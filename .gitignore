@@ -1,0 +1,20 @@
+# Build products and locally fetched dependencies
+/build/
+/build-*/
+/out/
+/_deps/
+/third_party/cache/
+/third_party/install/
+/third_party/src/
+/CMakeUserPresets.json
+/compile_commands.json
+
+# Editor settings, local workspaces and personal media
+/.cache/
+/.idea/
+/.vscode/
+/workspaces/
+/media/
+*.user
+*.swp
+*~

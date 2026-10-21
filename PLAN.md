@@ -23,10 +23,11 @@ completion promises.
   and relevant settings.
 - **Domain:** Qt-independent C++ library for shows, slides, groups, reusable
   styles, media and playlists. Qt model adapters expose it to QML.
-- **Backend:** a separate **Qt-free C++ worker**, using SDL3 for window/display/
-  audio handling, Skia Ganesh with Vulkan for composition, SkParagraph for text,
-  and FFmpeg libraries for decoding, pixel conversion and audio resampling.
-  The worker owns its Vulkan instance/device, swapchain and synchronization.
+- **Backend:** a separate **Qt-free C++ worker**, using GLFW for its output
+  window and Vulkan surface, vk-bootstrap for instance and device setup, Skia
+  Ganesh with Vulkan for composition, SkParagraph for text, and FFmpeg
+  libraries for decoding, pixel conversion and audio resampling. The worker
+  owns its Vulkan instance/device, swapchain and synchronization.
 - **Scheduling:** separate decoding, RPC handling and rendering. Do not block
   presentation or audio callbacks on files, decoding, IPC or preview consumers.
 - **RPC:** JSON-RPC 2.0 over Unix-domain sockets, using Qt local sockets in the
@@ -41,6 +42,11 @@ completion promises.
   frame-ready/release messages; drop previews under load rather than blocking
   output. Begin with 640×360 at 15 fps and on-demand editor previews/thumbnails.
   Never overwrite a slot still owned by the consumer.
+- **Audio:** native PipeWire. The worker mixes embedded video audio and one
+  standalone track in software to a single F32 stereo stream at the negotiated
+  rate, with independent volume and mute per source. Its process callback is
+  the playback clock whenever audio is running. Never mix or block on PipeWire
+  from the render or RPC threads.
 - **Ownership:** the frontend owns editable documents and all writes. Compile
   documents into immutable render scenes with resolved asset references. The
   worker owns playback/output and lives only while connected to its frontend.
@@ -57,15 +63,16 @@ completion promises.
 - **Editor:** worker-rendered imagery with QML selection handles; text entry
   through an inspector keeps final text layout in Skia.
 - **Deferred:** FreeShow import/round-trip compatibility, stage displays,
-  scripture, additional outputs, hardware decoding, advanced effects, remote
+  scripture, additional outputs, no-compositor output through the Vulkan
+  display plane, hardware decoding, advanced effects, remote
   control, streaming, NDI/SDI, cloud integrations, Windows and macOS.
 
 Technical references:
 
 - [Qt local sockets](https://doc.qt.io/qt-6/qlocalsocket.html)
 - [Asio local sockets](https://think-async.com/Asio/asio-1.30.2/doc/asio/overview/posix/local.html)
-- [SDL Vulkan surfaces](https://wiki.libsdl.org/SDL3/SDL_Vulkan_CreateSurface)
-- [SDL PCM output](https://wiki.libsdl.org/SDL3/SDL_OpenAudioDeviceStream)
+- [GLFW Vulkan support](https://www.glfw.org/docs/3.4/vulkan.html)
+- [PipeWire media streams](https://docs.pipewire.org/page_handling_media_sets.html)
 - [Skia device/context integration](https://skia.org/docs/user/api/skcanvas_creation/)
 
 ## Task, pause and Git rules
@@ -98,18 +105,39 @@ preparation. Detailed acceptance evidence belongs in `PROGRESS.md`.
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
 | 0.1 | DONE | Write plan and progress files | Both contain agreed architecture and task ledger |
-| 0.2 | TODO | Establish Git metadata and ignore rules | Git status works; generated files are excluded |
+| 0.2 | DONE | Establish Git metadata and ignore rules | Git status works; generated files are excluded |
 | 0.3 | TODO | Capture core screens, controls and shortcuts | Reference specification covers agreed screens |
 | 0.4 | TODO | Establish CMake targets and dependencies | UI and Qt-free worker skeletons build reproducibly |
-| 0.5 | TODO | Record dependency versions and asset notices | Skia revision/settings and dependencies are recorded |
+| 0.5 | DONE | Record dependency versions and asset notices | Skia revision/settings and dependencies are recorded |
 
 Checkpoint: `M0: establish project plan and build foundation`.
+
+#### Recorded dependencies (task 0.5, this machine)
+
+- **Skia:** `/home/jim/skia` at `a94df1cdab`, static `out/Release/libskia.a`
+  built with `skia_use_vulkan=true`, `skia_use_gl=false`,
+  `is_official_build=true` and internal libpng, libjpeg, zlib, expat and
+  FreeType. `libskparagraph.a`, `libskshaper.a`, `libskunicode_core.a` and
+  `libskunicode_icu.a` are already built, so SkParagraph needs no rebuild; PNG
+  and JPEG decoding come from SkCodec inside Skia.
+- **Proven pattern:** `/home/jim/sloppy-ui` opens a GLFW window with no client
+  API, creates the Vulkan surface, builds a `GrDirectContext` and presents
+  through its own `Swapchain` and `SwapchainImage` classes with per-image
+  fences and semaphores. Start the worker from that pattern.
+- **Installed:** GLFW 3.4.0, Vulkan loader and headers, Boost 1.90, CMake,
+  Ninja, GCC. vk-bootstrap `v1.3.225` arrives through FetchContent.
+- **Licences to ship:** Skia (BSD-3), GLFW (zlib), vk-bootstrap (MIT),
+  PipeWire (MIT), FFmpeg (LGPL or GPL depending on configure flags), Qt 6
+  (LGPL/GPL). Collected with the package in task 6.3.
+- **Missing for task 0.4:** `qt6-qtbase-devel`, `qt6-qtdeclarative-devel`,
+  `pipewire-devel`, `ffmpeg-devel`, `asio-devel` and a shader compiler
+  (`glslang-devel` or `shaderc-devel`).
 
 ### M1 — Prove frontend-to-renderer integration
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| 1.1 | TODO | SDL/Vulkan window and Skia rendering | Text and image render correctly |
+| 1.1 | TODO | GLFW/Vulkan window and Skia rendering | Text and image render correctly |
 | 1.2 | TODO | Worker launch, RPC handshake and shutdown | Commands change output; disconnect stops worker |
 | 1.3 | TODO | Display selection and swapchain recreation | Fullscreen, resizing and switching work |
 | 1.4 | TODO | Shared-memory previews | Qt displays worker frames without blocking output |
@@ -161,7 +189,7 @@ Checkpoint: `M4: complete core operator workspace and editor`.
 |---|---|---|---|
 | 5.1 | TODO | Bounded FFmpeg decoding queues | Fixtures decode without growing queues |
 | 5.2 | TODO | Video controls, seeking and looping | Playback transitions/seek flushing pass tests |
-| 5.3 | TODO | Standalone audio and stereo mixing | Video/music have independent volume/mute |
+| 5.3 | TODO | PipeWire output and stereo mixing | Video and standalone audio have independent volume and mute |
 | 5.4 | TODO | Playback clocks and synchronization | A/V timing meets acceptance targets |
 | 5.5 | TODO | Preload, continuous backgrounds, errors | Lyrics preserve playback; failures are visible |
 
