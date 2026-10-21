@@ -1,0 +1,31 @@
+add_executable(domain_tests
+  domain_tests.cpp
+)
+target_link_libraries(domain_tests PRIVATE openshow::domain)
+add_test(NAME domain_tests COMMAND domain_tests)
+
+add_executable(protocol_tests
+  protocol_tests.cpp
+)
+target_link_libraries(protocol_tests PRIVATE openshow::protocol)
+add_test(NAME protocol_tests COMMAND protocol_tests)
+
+# The worker runs as its own process and must never gain a Qt dependency.
+add_test(NAME worker_is_qt_free
+  COMMAND ${CMAKE_COMMAND}
+          -DTARGET=$<TARGET_FILE:openshow-worker>
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoQt.cmake
+)
+
+# The same check, inverted, proves the guard is not vacuous.
+if(OPENSHOW_BUILD_UI)
+  add_test(NAME ui_links_qt
+    COMMAND ${CMAKE_COMMAND}
+            -DTARGET=$<TARGET_FILE:openshow-ui>
+            -DCHECK=linked
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoQt.cmake
+  )
+endif()
+
+# Runs the Qt-free worker with no display and no audio session.
+add_test(NAME worker_check_deps COMMAND openshow-worker --check-deps)

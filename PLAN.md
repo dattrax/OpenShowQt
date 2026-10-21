@@ -108,7 +108,7 @@ preparation. Detailed acceptance evidence belongs in `PROGRESS.md`.
 | 0.1 | DONE | Write plan and progress files | Both contain agreed architecture and task ledger |
 | 0.2 | DONE | Establish Git metadata and ignore rules | Git status works; generated files are excluded |
 | 0.3 | TODO | Capture core screens, controls and shortcuts | Reference specification covers agreed screens |
-| 0.4 | TODO | Establish CMake targets and dependencies | UI and Qt-free worker skeletons build reproducibly |
+| 0.4 | DONE | Establish CMake targets and dependencies | UI and Qt-free worker skeletons build reproducibly |
 | 0.5 | DONE | Record dependency versions and asset notices | Skia revision/settings and dependencies are recorded |
 
 Checkpoint: `M0: establish project plan and build foundation`.
@@ -129,6 +129,9 @@ Checkpoint: `M0: establish project plan and build foundation`.
   Boost.JSON), Qt 6.11.2 base and declarative development packages,
   `pipewire-devel` 1.6.9, `ffmpeg-devel` 9.0.2, CMake, Ninja, GCC.
   vk-bootstrap `v1.3.225` arrives through FetchContent.
+- **FFmpeg gotcha:** its headers carry no `extern "C"` guards, so every C++
+  translation unit that includes them must wrap them, or the symbols will not
+  resolve at link time.
 - **Licences to ship:** Skia (BSD-3), GLFW (zlib), vk-bootstrap (MIT),
   Boost.JSON (BSL-1.0), PipeWire (MIT), FFmpeg (LGPL or GPL depending on
   configure flags), Qt 6 (LGPL/GPL). Collected with the package in task 6.3.
