@@ -4,7 +4,10 @@ Updated: 2026-10-21 (Europe/London).
 
 ## Current checkpoint
 
-- Milestone: **M0 — Planning, references and build foundation**.
+- Milestone: **M0 — Planning, references and build foundation**, complete.
+  Paused at the end of 2026-10-21 with everything committed and pushed; next task
+  is **1.1**, and the projector should be reconnected before any output-window
+  acceptance is attempted.
 - Completed tasks: **0.1** plan and progress files, **0.2** Git metadata,
   **0.3** core screens, controls and shortcuts, **0.4** CMake targets and
   dependencies, **0.5** recorded dependency versions. M0 is finished and ready for
@@ -110,7 +113,9 @@ Updated: 2026-10-21 (Europe/London).
   pages; the method and its traps are recorded in `docs/reference.md` §12, and the
   18 PNG captures sit in `third_party/cache/freeshow-visuals/` (Git-ignored). The
   app was killed afterwards and the `Documents/FreeShow` data root it created
-  during the run was removed, leaving the machine as found.
+  during the run was removed, leaving the machine as found. The driver used for
+  this is committed as `tools/cdp-inspect.mjs` and parses cleanly; it is a
+  development tool and nothing in the build references it.
 
 ## Decisions
 
@@ -133,6 +138,37 @@ Updated: 2026-10-21 (Europe/London).
 - Keep progress in these tracked files rather than chat memory, and never mark
   authored scaffolding as verified graphics work.
 
+## Output window log
+
+The projector is the second display and it is unplugged, so output behaviour is
+logged here from what is observable off screen rather than claimed as seen.
+
+- 2026-10-21, FreeShow 1.6.7, one display attached, output window created but
+  never shown (`autoOutput: false`, top-bar output button carrying class
+  `display off`):
+  - The output window exists as its own page target while hidden **and keeps
+    rendering**: after a slide went to air its DOM held the item, after a clear it
+    emptied. Reading it as pixels needs `fromSurface: false`. It occupies the
+    configured 1920x1080 bounds (1430x805 CSS at scale 1.34375).
+  - Off air: `div.slide` with `background-color: black`,
+    `transition: 800ms background-color`, `aspect-ratio: 16/9`, no children.
+  - On air with the Welcome slide: white bold "Welcome!" centred, captured at
+    `third_party/cache/freeshow-visuals/06-output-slide.png`.
+  - Cleared with `.`: DOM emptied, still black, "Clear all" became
+    "Restore output". Inline `zoom`, the layer list and the 5% drag strip are in
+    `docs/reference.md` §7.
+  - Timers: a 100ms interval in that occluded, unfocused window fired 50 times in
+    5008ms, so nothing is throttled while the audience window is off screen.
+  - Still untestable without the projector: placement and mode switching on a real
+    panel, per-display DPI, the display-selection precedence of §7, always-on-top
+    stacking against a real desktop, and how transitions and the `blur` fit read on
+    hardware. These are open for 1.3 and M4.
+- To repeat once the projector is connected: capture FreeShow again with
+  `tools/cdp-inspect.mjs` (`shot` with `CDP_FROM_SURFACE=0` for an off-screen
+  window, plain `shot` plus `CDP_FRONT=1` for one that is on screen), then do the
+  same against `openshow-worker` and compare. Record display topology, reported
+  scale factor and window bounds alongside every capture.
+
 ## Blockers and remaining work
 
 - No blockers. All five M0 tasks are DONE, so M0 awaits only its checkpoint
@@ -140,15 +176,19 @@ Updated: 2026-10-21 (Europe/London).
 - Two reference questions need controlled media rather than a running FreeShow and
   are now M4 acceptance items: the pixel result of the `blur` fit with edge
   blending, and per-slide action side effects on go.
-- Physical display, media and audio acceptance still need a desktop session; the
-  reference inspection ran on one display with the output window off screen.
+- The **projector (second display) is not connected**. Everything that needs an
+  audience panel — task 1.3 display selection and swapchain recreation, output
+  placement, DPI on the projector, always-on-top stacking, transitions and the
+  `blur` fit on hardware — waits for it. Follow up tomorrow; see the output window
+  log above for what was and was not observable meanwhile. Physical display, media
+  and audio acceptance still need a desktop session generally.
 - vk-bootstrap is linked into the worker but not yet used; task 1.1 uses it.
 
 ## Exact next action
 
-1. Propose the M0 checkpoint to the user: message
-   `M0: establish project plan and build foundation`, its file summary, and ask
-   whether to tag it.
+1. Ask the user whether to tag the M0 tip (`8150d55` plus this pause commit) as
+   `M0`; the proposed message is
+   `M0: establish project plan and build foundation`.
 2. Start **1.1 — GLFW/Vulkan window and Skia rendering**: open a GLFW
    `GLFW_NO_API` window from `openshow-worker`, create the instance and device with
    vk-bootstrap following `/home/jim/sloppy-ui`, attach Skia
@@ -156,7 +196,9 @@ Updated: 2026-10-21 (Europe/London).
    swapchain, sized from the authored 1920x1080 canvas so the scaling matches
    `docs/reference.md` §7.
 3. Keep the `worker_is_qt_free` guard green while doing it, and record the first
-   frames seen on the physical display in `PROGRESS.md`.
+   frames seen on the physical display in `PROGRESS.md`. Anything needing the
+   second display waits for task 1.3 and a reconnected projector; log output
+   observations as they go.
 
 ## Resume checklist
 

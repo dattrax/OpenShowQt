@@ -12,6 +12,13 @@ operator previews and one audience display.
 Reference: `/home/jim/FreeShow`, FreeShow 1.6.7, commit
 `436d4b634878ba723da1d1373637384ec700ce16`. Leave the source clone unchanged.
 
+In service the operator PC drives two screens: the operator UI on the first, the
+projector as the **second** display carrying the audience output. Our default
+output target is therefore the second display, which is also what FreeShow's
+`autoPosition` rule picks (`docs/reference.md` §7). The projector is not connected
+to this machine right now, so output-window behaviour is currently only observable
+off screen; see the output-window log in `PROGRESS.md`.
+
 Allow **12–16 focused engineer-weeks**, assuming one engineer. Re-estimate after
 M1; target an early lyric demonstration around weeks 4–5. Estimates are not
 completion promises.
@@ -240,6 +247,11 @@ physical hardware for display/media acceptance.
 - Synchronization: steady A/V offset within 50 ms over thirty minutes.
 - Reliability: one-hour mixed service without growing queues, sustained memory
   growth or unexpected output changes.
+- Displays: any check that needs an audience output — 1.3 display selection and
+  swapchain recreation, output placement, fit modes and transitions on a real
+  panel — requires the projector on the second display. With it unplugged those
+  checks stay open; evidence gathered from an off-screen output window is logged
+  and labelled as such, and does not satisfy them.
 - Platforms: physical-display checks on Fedora Wayland and X11. Headless checks
   supplement these and cannot replace them.
 

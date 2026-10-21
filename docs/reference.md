@@ -371,7 +371,8 @@ off screen.
 
 ## 12. How these captures were made
 
-Not part of the build; kept for reproducibility.
+Not part of the build; kept for reproducibility. The driver is committed as
+`tools/cdp-inspect.mjs` (`node tools/cdp-inspect.mjs <command> <target> [args]`).
 
 1. `curl` the AppImage into `third_party/cache/`, `chmod +x`, verify
    `openssl dgst -sha512 -binary … | openssl base64 -A` against `latest-linux.yml`.
