@@ -5,9 +5,10 @@ commit `436d4b634878ba723da1d1373637384ec700ce16` at `/home/jim/FreeShow`.
 Electron main process plus a **Svelte** renderer (547 `.svelte`, 466 `.ts`).
 
 Citations are `path:line` relative to that clone. Shorthands: `FS` =
-`src/frontend`, `EM` = `src/electron`, `T` = `src/types`. Sections marked
-**Needs runtime** are the residual questions that only a running copy can
-settle; see the consolidated list at the end.
+`src/frontend`, `EM` = `src/electron`, `T` = `src/types`. Rows and claims marked
+`RT` were additionally measured on a running 1.6.7 Linux AppImage over the
+Electron DevTools protocol; section 11 records what that inspection settled and
+what it could not, and section 12 how to reproduce it.
 
 ## 1. Terminology
 
@@ -33,10 +34,13 @@ FreeShow's words are not always ours.
 | Left panel | resizable `leftPanel`; per page: show→`Projects`, edit→`Navigation`, stage→`StageLayouts`, draw→`DrawTabs`, settings→`SettingsTabs` | `FS/MainLayout.svelte:40-56` |
 | Center | `flex:1`, background `--primary-darker`; show→`Show`, edit→Editor, settings→Settings | `FS/MainLayout.svelte:58-74` |
 | Right panel | resizable `rightPanel`, always `Preview`, then per-page tools (`ShowTools` on the show page) | `FS/MainLayout.svelte:76-107` |
-| Splitter | handle 4px, default width 290, max 638, snap: below 200.1 closes to 4, 200.1–290 snaps to 200.1, 270–310 snaps to 290; clicking a closed handle restores 290 | `FS/components/system/Resizeable.svelte:18-22,69-81,94-102`, `FS/utils/common.ts:14` |
-| Right panel goes two-column | when its width exceeds 522px the preview and tools sit side by side | `FS/MainLayout.svelte:77,171-182` |
+| Panels nest in the drawer too | the drawer repeats the same three-column structure with its own widths: `#leftPanelDrawer` (categories), a center list, `#rightPanelDrawer` (item info), each persisted separately | `FS/stores.ts:357` (`RT`) |
+| Measured at 1680x1020 | top bar 40; `#leftPanel` 290 (286 content + 4 handle); `.center` 1100; `#rightPanel` 290; `.row` 680; drawer 300 | `RT` |
+| Splitter | the panel div is itself the drag target: a mousedown within `handleWidth` of its inner edge starts a resize (`handleWidth` 4, or 6 once the panel is collapsed to 8 or less); default width 290, max `290 x 2.2` = 638, snap: below `290 x 0.69 / 2` = 100.05 it closes to the handle width, 100.05-200.1 floors at 200.1, 270-310 snaps to 290, above 638 clamps | `FS/components/system/Resizeable.svelte:18-22,41-58` (verified by dragging in the running app) |
+| Collapsed panel | `class="panel bar_left zero"`, `overflow: hidden`, content clipped to 0, a white `arrow_right` icon shown in the strip; clicking the strip restores 290 | `FS/components/system/Resizeable.svelte:73-99` (`RT`) |
+| Right panel goes two-column | above 522px the inner container gains class `right row` and computes `flex-direction: row-reverse`, so the tools column sits inside and the preview column stays nearest the screen edge; each column keeps its own width (measured 293 of a 590 panel) | `FS/MainLayout.svelte:77,171-182` (`RT`) |
 | Top bar | height 40, drag region, title at left (`width: var(--navigation-width)`), page buttons centred, settings and output buttons right | `FS/components/main/Top.svelte:94-158` |
-| Unsaved marker | 5px red strip at the left edge of the top bar while unsaved | `FS/components/main/Top.svelte:99-101,205-211` |
+| Unsaved marker | 5x40 strip at the left edge of the top bar, `rgba(255,0,0,.25)` | `FS/components/main/Top.svelte:99-101,205-211` (`RT`) |
 | Window | native frame on Linux; min 400x400; default 800x600 | `EM/index.ts:202,211-212,232` |
 | Focus mode | hides `Top` and `ShowTools` | `FS/MainLayout.svelte:36-38,80` |
 | Layout persistence | `resized` widths, drawer height, enabled tabs, slide options all live in the settings store, not the show file | `FS/stores.ts:344-357`, `FS/utils/save.ts:171-186`, `EM/data/defaults.ts:44-49` |
@@ -78,11 +82,26 @@ Drawer tabs, in order, with `Ctrl+1…8`: **Shows, Media, Audio, Overlays,
 Templates, Scripture, Calendar, Functions** (`FS/values/tabs.ts:5-16`,
 `FS/utils/shortcuts.ts:180-188`). Default tab `shows`, height 300, collapsed 40,
 `Ctrl+D` toggles when nothing is selected (`FS/stores.ts:63,346`,
-`FS/components/drawer/Drawer.svelte:28-30,81-111,184-185`). Search sits in the tab
-bar at `--navigation-width`, `Ctrl+F` focuses it, `Esc` clears
-(`FS/components/drawer/Drawer.svelte:164-227,287-292`). Shows and Media lists are
+`FS/components/drawer/Drawer.svelte:28-30,81-111,184-185`). Verified live: the
+drawer goes 300 to 40 and back and the row above it grows 680 to 940 accordingly.
+Search is **not** a permanent field: a 100x36 "Search" button sits at the right end
+of the tab bar, and `Ctrl+F` swaps it for `input.search.edit.drawer_search`,
+290x36 (the right-panel width) with placeholder `Search...`, which takes focus;
+`Esc` collapses it back (`display: none`)
+(`FS/components/drawer/Drawer.svelte:164-227,287-292`) (`RT`). Shows and Media lists are
 virtualised (`FS/components/drawer/pages/Shows.svelte:272`,
 `FS/components/drawer/media/Media.svelte:616`).
+
+Settings tabs, in order (`RT`): **General, Outputs, Styles, Audio, Connection,
+Files, Profiles, Theme, Smart, Other**. The Outputs tab lists one row per output
+with name, `Use style`, the window bounds (1920x1080), **Output screen** and
+**Always on top**, plus a `New output` button — that is the whole surface our
+display-selection operation has to cover
+(`FS/components/settings/tabs/Outputs.svelte`) (`RT`). Quick search (`Ctrl+G`) is a
+600px box centred in the window with placeholder `Quick search...`, empty until
+typed into (`RT`). The edit page shows `Slide | Chords | Text edit` tabs over the
+canvas, a `Textbox | Item` tool stack on the right and slide navigation with a
+`New slide` button on the left (`RT`).
 
 ## 5. Show page: playlist, grid, controls
 
@@ -99,25 +118,33 @@ go-commands go to the active outputs
 | Playlist rows | sections are coloured header rows with optional time and trigger icon; shows are rows between them | `FS/components/show/ProjectContentList.svelte:266-349` |
 | Reorder | HTML5 drag within the playlist, and from the drawer into the playlist, rewrites the project's item list at the drop index | `FS/components/helpers/drop.ts:21,30,42-78`, `FS/components/helpers/dropActions.ts:79-135` |
 | Slide grid | modes `grid` (default), `list`, `lyrics`, `simple`, `groups`; columns default 4 with a zoom slider; cycle `Ctrl+Shift+V` | `FS/stores.ts:247`, `FS/components/show/Slides.svelte:493,517-529`, `FS/components/slide/Layouts.svelte:188-192` |
-| Thumbnail | 1-based number at the left of the label bar; active slide gets a 2px accent outline, edit selection a 5px text-colour outline | `FS/components/slide/Slide.svelte:277,448,546-552`, `FS/components/system/SelectElem.svelte:331,364` |
+| Slide card anatomy | `div.slide.context.#slide` wraps `.hover.overlay` (the hover wash) plus `div#slide[data-item="{index,showId}"][draggable=true].selectElem`, inside it `div#<outputId>.zoomed` then `.slide.hideOverflow` with `aspect-ratio: 16/9` and a `span.zoom` whose CSS `zoom` is cardWidth/1920 (measured 0.13979 for a 268.4px card); the grid is `droparea > ParentBlock > grid > main.active`, `main.active` marking the on-air card | `FS/components/slide/Slide.svelte:277,448` (`RT`) |
+| Thumbnail label | a `.label[data-title="<group name>"]` bar under the card showing the 1-based number at the left; the active card's label carries `border-bottom: 2px solid var(--primary-darkest)`, edit selection a 5px text-colour outline | `FS/components/slide/Slide.svelte:546-552`, `FS/components/system/SelectElem.svelte:331,364` (`RT`) |
 | Click to go | a plain single click on a slide sends it to the output immediately; `Ctrl`/`Shift` click only selects; `Alt` goes without extras | `FS/components/show/Slides.svelte:96-99,143-144` |
-| Hover icon strip | per-slide icons for disabled, timer, next timer, transition, output binding, background, muted, loop, mics, each clickable to remove | `FS/components/slide/Icons.svelte:110-230` |
+| Hover icon strip | two `.icons` flex columns flank the card (left and right edges, card height); hovering paints `.hover.overlay` with `rgba(255,255,255,.05)`; the strips stay zero-width unless the slide itself carries an override (timer, per-slide transition, binding, background, muted, loop, mics) - setting the global text transition did not add one | `FS/components/slide/Icons.svelte:110-230` (`RT`) |
 | Empty states | "No slides" plus a "New slide" button in the grid; "Nothing here" in an empty playlist | `FS/components/show/Slides.svelte:530-538`, `FS/components/show/ProjectContentList.svelte:404-417` |
 
-Operator controls under the previews, with their titles:
+Operator controls under the preview, with the titles the running app reports:
 
-| Control | Title in FreeShow | Action |
+| Control | Runtime title | Runtime behaviour |
 |---|---|---|
-| Previous / Next | "Previous slide [Arrow Left]", "Next slide [Arrow Right]" | advance outputs |
-| Play | "Start show [Space]" | first enabled slide of the active show |
-| Update | "Update output [Ctrl+R]" | re-push current scene (replaces Play while live) |
-| Lock | "Lock output" / "Unlock output [Ctrl+L]" | blocks go, clear and advance |
-| Transition | "Transition" | per-slide transition popup |
-| Clear all | "Clear all [esc]" then "Restore output" | clears everything, restorable once |
-| Per-layer clear | "Clear background [F1]", "Clear slide [F2]", "Clear overlays [F3]", "Clear audio [F4]", "Clear timer [F5]" | independent per layer |
+| Hide preview | "Hide preview" | 41x40 button overlaid on the preview, collapses it |
+| Previous / Next | "Previous slide [Arrow Left]", "Next slide [Arrow Right]" | both `disabled` at the ends of a show, not hidden |
+| Play / Update | "Start show [Space]" off air, "Update output [Ctrl+R]" while live | the same slot swaps meaning |
+| Lock | "Lock output [Ctrl+L]" | blocks go, clear and advance |
+| Transition | "Transition" | opens the transition popup |
+| Clear all | "Clear all [esc]", `class="text clearAll red"` | once cleared the button becomes "Restore output" and drops `red` |
+| Per-layer clear | a red 28px clear button stacked over a 15px label button ("Background", "Slide", "Overlays", "Audio", "Next slide timer"); the label button gains `isActive` while that layer is on air | each pair is `disabled` while its own layer is empty, so with only a slide showing just the slide pair is enabled - independent per-layer clearing made visible |
 
 Source: `FS/components/output/ShowActions.svelte:90-118`,
-`FS/components/output/preview/ClearButtons.svelte:115-213`.
+`FS/components/output/preview/ClearButtons.svelte:115-213` (`RT`).
+
+The transition popup is fullscreen chrome (`.popup` with "Close [esc]" and "More
+options") holding two tabs, **Text transition** and **Media transition** - matching
+the two entries in `transitionData` - and a row of Duration, Flow and Easing
+controls. The type list offered is **None, Fade, Blur, Spin, Scale, Slide**;
+`crossfade` is absent, as the source said (`T/Show.ts:681`,
+`FS/utils/transitions.ts:11-27`) (`RT`).
 
 There is **no "auto go" control**; the closest are a per-slide next timer and a
 section trigger action (`FS/components/output/tools/NextTimer.svelte:71-77`,
@@ -137,10 +164,14 @@ when that has focus
 | `Space`, `PageDown`, `ArrowRight` | next |
 | `PageUp`, `ArrowLeft` | previous |
 | `Home` / `End` | go to start / go to end |
-| `Esc` or `.` | clear all |
-| `F1` `F2` `F3` `F4` `F5` | clear background, slide, overlays, audio, timers |
-| digits `0-9`, 300ms buffer | play slide N, only when `special.numberKeys` |
-| a bare letter | play the slide starting with it, only when `special.autoLetterShortcut` |
+| `Esc` or `.` | clear all - `Esc` only when nothing else wants it, see below |
+| `F1` | clear background |
+| `F2` | clear slide, unless a selection exists (then the app renames instead) |
+| `F3` | clear overlays and effects |
+| `F4` | clear audio, including playlist and microphones |
+| `F5` | **next**, not a clear: `OutputHelper.advanceOutputs()`, a convenience for presenter clickers. The layer the UI calls "Next slide timer" is cleared by its button, not by `F5` (`FS/utils/shortcuts.ts:380-384`, `FS/components/helpers/OutputHelper.ts:20-25`) (`RT`) |
+| digits `0-9`, 300ms buffer | play slide N, only when `special.numberKeys`; a fresh install has no `numberKeys` key at all, so **digits do not go to slides by default** (`RT`) |
+| a bare letter | play the slide starting with it, only when `special.autoLetterShortcut`, likewise absent by default (`RT`) |
 
 App-level keys (`FS/utils/shortcuts.ts:37-142`): `Ctrl+1…5` switch page,
 `Ctrl+1…8` switch drawer tab (body must have focus), `Ctrl+C/X/V/D/A`, `Ctrl+Z`,
@@ -152,8 +183,19 @@ slide view, `Ctrl+Shift+T` text edit mode, `Ctrl+Shift+F` focus mode, `F2` renam
 
 Gating rules worth copying deliberately:
 
+- Dispatch is split across **two window-level `keydown` listeners**: the app map
+  registered by `App.svelte`, and the presenter map registered by the preview
+  component (`FS/components/output/preview/Preview.svelte:252`); 17 `keydown`
+  listeners are attached to `window` in a running main window (`RT`).
 - `Esc` is a priority cascade: quick search → context menu → blur focus → popup →
-  selection (`FS/utils/shortcuts.ts:91-126`).
+  selection (`FS/utils/shortcuts.ts:91-126`). The presenter path for `Esc` is
+  `setTimeout(clearAll)`, i.e. `clearAll()` with `button = false`, and that
+  overload returns early while a popup, selection, context menu or edit selection
+  exists. Because the app map clears the selection in a 20ms timeout while the
+  presenter map fires at 0ms, **`Esc` right after selecting a slide only deselects
+  it**; observed twice in a row with the output still on air, while `.` cleared
+  immediately once nothing was selected (`RT`). Treat `Esc` as "cancel the topmost
+  thing", not "go black".
 - `Ctrl+D` means duplicate when something is selected, otherwise it toggles the
   drawer (`FS/utils/shortcuts.ts:43`, `FS/components/drawer/Drawer.svelte:184-185`).
 - `Ctrl+F` means find-and-replace on the edit page, otherwise focus the drawer
@@ -178,6 +220,14 @@ Gating rules worth copying deliberately:
 | Display hot-plug | `display-removed` acts immediately, `display-added` after 1s, metrics change after 500ms | `EM/output/helpers/OutputLifecycle.ts:44-78` |
 | Identify | numbered full-screen overlays for 3 seconds | `EM/output/helpers/OutputIdentify.ts:8-33` |
 | Program state | `OutData { refresh, background, slide, effects[], overlays[], transition, scene }` per output | `T/Output.ts:72-80` |
+| Program state as persisted | the serialised buffer is nested in the output object and survives restart, so the app re-presents what was on air: `out: { slide: { id, layout, index, line, revealCount, itemClickReveal }, background, transition, overlays, effects }` | `RT` |
+| Output window DOM | `main.background` (so no `--primary` paint) → `div.fill.context.#output_window` (`flex-direction: row`) → `div#<outputId>.zoomed.center` → `div.slide.hideOverflow.landscape` with `background-color: black; transition: 800ms background-color; aspect-ratio: 16/9` → `span.zoom` → the layers; a `.transitioner` wrapper appears only while a transition is running | `FS/MainOutput.svelte:62-71` (`RT`) |
+| Canvas scaling | the authored 1920-wide space is mapped with CSS `zoom = boxWidth / 1920`; measured 0.74495 in a 1430px window and 0.13979 in a 268px thumbnail; item geometry and font size stay in authored units (an item at `top:428.50px;left:208.50px;height:220px;width:1500px`, `font-size: 180px` echoed as `--base-font-size`) | `FS/components/slide/Zoomed.svelte:78-80` (`RT`) |
+| Cleared output | content is removed from the DOM and the slide box simply shows its own `background-color: black`, fading over the media transition duration (800ms); no blackout layer, no style background left behind | `FS/components/output/Output.svelte:329` (`RT`) |
+| Moving a borderless output | the top 5% of the output window is a `-webkit-app-region: drag` strip (`.dragger`), which is how the operator repositions an output that has no frame | `RT` |
+| Timers in the background | every window is created with `backgroundThrottling: false` ("allow timers to run in background"), and the renderer process really does run with `--disable-background-timer-throttling --disable-frame-rate-limit --disable-background-media-suspend`; measured in a fully occluded, unfocused output window: 50 ticks of a 100ms interval in 5008ms | `EM/utils/windowOptions.ts:37,68,113` (`RT`) |
+| Group colour plumbing | each item carries `--slide-group-color`, `--slide-group-next-color`, `--slide-group-upcoming-color` plus `--variable-number`, so upcoming/next tinting is pure CSS; chords default to `--chord-color: #FF851B` | `RT` |
+| Hidden windows still render | an output window created while outputs are off keeps updating its DOM (`visibilityState` stays `visible`), so previews, NDI capture and DevTools inspection all see live content; a screenshot of it needs CDP `fromSurface: false` | `RT` |
 | Clear | independent per key: background, slide, overlays, audio, timers, scene, drawing, all | `FS/components/output/clear.ts:13-34,86-198` |
 | Restore | clearing snapshots every active output, plus playing audio, so one restore is possible | `FS/components/output/clear.ts:36-84` |
 | Slide position | clearing with intent remembers the current slide so the next go continues from it; clearing at the last slide does not | `FS/components/output/clear.ts:97-124` |
@@ -220,13 +270,40 @@ caches (`T/Save.ts:95-122`).
 | Project (playlist) | `name`, `created`, `modified`, `used`, `parent`, `shows[]`, `timeline`, `archived` | `{projects:{}, folders:{}, projectTemplates:{}}` | `T/Projects.ts:3-46`, `EM/data/store.ts:37` |
 | Output | `enabled`, `active`, `name`, `color`, `bounds`, `screen`, `style`, optional crop, blend, transparency and capture transports | `{enabled: true, active: true, name: "Output", color: "#F0008C", bounds 1920x1080 at 0,0, screen: null}` | `T/Output.ts:8-39`, `EM/data/defaults.ts:16-90` |
 
-Storage: data root `Documents/FreeShow` with `Shows`, `Backups`, `Bibles`, `Media`,
-`Config` and others; one show per file as `Shows/<name||id>.show` whose content is
-the JSON tuple `[id, show]`; config as `Config/<store>.json`; backups as
+Storage: the data root defaults to `Documents/FreeShow` and its folders are fixed
+(`EM/utils/files.ts:338-360`, `dataFolderNames`): `Shows`, `Backups`, `Bibles`,
+`Online`, `Media`, `Exports`, `Imports`, `Lessons`, `Planning Center`,
+`Recordings`, `Audio`, `Cloud` and `Config` - `dataFolderNames.userData` is
+literally `"Config"`. One show per file as `Shows/<name||id>.show` whose content is
+the JSON tuple `[id, show]` (`EM/data/export.ts:199`); backups as
 `Backups/<timestamp>[_auto].zip` containing `PROJECTS.json`, `SHOWS/*` and bibles
-(`EM/utils/files.ts:338-360`, `EM/data/export.ts:199`, `EM/data/store.ts:30-53`,
-`EM/data/backup.ts:16-17,85-175`). Startup deletes `*.json.tmp-*` leftovers and
+(`EM/data/backup.ts:16-17,85-175`). Startup deletes `*.json.tmp-*` leftovers and
 drops store files that fail to parse (`EM/data/store.ts:68-107`).
+
+The store files are `<dataPath>/Config/<store>.json`. Measured on a clean run:
+`config.json` (only `loaded`, `maximized`, `bounds`, `dataPath`,
+`disableHardwareAcceleration`, `graphicsDevice`, `machineId`), plus `settings.json`,
+`settings_synced.json`, `projects.json`, `shows.json`, `stage.json`, `themes.json`,
+`templates.json`, `overlays.json`, `history.json` and `cache.json`. Passing Electron
+a custom `--user-data-dir` keeps the stores there instead and sets
+`special.customUserDataLocation: true`; that is how this inspection avoided writing
+to a real data root (`RT`).
+
+First run, measured: it creates `Documents/FreeShow/{Bibles,Config,Shows}`, writes
+`Shows/Welcome.show`, seeds a "Meetings" project holding one item plus the
+Presentations and Songs categories, and the centre of the window offers
+`Documentation`, `Quick search`, `New project`, `New show` (`RT`).
+
+Persisted defaults worth copying (`RT`): `resized`
+`{leftPanel:290, rightPanel:290, leftPanelDrawer:290, rightPanelDrawer:290}`,
+`drawer {height:300, stored:null}`, `drawerTabsData` written only for tabs actually
+touched, `slidesOptions {columns:4, mode:"grid"}`, `mediaOptions {columns:5,
+mode:"grid"}`, `transitionData` text `fade 500 sine` and media `fade 800 sine`,
+`theme "default"`, `autosave "15min"`, `timeFormat "24"`, `language "en_GB"`,
+`ports {remote:5510, stage:5511}` with a generated remote password, and a single
+output named **"Primary"** - the code default string is "Output" - as
+`{enabled:true, active:true, color:"#F0008C", bounds 1920x1080 at 0,0,
+screen:null, style:"default"}`.
 
 **There is no schema version field.** Migration is done by
 version-named fixup functions and filename-triggered repairs
@@ -268,24 +345,53 @@ Deferred, matching `PLAN.md`: stage outputs, layouts, effects, scripture,
 calendar, functions, quick search, cloud and content providers, NDI, OMT,
 Blackmagic, WebRTC and RTMP, drawing, timers beyond the simple countdown.
 
-## 11. Needs runtime to confirm
+## 11. Runtime verification
 
-1. Effective composition of conditional layout classes: the right panel
-   two-column threshold and the drawer split views.
-2. Real appearance of the ghost background dimming, group colour bars and the
-   hover icon strip on slides.
-3. What clear-all leaves behind in practice: pure black, or the style background.
-4. Whether `crossfade` and the `between` transition variants ever render.
-5. Pixel results of the `blur` fit mode and output edge blending.
-6. Drag feedback when moving items between the drawer and the playlist.
-7. Relative dispatch order of the many window-level key handlers, and the
-   20-300ms `setTimeout` races around `Esc`, duplicate and `F2`.
-8. Per-slide action side effects on go, which are timing dependent.
-9. Timer tick accuracy under background throttling.
-10. Actual persisted user settings such as panel widths and enabled tabs, which
-    are not in the repository.
+The ten open questions were taken up against the official 1.6.7 Linux AppImage
+(sha512 `MsURzL48zjECRkTTvHnmmtF0fu8QO97PTpFL12kayUw/VGdBrAyUMUh5O3qODa7yYhmG1q9bn4lZ3Q+lQ1GyOQ==`,
+165640234 bytes, matching `latest-linux.yml`) driven over CDP.
 
-Capturing these needs a running copy. The plan is the official 1.6.7 Linux
-AppImage driven over the Electron DevTools protocol, which gives window
-enumeration, DOM and computed-style reads, synthetic input and per-window
-screenshots without extra system packages.
+| # | Question | Result |
+|---|---|---|
+| 1 | Conditional layout classes | **Settled.** Right panel above 522px becomes `right row` with `flex-direction: row-reverse` (tools inside, preview at the screen edge); the drawer carries its own `#leftPanelDrawer` / `#rightPanelDrawer`. Resize snapping, the 4px/6px handle hit strip, the `zero` collapsed state with its arrow icon, and click-to-restore-290 were all reproduced by dragging (`§2`) |
+| 2 | Ghost dimming, group colours, hover strip | **Settled.** `.background.ghost` is `opacity: .4`; hover paints `.hover.overlay` at `rgba(255,255,255,.05)`; group and upcoming colours arrive as `--slide-group-color` / `-next-` / `-upcoming-` custom properties on each item; the per-card `.icons` columns are zero-width unless the slide itself has an override (`§5`, `§7`) |
+| 3 | What clear-all leaves | **Settled.** Pure black: the slide box's own `background-color: black` with `transition: 800ms background-color`, content removed from the DOM, no style background behind it. "Clear all" flips to "Restore output" and loses its `red` class (`§5`, `§7`) |
+| 4 | Does `crossfade` ever render | **Settled.** No. The transition popup offers exactly None, Fade, Blur, Spin, Scale, Slide; `crossfade` is not offered anywhere in the UI |
+| 5 | Pixels of the `blur` fit and edge blending | **Not verified.** Needs a controlled image and video asset; the operator route to a background is a drag from the Media drawer, and the only images on this machine are personal screenshots. Deferred to the M4 acceptance pass with our own fixtures |
+| 6 | Drag feedback | **Settled from the shipped CSS**, which is what the browser actually applies: `.droparea.hover` fades the target to `opacity: .3` over `transition: opacity .3s` behind a `rgba(0,0,0,.4)` wash, dropping onto an output preview draws `border: 3px solid var(--secondary)` on `.previewContainer::after`, and a chord drop target gets `outline: 2px dashed var(--secondary)` with `rgba(255,255,255,.15)` |
+| 7 | Handler dispatch order | **Partly settled, and it matters.** Two window-level `keydown` listeners compete: the app map and the presenter map from `Preview.svelte`; 17 `keydown` listeners are attached to `window` overall. `Esc`'s presenter path is `setTimeout(clearAll)` (0ms) while the app map defers deselecting by 20ms, so `Esc` with a selection never clears the output - confirmed by pressing it twice with the output on air, where `.` cleared immediately. Numbers in the 300ms buffer are the slide-N path. Exact interleaving of the other listeners was not traced |
+| 8 | Per-slide action side effects | **Not verified.** The action list is documented from source; exercising timed actions on go needs a purpose-built show file. Deferred to M4 |
+| 9 | Timer accuracy under throttling | **Settled.** All windows set `backgroundThrottling: false`; a 100ms interval in a fully occluded, unfocused output window fired 50 times in 5008ms |
+| 10 | Real persisted settings | **Settled.** First-run artefacts and every default recorded in `§8`, including that digit-to-slide and letter-to-slide are off unless the user turns them on |
+
+Two things the run gave us that the source alone did not: the output window's top
+5% is an `-webkit-app-region: drag` strip, and a hidden output window keeps
+rendering live DOM updates, which is why previews and capture work with the window
+off screen.
+
+## 12. How these captures were made
+
+Not part of the build; kept for reproducibility.
+
+1. `curl` the AppImage into `third_party/cache/`, `chmod +x`, verify
+   `openssl dgst -sha512 -binary … | openssl base64 -A` against `latest-linux.yml`.
+2. Run it with `--remote-debugging-port=9222
+   --user-data-dir=/tmp/opencode/fs/userdata`, so its stores stay out of
+   `Documents/FreeShow`. Chrome/138, Electron/37.10.3.
+   The app's own stdout is worth reading too: it prints a staged GPU probe
+   (`[GPU-STATUS]` at t=0, 10s and 25s for compositing, rasterization, webgl and
+   video decode, then `[GPU-HEALTH]` with the VA drivers found and a decode probe
+   result). That is a good pattern for our worker's first-run diagnostics.
+3. `/json/list` returns two page targets with the same title, and the order is not
+   stable: identify them by feature (`[class*="output_window"]` for the output
+   window, `.drawer` for the main one) and address them by target id. Note the
+   class is literally `#output_window`, so `querySelector('#output_window')` fails;
+   match on the attribute instead.
+4. `Page.captureScreenshot` works on the main window but stalls on an off-screen
+   output window unless `fromSurface: false`; captures also stall once when a
+   window is occluded, so `Page.bringToFront` plus a short retry loop is worth it.
+   `Emulation.setDeviceMetricsOverride` fakes viewport sizes, but panel widths need
+   a real drag, and FreeShow's resize handler ignores coalesced moves: synthetic
+   drags must send ~20 discrete `mouseMoved` events with small delays.
+5. Screenshots are reference material, not repo content: 18 PNGs are kept in
+   `third_party/cache/freeshow-visuals/`, which is Git-ignored.
