@@ -31,9 +31,10 @@ completion promises.
 - **Scheduling:** separate decoding, RPC handling and rendering. Do not block
   presentation or audio callbacks on files, decoding, IPC or preview consumers.
 - **RPC:** JSON-RPC 2.0 over Unix-domain sockets, using Qt local sockets in the
-  frontend and standalone Asio in the worker. Length-prefixed messages,
-  protocol-version negotiation, request IDs, structured errors and acknowledged
-  scene revisions. Share Qt-independent scene/protocol types using nlohmann/json.
+  frontend and a single-threaded `poll()` loop on a raw Unix socket in the
+  worker. Length-prefixed messages, protocol-version negotiation, request IDs,
+  structured errors and acknowledged scene revisions. Share Qt-independent
+  scene/protocol types using Boost.JSON.
 - **Initial operations:** capabilities, display selection, scene preparation/
   presentation, preview requests, playback controls, clearing and shutdown.
   Events report applied revisions, playback position, displays, statistics and
@@ -70,7 +71,7 @@ completion promises.
 Technical references:
 
 - [Qt local sockets](https://doc.qt.io/qt-6/qlocalsocket.html)
-- [Asio local sockets](https://think-async.com/Asio/asio-1.30.2/doc/asio/overview/posix/local.html)
+- [Boost.JSON](https://www.boost.org/doc/libs/1_90_0/doc/html/json.html)
 - [GLFW Vulkan support](https://www.glfw.org/docs/3.4/vulkan.html)
 - [PipeWire media streams](https://docs.pipewire.org/page_handling_media_sets.html)
 - [Skia device/context integration](https://skia.org/docs/user/api/skcanvas_creation/)
@@ -129,17 +130,17 @@ Checkpoint: `M0: establish project plan and build foundation`.
   `pipewire-devel` 1.6.9, `ffmpeg-devel` 9.0.2, CMake, Ninja, GCC.
   vk-bootstrap `v1.3.225` arrives through FetchContent.
 - **Licences to ship:** Skia (BSD-3), GLFW (zlib), vk-bootstrap (MIT),
-  PipeWire (MIT), FFmpeg (LGPL or GPL depending on configure flags), Qt 6
-  (LGPL/GPL). Collected with the package in task 6.3.
+  Boost.JSON (BSL-1.0), PipeWire (MIT), FFmpeg (LGPL or GPL depending on
+  configure flags), Qt 6 (LGPL/GPL). Collected with the package in task 6.3.
 - **No shader compiler needed.** Skia's Vulkan backend turns SkSL into SPIR-V
   in process through its own code generator (`SkSL::ToSPIRV`, a member of
   `libskia.a`), which is why `/home/jim/sloppy-ui` renders with no shaders of
   its own. A custom transition or colour effect would be SkSL for
   `SkRuntimeEffect`, still compiled by Skia. Shader tooling such as spirv-cross
   or RenderDoc is for debugging only.
-- **Outstanding:** the plan names standalone Asio for the worker socket and
-  nlohmann/json for shared types, while Boost 1.90 with Boost.JSON is already
-  installed. Settle the socket and JSON choice before scaffolding task 0.4.
+- **Sockets and JSON, decided 2026-10-21:** the worker uses a `poll()` loop on
+  a raw Unix socket and Boost.JSON for all payloads. `asio-devel` and
+  `nlohmann-json-devel` are therefore not installed and not wanted.
 
 ### M1 — Prove frontend-to-renderer integration
 

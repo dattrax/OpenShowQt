@@ -44,9 +44,9 @@ Updated: 2026-10-21 (Europe/London).
   `libskparagraph.a`, `libskshaper.a`, `libskunicode_core.a` and
   `libskunicode_icu.a`, so SkParagraph needs no Skia rebuild.
 - Installed for task 0.4: `qt6-qtbase-devel` and `qt6-qtdeclarative-devel`
-  6.11.2, `pipewire-devel` 1.6.9, `ffmpeg-devel` 9.0.2. `asio-devel` is still
-  absent, and no shader compiler is needed: `SkSL::ToSPIRV` is already a member
-  of `libskia.a`, so Skia generates SPIR-V from SkSL in process.
+  6.11.2, `pipewire-devel` 1.6.9, `ffmpeg-devel` 9.0.2. No shader compiler is
+  needed: `SkSL::ToSPIRV` is already a member of `libskia.a`, so Skia generates
+  SPIR-V from SkSL in process. `asio-devel` stays uninstalled by decision.
 - `/home/jim/sloppy-ui` builds windowed against that Skia tree with GLFW; its
   `DIRECT_TO_DISPLAY` mode needs an input plugin that is not on this machine.
 - Fedora 46 KDE with some fc45 packages. Display and media acceptance still
@@ -60,6 +60,8 @@ Updated: 2026-10-21 (Europe/London).
 - Audio is native PipeWire: one stream per worker, software mix of embedded
   video audio with one standalone track, per-source volume and mute, the
   process callback as clock.
+- Sockets and JSON are settled: a `poll()` loop on a raw Unix socket in the
+  worker and Boost.JSON for payloads, with no Asio and no nlohmann/json.
 - Text layout stays in Skia with SkParagraph. No shader toolchain in the
   project: Skia compiles SkSL to SPIR-V in process, so a custom effect would be
   SkSL through `SkRuntimeEffect` rather than hand-written SPIR-V.
@@ -71,20 +73,15 @@ Updated: 2026-10-21 (Europe/London).
 
 - Task 0.3 needs FreeShow running in a desktop session to capture screens,
   controls and shortcuts.
-- The plan names standalone Asio for the worker socket and nlohmann/json for
-  shared types. Boost 1.90 with Boost.JSON is installed and `asio-devel` is
-  not, so the likely answer is a `poll()` loop on a Unix socket plus one JSON
-  library. Settle this before scaffolding task 0.4.
 - Display and media acceptance still needs a desktop session; headless checks
   can only supplement them.
 
 ## Exact next action
 
-1. Confirm the worker socket and JSON library choice.
-2. Create the CMake skeleton: Qt frontend, Qt-free worker, and a
+1. Create the CMake skeleton: Qt frontend, Qt-free worker, and a
    Qt-independent domain and protocol library, with the worker building against
-   `/home/jim/skia/out/Release`, GLFW, Vulkan and libpipewire.
-3. Record the configure and build commands that worked here, run the M0 checks
+   `/home/jim/skia/out/Release`, GLFW, Vulkan, Boost.JSON and libpipewire.
+2. Record the configure and build commands that worked here, run the M0 checks
    and propose the checkpoint commit.
 
 ## Resume checklist
