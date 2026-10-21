@@ -7,7 +7,9 @@ Updated: 2026-10-21 (Europe/London).
 - Milestone: **M0 — Planning, references and build foundation**.
 - Completed tasks: **0.1** plan and progress files, **0.2** Git metadata,
   **0.4** CMake targets and dependencies, **0.5** recorded dependency versions.
-- Next task: **0.3 — Capture core screens, controls and shortcuts**.
+- In progress: **0.3 — Capture core screens, controls and shortcuts**. The
+  source-derived specification is written to `docs/reference.md`; only visual
+  captures of a running FreeShow remain, so the task stays open.
 - State: `cmake --preset desktop` plus `cmake --build --preset desktop` builds
   the Qt frontend, the Qt-free worker and the shared libraries, and
   `ctest --preset desktop` passes 5 of 5. The Qt-free `headless` preset passes
@@ -38,6 +40,14 @@ Updated: 2026-10-21 (Europe/London).
 | `src/ui` | `openshow-ui`, Qt 6 Quick window with placeholder text |
 | `tests` | domain and protocol tests, an `ldd` based Qt-dependency guard, worker `--check-deps` |
 
+- Derived `docs/reference.md` from the FreeShow source for task 0.3: shell and
+  panel geometry, theme tokens, pages and drawer tabs, the show page playlist and
+  slide grid, the full keyboard map with its gating rules, output and compositing
+  semantics including background continuity, the saved data model and storage
+  layout, and a mapping from FreeShow's operation surface to our planned RPC.
+- Confirmed the FreeShow renderer is **Svelte**, not Vue, and corrected the
+  earlier note here. 547 `.svelte` and 466 `.ts` files under `src/`.
+
 ## Verification and environment
 
 - `cmake --preset desktop` configures without warnings using CMake 4.3.0,
@@ -62,6 +72,13 @@ Updated: 2026-10-21 (Europe/London).
 - FreeShow 1.6.7 reference clone `/home/jim/FreeShow` at
   `436d4b634878ba723da1d1373637384ec700ce16`, unchanged, with no installed
   node_modules.
+- Every citation path in `docs/reference.md` was checked to exist in the clone:
+  69 unique paths, no misses after fixing six wrong prefixes such as
+  `EM/output/clear.ts` which is really `src/frontend/components/output/clear.ts`.
+  Sampled line numbers were read back and agree, for example the 1920x1080
+  `DEFAULT_BOUNDS` at `FS/components/helpers/output.ts:858` and the background
+  mount delay `duration / 4 + 20` at
+  `FS/components/output/layers/Background.svelte:88`.
 
 ## Decisions
 
@@ -86,22 +103,26 @@ Updated: 2026-10-21 (Europe/London).
 
 ## Blockers and remaining work
 
-- Task 0.3 is the only M0 task left. Runtime screen captures need FreeShow
-  running and upstream has no installed node_modules, so either the user starts
-  it or its dependencies are installed with approval. Controls, shortcuts and
-  panel layout can be documented from source meanwhile.
+- Task 0.3 is the only M0 task left and its source-derived part is finished. The
+  ten runtime questions at the end of `docs/reference.md` need a running
+  FreeShow. The clone has no node_modules, so building from source means
+  `npm ci`; the cheaper route is the official 1.6.7 Linux AppImage driven over
+  the Electron DevTools protocol, which needs no extra system packages. Either
+  route needs the user's approval because it downloads a binary and puts windows
+  on their session.
 - Physical display, media and audio acceptance still need a desktop session.
 - vk-bootstrap is linked into the worker but not yet used; task 1.1 uses it.
 
 ## Exact next action
 
-1. Task 0.3 from source: read the FreeShow Vue components under
-   `/home/jim/FreeShow/src` and write the reference specification of screens,
-   panels, controls and keyboard shortcuts into `docs/reference.md`.
-2. Ask the user to start FreeShow for screenshots, or to approve installing its
-   node dependencies, then add the captures to `docs/reference.md`.
-3. Once 0.3 is accepted, run the M0 checks and propose the checkpoint commit
-   message and file summary before starting M1.
+1. With approval, fetch the FreeShow 1.6.7 Linux AppImage into
+   `third_party/cache` (already Git-ignored), start it with
+   `--remote-debugging-port`, and close the runtime questions in
+   `docs/reference.md` using per-window captures and computed-style readings.
+2. Mark 0.3 DONE, run the M0 checks and propose the checkpoint commit message and
+   file summary before starting M1.
+3. If the user would rather not run FreeShow at all, accept `docs/reference.md`
+   as it stands and record the visual-fidelity questions as M4 acceptance items.
 
 ## Resume checklist
 

@@ -107,7 +107,7 @@ preparation. Detailed acceptance evidence belongs in `PROGRESS.md`.
 |---|---|---|---|
 | 0.1 | DONE | Write plan and progress files | Both contain agreed architecture and task ledger |
 | 0.2 | DONE | Establish Git metadata and ignore rules | Git status works; generated files are excluded |
-| 0.3 | TODO | Capture core screens, controls and shortcuts | Reference specification covers agreed screens |
+| 0.3 | IN PROGRESS | Capture core screens, controls and shortcuts | Reference specification covers agreed screens |
 | 0.4 | DONE | Establish CMake targets and dependencies | UI and Qt-free worker skeletons build reproducibly |
 | 0.5 | DONE | Record dependency versions and asset notices | Skia revision/settings and dependencies are recorded |
 

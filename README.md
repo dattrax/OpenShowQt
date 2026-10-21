@@ -17,4 +17,6 @@ outputs, FreeShow file compatibility, Windows and macOS are deliberately out of
 scope.
 
 Nothing is usable yet. [PLAN.md](PLAN.md) holds the accepted architecture and
-milestones; [PROGRESS.md](PROGRESS.md) records where the work actually stands.
+milestones; [PROGRESS.md](PROGRESS.md) records where the work actually stands;
+[docs/reference.md](docs/reference.md) documents the FreeShow behaviour we are
+reproducing.
