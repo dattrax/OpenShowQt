@@ -124,14 +124,22 @@ Checkpoint: `M0: establish project plan and build foundation`.
   API, creates the Vulkan surface, builds a `GrDirectContext` and presents
   through its own `Swapchain` and `SwapchainImage` classes with per-image
   fences and semaphores. Start the worker from that pattern.
-- **Installed:** GLFW 3.4.0, Vulkan loader and headers, Boost 1.90, CMake,
-  Ninja, GCC. vk-bootstrap `v1.3.225` arrives through FetchContent.
+- **Installed:** GLFW 3.4.0, Vulkan loader and headers, Boost 1.90 (with
+  Boost.JSON), Qt 6.11.2 base and declarative development packages,
+  `pipewire-devel` 1.6.9, `ffmpeg-devel` 9.0.2, CMake, Ninja, GCC.
+  vk-bootstrap `v1.3.225` arrives through FetchContent.
 - **Licences to ship:** Skia (BSD-3), GLFW (zlib), vk-bootstrap (MIT),
   PipeWire (MIT), FFmpeg (LGPL or GPL depending on configure flags), Qt 6
   (LGPL/GPL). Collected with the package in task 6.3.
-- **Missing for task 0.4:** `qt6-qtbase-devel`, `qt6-qtdeclarative-devel`,
-  `pipewire-devel`, `ffmpeg-devel`, `asio-devel` and a shader compiler
-  (`glslang-devel` or `shaderc-devel`).
+- **No shader compiler needed.** Skia's Vulkan backend turns SkSL into SPIR-V
+  in process through its own code generator (`SkSL::ToSPIRV`, a member of
+  `libskia.a`), which is why `/home/jim/sloppy-ui` renders with no shaders of
+  its own. A custom transition or colour effect would be SkSL for
+  `SkRuntimeEffect`, still compiled by Skia. Shader tooling such as spirv-cross
+  or RenderDoc is for debugging only.
+- **Outstanding:** the plan names standalone Asio for the worker socket and
+  nlohmann/json for shared types, while Boost 1.90 with Boost.JSON is already
+  installed. Settle the socket and JSON choice before scaffolding task 0.4.
 
 ### M1 — Prove frontend-to-renderer integration
 

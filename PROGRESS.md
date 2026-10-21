@@ -24,7 +24,9 @@ Updated: 2026-10-21 (Europe/London).
 - Checked the Git setup: remote, reachability and ignore rules (task 0.2).
 - Inspected `/home/jim/sloppy-ui` and replaced SDL3 in the plan with GLFW plus
   vk-bootstrap for the output window, and native PipeWire for audio.
-- Recorded the dependency versions, licences and gaps in `PLAN.md` (task 0.5).
+- Recorded the dependency versions, licences and gaps in `PLAN.md` (task 0.5),
+  then re-checked it after the Qt, PipeWire and FFmpeg development packages were
+  installed.
 
 ## Verification and environment
 
@@ -36,13 +38,15 @@ Updated: 2026-10-21 (Europe/London).
   `436d4b634878ba723da1d1373637384ec700ce16`, left unchanged.
 - `rpm -q glfw-devel` gives `glfw-devel-3.4-8.fc45`; `pkg-config --modversion
   glfw3` gives `3.4.0`. Vulkan loader `1.4.357.0` and `/usr/include/vulkan` are
-  present. `cmake`, `ninja` and `g++` are present; `glslc` is absent.
+  present. `cmake`, `ninja` and `g++` are present; `glslc` is absent and not
+  required.
 - `/home/jim/skia` is at `a94df1cdab` with `out/Release/libskia.a` and also
   `libskparagraph.a`, `libskshaper.a`, `libskunicode_core.a` and
   `libskunicode_icu.a`, so SkParagraph needs no Skia rebuild.
-- Absent and blocking task 0.4: `qt6-qtbase-devel`, `qt6-qtdeclarative-devel`,
-  `pipewire-devel`, `ffmpeg-devel`, `asio-devel`, and a shader compiler
-  (`glslang-devel` or `shaderc-devel`). PipeWire runtime `1.6.9` is installed.
+- Installed for task 0.4: `qt6-qtbase-devel` and `qt6-qtdeclarative-devel`
+  6.11.2, `pipewire-devel` 1.6.9, `ffmpeg-devel` 9.0.2. `asio-devel` is still
+  absent, and no shader compiler is needed: `SkSL::ToSPIRV` is already a member
+  of `libskia.a`, so Skia generates SPIR-V from SkSL in process.
 - `/home/jim/sloppy-ui` builds windowed against that Skia tree with GLFW; its
   `DIRECT_TO_DISPLAY` mode needs an input plugin that is not on this machine.
 - Fedora 46 KDE with some fc45 packages. Display and media acceptance still
@@ -56,7 +60,9 @@ Updated: 2026-10-21 (Europe/London).
 - Audio is native PipeWire: one stream per worker, software mix of embedded
   video audio with one standalone track, per-source volume and mute, the
   process callback as clock.
-- Text layout stays in Skia with SkParagraph.
+- Text layout stays in Skia with SkParagraph. No shader toolchain in the
+  project: Skia compiles SkSL to SPIR-V in process, so a custom effect would be
+  SkSL through `SkRuntimeEffect` rather than hand-written SPIR-V.
 - No-compositor output through the Vulkan display plane is deferred.
 - Keep progress in these tracked Markdown files rather than chat memory, and
   never mark authored scaffolding as verified graphics work.
@@ -65,16 +71,16 @@ Updated: 2026-10-21 (Europe/London).
 
 - Task 0.3 needs FreeShow running in a desktop session to capture screens,
   controls and shortcuts.
-- Task 0.4 needs the missing development packages; installing them requires the
-  user's approval for `sudo dnf install`.
-- The plan still names standalone Asio for the worker socket. A plain `poll()`
-  loop on a Unix socket would drop that dependency; settle this before writing
-  any RPC code.
+- The plan names standalone Asio for the worker socket and nlohmann/json for
+  shared types. Boost 1.90 with Boost.JSON is installed and `asio-devel` is
+  not, so the likely answer is a `poll()` loop on a Unix socket plus one JSON
+  library. Settle this before scaffolding task 0.4.
+- Display and media acceptance still needs a desktop session; headless checks
+  can only supplement them.
 
 ## Exact next action
 
-1. Ask, then install `qt6-qtbase-devel qt6-qtdeclarative-devel pipewire-devel
-   ffmpeg-devel` and a shader compiler with `sudo dnf install`.
+1. Confirm the worker socket and JSON library choice.
 2. Create the CMake skeleton: Qt frontend, Qt-free worker, and a
    Qt-independent domain and protocol library, with the worker building against
    `/home/jim/skia/out/Release`, GLFW, Vulkan and libpipewire.
