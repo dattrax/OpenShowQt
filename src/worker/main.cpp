@@ -184,7 +184,7 @@ int runRenderTest(int monitorIndex, double seconds,
         if (surface) {
             char status[160];
             std::snprintf(status, sizeof(status),
-                          "\xe2\x9c\x94 live: %s \xc2\xb7 %dx%d \xc2\xb7 frame %llu",
+                          "live: %s \xc2\xb7 %dx%d \xc2\xb7 frame %llu",
                           vk.deviceName().c_str(), swapchain.width(), swapchain.height(),
                           frameCount);
             const double elapsed =
@@ -193,7 +193,55 @@ int runRenderTest(int monitorIndex, double seconds,
             scene.draw(surface->getCanvas(), swapchain.width(), swapchain.height(), elapsed,
                        status);
             ++frameCount;
+            // Diagnostic: read the wrapped GPU image back on the CPU a few
+            // frames in, to separate "Skia never wrote the image" from
+            // "present shows the wrong thing".
+            if (frameCount == 30) {
+                const SkImageInfo info =
+                    SkImageInfo::MakeN32Premul(swapchain.width(), swapchain.height());
+                std::vector<SkColor> pixels(info.height());
+                pixels.resize(size_t(info.width()) * size_t(info.height()));
+                if (surface->readPixels(info, pixels.data(), info.minRowBytes(), 0, 0)) {
+                    size_t nonBlack = 0;
+                    SkColor firstBright = 0;
+                    for (SkColor c : pixels) {
+                        if (c != SK_ColorBLACK) {
+                            ++nonBlack;
+                            if (!firstBright) {
+                                firstBright = c;
+                            }
+                        }
+                    }
+                    std::fprintf(stderr,
+                                 "openshow-worker: readback frame 30: %zu/%zu non-black"
+                                 " (first bright %08x)\n",
+                                 nonBlack, pixels.size(), firstBright);
+                } else {
+                    std::fprintf(stderr, "openshow-worker: readback at frame 30 failed\n");
+                }
+            }
             if (!swapchain.flushAndPresent(surface, imageIndex, &result)) {
+                swapchain.destroy();
+                if (!createSwapchain()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                continue;
+            }
+        }
+
+        // Wayland may configure the surface after the swapchain was created
+        // (or the swapchain fell back to the provisional size), and present
+        // does not always report that. Check the surface extent periodically
+        // and recreate at the real panel size when it differs.
+        if (frameCount % 30 == 0) {
+            int surfaceWidth = 0;
+            int surfaceHeight = 0;
+            if (swapchain.extentOutOfDate(&surfaceWidth, &surfaceHeight)) {
+                std::fprintf(stderr,
+                             "openshow-worker: compositor configured %dx%d, recreating "
+                             "swapchain from %dx%d\n",
+                             surfaceWidth, surfaceHeight, swapchain.width(),
+                             swapchain.height());
                 swapchain.destroy();
                 if (!createSwapchain()) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));

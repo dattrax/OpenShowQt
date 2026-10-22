@@ -81,15 +81,35 @@ bool OutputWindow::open(const Options& options) {
             close();
             return false;
         }
+        // Map the window first, then request fullscreen: GLFW's Wayland
+        // backend forwards the fullscreen state when the surface maps, and
+        // KWin then configures the surface for the monitor mode.
+        glfwShowWindow(fWindow);
         glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width, mode->height,
                              mode->refreshRate);
         std::fprintf(stderr,
                      "openshow-worker: fullscreen on monitor %d (%s) %dx%d@%dHz\n",
                      options.monitor, glfwGetMonitorName(monitor),
                      mode->width, mode->height, mode->refreshRate);
+        // Let the compositor's configure arrive before the caller creates
+        // the Vulkan surface, up to ~600 ms; the render loop's extent check
+        // catches the late case regardless.
+        for (int i = 0; i < 60; ++i) {
+            glfwWaitEventsTimeout(0.01);
+            int width = 0;
+            int height = 0;
+            glfwGetFramebufferSize(fWindow, &width, &height);
+            if (width == mode->width && height == mode->height) {
+                break;
+            }
+        }
+    } else {
+        glfwShowWindow(fWindow);
+        // Give the initial configure a short head start (~150 ms).
+        for (int i = 0; i < 15; ++i) {
+            glfwWaitEventsTimeout(0.01);
+        }
     }
-
-    glfwShowWindow(fWindow);
     fResized = true;
     return true;
 }

@@ -55,6 +55,13 @@ public:
     int width() const { return fWidth; }
     int height() const { return fHeight; }
 
+    // True once the compositor has configured the wl_surface at a size
+    // different from this swapchain's extent. Wayland reports 0xFFFFFFFF
+    // until the configure lands, so the first swapchain may be built at the
+    // provisional fallback size; this is how the loop notices it is time to
+    // recreate at the real panel extent.
+    bool extentOutOfDate(int* outWidth, int* outHeight) const;
+
 private:
     struct Image {
         VkSemaphore fRenderComplete = VK_NULL_HANDLE;
@@ -66,6 +73,8 @@ private:
     };
 
     VkDevice fDevice = VK_NULL_HANDLE;
+    VkPhysicalDevice fPhysicalDevice = VK_NULL_HANDLE;
+    VkSurfaceKHR fSurface = VK_NULL_HANDLE;
     VkQueue fQueue = VK_NULL_HANDLE;
     VkSwapchainKHR fSwapchain = VK_NULL_HANDLE;
     VkFence fAcquireFence = VK_NULL_HANDLE;

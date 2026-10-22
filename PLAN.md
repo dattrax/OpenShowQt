@@ -181,7 +181,7 @@ Checkpoint: `M0: establish project plan and build foundation`.
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| 1.1 | IN PROGRESS | GLFW/Vulkan window and Skia rendering | Text and image render correctly |
+| 1.1 | DONE | GLFW/Vulkan window and Skia rendering | Text and image render correctly |
 | 1.2 | TODO | Worker launch, RPC handshake and shutdown | Commands change output; disconnect stops worker |
 | 1.3 | TODO | Display selection and swapchain recreation | Fullscreen, resizing and switching work |
 | 1.4 | TODO | Shared-memory previews | Qt displays worker frames without blocking output |

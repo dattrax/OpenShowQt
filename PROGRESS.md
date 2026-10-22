@@ -5,17 +5,21 @@ Updated: 2026-10-22 (Europe/London).
 ## Current checkpoint
 
 - Milestone: **M1 — Prove frontend-to-renderer integration**, task **1.1**
-  IN PROGRESS. M0 was closed at the start of this session: annotated tag
+  DONE on 2026-10-22. M0 was closed earlier the same day: annotated tag
   `M0` created at tip `bca7cee` and pushed (commits and tags are delegated
   to the agent for this session).
-- Task 1.1 state: the Qt-free worker now opens a GLFW window on native
-  Wayland, builds a Vulkan device with vk-bootstrap, creates a Skia Ganesh
-  `GrDirectContext`, wraps the swapchain images as Skia surfaces and presents
-  the test scene — **277 frames presented at fullscreen on eDP-1, exit 0**
-  (see the task 1.1 log below for the three real bugs that stood between
-  here and there). Acceptance is not yet closable: the frames have not been
-  *seen* on a panel, because the session screen went locked during testing
-  and the second display (DP-4) was unplugged mid-session.
+- Task 1.1: the Qt-free worker opens a GLFW window on native Wayland,
+  builds a Vulkan device with vk-bootstrap, creates a Skia Ganesh
+  `GrDirectContext`, wraps the swapchain images as Skia surfaces and
+  composites the test scene through the layer stack. **Accepted on screen**:
+  fullscreen on the second display (DP-4 1920x1200@60) at the native
+  extent, legible SkParagraph text and the SkCodec photo, ~59.4 fps
+  FIFO-paced (1188 frames in 20 s, exit 0), letterboxed exactly as the
+  output rule prescribes for a 16:9 canvas on a 16:10 panel; the user
+  confirmed seeing it. Evidence: `/tmp/opencode/native2-dp.png` plus the
+  render-test log. (Earlier in the day: 277 frames at fullscreen on eDP-1
+  once the swapchain transfer-usage bug was fixed, and the first-ever GPU
+  frames in a normal window.)
 - Rendering is built on the new **output layer model** (PLAN.md): every
   frame is composited bottom-to-top from background, images, words, aux and
   clock layers in a single pass with no render-to-texture; disabled layers
@@ -25,30 +29,11 @@ Updated: 2026-10-22 (Europe/London).
   `render_scene_snapshot` and `render_layer_composition`);
   `ctest --preset headless` passes **6 of 6**; `worker_is_qt_free` stayed
   green throughout.
-- Blocker for acceptance: **the KDE screen is locked** (`kscreenlocker_greet`
-  running, `LockedHint=yes`). Screenshots taken while locked return the last
-  pre-lock composited frame, so nothing can be visually verified until the
-  user unlocks the session; the lock is a security boundary and was not
-  bypassed. Second blocker for the *second-display* half of 1.3: DP-4 is
-  disconnected again.
-- Next: user unlocks → re-run `--render-test --monitor 0` and capture the
-  first frames actually seen; reconnect the projector for the second-display
-  checks; then task 1.2 (launch + RPC handshake).
-- Task 0.3 closed against a running copy: the official 1.6.7 Linux AppImage was
-  verified by checksum, started over CDP, and inspected with DOM,
-  computed-style and synthetic-input probes plus 18 screenshots. Nine of its ten
-  open questions are settled and recorded in `docs/reference.md`; the two that need
-  controlled media assets (`blur` fit pixels, per-slide action side effects) are
-  now M4 acceptance items.
-- State: `cmake --preset desktop` plus `cmake --build --preset desktop` builds
-  the Qt frontend, the Qt-free worker and the shared libraries, and
-  `ctest --preset desktop` passes 5 of 5. The Qt-free `headless` preset passes
-  4 of 4. Nothing renders yet: the worker only reports the libraries it linked
-  and the frontend shows a placeholder window.
-- Next milestone commit: `M0: establish project plan and build foundation`
-  (proposed; M0 tasks are all DONE and its checks were re-run green).
-- Commits made by the agent: documentation and this build skeleton. Tags and
-  further commits stay with the user.
+- The screen-lock and unplugged-DP-4 incident that blocked visual
+  verification earlier was resolved when the user unlocked and reconnected
+  the display; nothing was bypassed.
+- Next: task **1.2** (launch the worker from the frontend, RPC handshake,
+  clean shutdown).
 
 ## Completed work
 
@@ -149,11 +134,35 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   dispatch nothing), each enabled layer paints only inside its declared
   region, and re-toggling returns byte-identical frames. Default snapshot is
   pixel-identical in composition to the pre-layer scene.
-- **What has not been achieved yet:** frames *seen on a panel*. The screen
-  locked mid-session (see below), so the visual half of the acceptance stays
-  open; the swapchain extent also remained provisional during the locked run,
-  so the configure→recreate-at-panel-size cycle still needs one unlocked
-  observation.
+- **Accepted on screen later the same day** (screen unlocked, DP-4 back):
+  three more bugs stood between "presenting" and "correct on the panel",
+  all found with the user watching the live window:
+  - The scene *shrank every frame*. The swapchain surface hands out the
+    same `SkCanvas` each frame and Skia keeps its matrix, so the
+    per-frame `translate`+`scale` of the output rule compounded
+    (×0.9, ×0.81, …) until the scene collapsed into a dot — which is
+    also why screenshots read as "solid black". A CPU snapshot renders
+    one frame per process and could never show it. Fix:
+    `canvas->resetMatrix()` at the top of `TestScene::draw()`.
+  - A one-shot `surface->readPixels()` probe at frame 30 (kept in
+    `runRenderTest`) was the decisive instrument: pre-fix it showed 15%
+    non-black pixels, post-fix 100% — Skia had been writing correctly
+    into the wrapped images all along.
+  - Fullscreen never got the panel extent: GLFW received no configure
+     while the surface stayed unconfigured, so the swapchain lived at the
+     1280x720 fallback and KWin upscaled (soft text). Fix: map the window
+     *before* `glfwSetWindowMonitor`, pump events until the framebuffer
+     matches the monitor mode (≤600 ms), and poll
+     `Swapchain::extentOutOfDate()` every 30 frames so a late configure
+     still recreates the swapchain at the true extent.
+  - Cosmetic: the status line's `U+2714` is missing from Liberation Sans
+    and showed as tofu in the text-blob path; the prefix is now plain
+    "live:".
+  Final acceptance: `--render-test --monitor 1 --seconds 20` created the
+  swapchain at native **1920x1200**, presented **1188 frames (~59.4 fps,
+  exit 0)**, readback 90% non-black (the authored 1920x1080 canvas
+  letterboxed in the 16:10 panel), and the user confirmed the scene on
+  the second display (`/tmp/opencode/native2-dp.png`).
 
 ## Verification and environment
 
@@ -280,19 +289,12 @@ logged here from what is observable off screen rather than claimed as seen.
 
 ## Blockers and remaining work
 
-- **Screen is locked** (`kscreenlocker_greet`, `LockedHint=yes` since
-  ~10:00 on 2026-10-22): visual verification of *anything* on a panel is
-  impossible until the user unlocks; screenshots while locked are stale.
-  The agent did not bypass it. Task 1.1 acceptance ("text and image render
-  correctly" — seen) and the configure→panel-size recreate observation are
-  held on this.
-- **DP-4 (second display) unplugged again** mid-session. All second-display
-  acceptance (1.3 placement, projector DPI, transitions on hardware) stays
-  open as before.
-- Task 1.1 remaining after unlock: confirm first frames seen on eDP-1 and
-  the swapchain re-creating at real panel extent (currently the extent was
-  only ever observed as the provisional 1280x720 fallback or windowed size);
-  with DP-4 back, repeat on the second display.
+- No blockers. The earlier screen-lock and unplugged-DP-4 incident
+  resolved itself when the user unlocked and reconnected; task 1.1 was
+  accepted on the second display (see the task 1.1 log).
+- Second-display hardware checks that remain open belong to their tasks:
+  projector DPI and always-on-top stacking in 1.3, transitions on
+  hardware later.
 - Two reference questions need controlled media rather than a running FreeShow and
   are now M4 acceptance items: the pixel result of the `blur` fit with edge
   blending, and per-slide action side effects on go.
@@ -301,16 +303,13 @@ logged here from what is observable off screen rather than claimed as seen.
 
 ## Exact next action
 
-1. **Ask the user to unlock the KDE session** (screen lock blocks all visual
-   verification), then re-run
-   `./build/src/worker/openshow-worker --render-test --monitor 0 --seconds 14`
-   and capture with `spectacle -b -n -f -o /tmp/opencode/edp-live.png` to
-   record the first frames actually seen, plus the swapchain recreate at the
-   real panel extent in the log.
-2. When the projector/DP-4 is reconnected: `--render-test --monitor 1` and
-   repeat; that closes the on-screen half of 1.1 and unblocks 1.3 evidence.
-3. Then start **1.2 — worker launch, RPC handshake and shutdown**, keeping
-   the `worker_is_qt_free` guard green.
+1. Start **1.2 — worker launch, RPC handshake and shutdown**: the Qt
+   frontend spawns `openshow-worker --socket PATH`, they exchange the
+   handshake over the Unix socket, and closing the UI shuts the worker
+   down cleanly. Keep the `worker_is_qt_free` guard green.
+2. Useful carry-over from 1.1: the render-test's frame-30 readback probe
+   and periodic `extentOutOfDate()` recreate stay available for 1.3's
+   output-window placement work.
 
 ## Resume checklist
 

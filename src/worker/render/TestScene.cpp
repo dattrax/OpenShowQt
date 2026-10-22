@@ -607,6 +607,12 @@ void TestScene::draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSec
 
 void TestScene::draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
                      std::time_t wallClock, const std::string& statusLine) {
+    // The swapchain surface hands out the same canvas every frame and Skia
+    // keeps its matrix: without this reset the output-rule scale below
+    // compounds frame after frame and the scene collapses into the top-left
+    // corner (seen live 2026-10-22; CPU snapshots rendered one frame per
+    // process, so they hid it).
+    canvas->resetMatrix();
     canvas->clear(SK_ColorBLACK);
 
     // The output rule: scale the authored 1920x1080 canvas uniformly and

@@ -37,6 +37,8 @@ void Swapchain::Image::destroy(VkDevice device) {
 
 bool Swapchain::create(const CreateInfo& info) {
     fDevice = info.device;
+    fPhysicalDevice = info.physicalDevice;
+    fSurface = info.surface;
     fQueue = info.queue;
     fContext = info.context;
     fPresentQueueIndex = info.presentQueueIndex;
@@ -223,10 +225,35 @@ void Swapchain::destroy() {
         fSwapchain = VK_NULL_HANDLE;
     }
     fDevice = VK_NULL_HANDLE;
+    fPhysicalDevice = VK_NULL_HANDLE;
+    fSurface = VK_NULL_HANDLE;
     fQueue = VK_NULL_HANDLE;
     fContext = nullptr;
     fWidth = 0;
     fHeight = 0;
+}
+
+bool Swapchain::extentOutOfDate(int* outWidth, int* outHeight) const {
+    if (fSurface == VK_NULL_HANDLE || fPhysicalDevice == VK_NULL_HANDLE) {
+        return false;
+    }
+    VkSurfaceCapabilitiesKHR capabilities = {};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(fPhysicalDevice, fSurface, &capabilities) !=
+        VK_SUCCESS) {
+        return false;
+    }
+    const uint32_t width = capabilities.currentExtent.width;
+    const uint32_t height = capabilities.currentExtent.height;
+    if (width == 0xFFFFFFFFu || height == 0xFFFFFFFFu) {
+        return false;  // not (re)configured yet
+    }
+    if (outWidth) {
+        *outWidth = static_cast<int>(width);
+    }
+    if (outHeight) {
+        *outHeight = static_cast<int>(height);
+    }
+    return static_cast<int>(width) != fWidth || static_cast<int>(height) != fHeight;
 }
 
 bool Swapchain::acquire(uint32_t* outImageIndex, VkResult* outResult) {
