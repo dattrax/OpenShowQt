@@ -100,6 +100,46 @@ owned by the AV subsystem, never a composition item dispatched to Skia.
   proves on the CPU that disabled layers contribute nothing and each layer
   paints only its own region.
 
+### Worker architecture graduation (added 2026-10-23)
+
+The task 1.1 worker is deliberately scaffolding: `runRenderTest()` in
+`src/worker/main.cpp` is a fixed development loop, and
+`render/TestScene.cpp` holds five hard-coded layer classes, the CPU snapshot
+harness and the layer checks in one file. That shape was acceptable as
+proof, not as a destination. The decomposition is not a separate cleanup
+milestone — a dedicated refactor task before the protocol and scene types
+exist would design APIs by guesswork — it is driven by task acceptance, and
+each step below names the piece of scaffolding that must graduate:
+
+- **1.2** introduces the worker **runtime seam**: a session object that owns
+  the output window, swapchain, `LayerStack` and mutable output state, and
+  runs the frame loop. RPC handlers call session operations; they must not
+  reach into test-scene state. `--render-test` becomes a development mode
+  whose demo scene feeds the session — the session gets a first client
+  before the socket does — and the frame-30 readback probe moves behind a
+  diagnostics flag inside the session.
+- **1.3** moves display selection behind session operations driven by RPC
+  (list displays, select destination, recreate at the configured extent),
+  replacing the `--monitor` flag's placement logic.
+- **1.4** renders a scene into an arbitrary target — offscreen 640x360 for
+  preview slots as well as the swapchain — the first hard requirement that
+  the scene be data the renderer walks rather than code.
+- **2.4** delivers the real input type: immutable compiled render scenes as
+  Qt-independent shared types over the protocol. The worker stores prepared
+  scenes with acknowledged revisions; the 1.x demo content becomes a
+  fixture that builds one.
+- **3.1/3.2** replace the five hard-coded layers with production layers that
+  read scene data (text, images, backgrounds and fit modes, transitions).
+  `TestScene` shrinks to a test fixture whose snapshot and
+  `verifyLayerComposition` harnesses live in the test tree.
+- **6.1** owns worker/device restart so the session can be destroyed and
+  rebuilt without touching the device layer.
+
+Enforcement rule for reviews: a task does not pass by threading a command
+through to hard-coded scene state. If a required command cannot be answered
+by calling a session or scene operation, the seam is introduced first, as
+part of that task.
+
 Technical references:
 
 - [Qt local sockets](https://doc.qt.io/qt-6/qlocalsocket.html)
@@ -182,7 +222,7 @@ Checkpoint: `M0: establish project plan and build foundation`.
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
 | 1.1 | DONE | GLFW/Vulkan window and Skia rendering | Text and image render correctly |
-| 1.2 | TODO | Worker launch, RPC handshake and shutdown | Commands change output; disconnect stops worker |
+| 1.2 | TODO | Worker launch, RPC handshake and shutdown | Commands change output through the runtime seam (see graduation note); disconnect stops worker |
 | 1.3 | TODO | Display selection and swapchain recreation | Fullscreen, resizing and switching work |
 | 1.4 | TODO | Shared-memory previews | Qt displays worker frames without blocking output |
 | 1.5 | TODO | Video decode and A/V benchmark | Results establish feasibility on this PC |

@@ -255,6 +255,19 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
 - No-compositor output through the Vulkan display plane is deferred.
 - Keep progress in these tracked files rather than chat memory, and never mark
   authored scaffolding as verified graphics work.
+- 2026-10-23, raised as "when does the server architecture stop being
+  TestScene?": the scaffolding graduates **per task, not as a separate
+  cleanup milestone**, because the render API's shape must be forced by the
+  protocol and scene types that do not exist yet. PLAN.md gained a *Worker
+  architecture graduation* section: 1.2 must carve the session seam (an
+  object owning window/swapchain/LayerStack/output state that RPC handlers
+  call; `--render-test` becomes its development client), 1.3 moves display
+  selection behind session operations, 1.4 requires the scene to be data
+  (preview targets), 2.4 delivers the compiled-scene type, 3.1/3.2 replace
+  the five hard-coded layers, and `TestScene` ends as a test fixture.
+  Review rule: a task does not pass by threading a command to hard-coded
+  scene state; the seam comes first. What is *not* debt: `src/worker/output/`
+  and `render/Layer.{h,cpp}` are already production-shaped.
 
 ## Output window log
 
@@ -303,10 +316,14 @@ logged here from what is observable off screen rather than claimed as seen.
 
 ## Exact next action
 
-1. Start **1.2 — worker launch, RPC handshake and shutdown**: the Qt
-   frontend spawns `openshow-worker --socket PATH`, they exchange the
-   handshake over the Unix socket, and closing the UI shuts the worker
-   down cleanly. Keep the `worker_is_qt_free` guard green.
+1. Start **1.2 — worker launch, RPC handshake and shutdown**, and do it in
+   the order PLAN.md's *Worker architecture graduation* requires: first
+   split `runRenderTest()` into a worker **session** object that owns the
+   window, swapchain, `LayerStack` and output state and drives the frame
+   loop, with `--render-test` as its development client and the readback
+   probe behind a diagnostics flag; only then add `--socket PATH`, the
+   handshake and shutdown, so RPC handlers call session operations instead
+   of test-scene state. Keep the `worker_is_qt_free` guard green.
 2. Useful carry-over from 1.1: the render-test's frame-30 readback probe
    and periodic `extentOutOfDate()` recreate stay available for 1.3's
    output-window placement work.
