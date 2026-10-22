@@ -5,6 +5,8 @@ add_executable(openshow-worker
   output/VulkanContext.cpp
   render/Layer.cpp
   render/TestScene.cpp
+  rpc/RpcServer.cpp
+  session/OutputSession.cpp
 )
 # The prebuilt Skia is compiled with RTTI off; TestScene derives from its
 # classes, whose typeinfo does not exist, so this TU must also be -fno-rtti.

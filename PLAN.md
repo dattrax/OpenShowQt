@@ -222,7 +222,12 @@ Checkpoint: `M0: establish project plan and build foundation`.
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
 | 1.1 | DONE | GLFW/Vulkan window and Skia rendering | Text and image render correctly |
-| 1.2 | TODO | Worker launch, RPC handshake and shutdown | Commands change output through the runtime seam (see graduation note); disconnect stops worker |
+| 1.2 | DONE | Worker launch, RPC handshake and shutdown | Commands change output through the runtime seam (see graduation note); disconnect stops worker |
+| 1.2a | DONE | Session seam: frame loop out of `main.cpp` into `OutputSession` | `--render-test` presents unchanged; all checks green |
+| 1.2b | DONE | Wire framing and JSON-RPC envelope in `openshow::protocol` | Round-trip, fragmentation, oversize and malformed-input tests pass |
+| 1.2c | DONE | Worker RPC server thread on `--socket PATH` | Handshake completes; worker exits on `shutdown` and on disconnect |
+| 1.2d | DONE | Live RPC commands driving the seam | A socket command changes visible output on the next frame |
+| 1.2e | DONE | Frontend supervision: spawn, handshake, shutdown | UI shows worker state; closing the UI terminates the worker |
 | 1.3 | TODO | Display selection and swapchain recreation | Fullscreen, resizing and switching work |
 | 1.4 | TODO | Shared-memory previews | Qt displays worker frames without blocking output |
 | 1.5 | TODO | Video decode and A/V benchmark | Results establish feasibility on this PC |

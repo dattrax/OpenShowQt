@@ -2,6 +2,8 @@ qt_policy(SET QTP0001 NEW)
 
 qt_add_executable(openshow-ui
   main.cpp
+  WorkerController.cpp
+  WorkerController.h
 )
 add_executable(openshow::ui ALIAS openshow-ui)
 
@@ -11,10 +13,18 @@ qt_add_qml_module(openshow-ui
   QML_FILES Main.qml
 )
 
+# In-tree development path to the worker; packaging (task 6.3) will place
+# them side by side and can drop this.
+target_compile_definitions(openshow-ui PRIVATE
+  OPENSHOW_WORKER_PATH="$<TARGET_FILE:openshow-worker>"
+)
+add_dependencies(openshow-ui openshow-worker)
+
 target_link_libraries(openshow-ui PRIVATE
   Qt6::Core
   Qt6::Gui
   Qt6::Quick
+  Qt6::Network
   openshow::domain
   openshow::protocol
 )

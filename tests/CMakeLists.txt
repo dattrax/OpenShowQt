@@ -40,3 +40,13 @@ add_test(NAME render_scene_snapshot
 add_test(NAME render_layer_composition
   COMMAND openshow-worker --check-layers
 )
+
+# Task 1.2 end-to-end: spawn a real openshow-worker --socket, handshake,
+# change output state live, and take both exits (served shutdown and the
+# frontend going away). It opens a window, so it carries the `display`
+# label, which the headless test preset excludes.
+add_executable(rpc_ipc_tests rpc_ipc_tests.cpp)
+target_link_libraries(rpc_ipc_tests PRIVATE openshow::protocol)
+add_test(NAME worker_rpc_lifecycle
+  COMMAND rpc_ipc_tests $<TARGET_FILE:openshow-worker>)
+set_tests_properties(worker_rpc_lifecycle PROPERTIES LABELS display TIMEOUT 90)

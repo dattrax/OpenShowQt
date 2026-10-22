@@ -1,39 +1,54 @@
 # OpenShowQt progress and session handoff
 
-Updated: 2026-10-22 (Europe/London).
+Updated: 2026-10-23 (Europe/London).
 
 ## Current checkpoint
 
-- Milestone: **M1 — Prove frontend-to-renderer integration**, task **1.1**
-  DONE on 2026-10-22. M0 was closed earlier the same day: annotated tag
-  `M0` created at tip `bca7cee` and pushed (commits and tags are delegated
-  to the agent for this session).
-- Task 1.1: the Qt-free worker opens a GLFW window on native Wayland,
-  builds a Vulkan device with vk-bootstrap, creates a Skia Ganesh
-  `GrDirectContext`, wraps the swapchain images as Skia surfaces and
-  composites the test scene through the layer stack. **Accepted on screen**:
-  fullscreen on the second display (DP-4 1920x1200@60) at the native
-  extent, legible SkParagraph text and the SkCodec photo, ~59.4 fps
-  FIFO-paced (1188 frames in 20 s, exit 0), letterboxed exactly as the
-  output rule prescribes for a 16:9 canvas on a 16:10 panel; the user
-  confirmed seeing it. Evidence: `/tmp/opencode/native2-dp.png` plus the
-  render-test log. (Earlier in the day: 277 frames at fullscreen on eDP-1
-  once the swapchain transfer-usage bug was fixed, and the first-ever GPU
-  frames in a normal window.)
-- Rendering is built on the new **output layer model** (PLAN.md): every
-  frame is composited bottom-to-top from background, images, words, aux and
-  clock layers in a single pass with no render-to-texture; disabled layers
-  are skipped without dispatch. ctest `render_layer_composition` verifies
-  this on the CPU.
-- Checks: `ctest --preset desktop` passes **7 of 7** (adds
-  `render_scene_snapshot` and `render_layer_composition`);
-  `ctest --preset headless` passes **6 of 6**; `worker_is_qt_free` stayed
-  green throughout.
-- The screen-lock and unplugged-DP-4 incident that blocked visual
-  verification earlier was resolved when the user unlocked and reconnected
-  the display; nothing was bypassed.
-- Next: task **1.2** (launch the worker from the frontend, RPC handshake,
-  clean shutdown).
+- Milestone: **M1 — Prove frontend-to-renderer integration**, tasks **1.1**
+  (2026-10-22) and **1.2** (2026-10-23) DONE. M0 was closed earlier with tag
+  `M0` at `bca7cee`; commits and tags are delegated to the agent for this
+  session.
+- Task 1.2 delivered in the five subtasks PLAN.md's graduation note demands,
+  and **accepted on screen**: the Qt frontend spawns
+  `openshow-worker --socket PATH`, handshakes over JSON-RPC 2.0, and drives
+  the output; closing the UI shuts the worker down.
+  - **1.2a** `session/OutputSession` is the runtime seam: it owns the window,
+    Vulkan device, Ganesh context, swapchain and `TestScene`, and runs the
+    frame loop that used to live in `main.cpp`. It exposes no window, device
+    or swapchain handle. `--render-test` is now a thin driver over it and
+    presents identically (same 1728x972 / native 1920x1200 extents, same
+    readback ratio).
+  - **1.2b** `openshow::protocol` gained the wire: 4-byte little-endian
+    length + JSON framing with a 1 MiB cap, an incremental `Decoder` that
+    poisons the connection on a framing violation, JSON-RPC 2.0 envelopes
+    and the `hello` version negotiation.
+  - **1.2c** `rpc/RpcServer` serves one frontend from its own `poll()`
+    thread (50 ms ticks) on a raw `AF_UNIX` socket. Nothing is answered
+    before `hello`; the worker unlinks a stale path before binding.
+  - **1.2d** live commands: `layer.setEnabled` mutates a guarded desired
+    mask that the **render thread applies at the top of a frame** and
+    reports through an acknowledged `revision`. Proven on DP-4: two socket
+    commands made the photo and title vanish, and a re-enable brought them
+    back (`/tmp/opencode/toggle-off-dp.png`).
+  - **1.2e** `ui/WorkerController` spawns the worker, retries the socket
+    until it answers, runs the handshake, polls `output.status` at 2 Hz into
+    QML (worker state in green, device, frame and revision counters, five
+    layer checkboxes) and forwards the worker's log.
+- Both required exits work and are automated: a served `shutdown` and the
+  frontend simply going away each leave `openshow-worker` exit 0 with the
+  socket unlinked (`/tmp/opencode/live.log`, ctest `worker_rpc_lifecycle`).
+- Rendering is built on the **output layer model** (PLAN.md): every frame is
+  composited bottom-to-top from background, images, words, aux and clock in
+  a single pass with no render-to-texture; disabled layers are skipped
+  without dispatch. ctest `render_layer_composition` verifies this on the CPU.
+- Checks: `ctest --preset desktop` passes **8 of 8** (adds
+  `worker_rpc_lifecycle`, labelled `display`); `ctest --preset headless`
+  passes **6 of 6** — the headless test preset now excludes the `display`
+  label, which needed the CMake-4 `filter` key rather than `tests`;
+  `worker_is_qt_free` stayed green throughout, so the RPC path is
+  `poll()`/Boost.JSON with no Qt.
+- Next: task **1.3** (display selection and swapchain recreation over RPC,
+  including `--monitor` moving behind session operations).
 
 ## Completed work
 
@@ -164,8 +179,81 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   letterboxed in the 16:10 panel), and the user confirmed the scene on
   the second display (`/tmp/opencode/native2-dp.png`).
 
+## Task 1.2 log (2026-10-23)
+
+- Carved the seam before the socket, per PLAN.md graduation:
+  `OutputSession` (session/) took the whole task 1.1 loop — resize
+  handling, the periodic `extentOutOfDate()` recreate, the FIFO present
+  path and the readback probe (now `Options::diagnostics`) — verbatim in
+  behaviour. Cross-thread design: layer toggles land in a mutex-guarded
+  *desired mask* with an incremented revision; the render thread applies
+  the mask at the top of each frame and publishes the applied state, so
+  the ack's revision tells the frontend which status confirms the change
+  and no render-owned object is ever touched off-thread. A generic
+  command queue was deliberately not built yet (YAGNI; M2 scenes will
+  want one with ordering).
+- Wire (`openshow::protocol`): u32-LE length + JSON, cap 1 MiB; `Decoder`
+  poisons itself (and the connection) on oversize/zero-length/malformed
+  frames; JSON-RPC 2.0 helpers; `hello` negotiates major=0 and answers
+  with capabilities `output.status.v1`, `output.layers.v1`,
+  `shutdown.v1`. Methods served: hello, ping, output.status,
+  layer.setEnabled, shutdown. Everything before hello gets
+  `kNotHandshaked`; unknown names/methods get structured errors.
+- `RpcServer` (worker/rpc): own thread, `poll()` with 50 ms ticks so
+  `stop()`/`requestStop()` land promptly; `MSG_NOSIGNAL` writes; one
+  client; after `serve()` returns the worker requests its own stop —
+  "lives only while connected" is implemented in the accept loop.
+- UI (`openshow::ui::WorkerController`): worker path via
+  `OPENSHOW_WORKER_PATH` compile definition; socket path under
+  XDG_RUNTIME_DIR with the UI pid; `OPENSHOW_WORKER_EXTRA_ARGS` dev hook
+  (used to put the output on DP-4 for screenshots); QML shows state,
+  device, frames, revision and the five layer checkboxes wired to
+  `layer.setEnabled`.
+- Traps hit and fixed along the way:
+  - Boost.JSON object iteration yields `key_value_pair` with `.value()`,
+    not `.second`.
+  - `sk_sp`/`unique_ptr` members of forward-declared types blew up in
+    `main.cpp` (inline destructor paths); `OutputSession.h` just includes
+    the real headers — the worker's internals are all in-tree anyway.
+  - QProcess default channel mode is *closed* — the worker's log vanished
+    into nowhere until `ForwardedChannels` was set.
+  - The UI's first `connectToServer` fired before the worker had bound
+    (the ctest client had a retry loop, the UI did not) — caught **only**
+    by the on-screen check, not by any test: status sat red at "starting
+    worker...". Now a 100 ms retry timer, ten seconds of patience. The
+    lesson matches M0's: runtime verification finds what unit tests
+    structurally cannot.
+  - Both binaries now handle SIGTERM/SIGINT: the worker sets an atomic
+    the frame loops check (`run(seconds, &abort)`), the UI's polls a timer
+    into `quit()` so `aboutToQuit` still sends the graceful shutdown.
+  - CMake 4's ctest preset key for filtering is `filter`, not `tests`
+    (v6 docs vs loader); the new display-labelled test is excluded from
+    the headless preset.
+  - Verification pitfall: `pgrep -f "openshow-worker --socket"` matches
+    the shell quoting the pattern — count real processes by binary path
+    (`pgrep -af "build/src/worker/openshow-worker"`).
+- Acceptance evidence: ctest `worker_rpc_lifecycle` (spawn → gated
+  commands → hello → live toggle observed through status revision →
+  structured errors → served shutdown → clean disconnect) passes;
+  screenshots `/tmp/opencode/e2e2-edp.png` (UI: green connected, live
+  counters, toggles), `/tmp/opencode/e2e2-dp.png` (scene on DP-4 driven
+  by the spawned worker), `/tmp/opencode/toggle-off-dp.png` (socket
+  commands visibly removed and restored the images/words layers);
+  worker logs show `shut down after 1756 frames`, exit 0, socket unlinked.
+
 ## Verification and environment
 
+- 2026-10-23, task 1.2: `ctest --preset desktop` passes **8 of 8** — the
+  seven task 1.1 tests plus `worker_rpc_lifecycle`
+  (`tests/rpc_ipc_tests.cpp`, LABELS `display`, TIMEOUT 90).
+  `ctest --preset headless` passes **6 of 6**; `ctest --preset headless
+  --show-only` confirms the `display` label exclusion so the new test,
+  which opens a window, is not counted against the no-Qt preset.
+  `worker_is_qt_free` still passes with the RPC code linked in: the worker
+  speaks `poll()` and Boost.JSON, never Qt. Manual acceptance ran
+  `OPENSHOW_WORKER_EXTRA_ARGS="--monitor 1" ./build/src/ui/openshow-ui`
+  (UI on eDP-1, audience output on DP-4) and `--socket` with the wire
+  driver `/tmp/opencode/live_toggle.py`.
 - 2026-10-22, task 1.1: `ctest --preset desktop` passes **7 of 7** —
   `domain_tests`, `protocol_tests`, `worker_is_qt_free`, `ui_links_qt`,
   `worker_check_deps`, `render_scene_snapshot`, `render_layer_composition`.
@@ -316,17 +404,22 @@ logged here from what is observable off screen rather than claimed as seen.
 
 ## Exact next action
 
-1. Start **1.2 — worker launch, RPC handshake and shutdown**, and do it in
-   the order PLAN.md's *Worker architecture graduation* requires: first
-   split `runRenderTest()` into a worker **session** object that owns the
-   window, swapchain, `LayerStack` and output state and drives the frame
-   loop, with `--render-test` as its development client and the readback
-   probe behind a diagnostics flag; only then add `--socket PATH`, the
-   handshake and shutdown, so RPC handlers call session operations instead
-   of test-scene state. Keep the `worker_is_qt_free` guard green.
-2. Useful carry-over from 1.1: the render-test's frame-30 readback probe
-   and periodic `extentOutOfDate()` recreate stay available for 1.3's
-   output-window placement work.
+1. Tag and commit the M1 half that is now provable — the milestone itself
+   is not closable yet: tasks 1.3, 1.4 and 1.5 remain TODO. Start **1.3 —
+   display selection and swapchain recreation over RPC**. Per PLAN.md's
+   graduation note the first move is to retire the `--monitor` flag's
+   placement logic behind session operations: add `output.displays`
+   (enumerate the GLFW monitor list) and `output.select` (destination by
+   index or `-1` for windowed) to `RpcServer`, each calling a new
+   `OutputSession` method that re-enters `glfwSetWindowMonitor` and lets
+   the existing `extentOutOfDate()` path rebuild the swapchain. Acceptance
+   is "fullscreen, resizing and switching work" **seen on a panel**; the
+   projector is still not connected, so record off-screen evidence labelled
+   as such and keep the physical check open.
+2. Useful carry-over from 1.2: the UI already polls `output.status` at
+   2 Hz and renders layer checkboxes, so a destination picker drops into
+   the same `WorkerController`/`Main.qml` pair; the frame-30 readback probe
+   (`Options::diagnostics`) and the `display` test label are both in place.
 
 ## Resume checklist
 

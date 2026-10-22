@@ -35,7 +35,8 @@
     {
       "name": "headless",
       "configurePreset": "headless",
-      "output": { "outputOnFailure": true }
+      "output": { "outputOnFailure": true },
+      "filter": { "exclude": { "labelExclude": ["display"] } }
     }
   ]
 }

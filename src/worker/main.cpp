@@ -3,12 +3,16 @@
  *
  * Task 1.1 adds --render-test: a GLFW window, a vk-bootstrap Vulkan device
  * and Skia Ganesh presenting the task 1.1 test scene. --snapshot draws the
- * same scene on the CPU with no display at all. The RPC handshake is 1.2.
+ * same scene on the CPU with no display at all. Task 1.2 adds --socket: a
+ * JSON-RPC server thread steering the same OutputSession a frontend
+ * spawns us for; the worker exits when its frontend goes away.
  *
  * Exit codes: 0 success, 1 runtime failure, 2 bad usage, 3 feature not built.
  */
 
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -32,18 +36,33 @@ extern "C" {
 }
 
 #include "include/core/SkGraphics.h"
-#include "include/gpu/ganesh/GrDirectContext.h"
-#include "include/gpu/ganesh/vk/GrVkDirectContext.h"
 
 #include "openshow/domain/version.h"
 #include "openshow/protocol/protocol.h"
 
 #include "output/OutputWindow.h"
-#include "output/Swapchain.h"
-#include "output/VulkanContext.h"
+#include "render/Layer.h"
 #include "render/TestScene.h"
+#include "rpc/RpcServer.h"
+#include "session/OutputSession.h"
 
 namespace {
+
+// SIGTERM/SIGINT ask the process to go away; the frame loops notice the
+// flag between frames and take the normal clean-exit path (server stopped,
+// socket unlinked, exit 0) instead of dying mid-present.
+std::atomic<bool> gStopRequested{false};
+
+void handleStopSignal(int) { gStopRequested.store(true); }
+
+void installStopHandlers() {
+    struct sigaction action = {};
+    action.sa_handler = handleStopSignal;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    sigaction(SIGTERM, &action, nullptr);
+    sigaction(SIGINT, &action, nullptr);
+}
 
 void printUsage(const char* program) {
     std::fprintf(stderr,
@@ -100,176 +119,35 @@ int reportDependencies() {
 }
 
 // Task 1.1: window, Vulkan device, Skia context and the test scene on screen.
+// Since 1.2a this is a thin development driver: the window, device, swapchain
+// and frame loop live in OutputSession, the runtime seam that the 1.2 RPC
+// server will drive.
 int runRenderTest(int monitorIndex, double seconds,
                   const std::vector<std::pair<openshow::worker::LayerId, bool>>& layerOverrides) {
-    openshow::worker::OutputWindow window;
-    openshow::worker::OutputWindow::Options options;
+    openshow::worker::OutputSession::Options options;
     options.title = "OpenShowQt render test (task 1.1)";
     options.monitor = monitorIndex;
-    if (!window.open(options)) {
-        return 1;
-    }
+    options.diagnostics = true;
 
-    openshow::worker::VulkanContext vk;
-    if (!vk.create(window.handle())) {
-        return 1;
-    }
-
-    sk_sp<GrDirectContext> context = GrDirectContexts::MakeVulkan(vk.backendContext());
-    if (!context) {
-        std::fprintf(stderr, "openshow-worker: GrDirectContexts::MakeVulkan failed\n");
-        return 1;
-    }
-    context->setResourceCacheLimit(64 * 1024 * 1024);
-
-    openshow::worker::TestScene scene;
+    openshow::worker::OutputSession session;
     std::string error;
-    if (!scene.create(&error)) {
-        std::fprintf(stderr, "openshow-worker: test scene failed: %s\n", error.c_str());
+    if (!session.open(options, &error)) {
+        std::fprintf(stderr, "openshow-worker: render test failed: %s\n", error.c_str());
         return 1;
     }
-    scene.applyLayerOverrides(layerOverrides);
-
-    openshow::worker::Swapchain swapchain;
-    const auto createSwapchain = [&]() {
-        openshow::worker::Swapchain::CreateInfo info;
-        info.device = vk.device();
-        info.physicalDevice = vk.physicalDevice();
-        info.surface = vk.surface();
-        info.queue = vk.queue();
-        info.presentQueueIndex = vk.queueIndex();
-        info.context = context.get();
-        // Provisional size for the frame(s) before the compositor configures
-        // the Wayland surface; a later OUT_OF_DATE recreate picks up the real
-        // extent once configure lands.
-        window.framebufferSize(&info.width, &info.height);
-        return swapchain.create(info);
-    };
-    if (!createSwapchain()) {
-        return 1;
+    for (const auto& [id, enabled] : layerOverrides) {
+        session.setLayerEnabled(openshow::worker::layerName(id), enabled, nullptr);
     }
 
-    const auto startTime = std::chrono::steady_clock::now();
-    unsigned long long frameCount = 0;
-    while (!window.shouldClose()) {
-        glfwPollEvents();
-
-        int width = 0;
-        int height = 0;
-        const bool sizeChanged = window.framebufferResized();
-        if (window.framebufferSize(&width, &height) &&
-            (sizeChanged || width != swapchain.width() || height != swapchain.height())) {
-            swapchain.destroy();
-            if (!createSwapchain()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                continue;
-            }
-            window.resetFramebufferResize();
-        }
-
-        uint32_t imageIndex = 0;
-        VkResult result = VK_SUCCESS;
-        if (!swapchain.acquire(&imageIndex, &result)) {
-            if (result == VK_TIMEOUT) {
-                continue;
-            }
-            swapchain.destroy();
-            if (!createSwapchain()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-            continue;
-        }
-
-        SkSurface* surface = swapchain.surface(imageIndex);
-        if (surface) {
-            char status[160];
-            std::snprintf(status, sizeof(status),
-                          "live: %s \xc2\xb7 %dx%d \xc2\xb7 frame %llu",
-                          vk.deviceName().c_str(), swapchain.width(), swapchain.height(),
-                          frameCount);
-            const double elapsed =
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime)
-                    .count();
-            scene.draw(surface->getCanvas(), swapchain.width(), swapchain.height(), elapsed,
-                       status);
-            ++frameCount;
-            // Diagnostic: read the wrapped GPU image back on the CPU a few
-            // frames in, to separate "Skia never wrote the image" from
-            // "present shows the wrong thing".
-            if (frameCount == 30) {
-                const SkImageInfo info =
-                    SkImageInfo::MakeN32Premul(swapchain.width(), swapchain.height());
-                std::vector<SkColor> pixels(info.height());
-                pixels.resize(size_t(info.width()) * size_t(info.height()));
-                if (surface->readPixels(info, pixels.data(), info.minRowBytes(), 0, 0)) {
-                    size_t nonBlack = 0;
-                    SkColor firstBright = 0;
-                    for (SkColor c : pixels) {
-                        if (c != SK_ColorBLACK) {
-                            ++nonBlack;
-                            if (!firstBright) {
-                                firstBright = c;
-                            }
-                        }
-                    }
-                    std::fprintf(stderr,
-                                 "openshow-worker: readback frame 30: %zu/%zu non-black"
-                                 " (first bright %08x)\n",
-                                 nonBlack, pixels.size(), firstBright);
-                } else {
-                    std::fprintf(stderr, "openshow-worker: readback at frame 30 failed\n");
-                }
-            }
-            if (!swapchain.flushAndPresent(surface, imageIndex, &result)) {
-                swapchain.destroy();
-                if (!createSwapchain()) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                }
-                continue;
-            }
-        }
-
-        // Wayland may configure the surface after the swapchain was created
-        // (or the swapchain fell back to the provisional size), and present
-        // does not always report that. Check the surface extent periodically
-        // and recreate at the real panel size when it differs.
-        if (frameCount % 30 == 0) {
-            int surfaceWidth = 0;
-            int surfaceHeight = 0;
-            if (swapchain.extentOutOfDate(&surfaceWidth, &surfaceHeight)) {
-                std::fprintf(stderr,
-                             "openshow-worker: compositor configured %dx%d, recreating "
-                             "swapchain from %dx%d\n",
-                             surfaceWidth, surfaceHeight, swapchain.width(),
-                             swapchain.height());
-                swapchain.destroy();
-                if (!createSwapchain()) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                }
-            }
-        }
-
-        if (seconds > 0.0) {
-            const double elapsed =
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime)
-                    .count();
-            if (elapsed >= seconds) {
-                break;
-            }
-        }
-    }
-
+    const unsigned long long frameCount = session.run(seconds, &gStopRequested);
     std::fprintf(stderr, "openshow-worker: render test presented %llu frames\n", frameCount);
-    swapchain.destroy();
-    context.reset();
-    vk.destroy();
-    window.close();
     return 0;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
+    installStopHandlers();
     const char* socketPath = nullptr;
     const char* snapshotPath = nullptr;
     bool checkDependencies = false;
@@ -357,11 +235,39 @@ int main(int argc, char** argv) {
     }
 
     if (socketPath) {
-        std::fprintf(stderr,
-                     "openshow-worker: the socket transport is task 1.2 and is not "
-                     "implemented yet (was asked for %s)\n",
+        // Task 1.2: bind first so a bad path fails without touching the
+        // display, then open the output session, then serve the frontend.
+        // The worker lives only while connected: disconnect or "shutdown"
+        // ends run() and we exit cleanly.
+        openshow::worker::OutputSession session;
+        openshow::worker::RpcServer::Options rpc;
+        rpc.socketPath = socketPath;
+        rpc.workerVersion = openshow::domain::applicationVersion();
+        openshow::worker::RpcServer server(session, std::move(rpc));
+        std::string error;
+        if (!server.listen(&error)) {
+            std::fprintf(stderr, "openshow-worker: could not listen on %s: %s\n",
+                         socketPath, error.c_str());
+            return 1;
+        }
+        openshow::worker::OutputSession::Options options;
+        options.title = "OpenShowQt output";
+        options.monitor = monitorIndex;
+        if (!session.open(options, &error)) {
+            std::fprintf(stderr, "openshow-worker: %s\n", error.c_str());
+            return 1;
+        }
+        if (!server.start(&error)) {
+            std::fprintf(stderr, "openshow-worker: could not start the RPC server: %s\n",
+                         error.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "openshow-worker: listening on %s, waiting for the frontend\n",
                      socketPath);
-        return 3;
+        const unsigned long long frameCount = session.run(seconds, &gStopRequested);
+        server.stop();
+        std::fprintf(stderr, "openshow-worker: shut down after %llu frames\n", frameCount);
+        return 0;
     }
 
     if (!checkDependencies) {
