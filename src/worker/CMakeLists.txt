@@ -1,5 +1,15 @@
 add_executable(openshow-worker
   main.cpp
+  output/OutputWindow.cpp
+  output/Swapchain.cpp
+  output/VulkanContext.cpp
+  render/Layer.cpp
+  render/TestScene.cpp
+)
+# The prebuilt Skia is compiled with RTTI off; TestScene derives from its
+# classes, whose typeinfo does not exist, so this TU must also be -fno-rtti.
+set_source_files_properties(render/TestScene.cpp PROPERTIES
+  COMPILE_OPTIONS "-fno-rtti"
 )
 add_executable(openshow::worker ALIAS openshow-worker)
 
@@ -11,5 +21,10 @@ target_link_libraries(openshow-worker PRIVATE
   PkgConfig::GLFW
   PkgConfig::PIPEWIRE
   PkgConfig::FFMPEG
+  PkgConfig::FONTCONFIG
+  PkgConfig::HARFBUZZ
   vk-bootstrap::vk-bootstrap
+)
+target_include_directories(openshow-worker PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
 )

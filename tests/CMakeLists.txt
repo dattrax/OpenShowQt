@@ -29,3 +29,14 @@ endif()
 
 # Runs the Qt-free worker with no display and no audio session.
 add_test(NAME worker_check_deps COMMAND openshow-worker --check-deps)
+
+# The task 1.1 scene composed on the CPU with no display, window or Vulkan.
+add_test(NAME render_scene_snapshot
+  COMMAND openshow-worker --snapshot ${CMAKE_CURRENT_BINARY_DIR}/test-scene.png
+)
+
+# The output layer model (PLAN.md): disabled layers dispatch nothing to Skia
+# and enabled ones paint only inside their region. CPU only.
+add_test(NAME render_layer_composition
+  COMMAND openshow-worker --check-layers
+)

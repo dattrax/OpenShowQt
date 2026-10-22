@@ -75,6 +75,31 @@ completion promises.
   display plane, hardware decoding, advanced effects, remote
   control, streaming, NDI/SDI, cloud integrations, Windows and macOS.
 
+### Output layer model (added 2026-10-22)
+
+The audience output composites each frame from ordered layers, bottom to top:
+**background** (colour, gradient, image or video), **images**, **words**,
+**aux** (auxiliary overlays) and **clock**, mirroring FreeShow's output tabs.
+**Audio is deliberately not a layer**: as in FreeShow it is a playback source
+owned by the AV subsystem, never a composition item dispatched to Skia.
+
+- Compositing is **one pass with no render-to-texture**: every enabled layer
+  draws straight into the current swapchain surface in z order. No per-layer
+  or intermediate render targets — the target PC is low-end. Transparency
+  goes directly into paint alphas on the shared target.
+- A disabled layer is **functionally skipped**: its draw entry point is never
+  called, so it records no Skia work and costs nothing.
+- Frontend can **toggle any layer at runtime** (over RPC from task 1.2 on);
+  the change takes effect on the next frame with no swapchain or GPU-object
+  recreation. Aux and clock are not wanted for this operator's use case and
+  start off in production output; they stay implemented so later overlay
+  kinds follow the same shape.
+- The worker's `LayerStack`/`RenderLayer` (`src/worker/render/Layer.{h,cpp}`)
+  implements this, the task 1.1 test scene is built from one layer per tab,
+  and `openshow-worker --check-layers` (ctest `render_layer_composition`)
+  proves on the CPU that disabled layers contribute nothing and each layer
+  paints only its own region.
+
 Technical references:
 
 - [Qt local sockets](https://doc.qt.io/qt-6/qlocalsocket.html)
@@ -156,7 +181,7 @@ Checkpoint: `M0: establish project plan and build foundation`.
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| 1.1 | TODO | GLFW/Vulkan window and Skia rendering | Text and image render correctly |
+| 1.1 | IN PROGRESS | GLFW/Vulkan window and Skia rendering | Text and image render correctly |
 | 1.2 | TODO | Worker launch, RPC handshake and shutdown | Commands change output; disconnect stops worker |
 | 1.3 | TODO | Display selection and swapchain recreation | Fullscreen, resizing and switching work |
 | 1.4 | TODO | Shared-memory previews | Qt displays worker frames without blocking output |
@@ -181,7 +206,7 @@ Checkpoint: `M2: add persistent presentation documents`.
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
 | 3.1 | TODO | Text layout and typography | Wrapping, alignment, fallback and fit pass fixtures |
-| 3.2 | TODO | Image/background composition, transitions | Layering, cuts and crossfades render correctly |
+| 3.2 | TODO | Image/background composition, transitions | Layering, cuts and crossfades render correctly; layer on/off from the UI skips dispatch per the output layer model |
 | 3.3 | TODO | Minimal lyric entry and navigation | Newly created song can be presented |
 | 3.4 | TODO | Output controls and acknowledged live state | Clear controls/live indicators match output |
 

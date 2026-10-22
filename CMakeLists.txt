@@ -35,6 +35,10 @@ pkg_check_modules(GLFW REQUIRED IMPORTED_TARGET GLOBAL glfw3)
 pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET GLOBAL libpipewire-0.3)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET GLOBAL
   libavcodec libavformat libavutil libswscale libswresample)
+# libskia references fontconfig symbols when the font manager is used, and
+# libskshaper's harfbuzz backend references the system harfbuzz.
+pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET GLOBAL fontconfig)
+pkg_check_modules(HARFBUZZ REQUIRED IMPORTED_TARGET GLOBAL harfbuzz)
 
 find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
