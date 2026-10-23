@@ -279,15 +279,26 @@ bool Swapchain::acquire(uint32_t* outImageIndex, VkResult* outResult) {
     return true;
 }
 
-bool Swapchain::flushAndPresent(SkSurface* surface, uint32_t imageIndex, VkResult* outResult) {
+bool Swapchain::flushAndPresent(SkSurface* surface, uint32_t imageIndex, VkResult* outResult,
+                                VkSemaphore extraSignal) {
     Image& image = fImages[imageIndex];
 
     // Hand the image from Skia to the presentation queue: flush with the
     // layout transition baked in and a timeline semaphore to gate present.
-    GrBackendSemaphore renderComplete = GrBackendSemaphores::MakeVk(image.fRenderComplete);
+    // Callers may attach one more signal of their own (task 1.5e: a video
+    // done-semaphore covering the draw that sampled a GPU slot) — every
+    // failure path below still flushes first, so attached semaphores are
+    // signalled regardless of the return value.
+    GrBackendSemaphore signals[2] = {GrBackendSemaphores::MakeVk(image.fRenderComplete),
+                                     GrBackendSemaphore{}};
+    size_t signalCount = 1;
+    if (extraSignal != VK_NULL_HANDLE) {
+        signals[1] = GrBackendSemaphores::MakeVk(extraSignal);
+        signalCount = 2;
+    }
     GrFlushInfo flushInfo;
-    flushInfo.fNumSemaphores = 1;
-    flushInfo.fSignalSemaphores = &renderComplete;
+    flushInfo.fNumSemaphores = signalCount;
+    flushInfo.fSignalSemaphores = signals;
     skgpu::MutableTextureState presentState = skgpu::MutableTextureStates::MakeVulkan(
         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, fPresentQueueIndex);
     fContext->flush(surface, flushInfo, &presentState);

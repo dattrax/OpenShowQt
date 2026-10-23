@@ -1,5 +1,5 @@
 /*
- * GpuYuvUploader: I420 frames to GPU textures Skia can sample (task 1.5d).
+ * GpuYuvUploader: I420 frames to GPU textures Skia can sample (tasks 1.5d/1.5e).
  *
  * The shape follows the decode side: a fixed ring of slots (never grows).
  * Each slot owns host-visible staging plus two device-local optimal-tiling
@@ -8,20 +8,23 @@
  * copy commands (plane copies plus the layout transitions to
  * shader-read-optimal) are recorded and submitted on the upload queue and
  * fenced there, so on GPUs with a separate transfer family nothing of the
- * upload touches the render thread. Each slot is wrapped into a persistent
- * SkImage exactly once via SkImages::TextureFromYUVATextures (the YUV→RGB
- * conversion runs inside the compositing draw - no render-to-texture), and
- * that wrapper is reused for every subsequent frame that lands in the slot.
+ * upload touches the render thread.
  *
- * Slot lifetime is a consumer contract, not a queue trick: upload() blocks
- * while the next slot in ring order is still in use, and the consumer calls
- * release(slot) once it has finished sampling it. Task 1.5e upgrades that
- * release to carry the flush's GPU semaphore so the wait happens on the GPU
- * rather than in a thread.
+ * Skia lives behind one call: imageForSlot() wraps a slot exactly once via
+ * SkImages::TextureFromYUVATextures (the YUV→RGB conversion runs inside the
+ * compositing draw - no render-to-texture), and the wrapper is reused for
+ * every later frame of that slot. This revision gives no thread-safety
+ * guarantee for GrDirectContext, so upload() is pure Vulkan (call it from
+ * any thread) and imageForSlot() must be called from the thread that draws.
  *
- * Not thread-safe by itself: one caller uploads, one caller consumes, and
- * the ring state is guarded internally by a mutex + condition variable so
- * the 1.5e producer thread and render thread can sit on either side.
+ * Slot lifetime is a consumer contract: upload() blocks briefly for the next
+ * slot and refuses when every slot is held; the consumer calls
+ * release(slot, doneVk) once its sampling is submitted, where doneVk is a
+ * Vulkan semaphore the consumer's flush will signal. The next upload to
+ * that slot waits on the collected semaphores on the GPU before copying and
+ * destroys them once its fence has passed - no thread sits waiting in between.
+ * release(slot) without a semaphore means "already GPU-safe" (e.g. after a
+ * device-wide idle in a test).
  */
 
 #pragma once
@@ -29,6 +32,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <vulkan/vulkan.h>
 
@@ -44,16 +48,10 @@ class GpuYuvUploader {
 public:
     static constexpr int kSlots = 4;
 
-    struct Frame {
-        sk_sp<SkImage> image;
-        uint64_t sequence = 0;
-        double ptsSeconds = 0.0;
-        unsigned slot = 0;  // for release()
-    };
-
     struct Stats {
         uint64_t uploads = 0;
         uint64_t slotsCreated = 0;   // GPU slot allocations (≤ kSlots)
+        uint64_t wraps = 0;          // SkImage creations (≤ slotsCreated)
         uint64_t waitsForFreeSlot = 0;
         double totalStageMs = 0.0;   // memcpy into staging
         double totalGpuMs = 0.0;     // submit + fence wait
@@ -68,7 +66,8 @@ public:
 
     // width/height must be even (I420). yuvColorSpace selects the conversion
     // the compositing shader will apply (from the stream's probe info in
-    // 1.5e; tests pick one explicitly).
+    // 1.5e; tests pick one explicitly). context is only used by
+    // imageForSlot().
     bool create(VkDevice device, VkPhysicalDevice physicalDevice,
                 uint32_t graphicsQueueIndex, uint32_t uploadQueueIndex,
                 VkQueue uploadQueue, GrDirectContext* context,
@@ -76,20 +75,26 @@ public:
                 std::string* error);
     void destroy();
 
-    // Blocks while the next slot is in use, then stages the planes, copies,
-    // transitions to shader-read and hands back the slot's wrapped image.
-    // Returns false on creation failure (after reporting once).
+    // Producer side, any thread. Blocks while the next slot is in use, then
+    // stages the planes, copies and transitions to shader-read (waiting on
+    // the release semaphores of that slot's last consumer on the GPU).
+    // *slotOut identifies the slot for imageForSlot()/release().
     bool upload(const uint8_t* yPlane, int yRowBytes,
                 const uint8_t* uvPlane, int uvRowBytes,
-                uint64_t sequence, double ptsSeconds, Frame* out);
+                uint64_t sequence, double ptsSeconds, unsigned* slotOut);
 
-    // The consumer is done sampling this slot: safe to overwrite. By the time
-    // this is called the consumer's GPU work must be finished or fenced; a
-    // plain release after vkDeviceWaitIdle/readPixels satisfies that today,
-    // and 1.5e will pass the flush semaphore instead.
-    void release(unsigned slot);
+    // Consumer side, render thread only (first call wraps through Skia).
+    // Returns null on wrap failure (reported once per slot).
+    sk_sp<SkImage> imageForSlot(unsigned slot, std::string* error);
 
-    // After a device-wide idle: clear all in-use marks.
+    // The consumer's sampling of this slot is submitted; doneVk (may be
+    // VK_NULL_HANDLE) signals when it is finished. Ownership of doneVk
+    // transfers to the uploader, which waits on and destroys it before the
+    // slot is written again.
+    void release(unsigned slot, VkSemaphore doneVk = VK_NULL_HANDLE);
+
+    // After a device-wide idle: clear all in-use marks and drop any
+    // collected semaphores.
     void releaseAll();
 
     const Stats& stats() const { return fStats; }
@@ -100,7 +105,6 @@ private:
     struct Slot;
 
     bool createSlotResources(Slot& slot, std::string* error);
-    bool waitForFreeSlot(Slot& slot);
 
     VkDevice fDevice = VK_NULL_HANDLE;
     VkPhysicalDevice fPhysicalDevice = VK_NULL_HANDLE;

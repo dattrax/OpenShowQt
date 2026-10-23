@@ -11,16 +11,21 @@
  */
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include <sys/resource.h>
 
 #include <GLFW/glfw3.h>
 #include <pipewire/version.h>
@@ -29,9 +34,13 @@
 // FFmpeg headers are C headers without extern "C" guards; media/FFmpeg.h is
 // the module's single wrapped include point (task 1.5a).
 #include "media/FFmpeg.h"
+#include "media/AudioClock.h"
+#include "media/AudioFeeder.h"
 #include "media/PipeWireSink.h"
+#include "media/VideoFrameSource.h"
 
 #include "include/core/SkGraphics.h"
+#include "include/core/SkImageInfo.h"
 
 #include "openshow/domain/version.h"
 #include "openshow/protocol/protocol.h"
@@ -39,6 +48,7 @@
 #include "output/OutputWindow.h"
 #include "render/Layer.h"
 #include "render/TestScene.h"
+#include "render/YuvGpu.h"
 #include "rpc/RpcServer.h"
 #include "session/OutputSession.h"
 
@@ -63,7 +73,8 @@ void installStopHandlers() {
 void printUsage(const char* program) {
     std::fprintf(stderr,
                  "Usage: %s [--version] [--check-deps] [--socket PATH]\n"
-                 "       %s --render-test [--monitor N] [--seconds S]\n"
+                 "       %s --render-test [--monitor N] [--seconds S] [--idle-check]\n"
+                 "       %s --av-bench FILE [--monitor N] [--seconds S] [--no-audio]\n"
                  "       %s --snapshot PATH [--width N] [--height N]\n"
                  "       %s --list-monitors\n"
                  "       %s --check-layers\n"
@@ -72,9 +83,14 @@ void printUsage(const char* program) {
                  "  --check-deps         report the libraries this build linked and exit\n"
                  "  --socket PATH        connect to the frontend over a Unix socket\n"
                  "  --render-test        open the output window and draw the test scene\n"
+                 "  --av-bench FILE      decode FILE to the GPU and pace presents\n"
+                 "                       against the audio clock (10 s by default)\n"
+                 "  --no-audio           with --av-bench: pace on the wall clock\n"
                  "  --monitor N          destination override: fullscreen on monitor N\n"
                  "                       (socket mode defaults to the second display)\n"
                  "  --seconds S          with --render-test, exit after S seconds\n"
+                 "  --idle-check         with --render-test: verify a static scene\n"
+                 "                       presents nothing and a command wakes the loop\n"
                  "  --snapshot PATH      render the test scene to a PNG (no display needed)\n"
                  "  --list-monitors      print the GLFW monitor list and exit\n"
                  "  --check-layers       verify layer composition on the CPU and exit\n"
@@ -83,7 +99,7 @@ void printUsage(const char* program) {
                  "  --disable-layer NAME composition layer off: background, images,\n"
                  "                       words, aux or clock (repeatable)\n"
                  "  --enable-layer NAME  the converse, e.g. --enable-layer aux\n",
-                 program, program, program, program, program, program);
+                 program, program, program, program, program, program, program);
 }
 
 void printVersion(const char* label, unsigned int packed) {
@@ -122,8 +138,15 @@ int reportDependencies() {
 // Since 1.2a this is a thin development driver: the window, device, swapchain
 // and frame loop live in OutputSession, the runtime seam that the 1.2 RPC
 // server will drive.
+//
+// --idle-check (task 1.5e acceptance) watches that loop from a second
+// thread: after a warm-up the present counter must stay flat, process CPU
+// time during the quiet window must be negligible, and a layer toggle must
+// wake a present again within half a second — the event-driven loop either
+// holds all three or the check exits non-zero.
 int runRenderTest(int monitorIndex, double seconds,
-                  const std::vector<std::pair<openshow::worker::LayerId, bool>>& layerOverrides) {
+                  const std::vector<std::pair<openshow::worker::LayerId, bool>>& layerOverrides,
+                  bool idleCheck) {
     openshow::worker::OutputSession::Options options;
     options.title = "OpenShowQt render test (task 1.1)";
     options.monitor = monitorIndex;
@@ -139,9 +162,59 @@ int runRenderTest(int monitorIndex, double seconds,
         session.setLayerEnabled(openshow::worker::layerName(id), enabled, nullptr);
     }
 
-    const unsigned long long frameCount = session.run(seconds, &gStopRequested);
+    auto processMs = [] {
+        rusage usage = {};
+        getrusage(RUSAGE_SELF, &usage);
+        return (static_cast<double>(usage.ru_utime.tv_sec) + usage.ru_utime.tv_usec * 1e-6) +
+               (static_cast<double>(usage.ru_stime.tv_sec) + usage.ru_stime.tv_usec * 1e-6);
+    };
+
+    std::thread monitor;
+    std::atomic<bool> idleFailed{false};
+    if (idleCheck) {
+        monitor = std::thread([&session, &idleFailed, processMs] {
+            std::this_thread::sleep_for(std::chrono::seconds(2));  // warm-up
+            const unsigned long long frames0 = session.status().frames;
+            const double cpu0 = processMs();
+            const auto wall0 = std::chrono::steady_clock::now();
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            const unsigned long long frames1 = session.status().frames;
+            const double cpuMs = (processMs() - cpu0) * 1e3;
+            const double wallMs = std::chrono::duration<double, std::milli>(
+                                      std::chrono::steady_clock::now() - wall0)
+                                      .count();
+            bool woke = false;
+            if (frames1 == frames0) {
+                // Not presenting is only half of event-driven: a command
+                // has to wake the loop for the next vsync.
+                session.setLayerEnabled("clock", false, nullptr);
+                const auto wakeDeadline =
+                    std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+                while (session.status().frames == frames1 &&
+                       std::chrono::steady_clock::now() < wakeDeadline) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+                woke = session.status().frames > frames1;
+            }
+            const bool ok = frames1 == frames0 && cpuMs <= wallMs * 0.05 && woke;
+            std::fprintf(stderr,
+                         "openshow-worker: idle-check: %llu presents in %.1fs idle, "
+                         "cpu %.1fms (%.2f%%), toggle wake %s -> %s\n",
+                         frames1 - frames0, wallMs / 1e3, cpuMs, cpuMs / wallMs * 100.0,
+                         woke ? "ok" : "MISSING", ok ? "PASS" : "FAIL");
+            idleFailed = !ok;
+        });
+    }
+
+    // The check needs its 2 + 5 seconds plus the wake window; an explicit
+    // --seconds still wins.
+    const double runSeconds = idleCheck && seconds <= 0.0 ? 9.0 : seconds;
+    const unsigned long long frameCount = session.run(runSeconds, &gStopRequested);
+    if (monitor.joinable()) {
+        monitor.join();
+    }
     std::fprintf(stderr, "openshow-worker: render test presented %llu frames\n", frameCount);
-    return 0;
+    return idleFailed.load() ? 1 : 0;
 }
 
 // Task 1.5c: live PipeWire evidence. Feeds a quiet 440 Hz tone through the
@@ -225,6 +298,356 @@ int runPipeWireCheck(double seconds) {
     return ok ? 0 : 1;
 }
 
+// Task 1.5e A/V bench: the stream's probe hint decides the conversion the
+// compositing shader applies to uploaded YUV. Unknown color spaces follow
+// the height convention (720 rows and up are usually Rec.709); this Skia
+// revision has no Rec.601 full-range entry, where JPEG's full-range
+// mapping is the matching one.
+SkYUVColorSpace pickYuvColorSpace(const openshow::media::VideoStreamInfo& info) {
+    const bool fullRange =
+        info.colorRange == "jpeg" || info.colorRange == "pc" || info.colorRange == "full";
+    bool bt709 = info.colorSpace == "bt709";
+    const bool bt601 = info.colorSpace == "bt601" || info.colorSpace == "smpte240m";
+    if (!bt709 && !bt601) {
+        bt709 = info.height >= 720;
+    }
+    if (bt709) {
+        return fullRange ? kRec709_Full_SkYUVColorSpace : kRec709_Limited_SkYUVColorSpace;
+    }
+    return fullRange ? kJPEG_Full_SkYUVColorSpace : kRec601_Limited_SkYUVColorSpace;
+}
+
+// Counts what the scheduler did with the frames the upload thread offered:
+// drift of the presentation instant against the video clock, deadlines
+// missed (M5's metric), and drops. onDropped can arrive on the upload
+// thread (submitVideo replacing an undrawn pending slot) while onPresented
+// is render-thread, so the counters carry a mutex.
+class BenchPresenter final : public openshow::worker::OutputSession::VideoPresenter {
+public:
+    // A present is "missed" when the clock already ran 25 ms past the
+    // frame's pts: twice a 40 fps frame interval, so wake-up jitter stays
+    // out of the count while real stalls do not.
+    static constexpr double kMissedWindowMs = 25.0;
+
+    explicit BenchPresenter(openshow::worker::GpuYuvUploader* uploader) : fUploader(uploader) {}
+
+    void setClock(std::function<double()> clock) { fClock = std::move(clock); }
+
+    // The upload thread records a slot's pts before submitting it. The slot
+    // cannot be rewritten before its release (onPresented/onDropped), and
+    // the uploader's in-use protocol orders that release against the next
+    // upload, so the entry lives exactly as long as any reader can need it.
+    void recordPts(unsigned slot, double pts) { fPtsBySlot[slot] = pts; }
+
+    SkImage* acquireImage(unsigned token) override {
+        // Borrowed: the uploader holds the wrapper's own reference until
+        // it is destroyed, so the raw pointer outlives every draw.
+        return fUploader->imageForSlot(token, nullptr).get();
+    }
+
+    void onPresented(unsigned token, VkSemaphore doneVk) override {
+        const double pts = token < kSlotTableSize ? fPtsBySlot[token] : 0.0;
+        const double driftMs = ((fClock ? fClock() : 0.0) - pts) * 1000.0;
+        {
+            std::lock_guard<std::mutex> lock(fStatsMutex);
+            ++fPresents;
+            fDriftSumMs += driftMs;
+            if (driftMs > fDriftMaxMs) {
+                fDriftMaxMs = driftMs;
+            }
+            if (driftMs > kMissedWindowMs) {
+                ++fMissed;
+            }
+        }
+        fUploader->release(token, doneVk);
+    }
+
+    void onDropped(unsigned token) override {
+        {
+            std::lock_guard<std::mutex> lock(fStatsMutex);
+            ++fDrops;
+        }
+        fUploader->release(token, VK_NULL_HANDLE);  // never sampled
+    }
+
+    struct Report {
+        uint64_t presents = 0;
+        uint64_t missed = 0;
+        uint64_t drops = 0;
+        double driftMeanMs = 0.0;
+        double driftMaxMs = 0.0;
+    };
+    Report report() const {
+        std::lock_guard<std::mutex> lock(fStatsMutex);
+        Report out;
+        out.presents = fPresents;
+        out.missed = fMissed;
+        out.drops = fDrops;
+        out.driftMeanMs =
+            fPresents != 0 ? fDriftSumMs / static_cast<double>(fPresents) : 0.0;
+        out.driftMaxMs = fDriftMaxMs;
+        return out;
+    }
+
+private:
+    static constexpr unsigned kSlotTableSize = 8;
+
+    openshow::worker::GpuYuvUploader* fUploader;
+    std::function<double()> fClock;
+    double fPtsBySlot[kSlotTableSize] = {};
+    mutable std::mutex fStatsMutex;
+    uint64_t fPresents = 0;
+    uint64_t fMissed = 0;
+    uint64_t fDrops = 0;
+    double fDriftSumMs = 0.0;
+    double fDriftMaxMs = 0.0;
+};
+
+// Decode FILE, upload its frames to the GPU ring and let OutputSession's
+// scheduler pace presents against the audio sink's own clock (wall clock
+// with --no-audio or when FILE has no decodable audio). Reports the numbers
+// M5 is judged on: missed deadlines under 1%, drift under 50 ms.
+int runAvBench(const std::string& path, int monitorIndex, double seconds, bool useAudio) {
+    openshow::media::MediaInfo info;
+    std::string error;
+    if (openshow::media::probeMedia(path, &info, &error) != openshow::media::ProbeStatus::kOk) {
+        std::fprintf(stderr, "openshow-worker: av-bench cannot read %s: %s\n", path.c_str(),
+                     error.c_str());
+        return 1;
+    }
+
+    openshow::worker::OutputSession::Options options;
+    options.title = "OpenShowQt A/V bench (task 1.5e)";
+    options.monitor = monitorIndex;
+
+    // Session first, uploader second: the reverse destruction order keeps
+    // the GrDirectContext alive for uploader.destroy()'s SkImage drops.
+    openshow::worker::OutputSession session;
+    openshow::worker::GpuYuvUploader uploader;
+    if (!session.open(options, &error)) {
+        std::fprintf(stderr, "openshow-worker: av-bench session: %s\n", error.c_str());
+        return 1;
+    }
+
+    openshow::media::VideoFrameSource source;
+    if (!source.open(path, 6, &error)) {
+        std::fprintf(stderr, "openshow-worker: av-bench video: %s\n", error.c_str());
+        return 1;
+    }
+    const openshow::media::VideoStreamInfo& video = source.streamInfo();
+
+    openshow::media::PipeWireSink sink;
+    openshow::media::AudioFileFeeder feeder;
+    bool audio = false;
+    if (useAudio) {
+        if (!info.audioStreams.empty() && info.audioStreams.front().decoderAvailable) {
+            if (sink.start(48000, &error)) {
+                const uint32_t rate =
+                    sink.negotiatedRate() != 0 ? sink.negotiatedRate() : 48000;
+                if (feeder.open(path, rate, &error)) {
+                    audio = feeder.start(
+                        [&sink](const float* frames, size_t count) {
+                            return sink.feed(frames, count);
+                        },
+                        true, &error);
+                }
+            }
+            if (!audio) {
+                std::fprintf(stderr,
+                             "openshow-worker: av-bench: audio unavailable (%s), "
+                             "pacing on the wall clock\n",
+                             error.c_str());
+            }
+        } else {
+            std::fprintf(stderr, "openshow-worker: av-bench: no decodable audio stream, "
+                                 "pacing on the wall clock\n");
+        }
+    }
+
+    // The scheduler and the drift stats read the same function: on the
+    // audio path the sink's stream time, otherwise one wall clock anchored
+    // here so drift compares against the scheduler's actual notion of now.
+    const auto clockStart = std::chrono::steady_clock::now();
+    std::function<double()> clock;
+    if (audio) {
+        clock = [&sink] { return sink.clock().clockSeconds(); };
+    } else {
+        clock = [clockStart] {
+            return std::chrono::duration<double>(std::chrono::steady_clock::now() - clockStart)
+                .count();
+        };
+    }
+    session.setVideoClock(clock);
+
+    BenchPresenter presenter(&uploader);
+    presenter.setClock(clock);
+    session.setVideoPresenter(&presenter);
+
+    if (!source.startDecode(true, &error)) {
+        std::fprintf(stderr, "openshow-worker: av-bench decode: %s\n", error.c_str());
+        return 1;
+    }
+
+    // Decode ring -> GPU ring. upload() applies backpressure itself while
+    // every slot is in use, which is exactly the pacing this thread wants;
+    // it returns the slot index, and recordPts precedes submitVideo so the
+    // render thread can never observe a submission without its pts.
+    bool uploaderFailed = false;
+    uint64_t uploadRefusals = 0;  // upload thread writes; read after join
+    // Supply pacing: upload no further ahead of the clock than the session
+    // can hold. The seam keeps one pending frame and drops the replaced
+    // one, so the lookahead must stay under a frame interval — otherwise
+    // every deadline is superseded before it arrives and nothing presents.
+    const double supplyLookahead =
+        video.frameRate > 0.0
+            ? std::min(0.05, std::max(0.004, 0.4 / video.frameRate))
+            : 0.015;
+    const double clipSeconds = info.durationSeconds;
+    // The upload loop ends on a stop signal or on the bench's own teardown
+    // (run() returning at its deadline is neither: a stopped ring just
+    // makes poll() return false, which must end the loop, not spin it).
+    std::atomic<bool> benchStop{false};
+    std::thread uploadThread([&] {
+        openshow::media::VideoFrame frame;
+        // The ring's frames are planar I420; the GPU slots are a Y (R8)
+        // plus interleaved-UV (R8G8) layout, so fold U and V together
+        // here — a 960x540 interleave costs microseconds. (M2 can skip it
+        // by asking swscale for NV12 output directly.)
+        std::vector<uint8_t> uvScratch;
+        // pts continuity across decoder loops: the container pts restart at
+        // 0, while the presentation clock runs on; keep a monotonic
+        // effective pts so drift means what M5 needs it to mean.
+        double lastPts = -1.0;
+        double loopBase = 0.0;
+        while (!benchStop.load() && !gStopRequested.load()) {
+            if (!source.ring().poll(&frame, std::chrono::milliseconds(100))) {
+                continue;  // timeout now; the teardown's stop() ends the loop
+            }
+            bool ok = true;
+            if (uploader.width() == 0) {
+                const auto handles = session.gpuHandles();
+                ok = uploader.create(handles.device, handles.physicalDevice,
+                                     handles.graphicsQueueIndex, handles.uploadQueueIndex,
+                                     handles.uploadQueue, handles.context, frame.width,
+                                     frame.height, pickYuvColorSpace(video), &error);
+                if (!ok) {
+                    std::fprintf(stderr, "openshow-worker: av-bench gpu: %s\n", error.c_str());
+                    uploaderFailed = true;
+                }
+            }
+            unsigned slot = 0;
+            // Hold the frame near its presentation time before shipping it
+            // to the GPU (small sleeps; stop cuts them short).
+            if (lastPts >= 0.0 && frame.ptsSeconds + 0.5 < lastPts && clipSeconds > 0.0) {
+                loopBase += clipSeconds;  // the decoder rewound; pts restarts
+            }
+            lastPts = frame.ptsSeconds;
+            const double effectivePts = loopBase + frame.ptsSeconds;
+            while (!benchStop.load() && !gStopRequested.load() &&
+                   clock() < effectivePts - supplyLookahead) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            if (ok && !gStopRequested.load()) {
+                const int chromaWidth = frame.width / 2;
+                const int chromaRows = frame.height / 2;
+                uvScratch.resize(static_cast<size_t>(chromaWidth) * 2u *
+                                 static_cast<size_t>(chromaRows));
+                for (int row = 0; row < chromaRows; ++row) {
+                    const uint8_t* uRow =
+                        frame.data[1] + static_cast<size_t>(row) * frame.linesize[1];
+                    const uint8_t* vRow =
+                        frame.data[2] + static_cast<size_t>(row) * frame.linesize[2];
+                    uint8_t* uvRow = uvScratch.data() + static_cast<size_t>(row) * chromaWidth * 2u;
+                    for (int col = 0; col < chromaWidth; ++col) {
+                        uvRow[col * 2] = uRow[col];
+                        uvRow[col * 2 + 1] = vRow[col];
+                    }
+                }
+                ok = uploader.upload(frame.data[0], frame.linesize[0], uvScratch.data(),
+                                     chromaWidth * 2, frame.sequence, frame.ptsSeconds, &slot);
+                if (ok) {
+                    presenter.recordPts(slot, effectivePts);
+                    openshow::worker::OutputSession::VideoSubmission submission;
+                    submission.token = slot;
+                    submission.ptsSeconds = effectivePts;
+                    submission.sequence = frame.sequence;
+                    session.submitVideo(submission);
+                } else {
+                    ++uploadRefusals;  // counted: silence here hides real bugs
+                }
+            }
+            source.ring().release(frame.slot);
+            if (uploaderFailed) {
+                gStopRequested.store(true);  // the run loop unwinds on this
+                break;
+            }
+        }
+    });
+
+    const unsigned long long presented = session.run(seconds, &gStopRequested);
+
+    // Snapshot the sink before stopping it (the stats keep counting while
+    // the stream lives, and the meaningful window ends with run()).
+    uint64_t sinkCallbacks = 0;
+    uint64_t sinkUnderruns = 0;
+    double sinkDriftMs = 0.0;
+    if (audio) {
+        const auto stats = sink.stats();
+        sinkCallbacks = stats.callbacks;
+        sinkUnderruns = stats.underrunEvents;
+        sinkDriftMs = (stats.wallSeconds - stats.clockSeconds) * 1000.0;
+    }
+
+    // Teardown order: producers first (benchStop ends the upload loop — the
+    // deadline path leaves no other signal; ring stop would only spin it),
+    // then audio, GPU objects last while the context is still open.
+    benchStop.store(true);
+    source.ring().stop();
+    source.requestStop();
+    uploadThread.join();
+    feeder.requestStop();
+    feeder.join();
+    if (audio) {
+        sink.stop();
+    }
+    session.setVideoPresenter(nullptr);
+    session.setVideoClock(nullptr);
+    uploader.destroy();
+
+    if (uploaderFailed) {
+        return 1;
+    }
+
+    const auto report = presenter.report();
+    const auto gpu = uploader.stats();
+    const auto decoded = source.stats();
+    std::printf(
+        "av-bench %s: presents=%llu missed(>%.0fms)=%llu drops=%llu "
+        "drift mean=%+.1fms max=%.1fms\n",
+        path.c_str(), static_cast<unsigned long long>(report.presents),
+        BenchPresenter::kMissedWindowMs, static_cast<unsigned long long>(report.missed),
+        static_cast<unsigned long long>(report.drops), report.driftMeanMs, report.driftMaxMs);
+    std::printf("  decoded=%llu loops=%llu decode-errors=%llu stage=%.3fms gpu=%.3fms per upload\n",
+                static_cast<unsigned long long>(decoded.framesProduced),
+                static_cast<unsigned long long>(decoded.loops),
+                static_cast<unsigned long long>(decoded.decodeErrors),
+                gpu.uploads != 0 ? gpu.totalStageMs / static_cast<double>(gpu.uploads) : 0.0,
+                gpu.uploads != 0 ? gpu.totalGpuMs / static_cast<double>(gpu.uploads) : 0.0);
+    std::printf("  gpu slots=%llu wraps=%llu refusals=%llu, sink callbacks=%llu underruns=%llu drift=%+.1fms\n",
+                static_cast<unsigned long long>(gpu.slotsCreated),
+                static_cast<unsigned long long>(gpu.wraps),
+                static_cast<unsigned long long>(uploadRefusals),
+                static_cast<unsigned long long>(sinkCallbacks),
+                static_cast<unsigned long long>(sinkUnderruns), sinkDriftMs);
+    std::printf("  session presented %llu frames total\n", presented);
+
+    if (report.presents == 0) {
+        std::fprintf(stderr, "openshow-worker: av-bench presented nothing\n");
+        return 1;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -236,6 +659,9 @@ int main(int argc, char** argv) {
     bool listMonitors = false;
     bool checkLayers = false;
     bool pwCheck = false;
+    const char* avBenchPath = nullptr;
+    bool idleCheck = false;
+    bool noAudio = false;
     int monitorIndex = openshow::worker::OutputSession::kAutoSecondDisplay;
     bool monitorGiven = false;
     double seconds = 0.0;
@@ -259,6 +685,12 @@ int main(int argc, char** argv) {
             checkLayers = true;
         } else if (argument == "--pw-check") {
             pwCheck = true;
+        } else if (argument == "--av-bench" && i + 1 < argc) {
+            avBenchPath = argv[++i];
+        } else if (argument == "--idle-check") {
+            idleCheck = true;
+        } else if (argument == "--no-audio") {
+            noAudio = true;
         } else if (argument == "--socket" && i + 1 < argc) {
             socketPath = argv[++i];
         } else if (argument == "--monitor" && i + 1 < argc) {
@@ -320,10 +752,18 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (avBenchPath != nullptr) {
+        // Task 1.5e development bench: same session an operator drives, plus
+        // the decode -> GPU upload pipeline paced by the audio clock.
+        return runAvBench(avBenchPath, monitorGiven ? monitorIndex : -1,
+                          seconds > 0.0 ? seconds : 10.0, !noAudio);
+    }
+
     if (renderTest) {
         // The development driver keeps the explicit destination; without
         // --monitor it shows the borderless window on the operator panel.
-        return runRenderTest(monitorGiven ? monitorIndex : -1, seconds, layerOverrides);
+        return runRenderTest(monitorGiven ? monitorIndex : -1, seconds, layerOverrides,
+                             idleCheck);
     }
 
     if (socketPath) {

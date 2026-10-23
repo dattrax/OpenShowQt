@@ -9,6 +9,7 @@
 
 #include "session/OutputSession.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <utility>
 #include <vector>
@@ -18,7 +19,9 @@
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
+#include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
+#include "include/core/SkImage.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkSurface.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
@@ -181,16 +184,21 @@ bool OutputSession::setLayerEnabled(std::string_view name, bool enabled,
     if (!layerIdFromName(name, &id)) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(fMutex);
-    if (enabled) {
-        fDesiredMask |= layerBit(id);
-    } else {
-        fDesiredMask &= ~layerBit(id);
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (enabled) {
+            fDesiredMask |= layerBit(id);
+        } else {
+            fDesiredMask &= ~layerBit(id);
+        }
+        ++fRevision;
+        if (revisionOut) {
+            *revisionOut = fRevision;
+        }
     }
-    ++fRevision;
-    if (revisionOut) {
-        *revisionOut = fRevision;
-    }
+    // The event-driven loop (task 1.5e) sleeps between frames: nudge it so
+    // the change lands on the next vsync rather than never.
+    wakeRenderThread();
     return true;
 }
 
@@ -200,17 +208,20 @@ bool OutputSession::selectMonitor(int index, uint64_t* revisionOut) {
     if (index < -1 || index == kAutoSecondDisplay) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(fMutex);
-    if (index >= static_cast<int>(fDisplays.size())) {
-        return false;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (index >= static_cast<int>(fDisplays.size())) {
+            return false;
+        }
+        if (index != fDesiredMonitor) {
+            fDesiredMonitor = index;
+            ++fRevision;
+        }
+        if (revisionOut) {
+            *revisionOut = fRevision;
+        }
     }
-    if (index != fDesiredMonitor) {
-        fDesiredMonitor = index;
-        ++fRevision;
-    }
-    if (revisionOut) {
-        *revisionOut = fRevision;
-    }
+    wakeRenderThread();
     return true;
 }
 
@@ -230,7 +241,7 @@ bool OutputSession::startPreview(uint32_t width, uint32_t height, uint32_t fps,
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(fMutex);
+    std::unique_lock<std::mutex> lock(fMutex);
     ++fPreviewRequestCounter;
     PreviewDesired desired;
     desired.enabled = true;
@@ -261,19 +272,24 @@ bool OutputSession::startPreview(uint32_t width, uint32_t height, uint32_t fps,
         info->bytesPerSlot =
             static_cast<uint32_t>(protocol::previewSlotStrideBytes(width, height));
     }
+    lock.unlock();
+    wakeRenderThread();
     return true;
 }
 
 void OutputSession::stopPreview() {
-    std::lock_guard<std::mutex> lock(fMutex);
-    if (!fDesiredPreview.enabled) {
-        return;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (!fDesiredPreview.enabled) {
+            return;
+        }
+        fDesiredPreview.enabled = false;
+        ++fDesiredPreview.generation;
+        for (auto& pending : fPendingReady) {
+            pending.reset();
+        }
     }
-    fDesiredPreview.enabled = false;
-    ++fDesiredPreview.generation;
-    for (auto& pending : fPendingReady) {
-        pending.reset();
-    }
+    wakeRenderThread();
 }
 
 void OutputSession::releasePreviewSlot(uint32_t slot, uint64_t seq) {
@@ -299,6 +315,63 @@ bool OutputSession::takePreviewReady(PreviewReady* out) {
         }
     }
     return false;
+}
+
+void OutputSession::setVideoPresenter(VideoPresenter* presenter) {
+    // Before run(); the render thread reads it without synchronisation
+    // because it is only ever written while the loop is not running.
+    fVideoPresenter = presenter;
+}
+
+void OutputSession::setVideoClock(std::function<double()> clock) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    fVideoClock = std::move(clock);
+}
+
+void OutputSession::submitVideo(VideoSubmission submission) {
+    std::optional<VideoSubmission> dropped;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (fPendingVideo) {
+            dropped = fPendingVideo;
+        }
+        fPendingVideo = submission;
+    }
+    // A slot replaced before ever being drawn goes back now, with no GPU
+    // semaphore: nothing ever sampled it.
+    if (dropped && fVideoPresenter && dropped->token != submission.token) {
+        fVideoPresenter->onDropped(dropped->token);
+    }
+    wakeRenderThread();
+}
+
+OutputSession::GpuHandles OutputSession::gpuHandles() const {
+    GpuHandles handles;
+    if (fVk) {
+        handles.device = fVk->device();
+        handles.physicalDevice = fVk->physicalDevice();
+        handles.graphicsQueueIndex = fVk->queueIndex();
+        handles.uploadQueueIndex = fVk->uploadQueueIndex();
+        handles.uploadQueue = fVk->uploadQueue();
+    }
+    handles.context = fContext.get();
+    return handles;
+}
+
+void OutputSession::wakeRenderThread() {
+    // GLFW owns the display connection, so its portable cross-thread nudge
+    // (an empty event waking glfwWaitEventsTimeout) is the eventfd of this
+    // design — PLAN.md's "eventfd + display fd" intent without private
+    // Wayland plumbing.
+    glfwPostEmptyEvent();
+}
+
+double OutputSession::videoClockSecondsLocked(
+    std::chrono::steady_clock::time_point now) const {
+    if (fVideoClock) {
+        return fVideoClock();
+    }
+    return std::chrono::duration<double>(now - fRunStart).count();
 }
 
 void OutputSession::refreshDisplaySnapshot() {
@@ -331,6 +404,7 @@ OutputSession::Status OutputSession::status() const {
 
 void OutputSession::requestStop() {
     fStop = true;
+    wakeRenderThread();
 }
 
 bool OutputSession::running() const {
@@ -432,10 +506,11 @@ void OutputSession::applyPreviewState() {
     if (ok) {
         fPreviewStream = std::move(stream);
         fLastPreview = std::chrono::steady_clock::time_point{};  // tick immediately
+        fPreviewPublishedFrames = 0;  // a fresh stream owes its first frame
     }
 }
 
-void OutputSession::publishPreviewFrame(double elapsed) {
+void OutputSession::publishPreviewFrame(double elapsed, SkImage* video) {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t fps = 0;
@@ -453,6 +528,13 @@ void OutputSession::publishPreviewFrame(double elapsed) {
         revision = static_cast<uint32_t>(fRevision);
     }
     if (!stream) {
+        return;
+    }
+
+    // Content gate (task 1.5e): republish only when the presented frame
+    // changed since the last publish — a slide that sits still must not
+    // keep ticking preview frames.
+    if (fFrames == fPreviewPublishedFrames) {
         return;
     }
 
@@ -490,9 +572,17 @@ void OutputSession::publishPreviewFrame(double elapsed) {
 
     // The same scene through the same draw path as the audience output,
     // only smaller; the diagnostics status line stays empty so it does
-    // not crowd the preview.
+    // not crowd the preview. Video (task 1.5e) belongs to what the
+    // audience sees, so the held frame is drawn over it here too — the
+    // readPixels below is CPU-synchronous, which keeps this sampling of
+    // a released slot ordered ahead of any later reuse.
     fScene->draw(fPreviewSurface->getCanvas(), static_cast<int>(width),
                  static_cast<int>(height), elapsed, std::string());
+    if (video) {
+        fPreviewSurface->getCanvas()->drawImageRect(
+            video, SkRect::MakeIWH(static_cast<int>(width), static_cast<int>(height)),
+            SkSamplingOptions(SkFilterMode::kLinear));
+    }
 
     const SkImageInfo dst = SkImageInfo::Make(static_cast<int>(width),
                                               static_cast<int>(height),
@@ -510,6 +600,7 @@ void OutputSession::publishPreviewFrame(double elapsed) {
         std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch())
             .count());
     const uint64_t seq = stream->publish(slot, revision, publishedNs);
+    fPreviewPublishedFrames = fFrames;  // the gate counts this publish
 
     PreviewReady ready;
     ready.slot = static_cast<uint32_t>(slot);
@@ -525,6 +616,15 @@ void OutputSession::publishPreviewFrame(double elapsed) {
 }
 
 void OutputSession::frame() {
+    // The revision this frame represents: a command landing while the
+    // frame is in flight must re-dirty the loop rather than be swallowed
+    // (task 1.5e).
+    uint64_t presentedFor = 0;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        presentedFor = fRevision;
+    }
+
     applyPendingLayerChanges();
     applyPendingDisplayChange();
     applyPreviewState();
@@ -554,6 +654,10 @@ void OutputSession::frame() {
     }
 
     SkSurface* surface = fSwapchain->surface(imageIndex);
+    // Video hand-off state for this frame (task 1.5e).
+    SkImage* videoImage = nullptr;
+    unsigned videoToken = 0;
+    VkSemaphore videoDone = VK_NULL_HANDLE;
     if (surface) {
         char status[160];
         std::snprintf(status, sizeof(status), "live: %s \xc2\xb7 %dx%d \xc2\xb7 frame %llu",
@@ -565,6 +669,41 @@ void OutputSession::frame() {
         fScene->draw(surface->getCanvas(), fSwapchain->width(), fSwapchain->height(), elapsed,
                      status);
         ++fFrames;
+
+        // Video (task 1.5e): the pending slot is drawn once the clock has
+        // reached its pts; until then — and on every dirty redraw between
+        // video frames — the last presented frame is held, so a layer
+        // toggle in the middle of a video never blanks it.
+        std::optional<VideoSubmission> toDraw;
+        {
+            std::lock_guard<std::mutex> lock(fMutex);
+            if (fPendingVideo && fVideoPresenter &&
+                videoClockSecondsLocked(std::chrono::steady_clock::now()) >=
+                    fPendingVideo->ptsSeconds) {
+                toDraw = fPendingVideo;
+                fDrawnVideo = toDraw;
+                fPendingVideo.reset();
+            }
+        }
+        if (!toDraw && fDrawnVideo) {
+            toDraw = fDrawnVideo;
+        }
+        if (toDraw && fVideoPresenter) {
+            videoImage = fVideoPresenter->acquireImage(toDraw->token);
+            if (!videoImage) {
+                fVideoPresenter->onDropped(toDraw->token);
+                if (fDrawnVideo && fDrawnVideo->token == toDraw->token) {
+                    fDrawnVideo.reset();
+                }
+            } else {
+                videoToken = toDraw->token;
+                // Dev-bench placement: the video fills the output (later
+                // media layers will place it like any other layer).
+                surface->getCanvas()->drawImageRect(
+                    videoImage, SkRect::MakeIWH(fSwapchain->width(), fSwapchain->height()),
+                    SkSamplingOptions(SkFilterMode::kLinear));
+            }
+        }
 
         // Diagnostic (task 1.1): read the wrapped GPU image back on the CPU
         // once, to separate "Skia never wrote the image" from "present shows
@@ -593,7 +732,28 @@ void OutputSession::frame() {
             }
         }
 
-        if (!fSwapchain->flushAndPresent(surface, imageIndex, &result)) {
+        // Every draw that samples video attaches a fresh done-semaphore to
+        // its flush: the release protocol gives the uploader one semaphore
+        // per sampling flush, and the next upload to the slot waits on all
+        // of them before overwriting. (A single per-slot semaphore could
+        // not express the static-hold redraws of the same texture.)
+        if (videoImage) {
+            VkSemaphoreCreateInfo semaphoreInfo = {};
+            semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            if (vkCreateSemaphore(fVk->device(), &semaphoreInfo, nullptr, &videoDone) !=
+                VK_SUCCESS) {
+                videoDone = VK_NULL_HANDLE;
+            }
+        }
+
+        const bool presented =
+            fSwapchain->flushAndPresent(surface, imageIndex, &result, videoDone);
+        if (!presented) {
+            // flushAndPresent only fails after flushing, so an attached
+            // semaphore will still be signalled: the hand-off stands.
+            if (videoDone != VK_NULL_HANDLE && fVideoPresenter) {
+                fVideoPresenter->onPresented(videoToken, videoDone);
+            }
             fSwapchain->destroy();
             createSwapchain();
             return;
@@ -602,37 +762,24 @@ void OutputSession::frame() {
 
     // Preview (task 1.4) runs after the audience frame is presented: the
     // extra pass never delays the swapchain work it follows, and its
-    // throttling and drop policy live entirely in publishPreviewFrame.
+    // throttling, content gate and drop policy live in publishPreviewFrame.
     if (fFrames > 0) {
         const double elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - fStartTime)
                 .count();
-        publishPreviewFrame(elapsed);
+        publishPreviewFrame(elapsed, videoImage);
     }
 
-    // Wayland may configure the surface after the swapchain was created
-    // (or the swapchain fell back to the provisional size), and present
-    // does not always report that. Check the surface extent periodically
-    // and recreate at the real panel size when it differs.
-    if (fFrames % 30 == 0) {
-        int surfaceWidth = 0;
-        int surfaceHeight = 0;
-        if (fSwapchain->extentOutOfDate(&surfaceWidth, &surfaceHeight)) {
-            std::fprintf(stderr,
-                         "openshow-worker: compositor configured %dx%d, recreating "
-                         "swapchain from %dx%d\n",
-                         surfaceWidth, surfaceHeight, fSwapchain->width(),
-                         fSwapchain->height());
-            fSwapchain->destroy();
-            createSwapchain();
-        }
+    // The video slot is handed back last: publishPreviewFrame's readback
+    // above is CPU-synchronous, so every queued sampling of the slot has
+    // finished by now, and once doneVk signals the uploader may write the
+    // slot again with nothing in flight against it.
+    if (videoDone != VK_NULL_HANDLE && fVideoPresenter) {
+        fVideoPresenter->onPresented(videoToken, videoDone);
     }
 
-    // Cheap re-enumeration so a hotplug reaches output.displays without
-    // GLFW monitor callbacks (the dedicated hotplug story is M6.1).
-    if (fFrames % 60 == 0) {
-        refreshDisplaySnapshot();
-    }
+    fPresentedRevision = presentedFor;
+    fNeedsPresent = false;
 
     {
         std::lock_guard<std::mutex> lock(fMutex);
@@ -642,17 +789,129 @@ void OutputSession::frame() {
     }
 }
 
+void OutputSession::housekeep() {
+    // Time-based chores that must not depend on frames being presented:
+    // the event-driven loop presents nothing while content sits still.
+
+    // Wayland may configure the surface after the swapchain was created
+    // (or the swapchain fell back to the provisional size), and present
+    // does not always report that. Check the surface extent and recreate
+    // at the real panel size when it differs; the fresh buffers then make
+    // the loop present once.
+    int surfaceWidth = 0;
+    int surfaceHeight = 0;
+    if (fSwapchain && fSwapchain->extentOutOfDate(&surfaceWidth, &surfaceHeight)) {
+        std::fprintf(stderr,
+                     "openshow-worker: compositor configured %dx%d, recreating "
+                     "swapchain from %dx%d\n",
+                     surfaceWidth, surfaceHeight, fSwapchain->width(),
+                     fSwapchain->height());
+        fSwapchain->destroy();
+        if (createSwapchain()) {
+            fNeedsPresent = true;
+        }
+    }
+
+    // Cheap re-enumeration so a hotplug reaches output.displays without
+    // GLFW monitor callbacks (the dedicated hotplug story is M6.1).
+    refreshDisplaySnapshot();
+}
+
 unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* abort) {
     const auto startTime = std::chrono::steady_clock::now();
+    fRunStart = startTime;
+    // Far-future sentinel: steady_clock::time_point::max() overflows when
+    // durations are subtracted from it.
+    const auto forever = startTime + std::chrono::hours(24 * 3650);
+    const auto hardDeadline =
+        seconds > 0.0
+            ? startTime + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                  std::chrono::duration<double>(seconds))
+            : forever;
+    auto nextHousekeeping = startTime + std::chrono::milliseconds(500);
+
+    // Event-driven frame loop (task 1.5e): render only on a reason — a
+    // command that changed state, a window event, or a video slot due
+    // against the clock. Otherwise sleep in glfwWaitEventsTimeout, which
+    // wakes on display events and on wakeRenderThread() posts; the
+    // periodic housekeeping is time-based and presents nothing, so an idle
+    // slide keeps the present counter flat at ~0% CPU (PLAN.md 1.5e).
     while (running() && !(abort && *abort)) {
-        frame();
-        if (seconds > 0.0) {
-            const double elapsed =
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime)
-                    .count();
-            if (elapsed >= seconds) {
-                break;
+        glfwPollEvents();
+        const auto now = std::chrono::steady_clock::now();
+
+        bool presentNow = false;
+        bool previewDue = false;
+        auto wakeAt = hardDeadline;
+        {
+            std::lock_guard<std::mutex> lock(fMutex);
+            presentNow = fRevision != fPresentedRevision ||
+                         fDesiredMonitor != fAppliedMonitor ||
+                         fDesiredPreview.generation != fAppliedPreviewGeneration ||
+                         fNeedsPresent || fWindow->framebufferResized();
+            if (!presentNow && fPendingVideo && fVideoPresenter) {
+                const double clock = videoClockSecondsLocked(now);
+                if (clock >= fPendingVideo->ptsSeconds) {
+                    presentNow = true;  // frame() re-checks and consumes it
+                } else {
+                    wakeAt = std::min(
+                        wakeAt,
+                        now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                  std::chrono::duration<double>(
+                                      fPendingVideo->ptsSeconds - clock)));
+                }
             }
+            if (!presentNow && fStatus.preview.running &&
+                fFrames != fPreviewPublishedFrames) {
+                // A change is owed to the preview but the cadence throttled
+                // it: republish when allowed without a fresh output frame.
+                const auto nextAllowed =
+                    fLastPreview +
+                    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<double>(
+                            1.0 / std::max(1u, fStatus.preview.fps)));
+                if (now >= nextAllowed) {
+                    previewDue = true;
+                } else {
+                    wakeAt = std::min(wakeAt, nextAllowed);
+                }
+            }
+        }
+
+        if (now >= nextHousekeeping) {
+            housekeep();
+            nextHousekeeping =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+            if (fNeedsPresent) {
+                presentNow = true;
+            }
+        }
+
+        // The deadline is checked ahead of the present branches: a due
+        // video frame every 40 ms would otherwise keep re-entering frame()
+        // and never let a timed run end (dev-only; seconds==0 runs forever).
+        if (now >= hardDeadline) {
+            break;
+        }
+
+        if (presentNow) {
+            frame();
+            continue;
+        }
+        if (previewDue) {
+            const double elapsed =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - fStartTime)
+                    .count();
+            SkImage* held = nullptr;
+            if (fVideoPresenter && fDrawnVideo) {
+                held = fVideoPresenter->acquireImage(fDrawnVideo->token);
+            }
+            publishPreviewFrame(elapsed, held);
+            continue;
+        }
+        const auto waitUntil = std::min(nextHousekeeping, wakeAt);
+        if (waitUntil > now) {
+            glfwWaitEventsTimeout(std::chrono::duration<double>(waitUntil - now).count());
         }
     }
     return fFrames;

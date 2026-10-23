@@ -622,6 +622,94 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
     submit there concurrently with Skia; same-family GPUs will need uploads
     serialized behind the render thread (or accepted in the same queue with
     a host-side lock) when the frame loop lands.
+- **1.5e** DONE. `OutputSession` became the presentation scheduler; new
+  `media/AudioFeeder.{h,cpp}` (`AudioFileFeeder`) and two development modes:
+  `--av-bench FILE [--monitor N] [--seconds S] [--no-audio]` and
+  `--idle-check` (with `--render-test`, ctest `render_idle_check`,
+  `display` label).
+  - **Render-thread-only Skia** (this revision documents no `GrDirectContext`
+    thread-safety): every Skia call lives on the render thread. The uploader
+    split expresses it — `upload()` is pure Vulkan and runs on any thread
+    (returning the slot index), `imageForSlot()` wraps lazily on the render
+    thread (the wrapper is the uploader's own `sk_sp`, so `acquireImage()`
+    hands the session a safely borrowed raw pointer), and the session seam
+    (`VideoPresenter` + `VideoSubmission`) carries only slot tokens —
+    no bitmaps and no Skia types cross the thread boundary.
+  - **Release protocol**: every draw that samples a video slot attaches a
+    **fresh** `VkSemaphore` to its flush via
+    `Swapchain::flushAndPresent(..., extraSignal)` (a 1-or-2 element
+    `GrBackendSemaphores::MakeVk` array in `GrFlushInfo`; every failure path
+    there runs after `flush()+submit()`, so an attached semaphore is always
+    signalled and hand-off stands regardless of the return value).
+    `release(slot, doneVk)` appends to the slot's `pendingDone`; the next
+    upload to that slot waits on **all** of them at
+    `FRAGMENT_SHADER`-read stage and destroys them behind its own fence.
+    A static per-slot binary semaphore cannot express this: static-hold
+    redraws of the same texture would double-signal it.
+  - **Event-driven loop**: `run()` presents only when a revision/monitor/
+    preview-generation changed, the framebuffer resized, the swapchain was
+    recreated (`fNeedsPresent`), or a pending video slot came due against
+    the clock; otherwise it sleeps in `glfwWaitEventsTimeout`, woken by
+    display events or `wakeRenderThread()` — `glfwPostEmptyEvent`, the
+    portable thread-safe nudge (documented deviation from PLAN's literal
+    "eventfd + display fd": GLFW owns the display connection; the intent,
+    one poll-able wake for commands + vsync events, holds, and it works on
+    both Wayland and X11). Housekeeping (compositor extent check, display
+    snapshot) runs time-based every 0.5 s and presents nothing; a swapchain
+    recreate marks the loop dirty. Frame() captures the revision it renders
+    for and stores it only after presenting, so commands arriving mid-frame
+    re-dirty instead of being swallowed. The timed `--seconds` deadline is
+    checked **before** the present branches (a due video frame every 40 ms
+    otherwise re-enters frame() forever).
+  - **Video path**: `setVideoPresenter/setVideoClock/submitVideo` (drop-old
+    with `onDropped` for the superseded token); `frame()` draws the pending
+    slot when `clock >= pts`, else statically holds the last drawn frame
+    (a toggle mid-video never blanks); the `onPresented` hand-off happens at
+    the **end** of frame(), after the preview publish, whose `readPixels`
+    is CPU-synchronous — so by hand-off no queued GPU work samples the slot
+    beyond what the done-semaphore covers.
+  - **Preview content gate**: `publishPreviewFrame` republishes only when
+    the presented frame count moved (`fFrames != fPreviewPublishedFrames`,
+    reset when a stream is built); a cadence-throttled publish completes on
+    the next allowed tick through a previewDue wake without an audience
+    present. Rpc scenario D was rewritten to these semantics — every copy
+    is preceded by a layer toggle (doubles as proof a command wakes the
+    loop), and the stall window keeps toggling: `published` freezes, drops
+    tick, releases resume, all green.
+  - `AudioFileFeeder`: owns its own container handle (never share a demuxer
+    across threads), `swr_alloc_set_opts2` to interleaved stereo F32 at the
+    sink's negotiated rate, retry-on-zero write callback (never blocks on
+    consumer state; stop cuts sleeps short), EOF drains decoder (`send_packet
+    (NULL)`) then resampler, loops via `avformat_seek_file` (**six** args:
+    min/ts/max/flags) + `avcodec_flush_buffers`.
+  - Evidence (`--av-bench`): decode-hd.mp4 (1080p25, silent → wall clock)
+    6 s: presents=150 (**25.0 fps**), missed(>25 ms)=**0**, drops=1, drift
+    mean **+0.7 ms** max 11.2 ms. av-10s.mp4 (1080p25+AAC → PipeWire clock)
+    12 s incl. one loop: presents=300, missed=**0**, drops=**0**, drift
+    mean **+0.6 ms** max 1.2 ms, sink underruns=0 (audio-vs-wall offset
+    +37 ms is the buffer latency, inside the 50 ms band). `--idle-check`
+    run: "0 presents in 5.0s idle, cpu 0.9ms (0.02%), toggle wake ok →
+    PASS". Desktop **11/11** (new `render_idle_check`), headless preset
+    **8/8**, `worker_is_qt_free` green (AudioFeeder links no Qt). Behavior
+    change to note: `--render-test` on the static test scene now presents
+    1 frame instead of the old ~182/3 s — the scene has no animating
+    source, so under the new rules presenting once is correct; the frozen
+    diagnostics line updates with every event-driven present.
+  - Bench-pipeline lessons (each cost a debug cycle, all worth keeping):
+    the decode ring hands out **planar I420** while the GPU slots want
+    Y + **interleaved** UV — the bench folds U/V on the upload thread
+    (µs; M2 should ask swscale for NV12 output directly); upload **lookahead
+    must stay under one frame interval** because the seam holds a single
+    pending frame — 0.12 s lookahead made every deadline superseded before
+    it arrived and nothing presented; and a **looping decoder rewinds pts**
+    while the presentation clock runs on — the bench carries a loop-base
+    offset (container duration) so drift means what M5 needs it to mean.
+  - Accepted residual race (cosmetic, documented in code): a dirty-redraw
+    or cadence-delayed publish can sample an already-released slot while
+    that slot's next upload copy is in flight — never memory-unsafe (the
+    copy waits on all release semaphores of prior sampling and starts only
+    after the CPU-side release), worst case one blended frame. Closed by
+    the hold-until-replaced slot protocol when M2 media layers land.
 
 ## Verification and environment
 

@@ -20,12 +20,15 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <vulkan/vulkan.h>
 
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkSurface.h"
@@ -183,6 +186,59 @@ public:
     // that slot is all that matters.
     bool takePreviewReady(PreviewReady* out);
 
+    // --- video (task 1.5e) ---
+
+    // The seam a bench (later: the media layer) uses to present GPU slots:
+    // the session decides *when* a slot is drawn (against the video clock),
+    // the presenter owns *what* the slot is and its GPU lifetime.
+    class VideoPresenter {
+    public:
+        virtual ~VideoPresenter() = default;
+        // Render thread: the image to sample for this token. Wrapping
+        // belongs here — every Skia call stays on the render thread.
+        // Returning null drops the submission.
+        virtual SkImage* acquireImage(unsigned token) = 0;
+        // Render thread, once the frame has been submitted and any preview
+        // readback completed: doneVk (freshly created here, ownership now
+        // the presenter's) signals when the GPU finished sampling.
+        virtual void onPresented(unsigned token, VkSemaphore doneVk) = 0;
+        // Render thread: the submission was replaced before ever being drawn.
+        virtual void onDropped(unsigned token) = 0;
+    };
+
+    struct VideoSubmission {
+        unsigned token = 0;       // presenter-side slot identity
+        double ptsSeconds = 0.0;  // in video-clock seconds
+        uint64_t sequence = 0;
+    };
+
+    // Both set before run(); presenter may be null (no video at all).
+    void setVideoPresenter(VideoPresenter* presenter);
+    // Clock in seconds that pts is expressed against; defaults to wall
+    // time since run() began.
+    void setVideoClock(std::function<double()> clock);
+
+    // Any thread (the uploader): offer the newest GPU slot. Replaces the
+    // pending submission (dropping it through the presenter) and wakes the
+    // render thread.
+    void submitVideo(VideoSubmission submission);
+
+    // Device handles a bench needs beside the session (task 1.5e): the YUV
+    // upload ring lives outside the session but shares its device, and the
+    // seam to build it is this narrow view rather than the objects. The
+    // context may only be touched from the render thread (no thread-safety
+    // guarantee at this Skia revision); the Vulkan handles are safe to use
+    // from an upload thread. Valid between open() and close().
+    struct GpuHandles {
+        VkDevice device = VK_NULL_HANDLE;
+        VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+        uint32_t graphicsQueueIndex = 0;
+        uint32_t uploadQueueIndex = 0;
+        VkQueue uploadQueue = VK_NULL_HANDLE;
+        GrDirectContext* context = nullptr;
+    };
+    GpuHandles gpuHandles() const;
+
     Status status() const;
     void requestStop();
     bool running() const;
@@ -190,11 +246,20 @@ public:
 private:
     bool createSwapchain();
     void frame();
+    void housekeep();
     void applyPendingLayerChanges();
     void applyPendingDisplayChange();
     void applyPreviewState();
-    void publishPreviewFrame(double elapsed);
+    void publishPreviewFrame(double elapsed, SkImage* video);
     void refreshDisplaySnapshot();
+
+    // Wakes the thread blocked in run()'s glfwWaitEventsTimeout. Safe from
+    // any thread (GLFW owns the socket this needs; posting an empty event
+    // is its portable equivalent of writing an eventfd).
+    void wakeRenderThread();
+
+    // Seconds against the installed video clock; caller holds fMutex.
+    double videoClockSecondsLocked(std::chrono::steady_clock::time_point now) const;
 
     std::unique_ptr<OutputWindow> fWindow;
     std::unique_ptr<VulkanContext> fVk;
@@ -207,6 +272,20 @@ private:
     unsigned long long fFrames = 0;
     uint32_t fAppliedMask = 0;
     std::chrono::steady_clock::time_point fStartTime;
+
+    // Dirty tracking for the event-driven loop (task 1.5e): presented* are
+    // render-thread copies compared against the guarded desired state; the
+    // run loop presents only when they diverge, a new video slot is due, or
+    // the window itself asks (close, resize).
+    uint64_t fPresentedRevision = 0;      // render thread
+    bool fNeedsPresent = false;           // render thread (swapchain recreated)
+
+    // Video seam state (task 1.5e).
+    VideoPresenter* fVideoPresenter = nullptr;             // set before run()
+    std::function<double()> fVideoClock;                   // fMutex
+    std::optional<VideoSubmission> fPendingVideo;          // fMutex
+    std::optional<VideoSubmission> fDrawnVideo;            // render thread
+    std::chrono::steady_clock::time_point fRunStart;       // render thread
 
     // Guards fDesiredMask, fRevision and the fields of fStatus that the
     // render thread refreshes (frames, extent, applied mask, revision).
@@ -241,6 +320,9 @@ private:
     sk_sp<SkSurface> fPreviewSurface;          // render thread only
     std::optional<PreviewReady> fPendingReady[protocol::kPreviewSlotCount];  // fMutex
     std::chrono::steady_clock::time_point fLastPreview;  // render thread
+    // Content gate (task 1.5e): the preview republishes only when the
+    // presented frame changed since the last publish.
+    unsigned long long fPreviewPublishedFrames = 0;  // render thread
 };
 
 }  // namespace openshow::worker

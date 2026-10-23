@@ -34,6 +34,7 @@ add_executable(openshow::worker ALIAS openshow-worker)
 # plain C++ (FFmpeg.h is module-private), which also keeps libav includes
 # out of everything else. PUBLIC include dir = src/worker for "media/..." paths.
 add_library(openshow-worker-media STATIC
+  media/AudioFeeder.cpp
   media/AudioRing.cpp
   media/FrameRing.cpp
   media/MediaProbe.cpp

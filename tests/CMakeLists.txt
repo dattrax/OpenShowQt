@@ -66,3 +66,11 @@ target_link_libraries(rpc_ipc_tests PRIVATE openshow::protocol)
 add_test(NAME worker_rpc_lifecycle
   COMMAND rpc_ipc_tests $<TARGET_FILE:openshow-worker>)
 set_tests_properties(worker_rpc_lifecycle PROPERTIES LABELS display TIMEOUT 90)
+
+# Task 1.5e acceptance: the event-driven scheduler. --idle-check watches the
+# render loop from a second thread and fails (exit 1) if a static scene
+# presents anything, burns more than 5% CPU over the window, or ignores a
+# layer toggle. Needs a display like the rpc scenario.
+add_test(NAME render_idle_check
+  COMMAND openshow-worker --render-test --idle-check)
+set_tests_properties(render_idle_check PROPERTIES LABELS display TIMEOUT 60)

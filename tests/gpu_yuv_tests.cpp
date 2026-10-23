@@ -206,17 +206,22 @@ int main() {
     int expectedUploads = 0;
     for (const VariantCase& testCase : cases) {
         const I420 frame = makePattern(testCase.variant);
-        openshow::worker::GpuYuvUploader::Frame uploaded;
+        unsigned uploadedSlot = 0;
         if (!uploader.upload(frame.y.data(), kW, frame.uv.data(), kW,
-                             static_cast<uint64_t>(expectedUploads + 1), 0.0, &uploaded)) {
+                             static_cast<uint64_t>(expectedUploads + 1), 0.0, &uploadedSlot)) {
             std::fprintf(stderr, "gpu_yuv_tests: upload failed (%s)\n", testCase.label);
             return 1;
         }
         ++expectedUploads;
-        check(uploaded.image != nullptr && uploaded.slot < openshow::worker::GpuYuvUploader::kSlots,
-              "upload returns a wrapped image and a slot");
+        std::string wrapError;
+        sk_sp<SkImage> image = uploader.imageForSlot(uploadedSlot, &wrapError);
+        check(image != nullptr && uploadedSlot < openshow::worker::GpuYuvUploader::kSlots,
+              "upload + imageForSlot yield a wrapped image");
+        if (!image) {
+            return 1;
+        }
 
-        const std::vector<uint8_t> pixels = drawAndRead(gr.get(), uploaded.image.get());
+        const std::vector<uint8_t> pixels = drawAndRead(gr.get(), image.get());
         if (pixels.empty()) {
             std::fprintf(stderr, "gpu_yuv_tests: readback failed (%s)\n", testCase.label);
             return 1;
@@ -239,7 +244,15 @@ int main() {
             check(pixels[blue + 2] > pixels[blue] + 40, "chroma band 2 reads blue-dominant");
         }
 
-        uploader.release(uploaded.slot);
+        uploader.release(uploadedSlot);
+    }
+
+    // The wrapper is per slot, not per frame: a later upload into a wrapped
+    // slot must hand back the very same SkImage.
+    sk_sp<SkImage> firstImage;
+    {
+        std::string wrapError;
+        firstImage = uploader.imageForSlot(0, &wrapError);
     }
 
     // ---- ring behaviour: depth is bounded and enforced -------------------
@@ -247,36 +260,41 @@ int main() {
     // than overwrite a slot the consumer still holds.
     const I420 frame = makePattern(0);
     for (int i = 0; i < openshow::worker::GpuYuvUploader::kSlots; ++i) {
-        openshow::worker::GpuYuvUploader::Frame uploaded;
-        if (!uploader.upload(frame.y.data(), kW, frame.uv.data(), kW, 100 + i, 0.0, &uploaded)) {
+        unsigned slot = 0;
+        if (!uploader.upload(frame.y.data(), kW, frame.uv.data(), kW, 100 + i, 0.0, &slot)) {
             std::fprintf(stderr, "gpu_yuv_tests: fill upload %d failed\n", i);
             return 1;
         }
         ++expectedUploads;
     }
-    openshow::worker::GpuYuvUploader::Frame overflow;
-    check(!uploader.upload(frame.y.data(), kW, frame.uv.data(), kW, 999, 0.0, &overflow),
+    unsigned overflowSlot = 0;
+    check(!uploader.upload(frame.y.data(), kW, frame.uv.data(), kW, 999, 0.0, &overflowSlot),
           "a full ring refuses new uploads (never grows, never overwrites)");
     check(uploader.stats().uploads == static_cast<uint64_t>(expectedUploads),
           "a refused upload is not counted");
 
     uploader.releaseAll();
-    openshow::worker::GpuYuvUploader::Frame afterRelease;
-    check(uploader.upload(frame.y.data(), kW, frame.uv.data(), kW, 1000, 0.0, &afterRelease),
+    unsigned afterReleaseSlot = 0;
+    check(uploader.upload(frame.y.data(), kW, frame.uv.data(), kW, 1000, 0.0, &afterReleaseSlot),
           "releaseAll makes room again");
     ++expectedUploads;
-    uploader.release(afterRelease.slot);
+    uploader.release(afterReleaseSlot);
+
+    check(uploader.imageForSlot(0, nullptr).get() == firstImage.get(),
+          "a re-uploaded slot hands back the same wrapped image (one wrap per slot)");
 
     // ---- instrumented upload cost ----------------------------------------
     const auto& stats = uploader.stats();
-    std::printf("uploads=%llu slotsCreated=%llu waitsForFreeSlot=%llu stage=%.3fms gpu=%.3fms\n",
+    std::printf("uploads=%llu slotsCreated=%llu wraps=%llu waitsForFreeSlot=%llu stage=%.3fms gpu=%.3fms\n",
                 static_cast<unsigned long long>(stats.uploads),
                 static_cast<unsigned long long>(stats.slotsCreated),
+                static_cast<unsigned long long>(stats.wraps),
                 static_cast<unsigned long long>(stats.waitsForFreeSlot), stats.totalStageMs,
                 stats.totalGpuMs);
     check(stats.uploads == static_cast<uint64_t>(expectedUploads), "upload count matches");
     check(stats.slotsCreated == openshow::worker::GpuYuvUploader::kSlots,
           "exactly one GPU allocation per slot (reused frames rewrap nothing)");
+    check(stats.wraps == 3, "three distinct slots ever handed to Skia (one wrap each)");
 
     uploader.destroy();
     gr.reset();

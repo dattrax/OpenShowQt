@@ -91,14 +91,20 @@ struct GpuYuvUploader::Slot {
     VkDeviceMemory yMemory = VK_NULL_HANDLE;
     VkImage uvImage = VK_NULL_HANDLE;
     VkDeviceMemory uvMemory = VK_NULL_HANDLE;
-    bool onDevice = false;        // images exist
-    bool firstTransfer = true;    // next transfer starts from UNDEFINED layout
-    sk_sp<SkImage> wrapped;       // one wrap per slot, reused forever after
+    bool onDevice = false;          // images exist
+    bool firstTransfer = true;      // next transfer starts from UNDEFINED layout
+    sk_sp<SkImage> wrapped;         // created by imageForSlot once, reused forever
+    bool wrapFailed = false;
+
+    // Consumer release semaphores: sampling submits that must finish before
+    // the next copy into this slot. Collected at release(), waited and
+    // destroyed by the next upload.
+    std::vector<VkSemaphore> pendingDone;
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
 
-    bool inUse = false;           // consumer contract
+    bool inUse = false;             // consumer contract
     uint64_t sequence = 0;
 };
 
@@ -242,19 +248,10 @@ bool GpuYuvUploader::createSlotResources(Slot& slot, std::string* error) {
     return true;
 }
 
-bool GpuYuvUploader::waitForFreeSlot(Slot& slot) {
-    std::unique_lock lock(fSync->mutex);
-    while (slot.inUse) {
-        ++fStats.waitsForFreeSlot;
-        // 1.5e replaces the polling wait with the release carrying the flush
-        // semaphore (the GPU waits, not this thread).
-        fSync->available.wait_for(lock, std::chrono::milliseconds(1));
-    }
-    return true;
-}
-
 bool GpuYuvUploader::upload(const uint8_t* yPlane, int yRowBytes, const uint8_t* uvPlane,
-                            int uvRowBytes, uint64_t sequence, double ptsSeconds, Frame* out) {
+                            int uvRowBytes, uint64_t sequence, double ptsSeconds,
+                            unsigned* slotOut) {
+    (void)ptsSeconds;  // carried for logging symmetry; slots key on sequence
     if (!fSlots || yPlane == nullptr || uvPlane == nullptr || yRowBytes < fWidth ||
         uvRowBytes < fWidth /* w/2 pairs of bytes */) {
         return false;
@@ -395,10 +392,20 @@ bool GpuYuvUploader::upload(const uint8_t* yPlane, int yRowBytes, const uint8_t*
         return false;
     }
     {
+        // The consumer's sampling of this slot must finish before the copy:
+        // wait on the collected release semaphores on the GPU (rather than
+        // parking a thread) at the stage where sampling happened.
+        std::vector<VkPipelineStageFlags> waitStages(
+            chosen->pendingDone.size(), VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
         VkSubmitInfo submitInfo = {};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &command;
+        if (!chosen->pendingDone.empty()) {
+            submitInfo.pWaitSemaphores = chosen->pendingDone.data();
+            submitInfo.waitSemaphoreCount = static_cast<uint32_t>(chosen->pendingDone.size());
+            submitInfo.pWaitDstStageMask = waitStages.data();
+        }
         if (vkQueueSubmit(fUploadQueue, 1, &submitInfo, chosen->fence) != VK_SUCCESS) {
             return false;
         }
@@ -406,42 +413,12 @@ bool GpuYuvUploader::upload(const uint8_t* yPlane, int yRowBytes, const uint8_t*
     if (vkWaitForFences(fDevice, 1, &chosen->fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
         return false;
     }
+    for (VkSemaphore semaphore : chosen->pendingDone) {
+        vkDestroySemaphore(fDevice, semaphore, nullptr);
+    }
+    chosen->pendingDone.clear();
     fStats.totalGpuMs += static_cast<double>(steadyNowNs() - gpuStart) / 1e6;
     chosen->firstTransfer = false;
-
-    // One wrap per slot: the layout never leaves shader-read afterwards, so
-    // the same SkImage serves every later frame of this slot.
-    if (!chosen->wrapped) {
-        auto makeTexture = [&](VkImage image, VkFormat format, int planeWidth, int planeHeight) {
-            GrVkImageInfo imageInfo;
-            imageInfo.fImage = image;
-            imageInfo.fImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            imageInfo.fFormat = format;
-            imageInfo.fImageUsageFlags = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                                         VK_IMAGE_USAGE_SAMPLED_BIT;
-            imageInfo.fSampleCount = VK_SAMPLE_COUNT_1_BIT;
-            imageInfo.fLevelCount = 1;
-            imageInfo.fCurrentQueueFamily = VK_QUEUE_FAMILY_IGNORED;
-            imageInfo.fProtected = skgpu::Protected::kNo;
-            imageInfo.fSharingMode = VK_SHARING_MODE_CONCURRENT;
-            return GrBackendTextures::MakeVk(planeWidth, planeHeight, imageInfo);
-        };
-        GrBackendTexture planeTextures[SkYUVAInfo::kMaxPlanes] = {
-            makeTexture(chosen->yImage, VK_FORMAT_R8_UNORM, fWidth, fHeight),
-            makeTexture(chosen->uvImage, VK_FORMAT_R8G8_UNORM, fWidth / 2, fHeight / 2),
-            GrBackendTexture(),
-            GrBackendTexture(),
-        };
-        const SkYUVAInfo yuvaInfo(SkISize{fWidth, fHeight}, SkYUVAInfo::PlaneConfig::kY_UV,
-                                  SkYUVAInfo::Subsampling::k420, fYuvColorSpace);
-        const GrYUVABackendTextures yuvaTextures(yuvaInfo, planeTextures, kTopLeft_GrSurfaceOrigin);
-        chosen->wrapped = SkImages::TextureFromYUVATextures(fContext, yuvaTextures);
-        if (!chosen->wrapped) {
-            std::fprintf(stderr, "openshow-worker: TextureFromYUVATextures failed\n");
-            return false;
-        }
-    }
 
     {
         std::lock_guard lock(fSync->mutex);
@@ -450,22 +427,77 @@ bool GpuYuvUploader::upload(const uint8_t* yPlane, int yRowBytes, const uint8_t*
         fNextSlot = (static_cast<int>(chosen - fSlots.get()) + 1) % kSlots;
     }
 
-    if (out != nullptr) {
-        out->image = chosen->wrapped;
-        out->sequence = sequence;
-        out->ptsSeconds = ptsSeconds;
-        out->slot = static_cast<unsigned>(chosen - fSlots.get());
+    if (slotOut != nullptr) {
+        *slotOut = static_cast<unsigned>(chosen - fSlots.get());
     }
     ++fStats.uploads;
     return true;
 }
 
-void GpuYuvUploader::release(unsigned slot) {
+sk_sp<SkImage> GpuYuvUploader::imageForSlot(unsigned slot, std::string* error) {
     if (!fSlots || slot >= kSlots) {
+        return nullptr;
+    }
+    Slot& target = fSlots[slot];
+    std::lock_guard lock(fSync->mutex);
+    if (target.wrapped) {
+        return target.wrapped;
+    }
+    if (target.wrapFailed || !target.onDevice || fContext == nullptr) {
+        return nullptr;
+    }
+
+    // One wrap per slot: the layout never leaves shader-read after the
+    // first upload, so the same SkImage serves every later frame here.
+    auto makeTexture = [&](VkImage image, VkFormat format, int planeWidth, int planeHeight) {
+        GrVkImageInfo imageInfo;
+        imageInfo.fImage = image;
+        imageInfo.fImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imageInfo.fFormat = format;
+        imageInfo.fImageUsageFlags = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                     VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.fSampleCount = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.fLevelCount = 1;
+        imageInfo.fCurrentQueueFamily = VK_QUEUE_FAMILY_IGNORED;
+        imageInfo.fProtected = skgpu::Protected::kNo;
+        imageInfo.fSharingMode = VK_SHARING_MODE_CONCURRENT;
+        return GrBackendTextures::MakeVk(planeWidth, planeHeight, imageInfo);
+    };
+    GrBackendTexture planeTextures[SkYUVAInfo::kMaxPlanes] = {
+        makeTexture(target.yImage, VK_FORMAT_R8_UNORM, fWidth, fHeight),
+        makeTexture(target.uvImage, VK_FORMAT_R8G8_UNORM, fWidth / 2, fHeight / 2),
+        GrBackendTexture(),
+        GrBackendTexture(),
+    };
+    const SkYUVAInfo yuvaInfo(SkISize{fWidth, fHeight}, SkYUVAInfo::PlaneConfig::kY_UV,
+                              SkYUVAInfo::Subsampling::k420, fYuvColorSpace);
+    const GrYUVABackendTextures yuvaTextures(yuvaInfo, planeTextures, kTopLeft_GrSurfaceOrigin);
+    target.wrapped = SkImages::TextureFromYUVATextures(fContext, yuvaTextures);
+    if (!target.wrapped) {
+        target.wrapFailed = true;
+        if (error) {
+            *error = "TextureFromYUVATextures failed";
+        }
+        std::fprintf(stderr, "openshow-worker: TextureFromYUVATextures failed\n");
+        return nullptr;
+    }
+    ++fStats.wraps;
+    return target.wrapped;
+}
+
+void GpuYuvUploader::release(unsigned slot, VkSemaphore doneVk) {
+    if (!fSlots || slot >= kSlots) {
+        if (doneVk != VK_NULL_HANDLE) {
+            vkDestroySemaphore(fDevice, doneVk, nullptr);
+        }
         return;
     }
     {
         std::lock_guard lock(fSync->mutex);
+        if (doneVk != VK_NULL_HANDLE) {
+            fSlots[slot].pendingDone.push_back(doneVk);
+        }
         fSlots[slot].inUse = false;
     }
     fSync->available.notify_all();
@@ -478,6 +510,12 @@ void GpuYuvUploader::releaseAll() {
     {
         std::lock_guard lock(fSync->mutex);
         for (int i = 0; i < kSlots; ++i) {
+            // Only valid after a device-wide idle: drop the collected
+            // semaphores, their waits can no longer matter.
+            for (VkSemaphore semaphore : fSlots[i].pendingDone) {
+                vkDestroySemaphore(fDevice, semaphore, nullptr);
+            }
+            fSlots[i].pendingDone.clear();
             fSlots[i].inUse = false;
         }
     }
@@ -498,6 +536,10 @@ void GpuYuvUploader::destroy() {
     }
     for (int i = 0; i < kSlots; ++i) {
         Slot& slot = fSlots[i];
+        for (VkSemaphore semaphore : slot.pendingDone) {
+            vkDestroySemaphore(fDevice, semaphore, nullptr);
+        }
+        slot.pendingDone.clear();
         if (!slot.onDevice) {
             continue;
         }

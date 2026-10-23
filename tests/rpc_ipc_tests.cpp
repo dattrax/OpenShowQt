@@ -613,15 +613,27 @@ void testPreviewStream() {
                                          {"seq", numberValue(ready.at("seq"))}});
 
     // Copy two frames that survive the seqlock check; the first one is kept
-    // for a content comparison after a layer toggle.
+    // for a content comparison after a layer toggle. Publishing is
+    // content-driven since task 1.5e — a static slide yields exactly one
+    // frame — so every copy is preceded by a layer toggle, which doubles
+    // as proof that a command wakes the event-driven loop.
+    std::uint64_t rpcId = 3;
+    const auto toggleLayer = [&](const char* layerName, bool on) {
+        return call(fd, static_cast<std::int64_t>(rpcId++), "layer.setEnabled",
+                    boost::json::object{{"layer", layerName}, {"enabled", on}}, &reply) &&
+               reply.as_object().contains("result");
+    };
     std::vector<std::uint8_t> frameWithImages;
+    const bool wokeOnce = toggleLayer("clock", false);
     const bool gotFirst =
+        wokeOnce &&
         copyOneFrame(fd, reinterpret_cast<const std::uint8_t*>(segment), bytesPerSlot,
                      width, height, &frameWithImages);
-    check(gotFirst, "a frame copied intact through the slot seqlock");
+    check(gotFirst, "a frame copied intact after a command woke the loop");
     std::vector<std::uint8_t> frameSecond;
-    check(copyOneFrame(fd, reinterpret_cast<const std::uint8_t*>(segment), bytesPerSlot,
-                       width, height, &frameSecond),
+    check(toggleLayer("clock", true) &&
+              copyOneFrame(fd, reinterpret_cast<const std::uint8_t*>(segment), bytesPerSlot,
+                           width, height, &frameSecond),
           "a second frame copied intact through the slot seqlock");
     bool frameHadContent = false;
     for (std::size_t i = 3; gotFirst && i < frameWithImages.size(); i += 4) {
@@ -639,10 +651,8 @@ void testPreviewStream() {
     // covers a fifth of the canvas, while the ticking clock alone repaints
     // a thin text strip.
     if (gotFirst) {
-        if (check(call(fd, 3, "layer.setEnabled",
-                       boost::json::object{{"layer", "images"}, {"enabled", false}},
-                       &reply) &&
-                      reply.as_object().contains("result"),
+        const bool imagesOffAcked = toggleLayer("images", false);
+        if (check(imagesOffAcked,
                   "turning the images layer off is acknowledged (preview scenario)")) {
             const std::uint64_t ackedRevision =
                 numberValue(reply.at("result").as_object().at("revision"));
@@ -651,7 +661,8 @@ void testPreviewStream() {
                 std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!applied && std::chrono::steady_clock::now() < applyDeadline) {
                 boost::json::value statusReply;
-                if (call(fd, 4, "output.status", {}, &statusReply)) {
+                if (call(fd, static_cast<std::int64_t>(rpcId++), "output.status", {},
+                         &statusReply)) {
                     const boost::json::object& status = statusReply.at("result").as_object();
                     applied = !status.at("layers").as_object().at("images").as_bool() &&
                               numberValue(status.at("revision")) >= ackedRevision;
@@ -687,8 +698,12 @@ void testPreviewStream() {
     const auto fillDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
     while (held.size() < proto::kPreviewSlotCount &&
            std::chrono::steady_clock::now() < fillDeadline) {
-        if (!nextPreviewReady(fd, &ready, 3)) {
-            break;
+        // Content-driven publishing: each slot needs a fresh change to
+        // arrive. Quiet spells are the new normal, so a missed ready is a
+        // reason to toggle again, not to give up.
+        toggleLayer("clock", (held.size() & 1u) == 1u);
+        if (!nextPreviewReady(fd, &ready, 2)) {
+            continue;
         }
         const std::uint64_t slot = numberValue(ready.at("slot"));
         if (slot >= proto::kPreviewSlotCount) {
@@ -706,9 +721,18 @@ void testPreviewStream() {
     std::uint64_t frames1 = 0;
     std::uint64_t published1 = 0;
     std::uint64_t dropped1 = 0;
-    const bool counts0 = readPreviewCounts(fd, 3, &frames0, &published0, &dropped0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-    const bool counts1 = readPreviewCounts(fd, 4, &frames1, &published1, &dropped1);
+    const bool counts0 = readPreviewCounts(fd, static_cast<std::int64_t>(rpcId++), &frames0,
+                                           &published0, &dropped0);
+    // Keep changing content while every slot is held: the audience output
+    // must keep presenting and the preview must count drops instead of
+    // blocking or overwriting an owned slot.
+    const auto stallEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+    for (int i = 0; std::chrono::steady_clock::now() < stallEnd; ++i) {
+        toggleLayer("clock", (i & 1) == 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    const bool counts1 = readPreviewCounts(fd, static_cast<std::int64_t>(rpcId++), &frames1,
+                                           &published1, &dropped1);
     if (check(counts0 && counts1, "status answers while every slot is held")) {
         check(frames1 > frames0,
               "the audience output keeps presenting while the preview consumer stalls");
@@ -726,7 +750,8 @@ void testPreviewStream() {
     std::uint64_t frames2 = 0;
     std::uint64_t published2 = 0;
     std::uint64_t dropped2 = 0;
-    if (check(readPreviewCounts(fd, 5, &frames2, &published2, &dropped2),
+    if (check(readPreviewCounts(fd, static_cast<std::int64_t>(rpcId++), &frames2, &published2,
+                                &dropped2),
               "status answers again after the releases")) {
         check(published2 > published1, "publishing resumes as soon as slots are released");
     }

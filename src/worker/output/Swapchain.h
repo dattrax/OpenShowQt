@@ -46,9 +46,12 @@ public:
     bool acquire(uint32_t* outImageIndex, VkResult* outResult = nullptr);
 
     // Flushes Skia work for the image, transitioning it to
-    // VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, then submits and presents.
+    // VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, then submits and presents. An
+    // optional caller-owned VkSemaphore is signalled by the same flush
+    // (task 1.5e: video done-tracking); it must outlive the flushed work.
     bool flushAndPresent(SkSurface* surface, uint32_t imageIndex,
-                         VkResult* outResult = nullptr);
+                         VkResult* outResult = nullptr,
+                         VkSemaphore extraSignal = VK_NULL_HANDLE);
 
     SkSurface* surface(uint32_t index);
     uint32_t imageCount() const { return static_cast<uint32_t>(fImages.size()); }
