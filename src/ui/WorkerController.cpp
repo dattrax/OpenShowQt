@@ -169,7 +169,33 @@ void WorkerController::handleReply(const boost::json::object& message) {
         return;
     }
     const auto result = message.find("result");
-    if (result == message.end() || !result->value().is_object()) {
+    if (result == message.end()) {
+        return;
+    }
+    if (result->value().is_array()) {  // output.displays answers with a bare array
+        QVariantList displays;
+        for (const auto& entry : result->value().as_array()) {
+            const boost::json::object& panel = entry.as_object();
+            QVariantMap item;
+            item.insert(QStringLiteral("index"),
+                        static_cast<qint64>(panel.at("index").to_number<std::int64_t>()));
+            item.insert(QStringLiteral("name"),
+                        QString::fromStdString(std::string(panel.at("name").as_string())));
+            item.insert(QStringLiteral("size"),
+                        QStringLiteral("%1x%2@%3Hz")
+                            .arg(static_cast<qint64>(
+                                panel.at("width").to_number<std::int64_t>()))
+                            .arg(static_cast<qint64>(
+                                panel.at("height").to_number<std::int64_t>()))
+                            .arg(static_cast<qint64>(
+                                panel.at("refreshHz").to_number<std::int64_t>())));
+            displays.push_back(item);
+        }
+        fDisplays = displays;
+        emit displaysChanged();
+        return;
+    }
+    if (!result->value().is_object()) {
         return;
     }
     const boost::json::object& payload = result->value().as_object();
@@ -186,6 +212,7 @@ void WorkerController::handleReply(const boost::json::object& message) {
                                negotiated.at("minor").to_number<std::uint64_t>()))));
         // Ask for the first status immediately, then keep it fresh while
         // connected; the poll stops itself once the socket is gone.
+        sendRequest("output.displays", {});
         QTimer::singleShot(0, this, &WorkerController::pollStatus);
         auto* poll = new QTimer(this);
         poll->setInterval(kStatusPollMs);
@@ -206,6 +233,10 @@ void WorkerController::handleReply(const boost::json::object& message) {
         fRevision = static_cast<qint64>(payload.at("revision").to_number<std::uint64_t>());
         if (payload.contains("device")) {
             fDevice = QString::fromStdString(std::string(payload.at("device").as_string()));
+        }
+        if (payload.contains("monitor")) {
+            fCurrentMonitor =
+                static_cast<qint64>(payload.at("monitor").to_number<std::int64_t>());
         }
         QVariantMap layers;
         for (const auto& entry : payload.at("layers").as_object()) {
@@ -232,6 +263,14 @@ void WorkerController::setLayerEnabled(const QString& name, bool enabled) {
     sendRequest("layer.setEnabled",
                 boost::json::object{{"layer", name.toStdString()},
                                     {"enabled", enabled}});
+}
+
+void WorkerController::selectDisplay(qint64 index) {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    sendRequest("output.select",
+                boost::json::object{{"monitor", static_cast<std::int64_t>(index)}});
 }
 
 void WorkerController::sendRequest(const char* method, boost::json::object params) {

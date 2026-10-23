@@ -48,6 +48,9 @@ bool OutputWindow::open(const Options& options) {
         return false;
     }
 
+    fWidth = options.width;
+    fHeight = options.height;
+
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
@@ -63,54 +66,86 @@ bool OutputWindow::open(const Options& options) {
     glfwSetWindowUserPointer(fWindow, this);
     glfwSetFramebufferSizeCallback(fWindow, &OutputWindow::onFramebufferSize);
 
+    // Map the window first: GLFW's Wayland backend forwards the fullscreen
+    // state when the surface maps, and KWin then configures it for the
+    // monitor mode.
+    glfwShowWindow(fWindow);
     if (options.monitor >= 0) {
-        int monitorCount = 0;
-        GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
-        if (!monitors || options.monitor >= monitorCount) {
-            std::fprintf(stderr,
-                         "openshow-worker: monitor %d requested, %d present\n",
-                         options.monitor, monitorCount);
-            close();
-            return false;
-        }
-        GLFWmonitor* monitor = monitors[options.monitor];
-        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-        if (!mode) {
-            std::fprintf(stderr, "openshow-worker: monitor %d reports no mode\n",
-                         options.monitor);
-            close();
-            return false;
-        }
-        // Map the window first, then request fullscreen: GLFW's Wayland
-        // backend forwards the fullscreen state when the surface maps, and
-        // KWin then configures the surface for the monitor mode.
-        glfwShowWindow(fWindow);
-        glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width, mode->height,
-                             mode->refreshRate);
-        std::fprintf(stderr,
-                     "openshow-worker: fullscreen on monitor %d (%s) %dx%d@%dHz\n",
-                     options.monitor, glfwGetMonitorName(monitor),
-                     mode->width, mode->height, mode->refreshRate);
         // Let the compositor's configure arrive before the caller creates
         // the Vulkan surface, up to ~600 ms; the render loop's extent check
         // catches the late case regardless.
-        for (int i = 0; i < 60; ++i) {
-            glfwWaitEventsTimeout(0.01);
-            int width = 0;
-            int height = 0;
-            glfwGetFramebufferSize(fWindow, &width, &height);
-            if (width == mode->width && height == mode->height) {
-                break;
-            }
+        if (!setMonitor(options.monitor, 600)) {
+            close();
+            return false;
         }
     } else {
-        glfwShowWindow(fWindow);
         // Give the initial configure a short head start (~150 ms).
         for (int i = 0; i < 15; ++i) {
             glfwWaitEventsTimeout(0.01);
         }
     }
     fResized = true;
+    return true;
+}
+
+bool OutputWindow::setMonitor(int index, int settleMs) {
+    if (!fWindow) {
+        return false;
+    }
+
+    int targetWidth = 0;
+    int targetHeight = 0;
+    if (index >= 0) {
+        int monitorCount = 0;
+        GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
+        if (!monitors || index >= monitorCount) {
+            std::fprintf(stderr, "openshow-worker: monitor %d requested, %d present\n",
+                         index, monitorCount);
+            return false;
+        }
+        GLFWmonitor* monitor = monitors[index];
+        const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+        if (!mode) {
+            std::fprintf(stderr, "openshow-worker: monitor %d reports no mode\n", index);
+            return false;
+        }
+        glfwSetWindowMonitor(fWindow, monitor, 0, 0, mode->width, mode->height,
+                             mode->refreshRate);
+        std::fprintf(stderr,
+                     "openshow-worker: output %s monitor %d (%s) %dx%d@%dHz\n",
+                     fMonitor >= 0 ? "switched to" : "fullscreen on", index,
+                     glfwGetMonitorName(monitor), mode->width, mode->height,
+                     mode->refreshRate);
+        targetWidth = mode->width;
+        targetHeight = mode->height;
+    } else {
+        // Restore the borderless window at the size it opened with.
+        glfwSetWindowMonitor(fWindow, nullptr, 100, 100, fWidth, fHeight, 0);
+        std::fprintf(stderr, "openshow-worker: output returned to windowed %dx%d\n", fWidth,
+                     fHeight);
+    }
+    fMonitor = index;
+    fResized = true;
+
+    // Pump until the compositor's configure lands. Fullscreen ends when the
+    // buffer reaches the panel mode; windowed restore ends when the buffer
+    // merely changes (fractional scaling means it is rarely fWidth x fHeight).
+    int lastWidth = 0;
+    int lastHeight = 0;
+    glfwGetFramebufferSize(fWindow, &lastWidth, &lastHeight);
+    const int steps = settleMs > 0 ? settleMs / 10 : 0;
+    for (int i = 0; i < steps; ++i) {
+        glfwWaitEventsTimeout(0.01);
+        int width = 0;
+        int height = 0;
+        glfwGetFramebufferSize(fWindow, &width, &height);
+        const bool arrived =
+            index >= 0 ? (width == targetWidth && height == targetHeight)
+                       : (width != lastWidth || height != lastHeight);
+        if (arrived) {
+            break;
+        }
+    }
     return true;
 }
 

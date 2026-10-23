@@ -24,6 +24,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "include/core/SkRefCnt.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
@@ -38,13 +39,29 @@ namespace openshow::worker {
 
 class OutputSession {
 public:
+    // Options::monitor values. -1 stays windowed, >=0 is that monitor;
+    // kAutoSecondDisplay is the FreeShow autoPosition rule: land on the
+    // second panel when the machine has one, so the operator's screen
+    // stays free for the frontend.
+    static constexpr int kAutoSecondDisplay = -2;
+
     struct Options {
         const char* title = "OpenShowQt output";
         // -1 keeps the borderless windowed mode; >=0 fullscreens on that
-        // monitor. Task 1.3 moves destination choice behind RPC.
+        // monitor; kAutoSecondDisplay picks index 1 when one exists.
         int monitor = -1;
         // Read the frame-30 image back on the CPU (the task 1.1 diagnostic).
         bool diagnostics = false;
+    };
+
+    // One physical panel, as the frontend sees it. index is the value
+    // output.select takes; -1 (windowed) is not in this list.
+    struct DisplayInfo {
+        int index = 0;
+        std::string name;
+        int width = 0;
+        int height = 0;
+        int refreshHz = 0;
     };
 
     // Snapshot of output state, safe to take from any thread. layerMask
@@ -58,6 +75,10 @@ public:
         int width = 0;
         int height = 0;
         std::string deviceName;
+        // Where the output currently is: -1 windowed, >=0 that display's
+        // index, with its name empty when windowed.
+        int monitor = -1;
+        std::string monitorName;
     };
 
     OutputSession() = default;
@@ -83,6 +104,18 @@ public:
     // the revision this change is included in.
     bool setLayerEnabled(std::string_view name, bool enabled, uint64_t* revisionOut);
 
+    // The panels GLFW reported, refreshed on the render thread at open,
+    // after each destination change and periodically after that (so a
+    // hotplug shows up without any event plumbing yet, M6.1).
+    std::vector<DisplayInfo> displays() const;
+
+    // Moves the audience output: -1 windowed, >=0 that display's index
+    // (validated against the last snapshot). The GLFW call and the
+    // swapchain rebuild happen on the render thread at the top of a frame,
+    // exactly like layer toggles; *revisionOut reports the revision the
+    // change is included in.
+    bool selectMonitor(int index, uint64_t* revisionOut);
+
     Status status() const;
     void requestStop();
     bool running() const;
@@ -91,6 +124,8 @@ private:
     bool createSwapchain();
     void frame();
     void applyPendingLayerChanges();
+    void applyPendingDisplayChange();
+    void refreshDisplaySnapshot();
 
     std::unique_ptr<OutputWindow> fWindow;
     std::unique_ptr<VulkanContext> fVk;
@@ -109,6 +144,12 @@ private:
     mutable std::mutex fMutex;
     uint32_t fDesiredMask = 0;
     uint64_t fRevision = 0;
+    // Destination: desired is written by selectMonitor (any thread),
+    // applied by the render thread; the display snapshot is refreshed
+    // there too so GLFW is only ever queried from the render thread.
+    int fDesiredMonitor = -1;
+    int fAppliedMonitor = -1;
+    std::vector<DisplayInfo> fDisplays;
     Status fStatus;
 };
 

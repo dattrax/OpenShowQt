@@ -1,13 +1,19 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
     },
     {
       "name": "desktop",
@@ -19,24 +25,40 @@
       "inherits": "base",
       "binaryDir": "${sourceDir}/build-headless",
       "description": "Worker and shared libraries only, no Qt",
-      "cacheVariables": { "OPENSHOW_BUILD_UI": "OFF" }
+      "cacheVariables": {
+        "OPENSHOW_BUILD_UI": "OFF"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "desktop", "configurePreset": "desktop" },
-    { "name": "headless", "configurePreset": "headless" }
+    {
+      "name": "desktop",
+      "configurePreset": "desktop"
+    },
+    {
+      "name": "headless",
+      "configurePreset": "headless"
+    }
   ],
   "testPresets": [
     {
       "name": "desktop",
       "configurePreset": "desktop",
-      "output": { "outputOnFailure": true }
+      "output": {
+        "outputOnFailure": true
+      }
     },
     {
       "name": "headless",
       "configurePreset": "headless",
-      "output": { "outputOnFailure": true },
-      "filter": { "exclude": { "labelExclude": ["display"] } }
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "display"
+        }
+      }
     }
   ]
 }

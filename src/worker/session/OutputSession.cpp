@@ -49,10 +49,23 @@ OutputSession::~OutputSession() {
 }
 
 bool OutputSession::open(const Options& options, std::string* error) {
+    // Resolve the auto destination while GLFW has no window yet, so the
+    // window maps straight onto its final panel (map-then-fullscreen, once).
+    int monitor = options.monitor;
+    if (monitor == kAutoSecondDisplay) {
+        if (OutputWindow::initGlfw()) {
+            int monitorCount = 0;
+            glfwGetMonitors(&monitorCount);
+            monitor = monitorCount >= 2 ? 1 : -1;
+        } else {
+            monitor = -1;
+        }
+    }
+
     fWindow = std::make_unique<OutputWindow>();
     OutputWindow::Options windowOptions;
     windowOptions.title = options.title;
-    windowOptions.monitor = options.monitor;
+    windowOptions.monitor = monitor;
     if (!fWindow->open(windowOptions)) {
         if (error) {
             *error = "could not open the output window (is a Wayland/X11 session "
@@ -94,6 +107,16 @@ bool OutputSession::open(const Options& options, std::string* error) {
         fStatus.layerMask = fDesiredMask;
         fStatus.revision = fRevision;
         fStatus.deviceName = fVk->deviceName();
+        fDesiredMonitor = monitor;
+        fAppliedMonitor = monitor;
+        fStatus.monitor = monitor;
+    }
+    refreshDisplaySnapshot();
+    if (monitor >= 0) {
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (monitor < static_cast<int>(fDisplays.size())) {
+            fStatus.monitorName = fDisplays[monitor].name;
+        }
     }
     fDiagnostics = options.diagnostics;
 
@@ -162,6 +185,54 @@ bool OutputSession::setLayerEnabled(std::string_view name, bool enabled,
     return true;
 }
 
+bool OutputSession::selectMonitor(int index, uint64_t* revisionOut) {
+    // -1 is the windowed destination and always valid; a panel index must
+    // exist in the snapshot (which GLFW refreshed on the render thread).
+    if (index < -1 || index == kAutoSecondDisplay) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(fMutex);
+    if (index >= static_cast<int>(fDisplays.size())) {
+        return false;
+    }
+    if (index != fDesiredMonitor) {
+        fDesiredMonitor = index;
+        ++fRevision;
+    }
+    if (revisionOut) {
+        *revisionOut = fRevision;
+    }
+    return true;
+}
+
+std::vector<OutputSession::DisplayInfo> OutputSession::displays() const {
+    std::lock_guard<std::mutex> lock(fMutex);
+    return fDisplays;
+}
+
+void OutputSession::refreshDisplaySnapshot() {
+    int count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    std::vector<DisplayInfo> snapshot;
+    if (monitors) {
+        for (int i = 0; i < count; ++i) {
+            DisplayInfo info;
+            info.index = i;
+            const char* name = glfwGetMonitorName(monitors[i]);
+            info.name = name ? name : "monitor";
+            const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
+            if (mode) {
+                info.width = mode->width;
+                info.height = mode->height;
+                info.refreshHz = mode->refreshRate;
+            }
+            snapshot.push_back(std::move(info));
+        }
+    }
+    std::lock_guard<std::mutex> lock(fMutex);
+    fDisplays = std::move(snapshot);
+}
+
 OutputSession::Status OutputSession::status() const {
     std::lock_guard<std::mutex> lock(fMutex);
     return fStatus;
@@ -197,8 +268,46 @@ void OutputSession::applyPendingLayerChanges() {
     fStatus.revision = fRevision;
 }
 
+void OutputSession::applyPendingDisplayChange() {
+    int desired = fAppliedMonitor;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        desired = fDesiredMonitor;
+    }
+    if (desired == fAppliedMonitor) {
+        return;
+    }
+    if (!fWindow->setMonitor(desired, 300)) {
+        // The index vanished between validation and apply (hotplug): drop
+        // the request rather than retry a doomed one every frame.
+        std::lock_guard<std::mutex> lock(fMutex);
+        fDesiredMonitor = fAppliedMonitor;
+        return;
+    }
+    fAppliedMonitor = desired;
+    refreshDisplaySnapshot();
+
+    // Rebuild the swapchain at the new panel; if the compositor's configure
+    // is still lagging, the periodic extentOutOfDate() check recreates
+    // again at the real extent, same as at open().
+    fSwapchain->destroy();
+    if (!createSwapchain()) {
+        return;  // the resize path retries on the next frame
+    }
+    fWindow->resetFramebufferResize();  // setMonitor's resize is done here
+
+    std::lock_guard<std::mutex> lock(fMutex);
+    fStatus.monitor = fAppliedMonitor;
+    fStatus.monitorName = fAppliedMonitor >= 0 &&
+                                 fAppliedMonitor < static_cast<int>(fDisplays.size())
+                             ? fDisplays[fAppliedMonitor].name
+                             : "";
+    fStatus.revision = fRevision;
+}
+
 void OutputSession::frame() {
     applyPendingLayerChanges();
+    applyPendingDisplayChange();
     glfwPollEvents();
 
     int width = 0;
@@ -287,6 +396,12 @@ void OutputSession::frame() {
             fSwapchain->destroy();
             createSwapchain();
         }
+    }
+
+    // Cheap re-enumeration so a hotplug reaches output.displays without
+    // GLFW monitor callbacks (the dedicated hotplug story is M6.1).
+    if (fFrames % 60 == 0) {
+        refreshDisplaySnapshot();
     }
 
     {

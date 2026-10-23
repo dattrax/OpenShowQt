@@ -75,7 +75,8 @@ void printUsage(const char* program) {
                  "  --check-deps         report the libraries this build linked and exit\n"
                  "  --socket PATH        connect to the frontend over a Unix socket\n"
                  "  --render-test        open the output window and draw the test scene\n"
-                 "  --monitor N          with --render-test, fullscreen on monitor N\n"
+                 "  --monitor N          destination override: fullscreen on monitor N\n"
+                 "                       (socket mode defaults to the second display)\n"
                  "  --seconds S          with --render-test, exit after S seconds\n"
                  "  --snapshot PATH      render the test scene to a PNG (no display needed)\n"
                  "  --list-monitors      print the GLFW monitor list and exit\n"
@@ -154,7 +155,8 @@ int main(int argc, char** argv) {
     bool renderTest = false;
     bool listMonitors = false;
     bool checkLayers = false;
-    int monitorIndex = -1;
+    int monitorIndex = openshow::worker::OutputSession::kAutoSecondDisplay;
+    bool monitorGiven = false;
     double seconds = 0.0;
     int snapshotWidth = 1920;
     int snapshotHeight = 1080;
@@ -178,6 +180,7 @@ int main(int argc, char** argv) {
             socketPath = argv[++i];
         } else if (argument == "--monitor" && i + 1 < argc) {
             monitorIndex = std::atoi(argv[++i]);
+            monitorGiven = true;
         } else if (argument == "--seconds" && i + 1 < argc) {
             seconds = std::atof(argv[++i]);
         } else if (argument == "--snapshot" && i + 1 < argc) {
@@ -231,7 +234,9 @@ int main(int argc, char** argv) {
     }
 
     if (renderTest) {
-        return runRenderTest(monitorIndex, seconds, layerOverrides);
+        // The development driver keeps the explicit destination; without
+        // --monitor it shows the borderless window on the operator panel.
+        return runRenderTest(monitorGiven ? monitorIndex : -1, seconds, layerOverrides);
     }
 
     if (socketPath) {

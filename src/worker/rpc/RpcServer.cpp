@@ -76,7 +76,21 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                {"height", status.height},
                                {"frames", status.frames},
                                {"revision", status.revision},
+                               {"monitor", status.monitor},
+                               {"monitorName", status.monitorName},
                                {"layers", layersObject(status.layerMask)}};
+}
+
+boost::json::value displaysResult(const std::vector<OutputSession::DisplayInfo>& displays) {
+    boost::json::array array;
+    for (const auto& display : displays) {
+        array.push_back(boost::json::object{{"index", display.index},
+                                            {"name", display.name},
+                                            {"width", display.width},
+                                            {"height", display.height},
+                                            {"refreshHz", display.refreshHz}});
+    }
+    return array;
 }
 
 }  // namespace
@@ -313,6 +327,40 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
     } else if (name == "output.status") {
         proto::appendFrame(
             proto::makeResult(id, statusResult(fSession.status())), outbound);
+    } else if (name == "output.displays") {
+        proto::appendFrame(
+            proto::makeResult(id, displaysResult(fSession.displays())), outbound);
+    } else if (name == "output.select") {
+        if (!given.is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "output.select requires params"),
+                               outbound);
+            return true;
+        }
+        const auto monitor = given.as_object().find("monitor");
+        std::int64_t index = -2;  // sentinel: absent or non-numeric is invalid
+        if (monitor != given.as_object().end()) {
+            if (monitor->value().is_int64()) {
+                index = monitor->value().as_int64();
+            } else if (monitor->value().is_uint64()) {
+                index = static_cast<std::int64_t>(monitor->value().as_uint64());
+            }
+        }
+        std::uint64_t revision = 0;
+        if (index < -1 || !fSession.selectMonitor(static_cast<int>(index), &revision)) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "output.select requires \"monitor\": -1 (windowed) "
+                                 "or an index from output.displays"),
+                outbound);
+            return true;
+        }
+        // The move happens on the render thread's next frame; revision
+        // tells the frontend which status confirms arrival.
+        proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                     {"revision", revision},
+                                                     {"pending", true}}),
+                           outbound);
     } else if (name == "layer.setEnabled") {
         if (!given.is_object()) {
             proto::appendFrame(proto::makeError(id, proto::kInvalidParams,

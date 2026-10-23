@@ -34,6 +34,10 @@ class WorkerController : public QObject {
     Q_PROPERTY(qint64 revision READ revision NOTIFY outputStatusChanged)
     Q_PROPERTY(QString device READ device NOTIFY outputStatusChanged)
     Q_PROPERTY(QVariantMap layers READ layers NOTIFY outputStatusChanged)
+    // Destination control (task 1.3): -1 windowed, >=0 display index, plus
+    // the enumerated panels for the picker.
+    Q_PROPERTY(qint64 currentMonitor READ currentMonitor NOTIFY outputStatusChanged)
+    Q_PROPERTY(QVariantList displays READ displays NOTIFY displaysChanged)
 
 public:
     explicit WorkerController(QObject* parent = nullptr);
@@ -47,6 +51,9 @@ public:
     Q_INVOKABLE void shutdownNow();
 
     // One output.status round trip; also drives the periodic poll.
+    // Move the audience output (-1 windowed, >=0 display index).
+    Q_INVOKABLE void selectDisplay(qint64 index);
+
     Q_INVOKABLE void setLayerEnabled(const QString& name, bool enabled);
 
     QString statusText() const { return fStatusText; }
@@ -56,10 +63,13 @@ public:
     qint64 revision() const { return fRevision; }
     QString device() const { return fDevice; }
     QVariantMap layers() const { return fLayers; }
+    qint64 currentMonitor() const { return fCurrentMonitor; }
+    QVariantList displays() const { return fDisplays; }
 
 signals:
     void stateChanged();
     void outputStatusChanged();
+    void displaysChanged();
 
 private slots:
     void tryConnect();
@@ -93,6 +103,8 @@ private:
     qint64 fRevision = 0;
     QString fDevice;
     QVariantMap fLayers;
+    qint64 fCurrentMonitor = -1;
+    QVariantList fDisplays;
 };
 
 }  // namespace openshow::ui

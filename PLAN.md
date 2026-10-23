@@ -228,7 +228,11 @@ Checkpoint: `M0: establish project plan and build foundation`.
 | 1.2c | DONE | Worker RPC server thread on `--socket PATH` | Handshake completes; worker exits on `shutdown` and on disconnect |
 | 1.2d | DONE | Live RPC commands driving the seam | A socket command changes visible output on the next frame |
 | 1.2e | DONE | Frontend supervision: spawn, handshake, shutdown | UI shows worker state; closing the UI terminates the worker |
-| 1.3 | TODO | Display selection and swapchain recreation | Fullscreen, resizing and switching work |
+| 1.3 | DONE | Display selection and swapchain recreation | Fullscreen, resizing and switching work |
+| 1.3a | DONE | Session display operations: list and select applied on the render thread | Selecting a destination moves the output and rebuilds the swapchain at the new extent |
+| 1.3b | DONE | RPC surface: `output.displays`, `output.select`, monitor fields in status | A socket command moves the output between panels |
+| 1.3c | DONE | Frontend destination picker | Dropdown in the UI moves the audience output |
+| 1.3d | DONE | Acceptance: both panels, automated switch test | Scene demonstrably eDP→DP-4→windowed→back, seen; interactive drag-resize noted as manual |
 | 1.4 | TODO | Shared-memory previews | Qt displays worker frames without blocking output |
 | 1.5 | TODO | Video decode and A/V benchmark | Results establish feasibility on this PC |
 

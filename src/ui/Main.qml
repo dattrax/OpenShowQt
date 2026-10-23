@@ -38,8 +38,42 @@ Window {
             anchors.horizontalCenter: parent.horizontalCenter
             color: "#9a9a9a"
             font.pixelSize: 13
-            text: worker.device + " · frame " + worker.frames
-                  + " · revision " + worker.revision
+            // The panel name is looked up in displays, guarded: status can
+            // arrive before the display list (or after a hotplug empties it).
+            text: {
+                const panel = worker.currentMonitor >= 0
+                    ? worker.displays[worker.currentMonitor] : null
+                const where = worker.currentMonitor < 0 ? "windowed"
+                    : (panel ? panel.name : "monitor " + worker.currentMonitor)
+                return worker.device + " · frame " + worker.frames
+                       + " · revision " + worker.revision + " · " + where
+            }
+        }
+
+        Row {
+            visible: worker.outputLive
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: 8
+
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                color: "#9a9a9a"
+                font.pixelSize: 13
+                text: "Destination:"
+            }
+
+            ComboBox {
+                id: destination
+                model: [{value: -1, label: "Windowed"}].concat(
+                    worker.displays.map(d => ({value: d.index,
+                                               label: d.name + " — " + d.size})))
+                textRole: "label"
+                valueRole: "value"
+                // Bound to the worker's applied state, so the picker shows
+                // where the output actually is until a switch confirms.
+                currentIndex: destination.indexOfValue(worker.currentMonitor)
+                onActivated: worker.selectDisplay(currentValue)
+            }
         }
 
         Row {

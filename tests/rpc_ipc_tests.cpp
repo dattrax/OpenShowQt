@@ -125,6 +125,29 @@ bool fieldEquals(const boost::json::value& object, const char* field, const char
            found->value().as_string() == expected;
 }
 
+std::uint64_t numberValue(const boost::json::value& value) {
+    return value.is_uint64() ? value.as_uint64()
+                             : static_cast<std::uint64_t>(value.as_int64());
+}
+
+// Polls output.status until it reports the given monitor (or timeout).
+bool waitForMonitor(int fd, int wanted, std::uint64_t atLeastRevision, int seconds) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    std::int64_t id = 100;
+    while (std::chrono::steady_clock::now() < deadline) {
+        boost::json::value reply;
+        if (call(fd, ++id, "output.status", {}, &reply)) {
+            const boost::json::value& status = reply.at("result");
+            if (status.as_object().at("monitor").as_int64() == wanted &&
+                numberValue(status.as_object().at("revision")) >= atLeastRevision) {
+                return true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+}
+
 // Waits (bounded) for waitpid to report an exit; returns the exit code or -1.
 int waitExit(pid_t pid, int seconds) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
@@ -256,6 +279,67 @@ void testDisconnectStopsWorker() {
     check(waitExit(pid, 5) == 0, "worker exits with status 0 when its frontend disconnects");
 }
 
+// Scenario C (task 1.3): destination control over the wire. Enumerate the
+// panels, refuse bad selections, move the output onto the first panel and
+// back to windowed, waiting for the status to confirm each arrival.
+void testDisplaySelection() {
+    const std::string path = socketPath("displays");
+    const pid_t pid = spawnWorker(path);
+    if (!check(pid > 0, "worker spawned (display scenario)")) {
+        return;
+    }
+    const int fd = connectRetry(path);
+    if (!check(fd >= 0, "connected to the worker socket")) {
+        killWorker(pid);
+        return;
+    }
+    boost::json::value reply;
+    if (!check(call(fd, 1, "hello", proto::helloParams("ipc-test", 0, 1), &reply),
+               "hello succeeded (display scenario)")) {
+        killWorker(pid);
+        return;
+    }
+
+    if (check(call(fd, 2, "output.displays", {}, &reply) && reply.at("result").is_array(),
+              "output.displays answers with an array")) {
+        const boost::json::array& displays = reply.at("result").as_array();
+        check(!displays.empty(), "at least one display is enumerated");
+        if (!displays.empty()) {
+            const boost::json::object& first = displays[0].as_object();
+            check(numberValue(first.at("index")) == 0 && first.at("name").is_string() &&
+                      numberValue(first.at("width")) > 0,
+                  "display entries carry index, name and size");
+        }
+
+        check(call(fd, 3, "output.select", boost::json::object{{"monitor", 99}}, &reply) &&
+                  isErrorCode(reply, proto::kInvalidParams),
+              "a nonexistent monitor is refused");
+        check(call(fd, 4, "output.select", {}, &reply) &&
+                  isErrorCode(reply, proto::kInvalidParams),
+              "output.select without a monitor is refused");
+
+        if (!displays.empty() &&
+            check(call(fd, 5, "output.select", boost::json::object{{"monitor", 0}}, &reply) &&
+                      reply.as_object().contains("result"),
+                  "output.select monitor 0 is acknowledged")) {
+            check(waitForMonitor(fd, 0, numberValue(reply.at("result").as_object().at("revision")),
+                                 6),
+                  "status reports the output arrived on monitor 0");
+        }
+        if (check(call(fd, 6, "output.select", boost::json::object{{"monitor", -1}}, &reply) &&
+                      reply.as_object().contains("result"),
+                  "output.select windowed is acknowledged")) {
+            check(waitForMonitor(fd, -1,
+                                 numberValue(reply.at("result").as_object().at("revision")), 6),
+                  "status reports the output returned to windowed");
+        }
+    }
+
+    call(fd, 7, "shutdown", {}, &reply);
+    close(fd);
+    check(waitExit(pid, 5) == 0, "display-scenario worker exits cleanly");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -264,6 +348,7 @@ int main(int argc, char** argv) {
     }
     testServedSession();
     testDisconnectStopsWorker();
+    testDisplaySelection();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "%d IPC check(s) failed\n", gFailures);

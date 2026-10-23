@@ -4,10 +4,37 @@ Updated: 2026-10-23 (Europe/London).
 
 ## Current checkpoint
 
-- Milestone: **M1 — Prove frontend-to-renderer integration**, tasks **1.1**
-  (2026-10-22) and **1.2** (2026-10-23) DONE. M0 was closed earlier with tag
-  `M0` at `bca7cee`; commits and tags are delegated to the agent for this
-  session.
+- Milestone: **M1 — Prove frontend-to-renderer integration**, tasks **1.1**,
+  **1.2** and **1.3** DONE (all 2026-10-22/23). M0 was closed earlier with
+  tag `M0` at `bca7cee`; commits and tags are delegated to the agent for
+  this session.
+- Task 1.3 delivered display control over the wire and was **accepted on
+  screen**: the worker now *starts* on the second panel automatically (the
+  FreeShow autoPosition rule; `--monitor` remains only as a development
+  override), and RPC moves it.
+  - **1.3a** `OutputWindow::setMonitor(index, settleMs)` carries the
+    map-then-fullscreen + configure-pump sequencing and serves both open()
+    and later moves; `OutputSession` grew a desired/applied monitor pair
+    applied at the top of the frame exactly like the layer mask, a
+    `DisplayInfo` snapshot refreshed at open, after each move and every 60
+    frames (hotplug reaches `output.displays` without monitor callbacks
+    yet — the dedicated story stays M6.1), and `Status::monitor/
+    monitorName`.
+  - **1.3b** RPC `output.displays` + `output.select {monitor:-1|N}`
+    (validated against the snapshot on the RPC thread; bad/absent index is
+    a structured invalid-params error); `output.status` gained `monitor`
+    and `monitorName`.
+  - **1.3c** the UI has a Destination dropdown (Windowed + panels with
+    modes) bound to the *applied* state; `WorkerController` fetches
+    `output.displays` after hello and tracks `currentMonitor`.
+  - **1.3d** automated: ctest scenario `worker_rpc_lifecycle` now also
+    enumerates displays, refuses bad selections and waits for status to
+    confirm monitor 0 then windowed. Seen: `/tmp/opencode/switch-sheet.png`
+    shows the four states — DP-4 fullscreen, eDP-1 fullscreen (2256x1504),
+    1280x720 windowed, back on DP-4 — driven purely over the socket.
+    **Interactive drag-resize remains a manual check** (the recreate path
+    it exercises is the same compositor-configure one proven repeatedly,
+    but Wayland cannot script the drag; re-check when convenient).
 - Task 1.2 delivered in the five subtasks PLAN.md's graduation note demands,
   and **accepted on screen**: the Qt frontend spawns
   `openshow-worker --socket PATH`, handshakes over JSON-RPC 2.0, and drives
@@ -43,12 +70,16 @@ Updated: 2026-10-23 (Europe/London).
   without dispatch. ctest `render_layer_composition` verifies this on the CPU.
 - Checks: `ctest --preset desktop` passes **8 of 8** (adds
   `worker_rpc_lifecycle`, labelled `display`); `ctest --preset headless`
-  passes **6 of 6** — the headless test preset now excludes the `display`
-  label, which needed the CMake-4 `filter` key rather than `tests`;
-  `worker_is_qt_free` stayed green throughout, so the RPC path is
-  `poll()`/Boost.JSON with no Qt.
-- Next: task **1.3** (display selection and swapchain recreation over RPC,
-  including `--monitor` moving behind session operations).
+  passes **6 of 6** via the test preset's
+  `filter.exclude.label: "display"` — note the earlier "6 of 6" for task
+  1.2 was a stale build dir, the filter as first written (`labelExclude`)
+  was silently ignored; the working key is `exclude.label` (1.3 fixed it
+  and re-verified with `--show-only`); `worker_is_qt_free` stayed green
+  throughout, so the RPC path is `poll()`/Boost.JSON with no Qt.
+- Next: task **1.4** (shared-memory previews), and one manual check to
+  close 1.3 fully: drag-resize the borderless window on screen and watch
+  the swapchain recreate (the same code path a compositor configure drives,
+  already proven — this is the acceptance row's honest caveat).
 
 ## Completed work
 
@@ -241,14 +272,83 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   commands visibly removed and restored the images/words layers);
   worker logs show `shut down after 1756 frames`, exit 0, socket unlinked.
 
+## Task 1.3 log (2026-10-23)
+
+- Graduation carried out as planned: placement logic left the CLI.
+  `OutputWindow::open()`'s inline monitor block became
+  `setMonitor(index, settleMs)` — same map-then-fullscreen + configure-pump
+  trick, now reusable while live; windowed restore returns to the open()
+  size at (100,100). `OutputSession` owns the semantics: a desired/applied
+  monitor pair applied at the top of `frame()` (GLFW is only ever touched
+  from the render thread), swapchain destroy/recreate right there, a
+  `DisplayInfo` snapshot (index/name/width/height/refreshHz) refreshed at
+  open, after every move and every 60 frames, and `Options::
+  kAutoSecondDisplay` implementing the FreeShow autoPosition rule (socket
+  mode with no `--monitor` lands on panel 1 when one exists; `--render-test`
+  stays windowed unless told otherwise).
+- RPC: `output.displays` (bare array result), `output.select
+  {monitor:-1|N}`, `monitor`+`monitorName` in status. `output.select`
+  validates against the snapshot on the RPC thread; a missing or
+  non-numeric `monitor` is invalid-params via a -2 sentinel (an early
+  version defaulted it to windowed — caught in review, not by tests).
+  `applyPendingDisplayChange` drops a vanished index rather than retrying
+  a doomed selection every frame.
+- UI: Destination `ComboBox` (Windowed + "name — WxH@RHz"), currentIndex
+  bound to the worker's *applied* `currentMonitor`, activation sends
+  `output.select`; the status line names the current panel.
+- Traps hit and fixed:
+  - **Array results were being dropped**: `handleReply`'s
+    `result->is_object()` guard silently discarded the bare-array
+    `output.displays` answer; the empty list then made the QML status-line
+    binding throw on `displays[currentMonitor].name`, which froze *that
+    text* at its defaults while the layer checkboxes (a different binding)
+    kept updating — the screenshot showing "frame 0 · windowed" next to
+    correctly-checked layers was the tell. Fixed both: array results
+    handled before the object guard, and the QML binding made total
+    (guarded panel lookup).
+  - **The ctest label filter had never worked**: presets want
+    `filter.exclude.label` (regex), not `labelExclude`; the wrong inner
+    key is accepted and ignored, and the "headless 6/6" at 1.2's close was
+    a stale build dir where the test wasn't registered yet. Two layers of
+    false green in one line — `--show-only` after the fix now shows 6
+    excluding a registered 7.
+  - `sk_sp` lesson repeated: the frame's resize check double-recreated the
+    swapchain right after `applyPendingDisplayChange` had already rebuilt
+    it (setMonitor's `fResized`); the apply now clears the flag.
+- Acceptance evidence: ctest scenario extended (enumerate, refuse 99 and
+  missing param, arrive at monitor 0, arrive back windowed — all through
+  status/revision); `/tmp/opencode/switch-sheet.png` (four states seen:
+  DP-4 → eDP-1 → windowed → DP-4, socket-driven, worker exited 0);
+  `/tmp/opencode/picker3-edp.png` (UI green, live "frame 222 · DP-4",
+  picker on DP-4). Interactive drag-resize stays a manual check (Wayland
+  cannot script it; the recreate path is the proven configure one).
+
 ## Verification and environment
 
+- 2026-10-23, task 1.3: `ctest --preset desktop` passes **8 of 8** —
+  `worker_rpc_lifecycle` now runs three scenarios (served session,
+  disconnect, display selection: enumerate, refuse index 99 and a missing
+  param, arrive monitor 0, arrive back windowed, clean exit).
+  `ctest --preset headless` passes **6 of 6**, and `--show-only` now
+  genuinely confirms the `display` exclusion (7 registered, 6 counted)
+  after the preset key was corrected to `filter.exclude.label`. Socket
+  mode with no `--monitor` auto-lands on panel 1 (`output fullscreen on
+  monitor 1 (DP-4)` in the log). Seen acceptance:
+  `/tmp/opencode/switch-sheet.png` (DP-4 → eDP-1 → 1280x720 windowed →
+  DP-4, driven only over the socket by `/tmp/opencode/switch_walk.py`,
+  worker exited 0) and `/tmp/opencode/picker3-edp.png` (UI status green,
+  live frame counter naming DP-4, destination picker showing the applied
+  panel). Interactive drag-resize remains a manual check.
 - 2026-10-23, task 1.2: `ctest --preset desktop` passes **8 of 8** — the
   seven task 1.1 tests plus `worker_rpc_lifecycle`
   (`tests/rpc_ipc_tests.cpp`, LABELS `display`, TIMEOUT 90).
   `ctest --preset headless` passes **6 of 6**; `ctest --preset headless
   --show-only` confirms the `display` label exclusion so the new test,
   which opens a window, is not counted against the no-Qt preset.
+  *(Corrected during 1.3: that `--show-only` run counted 6 only because
+  the test was not yet registered in the headless build dir; the filter
+  key as then written was silently ignored. See the 1.3 entry above for
+  the fixed filter.)*
   `worker_is_qt_free` still passes with the RPC code linked in: the worker
   speaks `poll()` and Boost.JSON, never Qt. Manual acceptance ran
   `OPENSHOW_WORKER_EXTRA_ARGS="--monitor 1" ./build/src/ui/openshow-ui`
@@ -404,22 +504,36 @@ logged here from what is observable off screen rather than claimed as seen.
 
 ## Exact next action
 
-1. Tag and commit the M1 half that is now provable — the milestone itself
-   is not closable yet: tasks 1.3, 1.4 and 1.5 remain TODO. Start **1.3 —
-   display selection and swapchain recreation over RPC**. Per PLAN.md's
-   graduation note the first move is to retire the `--monitor` flag's
-   placement logic behind session operations: add `output.displays`
-   (enumerate the GLFW monitor list) and `output.select` (destination by
-   index or `-1` for windowed) to `RpcServer`, each calling a new
-   `OutputSession` method that re-enters `glfwSetWindowMonitor` and lets
-   the existing `extentOutOfDate()` path rebuild the swapchain. Acceptance
-   is "fullscreen, resizing and switching work" **seen on a panel**; the
-   projector is still not connected, so record off-screen evidence labelled
-   as such and keep the physical check open.
-2. Useful carry-over from 1.2: the UI already polls `output.status` at
-   2 Hz and renders layer checkboxes, so a destination picker drops into
-   the same `WorkerController`/`Main.qml` pair; the frame-30 readback probe
-   (`Options::diagnostics`) and the `display` test label are both in place.
+1. Commit the task 1.3 work (worker + UI + tests + PLAN/PROGRESS rows are
+   done; milestone M1 is still open: 1.4 and 1.5 remain TODO). Start
+   **1.4 — shared-memory previews**: the Qt frontend displays worker
+   frames without ever blocking output. Per PLAN.md the design is fixed:
+   POSIX shared-memory slots **outside RPC** — three slots, explicit
+   frame-ready/release messages, drop previews under load, start at
+   640x360 at 15 fps. Split 1.4 into subtasks in PLAN.md before coding
+   (graduation rule), e.g.: (a) render the scene offscreen at 640x360 in
+   the session (a second Skia surface target, reusing the existing
+   composition code — PLAN line ~124 calls this out as the first hard
+   requirement for arbitrary render targets); (b) the shm carrier: named
+   POSIX shm segment(s) with a small header (sequence, timestamp,
+   format/size) and slot claim/release semantics; (c) the notify channel
+   — decide where frame-ready/release travels (a second socket or an RPC
+   notification; the PLAN says the *pixels* stay out of RPC, notifications
+   may ride it); (d) Qt side: map the shm, build a QImage/QQuickImageProvider
+   or software-backed item, update on ready, release after paint; (e)
+   acceptance: preview visibly live in the UI while output runs, and a
+   deliberately stalled preview consumer proves output keeps its frame
+   rate (drops are visible, output never blocks).
+2. Useful carry-over: the session already applies desired state at the top
+   of `frame()` and publishes revisions — the preview cadence (15 fps) is
+   a throttle on that loop, not a second loop; `Options::diagnostics`'
+   frame-30 CPU readback shows the vk readback plumbing already needed;
+   `WorkerController` has the request/reply plumbing a preview-control
+   method slots into; ctest is desktop 8/8 and headless 6/6 with the
+   `display` label exclusion genuinely working.
+3. One manual check stays open from 1.3: drag-resize the borderless output
+   window once and confirm the swapchain recreate (see the acceptance
+   caveat in the task 1.3 log).
 
 ## Resume checklist
 
