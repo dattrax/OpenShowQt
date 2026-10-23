@@ -273,6 +273,7 @@ private:
     std::atomic<bool> fStop{false};
     bool fDiagnostics = false;
     unsigned long long fFrames = 0;
+    bool fLoggedVideoQuad = false;
     uint32_t fAppliedMask = 0;
     std::chrono::steady_clock::time_point fStartTime;
 

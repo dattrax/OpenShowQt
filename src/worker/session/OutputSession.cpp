@@ -10,6 +10,7 @@
 #include "session/OutputSession.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <utility>
 #include <vector>
@@ -175,6 +176,11 @@ bool OutputSession::createSwapchain() {
     // the Wayland surface; the resize and extentOutOfDate() paths pick up
     // the real extent once configure lands.
     fWindow->framebufferSize(&info.width, &info.height);
+    int logicalWidth = 0;
+    int logicalHeight = 0;
+    glfwGetWindowSize(fWindow->handle(), &logicalWidth, &logicalHeight);
+    std::fprintf(stderr, "openshow-worker: window %dx%d logical, framebuffer %dx%d\n",
+                 logicalWidth, logicalHeight, info.width, info.height);
     return fSwapchain->create(info);
 }
 
@@ -697,25 +703,43 @@ void OutputSession::frame() {
                 }
             } else {
                 videoToken = toDraw->token;
-                // Dev-bench placement: aspect-preserving fit, centred, the
-                // scene background showing through as letterbox bars (real
-                // media layers bring their own geometry in M2). Assumes
-                // square pixels, which the wrapped YUV slots always are;
-                // anamorphic source is a media-layer problem.
+                // Dev-bench placement: fit centred inside the whole
+                // output, aspect preserved, the scene background showing
+                // through as letterbox bars (real media layers bring their
+                // own geometry in M2; assumes square pixels, which the
+                // wrapped YUV slots always are). NOTE: TestScene::draw
+                // leaves its output-rule transform (the fit of the authored
+                // 1920x1080 canvas) on this canvas — the video rect is in
+                // swapchain pixels, so it must be drawn on the identity.
+                surface->getCanvas()->save();
+                surface->getCanvas()->resetMatrix();
                 const SkISize srcSize = videoImage->dimensions();
                 const float fitScale = std::min(
                     static_cast<float>(fSwapchain->width()) / srcSize.width(),
                     static_cast<float>(fSwapchain->height()) / srcSize.height());
-                const float fitWidth = srcSize.width() * fitScale;
-                const float fitHeight = srcSize.height() * fitScale;
-                surface->getCanvas()->drawImageRect(
-                    videoImage,
-                    SkRect::MakeLTRB(
-                        (fSwapchain->width() - fitWidth) * 0.5f,
-                        (fSwapchain->height() - fitHeight) * 0.5f,
-                        (fSwapchain->width() + fitWidth) * 0.5f,
-                        (fSwapchain->height() + fitHeight) * 0.5f),
-                    SkSamplingOptions(SkFilterMode::kLinear));
+                // Round to whole pixels: the scale is a float division and
+                // multiplying it back leaves ~1e-5 px error on the axis that
+                // decides the fit (a 972-height returning 972.00006), which
+                // is noise but reads as a bug in the quad log.
+                const float fitWidth = std::round(srcSize.width() * fitScale);
+                const float fitHeight = std::round(srcSize.height() * fitScale);
+                const SkRect fitRect = SkRect::MakeLTRB(
+                    (fSwapchain->width() - fitWidth) * 0.5f,
+                    (fSwapchain->height() - fitHeight) * 0.5f,
+                    (fSwapchain->width() + fitWidth) * 0.5f,
+                    (fSwapchain->height() + fitHeight) * 0.5f);
+                if (!fLoggedVideoQuad) {
+                    fLoggedVideoQuad = true;
+                    std::fprintf(stderr,
+                                 "openshow-worker: video quad: image %dx%d -> (%g,%g,%g,%g) "
+                                 "on surface %dx%d\n",
+                                 srcSize.width(), srcSize.height(), fitRect.left(),
+                                 fitRect.top(), fitRect.right(), fitRect.bottom(),
+                                 surface->width(), surface->height());
+                }
+                surface->getCanvas()->drawImageRect(videoImage, fitRect,
+                                                    SkSamplingOptions(SkFilterMode::kLinear));
+                surface->getCanvas()->restore();
             }
         }
 

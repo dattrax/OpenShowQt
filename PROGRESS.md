@@ -787,6 +787,29 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   portrait stretched full-frame) vs `/tmp/opencode/fit-916-fixed.png`
   (after: pillarboxed, undistorted), 16:9 unchanged
   (`/tmp/opencode/fit-169-fixed.png`).
+- The follow-up itself needed a follow-up: the user still saw background
+  "right and bottom", and was right — a **leftover canvas transform**
+  was warping the video quad. `TestScene::draw` applies its output rule
+  (fit the authored 1920x1080 into the swapchain: at this window, scale
+  0.9 + translate) and only resets the matrix on *entry*, so anything
+  drawn after it — the video quad, computed in swapchain pixels — is
+  multiplied by that transform: the fitted rect (590.6, 0, 1137.4, 972)
+  actually landed at (567.6, 0, 1059.7, 874.8): a ~10% gap at the bottom
+  and shifted left, i.e. exactly the reported asymmetry. Proved with a
+  temporary red probe frame drawn at the surface bounds: it landed
+  inside the window content, not at its edges; drawing the video on the
+  identity matrix (save/reset/restore) fixed it and the probe then
+  hugged the window. Kept diagnostics: the window now logs
+  "logical/framebuffer" sizes (this Wayland session scales 1.35:
+  1280x720 logical → 1728x972 physical, which is why the swapchain size
+  looked bigger than the window) and the first video draw logs its quad.
+  The quad log also gained whole-pixel rounding — the old `-3.05e-05`
+  top edge was float32 round-trip noise (972/1920 = 0.50625 is not a
+  binary fraction; multiplied back it gives 972.00006), harmless but
+  alarming-looking. **Lesson for M2: anything drawn onto the swapchain
+  canvas after the scene must set up its own matrix — the scene owns
+  the transform but only restores on entry.** Gates after the fix:
+  desktop **11/11**, headless **8/8**.
 
 ## Verification and environment
 
