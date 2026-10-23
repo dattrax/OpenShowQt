@@ -565,6 +565,63 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
     returns and `stop()` waits on that before destroying the context;
     without `PW_KEY_NODE_LATENCY` the server hands the whole ring per
     callback (~4 Hz) and any timing histogram measures the wrong thing.
+- **1.5d** DONE. `render/YuvGpu.{h,cpp}` (`GpuYuvUploader`), the new static
+  `openshow::worker_gpu` library (VulkanContext moved into it), and the
+  headless test `gpu_yuv_tests`.
+  - `VulkanContext` refactored: `createHeadless()` (no GLFW extensions, no
+    surface) shares the device path with `create(window)`; the device is now
+    built with vk-bootstrap `custom_queue_setup` carrying the graphics family
+    **and** a transfer-capable family when one exists (RADV STRIX1: gfx 0 +
+    compute/xfer 1, verified "uploads on queue 1"); single-family GPUs get
+    uploadQueue() == queue() and callers skip cross-queue handling. Queues
+    are fetched with `vkGetDeviceQueue` because custom setup leaves queue
+    bookkeeping to the app.
+  - `GpuYuvUploader`: fixed 4-slot ring, never grows. Each slot is a
+    host-visible coherent staging buffer (Y at 0, UV at alignUp(w·h, 256))
+    plus two device-local optimal-tiling images — R8 w×h and R8G8 w/2×h/2 —
+    created CONCURRENT over {graphics, upload} (sharing mode is per-object;
+    device queue create-infos have none). Per upload: layout barrier
+    (UNDEFINED→TRANSFER_DST first use, SHADER_READ→TRANSFER_DST on reuse),
+    both `vkCmdCopyBufferToImage` calls, TRANSFER_DST→SHADER_READ, submit on
+    the upload queue, fence. **One `SkImages::TextureFromYUVATextures` wrap
+    per slot** (GrVkImageInfo with zeroed fAlloc, shader-read layout,
+    queue family IGNORED — same external-wrap pattern the swapchain uses);
+    the layout never leaves shader-read after the first upload, so the same
+    SkImage serves every later frame and YUV→RGB happens inside the
+    compositing draw (no RTT). Consumer contract: upload() blocks briefly
+    for the next slot and *refuses* when all four are held; `release(slot)`
+    / `releaseAll()` return them; 1.5e upgrades release to carry the flush's
+    GPU semaphore.
+  - Evidence (`gpu_yuv_tests`, RADV headless — needs a GPU but no display
+    server; skips 77 otherwise): 12/12 probe pixels (3 luma variants × 4
+    chroma bands) matched `SkColorMatrix_YUV2RGB(kRec601_Limited)` **exactly**
+    (tolerance ±3 for dithering was never needed); red/blue band structure
+    verified; the 5th unreleased upload is refused and uncounted; after 8
+    uploads slotsCreated is exactly 4 (reused frames rewrap nothing); upload
+    cost instrumented per stage: 64×64 stage 0.24 ms / gpu 1.27 ms totals
+    (per-frame fences dominate — the threaded 1.5e loop removes the wait
+    from the producer). Desktop **10/10**, headless **8/8**; `--render-test`
+    still presents after the VulkanContext refactor (182 frames/3 s,
+    readback non-black); `worker_is_qt_free` green with the new lib linked.
+  - Gotchas: vk-bootstrap's selector **requires present by default** —
+    headless selection fails "no_surface_provided" until
+    `require_present(false)`; Skia's `check_image_info` demands wrapped
+    textures carry **both TRANSFER_SRC and TRANSFER_DST** usage bits (a
+    copy-only destination returning a null wrap with no message — read the
+    validator); `VkBufferImageCopy::bufferRowLength` counts **texels, not
+    bytes**, so the R8G8 UV plane silently copies at double row stride (the
+    R8 Y plane hides the same bug, its texel is one byte); this revision has
+    no `SkImageInfo::MakeN8Premul` (use `Make(w,h,kRGBA_8888,kPremul)`) and
+    `SkSurfaces::RenderTarget` lives behind `SkSurfaceGanesh.h`;
+    `vkb::Instance` is not constructible from a raw `VkInstance`, so the
+    built one is stored; and pimpl'd classes must out-line the **constructor**
+    as well as the destructor (a `= default` ctor in the header makes GCC
+    instantiate member-cleanup paths against the incomplete type).
+  - Note for 1.5e: when a GPU has a single queue family, uploadQueue() ==
+    queue() and `VkQueue` is **not** thread-safe — the producer must not
+    submit there concurrently with Skia; same-family GPUs will need uploads
+    serialized behind the render thread (or accepted in the same queue with
+    a host-side lock) when the frame loop lands.
 
 ## Verification and environment
 

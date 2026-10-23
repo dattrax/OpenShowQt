@@ -1,6 +1,7 @@
 #include "VulkanContext.h"
 
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,21 +18,33 @@ namespace openshow::worker {
 
 namespace {
 constexpr uint32_t kApiVersion = VK_API_VERSION_1_2;
-}
+}  // namespace
 
-bool VulkanContext::create(GLFWwindow* window) {
-    uint32_t glfwExtensionCount = 0;
-    const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-    if (!glfwExtensions || glfwExtensionCount == 0) {
-        std::fprintf(stderr, "openshow-worker: GLFW returned no Vulkan instance extensions\n");
-        return false;
-    }
+// The vk-bootstrap instance and selected physical device have to outlive
+// their phases so the selector and the Skia feature/extension handover can
+// read them.
+class VulkanContext::PhysicalDeviceStorage {
+public:
+    vkb::Instance instance;
+    std::optional<vkb::PhysicalDevice> physical;
+};
 
+VulkanContext::VulkanContext() = default;
+VulkanContext::~VulkanContext() { destroy(); }
+
+bool VulkanContext::createInstance(bool withWindowExtensions) {
     vkb::InstanceBuilder instanceBuilder;
-    instanceBuilder.set_app_name("openshow-worker")
-        .require_api_version(kApiVersion);
-    for (uint32_t i = 0; i < glfwExtensionCount; ++i) {
-        instanceBuilder.enable_extension(glfwExtensions[i]);
+    instanceBuilder.set_app_name("openshow-worker").require_api_version(kApiVersion);
+    if (withWindowExtensions) {
+        uint32_t glfwExtensionCount = 0;
+        const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+        if (!glfwExtensions || glfwExtensionCount == 0) {
+            std::fprintf(stderr, "openshow-worker: GLFW returned no Vulkan instance extensions\n");
+            return false;
+        }
+        for (uint32_t i = 0; i < glfwExtensionCount; ++i) {
+            instanceBuilder.enable_extension(glfwExtensions[i]);
+        }
     }
 
     auto builtInstance = instanceBuilder.build();
@@ -41,33 +54,24 @@ bool VulkanContext::create(GLFWwindow* window) {
         return false;
     }
     fInstance = builtInstance->instance;
+    fPhysical = std::make_unique<PhysicalDeviceStorage>();
+    fPhysical->instance = *builtInstance;
+    return true;
+}
 
+bool VulkanContext::create(GLFWwindow* window) {
+    if (!createInstance(true)) {
+        return false;
+    }
     if (glfwCreateWindowSurface(fInstance, window, nullptr, &fSurface) != VK_SUCCESS) {
         std::fprintf(stderr, "openshow-worker: glfwCreateWindowSurface failed\n");
         destroy();
         return false;
     }
-
-    auto selectedPhysicalDevice =
-        vkb::PhysicalDeviceSelector(*builtInstance).set_surface(fSurface).select();
-    if (!selectedPhysicalDevice) {
-        std::fprintf(stderr, "openshow-worker: no Vulkan device presents to the window: %s\n",
-                     selectedPhysicalDevice.error().message().c_str());
+    if (!selectPhysicalDevice() || !createDevice()) {
         destroy();
         return false;
     }
-    fPhysicalDevice = selectedPhysicalDevice->physical_device;
-
-    auto builtDevice = vkb::DeviceBuilder(*selectedPhysicalDevice).build();
-    if (!builtDevice) {
-        std::fprintf(stderr, "openshow-worker: Vulkan device failed: %s\n",
-                     builtDevice.error().message().c_str());
-        destroy();
-        return false;
-    }
-    fDevice = builtDevice->device;
-    fQueue = builtDevice->get_queue(vkb::QueueType::graphics).value();
-    fQueueIndex = builtDevice->get_queue_index(vkb::QueueType::graphics).value();
 
     VkBool32 queueCanPresent = VK_FALSE;
     if (vkGetPhysicalDeviceSurfaceSupportKHR(fPhysicalDevice, fQueueIndex, fSurface,
@@ -76,6 +80,109 @@ bool VulkanContext::create(GLFWwindow* window) {
         std::fprintf(stderr, "openshow-worker: graphics queue cannot present\n");
         destroy();
         return false;
+    }
+
+    std::fprintf(stderr, "openshow-worker: Vulkan device \"%s\" (queue %u presents",
+                 fDeviceName.c_str(), fQueueIndex);
+    if (hasDedicatedUploadQueue()) {
+        std::fprintf(stderr, ", uploads on queue %u", fUploadQueueIndex);
+    }
+    std::fprintf(stderr, ")\n");
+    return true;
+}
+
+bool VulkanContext::createHeadless() {
+    if (!createInstance(false)) {
+        return false;
+    }
+    if (!selectPhysicalDevice() || !createDevice()) {
+        destroy();
+        return false;
+    }
+    std::fprintf(stderr, "openshow-worker: Vulkan device \"%s\" (headless", fDeviceName.c_str());
+    if (hasDedicatedUploadQueue()) {
+        std::fprintf(stderr, ", uploads on queue %u", fUploadQueueIndex);
+    }
+    std::fprintf(stderr, ")\n");
+    return true;
+}
+
+bool VulkanContext::selectPhysicalDevice() {
+    vkb::PhysicalDeviceSelector selector{fPhysical->instance};
+    if (fSurface != VK_NULL_HANDLE) {
+        selector.set_surface(fSurface);
+    } else {
+        // Headless: nothing will present, and the selector requires a
+        // surface by default (fails with "no_surface_provided").
+        selector.require_present(false);
+    }
+    auto selected = selector.select();
+    if (!selected) {
+        std::fprintf(stderr, "openshow-worker: no suitable Vulkan device: %s\n",
+                     selected.error().message().c_str());
+        return false;
+    }
+    fPhysicalDevice = selected->physical_device;
+    fPhysical->physical = *selected;
+    return true;
+}
+
+int VulkanContext::pickUploadFamily() const {
+    const std::vector<VkQueueFamilyProperties> families = fPhysical->physical->get_queue_families();
+    int separateTransfer = -1;  // transfer without graphics, compute preferred
+    for (size_t family = 0; family < families.size(); ++family) {
+        const VkQueueFlags flags = families[family].queueFlags;
+        if (flags & VK_QUEUE_GRAPHICS_BIT) {
+            continue;
+        }
+        if (!(flags & VK_QUEUE_TRANSFER_BIT)) {
+            continue;
+        }
+        if (flags & VK_QUEUE_COMPUTE_BIT) {
+            return static_cast<int>(family);
+        }
+        if (separateTransfer < 0) {
+            separateTransfer = static_cast<int>(family);
+        }
+    }
+    return separateTransfer;
+}
+
+bool VulkanContext::createDevice() {
+    // The graphics family is the first one with the graphics bit; the
+    // selector guaranteed one exists.
+    uint32_t graphicsFamily = 0;
+    const std::vector<VkQueueFamilyProperties> families = fPhysical->physical->get_queue_families();
+    for (size_t family = 0; family < families.size(); ++family) {
+        if (families[family].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            graphicsFamily = static_cast<uint32_t>(family);
+            break;
+        }
+    }
+    const int uploadFamily = pickUploadFamily();
+
+    std::vector<vkb::CustomQueueDescription> queues;
+    queues.emplace_back(graphicsFamily, 1u, std::vector<float>{1.0f});
+    if (uploadFamily >= 0) {
+        queues.emplace_back(static_cast<uint32_t>(uploadFamily), 1u, std::vector<float>{1.0f});
+    }
+
+    auto builtDevice =
+        vkb::DeviceBuilder(*fPhysical->physical).custom_queue_setup(queues).build();
+    if (!builtDevice) {
+        std::fprintf(stderr, "openshow-worker: Vulkan device failed: %s\n",
+                     builtDevice.error().message().c_str());
+        return false;
+    }
+    fDevice = builtDevice->device;
+    vkGetDeviceQueue(fDevice, graphicsFamily, 0, &fQueue);
+    fQueueIndex = graphicsFamily;
+    if (uploadFamily >= 0) {
+        vkGetDeviceQueue(fDevice, static_cast<uint32_t>(uploadFamily), 0, &fUploadQueue);
+        fUploadQueueIndex = static_cast<uint32_t>(uploadFamily);
+    } else {
+        fUploadQueue = fQueue;
+        fUploadQueueIndex = graphicsFamily;
     }
 
     VkPhysicalDeviceProperties properties = {};
@@ -113,7 +220,7 @@ bool VulkanContext::create(GLFWwindow* window) {
     // allocator is used, so the enabled device extension list from vk-bootstrap
     // has to be handed over (instance extensions are not checked by Skia, so
     // sloppy-ui passes none and neither do we).
-    const std::vector<std::string> deviceExtensions = selectedPhysicalDevice->get_extensions();
+    const std::vector<std::string> deviceExtensions = fPhysical->physical->get_extensions();
     std::vector<const char*> deviceExtensionNames;
     deviceExtensionNames.reserve(deviceExtensions.size());
     for (const std::string& extension : deviceExtensions) {
@@ -128,19 +235,15 @@ bool VulkanContext::create(GLFWwindow* window) {
     // Report the exact features vk-bootstrap enabled on the device.
     fDeviceFeatures2 = {};
     fDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    fDeviceFeatures2.features = selectedPhysicalDevice->features;
+    fDeviceFeatures2.features = fPhysical->physical->features;
     fBackendContext->fDeviceFeatures2 = &fDeviceFeatures2;
 
     fBackendContext->fMemoryAllocator =
         skgpu::VulkanMemoryAllocators::Make(*fBackendContext, skgpu::ThreadSafe::kNo);
     if (!fBackendContext->fMemoryAllocator) {
         std::fprintf(stderr, "openshow-worker: Skia Vulkan memory allocator failed\n");
-        destroy();
         return false;
     }
-
-    std::fprintf(stderr, "openshow-worker: Vulkan device \"%s\" (queue %u presents)\n",
-                 fDeviceName.c_str(), fQueueIndex);
     return true;
 }
 
@@ -155,6 +258,8 @@ void VulkanContext::destroy() {
         fDevice = VK_NULL_HANDLE;
     }
     fQueue = VK_NULL_HANDLE;
+    fUploadQueue = VK_NULL_HANDLE;
+    fPhysical.reset();
     if (fSurface != VK_NULL_HANDLE && fInstance != VK_NULL_HANDLE) {
         vkDestroySurfaceKHR(fInstance, fSurface, nullptr);
         fSurface = VK_NULL_HANDLE;

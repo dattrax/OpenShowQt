@@ -49,6 +49,14 @@ target_link_libraries(media_tests PRIVATE openshow::worker_media)
 add_test(NAME media_tests COMMAND media_tests)
 set_tests_properties(media_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 
+# Task 1.5d: I420 upload -> wrapped YUV SkImage -> GPU draw -> readback,
+# pixel-compared against Skia's own conversion matrix. Needs a Vulkan GPU
+# but no display server; skips (77) when the device or context is missing.
+add_executable(gpu_yuv_tests gpu_yuv_tests.cpp)
+target_link_libraries(gpu_yuv_tests PRIVATE openshow::worker_gpu)
+add_test(NAME gpu_yuv_tests COMMAND gpu_yuv_tests)
+set_tests_properties(gpu_yuv_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
 # Task 1.2 end-to-end: spawn a real openshow-worker --socket, handshake,
 # change output state live, and take both exits (served shutdown and the
 # frontend going away). It opens a window, so it carries the `display`
