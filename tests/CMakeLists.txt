@@ -41,6 +41,14 @@ add_test(NAME render_layer_composition
   COMMAND openshow-worker --check-layers
 )
 
+# Task 1.5 media foundation, linked straight into the Qt-free test binary.
+# Fixtures are generated with the ffmpeg CLI; the test exits 77 (skipped)
+# when the CLI is not available to produce them.
+add_executable(media_tests media_tests.cpp)
+target_link_libraries(media_tests PRIVATE openshow::worker_media)
+add_test(NAME media_tests COMMAND media_tests)
+set_tests_properties(media_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+
 # Task 1.2 end-to-end: spawn a real openshow-worker --socket, handshake,
 # change output state live, and take both exits (served shutdown and the
 # frontend going away). It opens a window, so it carries the `display`

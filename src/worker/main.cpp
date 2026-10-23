@@ -25,15 +25,9 @@
 #include <pipewire/version.h>
 #include <vulkan/vulkan.h>
 
-// FFmpeg headers are C headers without extern "C" guards, so C++ callers have
-// to wrap them or the symbols will not resolve at link time.
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libavutil/version.h>
-#include <libswresample/swresample.h>
-#include <libswscale/swscale.h>
-}
+// FFmpeg headers are C headers without extern "C" guards; media/FFmpeg.h is
+// the module's single wrapped include point (task 1.5a).
+#include "media/FFmpeg.h"
 
 #include "include/core/SkGraphics.h"
 

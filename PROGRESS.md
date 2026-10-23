@@ -114,7 +114,23 @@ Updated: 2026-10-23 (Europe/London).
   was silently ignored; the working key is `exclude.label` (1.3 fixed it
   and re-verified with `--show-only`); `worker_is_qt_free` stayed green
   throughout, so the RPC path is `poll()`/Boost.JSON with no Qt.
-- Next: task **1.5** (video decode and A/V benchmark), and one manual
+- Task 1.5 (video decode + A/V benchmark) is **IN PROGRESS** with the
+  approved subtask rows 1.5a–1.5f in PLAN.md: FFmpeg software decode to
+  native I420 → bounded staging ring → device-local optimal-tiling plane
+  ring on the *transfer* queue family (upload thread: copy +
+  `TRANSFER_DST→SHADER_READ` + fence) → one
+  `SkImages::TextureFromYUVATextures` wrap per slot, PipeWire callback as
+  the clock, and an event-driven presentation scheduler. Verified
+  against the pinned Skia `a94df1cdab` and this machine's vulkaninfo:
+  the old `SkExternalImageInfo` is gone; the seam is
+  `GrYUVABackendTextures` + `SkImages::TextureFromYUVATextures`
+  (`include/gpu/ganesh/SkImageGanesh.h:257`), wrapping trusts
+  `GrVkImageInfo::fImageLayout/fCurrentQueueFamily/fSharingMode`,
+  `setMutableState` is the client-side update hook; RADV STRIX1 samples
+  R8/R8G8/2-plane/3-plane YUV with optimal tiling, and queue family 1 is
+  compute+transfer with 4 queues (a real async upload path).
+  **1.5a DONE**; next is 1.5b (decode thread + FrameRing).
+- Next: task **1.5b**, and one manual
   check to close 1.3 fully: drag-resize the borderless window on screen and watch
   the swapchain recreate (the same code path a compositor configure drives,
   already proven — this is the acceptance row's honest caveat).
@@ -434,6 +450,37 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   `/tmp/opencode/preview-ui-edp.png` (UI pane live, "preview · 77
   frames shown · 0 dropped", destination on DP-4); ctest scenario D
   green inside desktop 8/8.
+
+## Task 1.5 log (started 2026-10-23)
+
+- Architecture reviewed with the user before coding; PLAN.md rows 1.5a–f
+  record it. Two user requirements shaped it: YUV (not RGBA) upload so
+  the texture units do the colour conversion and bandwidth drops ~3×;
+  and redraws must be event-driven (a static slide must not repaint),
+  which graduates the frame loop into a scheduler in 1.5e.
+- **1.5a** DONE. `src/worker/media/` built as static `openshow::worker_media`
+  so tests link it directly; public headers carry no FFmpeg or Qt types.
+  - `FFmpeg.h` is now the module's single `extern "C"` include point;
+    `main.cpp` was switched to it (its inline wrapper was the second copy).
+  - `MediaProbe.{h,cpp}` reports per stream: codec, profile, size, pixel
+    format, guessed fps + whether the container guarantees constancy,
+    colour space/range, sample rate/layout/format, and decoder
+    availability from `avcodec_find_decoder`. `ProbeStatus` is a
+    structured error: `kOpenFailed` (missing/unparseable, message carries
+    FFmpeg's reason) and `kNoUsableStreams`.
+  - ctest `media_tests` runs in **both** presets and exits 77 (skip) if
+    the ffmpeg CLI cannot generate fixtures. Seen: "h264 Constrained
+    Baseline 320x240 yuv420p 30.00fps", "aac 44100Hz stereo (fltp)",
+    garbage file → "Invalid data found when processing input", WAV →
+    one usable stream, no video. Desktop **9/9**, headless **7/7**,
+    `worker_is_qt_free` green with the library linked into the worker.
+  - Gotchas: FFmpeg 9 renamed `FF_PROFILE_*` → `AV_PROFILE_*`
+    (`AV_PROFILE_UNKNOWN`); `av_err2str` is a C99 compound literal, use
+    `av_strerror` into a buffer; lavfi `sine` is **mono** by default —
+    the stereo fixture needs `-ac 2`; the x264 fixture reports colour
+    space "unknown", so the test prints colour info rather than
+    asserting it (the 1.5f real-world fixtures carry BT.709 and the
+    probe will be exercised on them).
 
 ## Verification and environment
 

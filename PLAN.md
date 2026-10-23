@@ -239,7 +239,13 @@ Checkpoint: `M0: establish project plan and build foundation`.
 | 1.4c | DONE | RPC control: `preview.start`/`preview.stop`, server-originated `preview.ready` notification, `preview.released` from the client, capability and status fields | Socket client mmaps the named segment, decodes frames, stalls to raise drops, stops and restarts (ctest scenario D) |
 | 1.4d | DONE | Frontend consumer: mmap the segment, copy ready slots to a QImage under the seqlock, send releases, PreviewView item in the UI | Preview pane showed the live scene ("77 frames shown · 0 dropped"); drawImage fit fix verified after |
 | 1.4e | DONE | Acceptance: automated (frame content follows layer toggles; a stalled consumer raises drops while the output keeps presenting) and seen on screen | ctest scenario D green; preview live in the UI |
-| 1.5 | TODO | Video decode and A/V benchmark | Results establish feasibility on this PC |
+| 1.5 | IN PROGRESS | Video decode and A/V benchmark | Results establish feasibility on this PC |
+| 1.5a | DONE | `media/` skeleton: single `extern "C"` FFmpeg header, `MediaProbe` (streams, codecs, fps, duration, colour info, decoder availability) | `media_tests` probes a generated H.264/AAC fixture; structured errors for missing/unparseable files; fixtures skip (exit 77) when no ffmpeg CLI |
+| 1.5b | TODO | Decode thread: native I420 into a bounded PTS-tagged staging ring, claim/release/drop semantics (`FrameRing`) | Sustained decode ≥ 2× source fps on a 1080p fixture; high-water bounded; EOF/loop reported; drops counted |
+| 1.5c | TODO | PipeWire sink + resampled feed + audio clock (delivered frames / negotiated rate) | Minutes-long fed run, zero underruns; callback interval p99 and negotiated rate recorded |
+| 1.5d | TODO | YUV GPU upload pipeline: device-local optimal-tiling plane ring on the transfer queue family, copy + `TRANSFER_DST→SHADER_READ` + fence on the upload thread, one `SkImages::TextureFromYUVATextures` wrap per slot | Headless Vulkan test: synthetic I420 pattern composites pixel-correct through the pre-wrapped image; upload ms instrumented separately |
+| 1.5e | TODO | Presentation scheduler: event-driven frame loop (eventfd + display fd + scheduled wakes) in `OutputSession`; `--av-bench` development mode presents clocked video slots | Static slide: present counter flat and ~0% CPU over 10 s idle; a command or a new video slot wakes the next vsync; preview publishes only on content change |
+| 1.5f | TODO | Benchmark runs; feasibility numbers into PROGRESS.md | 2–3 representative files with the preview on, incl. one ~10-min soak; verdict against M5 targets (<1% missed deadlines, <50 ms drift) |
 
 Checkpoint: `M1: prove rendering worker and preview pipeline`.
 Resolve integration failures before expanding the application.
