@@ -1,6 +1,8 @@
 /*
  * Task 1.5 media foundation: MediaProbe (1.5a), FrameRing + decode thread
- * (1.5b), all against generated fixtures.
+ * (1.5b), AudioRing + AudioClock (1.5c), all against generated fixtures.
+ * The live PipeWire run for 1.5c is `openshow-worker --pw-check`, run
+ * manually so automated tests stay silent.
  *
  * Fixtures come from the ffmpeg CLI so the probe sees real container and
  * codec headers and the decoder sees real H.264. When the CLI is
@@ -15,7 +17,10 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
+#include "media/AudioClock.h"
+#include "media/AudioRing.h"
 #include "media/FrameRing.h"
 #include "media/MediaProbe.h"
 #include "media/VideoFrameSource.h"
@@ -225,6 +230,69 @@ bool exerciseLoop(const std::string& mp4Path) {
     return ok;
 }
 
+// 1.5c: the ring arithmetic and clock the PipeWire callback leans on —
+// deterministic and silent, the live tone run lives behind --pw-check.
+bool exerciseAudio() {
+    bool ok = true;
+    openshow::media::AudioRing ring;
+    ok = check(!ring.create(0), "a zero-capacity audio ring is refused") && ok;
+    ok = check(ring.create(10), "audio ring creates") && ok;
+    ok = check(ring.capacity() == 10 && ring.available() == 0 && ring.free() == 10,
+               "empty ring accounting") && ok;
+
+    // Fill past capacity across the wrap point and read the bytes back in
+    // order: 8 frames, then 8 more of which only 2 fit.
+    std::vector<float> chunk(16);
+    for (int round = 0; round < 2; ++round) {
+        for (size_t i = 0; i < chunk.size(); ++i) {
+            chunk[i] = static_cast<float>(round * 100 + i);
+        }
+        const size_t expected = round == 0 ? 8 : 2;
+        ok = check(ring.write(chunk.data(), 8) == expected,
+                   "writes are capped at the free space") && ok;
+    }
+    ok = check(ring.available() == 10 && ring.free() == 0, "ring reports itself full") && ok;
+
+    std::vector<float> drained(24, -1.0f);
+    ok = check(ring.read(drained.data(), 12) == 10, "reads are capped at what is available") && ok;
+    bool contents = true;
+    for (int i = 0; i < 16; ++i) {
+        contents = contents && drained[i] == static_cast<float>(i);
+    }
+    contents = contents && drained[16] == 100.0f && drained[17] == 101.0f;
+    ok = check(contents, "samples survive the wrap in order") && ok;
+    ok = check(ring.available() == 0, "reading empties the ring") && ok;
+    ring.reset();
+    ok = check(ring.free() == 10, "reset restores the full capacity") && ok;
+
+    openshow::media::AudioClock clock;
+    ok = check(clock.clockSeconds() == 0.0, "an unrated clock reads zero") && ok;
+    clock.setRate(1000);
+    clock.anchor();
+    clock.addDelivered(500);
+    ok = check(clock.clockSeconds() == 0.5, "clock is delivered frames / rate") && ok;
+    clock.anchor();
+    ok = check(clock.deliveredFrames() == 0 && clock.clockSeconds() == 0.0,
+               "anchoring restarts the count") && ok;
+    clock.addDelivered(10);
+    ok = check(clock.clockSeconds() == 0.01, "the clock only moves with delivery") && ok;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    ok = check(clock.wallElapsedSeconds() >= 0.01 && clock.clockSeconds() == 0.01,
+               "wall time advances on its own; the audio clock does not") && ok;
+
+    // The live clock source: the server's stream-time report takes over and
+    // extrapolates between callbacks.
+    const int64_t nowNs = openshow::media::AudioClock::monotonicNs();
+    clock.setStreamTime(4800 /* frames played */, nowNs - 10'000'000 /* reported 10ms ago */,
+                        48000.0);
+    const double withStream = clock.clockSeconds();
+    ok = check(withStream > 0.105 && withStream < 0.115,
+               "stream time extrapolates from the reported tick") && ok;
+    clock.anchor();
+    ok = check(clock.clockSeconds() == 0.0, "anchoring drops the stream-time report") && ok;
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -323,6 +391,9 @@ int main() {
     ok = exerciseDecode(hd) && ok;
     ok = exerciseBackpressure(hd) && ok;
     ok = exerciseLoop(mp4) && ok;
+
+    // ---- 1.5c: AudioRing + AudioClock (live PipeWire is --pw-check) ----
+    ok = exerciseAudio() && ok;
 
     if (!ok) {
         return 1;

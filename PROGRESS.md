@@ -512,6 +512,59 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
     1.5 number to watch is decode-to-present under the GPU path (1.5d)
     and the soak (1.5f), where pacing and A/V drift matter, not raw
     decode throughput.
+- **1.5c** DONE. `AudioRing.{h,cpp}`, `AudioClock.h`, `PipeWireSink.{h,cpp}`
+  and the worker dev flag `--pw-check [--seconds S]`.
+  - `AudioRing` is the lock-free SPSC ring of interleaved stereo F32:
+    monotone head/tail counters (no empty/full ambiguity), write capped
+    at free space, read capped at available, two-memcpy wrap. Bounded at
+    construction (2 s at the requested rate), never grows.
+  - `PipeWireSink` owns a `pw_main_loop` thread, `pw_context` and one
+    playback stream (`openshow-bench`, F32 stereo, `PW_KEY_NODE_LATENCY
+    1024/48000`), connects with AUTOCONNECT|MAP_BUFFERS and waits ≤1.5 s
+    on a condvar for STREAMING; failure = "daemon unavailable" reported
+    through `start()` so callers skip rather than fail. The `.process`
+    callback drains the ring, zero-pads the shortfall (counting
+    `underrunEvents`/`underrunFrames`), sets chunk size/stride, tallies
+    callback-arrival intervals into a fixed histogram (2 ms × 500
+    buckets) and hands the server's stream-time report to the clock —
+    no allocation, no lock in the data path.
+  - `AudioClock` reads through the server's `pw_time` (`ticks` = frames
+    the sink is reading, `now` = CLOCK_MONOTONIC ns, rate 1/48000),
+    extrapolating between callbacks under a tiny seqlock — the clock
+    ticks at server discipline, not at buffer-slice granularity.
+    Delivered-frames/rate remains as fallback (and as feed accounting);
+    `anchor()` clears the stream-time report. This upgrade came out of
+    the live runs: with a full ring the server pulls one 12288-frame
+    slice per ~256 ms, so a delivered-count clock can never resolve
+    50 ms drift — the server-disciplined tick can.
+  - Live evidence on this machine (speaker sink): `--pw-check --seconds
+    10` → rate 48000, 39 callbacks, p99 258 ms, **0 underruns**, clock
+    9.971 s vs wall 10.008 s (+37 ms total, mostly initial queue fill);
+    `--seconds 60` → 235 callbacks, **0 underruns**, clock 60.059 s vs
+    wall 60.039 s (**drift −20.1 ms**), exit 0. The p99 ≈ slice/rate is
+    expected pacing, not a defect — the callback fires when the server
+    needs the next slice. `--pw-check` verdicts on the post-warm-up
+    window (underrun delta = 0, |window drift| < 50 ms) so the first
+    fill does not count against "fed runs never underrun".
+  - `media_tests` gained `exerciseAudio()`: ring caps/wrap-order/reset,
+    unrated clock reads zero, clock = delivered/rate, anchoring restarts
+    and drops the stream-time report, and stream time extrapolates from
+    a reported tick. Automated tests stay **silent** — no PipeWire null
+    sink exists on this machine, so the live tone run is manual
+    acceptance evidence. Desktop **9/9**, headless **7/7**.
+  - PipeWire 1.6 gotchas learned the hard way: `pw_stream_new` takes a
+    `pw_core*` from `pw_context_connect` (that connect is where "no
+    daemon" surfaces; teardown is `pw_core_disconnect`); the enums carry
+    no `_t` typedefs (`enum pw_stream_state`); `spa_format_audio_raw_parse`
+    returns **positive** (4) on success, negative errno on failure — a
+    `== 0` check silently loses the negotiated rate, which then starves
+    any consumer that sizes itself from it; there is **no**
+    `pw_main_loop_lock` — PipeWire rejects cross-thread object calls
+    ("called from wrong context… Operation not permitted"), so the loop
+    thread itself destroys stream and core after `pw_main_loop_run`
+    returns and `stop()` waits on that before destroying the context;
+    without `PW_KEY_NODE_LATENCY` the server hands the whole ring per
+    callback (~4 Hz) and any timing histogram measures the wrong thing.
 
 ## Verification and environment
 

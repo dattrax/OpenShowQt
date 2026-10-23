@@ -21,12 +21,14 @@ add_executable(openshow::worker ALIAS openshow-worker)
 # plain C++ (FFmpeg.h is module-private), which also keeps libav includes
 # out of everything else. PUBLIC include dir = src/worker for "media/..." paths.
 add_library(openshow-worker-media STATIC
+  media/AudioRing.cpp
   media/FrameRing.cpp
   media/MediaProbe.cpp
+  media/PipeWireSink.cpp
   media/VideoFrameSource.cpp
 )
 add_library(openshow::worker_media ALIAS openshow-worker-media)
-target_link_libraries(openshow-worker-media PRIVATE PkgConfig::FFMPEG)
+target_link_libraries(openshow-worker-media PRIVATE PkgConfig::FFMPEG PkgConfig::PIPEWIRE)
 target_include_directories(openshow-worker-media PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # The worker must stay free of Qt. tests/CheckNoQt.cmake enforces this.
