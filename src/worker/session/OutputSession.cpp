@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <unistd.h>
+
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
@@ -20,11 +22,13 @@
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkSurface.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/SkSurfaceGanesh.h"
 #include "include/gpu/ganesh/vk/GrVkDirectContext.h"
 
 #include "output/OutputWindow.h"
 #include "output/Swapchain.h"
 #include "output/VulkanContext.h"
+#include "preview/PreviewStream.h"
 #include "render/TestScene.h"
 
 namespace openshow::worker {
@@ -139,6 +143,11 @@ void OutputSession::close() {
         fSwapchain->destroy();
         fSwapchain.reset();
     }
+    fPreviewSurface.reset();
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        fPreviewStream.reset();  // unlinks the preview segment (unless a release call still holds it)
+    }
     fContext.reset();
     if (fVk) {
         fVk->destroy();
@@ -208,6 +217,88 @@ bool OutputSession::selectMonitor(int index, uint64_t* revisionOut) {
 std::vector<OutputSession::DisplayInfo> OutputSession::displays() const {
     std::lock_guard<std::mutex> lock(fMutex);
     return fDisplays;
+}
+
+bool OutputSession::startPreview(uint32_t width, uint32_t height, uint32_t fps,
+                                 PreviewInfo* info, std::string* error) {
+    // Geometry limits: a preview, not a second output.
+    if (width < 64 || width > 1920 || height < 48 || height > 1080 || fps < 1 ||
+        fps > 60) {
+        if (error) {
+            *error = "preview wants width 64..1920, height 48..1080, fps 1..60";
+        }
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(fMutex);
+    ++fPreviewRequestCounter;
+    PreviewDesired desired;
+    desired.enabled = true;
+    desired.width = width;
+    desired.height = height;
+    desired.fps = fps;
+    desired.name = "/openshow-preview-" + std::to_string(static_cast<long>(::getpid())) +
+                   "-" + std::to_string(1000u + fPreviewRequestCounter);
+    desired.generation = fDesiredPreview.generation + 1;
+    fDesiredPreview = std::move(desired);
+
+    // Fresh counters for the new stream; running flips true when the
+    // render thread has actually built the segment and surface.
+    fStatus.preview = PreviewStatus{};
+    fStatus.preview.name = fDesiredPreview.name;
+    fStatus.preview.width = width;
+    fStatus.preview.height = height;
+    fStatus.preview.fps = fps;
+    for (auto& pending : fPendingReady) {
+        pending.reset();  // slots belong to the stream being replaced
+    }
+
+    if (info) {
+        info->name = fDesiredPreview.name;
+        info->width = width;
+        info->height = height;
+        info->slotCount = protocol::kPreviewSlotCount;
+        info->bytesPerSlot =
+            static_cast<uint32_t>(protocol::previewSlotStrideBytes(width, height));
+    }
+    return true;
+}
+
+void OutputSession::stopPreview() {
+    std::lock_guard<std::mutex> lock(fMutex);
+    if (!fDesiredPreview.enabled) {
+        return;
+    }
+    fDesiredPreview.enabled = false;
+    ++fDesiredPreview.generation;
+    for (auto& pending : fPendingReady) {
+        pending.reset();
+    }
+}
+
+void OutputSession::releasePreviewSlot(uint32_t slot, uint64_t seq) {
+    std::shared_ptr<PreviewStream> stream;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        stream = fPreviewStream;
+    }
+    if (stream) {
+        stream->release(slot, seq);
+    }
+}
+
+bool OutputSession::takePreviewReady(PreviewReady* out) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    for (auto& pending : fPendingReady) {
+        if (pending) {
+            if (out) {
+                *out = *pending;
+            }
+            pending.reset();
+            return true;
+        }
+    }
+    return false;
 }
 
 void OutputSession::refreshDisplaySnapshot() {
@@ -305,9 +396,138 @@ void OutputSession::applyPendingDisplayChange() {
     fStatus.revision = fRevision;
 }
 
+void OutputSession::applyPreviewState() {
+    PreviewDesired desired;
+    std::shared_ptr<PreviewStream> retire;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (fDesiredPreview.generation == fAppliedPreviewGeneration) {
+            return;
+        }
+        desired = fDesiredPreview;
+        retire = std::move(fPreviewStream);
+        fAppliedPreviewGeneration = desired.generation;
+    }
+    // Outside the lock: an RPC thread answering a release may still hold a
+    // reference, and the unlink then happens on its last drop.
+    retire.reset();
+    fPreviewSurface.reset();
+
+    if (!desired.enabled) {
+        std::lock_guard<std::mutex> lock(fMutex);
+        fStatus.preview = PreviewStatus{};
+        return;
+    }
+
+    auto stream = std::make_shared<PreviewStream>();
+    std::string error;
+    const bool ok = stream->create(desired.name, desired.width, desired.height, &error);
+    std::lock_guard<std::mutex> lock(fMutex);
+    fStatus.preview.running = ok;
+    fStatus.preview.name = desired.name;
+    fStatus.preview.width = desired.width;
+    fStatus.preview.height = desired.height;
+    fStatus.preview.fps = desired.fps;
+    fStatus.preview.error = ok ? std::string() : error;
+    if (ok) {
+        fPreviewStream = std::move(stream);
+        fLastPreview = std::chrono::steady_clock::time_point{};  // tick immediately
+    }
+}
+
+void OutputSession::publishPreviewFrame(double elapsed) {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t fps = 0;
+    uint32_t revision = 0;
+    std::shared_ptr<PreviewStream> stream;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (!fStatus.preview.running) {
+            return;
+        }
+        width = fStatus.preview.width;
+        height = fStatus.preview.height;
+        fps = fStatus.preview.fps;
+        stream = fPreviewStream;
+        revision = static_cast<uint32_t>(fRevision);
+    }
+    if (!stream) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now - fLastPreview < std::chrono::duration<double>(1.0 / fps)) {
+        return;
+    }
+    fLastPreview = now;
+
+    const int slot = stream->claim();
+    if (slot < 0) {
+        // Every slot is still owned by the consumer: drop the preview
+        // frame, never block the output for it (PLAN.md "Preview").
+        std::lock_guard<std::mutex> lock(fMutex);
+        ++fStatus.preview.dropped;
+        return;
+    }
+
+    if (!fPreviewSurface || fPreviewSurface->width() != static_cast<int>(width) ||
+        fPreviewSurface->height() != static_cast<int>(height)) {
+        const SkImageInfo info =
+            SkImageInfo::Make(static_cast<int>(width), static_cast<int>(height),
+                              kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+        fPreviewSurface =
+            SkSurfaces::RenderTarget(fContext.get(), skgpu::Budgeted::kNo, info);
+        if (!fPreviewSurface) {
+            stream->abort(slot);
+            std::lock_guard<std::mutex> lock(fMutex);
+            ++fStatus.preview.dropped;
+            fStatus.preview.running = false;
+            fStatus.preview.error = "could not create the preview surface";
+            return;
+        }
+    }
+
+    // The same scene through the same draw path as the audience output,
+    // only smaller; the diagnostics status line stays empty so it does
+    // not crowd the preview.
+    fScene->draw(fPreviewSurface->getCanvas(), static_cast<int>(width),
+                 static_cast<int>(height), elapsed, std::string());
+
+    const SkImageInfo dst = SkImageInfo::Make(static_cast<int>(width),
+                                              static_cast<int>(height),
+                                              kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    if (!fPreviewSurface->readPixels(dst, stream->slotPixels(slot), stream->rowBytes(), 0,
+                                     0)) {
+        stream->abort(slot);
+        std::lock_guard<std::mutex> lock(fMutex);
+        ++fStatus.preview.dropped;
+        fStatus.preview.error = "preview readback failed";
+        return;
+    }
+
+    const uint64_t publishedNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch())
+            .count());
+    const uint64_t seq = stream->publish(slot, revision, publishedNs);
+
+    PreviewReady ready;
+    ready.slot = static_cast<uint32_t>(slot);
+    ready.seq = seq;
+    ready.width = width;
+    ready.height = height;
+    ready.rowBytes = stream->rowBytes();
+    ready.revision = revision;
+    ready.publishedNs = publishedNs;
+    std::lock_guard<std::mutex> lock(fMutex);
+    fPendingReady[slot] = ready;
+    ++fStatus.preview.published;
+}
+
 void OutputSession::frame() {
     applyPendingLayerChanges();
     applyPendingDisplayChange();
+    applyPreviewState();
     glfwPollEvents();
 
     int width = 0;
@@ -378,6 +598,16 @@ void OutputSession::frame() {
             createSwapchain();
             return;
         }
+    }
+
+    // Preview (task 1.4) runs after the audience frame is presented: the
+    // extra pass never delays the swapchain work it follows, and its
+    // throttling and drop policy live entirely in publishPreviewFrame.
+    if (fFrames > 0) {
+        const double elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - fStartTime)
+                .count();
+        publishPreviewFrame(elapsed);
     }
 
     // Wayland may configure the surface after the swapchain was created

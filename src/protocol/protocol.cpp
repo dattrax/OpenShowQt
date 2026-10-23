@@ -128,6 +128,14 @@ boost::json::object makeError(std::int64_t id, ErrorCode code, std::string_view 
     return response;
 }
 
+boost::json::object makeNotification(std::string_view method, boost::json::object params) {
+    boost::json::object notification;
+    notification["jsonrpc"] = "2.0";
+    notification["method"] = std::string(method);
+    notification["params"] = std::move(params);
+    return notification;
+}
+
 bool looksLikeJsonRpc(const boost::json::value& value) {
     if (!value.is_object()) {
         return false;
@@ -193,7 +201,8 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
         {"protocol", boost::json::object{{"major", kProtocolMajor},
                                          {"minor", kProtocolMinor}}},
         {"capabilities",
-         boost::json::array{"output.status.v1", "output.layers.v1", "shutdown.v1"}}};
+         boost::json::array{"output.status.v1", "output.layers.v1", "preview.shm.v1",
+                            "shutdown.v1"}}};
     return true;
 }
 

@@ -22,12 +22,16 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "include/core/SkRefCnt.h"
+#include "include/core/SkSurface.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
+
+#include "openshow/protocol/preview_wire.h"
 
 #include "output/OutputWindow.h"
 #include "output/Swapchain.h"
@@ -36,6 +40,8 @@
 #include "render/TestScene.h"
 
 namespace openshow::worker {
+
+class PreviewStream;
 
 class OutputSession {
 public:
@@ -64,6 +70,21 @@ public:
         int refreshHz = 0;
     };
 
+    // Live preview state as the render thread applies it. running only
+    // turns true once the shm segment exists; error explains a failed
+    // start (and then running stays false). published/dropped let the
+    // frontend show the load behaviour honestly.
+    struct PreviewStatus {
+        bool running = false;
+        std::string name;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t fps = 0;
+        uint64_t published = 0;
+        uint64_t dropped = 0;
+        std::string error;
+    };
+
     // Snapshot of output state, safe to take from any thread. layerMask
     // reports what has actually been applied on the render thread, so a
     // caller can wait for status().revision >= the revision its command
@@ -79,6 +100,33 @@ public:
         // index, with its name empty when windowed.
         int monitor = -1;
         std::string monitorName;
+        PreviewStatus preview;
+    };
+
+    // --- preview (task 1.4) ---
+
+    // What preview.start reports: where the frames will live and how the
+    // segment is laid out (openshow/protocol/preview_wire.h). The segment
+    // itself is created by the render thread on its next frame, so wait
+    // for the first preview.ready notification (or status().preview
+    // .running) before mapping.
+    struct PreviewInfo {
+        std::string name;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t slotCount = 0;
+        uint32_t bytesPerSlot = 0;
+    };
+
+    // One queued preview.ready notification (drained by the RPC thread).
+    struct PreviewReady {
+        uint32_t slot = 0;
+        uint64_t seq = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t rowBytes = 0;
+        uint32_t revision = 0;
+        uint64_t publishedNs = 0;
     };
 
     OutputSession() = default;
@@ -116,6 +164,25 @@ public:
     // change is included in.
     bool selectMonitor(int index, uint64_t* revisionOut);
 
+    // Enables the preview pipeline (task 1.4): the same scene, drawn to
+    // a GPU offscreen surface at the requested size, is read back into
+    // rotating shm slots at the requested cadence. Callable from any
+    // thread; the segment and the surface are built by the render thread
+    // on its next frame. Calling it again replaces the stream under a new
+    // name. Geometry limits keep a preview a preview, not a second output.
+    bool startPreview(uint32_t width, uint32_t height, uint32_t fps,
+                      PreviewInfo* info, std::string* error);
+    void stopPreview();
+
+    // The consumer finished copying slot@seq; the slot becomes claimable
+    // again. Releases for an unknown slot or stale sequence are ignored.
+    void releasePreviewSlot(uint32_t slot, uint64_t seq);
+
+    // Pops one queued preview.ready notification (RPC thread). At most
+    // one is queued per slot: if the RPC side lags, the newest frame for
+    // that slot is all that matters.
+    bool takePreviewReady(PreviewReady* out);
+
     Status status() const;
     void requestStop();
     bool running() const;
@@ -125,6 +192,8 @@ private:
     void frame();
     void applyPendingLayerChanges();
     void applyPendingDisplayChange();
+    void applyPreviewState();
+    void publishPreviewFrame(double elapsed);
     void refreshDisplaySnapshot();
 
     std::unique_ptr<OutputWindow> fWindow;
@@ -151,6 +220,27 @@ private:
     int fAppliedMonitor = -1;
     std::vector<DisplayInfo> fDisplays;
     Status fStatus;
+
+    // Preview pipeline (task 1.4). Desired state is set from the RPC
+    // thread and a generation counter drives creation/retirement on the
+    // render thread. The stream is shared_ptr'd because the RPC thread
+    // may hold it while answering a release exactly as the render thread
+    // retires it: destruction then defers to the last reference.
+    struct PreviewDesired {
+        bool enabled = false;
+        uint32_t width = 640;
+        uint32_t height = 360;
+        uint32_t fps = 15;
+        std::string name;  // shm object name when enabled
+        uint64_t generation = 0;
+    };
+    PreviewDesired fDesiredPreview;            // fMutex
+    uint32_t fPreviewRequestCounter = 0;       // fMutex, names the segments
+    uint64_t fAppliedPreviewGeneration = 0;    // render thread
+    std::shared_ptr<PreviewStream> fPreviewStream;  // fMutex
+    sk_sp<SkSurface> fPreviewSurface;          // render thread only
+    std::optional<PreviewReady> fPendingReady[protocol::kPreviewSlotCount];  // fMutex
+    std::chrono::steady_clock::time_point fLastPreview;  // render thread
 };
 
 }  // namespace openshow::worker

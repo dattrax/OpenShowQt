@@ -4,7 +4,7 @@ import QtQuick.Controls
 Window {
     id: root
     width: 960
-    height: 600
+    height: 760
     visible: true
     color: "#141414"
     title: "OpenShowQt " + applicationVersion
@@ -90,6 +90,39 @@ Window {
                     checked: worker.layers[modelData] === true
                     onToggled: worker.setLayerEnabled(modelData, checked)
                 }
+            }
+        }
+
+        // Task 1.4: the audience output as the worker sees it, streamed
+        // over shared memory. Qt only paints bytes here; the scene is the
+        // worker's Skia render, downscaled to preview size.
+        Column {
+            visible: worker.outputLive
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: 4
+
+            Rectangle {
+                width: 480
+                height: 270
+                color: "black"
+                border.color: "#3a3a3a"
+
+                PreviewView {
+                    anchors.fill: parent
+                    anchors.margins: 1
+                    controller: worker
+                }
+            }
+
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                color: "#9a9a9a"
+                font.pixelSize: 12
+                text: worker.previewActive
+                    ? "preview · " + worker.previewFrames + " frames shown · "
+                      + worker.previewDropped + " dropped"
+                    : (worker.previewError !== ""
+                       ? "preview: " + worker.previewError : "preview starting...")
             }
         }
     }

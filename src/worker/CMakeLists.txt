@@ -3,6 +3,7 @@ add_executable(openshow-worker
   output/OutputWindow.cpp
   output/Swapchain.cpp
   output/VulkanContext.cpp
+  preview/PreviewStream.cpp
   render/Layer.cpp
   render/TestScene.cpp
   rpc/RpcServer.cpp
@@ -30,3 +31,9 @@ target_link_libraries(openshow-worker PRIVATE
 target_include_directories(openshow-worker PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
+
+# shm_open lives in libc since glibc 2.34 and in librt before that.
+find_library(OPENSHOW_LIBRT rt)
+if(OPENSHOW_LIBRT)
+  target_link_libraries(openshow-worker PRIVATE ${OPENSHOW_LIBRT})
+endif()

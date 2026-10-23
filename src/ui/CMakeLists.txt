@@ -11,6 +11,7 @@ qt_add_qml_module(openshow-ui
   URI OpenShow
   VERSION 1.0
   QML_FILES Main.qml
+  SOURCES PreviewView.h PreviewView.cpp
 )
 
 # In-tree development path to the worker; packaging (task 6.3) will place

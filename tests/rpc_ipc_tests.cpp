@@ -11,6 +11,7 @@
 
 #include <boost/json.hpp>
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -18,15 +19,21 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <poll.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
 
 namespace {
@@ -79,7 +86,38 @@ int connectRetry(const std::string& path) {
 
 proto::Decoder gDecoder;
 
-// Sends one framed request and waits (bounded) for the next framed reply.
+// preview.ready notifications can interleave with any reply once previews
+// are running; they queue here so the preview scenario still finds them.
+std::deque<boost::json::object> gReadyQueue;
+
+void routeNotification(const boost::json::value& message) {
+    if (!message.is_object()) {
+        return;
+    }
+    const boost::json::object& object = message.as_object();
+    const auto method = object.find("method");
+    if (method != object.end() && method->value().is_string() &&
+        method->value().as_string() == proto::kMethodPreviewReady &&
+        object.contains("params") && object.at("params").is_object()) {
+        gReadyQueue.emplace_back(object.at("params").as_object());
+    }
+}
+
+bool messageHasId(const boost::json::value& message, std::int64_t id) {
+    const auto found = message.as_object().find("id");
+    if (found == message.as_object().end()) {
+        return false;
+    }
+    if (found->value().is_int64()) {
+        return found->value().as_int64() == id;
+    }
+    return found->value().is_uint64() &&
+           found->value().as_uint64() == static_cast<std::uint64_t>(id);
+}
+
+// Sends one framed request and waits (bounded) for the reply carrying its
+// id; notifications that arrive on the way are routed, not mistaken for an
+// answer.
 bool call(int fd, std::int64_t id, const char* method, boost::json::object params,
           boost::json::value* reply) {
     std::string wire;
@@ -103,11 +141,26 @@ bool call(int fd, std::int64_t id, const char* method, boost::json::object param
             gDecoder.feed(std::string_view(buffer, static_cast<std::size_t>(count)));
         }
         std::string error;
-        if (gDecoder.next(reply, &error)) {
-            return true;
+        boost::json::value message;
+        while (gDecoder.next(&message, &error)) {
+            if (!message.is_object()) {
+                continue;
+            }
+            if (message.as_object().contains("method")) {
+                routeNotification(message);
+            } else if (messageHasId(message, id)) {
+                *reply = std::move(message);
+                return true;
+            }
         }
     }
     return false;
+}
+
+bool sendNotification(int fd, const char* method, boost::json::object params) {
+    std::string wire;
+    proto::appendFrame(proto::makeNotification(method, std::move(params)), &wire);
+    return ::send(fd, wire.data(), wire.size(), MSG_NOSIGNAL) >= 0;
 }
 
 bool isErrorCode(const boost::json::value& reply, proto::ErrorCode code) {
@@ -144,6 +197,130 @@ bool waitForMonitor(int fd, int wanted, std::uint64_t atLeastRevision, int secon
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+}
+
+// Waits (bounded) for the next preview.ready notification, whether it
+// already arrived interleaved with some earlier reply or comes in now.
+bool nextPreviewReady(int fd, boost::json::object* ready, int seconds) {
+    if (!gReadyQueue.empty()) {
+        *ready = std::move(gReadyQueue.front());
+        gReadyQueue.pop_front();
+        return true;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    for (;;) {
+        const auto remaining = deadline - std::chrono::steady_clock::now();
+        if (remaining <= std::chrono::milliseconds(0)) {
+            return false;
+        }
+        pollfd pending{fd, POLLIN, 0};
+        const int readyFd =
+            ::poll(&pending, 1,
+                   static_cast<int>(
+                       std::chrono::duration_cast<std::chrono::milliseconds>(remaining)
+                           .count()));
+        if (readyFd < 0 && errno == EINTR) {
+            continue;
+        }
+        if (readyFd > 0) {
+            char buffer[65536];
+            const ssize_t count = ::recv(fd, buffer, sizeof(buffer), 0);
+            if (count <= 0) {
+                return false;
+            }
+            gDecoder.feed(std::string_view(buffer, static_cast<std::size_t>(count)));
+            std::string error;
+            boost::json::value message;
+            while (gDecoder.next(&message, &error)) {
+                routeNotification(message);
+            }
+            if (!gReadyQueue.empty()) {
+                *ready = std::move(gReadyQueue.front());
+                gReadyQueue.pop_front();
+                return true;
+            }
+        }
+    }
+}
+
+// Throws away queued notifications (and any still buffered on the socket):
+// after a stop they belong to a stream that no longer exists.
+void drainReadyNotifications(int fd) {
+    gReadyQueue.clear();
+    for (;;) {
+        pollfd pending{fd, POLLIN, 0};
+        if (::poll(&pending, 1, 0) <= 0) {
+            break;
+        }
+        char buffer[65536];
+        const ssize_t count = ::recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT);
+        if (count <= 0) {
+            break;
+        }
+        gDecoder.feed(std::string_view(buffer, static_cast<std::size_t>(count)));
+        std::string error;
+        boost::json::value message;
+        while (gDecoder.next(&message, &error)) {
+            routeNotification(message);
+        }
+    }
+    gReadyQueue.clear();
+}
+
+// Reads the counters this scenario cares about out of one output.status.
+bool readPreviewCounts(int fd, std::int64_t id, std::uint64_t* frames,
+                       std::uint64_t* published, std::uint64_t* dropped) {
+    boost::json::value reply;
+    if (!call(fd, id, "output.status", {}, &reply)) {
+        return false;
+    }
+    const boost::json::object& status = reply.at("result").as_object();
+    *frames = numberValue(status.at("frames"));
+    const boost::json::object& preview = status.at("preview").as_object();
+    *published = numberValue(preview.at("published"));
+    *dropped = numberValue(preview.at("dropped"));
+    return true;
+}
+
+// Waits for one preview.ready, copies its payload under the seqlock and
+// releases the slot; true only when the sequence says nothing moved during
+// the copy.
+bool copyOneFrame(int fd, const std::uint8_t* segment, std::size_t bytesPerSlot,
+                  std::uint64_t width, std::uint64_t height,
+                  std::vector<std::uint8_t>* pixels) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    boost::json::object ready;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!nextPreviewReady(fd, &ready, 3)) {
+            return false;
+        }
+        const std::uint64_t slot = numberValue(ready.at("slot"));
+        const std::uint64_t seq = numberValue(ready.at("seq"));
+        const std::uint64_t rowBytes = numberValue(ready.at("rowBytes"));
+        bool intact = false;
+        if (slot < proto::kPreviewSlotCount && rowBytes == width * 4) {
+            const std::uint8_t* slotBase =
+                segment + proto::previewSlotOffset(static_cast<std::uint32_t>(slot),
+                                                   bytesPerSlot);
+            const auto* header =
+                reinterpret_cast<const proto::PreviewSlotHeader*>(slotBase);
+            const std::uint64_t seqBefore =
+                std::atomic_ref<const std::uint64_t>(header->seq).load();
+            if (seqBefore == seq && (seqBefore & 1) == 0) {
+                pixels->resize(static_cast<std::size_t>(rowBytes) * height);
+                std::memcpy(pixels->data(), slotBase + sizeof(proto::PreviewSlotHeader),
+                            pixels->size());
+                intact = std::atomic_ref<const std::uint64_t>(header->seq).load() ==
+                         seqBefore;
+            }
+        }
+        sendNotification(fd, proto::kMethodPreviewReleased,
+                         boost::json::object{{"slot", slot}, {"seq", seq}});
+        if (intact) {
+            return true;
+        }
     }
     return false;
 }
@@ -194,7 +371,7 @@ void testServedSession() {
         const boost::json::value& result = reply.at("result");
         check(result.as_object().at("protocol").as_object().at("major").is_number(),
               "hello negotiates a protocol version");
-        check(result.as_object().at("capabilities").as_array().size() == 3,
+        check(result.as_object().at("capabilities").as_array().size() == 4,
               "hello lists worker capabilities");
     }
 
@@ -340,6 +517,266 @@ void testDisplaySelection() {
     check(waitExit(pid, 5) == 0, "display-scenario worker exits cleanly");
 }
 
+// Scenario D (task 1.4): the shared-memory preview as the frontend sees it.
+// Start a stream, wait for a first ready, map the promised segment, copy
+// frames under the slot seqlock and release them, then hold all three slots
+// to prove the producer drops instead of blocking the audience output,
+// release to see the stream resume, stop (segment unlinked), and start a
+// second stream to prove streams are replaceable.
+void testPreviewStream() {
+    const std::string path = socketPath("preview");
+    const pid_t pid = spawnWorker(path);
+    if (!check(pid > 0, "worker spawned (preview scenario)")) {
+        return;
+    }
+    const int fd = connectRetry(path);
+    if (!check(fd >= 0, "connected to the worker socket")) {
+        killWorker(pid);
+        return;
+    }
+    boost::json::value reply;
+    if (!check(call(fd, 1, "hello", proto::helloParams("ipc-test", 0, 1), &reply),
+               "hello succeeded (preview scenario)")) {
+        killWorker(pid);
+        return;
+    }
+
+    // Explicit geometry: this also proves numeric params are honoured —
+    // Boost.JSON stores small integers as int64, so a uint64-only reader
+    // silently ignores every one of them (seen 2026-10-23).
+    const std::uint64_t width = 320;
+    const std::uint64_t height = 240;
+    std::string name;
+    std::size_t bytesPerSlot = 0;
+    const bool started = call(fd, 2, "preview.start",
+                              boost::json::object{{"width", width}, {"height", height},
+                                                  {"fps", 15}},
+                              &reply) &&
+                         reply.as_object().contains("result");
+    if (!check(started, "preview.start with an explicit size is acknowledged")) {
+        killWorker(pid);
+        return;
+    }
+    {
+        const boost::json::object& result = reply.at("result").as_object();
+        name = std::string(result.at("name").as_string());
+        bytesPerSlot = static_cast<std::size_t>(numberValue(result.at("bytesPerSlot")));
+        check(!name.empty() && name.front() == '/', "preview.start names a shm segment");
+        check(numberValue(result.at("slotCount")) == proto::kPreviewSlotCount,
+              "the start result reports three slots");
+        check(bytesPerSlot == proto::previewSlotStrideBytes(width, height),
+              "bytesPerSlot matches the requested geometry");
+        check(numberValue(result.at("width")) == width &&
+                  numberValue(result.at("height")) == height,
+              "the start result echoes the requested geometry");
+        check(fieldEquals(result, "format", "RGBA8888"), "the wire format is RGBA8888");
+    }
+
+    // The segment exists once the render thread has acted; a first ready
+    // proves it did, which is exactly when the frontend maps.
+    boost::json::object ready;
+    if (!check(nextPreviewReady(fd, &ready, 5), "a preview.ready notification arrives")) {
+        ::close(fd);
+        killWorker(pid);
+        return;
+    }
+
+    const std::size_t totalBytes = proto::previewSegmentBytes(width, height);
+    const int shmFd = ::shm_open(name.c_str(), O_RDONLY, 0);
+    if (!check(shmFd >= 0, "the promised shm segment exists once frames flow")) {
+        killWorker(pid);
+        return;
+    }
+    struct stat info {};
+    ::fstat(shmFd, &info);
+    check(static_cast<std::size_t>(info.st_size) == totalBytes,
+          "the segment is exactly the promised size");
+    const auto* segment = static_cast<const proto::PreviewSegmentHeader*>(
+        ::mmap(nullptr, totalBytes, PROT_READ, MAP_SHARED, shmFd, 0));
+    if (!check(segment != MAP_FAILED, "the consumer maps the segment read-only")) {
+        ::close(shmFd);
+        killWorker(pid);
+        return;
+    }
+    check(segment->magic == proto::kPreviewMagic &&
+              segment->layoutVersion == proto::kPreviewLayoutVersion &&
+              segment->slotCount == proto::kPreviewSlotCount &&
+              segment->bytesPerSlot == bytesPerSlot && segment->width == width &&
+              segment->height == height &&
+              segment->format == proto::kPreviewFourccRGBA8,
+          "the segment header matches the start result");
+    // That first ready was the "the segment exists" signal and its frame
+    // was not copied, so release the slot it came on: an unreleased slot
+    // stays owned forever by design (the smoke script learned this first).
+    sendNotification(fd, proto::kMethodPreviewReleased,
+                     boost::json::object{{"slot", numberValue(ready.at("slot"))},
+                                         {"seq", numberValue(ready.at("seq"))}});
+
+    // Copy two frames that survive the seqlock check; the first one is kept
+    // for a content comparison after a layer toggle.
+    std::vector<std::uint8_t> frameWithImages;
+    const bool gotFirst =
+        copyOneFrame(fd, reinterpret_cast<const std::uint8_t*>(segment), bytesPerSlot,
+                     width, height, &frameWithImages);
+    check(gotFirst, "a frame copied intact through the slot seqlock");
+    std::vector<std::uint8_t> frameSecond;
+    check(copyOneFrame(fd, reinterpret_cast<const std::uint8_t*>(segment), bytesPerSlot,
+                       width, height, &frameSecond),
+          "a second frame copied intact through the slot seqlock");
+    bool frameHadContent = false;
+    for (std::size_t i = 3; gotFirst && i < frameWithImages.size(); i += 4) {
+        if (frameWithImages[i] == 0xFF &&
+            (frameWithImages[i - 3] | frameWithImages[i - 2] | frameWithImages[i - 1]) !=
+                0) {
+            frameHadContent = true;
+            break;
+        }
+    }
+    check(frameHadContent, "the copied frame is not a blank buffer");
+
+    // The preview is not a snapshot: toggling the images layer must change
+    // what the slots carry. Many pixels have to differ because the photo
+    // covers a fifth of the canvas, while the ticking clock alone repaints
+    // a thin text strip.
+    if (gotFirst) {
+        if (check(call(fd, 3, "layer.setEnabled",
+                       boost::json::object{{"layer", "images"}, {"enabled", false}},
+                       &reply) &&
+                      reply.as_object().contains("result"),
+                  "turning the images layer off is acknowledged (preview scenario)")) {
+            const std::uint64_t ackedRevision =
+                numberValue(reply.at("result").as_object().at("revision"));
+            bool applied = false;
+            const auto applyDeadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!applied && std::chrono::steady_clock::now() < applyDeadline) {
+                boost::json::value statusReply;
+                if (call(fd, 4, "output.status", {}, &statusReply)) {
+                    const boost::json::object& status = statusReply.at("result").as_object();
+                    applied = !status.at("layers").as_object().at("images").as_bool() &&
+                              numberValue(status.at("revision")) >= ackedRevision;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            check(applied, "the render thread applied the images-layer change");
+            std::vector<std::uint8_t> frameWithoutImages;
+            if (check(copyOneFrame(fd, reinterpret_cast<const std::uint8_t*>(segment),
+                                   bytesPerSlot, width, height, &frameWithoutImages),
+                      "a frame copied after the layer toggle")) {
+                std::size_t differing = 0;
+                for (std::size_t i = 0; i + 2 < frameWithoutImages.size(); i += 4) {
+                    if (frameWithImages[i] != frameWithoutImages[i] ||
+                        frameWithImages[i + 1] != frameWithoutImages[i + 1] ||
+                        frameWithImages[i + 2] != frameWithoutImages[i + 2]) {
+                        ++differing;
+                    }
+                }
+                check(differing * 100 > frameWithoutImages.size() / 4 * 5,
+                      "preview content followed the layer toggle");
+            }
+        }
+    }
+
+    // Stalled consumer: hold three slots and never release them.
+    struct Held {
+        std::uint64_t slot;
+        std::uint64_t seq;
+    };
+    std::vector<Held> held;
+    std::uint64_t seenSlots = 0;
+    const auto fillDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+    while (held.size() < proto::kPreviewSlotCount &&
+           std::chrono::steady_clock::now() < fillDeadline) {
+        if (!nextPreviewReady(fd, &ready, 3)) {
+            break;
+        }
+        const std::uint64_t slot = numberValue(ready.at("slot"));
+        if (slot >= proto::kPreviewSlotCount) {
+            continue;
+        }
+        held.push_back({slot, numberValue(ready.at("seq"))});
+        seenSlots |= 1u << slot;
+    }
+    check(held.size() == proto::kPreviewSlotCount && seenSlots == 0b111,
+          "all three slots take turns carrying frames");
+
+    std::uint64_t frames0 = 0;
+    std::uint64_t published0 = 0;
+    std::uint64_t dropped0 = 0;
+    std::uint64_t frames1 = 0;
+    std::uint64_t published1 = 0;
+    std::uint64_t dropped1 = 0;
+    const bool counts0 = readPreviewCounts(fd, 3, &frames0, &published0, &dropped0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    const bool counts1 = readPreviewCounts(fd, 4, &frames1, &published1, &dropped1);
+    if (check(counts0 && counts1, "status answers while every slot is held")) {
+        check(frames1 > frames0,
+              "the audience output keeps presenting while the preview consumer stalls");
+        check(dropped1 > dropped0, "the stalled preview ticks count as drops");
+        check(published1 == published0,
+              "no slot is overwritten while its last frame is still owned");
+    }
+
+    // Release: the same slots carry frames again immediately.
+    for (const Held& frame : held) {
+        sendNotification(fd, proto::kMethodPreviewReleased,
+                         boost::json::object{{"slot", frame.slot}, {"seq", frame.seq}});
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::uint64_t frames2 = 0;
+    std::uint64_t published2 = 0;
+    std::uint64_t dropped2 = 0;
+    if (check(readPreviewCounts(fd, 5, &frames2, &published2, &dropped2),
+              "status answers again after the releases")) {
+        check(published2 > published1, "publishing resumes as soon as slots are released");
+    }
+
+    // Stop: the stream retires and unlinks its segment.
+    if (check(call(fd, 6, "preview.stop", {}, &reply) &&
+                  reply.at("result").as_object().at("ok").as_bool(),
+              "preview.stop is acknowledged")) {
+        bool stopped = false;
+        const auto stopDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!stopped && std::chrono::steady_clock::now() < stopDeadline) {
+            boost::json::value statusReply;
+            if (call(fd, 7, "output.status", {}, &statusReply)) {
+                stopped = !statusReply.at("result").as_object().at("preview").as_object()
+                               .at("running")
+                               .as_bool();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        check(stopped, "status reports the preview stream stopped");
+    }
+    ::munmap(const_cast<proto::PreviewSegmentHeader*>(segment), totalBytes);
+    ::close(shmFd);
+    const int relink = ::shm_open(name.c_str(), O_RDONLY, 0);
+    check(relink < 0, "the stopped stream unlinked its segment");
+    if (relink >= 0) {
+        ::close(relink);
+    }
+
+    // A second stream under a fresh name proves the seam is repeatable.
+    // Anything still queued belongs to the dead segment: throw it away.
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    drainReadyNotifications(fd);
+    if (check(call(fd, 8, "preview.start", {}, &reply) &&
+                  reply.as_object().contains("result"),
+              "preview.start again is acknowledged")) {
+        const std::string secondName =
+            std::string(reply.at("result").as_object().at("name").as_string());
+        check(secondName != name, "a replaced stream gets its own segment name");
+        // Defaults: 640x360 as documented.
+        check(numberValue(reply.at("result").as_object().at("width")) == 640,
+              "preview.start defaults to the documented width");
+        check(nextPreviewReady(fd, &ready, 5), "the second stream produces frames too");
+    }
+
+    call(fd, 9, "shutdown", {}, &reply);
+    close(fd);
+    check(waitExit(pid, 5) == 0, "preview-scenario worker exits cleanly");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -349,11 +786,13 @@ int main(int argc, char** argv) {
     testServedSession();
     testDisconnectStopsWorker();
     testDisplaySelection();
+    testPreviewStream();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "%d IPC check(s) failed\n", gFailures);
         return 1;
     }
-    std::printf("ok: worker RPC session, live command and both exits\n");
+    std::printf("ok: worker RPC session, live command, destination control, "
+                "preview stream and both exits\n");
     return 0;
 }

@@ -16,11 +16,15 @@
 
 #include <boost/json.hpp>
 
+#include <QImage>
 #include <QLocalSocket>
 #include <QProcess>
 #include <QTimer>
 #include <QVariantMap>
 
+#include <cstdint>
+
+#include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
 
 namespace openshow::ui {
@@ -38,6 +42,13 @@ class WorkerController : public QObject {
     // the enumerated panels for the picker.
     Q_PROPERTY(qint64 currentMonitor READ currentMonitor NOTIFY outputStatusChanged)
     Q_PROPERTY(QVariantList displays READ displays NOTIFY displaysChanged)
+    // Preview (task 1.4): frames arrive through shared memory the worker
+    // names; previewDropped is the worker's own drop counter, so a stalled
+    // consumer is visible honestly.
+    Q_PROPERTY(bool previewActive READ previewActive NOTIFY previewChanged)
+    Q_PROPERTY(qint64 previewFrames READ previewFrames NOTIFY previewChanged)
+    Q_PROPERTY(qint64 previewDropped READ previewDropped NOTIFY previewChanged)
+    Q_PROPERTY(QString previewError READ previewError NOTIFY previewChanged)
 
 public:
     explicit WorkerController(QObject* parent = nullptr);
@@ -66,10 +77,18 @@ public:
     qint64 currentMonitor() const { return fCurrentMonitor; }
     QVariantList displays() const { return fDisplays; }
 
+    // The copied frame for PreviewView (UI thread only).
+    const QImage& previewImage() const { return fPreviewImage; }
+    bool previewActive() const { return fMap != nullptr; }
+    qint64 previewFrames() const { return fPreviewFrames; }
+    qint64 previewDropped() const { return fPreviewDropped; }
+    QString previewError() const { return fPreviewError; }
+
 signals:
     void stateChanged();
     void outputStatusChanged();
     void displaysChanged();
+    void previewChanged();
 
 private slots:
     void tryConnect();
@@ -81,8 +100,12 @@ private slots:
 
 private:
     void sendRequest(const char* method, boost::json::object params);
+    void sendNotification(const char* method, boost::json::object params);
     void drainMessages();
     void handleReply(const boost::json::object& message);
+    void handleNotification(const boost::json::object& message);
+    void openPreviewSegment(const std::string& name, std::uint64_t bytesPerSlot);
+    void closePreviewSegment();
     void setStatus(const QString& text);
 
     QProcess fProcess;
@@ -105,6 +128,21 @@ private:
     QVariantMap fLayers;
     qint64 fCurrentMonitor = -1;
     QVariantList fDisplays;
+
+    // Preview consumer state (UI thread only): the read-only mapping of
+    // the worker's shm segment and the frame last copied out of it.
+    std::uint8_t* fMap = nullptr;
+    int fMapFd = -1;
+    std::uint64_t fMapBytes = 0;
+    std::uint64_t fPreviewSlotStride = 0;
+    std::uint64_t fPreviewSlotCount = 0;
+    // The start answer names a segment the render thread has not
+    // necessarily created yet; it is mapped on the first ready.
+    std::string fPendingPreviewName;
+    QImage fPreviewImage;
+    qint64 fPreviewFrames = 0;
+    qint64 fPreviewDropped = 0;
+    QString fPreviewError;
 };
 
 }  // namespace openshow::ui

@@ -4,10 +4,47 @@ Updated: 2026-10-23 (Europe/London).
 
 ## Current checkpoint
 
-- Milestone: **M1 — Prove frontend-to-renderer integration**, tasks **1.1**,
-  **1.2** and **1.3** DONE (all 2026-10-22/23). M0 was closed earlier with
+- Milestone: **M1 — Prove frontend-to-renderer integration**, tasks **1.1**
+  through **1.4** DONE (all 2026-10-22/23). M0 was closed earlier with
   tag `M0` at `bca7cee`; commits and tags are delegated to the agent for
   this session.
+- Task 1.4 delivered shared-memory previews and was **accepted on
+  screen**: the operator pane streams the same Vulkan-composed scene the
+  audience sees, and a stalled preview consumer never touches the
+  output.
+  - **1.4a** `protocol/preview_wire.h`: one POSIX shm segment per
+    stream (`/openshow-preview-<pid>-<generation>`, magic `OVSP`,
+    layout v1) = 64-byte segment header + three slots of 64-byte
+    seqlock header + RGBA8888 payload; `makeNotification` added for
+    `preview.ready` / `preview.released`. One Qt-free definition
+    compiled by both processes (protocol tests pin the geometry).
+  - **1.4b** `worker/preview/PreviewStream` (Qt-free producer) driven
+    by `OutputSession`: at 15 fps the *same* `TestScene::draw()`
+    renders into a 640x360 `SkSurfaces::RenderTarget` on the output's
+    own `GrDirectContext` — identical backend to the audience surface —
+    and `SkSurface::readPixels` lands RGBA8888 straight in a claimed
+    slot. Slots are only claimable once their last publish was
+    released; when none qualifies the frame counts as dropped and the
+    output never blocks.
+  - **1.4c** RPC: `preview.start {width?,height?,fps?}` /
+    `preview.stop`, worker→UI `preview.ready {slot,seq,rowBytes,…}`,
+    UI→worker `preview.released`, capability `preview.shm.v1`, status
+    `preview {running,name,width,height,fps,published,dropped,error}`;
+    notifications drain on every 50 ms poll tick. Pixels never cross
+    the socket.
+  - **1.4d** `WorkerController` maps the named segment on the **first
+    ready**, not on the reply (the reply names a segment the render
+    thread has not created yet), copies under the seqlock with the
+    sequence re-checked around the memcpy, and always releases;
+    `PreviewView` aspect-fits frames into the pane. Seen live:
+    "preview · 77 frames shown · 0 dropped".
+  - **1.4e** ctest scenario D inside `worker_rpc_lifecycle`: geometry
+    echo (proves `jsonUint`), header/size agreement, two seqlock-intact
+    non-blank copies, content follows an images-layer toggle (>5% of
+    pixels differ), all three slots rotate, a stalled consumer raises
+    drops with `published` frozen while the output keeps presenting,
+    releases resume publishing, stop unlinks the segment, restart gets
+    a fresh name at the documented 640x360 default.
 - Task 1.3 delivered display control over the wire and was **accepted on
   screen**: the worker now *starts* on the second panel automatically (the
   FreeShow autoPosition rule; `--monitor` remains only as a development
@@ -68,16 +105,17 @@ Updated: 2026-10-23 (Europe/London).
   composited bottom-to-top from background, images, words, aux and clock in
   a single pass with no render-to-texture; disabled layers are skipped
   without dispatch. ctest `render_layer_composition` verifies this on the CPU.
-- Checks: `ctest --preset desktop` passes **8 of 8** (adds
-  `worker_rpc_lifecycle`, labelled `display`); `ctest --preset headless`
+- Checks: `ctest --preset desktop` passes **8 of 8** (`worker_rpc_lifecycle`
+  now runs four scenarios including the preview stream, labelled
+  `display`); `ctest --preset headless`
   passes **6 of 6** via the test preset's
   `filter.exclude.label: "display"` — note the earlier "6 of 6" for task
   1.2 was a stale build dir, the filter as first written (`labelExclude`)
   was silently ignored; the working key is `exclude.label` (1.3 fixed it
   and re-verified with `--show-only`); `worker_is_qt_free` stayed green
   throughout, so the RPC path is `poll()`/Boost.JSON with no Qt.
-- Next: task **1.4** (shared-memory previews), and one manual check to
-  close 1.3 fully: drag-resize the borderless window on screen and watch
+- Next: task **1.5** (video decode and A/V benchmark), and one manual
+  check to close 1.3 fully: drag-resize the borderless window on screen and watch
   the swapchain recreate (the same code path a compositor configure drives,
   already proven — this is the acceptance row's honest caveat).
 
@@ -323,8 +361,99 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   picker on DP-4). Interactive drag-resize stays a manual check (Wayland
   cannot script it; the recreate path is the proven configure one).
 
+## Task 1.4 log (2026-10-23)
+
+- The user's constraint shaped everything: every pixel is rendered by
+  Skia *inside the worker*, the JSON API carries asset references only,
+  and the shm preview is the single sanctioned pixel flow. A preview
+  therefore draws the same `TestScene::draw()` the swapchain gets, into
+  a 640x360 `SkSurfaces::RenderTarget` (RGBA8888, `Budgeted::kNo`) on
+  the output's existing `GrDirectContext`; Ganesh's `readPixels` (the
+  no-context overload) converts and lands RGBA8888 straight into the
+  claimed shm slot. The pane shows the audience backend, not a CPU twin.
+- Transport: one POSIX shm segment per stream
+  (`/openshow-preview-<pid>-<generation>`), three slots, 64-byte
+  segment header + per-slot 64-byte seqlock header + payload
+  (`protocol/preview_wire.h`, magic `OVSP`, layout v1). The session
+  picks the generation at `preview.start` so the reply is truthful
+  before anything exists; the **render thread creates** segment and GPU
+  surface on the next frame, so the consumer maps on the first
+  `preview.ready`. `PreviewStream` lives behind a `std::shared_ptr`
+  held by session and RPC alike: a `preview.released` landing during
+  teardown can never touch a retired producer, and the last owner
+  unlinks the name.
+- Slot ownership is a seqlock (odd = mid-write, even = stable); the
+  consumer re-reads the sequence around its copy and discards on
+  change. The producer claims only slots whose last publish was
+  released — with all three owned the frame is dropped and counted.
+  The output loop never waits on a preview consumer.
+- Control: `preview.start {width?,height?,fps?}` (defaults 640x360 at
+  15 fps) / `preview.stop`; worker→UI `preview.ready
+  {slot,seq,width,height,rowBytes,revision,publishedNs}`; UI→worker
+  `preview.released {slot,seq}`; capability `preview.shm.v1`; status
+  gained `preview {running,name,width,height,fps,published,dropped,
+  error}`. `RpcServer::flushNotifications` drains ready events on every
+  50 ms poll tick, timeouts included, so notification latency is one
+  tick at most.
+- Traps hit and fixed:
+  - **Boost.JSON keeps small integers in its int64 kind.** Params
+    guarded with `is_uint64()` silently rejected every number the UI or
+    the Python driver sent — `preview.start` answered with defaults, no
+    error. Fixed with a `jsonUint()` accepting both kinds; ctest D
+    asserts an explicit 320x240 echo so this cannot regress quietly.
+  - **The first `preview.ready` must be released even when its frame is
+    never copied.** It doubles as the "segment exists" signal; holding
+    it owns that slot forever. ctest D failed exactly this way (only two
+    slots ever rotated; drops grew because a slot the test had never
+    read was stuck unreleased). The test now releases it right after
+    mapping; the UI consumer already releases every notification it
+    saw, which is why the live UI never showed the stall.
+  - **`preview.start` would lie unless mapping is deferred**: the reply
+    arrives one render frame before the segment exists. The contract is
+    documented in preview_wire.h — name in the reply, map on first
+    ready.
+  - **`PreviewView::paint()` used `drawImage(QPoint, image)`**, which
+    paints at the image's native size: a 640-wide frame overflowed the
+    480-wide pane (photo flush-left, title clipped, 640/480 ≈ 1.33 zoom
+    anchored top-left). Fixed with an explicit aspect-fit `QRectF`
+    destination. The raw frame dumped from the slot
+    (`/tmp/opencode/preview-frame.png`) proved the wire was never at
+    fault — the defect lived entirely in the QML item.
+  - Smaller ones: `shm_open` always takes a mode argument (two-arg
+    calls do not compile); `pgrep/pkill -f` self-matches the invoking
+    shell — bracket the pattern (`openshow-[uw]`); raising windows for
+    screenshots under a live KDE session needs the KWin Scripting D-Bus
+    (`org.kde.kwin.Scripting.loadScript`, with an exact-caption match —
+    Konsole's title also started with "OpenShowQt").
+- Acceptance evidence: `/tmp/opencode/preview_smoke.py` (Python
+  consumer straight off the wire: mmap by notified name, seqlock-checked
+  copies; a deliberately stalled consumer raised drops while the output
+  presented frames 317→419; stop + shutdown exit 0);
+  `/tmp/opencode/preview_dump.py` → `/tmp/opencode/preview-frame.png`
+  (raw RGBA from a slot — scene complete, letterbox rule correct);
+  `/tmp/opencode/preview-ui-edp.png` (UI pane live, "preview · 77
+  frames shown · 0 dropped", destination on DP-4); ctest scenario D
+  green inside desktop 8/8.
+
 ## Verification and environment
 
+- 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
+  `worker_rpc_lifecycle` now runs four scenarios (served session,
+  disconnect, display selection, **preview stream**: start 320x240 with
+  geometry echo, mmap by notified name, header and size agreement, two
+  seqlock-intact non-blank copies, content follows the images-layer
+  toggle at >5% of pixels, all three slots rotate, stalled consumer:
+  drops grow / `published` frozen / output keeps presenting, releases
+  resume publishing, stop unlinks the segment, restart under a fresh
+  name at the documented 640x360 default, clean exit).
+  `ctest --preset headless` passes **6 of 6**, `worker_is_qt_free`
+  included — `PreviewStream` and `preview_wire.h` pull in no Qt.
+  `protocol_tests` gained `testNotification` and `testPreviewWire`
+  (id-less envelope; segment/slot sizes, offset math, RGBA default) and
+  the capability count checks moved 3→4. Seen acceptance: preview pane
+  streaming the live scene ("preview · 77 frames shown · 0 dropped")
+  plus `/tmp/opencode/preview-frame.png` dumped from the shm slot
+  itself.
 - 2026-10-23, task 1.3: `ctest --preset desktop` passes **8 of 8** —
   `worker_rpc_lifecycle` now runs three scenarios (served session,
   disconnect, display selection: enumerate, refuse index 99 and a missing
@@ -456,6 +585,19 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   Review rule: a task does not pass by threading a command to hard-coded
   scene state; the seam comes first. What is *not* debt: `src/worker/output/`
   and `render/Layer.{h,cpp}` are already production-shaped.
+- (2026-10-23) Preview transport decisions (task 1.4, inside the user's
+  constraint that all rendering happens in the worker and the JSON API
+  carries references, never bitmaps): a preview frame is the audience
+  composition read back offscreen — same Vulkan/Skia backend
+  (`SkSurfaces::RenderTarget` + `readPixels` on the output's
+  `GrDirectContext`), downscaled 640x360@15fps is the sanctioned
+  approximation, no CPU raster twin; one shm segment with three seqlock
+  slots carries the pixels while notifications ride the RPC socket; the
+  producer may drop frames but the output never blocks on a consumer;
+  the `preview.start` reply names the segment yet the consumer maps
+  only on the first `preview.ready`; `PreviewStream` is held by
+  `std::shared_ptr` across session and RPC so teardown can never race a
+  release.
 
 ## Output window log
 
@@ -504,34 +646,31 @@ logged here from what is observable off screen rather than claimed as seen.
 
 ## Exact next action
 
-1. Commit the task 1.3 work (worker + UI + tests + PLAN/PROGRESS rows are
-   done; milestone M1 is still open: 1.4 and 1.5 remain TODO). Start
-   **1.4 — shared-memory previews**: the Qt frontend displays worker
-   frames without ever blocking output. Per PLAN.md the design is fixed:
-   POSIX shared-memory slots **outside RPC** — three slots, explicit
-   frame-ready/release messages, drop previews under load, start at
-   640x360 at 15 fps. Split 1.4 into subtasks in PLAN.md before coding
-   (graduation rule), e.g.: (a) render the scene offscreen at 640x360 in
-   the session (a second Skia surface target, reusing the existing
-   composition code — PLAN line ~124 calls this out as the first hard
-   requirement for arbitrary render targets); (b) the shm carrier: named
-   POSIX shm segment(s) with a small header (sequence, timestamp,
-   format/size) and slot claim/release semantics; (c) the notify channel
-   — decide where frame-ready/release travels (a second socket or an RPC
-   notification; the PLAN says the *pixels* stay out of RPC, notifications
-   may ride it); (d) Qt side: map the shm, build a QImage/QQuickImageProvider
-   or software-backed item, update on ready, release after paint; (e)
-   acceptance: preview visibly live in the UI while output runs, and a
-   deliberately stalled preview consumer proves output keeps its frame
-   rate (drops are visible, output never blocks).
-2. Useful carry-over: the session already applies desired state at the top
-   of `frame()` and publishes revisions — the preview cadence (15 fps) is
-   a throttle on that loop, not a second loop; `Options::diagnostics`'
-   frame-30 CPU readback shows the vk readback plumbing already needed;
-   `WorkerController` has the request/reply plumbing a preview-control
-   method slots into; ctest is desktop 8/8 and headless 6/6 with the
-   `display` label exclusion genuinely working.
-3. One manual check stays open from 1.3: drag-resize the borderless output
+1. Task 1.4 is committed with this file (worker preview producer +
+   `preview_wire.h`, RPC control, UI consumer + `PreviewView`, ctest
+   scenario D, PLAN/PROGRESS rows; gates green: desktop 8/8, headless
+   6/6). The task 1.4 log above records the wire contract and the traps
+   (Boost.JSON int64 params, map-on-first-ready, release-the-ready-you-
+   waited-on, `drawImage` fit).
+2. Next session starts **1.5 — video decode + A/V benchmark** (PLAN
+   acceptance: "results establish feasibility on this PC"). Architecture
+   context is fixed: FFmpeg software decode (headers need `extern "C"`),
+   PipeWire's process callback is the playback clock, GPU composition,
+   and never decode or mix on the render or RPC threads. Split 1.5 into
+   subtask rows in PLAN.md before coding (graduation rule), e.g.: (a) a
+   Qt-free demux+decode utility turning a sample clip into timestamped
+   frames with bounded queues; (b) a PipeWire sink reporting callback
+   timing; (c) a decode-to-present harness measuring frame pacing and
+   A/V drift over a few minutes on 2–3 representative files; (d) write
+   the feasibility numbers into PROGRESS.md so M5 gets a baseline.
+3. Useful carry-over: the preview throttle proves the session can run a
+   secondary cadence (15 fps) without disturbing the output loop — a
+   video layer's frame-pick cadence hangs off the same seam;
+   `PreviewStream`'s claim-only-released / drop-not-block semantics are
+   the template for any bounded producer–consumer queue here;
+   `WorkerController` now routes worker→UI notifications, so more
+   event types keep working.
+4. One manual check stays open from 1.3: drag-resize the borderless output
    window once and confirm the swapchain recreate (see the acceptance
    caveat in the task 1.3 log).
 

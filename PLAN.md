@@ -233,7 +233,12 @@ Checkpoint: `M0: establish project plan and build foundation`.
 | 1.3b | DONE | RPC surface: `output.displays`, `output.select`, monitor fields in status | A socket command moves the output between panels |
 | 1.3c | DONE | Frontend destination picker | Dropdown in the UI moves the audience output |
 | 1.3d | DONE | Acceptance: both panels, automated switch test | Scene demonstrably eDP→DP-4→windowed→back, seen; interactive drag-resize noted as manual |
-| 1.4 | TODO | Shared-memory previews | Qt displays worker frames without blocking output |
+| 1.4 | DONE | Shared-memory previews | Qt displays worker frames without blocking output (see 1.4a–e) |
+| 1.4a | DONE | `preview_wire.h` in the protocol library: shm segment layout, per-slot seqlock headers, ready/release message shapes | Layout and notification shapes covered in protocol tests; one Qt-free definition compiled by both processes |
+| 1.4b | DONE | Session preview producer: same scene drawn to a 640x360 GPU offscreen surface (same Vulkan backend as the output) at 15 fps, read back into free shm slots | Wire-verified: a live frame lands in a slot; owned slots are never overwritten; stalls count as drops |
+| 1.4c | DONE | RPC control: `preview.start`/`preview.stop`, server-originated `preview.ready` notification, `preview.released` from the client, capability and status fields | Socket client mmaps the named segment, decodes frames, stalls to raise drops, stops and restarts (ctest scenario D) |
+| 1.4d | DONE | Frontend consumer: mmap the segment, copy ready slots to a QImage under the seqlock, send releases, PreviewView item in the UI | Preview pane showed the live scene ("77 frames shown · 0 dropped"); drawImage fit fix verified after |
+| 1.4e | DONE | Acceptance: automated (frame content follows layer toggles; a stalled consumer raises drops while the output keeps presenting) and seen on screen | ctest scenario D green; preview live in the UI |
 | 1.5 | TODO | Video decode and A/V benchmark | Results establish feasibility on this PC |
 
 Checkpoint: `M1: prove rendering worker and preview pipeline`.

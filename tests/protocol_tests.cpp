@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <string>
 
+#include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
 
 namespace {
@@ -208,7 +209,7 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 3, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 4, "hello lists capabilities");
     }
 
     // Major mismatch: structured refusal with both versions.
@@ -242,6 +243,42 @@ void testHello() {
 
 }  // namespace
 
+void testNotification() {
+    const boost::json::object notification = proto::makeNotification(
+        proto::kMethodPreviewReady, boost::json::object{{"slot", 1}, {"seq", 8}});
+    check(notification.at("jsonrpc").as_string() == "2.0",
+          "notification carries jsonrpc 2.0");
+    check(notification.at("method").as_string() == "preview.ready",
+          "notification carries the method");
+    check(!notification.contains("id"), "a notification has no id to answer");
+    check(asInteger(notification.at("params").as_object().at("seq")) == 8,
+          "notification params travel intact");
+    check(proto::looksLikeJsonRpc(notification),
+          "a notification looks like JSON-RPC (method, no id needed)");
+}
+
+void testPreviewWire() {
+    // The layout both processes compile must stay exactly this geometry,
+    // because two processes index into one shared mapping with it.
+    check(sizeof(proto::PreviewSegmentHeader) == 64, "segment header is 64 bytes");
+    check(sizeof(proto::PreviewSlotHeader) == 64, "slot header is 64 bytes");
+    check(proto::kPreviewSlotCount == 3, "three slots are agreed");
+
+    check(proto::previewSlotStrideBytes(320, 240) == 64 + 320u * 240u * 4u,
+          "slot stride is header plus RGBA payload");
+    check(proto::previewSegmentBytes(320, 240) ==
+              64 + 3 * proto::previewSlotStrideBytes(320, 240),
+          "segment is the fixed header plus three slot strides");
+    check(proto::previewSlotOffset(0, 100) == 64, "slot zero starts after the segment header");
+    check(proto::previewSlotOffset(2, 100) == 64 + 2 * 100, "slot offsets step by strides");
+
+    // Defaults match what the producer writes at creation.
+    proto::PreviewSlotHeader header;
+    header.seq = 2;
+    check(header.format == proto::kPreviewFourccRGBA8, "slots default to RGBA");
+    check(header.seq == 2 && (header.seq & 1) == 0, "even seq means a stable frame");
+}
+
 int main() {
     testOffer();
     testFrameRoundTrip();
@@ -249,11 +286,13 @@ int main() {
     testHostileFraming();
     testEnvelopes();
     testHello();
+    testNotification();
+    testPreviewWire();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "%d protocol check(s) failed\n", gFailures);
         return 1;
     }
-    std::printf("ok: protocol framing, envelopes and handshake\n");
+    std::printf("ok: protocol framing, envelopes, handshake and preview wire\n");
     return 0;
 }

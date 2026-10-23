@@ -18,6 +18,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
 
 #include "render/Layer.h"
@@ -61,6 +62,25 @@ std::int64_t jsonId(const boost::json::object& message) {
     return 0;
 }
 
+// Reads a non-negative JSON integer. Boost.JSON stores small numbers as
+// int64 and only reaches for uint64 past the signed range, so checking
+// is_uint64() alone silently rejects every slot index a client sends.
+bool jsonUint(const boost::json::object& args, const char* key, std::uint64_t* out) {
+    const auto entry = args.find(key);
+    if (entry == args.end()) {
+        return false;
+    }
+    if (entry->value().is_uint64()) {
+        *out = entry->value().as_uint64();
+        return true;
+    }
+    if (entry->value().is_int64() && entry->value().as_int64() >= 0) {
+        *out = static_cast<std::uint64_t>(entry->value().as_int64());
+        return true;
+    }
+    return false;
+}
+
 boost::json::value layersObject(uint32_t mask) {
     boost::json::object layers;
     for (uint32_t i = 0; i < static_cast<uint32_t>(LayerId::kCount); ++i) {
@@ -71,6 +91,7 @@ boost::json::value layersObject(uint32_t mask) {
 }
 
 boost::json::object statusResult(const OutputSession::Status& status) {
+    const OutputSession::PreviewStatus& preview = status.preview;
     return boost::json::object{{"device", status.deviceName},
                                {"width", status.width},
                                {"height", status.height},
@@ -78,7 +99,15 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                {"revision", status.revision},
                                {"monitor", status.monitor},
                                {"monitorName", status.monitorName},
-                               {"layers", layersObject(status.layerMask)}};
+                               {"layers", layersObject(status.layerMask)},
+                               {"preview", boost::json::object{{"running", preview.running},
+                                                               {"name", preview.name},
+                                                               {"width", preview.width},
+                                                               {"height", preview.height},
+                                                               {"fps", preview.fps},
+                                                               {"published", preview.published},
+                                                               {"dropped", preview.dropped},
+                                                               {"error", preview.error}}}};
 }
 
 boost::json::value displaysResult(const std::vector<OutputSession::DisplayInfo>& displays) {
@@ -234,6 +263,11 @@ void RpcServer::serve(int connectionFd) {
             if (errno == EINTR) {
                 continue;
             }
+            return;
+        }
+        // Every tick, timeout included: the render thread queues preview
+        // notifications and this thread is the only one holding the socket.
+        if (!flushNotifications(connectionFd)) {
             return;
         }
         if (ready == 0) {
@@ -395,6 +429,60 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
                                                      {"revision", revision},
                                                      {"pending", true}}),
                            outbound);
+    } else if (name == "preview.start") {
+        uint32_t width = 640;
+        uint32_t height = 360;
+        uint32_t fps = 15;
+        if (given.is_object()) {
+            const boost::json::object& args = given.as_object();
+            std::uint64_t value = 0;
+            if (jsonUint(args, "width", &value)) {
+                width = static_cast<uint32_t>(value);
+            }
+            if (jsonUint(args, "height", &value)) {
+                height = static_cast<uint32_t>(value);
+            }
+            if (jsonUint(args, "fps", &value)) {
+                fps = static_cast<uint32_t>(value);
+            }
+        }
+        OutputSession::PreviewInfo info;
+        std::string error;
+        if (!fSession.startPreview(width, height, fps, &info, &error)) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams, error), outbound);
+            return true;
+        }
+        // Pixels never ride the socket: this names the shm segment, the
+        // consumer maps it and waits for preview.ready notifications.
+        proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                     {"name", info.name},
+                                                     {"width", info.width},
+                                                     {"height", info.height},
+                                                     {"slotCount", info.slotCount},
+                                                     {"bytesPerSlot", info.bytesPerSlot},
+                                                     {"format", "RGBA8888"}}),
+                           outbound);
+    } else if (name == "preview.stop") {
+        fSession.stopPreview();
+        proto::appendFrame(proto::makeResult(id, boost::json::object{{"ok", true}}),
+                           outbound);
+    } else if (name == proto::kMethodPreviewReleased) {
+        // A notification from the consumer: it finished copying that slot
+        // frame, so the producer may claim it again. Answered only if the
+        // client bothered to identify it.
+        if (given.is_object()) {
+            const boost::json::object& args = given.as_object();
+            std::uint64_t slot = 0;
+            std::uint64_t seq = 0;
+            if (jsonUint(args, "slot", &slot) && jsonUint(args, "seq", &seq)) {
+                fSession.releasePreviewSlot(static_cast<uint32_t>(slot), seq);
+            }
+        }
+        if (request.contains("id")) {
+            proto::appendFrame(proto::makeResult(id, boost::json::object{{"ok", true}}),
+                               outbound);
+        }
     } else if (name == "shutdown") {
         proto::appendFrame(proto::makeResult(id, boost::json::object{{"ok", true}}),
                            outbound);
@@ -406,6 +494,24 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
             outbound);
     }
     return true;
+}
+
+bool RpcServer::flushNotifications(int connectionFd) {
+    OutputSession::PreviewReady ready;
+    std::string outbound;
+    while (fSession.takePreviewReady(&ready)) {
+        proto::appendFrame(
+            proto::makeNotification(proto::kMethodPreviewReady,
+                                    boost::json::object{{"slot", ready.slot},
+                                                        {"seq", ready.seq},
+                                                        {"width", ready.width},
+                                                        {"height", ready.height},
+                                                        {"rowBytes", ready.rowBytes},
+                                                        {"revision", ready.revision},
+                                                        {"publishedNs", ready.publishedNs}}),
+            &outbound);
+    }
+    return outbound.empty() || writeAll(connectionFd, outbound);
 }
 
 }  // namespace openshow::worker

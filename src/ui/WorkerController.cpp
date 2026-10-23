@@ -18,7 +18,14 @@
 #include <QStringList>
 #include <QTimer>
 
+#include <atomic>
 #include <chrono>
+#include <cstring>
+
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace openshow::ui {
 
@@ -54,6 +61,7 @@ WorkerController::WorkerController(QObject* parent) : QObject(parent) {
 }
 
 WorkerController::~WorkerController() {
+    closePreviewSegment();
     if (fProcess.state() != QProcess::NotRunning) {
         fProcess.kill();
         fProcess.waitForFinished(1000);
@@ -115,6 +123,7 @@ void WorkerController::onSocketConnected() {
 void WorkerController::onSocketDisconnected() {
     fConnected = false;
     fHandshakeDone = false;
+    closePreviewSegment();
     emit stateChanged();
     if (!fShutdownRequested) {
         setStatus(QStringLiteral("worker connection lost"));
@@ -124,6 +133,7 @@ void WorkerController::onSocketDisconnected() {
 void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus) {
     fConnected = false;
     fOutputStopped = true;
+    closePreviewSegment();
     emit stateChanged();
     if (fShutdownRequested) {
         setStatus(QStringLiteral("worker stopped (exit %1)").arg(exitCode));
@@ -145,7 +155,12 @@ void WorkerController::drainMessages() {
     boost::json::value message;
     std::string error;
     while (fDecoder.next(&message, &error)) {
-        if (message.is_object()) {
+        if (!message.is_object()) {
+            continue;
+        }
+        if (message.as_object().contains("method")) {  // worker-originated
+            handleNotification(message.as_object());
+        } else {
             handleReply(message.as_object());
         }
     }
@@ -213,6 +228,23 @@ void WorkerController::handleReply(const boost::json::object& message) {
         // Ask for the first status immediately, then keep it fresh while
         // connected; the poll stops itself once the socket is gone.
         sendRequest("output.displays", {});
+        // Preview (task 1.4): ask for the shm stream whenever the worker
+        // speaks the capability; the start answer opens the mapping.
+        bool previewCapable = false;
+        if (payload.contains("capabilities") && payload.at("capabilities").is_array()) {
+            for (const auto& capability : payload.at("capabilities").as_array()) {
+                if (capability.is_string() &&
+                    capability.as_string() == "preview.shm.v1") {
+                    previewCapable = true;
+                    break;
+                }
+            }
+        }
+        if (previewCapable) {
+            sendRequest("preview.start", boost::json::object{{"width", 640},
+                                                             {"height", 360},
+                                                             {"fps", 15}});
+        }
         QTimer::singleShot(0, this, &WorkerController::pollStatus);
         auto* poll = new QTimer(this);
         poll->setInterval(kStatusPollMs);
@@ -228,6 +260,19 @@ void WorkerController::handleReply(const boost::json::object& message) {
         return;
     }
 
+    if (payload.contains("bytesPerSlot")) {  // the preview.start answer
+        // Do not map yet: the segment exists once the render thread has
+        // acted, and the first preview.ready proves it did.
+        closePreviewSegment();
+        fPreviewSlotCount = payload.at("slotCount").to_number<std::uint64_t>();
+        fPreviewSlotStride = payload.at("bytesPerSlot").to_number<std::uint64_t>();
+        fPendingPreviewName = std::string(payload.at("name").as_string());
+        fPreviewFrames = 0;
+        fPreviewError.clear();
+        emit previewChanged();
+        return;
+    }
+
     if (payload.contains("frames")) {  // output.status
         fFrames = static_cast<qint64>(payload.at("frames").to_number<std::uint64_t>());
         fRevision = static_cast<qint64>(payload.at("revision").to_number<std::uint64_t>());
@@ -237,6 +282,18 @@ void WorkerController::handleReply(const boost::json::object& message) {
         if (payload.contains("monitor")) {
             fCurrentMonitor =
                 static_cast<qint64>(payload.at("monitor").to_number<std::int64_t>());
+        }
+        if (payload.contains("preview") && payload.at("preview").is_object()) {
+            const boost::json::object& preview = payload.at("preview").as_object();
+            fPreviewDropped =
+                static_cast<qint64>(preview.at("dropped").to_number<std::uint64_t>());
+            fPreviewError = QString::fromStdString(
+                std::string(preview.at("error").as_string()));
+            if (!preview.at("running").as_bool() && fMap) {
+                closePreviewSegment();  // the worker retired the stream
+                fPendingPreviewName.clear();
+            }
+            emit previewChanged();
         }
         QVariantMap layers;
         for (const auto& entry : payload.at("layers").as_object()) {
@@ -277,6 +334,149 @@ void WorkerController::sendRequest(const char* method, boost::json::object param
     std::string wire;
     proto::appendFrame(proto::makeRequest(fNextId++, method, std::move(params)), &wire);
     fSocket.write(wire.data(), static_cast<qint64>(wire.size()));
+}
+
+void WorkerController::sendNotification(const char* method, boost::json::object params) {
+    std::string wire;
+    proto::appendFrame(proto::makeNotification(method, std::move(params)), &wire);
+    fSocket.write(wire.data(), static_cast<qint64>(wire.size()));
+}
+
+void WorkerController::handleNotification(const boost::json::object& message) {
+    const auto method = message.find("method");
+    if (method == message.end() || !method->value().is_string() ||
+        std::string_view(method->value().as_string()) != proto::kMethodPreviewReady) {
+        return;  // unknown notification: ignore, the protocol tolerates extensions
+    }
+    const auto paramsIt = message.find("params");
+    if (paramsIt == message.end() || !paramsIt->value().is_object()) {
+        return;
+    }
+    const boost::json::object& params = paramsIt->value().as_object();
+
+    // First ready proves the segment exists: this is where a pending
+    // (not-yet-mapped) stream gets opened, retrying if we beat the worker.
+    if (fMap == nullptr && !fPendingPreviewName.empty()) {
+        openPreviewSegment(fPendingPreviewName, fPreviewSlotStride);
+    }
+
+    auto number = [&params](const char* key) -> std::uint64_t {
+        const auto entry = params.find(key);
+        return entry == params.end() ? 0 : entry->value().to_number<std::uint64_t>();
+    };
+    const std::uint64_t slot = number("slot");
+    const std::uint64_t seq = number("seq");
+    const std::uint64_t width = number("width");
+    const std::uint64_t height = number("height");
+    const std::uint64_t rowBytes = number("rowBytes");
+
+    // Copy the payload under the slot's seqlock: same sequence before and
+    // after means the producer never touched it mid-copy. A stale or torn
+    // frame is simply skipped; the next notification brings a newer one.
+    bool fresh = false;
+    if (fMap && slot < fPreviewSlotCount && rowBytes == width * 4 && width > 0 &&
+        height > 0 && width <= 4096 && height <= 4096 &&
+        sizeof(proto::PreviewSlotHeader) + rowBytes * height <= fPreviewSlotStride) {
+        const std::uint8_t* slotBase =
+            fMap + proto::previewSlotOffset(static_cast<std::uint32_t>(slot),
+                                            fPreviewSlotStride);
+        const auto* header =
+            reinterpret_cast<const proto::PreviewSlotHeader*>(slotBase);
+        const std::uint64_t seqBefore =
+            std::atomic_ref<const std::uint64_t>(header->seq).load();
+        if (seqBefore == seq && (seqBefore & 1) == 0) {
+            QImage image(static_cast<int>(width), static_cast<int>(height),
+                         QImage::Format_RGBA8888);
+            if (!image.isNull()) {
+                std::memcpy(image.bits(), slotBase + sizeof(proto::PreviewSlotHeader),
+                            static_cast<std::size_t>(rowBytes) * height);
+                const std::uint64_t seqAfter =
+                    std::atomic_ref<const std::uint64_t>(header->seq).load();
+                if (seqAfter == seqBefore) {
+                    fPreviewImage = image;
+                    ++fPreviewFrames;
+                    fresh = true;
+                }
+            }
+        }
+    }
+
+    // Ownership of the slot ends whether or not this copy worked out; the
+    // producer drops rather than waits, but there is no reason to make it.
+    sendNotification(proto::kMethodPreviewReleased,
+                     boost::json::object{{"slot", static_cast<std::int64_t>(slot)},
+                                         {"seq", static_cast<std::int64_t>(seq)}});
+    if (fresh) {
+        emit previewChanged();
+    }
+}
+
+void WorkerController::openPreviewSegment(const std::string& name,
+                                          std::uint64_t bytesPerSlot) {
+    closePreviewSegment();
+    fPreviewSlotStride = bytesPerSlot;
+
+    const int fd = ::shm_open(name.c_str(), O_RDONLY, 0);
+    if (fd < 0) {
+        fPreviewError = QStringLiteral("shm_open %1 failed").arg(
+            QString::fromStdString(name));
+        emit previewChanged();
+        return;
+    }
+    struct stat info {};
+    if (::fstat(fd, &info) != 0 ||
+        info.st_size <
+            static_cast<off_t>(proto::previewSegmentBytes(0, 0))) {
+        ::close(fd);
+        fPreviewError = QStringLiteral("preview segment has a bad size");
+        emit previewChanged();
+        return;
+    }
+    const std::uint64_t total = fPreviewSlotStride * fPreviewSlotCount + 64;
+    if (info.st_size < static_cast<off_t>(total)) {
+        ::close(fd);
+        fPreviewError = QStringLiteral("preview segment is smaller than promised");
+        emit previewChanged();
+        return;
+    }
+    void* map = ::mmap(nullptr, total, PROT_READ, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) {
+        ::close(fd);
+        fPreviewError = QStringLiteral("mmap %1 failed").arg(
+            QString::fromStdString(name));
+        emit previewChanged();
+        return;
+    }
+
+    const auto* segment = static_cast<const proto::PreviewSegmentHeader*>(map);
+    if (segment->magic != proto::kPreviewMagic ||
+        segment->layoutVersion != proto::kPreviewLayoutVersion ||
+        segment->slotCount != fPreviewSlotCount ||
+        segment->bytesPerSlot != bytesPerSlot) {
+        ::munmap(map, total);
+        ::close(fd);
+        fPreviewError = QStringLiteral("preview segment header mismatch");
+        emit previewChanged();
+        return;
+    }
+
+    fMap = static_cast<std::uint8_t*>(map);
+    fMapFd = fd;
+    fMapBytes = total;
+    fPreviewError.clear();
+    emit previewChanged();
+}
+
+void WorkerController::closePreviewSegment() {
+    if (fMap) {
+        ::munmap(fMap, fMapBytes);
+        fMap = nullptr;
+        fMapBytes = 0;
+    }
+    if (fMapFd >= 0) {
+        ::close(fMapFd);
+        fMapFd = -1;
+    }
 }
 
 void WorkerController::shutdownNow() {

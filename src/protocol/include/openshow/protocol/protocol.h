@@ -76,6 +76,11 @@ boost::json::object makeResult(std::int64_t id, boost::json::value result);
 boost::json::object makeError(std::int64_t id, ErrorCode code, std::string_view message,
                               boost::json::value data = nullptr);
 
+// A notification: method and params but no id, so nothing may ever answer
+// it. Used for per-frame preview traffic (task 1.4).
+boost::json::object makeNotification(std::string_view method,
+                                     boost::json::object params = {});
+
 // True when the value is an object carrying "jsonrpc":"2.0" and a method
 // or an id; the full shape is validated by whoever serves it.
 bool looksLikeJsonRpc(const boost::json::value& value);
