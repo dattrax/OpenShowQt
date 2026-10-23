@@ -775,6 +775,18 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
     known loop-seam behaviour), gpu_yuv_tests pass headless with the env
     var, socket mode clean. Without flag or env the suites are unchanged:
     desktop **11/11**, headless **8/8**.
+- Follow-up (2026-10-24, user-verified): the bench's video placement had
+  been stretch-to-fill **since 1.5e** — never aspect-aware — so 16:9 clips
+  on the 16:9 panel looked correctly fitted and a non-16:9 clip suddenly
+  looked wrong (the user's system gained a hardware h264 decoder around
+  the same time, but that is unrelated: the worker requests no VA-API
+  decoder and decodes in software). `OutputSession`'s bench draw now
+  fits the frame centred with its aspect preserved; the letterbox/pillar
+  bars are the scene background, and real media layers will bring their
+  own geometry in M2. Screenshots: `/tmp/opencode/fit-916.png` (before:
+  portrait stretched full-frame) vs `/tmp/opencode/fit-916-fixed.png`
+  (after: pillarboxed, undistorted), 16:9 unchanged
+  (`/tmp/opencode/fit-169-fixed.png`).
 
 ## Verification and environment
 

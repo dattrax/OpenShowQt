@@ -697,10 +697,24 @@ void OutputSession::frame() {
                 }
             } else {
                 videoToken = toDraw->token;
-                // Dev-bench placement: the video fills the output (later
-                // media layers will place it like any other layer).
+                // Dev-bench placement: aspect-preserving fit, centred, the
+                // scene background showing through as letterbox bars (real
+                // media layers bring their own geometry in M2). Assumes
+                // square pixels, which the wrapped YUV slots always are;
+                // anamorphic source is a media-layer problem.
+                const SkISize srcSize = videoImage->dimensions();
+                const float fitScale = std::min(
+                    static_cast<float>(fSwapchain->width()) / srcSize.width(),
+                    static_cast<float>(fSwapchain->height()) / srcSize.height());
+                const float fitWidth = srcSize.width() * fitScale;
+                const float fitHeight = srcSize.height() * fitScale;
                 surface->getCanvas()->drawImageRect(
-                    videoImage, SkRect::MakeIWH(fSwapchain->width(), fSwapchain->height()),
+                    videoImage,
+                    SkRect::MakeLTRB(
+                        (fSwapchain->width() - fitWidth) * 0.5f,
+                        (fSwapchain->height() - fitHeight) * 0.5f,
+                        (fSwapchain->width() + fitWidth) * 0.5f,
+                        (fSwapchain->height() + fitHeight) * 0.5f),
                     SkSamplingOptions(SkFilterMode::kLinear));
             }
         }
