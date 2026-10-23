@@ -481,6 +481,37 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
     space "unknown", so the test prints colour info rather than
     asserting it (the 1.5f real-world fixtures carry BT.709 and the
     probe will be exercised on them).
+- **1.5b** DONE. `FrameRing.{h,cpp}` and `VideoFrameSource.{h,cpp}`.
+  - `FrameRing` is the bounded I420 queue: `claim → publish` (producer),
+    `poll → release` (consumer), PreviewStream's "claimable only once
+    released" rule, never grows. The producer **waits** on a full ring
+    (a dropped decode frame would falsify the benchmark) but every wait
+    honours `stop()`. `stop()` drains visible frames then fails fast —
+    that is the consumer's "decode finished" signal. pimpl keeps FFmpeg
+    (`av_image_alloc`) in the .cpp; `VideoFrame`/`Stats` are plain types.
+  - `VideoFrameSource` owns container + decoder + one decode thread. It
+    probes first (reusing MediaProbe), picks the largest decodable video
+    stream, decodes to the ring at the coded size, and only builds a
+    swscale context when the stream is **not** yuv420p (I420 in →
+    `av_image_copy`, else convert). pts comes from `best_effort_timestamp`
+    scaled by the stream time base, falling back to a synthetic clock.
+    `loop=true` seeks to 0 and flushes; ring sequence numbers stay
+    monotone across the wrap while pts wraps — exactly what 1.5e's
+    clocked pick loop needs. `requestStop` + `join` are idempotent.
+  - ctest `media_tests` gained four scenarios, all green desktop **9/9**
+    and headless **7/7** (worker still Qt-free): ring contract (FIFO
+    order, monotone sequence, abort invisible, stop-drains-then-fails,
+    stats); 1080p25×4s decodes to exactly **100 frames in 0.29s =
+    ~350 fps** (≫2× real-time, acceptance ≥50fps), peakFilled 1 ≤ 6;
+    backpressure (2-slot ring → producer stalls at produced≈consumed,
+    requestStop wakes the parked producer in **0.002s**); loop (80
+    frames past a ~60-frame clip, loops=1, monotone sequence, pts wraps,
+    eof never set).
+  - Note: the 1080p decode ran ~350 fps, so the benchmark is CPU-decode
+    bound by how fast the ring is drained, not by libavcodec — the real
+    1.5 number to watch is decode-to-present under the GPU path (1.5d)
+    and the soak (1.5f), where pacing and A/V drift matter, not raw
+    decode throughput.
 
 ## Verification and environment
 

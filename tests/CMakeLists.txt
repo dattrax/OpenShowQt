@@ -47,7 +47,7 @@ add_test(NAME render_layer_composition
 add_executable(media_tests media_tests.cpp)
 target_link_libraries(media_tests PRIVATE openshow::worker_media)
 add_test(NAME media_tests COMMAND media_tests)
-set_tests_properties(media_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+set_tests_properties(media_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 
 # Task 1.2 end-to-end: spawn a real openshow-worker --socket, handshake,
 # change output state live, and take both exits (served shutdown and the
