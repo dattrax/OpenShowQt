@@ -75,6 +75,7 @@ void printUsage(const char* program) {
                  "Usage: %s [--version] [--check-deps] [--socket PATH]\n"
                  "       %s --render-test [--monitor N] [--seconds S] [--idle-check]\n"
                  "       %s --av-bench FILE [--monitor N] [--seconds S] [--no-audio]\n"
+                 "                                  [--preview]\n"
                  "       %s --snapshot PATH [--width N] [--height N]\n"
                  "       %s --list-monitors\n"
                  "       %s --check-layers\n"
@@ -86,6 +87,8 @@ void printUsage(const char* program) {
                  "  --av-bench FILE      decode FILE to the GPU and pace presents\n"
                  "                       against the audio clock (10 s by default)\n"
                  "  --no-audio           with --av-bench: pace on the wall clock\n"
+                 "  --preview            with --av-bench: run the 1.4 preview stream\n"
+                 "                       at 640x360@15 with a built-in consumer\n"
                  "  --monitor N          destination override: fullscreen on monitor N\n"
                  "                       (socket mode defaults to the second display)\n"
                  "  --seconds S          with --render-test, exit after S seconds\n"
@@ -407,7 +410,8 @@ private:
 // scheduler pace presents against the audio sink's own clock (wall clock
 // with --no-audio or when FILE has no decodable audio). Reports the numbers
 // M5 is judged on: missed deadlines under 1%, drift under 50 ms.
-int runAvBench(const std::string& path, int monitorIndex, double seconds, bool useAudio) {
+int runAvBench(const std::string& path, int monitorIndex, double seconds, bool useAudio,
+               bool preview) {
     openshow::media::MediaInfo info;
     std::string error;
     if (openshow::media::probeMedia(path, &info, &error) != openshow::media::ProbeStatus::kOk) {
@@ -482,6 +486,35 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
     BenchPresenter presenter(&uploader);
     presenter.setClock(clock);
     session.setVideoPresenter(&presenter);
+
+    // Optional 1.4 preview stream under load, with a built-in consumer that
+    // pops readys and releases immediately like a front-row frontend: the
+    // point is exercising the publish path (draw + readPixels) at preview
+    // fps while the audience output clocks video.
+    std::atomic<bool> previewStop{false};
+    std::atomic<uint64_t> previewConsumed{0};
+    std::thread previewThread;
+    bool previewRunning = false;
+    if (preview) {
+        openshow::worker::OutputSession::PreviewInfo previewInfo;
+        if (!session.startPreview(640, 360, 15, &previewInfo, &error)) {
+            std::fprintf(stderr, "openshow-worker: av-bench preview: %s (continuing without)\n",
+                         error.c_str());
+        } else {
+            previewRunning = true;
+            previewThread = std::thread([&] {
+                openshow::worker::OutputSession::PreviewReady ready;
+                while (!previewStop.load()) {
+                    if (session.takePreviewReady(&ready)) {
+                        session.releasePreviewSlot(ready.slot, ready.seq);
+                        previewConsumed.fetch_add(1, std::memory_order_relaxed);
+                    } else {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    }
+                }
+            });
+        }
+    }
 
     if (!source.startDecode(true, &error)) {
         std::fprintf(stderr, "openshow-worker: av-bench decode: %s\n", error.c_str());
@@ -610,6 +643,14 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
     if (audio) {
         sink.stop();
     }
+    previewStop.store(true);
+    if (previewThread.joinable()) {
+        previewThread.join();
+    }
+    if (previewRunning) {
+        session.stopPreview();
+    }
+    const auto previewStatus = session.status().preview;
     session.setVideoPresenter(nullptr);
     session.setVideoClock(nullptr);
     uploader.destroy();
@@ -640,6 +681,12 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
                 static_cast<unsigned long long>(sinkCallbacks),
                 static_cast<unsigned long long>(sinkUnderruns), sinkDriftMs);
     std::printf("  session presented %llu frames total\n", presented);
+    if (preview) {
+        std::printf("  preview consumed=%llu published=%llu dropped=%llu\n",
+                    static_cast<unsigned long long>(previewConsumed.load()),
+                    static_cast<unsigned long long>(previewStatus.published),
+                    static_cast<unsigned long long>(previewStatus.dropped));
+    }
 
     if (report.presents == 0) {
         std::fprintf(stderr, "openshow-worker: av-bench presented nothing\n");
@@ -662,6 +709,7 @@ int main(int argc, char** argv) {
     const char* avBenchPath = nullptr;
     bool idleCheck = false;
     bool noAudio = false;
+    bool benchPreview = false;
     int monitorIndex = openshow::worker::OutputSession::kAutoSecondDisplay;
     bool monitorGiven = false;
     double seconds = 0.0;
@@ -691,6 +739,8 @@ int main(int argc, char** argv) {
             idleCheck = true;
         } else if (argument == "--no-audio") {
             noAudio = true;
+        } else if (argument == "--preview") {
+            benchPreview = true;
         } else if (argument == "--socket" && i + 1 < argc) {
             socketPath = argv[++i];
         } else if (argument == "--monitor" && i + 1 < argc) {
@@ -756,7 +806,7 @@ int main(int argc, char** argv) {
         // Task 1.5e development bench: same session an operator drives, plus
         // the decode -> GPU upload pipeline paced by the audio clock.
         return runAvBench(avBenchPath, monitorGiven ? monitorIndex : -1,
-                          seconds > 0.0 ? seconds : 10.0, !noAudio);
+                          seconds > 0.0 ? seconds : 10.0, !noAudio, benchPreview);
     }
 
     if (renderTest) {

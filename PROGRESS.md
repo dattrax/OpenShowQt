@@ -710,6 +710,32 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
     copy waits on all release semaphores of prior sampling and starts only
     after the CPU-side release), worst case one blended frame. Closed by
     the hold-until-replaced slot protocol when M2 media layers land.
+- **1.5f** DONE. Benchmark matrix (`--av-bench … --preview`: the 1.4 preview
+  stream runs at 640x360@15 beside the output with a built-in consumer that
+  pops readys and releases immediately; RADV STRIX1, Wayland session, all
+  runs exit 0).
+  - av-10s.mp4 (generated h264 1080p25 + AAC, PipeWire clock) 60 s:
+    **1500 presents = exactly 25.0 fps**, missed=0, drops=0, drift mean
+    +0.6 ms / max 1.7 ms, 6 decoder loops, preview 899 published / 0 dropped.
+  - bribary.mp4 (real-world AV1 1080x1920 portrait @30 + AAC) 60 s: 1795
+    presents, **missed=2 (0.111%)**, drops=1, drift mean +0.6 ms /
+    **max 39.8 ms** (both outliers at a loop boundary, none mid-playback),
+    0 underruns, preview 899 / 0 dropped.
+  - decode-hd.mp4 (h264 1080p25, silent → wall clock) 30 s: 751 presents,
+    missed=0, drift mean +0.8 ms / max 13.8 ms, preview 450 / 0 dropped.
+  - **Soak** av-10s.mp4, 600 s: **15000 presents = exactly 25.000 fps for
+    ten minutes, missed=0, drops=0**, drift mean +0.5 ms / max 3.0 ms,
+    2344 sink callbacks with 0 underruns, 60 decoder loops, GPU slot count
+    flat at 4 with 4 wraps (no leaks, steady ~0.8 ms stage + ~0.8 ms
+    copy+fence per upload throughout), preview 8990 / 0 dropped.
+  - **Verdict: feasible on this PC.** M5's <1% missed deadlines: worst
+    observed 0.11%, and 0% in the three other runs including the soak.
+    M5's <50 ms drift: worst observed 39.8 ms at an AV1 loop seam,
+    steady-state max 3.0 ms. The sink's +35…40 ms audio-vs-wall offset is
+    buffer latency, not slip (the video clock rides it), and M5's sync work
+    can compensate it if needed. Follow-ups noted for M2: watch loop-boundary
+    outliers if they ever appear mid-playback, and the accepted redraw/
+    mid-copy cosmetic race (1.5e) closes with the media-layer slot protocol.
 
 ## Verification and environment
 
