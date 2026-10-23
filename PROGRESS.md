@@ -736,6 +736,45 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
     can compensate it if needed. Follow-ups noted for M2: watch loop-boundary
     outliers if they ever appear mid-playback, and the accepted redraw/
     mid-copy cosmetic race (1.5e) closes with the media-layer slot protocol.
+- **1.5g** DONE. Optional Vulkan validation for the hand-written code
+  (user-inserted task): `VK_LAYER_KHRONOS_validation` plus a
+  `VK_EXT_debug_utils` messenger, off by default, enabled with
+  `--vulkan-validation` (all Vulkan modes: `--render-test`, `--av-bench`,
+  `--socket`) or `OPENSHOW_VULKAN_VALIDATION=1` — the env form exists so
+  `OPENSHOW_VULKAN_VALIDATION=1 ctest` covers `gpu_yuv_tests` without
+  plumbing flags through it. vk-bootstrap does the work (extension,
+  messenger, hard failure when the layer isn't installed, checked up
+  front for a clear error); `VulkanContext` installs a custom callback
+  (severity warning+error), destroys the messenger before the instance,
+  and dedupes by message id — the first three occurrences in full, then
+  every 60th with a seen-count, because a 25 fps loop otherwise floods.
+  - **It caught a real bug** (fixed): the uploader's barriers in
+    `YuvGpu.cpp` named `VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT` as source,
+    destination and semaphore-wait stage inside upload-queue command
+    buffers — graphics stages are not allowed on the compute+transfer
+    family (VUID-vkCmdPipelineBarrier-dstStageMask-06462,
+    -srcStageMask-06461, VUID-vkQueueSubmit-pWaitDstStageMask-00066).
+    Semantically neutral to fix: a fragment stage on that queue could
+    never have contributed ordering — the release-semaphore wait is the
+    real protection, since its signal retires the whole Skia sampling
+    batch. Now TOP_OF_PIPE→TRANSFER for layout-in, TRANSFER→BOTTOM_OF_PIPE
+    for the shader-read transition (cross-queue visibility rides the fence
+    the upload waits before publishing the slot), and the wait stages are
+    BOTTOM_OF_PIPE.
+  - **Skia itself validated clean**: 20 s AV1 + preview runs (599 presents
+    through swapchain, wrapped external YUV textures and cross-queue
+    release semaphores) produced zero messages from Skia's Vulkan usage.
+    The one recurring message is loader noise on this Fedora install —
+    `terminator_CreateInstance: … libvulkan_dzn.so. Skipping this driver`
+    (the D3D12 ICD refusing to create on Wayland, harmless, unrelated to
+    anything here).
+  - Verified with the layer on (RADV STRIX1): render-test clean,
+    `--idle-check` still PASS (0 presents, 0.02% CPU), av-bench av-10s +
+    preview 200 presents 0 missed with no validation output, bribary 20 s
+    + preview zero validation messages (its 2 missed / 1 underrun are the
+    known loop-seam behaviour), gpu_yuv_tests pass headless with the env
+    var, socket mode clean. Without flag or env the suites are unchanged:
+    desktop **11/11**, headless **8/8**.
 
 ## Verification and environment
 
@@ -948,30 +987,25 @@ logged here from what is observable off screen rather than claimed as seen.
 
 ## Exact next action
 
-1. Task 1.4 is committed with this file (worker preview producer +
-   `preview_wire.h`, RPC control, UI consumer + `PreviewView`, ctest
-   scenario D, PLAN/PROGRESS rows; gates green: desktop 8/8, headless
-   6/6). The task 1.4 log above records the wire contract and the traps
-   (Boost.JSON int64 params, map-on-first-ready, release-the-ready-you-
-   waited-on, `drawImage` fit).
-2. Next session starts **1.5 — video decode + A/V benchmark** (PLAN
-   acceptance: "results establish feasibility on this PC"). Architecture
-   context is fixed: FFmpeg software decode (headers need `extern "C"`),
-   PipeWire's process callback is the playback clock, GPU composition,
-   and never decode or mix on the render or RPC threads. Split 1.5 into
-   subtask rows in PLAN.md before coding (graduation rule), e.g.: (a) a
-   Qt-free demux+decode utility turning a sample clip into timestamped
-   frames with bounded queues; (b) a PipeWire sink reporting callback
-   timing; (c) a decode-to-present harness measuring frame pacing and
-   A/V drift over a few minutes on 2–3 representative files; (d) write
-   the feasibility numbers into PROGRESS.md so M5 gets a baseline.
+1. **M1 is complete**: tasks 1.1–1.5 (1.5a–1.5f plus the inserted 1.5g
+   validation-layer option) are DONE, committed and pushed to
+   `dattrax/OpenShowQt` main; the task 1.5 log records the pipeline
+   architecture and every trap hit along the way. Gates as of 1.5g:
+   desktop ctest **11/11**, headless **8/8**, and both GPU test paths
+   pass under `OPENSHOW_VULKAN_VALIDATION=1`.
+2. Next session starts **M2 — 2.1 documents and application state**
+   (shows, slides, groups, styles, playlists as domain operations with
+   focused tests). The domain library (`src/domain`) is the place; the
+   worker's JSON surface grows from there.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;
    `PreviewStream`'s claim-only-released / drop-not-block semantics are
    the template for any bounded producer–consumer queue here;
    `WorkerController` now routes worker→UI notifications, so more
-   event types keep working.
+   event types keep working. `--av-bench` is the ready-made harness the
+   moment video layers need real decode-to-present plumbing, and
+   `--vulkan-validation` keeps any new hand-written Vulkan honest.
 4. One manual check stays open from 1.3: drag-resize the borderless output
    window once and confirm the swapchain recreate (see the acceptance
    caveat in the task 1.3 log).

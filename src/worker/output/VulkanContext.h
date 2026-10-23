@@ -11,6 +11,13 @@
  * single-family GPUs (llvmpipe) the upload queue is the graphics queue and
  * callers skip cross-queue handling. Images intended for the uploader are
  * created with CONCURRENT sharing over both families.
+ *
+ * Task 1.5g added optional Vulkan validation: create()/createHeadless() take
+ * a validation flag (the OPENSHOW_VULKAN_VALIDATION=1 environment variable
+ * also turns it on, so the GPU tests can enable it without plumbing), which
+ * enables VK_LAYER_KHRONOS_validation and installs a VK_EXT_debug_utils
+ * messenger that logs errors and warnings to stderr with deduplication.
+ * Requesting validation without the layer installed fails creation.
  */
 
 #pragma once
@@ -39,9 +46,11 @@ public:
     VulkanContext& operator=(const VulkanContext&) = delete;
 
     // Windowed: instance, GLFW surface, device (graphics queue presents).
-    bool create(GLFWwindow* window);
+    // validation turns on VK_LAYER_KHRONOS_validation and a debug messenger
+    // (the OPENSHOW_VULKAN_VALIDATION environment variable also does).
+    bool create(GLFWwindow* window, bool validation = false);
     // Offscreen: instance and device only; nothing can present.
-    bool createHeadless();
+    bool createHeadless(bool validation = false);
     void destroy();
 
     VkInstance instance() const { return fInstance; }
@@ -51,6 +60,7 @@ public:
     uint32_t queueIndex() const { return fQueueIndex; }
     VkSurfaceKHR surface() const { return fSurface; }
     const std::string& deviceName() const { return fDeviceName; }
+    bool validationEnabled() const { return fValidation; }
 
     // Copy/upload queue: a distinct transfer family when the GPU has one,
     // otherwise the graphics queue itself.
@@ -62,12 +72,14 @@ public:
     skgpu::VulkanBackendContext& backendContext() { return *fBackendContext; }
 
 private:
-    bool createInstance(bool withWindowExtensions);
+    bool createInstance(bool withWindowExtensions, bool validation);
     bool selectPhysicalDevice();
     bool createDevice();
     int pickUploadFamily() const;  // -1 when no separate family exists
 
     VkInstance fInstance = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT fMessenger = VK_NULL_HANDLE;  // only with validation
+    bool fValidation = false;
     VkSurfaceKHR fSurface = VK_NULL_HANDLE;
     VkPhysicalDevice fPhysicalDevice = VK_NULL_HANDLE;
     VkDevice fDevice = VK_NULL_HANDLE;

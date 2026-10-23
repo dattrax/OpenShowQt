@@ -61,6 +61,9 @@ public:
         int monitor = -1;
         // Read the frame-30 image back on the CPU (the task 1.1 diagnostic).
         bool diagnostics = false;
+        // Task 1.5g: VK_LAYER_KHRONOS_validation + debug messenger on the
+        // Vulkan instance (dev tool, off by default).
+        bool vulkanValidation = false;
     };
 
     // One physical panel, as the frontend sees it. index is the value

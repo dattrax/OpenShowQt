@@ -89,6 +89,10 @@ void printUsage(const char* program) {
                  "  --no-audio           with --av-bench: pace on the wall clock\n"
                  "  --preview            with --av-bench: run the 1.4 preview stream\n"
                  "                       at 640x360@15 with a built-in consumer\n"
+                 "  --vulkan-validation  with the Vulkan modes: run with the Khronos\n"
+                 "                       validation layer and log its warnings and\n"
+                 "                       errors (also OPENSHOW_VULKAN_VALIDATION=1,\n"
+                 "                       which additionally covers the GPU tests)\n"
                  "  --monitor N          destination override: fullscreen on monitor N\n"
                  "                       (socket mode defaults to the second display)\n"
                  "  --seconds S          with --render-test, exit after S seconds\n"
@@ -149,11 +153,12 @@ int reportDependencies() {
 // holds all three or the check exits non-zero.
 int runRenderTest(int monitorIndex, double seconds,
                   const std::vector<std::pair<openshow::worker::LayerId, bool>>& layerOverrides,
-                  bool idleCheck) {
+                  bool idleCheck, bool vulkanValidation) {
     openshow::worker::OutputSession::Options options;
     options.title = "OpenShowQt render test (task 1.1)";
     options.monitor = monitorIndex;
     options.diagnostics = true;
+    options.vulkanValidation = vulkanValidation;
 
     openshow::worker::OutputSession session;
     std::string error;
@@ -411,7 +416,7 @@ private:
 // with --no-audio or when FILE has no decodable audio). Reports the numbers
 // M5 is judged on: missed deadlines under 1%, drift under 50 ms.
 int runAvBench(const std::string& path, int monitorIndex, double seconds, bool useAudio,
-               bool preview) {
+               bool preview, bool vulkanValidation) {
     openshow::media::MediaInfo info;
     std::string error;
     if (openshow::media::probeMedia(path, &info, &error) != openshow::media::ProbeStatus::kOk) {
@@ -423,6 +428,7 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
     openshow::worker::OutputSession::Options options;
     options.title = "OpenShowQt A/V bench (task 1.5e)";
     options.monitor = monitorIndex;
+    options.vulkanValidation = vulkanValidation;
 
     // Session first, uploader second: the reverse destruction order keeps
     // the GrDirectContext alive for uploader.destroy()'s SkImage drops.
@@ -710,6 +716,7 @@ int main(int argc, char** argv) {
     bool idleCheck = false;
     bool noAudio = false;
     bool benchPreview = false;
+    bool vulkanValidation = false;
     int monitorIndex = openshow::worker::OutputSession::kAutoSecondDisplay;
     bool monitorGiven = false;
     double seconds = 0.0;
@@ -741,6 +748,8 @@ int main(int argc, char** argv) {
             noAudio = true;
         } else if (argument == "--preview") {
             benchPreview = true;
+        } else if (argument == "--vulkan-validation") {
+            vulkanValidation = true;
         } else if (argument == "--socket" && i + 1 < argc) {
             socketPath = argv[++i];
         } else if (argument == "--monitor" && i + 1 < argc) {
@@ -806,14 +815,15 @@ int main(int argc, char** argv) {
         // Task 1.5e development bench: same session an operator drives, plus
         // the decode -> GPU upload pipeline paced by the audio clock.
         return runAvBench(avBenchPath, monitorGiven ? monitorIndex : -1,
-                          seconds > 0.0 ? seconds : 10.0, !noAudio, benchPreview);
+                          seconds > 0.0 ? seconds : 10.0, !noAudio, benchPreview,
+                          vulkanValidation);
     }
 
     if (renderTest) {
         // The development driver keeps the explicit destination; without
         // --monitor it shows the borderless window on the operator panel.
         return runRenderTest(monitorGiven ? monitorIndex : -1, seconds, layerOverrides,
-                             idleCheck);
+                             idleCheck, vulkanValidation);
     }
 
     if (socketPath) {
@@ -835,6 +845,7 @@ int main(int argc, char** argv) {
         openshow::worker::OutputSession::Options options;
         options.title = "OpenShowQt output";
         options.monitor = monitorIndex;
+        options.vulkanValidation = vulkanValidation;
         if (!session.open(options, &error)) {
             std::fprintf(stderr, "openshow-worker: %s\n", error.c_str());
             return 1;

@@ -83,7 +83,7 @@ bool OutputSession::open(const Options& options, std::string* error) {
     }
 
     fVk = std::make_unique<VulkanContext>();
-    if (!fVk->create(fWindow->handle())) {
+    if (!fVk->create(fWindow->handle(), options.vulkanValidation)) {
         if (error) {
             *error = "could not create the Vulkan device";
         }

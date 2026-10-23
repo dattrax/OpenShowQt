@@ -1,8 +1,12 @@
 #include "VulkanContext.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -18,6 +22,57 @@ namespace openshow::worker {
 
 namespace {
 constexpr uint32_t kApiVersion = VK_API_VERSION_1_2;
+
+// Task 1.5g: the GPU tests enable validation through the environment because
+// they call createHeadless() directly; the worker binary has a CLI flag.
+bool envValidationRequested() {
+    const char* value = std::getenv("OPENSHOW_VULKAN_VALIDATION");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+// One debug messenger per process would be fine (there is at most one live
+// VulkanContext), but validation messages arrive on whichever thread made
+// the call, so the dedup table needs a lock.
+struct ValidationLog {
+    std::mutex mutex;
+    std::unordered_map<std::string, uint64_t> seenCounts;
+};
+ValidationLog gValidationLog;
+
+// VkDebugUtilsMessengerCallbackEXT. Errors and warnings from every layer go
+// to stderr. The validation layer reports the same violation once per call
+// site per frame, and during a 25 fps presentation loop that floods, so an
+// identical message is printed in full three times and then once every 60th
+// occurrence with a repeat count.
+VKAPI_ATTR VkBool32 VKAPI_CALL validationMessage(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT,
+    const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
+    // Only WARNING and ERROR severities are registered, so the bits arrive
+    // singly (VkDebugUtilsMessageSeverityFlagBitsEXT).
+    const bool isError = severity == VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    const char* level = isError ? "error" : "warn";
+    std::string key = data->pMessageIdName != nullptr ? data->pMessageIdName
+                                                      : (data->pMessage != nullptr ? data->pMessage
+                                                                                   : "(unnamed)");
+    uint64_t count = 0;
+    {
+        std::lock_guard<std::mutex> lock(gValidationLog.mutex);
+        count = ++gValidationLog.seenCounts[key];
+    }
+    if (count <= 3 || count % 60 == 0) {
+        std::fprintf(stderr, "openshow-worker: vulkan validation %s: %s", level,
+                     data->pMessage != nullptr ? data->pMessage : "(no message)");
+        // Validation messages rarely end with a newline; repeat markers do.
+        if (count > 3) {
+            std::fprintf(stderr, " [seen %llu times]", static_cast<unsigned long long>(count));
+        } else if (data->pMessage == nullptr ||
+                   data->pMessage[std::strlen(data->pMessage) - 1] != '\n') {
+            std::fprintf(stderr, "\n");
+        }
+    }
+    // Returning VK_FALSE only means "not aborting"; nothing else to do.
+    return VK_FALSE;
+}
 }  // namespace
 
 // The vk-bootstrap instance and selected physical device have to outlive
@@ -32,9 +87,30 @@ public:
 VulkanContext::VulkanContext() = default;
 VulkanContext::~VulkanContext() { destroy(); }
 
-bool VulkanContext::createInstance(bool withWindowExtensions) {
+bool VulkanContext::createInstance(bool withWindowExtensions, bool validation) {
+    if (validation) {
+        auto system = vkb::SystemInfo::get_system_info();
+        if (!system || !system->validation_layers_available) {
+            std::fprintf(stderr,
+                         "openshow-worker: vulkan validation requested but "
+                         "VK_LAYER_KHRONOS_validation is not installed\n");
+            return false;
+        }
+    }
     vkb::InstanceBuilder instanceBuilder;
     instanceBuilder.set_app_name("openshow-worker").require_api_version(kApiVersion);
+    if (validation) {
+        // The debug-utils extension and messenger come with it: vk-bootstrap
+        // enables VK_EXT_debug_utils whenever a callback is installed and
+        // creates the messenger right after the instance. Messages produced
+        // during vkCreateInstance itself are too early for the messenger and
+        // are lost, as in every vk-bootstrap application.
+        instanceBuilder.enable_validation_layers(true);
+        instanceBuilder.set_debug_callback(&validationMessage);
+        instanceBuilder.set_debug_messenger_severity(
+            VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+            VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);
+    }
     if (withWindowExtensions) {
         uint32_t glfwExtensionCount = 0;
         const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
@@ -54,13 +130,15 @@ bool VulkanContext::createInstance(bool withWindowExtensions) {
         return false;
     }
     fInstance = builtInstance->instance;
+    fMessenger = builtInstance->debug_messenger;
+    fValidation = validation;
     fPhysical = std::make_unique<PhysicalDeviceStorage>();
     fPhysical->instance = *builtInstance;
     return true;
 }
 
-bool VulkanContext::create(GLFWwindow* window) {
-    if (!createInstance(true)) {
+bool VulkanContext::create(GLFWwindow* window, bool validation) {
+    if (!createInstance(true, validation || envValidationRequested())) {
         return false;
     }
     if (glfwCreateWindowSurface(fInstance, window, nullptr, &fSurface) != VK_SUCCESS) {
@@ -87,12 +165,15 @@ bool VulkanContext::create(GLFWwindow* window) {
     if (hasDedicatedUploadQueue()) {
         std::fprintf(stderr, ", uploads on queue %u", fUploadQueueIndex);
     }
+    if (fValidation) {
+        std::fprintf(stderr, ", validation on");
+    }
     std::fprintf(stderr, ")\n");
     return true;
 }
 
-bool VulkanContext::createHeadless() {
-    if (!createInstance(false)) {
+bool VulkanContext::createHeadless(bool validation) {
+    if (!createInstance(false, validation || envValidationRequested())) {
         return false;
     }
     if (!selectPhysicalDevice() || !createDevice()) {
@@ -102,6 +183,9 @@ bool VulkanContext::createHeadless() {
     std::fprintf(stderr, "openshow-worker: Vulkan device \"%s\" (headless", fDeviceName.c_str());
     if (hasDedicatedUploadQueue()) {
         std::fprintf(stderr, ", uploads on queue %u", fUploadQueueIndex);
+    }
+    if (fValidation) {
+        std::fprintf(stderr, ", validation on");
     }
     std::fprintf(stderr, ")\n");
     return true;
@@ -264,11 +348,16 @@ void VulkanContext::destroy() {
         vkDestroySurfaceKHR(fInstance, fSurface, nullptr);
         fSurface = VK_NULL_HANDLE;
     }
+    if (fMessenger != VK_NULL_HANDLE && fInstance != VK_NULL_HANDLE) {
+        vkb::destroy_debug_utils_messenger(fInstance, fMessenger);
+        fMessenger = VK_NULL_HANDLE;
+    }
     if (fInstance != VK_NULL_HANDLE) {
         vkDestroyInstance(fInstance, nullptr);
         fInstance = VK_NULL_HANDLE;
     }
     fPhysicalDevice = VK_NULL_HANDLE;
+    fValidation = false;
 }
 
 }  // namespace openshow::worker

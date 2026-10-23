@@ -346,15 +346,19 @@ bool GpuYuvUploader::upload(const uint8_t* yPlane, int yRowBytes, const uint8_t*
                              &memoryBarrier);
     };
 
-    // First use starts from UNDEFINED (contents discarded anyway).
+    // First use starts from UNDEFINED (contents discarded anyway). The
+    // source stage is TOP_OF_PIPE rather than FRAGMENT_SHADER for two
+    // reasons: this command buffer runs on the upload queue family, which
+    // validation (correctly) refuses graphics-only stages for, and it does
+    // nothing anyway — the real ordering against in-flight sampling is the
+    // release-semaphore wait on the submit below, whose signal retires the
+    // whole sampling batch before any of this queue's work starts.
     const VkImageLayout before = chosen->firstTransfer ? VK_IMAGE_LAYOUT_UNDEFINED
                                                        : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     for (VkImage image : {chosen->yImage, chosen->uvImage}) {
         barrier(image, before, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                chosen->firstTransfer ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                                      : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                chosen->firstTransfer ? 0 : VK_ACCESS_SHADER_READ_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT);
     }
 
     // Vulkan measures buffer rows in texels, not bytes: the R8 plane's row
@@ -377,11 +381,15 @@ bool GpuYuvUploader::upload(const uint8_t* yPlane, int yRowBytes, const uint8_t*
     copyPlane(chosen->yImage, 0, fWidth, fHeight, yRowBytes);
     copyPlane(chosen->uvImage, chosen->uvOffset, fWidth / 2, fHeight / 2, uvRowBytes / 2);
 
+    // The transition's consumer (a fragment shader on the graphics queue)
+    // cannot be named on this transfer/compute queue, so the barrier drains
+    // to BOTTOM_OF_PIPE: cross-queue visibility comes from the fence wait
+    // below, after which any new graphics submission runs strictly after
+    // the copies and the layout change have completed.
     for (VkImage image : {chosen->yImage, chosen->uvImage}) {
         barrier(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                VK_ACCESS_SHADER_READ_BIT);
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0);
     }
     if (vkEndCommandBuffer(command) != VK_SUCCESS) {
         return false;
@@ -394,9 +402,11 @@ bool GpuYuvUploader::upload(const uint8_t* yPlane, int yRowBytes, const uint8_t*
     {
         // The consumer's sampling of this slot must finish before the copy:
         // wait on the collected release semaphores on the GPU (rather than
-        // parking a thread) at the stage where sampling happened.
+        // parking a thread). The signal retires the entire signalling batch,
+        // which is the fragment-shader ordering; the wait stage itself must
+        // be one the upload queue supports, hence BOTTOM_OF_PIPE.
         std::vector<VkPipelineStageFlags> waitStages(
-            chosen->pendingDone.size(), VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+            chosen->pendingDone.size(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
         VkSubmitInfo submitInfo = {};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.commandBufferCount = 1;
