@@ -19,13 +19,18 @@
 #include <string>
 #include <utility>
 
+#include "include/codec/SkCodec.h"
+#include "include/core/SkBitmap.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
 #include "include/core/SkData.h"
 #include "include/core/SkFontStyle.h"
 #include "include/core/SkFontMgr.h"
+#include "include/core/SkImage.h"
+#include "include/core/SkPaint.h"
 #include "include/core/SkPixmap.h"
 #include "include/core/SkRect.h"
+#include "include/core/SkSamplingOptions.h"
 #include "include/core/SkSurface.h"
 #include "include/encode/SkPngEncoder.h"
 #include "include/ports/SkFontMgr_fontconfig.h"
@@ -425,14 +430,96 @@ SceneTextEngine::SceneLayout SceneTextEngine::layoutScene(
     return out;
 }
 
-void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout) const {
-    float y = (kSceneCanvasHeight - layout.blockHeight) * 0.5f;
+void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
+                                 const SkPaint* paint) const {
+    const float top = (kSceneCanvasHeight - layout.blockHeight) * 0.5f;
+    // Paragraph::paint in this fork takes no paint, so the fade's group
+    // alpha wraps the block in a saveLayer — Skia's own "transparency
+    // straight into the paint". The layer is word-bounds only and exists
+    // only while a fade is in flight; steady frames never take it.
+    const bool group = paint != nullptr && paint->getAlpha() < 255;
+    if (group) {
+        canvas->saveLayer(SkRect::MakeLTRB(kSceneMarginX - 8.0f, top - 8.0f,
+                                           kSceneCanvasWidth - kSceneMarginX + 8.0f,
+                                           top + layout.blockHeight + 8.0f),
+                          paint);
+    }
+    float y = top;
     for (const auto& item : layout.items) {
         if (item.paragraph && item.hasText) {
             item.paragraph->paint(canvas, kSceneMarginX, y);
         }
         y += item.height + layout.gap;
     }
+    if (group) {
+        canvas->restore();
+    }
+}
+
+sk_sp<SkImage> SceneImageCache::imageFor(const std::string& path) {
+    const auto existing = fImages.find(path);
+    if (existing != fImages.end()) {
+        return existing->second;  // cached, or a cached failure (null)
+    }
+    sk_sp<SkImage> image;
+    std::ifstream in(path, std::ios::binary);
+    if (in) {
+        const std::string bytes((std::istreambuf_iterator<char>(in)),
+                                std::istreambuf_iterator<char>());
+        sk_sp<SkData> data = SkData::MakeWithCopy(bytes.data(), bytes.size());
+        auto codec = SkCodec::MakeFromData(std::move(data));
+        if (codec) {
+            const SkImageInfo info = codec->getInfo().makeColorType(kN32_SkColorType)
+                                         .makeAlphaType(kPremul_SkAlphaType);
+            SkBitmap bitmap;
+            if (bitmap.tryAllocPixels(info) &&
+                codec->getPixels(info, bitmap.getPixels(), bitmap.rowBytes()) ==
+                    SkCodec::kSuccess) {
+                image = SkImages::RasterFromBitmap(bitmap);
+            }
+        }
+    }
+    fImages.emplace(path, image);
+    return image;
+}
+
+void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
+                         SceneImageCache* images, const SkPaint* paint) {
+    const uint32_t color = scene.background.color;
+    SkPaint fill;
+    fill.setColor(SkColorSetARGB(0xFF, (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF));
+    if (paint != nullptr) {
+        fill.setAlpha(paint->getAlpha());
+    }
+    canvas->drawRect(SkRect::MakeWH(kSceneCanvasWidth, kSceneCanvasHeight), fill);
+    if (!scene.background.hasImage || images == nullptr) {
+        return;
+    }
+    sk_sp<SkImage> image = images->imageFor(scene.background.assetPath);
+    if (!image) {
+        return;  // missing or undecodable: the colour fill stands alone
+    }
+    // Cover fit: scale to fill the authored canvas, centre, crop overflow
+    // (clip so a portrait window's letterbox bars stay black).
+    const float scale = std::max(kSceneCanvasWidth / static_cast<float>(image->width()),
+                                 kSceneCanvasHeight / static_cast<float>(image->height()));
+    const float w = static_cast<float>(image->width()) * scale;
+    const float h = static_cast<float>(image->height()) * scale;
+    const SkRect dest = SkRect::MakeLTRB((kSceneCanvasWidth - w) * 0.5f,
+                                         (kSceneCanvasHeight - h) * 0.5f,
+                                         (kSceneCanvasWidth + w) * 0.5f,
+                                         (kSceneCanvasHeight + h) * 0.5f);
+    canvas->save();
+    canvas->clipRect(SkRect::MakeWH(kSceneCanvasWidth, kSceneCanvasHeight));
+    SkPaint imagePaint;
+    if (paint != nullptr) {
+        imagePaint.setAlpha(paint->getAlpha());
+    }
+    canvas->drawImageRect(image, SkRect::MakeIWH(image->width(), image->height()), dest,
+                          SkSamplingOptions(SkFilterMode::kLinear),
+                          paint != nullptr ? &imagePaint : nullptr,
+                          SkCanvas::kFast_SrcRectConstraint);
+    canvas->restore();
 }
 
 bool writePngRaster(SkSurface* surface, const std::string& path, std::string* error) {
@@ -469,7 +556,8 @@ bool writePngRaster(SkSurface* surface, const std::string& path, std::string* er
 }
 
 bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string& path,
-                         int width, int height, std::string* error) {
+                         int width, int height, const SnapshotOptions& options,
+                         std::string* error) {
     SceneTextEngine engine;
     if (!engine.create(error)) {
         return false;
@@ -492,16 +580,35 @@ bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string&
                       (static_cast<float>(height) - kSceneCanvasHeight * scale) * 0.5f);
     canvas->scale(scale, scale);
 
-    // Background colour fills the authored canvas; image composition is
-    // task 3.2. Letterbox bars outside the authored rect stay black.
-    SkPaint background;
-    background.setColor(SkColorSetARGB(0xFF, (scene.background.color >> 16) & 0xFF,
-                                       (scene.background.color >> 8) & 0xFF,
-                                       scene.background.color & 0xFF));
-    canvas->drawRect(SkRect::MakeWH(kSceneCanvasWidth, kSceneCanvasHeight), background);
-
-    const SceneTextEngine::SceneLayout layout = engine.layoutScene(scene);
-    engine.drawLayout(canvas, layout);
+    // The two layers, dispatched like the LayerStack would (a disabled one
+    // draws nothing at all), each honouring its own crossfade track.
+    SceneImageCache images;
+    if (options.background) {
+        const bool fading = options.fadeFrom != nullptr && options.mediaBlend < 1.0f;
+        if (fading) {
+            drawSceneBackground(canvas, *options.fadeFrom, &images, nullptr);
+        }
+        SkPaint fade;
+        if (fading) {
+            fade.setAlpha(static_cast<uint8_t>(options.mediaBlend * 255.0f + 0.5f));
+        }
+        drawSceneBackground(canvas, scene, &images, fading ? &fade : nullptr);
+    }
+    if (options.words) {
+        const bool fading = options.fadeFrom != nullptr && options.textBlend < 1.0f;
+        if (fading) {
+            const SceneTextEngine::SceneLayout fromLayout = engine.layoutScene(*options.fadeFrom);
+            SkPaint fade;
+            fade.setAlpha(static_cast<uint8_t>((1.0f - options.textBlend) * 255.0f + 0.5f));
+            engine.drawLayout(canvas, fromLayout, &fade);
+        }
+        const SceneTextEngine::SceneLayout layout = engine.layoutScene(scene);
+        SkPaint fade;
+        if (fading) {
+            fade.setAlpha(static_cast<uint8_t>(options.textBlend * 255.0f + 0.5f));
+        }
+        engine.drawLayout(canvas, layout, fading ? &fade : nullptr);
+    }
     return writePngRaster(surface.get(), path, error);
 }
 

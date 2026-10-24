@@ -1287,6 +1287,79 @@ of this work.
   card).
 - Gates: desktop **14/14**, headless **11/11**.
 
+## Task 3.2 log (2026-10-24) — image/background composition, transitions: DONE
+
+- **Deliverable**: a presented scene composes its picture and arrives like
+  one. The background layer draws the scene colour and the cover-fitted
+  background image; presenting another scene crossfades between the two on
+  the reference's two tracks, or cuts in one frame when asked.
+- **Compositing** (`SceneText.{h,cpp}`, still the layer-free primitive
+  module): `drawSceneBackground()` fills the colour then draws the image
+  cover-fitted — scale `max(W/iw, H/ih)`, centred, overflow clipped to the
+  authored rect so a portrait window's letterbox bars stay black. Cover is
+  the lyric default; the model carries no fit field yet, so contain/fill/
+  blur (and the blur-pixel check the reference itself defers to M4) wait
+  for the UI to expose the choice. `SceneImageCache` decodes through
+  SkCodec into N32 premul and keeps every path it has seen — including
+  failed decodes as cached nulls — so an unchanged background survives
+  lyric changes without re-decoding (the M3 continuity rule) and a fade can
+  hold the outgoing and incoming pictures at once. A missing file leaves
+  the colour fill standing alone.
+- **Transition design**: per-layer alpha dissolve, no render-to-texture
+  (the layer model's rule). Background: the outgoing scene draws at full
+  alpha, the incoming one over it at `mediaBlend` — the over-composite of
+  two opaque pictures is an exact lerp, so solid backgrounds mix exactly
+  and images crossfade. Words: old at `1 - textBlend`, new at
+  `textBlend` — the classic lyric cross-dissolve. The fork's
+  `Paragraph::paint` takes no paint (verified against
+  `modules/skparagraph/include/Paragraph.h`), so the words dissolve wraps
+  the block in one group-alpha `saveLayer` — Skia's own "transparency
+  straight into the paint"; the layer is word-bounds sized and exists only
+  while a fade is in flight. Layer.h's header comment now records the
+  exception.
+- **Two clocks**: media 800ms, text 500ms — FreeShow's per-tab transition
+  defaults (docs/reference.md §7), constant-documented in TestScene.cpp.
+  `SceneTransition{fFrom, fMediaBlend, fTextBlend}` lives on TestScene and
+  `advanceTransition()` computes both blends once per frame from the loop's
+  monotonic `timeSeconds` (the first drawn frame seeds the start, so the
+  fade measures from when it is actually seen). The scene-aware layers read
+  the struct by pointer — FrameContext stays scene-free per Layer.h's
+  design. WordsLayer caches layouts in two slots so neither side of a fade
+  re-lays-out mid-dissolve.
+- **Trigger semantics**: transition belongs to the present path, not the
+  Scene model. `TestScene::setActiveScene(scene, kind)`: first
+  presentation (nothing on air) pops in, a cut clears any fade in flight
+  and swaps in one frame, a fade keeps the outgoing scene alive as
+  `shared_ptr` until the blends finish. `OutputSession::presentScene` grew
+  a `SceneTransitionKind` parameter (default fade) carried to the render
+  thread beside `fDesiredScene`; `scene.present` accepts an optional
+  `"transition":"cut"|"fade"` — non-string or unknown names are
+  `kInvalidParams` before the session is touched; no capability change,
+  old clients see exactly the old behaviour.
+- **Verification**:
+  - `openshow-worker --check-transition` (ctest `render_scene_transition`)
+    drives the *live* state machine through drawn frames at 1920×1080 and
+    asserts: first-present pops; the media midpoint (+0.4s) is the
+    measured corner average; words still visible there but gone at exactly
+    +0.5s while media still travels (the split tracks); completion at
+    +0.8s leaves no trace; a cut swaps in one frame; a cut cancels a fade
+    mid-flight. `RasterFrame::render` grew a `timeSeconds` parameter
+    (defaulted, the 1.x checks are untouched).
+  - `scene_render_tests` adds four fixtures: cover fit both ways (wide
+    image shows its centre third with image colour in the top/bottom rows —
+    no letterbox; portrait image crops to a uniform middle band), missing
+    file falls back to the colour fill with words intact, crossfade stages
+    t=0/0.5/1 with the corner pixel measured against the endpoint average
+    plus a split-track frame (media 1.0, text 0.3), and the layer toggles
+    — background off leaves words on the black clear, words off leaves the
+    composed image with zero ink (the pixel twin of the UI's layer panel,
+    which has existed since M1 and whose dispatch skip `--check-layers`
+    pins for the demo picture).
+  - `worker_rpc_lifecycle` scenario E now also presents with
+    `transition=cut` and `transition=fade` (acknowledged, settled) and
+    rejects `"spin"` and `true`.
+- Gates: desktop **15/15**, headless **12/12**.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -1529,14 +1602,16 @@ logged here from what is observable off screen rather than claimed as seen.
    `scene.store.v1` capability.
    **M3 is under way**: 3.1 (production scene typography through
    `SceneTextEngine`, scene-aware background/words layers, the
-   shared_ptr hand-off from the session, and the pixel fixtures) is
-   DONE, committed and pushed. Gates: desktop ctest **14/14**, headless
-   **11/11**. Next is 3.2: image/background composition (contain/cover/
-   fill/blur fit rules over `background.assetPath`, cut + crossfade
-   transitions) plus the layer on/off dispatch check from the UI, then
-   3.3 (minimal lyric entry/navigation in QML — a newly created song
-   can be presented) and 3.4 (independent clear controls with
-   acknowledged live state).
+   shared_ptr hand-off from the session, and the pixel fixtures) and 3.2
+   (cover-fitted image backgrounds with a path-keyed decode cache, the
+   two-track fade — media 800ms/text 500ms — and cut, `scene.present`'s
+   optional `"transition"` parameter, `--check-transition` and four new
+   pixel fixtures) are DONE, committed and pushed. Gates: desktop ctest
+   **15/15**, headless **12/12**. Next is 3.3: minimal lyric entry and
+   navigation in QML — type or edit a song, navigate slides, and present
+   a newly created song through the ordinary compile/prepare/present
+   path — then 3.4 (independent clear controls with acknowledged live
+   state) and the M3 checkpoint demo.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

@@ -965,7 +965,35 @@ void testSceneStore() {
               isErrorCode(reply, proto::kInvalidParams),
           "presenting a never-prepared revision is refused");
 
-    call(fd, 11, "shutdown", {}, &reply);
+    // Task 3.2: scene.present's optional "transition". Cut and fade are
+    // accepted and land like any present; anything else is refused before
+    // the session is touched, and the scene on air does not move.
+    if (check(call(fd, 11, "scene.present",
+                   boost::json::object{{"revision", second}, {"transition", "cut"}}, &reply) &&
+                  reply.as_object().contains("result"),
+              "presenting with transition=cut is acknowledged")) {
+        check(waitForSceneActive(fd, second,
+                                 numberValue(reply.at("result").as_object().at("revision")), 6),
+              "status reports the cut scene applied");
+    }
+    if (check(call(fd, 12, "scene.present",
+                   boost::json::object{{"revision", first}, {"transition", "fade"}}, &reply) &&
+                  reply.as_object().contains("result"),
+              "presenting with transition=fade is acknowledged")) {
+        check(waitForSceneActive(fd, first,
+                                 numberValue(reply.at("result").as_object().at("revision")), 6),
+              "status reports the faded scene applied");
+    }
+    check(call(fd, 13, "scene.present",
+               boost::json::object{{"revision", second}, {"transition", "spin"}}, &reply) &&
+              isErrorCode(reply, proto::kInvalidParams),
+          "an unknown transition name is refused");
+    check(call(fd, 14, "scene.present",
+               boost::json::object{{"revision", second}, {"transition", true}}, &reply) &&
+              isErrorCode(reply, proto::kInvalidParams),
+          "a non-string transition is refused");
+
+    call(fd, 15, "shutdown", {}, &reply);
     close(fd);
     check(waitExit(pid, 5) == 0, "scene-scenario worker exits cleanly");
 }

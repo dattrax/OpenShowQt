@@ -82,6 +82,7 @@ void printUsage(const char* program) {
                  "       %s --snapshot PATH [--scene-file FILE] [--width N] [--height N]\n"
                  "       %s --list-monitors\n"
                  "       %s --check-layers\n"
+                 "       %s --check-transition\n"
                  "       %s --pw-check [--seconds S]\n"
                  "  --version            print the application version and exit\n"
                  "  --check-deps         report the libraries this build linked and exit\n"
@@ -108,12 +109,14 @@ void printUsage(const char* program) {
                 "                       (the scene.prepare JSON object) instead of the demo\n"
                  "  --list-monitors      print the GLFW monitor list and exit\n"
                  "  --check-layers       verify layer composition on the CPU and exit\n"
+                 "  --check-transition   verify scene cut/crossfade timing on the CPU\n"
+                 "                       and exit (no display needed)\n"
                  "  --pw-check           feed a quiet tone through PipeWire and report the\n"
                  "                       sink's timing numbers (audible, ~5 s by default)\n"
                  "  --disable-layer NAME composition layer off: background, images,\n"
                  "                       words, aux or clock (repeatable)\n"
                  "  --enable-layer NAME  the converse, e.g. --enable-layer aux\n",
-                 program, program, program, program, program, program, program);
+                 program, program, program, program, program, program, program, program);
 }
 
 void printVersion(const char* label, unsigned int packed) {
@@ -724,6 +727,7 @@ int main(int argc, char** argv) {
     bool renderTest = false;
     bool listMonitors = false;
     bool checkLayers = false;
+    bool checkTransition = false;
     bool pwCheck = false;
     const char* avBenchPath = nullptr;
     bool idleCheck = false;
@@ -753,6 +757,8 @@ int main(int argc, char** argv) {
             listMonitors = true;
         } else if (argument == "--check-layers") {
             checkLayers = true;
+        } else if (argument == "--check-transition") {
+            checkTransition = true;
         } else if (argument == "--pw-check") {
             pwCheck = true;
         } else if (argument == "--av-bench" && i + 1 < argc) {
@@ -817,6 +823,17 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (checkTransition) {
+        std::string error;
+        if (!openshow::worker::verifySceneTransition(&error)) {
+            std::fprintf(stderr, "openshow-worker: transition check failed: %s\n",
+                         error.c_str());
+            return 1;
+        }
+        std::printf("scene transition checks passed\n");
+        return 0;
+    }
+
     if (pwCheck) {
         return runPipeWireCheck(seconds > 0.0 ? seconds : 5.0);
     }
@@ -843,7 +860,8 @@ int main(int argc, char** argv) {
                         error = "scene file rejected: " + error;
                     } else {
                         ok = openshow::worker::renderSceneSnapshot(
-                            scene, snapshotPath, snapshotWidth, snapshotHeight, &error);
+                            scene, snapshotPath, snapshotWidth, snapshotHeight,
+                            openshow::worker::SnapshotOptions{}, &error);
                     }
                 }
             }

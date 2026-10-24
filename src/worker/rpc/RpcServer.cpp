@@ -477,8 +477,32 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
                                outbound);
             return true;
         }
+        // Optional transition (task 3.2): "fade" (the default) or "cut".
+        SceneTransitionKind kind = SceneTransitionKind::kFade;
+        const boost::json::object& args = given.as_object();
+        if (const auto it = args.find("transition"); it != args.end()) {
+            if (!it->value().is_string()) {
+                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                    "scene.present \"transition\" must be "
+                                                    "a string"),
+                                   outbound);
+                return true;
+            }
+            const std::string_view transition = it->value().as_string();
+            if (transition == "fade") {
+                kind = SceneTransitionKind::kFade;
+            } else if (transition == "cut") {
+                kind = SceneTransitionKind::kCut;
+            } else {
+                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                    "scene.present \"transition\" must be "
+                                                    "\"fade\" or \"cut\""),
+                                   outbound);
+                return true;
+            }
+        }
         std::uint64_t revision = 0;
-        if (!fSession.presentScene(prepared, &revision)) {
+        if (!fSession.presentScene(prepared, &revision, kind)) {
             proto::appendFrame(
                 proto::makeError(id, proto::kInvalidParams,
                                  "no prepared scene with revision " +

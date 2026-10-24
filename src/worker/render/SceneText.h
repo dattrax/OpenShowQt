@@ -1,12 +1,16 @@
 /*
- * Production text layout for compiled scenes (task 3.1).
+ * Production scene presentation primitives (tasks 3.1–3.2).
  *
  * Everything a Scene says about type — colours, families, sizes, the lines
  * of each item — becomes pixels here: SkParagraph paragraphs wrapped at the
  * authored canvas width, centred (the lyric default), with per-run font
  * fallback through the fontconfig-backed FontCollection, and a whole-block
  * shrink so an over-tall stanza still fits (FreeShow's shrinkToFit,
- * docs/reference.md §7). The engine is the one font setup the worker has:
+ * docs/reference.md §7). The background composites the same way the layer
+ * model composites: colour fill, then the background image cover-fitted
+ * (3.2), with a per-layer alpha dissolve for the fade transition — no
+ * render-to-texture, transparency goes straight into the paint, per
+ * render/Layer.h. The engine is the one font setup the worker has:
  * TestScene borrows its typefaces, and the production layers draw through
  * layoutScene()/drawLayout(), so what the fixture tests assert is what the
  * audience window renders.
@@ -19,11 +23,13 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "include/core/SkFontMgr.h"
+#include "include/core/SkImage.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkTypeface.h"
 #include "modules/skparagraph/include/FontCollection.h"
@@ -32,6 +38,7 @@
 #include "openshow/scene/scene.h"
 
 class SkCanvas;
+class SkPaint;
 class SkSurface;
 
 namespace openshow::worker {
@@ -102,8 +109,10 @@ public:
     SceneLayout layoutScene(const openshow::scene::Scene& scene) const;
 
     // Draws a laid-out scene's text centred in the authored canvas (which
-    // the caller's canvas transform must already implement).
-    void drawLayout(SkCanvas* canvas, const SceneLayout& layout) const;
+    // the caller's canvas transform must already implement). The optional
+    // paint's alpha dissolves the whole block for the fade transition.
+    void drawLayout(SkCanvas* canvas, const SceneLayout& layout,
+                    const SkPaint* paint = nullptr) const;
 
 private:
     sk_sp<SkFontMgr> fFontMgr;
@@ -113,13 +122,52 @@ private:
     sk_sp<SkUnicode> fUnicode;
 };
 
-// Renders the whole scene (background colour fill + text) on the CPU and
-// writes a PNG. No display, Vulkan or windowing needed; backs the 3.1
-// fixtures and --snapshot --scene-file for offline review. Image
-// backgrounds compose in 3.2; until then hasImage is skipped, matching the
-// compiler's stance that file existence is the renderer's problem.
+// Decodes and holds scene background images. Every path seen is kept:
+// backgrounds persist across lyric changes (the M3 continuity rule wants
+// an unchanged background not to re-decode) and a fade needs the outgoing
+// and incoming pictures at once.
+class SceneImageCache {
+public:
+    // Decodes the image at path (SkCodec), or returns the cached one.
+    // Null on failure; callers fall back to the colour fill — file
+    // existence is the renderer's problem, the compiler only names the path.
+    sk_sp<SkImage> imageFor(const std::string& path);
+
+private:
+    std::map<std::string, sk_sp<SkImage>> fImages;
+};
+
+// Draws a scene's background: the colour fill, and the cover-fitted image
+// on top when hasImage. Cover scales to fill the authored canvas (the
+// lyric default), centring and cropping the overflow; the paint's alpha
+// applies to the whole background for a fade. Image load failure leaves
+// the colour fill standing alone. The caller's canvas already carries the
+// output-rule transform.
+void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
+                         SceneImageCache* images, const SkPaint* paint = nullptr);
+
+// Options for renderSceneSnapshot: which layers to draw (mirroring the
+// LayerStack enable mask) and an optional crossfade stage to render.
+struct SnapshotOptions {
+    bool background = true;
+    bool words = true;
+    // Crossfade: when fadeFrom is set, the background composites fadeFrom
+    // under scene at mediaBlend and the text dissolves fadeFrom over
+    // scene at textBlend (0 = entirely fadeFrom, 1 = entirely scene) —
+    // the same two tracks (media 800 ms, text 500 ms by default) the live
+    // transition runs.
+    const openshow::scene::Scene* fadeFrom = nullptr;
+    float mediaBlend = 1.0f;
+    float textBlend = 1.0f;
+};
+
+// Renders the whole scene (background colour/image + text) on the CPU and
+// writes a PNG. No display, Vulkan or windowing needed; backs the 3.1 and
+// 3.2 fixtures and --snapshot --scene-file for offline review. Background
+// and words are dispatched as independent layers honouring SnapshotOptions.
 bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string& path,
-                         int width, int height, std::string* error);
+                         int width, int height, const SnapshotOptions& options,
+                         std::string* error);
 
 // Encodes a raster surface as PNG at path. Shared by the snapshot helpers.
 bool writePngRaster(SkSurface* surface, const std::string& path, std::string* error);

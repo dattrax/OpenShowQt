@@ -40,6 +40,22 @@ namespace openshow::worker {
 // Null means nothing has been presented: the demo picture renders.
 using ActiveScene = std::shared_ptr<const openshow::scene::Scene>;
 
+// How a presentation takes effect. FreeShow defaults every transition to
+// fade (docs/reference.md §7: text 500ms, media 800ms); a cut is "none".
+enum class SceneTransitionKind { kFade, kCut };
+
+// The crossfade in flight, read by the scene-aware layers on each draw.
+// In steady state fFrom is null and both blends are 1. Media (background
+// and image) and text fade on independent clocks matching FreeShow's two
+// transition defaults. Owned by TestScene; advanced once per frame.
+struct SceneTransition {
+    ActiveScene fFrom;
+    float fMediaBlend = 1.0f;  // 0 = all fFrom, 1 = all on-air
+    float fTextBlend = 1.0f;
+
+    bool fading() const { return fFrom != nullptr; }
+};
+
 class TestScene {
 public:
     static constexpr float kCanvasWidth = kSceneCanvasWidth;
@@ -64,11 +80,14 @@ public:
               std::time_t wallClock, const std::string& statusLine);
 
     // Renders the compiled scene instead of the demo content (task 3.1):
-    // the background fills the scene colour, the words layer lays the
-    // scene's text out through SceneTextEngine, and the demo photo stands
-    // down. Render-thread only, like draw(); the layers pick the change up
-    // on their next draw.
-    void setActiveScene(ActiveScene scene) { fActiveScene = std::move(scene); }
+    // the background fills the scene colour (or its cover-fitted image),
+    // the words layer lays the scene's text out through SceneTextEngine,
+    // and the demo photo stands down. Render-thread only, like draw(); the
+    // layers pick the change up on their next draw. A fade (the default)
+    // crossfades the outgoing scene into this one over the media and text
+    // durations; a cut swaps in one frame.
+    void setActiveScene(ActiveScene scene,
+                        SceneTransitionKind kind = SceneTransitionKind::kFade);
     const ActiveScene& activeScene() const { return fActiveScene; }
 
     // Layer toggles, mirroring what the RPC will drive later.
@@ -82,10 +101,16 @@ public:
 
 private:
     bool createPhoto(sk_sp<SkImage>* photo, std::string* error);
+    // Advances the fade for a frame at timeSeconds (see SceneTransition).
+    void advanceTransition(double timeSeconds);
 
     // Shared text services; the layer objects own the drawn content. The
     // engine outlives the layers (declared before fLayers).
     std::unique_ptr<SceneTextEngine> fText;
+    SceneImageCache fImages;     // persists background images across scenes
+    SceneTransition fTransition;
+    bool fTransitionRunning = false;
+    double fTransitionStart = -1.0;  // first draw timeSeconds of the fade
     LayerStack fLayers;
     ActiveScene fActiveScene;
 };
@@ -101,5 +126,12 @@ bool renderTestSnapshot(const std::string& path, int width, int height,
 // its region, and toggles round-trip to identical frames. Reports the first
 // failed expectation in error. Backs --check-layers.
 bool verifyLayerComposition(std::string* error);
+
+// Drives the scene transition state machine (task 3.2) on the CPU: pops
+// in the first presentation, times both crossfade tracks (media 800ms,
+// text 500ms) from drawn frames, completes them cleanly, and proves a cut
+// swaps in one frame — including cancelling a fade in flight. Pixel
+// assertions through the same layers the audience window uses.
+bool verifySceneTransition(std::string* error);
 
 }  // namespace openshow::worker

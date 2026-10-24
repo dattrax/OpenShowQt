@@ -1,6 +1,7 @@
 /*
- * Task 3.1 fixtures: production scene text — wrapping, alignment, fallback
- * and fit (PLAN.md acceptance).
+ * Task 3.1–3.2 fixtures: production scene presentation — wrapping,
+ * alignment, fallback and fit, image/background composition and cut +
+ * crossfade transitions (PLAN.md acceptance).
  *
  * Each fixture renders a known Scene through the same SceneTextEngine and
  * CPU snapshot path the audience layers use (no display, no Vulkan), then
@@ -23,9 +24,13 @@
 
 #include "include/codec/SkCodec.h"
 #include "include/core/SkBitmap.h"
+#include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
 #include "include/core/SkData.h"
 #include "include/core/SkImageInfo.h"
+#include "include/core/SkPaint.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkSurface.h"
 
 #include "openshow/scene/demo.h"
 #include "openshow/scene/scene.h"
@@ -107,7 +112,19 @@ bool loadPng(const std::string& path, Frame* frame, std::string* error) {
 bool renderFixture(const scene::Scene& subject, const std::string& name, Frame* frame,
                    std::string* error) {
     const std::string path = "scene-render-" + name + ".png";
-    if (!worker::renderSceneSnapshot(subject, path, kWidth, kHeight, error)) {
+    if (!worker::renderSceneSnapshot(subject, path, kWidth, kHeight, worker::SnapshotOptions{},
+                                     error)) {
+        return false;
+    }
+    return loadPng(path, frame, error);
+}
+
+// Renders a crossfade stage (or a layer-disabled frame) through the same
+// entry point and returns the decoded pixels for measurement.
+bool renderFixture(const scene::Scene& subject, const std::string& name,
+                   const worker::SnapshotOptions& options, Frame* frame, std::string* error) {
+    const std::string path = "scene-render-" + name + ".png";
+    if (!worker::renderSceneSnapshot(subject, path, kWidth, kHeight, options, error)) {
         return false;
     }
     return loadPng(path, frame, error);
@@ -427,9 +444,11 @@ void testWireSceneRendersIdentically() {
     const std::string directPath = "scene-render-wire-direct.png";
     const std::string wirePath = "scene-render-wire-restored.png";
     std::string error;
-    if (!check(worker::renderSceneSnapshot(subject, directPath, kWidth, kHeight, &error),
+    if (!check(worker::renderSceneSnapshot(subject, directPath, kWidth, kHeight,
+                                           worker::SnapshotOptions{}, &error),
                "direct render: " + error) ||
-        !check(worker::renderSceneSnapshot(restored, wirePath, kWidth, kHeight, &error),
+        !check(worker::renderSceneSnapshot(restored, wirePath, kWidth, kHeight,
+                                           worker::SnapshotOptions{}, &error),
                "wire render: " + error)) {
         return;
     }
@@ -476,6 +495,239 @@ void testDemoSlidesRender() {
     }
 }
 
+/* --- task 3.2: image backgrounds, crossfade stages, layer toggles ---------- */
+
+// Writes a red/green/blue banded PNG. verticalThirds gives left-to-right
+// stripes, otherwise top-to-bottom bands. The images are deliberately not
+// canvas-shaped so the cover crop direction carries meaning.
+bool writeBandPng(const std::string& path, int width, int height, bool verticalThirds,
+                  std::string* error) {
+    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(width, height));
+    if (!surface) {
+        if (error) {
+            *error = "fixture image surface failed";
+        }
+        return false;
+    }
+    const SkColor colors[3] = {SkColorSetRGB(235, 40, 40), SkColorSetRGB(40, 200, 40),
+                               SkColorSetRGB(40, 40, 235)};
+    for (int i = 0; i < 3; ++i) {
+        SkPaint paint;
+        paint.setColor(colors[i]);
+        const SkRect band =
+            verticalThirds
+                ? SkRect::MakeXYWH(static_cast<float>(width) * i / 3.0f, 0.0f,
+                                   static_cast<float>(width) / 3.0f, static_cast<float>(height))
+                : SkRect::MakeXYWH(0.0f, static_cast<float>(height) * i / 3.0f,
+                                   static_cast<float>(width), static_cast<float>(height) / 3.0f);
+        surface->getCanvas()->drawRect(band, paint);
+    }
+    return worker::writePngRaster(surface.get(), path, error);
+}
+
+scene::Scene bandImageScene(const std::string& path, std::vector<std::string> lines) {
+    scene::Scene subject;
+    subject.showId = "show1";
+    subject.slideId = "bg1";
+    subject.background.color = 0x102030u;  // the fill the image covers
+    subject.background.hasImage = true;
+    subject.background.assetId = "asset1";
+    subject.background.assetPath = path;
+    if (!lines.empty()) {
+        scene::TextItem item;
+        item.lines = std::move(lines);
+        item.fontSize = 200.0;
+        item.color = 0xFFFFFFu;
+        subject.items.push_back(std::move(item));
+    }
+    return subject;
+}
+
+// Colour equality within tolerance — the band assertions use generously
+// separated primaries, so PNG colour-management drift (a handful of units)
+// never crosses one.
+bool closeTo(SkColor color, SkColor expected, int tolerance = 24) {
+    return !differs(color, expected, tolerance);
+}
+
+void testImageBackgroundCover() {
+    // Cover fit (the lyric default): the image fills the authored canvas
+    // edge to edge — no letterbox bars — and the overflow is cropped
+    // equally about the centre. Text composites over it.
+    std::string error;
+    if (!check(writeBandPng("scene-render-bg-wide.png", 1920, 540, true, &error),
+               "wide band image written: " + error) ||
+        !check(writeBandPng("scene-render-bg-tall.png", 540, 1920, false, &error),
+               "tall band image written: " + error)) {
+        return;
+    }
+    const SkColor red = SkColorSetRGB(235, 40, 40);
+    const SkColor green = SkColorSetRGB(40, 200, 40);
+    const SkColor blue = SkColorSetRGB(40, 40, 235);
+
+    Frame wide;
+    const scene::Scene wideScene = bandImageScene("scene-render-bg-wide.png", {"COVER"});
+    if (!check(renderFixture(wideScene, "bg-wide", &wide, &error),
+               "wide image background rendered: " + error)) {
+        return;
+    }
+    // The canvas shows image x 480..1440 (scale 2, centred): the far left
+    // still lands in the red third, mid-left through right land green,
+    // green and blue; the top and bottom rows are image colour too, which
+    // is what separates cover from a letterboxed contain.
+    check(closeTo(wide.at(50, 270), red), "cover: canvas left shows the red third");
+    check(closeTo(wide.at(200, 270), green), "cover: crop brings green left of centre");
+    check(closeTo(wide.at(480, 270), green), "cover: canvas centre shows the green third");
+    check(closeTo(wide.at(860, 270), blue), "cover: canvas right shows the blue third");
+    check(closeTo(wide.at(200, 6), green), "cover: no letterbox bar on top");
+    check(closeTo(wide.at(200, 534), green), "cover: no letterbox bar on bottom");
+    check(measureInk(wide).count > 1000, "words draw over the image background");
+
+    Frame tall;
+    const scene::Scene tallScene = bandImageScene("scene-render-bg-tall.png", {});
+    if (!check(renderFixture(tallScene, "bg-tall", &tall, &error),
+               "tall image background rendered: " + error)) {
+        return;
+    }
+    // The portrait crop shows only the middle band, so the canvas is
+    // uniformly green: the top and bottom thirds are cropped away.
+    check(closeTo(tall.at(4, 4), green), "cover: portrait top-left is the middle band");
+    check(closeTo(tall.at(956, 4), green), "cover: portrait top-right is the middle band");
+    check(closeTo(tall.at(4, 536), green), "cover: portrait bottom-left is the middle band");
+    check(closeTo(tall.at(956, 536), green), "cover: portrait bottom edge is the middle band");
+    check(measureInk(tall).count == 0, "cover: portrait crop is uniformly the middle band");
+}
+
+void testMissingBackgroundFile() {
+    // The compiler's promise: file existence is the renderer's problem.
+    // An unreadable assetPath degrades to the plain colour fill, words
+    // still on top, no crash.
+    std::string error;
+    const scene::Scene subject =
+        bandImageScene("scene-render-no-such-file.png", {"STILL HERE"});
+    Frame frame;
+    if (!check(renderFixture(subject, "bg-missing", &frame, &error),
+               "background with a missing file rendered: " + error)) {
+        return;
+    }
+    check(closeTo(frame.at(2, 2), SkColorSetRGB(0x10, 0x20, 0x30)),
+          "missing image falls back to the scene colour");
+    check(measureInk(frame).count > 1000, "missing image still shows the words");
+}
+
+void testCrossfadeStages() {
+    // The snapshot renders arbitrary stages of the same dissolve the live
+    // layers composite: the background crossfades by drawing the incoming
+    // scene over the outgoing one at alpha mediaBlend (the over-composite
+    // of two opaque pictures is an exact lerp); the words dip through the
+    // text track. Media and text advance independently.
+    std::string error;
+    scene::Scene from;
+    from.showId = "show1";
+    from.slideId = "fade-a";
+    from.background.color = 0xE03030u;
+    scene::TextItem words;
+    words.lines = {"ONE"};
+    words.fontSize = 300.0;
+    words.color = 0xFFFFFFu;
+    from.items.push_back(std::move(words));
+    scene::Scene to;
+    to.showId = "show1";
+    to.slideId = "fade-b";
+    to.background.color = 0x3030E0u;  // plain blue: fully faded over means no ink
+
+    Frame start, mid, end, textOnly;
+    worker::SnapshotOptions options;
+    options.fadeFrom = &from;
+    options.mediaBlend = 0.0f;
+    options.textBlend = 0.0f;
+    const bool rendered =
+        check(renderFixture(to, "fade-0", options, &start, &error),
+              "crossfade stage 0 rendered: " + error);
+    options.mediaBlend = 0.5f;
+    options.textBlend = 0.5f;
+    const bool renderedMid = rendered && check(renderFixture(to, "fade-50", options, &mid, &error),
+                                               "crossfade stage 0.5 rendered: " + error);
+    options.mediaBlend = 1.0f;
+    options.textBlend = 1.0f;
+    const bool renderedEnd = renderedMid &&
+                             check(renderFixture(to, "fade-100", options, &end, &error),
+                                   "crossfade stage 1 rendered: " + error);
+    if (!renderedEnd) {
+        return;
+    }
+    options.mediaBlend = 1.0f;
+    options.textBlend = 0.3f;  // media arrived while the words are still dissolving
+    if (!check(renderFixture(to, "fade-tracks", options, &textOnly, &error),
+               "crossfade split-track frame rendered: " + error)) {
+        return;
+    }
+
+    const SkColor cornerStart = start.at(2, 2);
+    const SkColor cornerEnd = end.at(2, 2);
+    check(closeTo(cornerStart, SkColorSetRGB(0xE0, 0x30, 0x30)), "stage 0 is the old background");
+    check(closeTo(cornerEnd, SkColorSetRGB(0x30, 0x30, 0xE0)), "stage 1 is the new background");
+    const Ink inkStart = measureInk(start);
+    const Ink inkMid = measureInk(mid);
+    const Ink inkEnd = measureInk(end);
+    check(inkStart.count > 5000, "stage 0 shows the old words at full strength");
+    check(inkEnd.count == 0, "stage 1 has no trace of the old words");
+    // The background is the average of the endpoints (over-composite of
+    // opaques at alpha 128 is the midpoint to rounding).
+    const SkColor expect = SkColorSetARGB(
+        0xFF, (SkColorGetR(cornerStart) + SkColorGetR(cornerEnd)) / 2,
+        (SkColorGetG(cornerStart) + SkColorGetG(cornerEnd)) / 2,
+        (SkColorGetB(cornerStart) + SkColorGetB(cornerEnd)) / 2);
+    check(closeTo(mid.at(2, 2), expect, 16),
+          "stage 0.5 background is the midpoint (got " +
+              std::to_string(SkColorGetR(mid.at(2, 2))) + "," +
+              std::to_string(SkColorGetG(mid.at(2, 2))) + "," +
+              std::to_string(SkColorGetB(mid.at(2, 2))) + " want " +
+              std::to_string(SkColorGetR(expect)) + "," + std::to_string(SkColorGetG(expect)) +
+              "," + std::to_string(SkColorGetB(expect)) + ")");
+    check(inkMid.count > inkStart.count / 4 && inkMid.count < inkStart.count,
+          "stage 0.5 words are dissolving (ink " + std::to_string(inkMid.count) + " of " +
+              std::to_string(inkStart.count) + ")");
+    // Independent tracks: media 1.0 means the background already arrived,
+    // text 0.3 means the words are still mostly the old ones.
+    check(closeTo(textOnly.at(2, 2), cornerEnd, 8), "split frame: media track completed");
+    check(measureInk(textOnly).count > inkStart.count / 4,
+          "split frame: text track still dissolving");
+}
+
+void testSceneLayerToggles() {
+    // The UI's layer switches against a presented scene: a disabled layer
+    // dispatches nothing. Background off leaves the words on the black
+    // clear; words off leaves the composed background alone.
+    std::string error;
+    if (!check(writeBandPng("scene-render-bg-tall.png", 540, 1920, false, &error),
+               "toggle band image written: " + error)) {
+        return;
+    }
+    const scene::Scene subject = bandImageScene("scene-render-bg-tall.png", {"LAYERS"});
+
+    worker::SnapshotOptions noBackground;
+    noBackground.background = false;
+    Frame frame;
+    if (!check(renderFixture(subject, "layers-nobg", noBackground, &frame, &error),
+               "background-off frame rendered: " + error)) {
+        return;
+    }
+    check(closeTo(frame.at(2, 2), SK_ColorBLACK, 8),
+          "background off: the frame is the plain black clear");
+    check(measureInk(frame).count > 1000, "background off: words still dispatch");
+
+    worker::SnapshotOptions noWords;
+    noWords.words = false;
+    if (!check(renderFixture(subject, "layers-nowords", noWords, &frame, &error),
+               "words-off frame rendered: " + error)) {
+        return;
+    }
+    check(closeTo(frame.at(2, 2), SkColorSetRGB(40, 200, 40)),
+          "words off: the image background is drawn");
+    check(measureInk(frame).count == 0, "words off: no ink anywhere");
+}
+
 }  // namespace
 
 int main() {
@@ -497,6 +749,10 @@ int main() {
     testMultiItemStacking();
     testWireSceneRendersIdentically();
     testDemoSlidesRender();
+    testImageBackgroundCover();
+    testMissingBackgroundFile();
+    testCrossfadeStages();
+    testSceneLayerToggles();
 
     if (failures == 0) {
         std::printf("scene_render_tests: all fixtures passed\n");

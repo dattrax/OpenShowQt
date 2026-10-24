@@ -49,23 +49,30 @@ constexpr SkRect kAuxRegion = SkRect::MakeLTRB(1545.0f, 25.0f, 1895.0f, 125.0f);
 constexpr SkRect kClockRegion = SkRect::MakeLTRB(130.0f, 965.0f, 1500.0f, 1035.0f);
 
 // Bottom of the stack: the gradient background, or the presented scene's
-// colour fill while one is on air (task 3.1; image backgrounds are 3.2).
-// FreeShow puts video here too; the M5 background layer will replace this
-// shader with decoded frames through the same draw() entry point.
+// colour fill (and cover-fitted image, task 3.2) while one is on air. When
+// a crossfade is in flight the outgoing scene draws first, then the on-air
+// scene dissolves over it at the media blend — the whole background fading
+// as one, with the transparency straight in the paint (no render-to-
+// texture). FreeShow puts video here too; the M5 background layer will
+// replace this shader with decoded frames through the same draw() entry.
 class BackgroundLayer final : public RenderLayer {
 public:
-    explicit BackgroundLayer(const ActiveScene* active) : fActive(active) {}
+    BackgroundLayer(const ActiveScene* active, SceneImageCache* images,
+                    const SceneTransition* transition)
+        : fActive(active), fImages(images), fTransition(transition) {}
 
     LayerId id() const override { return LayerId::kBackground; }
 
     void draw(const FrameContext& ctx) override {
         if (*fActive) {
-            const openshow::scene::Color color = (*fActive)->background.color;
-            SkPaint fill;
-            fill.setColor(SkColorSetARGB(0xFF, (color >> 16) & 0xFF, (color >> 8) & 0xFF,
-                                         color & 0xFF));
-            ctx.canvas->drawRect(
-                SkRect::MakeWH(TestScene::kCanvasWidth, TestScene::kCanvasHeight), fill);
+            if (fTransition->fading()) {
+                drawSceneBackground(ctx.canvas, *fTransition->fFrom, fImages, nullptr);
+                SkPaint fade;
+                fade.setAlpha(static_cast<uint8_t>(fTransition->fMediaBlend * 255.0f + 0.5f));
+                drawSceneBackground(ctx.canvas, **fActive, fImages, &fade);
+            } else {
+                drawSceneBackground(ctx.canvas, **fActive, fImages, nullptr);
+            }
             return;
         }
         const SkPoint points[2] = {{0, 0}, {0, TestScene::kCanvasHeight}};
@@ -81,7 +88,9 @@ public:
     }
 
 private:
-    const ActiveScene* fActive;  // TestScene-owned; outlives the layer
+    const ActiveScene* fActive;            // TestScene-owned; outlives the layer
+    SceneImageCache* fImages;              // TestScene-owned image cache
+    const SceneTransition* fTransition;    // TestScene-owned fade state
 };
 
 // Slide images: the PNG-round-tripped photo with a border and caption. The
@@ -133,23 +142,38 @@ private:
 
 // Words: while a scene is on air, its text laid out through
 // SceneTextEngine (wrap, centre, fallback, fit — task 3.1); otherwise the
-// demo SkParagraph title. The layout is rebuilt when the active scene
-// changes, drawn every frame.
+// demo SkParagraph title. Layouts are cached per scene pointer (two slots,
+// so a crossfade never re-lays-out either side); during the fade the two
+// scenes dissolve — outgoing at 1 - textBlend, incoming at textBlend,
+// the classic lyric cross-dissolve (docs/reference.md §7 text transition).
 class WordsLayer final : public RenderLayer {
 public:
     WordsLayer(std::unique_ptr<skia::textlayout::Paragraph> title,
-               const SceneTextEngine* engine, const ActiveScene* active)
-        : fTitle(std::move(title)), fEngine(engine), fActive(active) {}
+               const SceneTextEngine* engine, const ActiveScene* active,
+               const SceneTransition* transition)
+        : fTitle(std::move(title)), fEngine(engine), fActive(active),
+          fTransition(transition) {}
 
     LayerId id() const override { return LayerId::kWords; }
 
     void draw(const FrameContext& ctx) override {
         if (*fActive) {
-            if (fCachedScene != *fActive) {
-                fCached = fEngine->layoutScene(**fActive);
-                fCachedScene = *fActive;
+            const bool fading = fTransition->fading();
+            if (fading) {
+                const SceneTextEngine::SceneLayout& from = layoutFor(&fSlotA, fTransition->fFrom);
+                SkPaint fade;
+                fade.setAlpha(
+                    static_cast<uint8_t>((1.0f - fTransition->fTextBlend) * 255.0f + 0.5f));
+                fEngine->drawLayout(ctx.canvas, from, &fade);
             }
-            fEngine->drawLayout(ctx.canvas, fCached);
+            const SceneTextEngine::SceneLayout& current = layoutFor(&fSlotB, *fActive);
+            if (fading) {
+                SkPaint fade;
+                fade.setAlpha(static_cast<uint8_t>(fTransition->fTextBlend * 255.0f + 0.5f));
+                fEngine->drawLayout(ctx.canvas, current, &fade);
+            } else {
+                fEngine->drawLayout(ctx.canvas, current);
+            }
             return;
         }
         if (fTitle) {
@@ -158,11 +182,31 @@ public:
     }
 
 private:
+    // One layout cache slot. The scenes cross-fading through here are the
+    // two this layer was handed, so a two-slot cache (this struct twice)
+    // covers every frame of a fade without rebuilding a layout.
+    struct LayoutSlot {
+        ActiveScene scene;  // the scene fLayout was built from, if any
+        SceneTextEngine::SceneLayout layout;
+    };
+
+    // Returns the layout for `scene`, (re)building `slot` when it holds a
+    // different scene. The slots live inside this layer; the returned
+    // reference stays valid until the next call that rebuilds that slot.
+    const SceneTextEngine::SceneLayout& layoutFor(LayoutSlot* slot, const ActiveScene& scene) {
+        if (slot->scene != scene) {
+            slot->layout = fEngine->layoutScene(*scene);
+            slot->scene = scene;
+        }
+        return slot->layout;
+    }
+
     std::unique_ptr<skia::textlayout::Paragraph> fTitle;
     const SceneTextEngine* fEngine;
-    const ActiveScene* fActive;  // TestScene-owned; outlives the layer
-    ActiveScene fCachedScene;    // last scene fCached was built from
-    SceneTextEngine::SceneLayout fCached;
+    const ActiveScene* fActive;          // TestScene-owned; outlives the layer
+    const SceneTransition* fTransition;  // TestScene-owned fade state
+    LayoutSlot fSlotA;                   // holds the outgoing scene during a fade
+    LayoutSlot fSlotB;                   // holds the on-air scene
 };
 
 // Aux: placeholder for future overlay content, off by default. A badge so
@@ -296,9 +340,10 @@ bool TestScene::create(std::string* error) {
     // One layer per composition tab, stacked bottom to top in the order the
     // compositor will dispatch them (PLAN.md "Output layer model"). Audio is
     // not here: it is a playback source, never a composition item.
-    fLayers.add(std::make_unique<BackgroundLayer>(&fActiveScene));
+    fLayers.add(std::make_unique<BackgroundLayer>(&fActiveScene, &fImages, &fTransition));
     fLayers.add(std::make_unique<ImageLayer>(std::move(photo), fText->regular(), &fActiveScene));
-    fLayers.add(std::make_unique<WordsLayer>(std::move(title), fText.get(), &fActiveScene));
+    fLayers.add(
+        std::make_unique<WordsLayer>(std::move(title), fText.get(), &fActiveScene, &fTransition));
     fLayers.add(std::make_unique<AuxLayer>(fText->regular()));
     fLayers.add(std::make_unique<ClockLayer>(fText->regular()));
     // Aux is not part of the agreed use case and starts off; the clock stays
@@ -390,6 +435,65 @@ bool TestScene::createPhoto(sk_sp<SkImage>* photo, std::string* error) {
     return *photo != nullptr;
 }
 
+namespace {
+
+// Crossfade durations, matching FreeShow's two transition-tab defaults
+// (docs/reference.md §7): text 500ms, media 800ms. A presented scene's
+// words dissolve on the faster clock, its background on the slower one.
+constexpr double kTextFadeSeconds = 0.5;
+constexpr double kMediaFadeSeconds = 0.8;
+
+float fadeBlend(double elapsed, double duration) {
+    if (elapsed <= 0.0) {
+        return 0.0f;
+    }
+    if (elapsed >= duration) {
+        return 1.0f;
+    }
+    return static_cast<float>(elapsed / duration);
+}
+
+}  // namespace
+
+void TestScene::setActiveScene(ActiveScene scene, SceneTransitionKind kind) {
+    if (scene == fActiveScene) {
+        return;  // already on air; a re-present of the same revision is a no-op
+    }
+    // A cut, or the first presentation (nothing to fade from), swaps in one
+    // frame and clears any fade in flight.
+    if (kind == SceneTransitionKind::kCut || !fActiveScene) {
+        fActiveScene = std::move(scene);
+        fTransition = SceneTransition{};
+        fTransitionRunning = false;
+        return;
+    }
+    // A fade keeps the outgoing scene alive as fFrom and starts the clock on
+    // the next draw (advanceTransition), so the blend is measured in the same
+    // monotonic timeSeconds the loop drives.
+    fTransition.fFrom = fActiveScene;
+    fTransition.fMediaBlend = 0.0f;
+    fTransition.fTextBlend = 0.0f;
+    fActiveScene = std::move(scene);
+    fTransitionRunning = true;
+    fTransitionStart = -1.0;
+}
+
+void TestScene::advanceTransition(double timeSeconds) {
+    if (!fTransitionRunning) {
+        return;
+    }
+    if (fTransitionStart < 0.0) {
+        fTransitionStart = timeSeconds;  // first frame of the fade
+    }
+    const double elapsed = timeSeconds - fTransitionStart;
+    fTransition.fTextBlend = fadeBlend(elapsed, kTextFadeSeconds);
+    fTransition.fMediaBlend = fadeBlend(elapsed, kMediaFadeSeconds);
+    if (fTransition.fMediaBlend >= 1.0f && fTransition.fTextBlend >= 1.0f) {
+        fTransition = SceneTransition{};  // done: drop the outgoing scene
+        fTransitionRunning = false;
+    }
+}
+
 void TestScene::draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
                      const std::string& statusLine) {
     draw(canvas, widthPx, heightPx, timeSeconds, std::time(nullptr), statusLine);
@@ -413,6 +517,10 @@ void TestScene::draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSec
     canvas->translate((static_cast<float>(widthPx) - kCanvasWidth * scale) * 0.5f,
                       (static_cast<float>(heightPx) - kCanvasHeight * scale) * 0.5f);
     canvas->scale(scale, scale);
+
+    // Advance any crossfade in flight before dispatching, so every layer
+    // this frame sees one consistent blend (steady frames pay nothing).
+    advanceTransition(timeSeconds);
 
     // Single pass, no render-to-texture: the layer stack dispatches each
     // enabled layer into this canvas in z order and skips disabled ones.
@@ -446,7 +554,7 @@ struct RasterFrame {
     int height = 1080;
     std::vector<SkColor> pixels;
 
-    bool render(TestScene& scene, std::string* error) {
+    bool render(TestScene& scene, std::string* error, double timeSeconds = 0.0) {
         auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(width, height));
         if (!surface) {
             if (error) {
@@ -456,7 +564,8 @@ struct RasterFrame {
         }
         // Fixed wall clock and status line: two frames with the same layer
         // configuration must come out pixel identical.
-        scene.draw(surface->getCanvas(), width, height, 0.0, std::time_t{1234567890}, "layers");
+        scene.draw(surface->getCanvas(), width, height, timeSeconds, std::time_t{1234567890},
+                   "layers");
         pixels.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
         const bool ok = surface->readPixels(SkImageInfo::MakeN32Premul(width, height),
                                             pixels.data(),
@@ -469,6 +578,16 @@ struct RasterFrame {
 
     SkColor at(int x, int y) const { return pixels[static_cast<size_t>(y) * width + x]; }
 };
+
+// Channel-wise closeness for the transition checks: rasters read straight
+// back carry no PNG colour-management drift, so tolerances only have to
+// cover Skia's fixed-point blend rounding.
+bool channelsMatch(SkColor a, SkColor b, int tolerance) {
+    const auto away = [](int x, int y) { return x > y ? x - y : y - x; };
+    return away(SkColorGetR(a), SkColorGetR(b)) <= tolerance &&
+           away(SkColorGetG(a), SkColorGetG(b)) <= tolerance &&
+           away(SkColorGetB(a), SkColorGetB(b)) <= tolerance;
+}
 
 // Bounding box of differing pixels; false when the frames are identical.
 bool diffBounds(const RasterFrame& a, const RasterFrame& b, SkIRect* bounds) {
@@ -612,6 +731,138 @@ bool verifyLayerComposition(std::string* error) {
             *error = "two renders of the same layer configuration differ: " + describe(bounds);
         }
         return false;
+    }
+    return true;
+}
+
+bool verifySceneTransition(std::string* error) {
+    TestScene scene;
+    if (!scene.create(error)) {
+        return false;
+    }
+    // Background and words only: the footer clock would count as ink, and
+    // the demo photo is not part of any scene.
+    scene.setLayerEnabled(LayerId::kClock, false);
+
+    const SkColor red = SkColorSetRGB(0xE0, 0x30, 0x30);
+    const SkColor blue = SkColorSetRGB(0x30, 0x30, 0xE0);
+    auto stage = [](uint32_t color, const char* line) {
+        auto subject = std::make_shared<openshow::scene::Scene>();
+        subject->showId = "check";
+        subject->slideId = "transition";
+        subject->background.color = color;
+        if (line != nullptr) {
+            openshow::scene::TextItem item;
+            item.lines = {line};
+            item.fontSize = 300.0;
+            item.color = 0xFFFFFFu;
+            subject->items.push_back(std::move(item));
+        }
+        return subject;
+    };
+
+    RasterFrame frame;
+    const auto fail = [&](const char* what) {
+        if (error) {
+            *error = what;
+        }
+        return false;
+    };
+    const auto inkCount = [&]() {
+        const SkColor background = frame.at(2, 2);
+        int count = 0;
+        for (int y = 0; y < frame.height; y += 2) {
+            for (int x = 0; x < frame.width; x += 2) {
+                if (!channelsMatch(frame.at(x, y), background, 16)) {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    };
+
+    // 1. The first presentation pops in: with nothing to fade from, the
+    //    very first frame already carries the scene's background.
+    scene.setActiveScene(stage(0xE03030u, "ONE"));  // fade requested, none possible
+    if (!frame.render(scene, error, 0.0)) {
+        return false;
+    }
+    if (!channelsMatch(frame.at(2, 2), red, 4)) {
+        return fail("first presentation did not pop in");
+    }
+    if (inkCount() < 5000) {
+        return fail("first presentation lost the words");
+    }
+
+    // 2. A fade is measured from the first frame it draws...
+    const auto blueScene = stage(0x3030E0u, nullptr);
+    scene.setActiveScene(blueScene);
+    if (!frame.render(scene, error, 10.0)) {
+        return false;
+    }
+    if (!channelsMatch(frame.at(2, 2), red, 4)) {
+        return fail("fade dropped its first frame");
+    }
+    //    ...so the media track is halfway at +0.4s of its 800ms, while the
+    //    old words (500ms text track, 80% through) are still faintly on
+    //    screen over the blending background.
+    if (!frame.render(scene, error, 10.4)) {
+        return false;
+    }
+    const SkColor midpoint =
+        SkColorSetRGB((0xE0 + 0x30) / 2, 0x30, (0x30 + 0xE0) / 2);
+    if (!channelsMatch(frame.at(2, 2), midpoint, 6)) {
+        return fail("media blend is not halfway at +0.4s");
+    }
+    if (inkCount() == 0) {
+        return fail("words vanished before the text track completed");
+    }
+    //    At +0.5s the text track is finished — no trace of the old words —
+    //    while the media track is still travelling.
+    if (!frame.render(scene, error, 10.5)) {
+        return false;
+    }
+    if (inkCount() != 0) {
+        return fail("text track did not complete at 0.5s");
+    }
+    if (channelsMatch(frame.at(2, 2), blue, 12)) {
+        return fail("media track completed before its 0.8s");
+    }
+    //    +0.8s: both tracks are done and the fade releases the old scene.
+    if (!frame.render(scene, error, 10.9)) {
+        return false;
+    }
+    if (!channelsMatch(frame.at(2, 2), blue, 4)) {
+        return fail("media track did not complete at 0.8s");
+    }
+    if (!frame.render(scene, error, 20.0)) {
+        return false;
+    }
+    if (!channelsMatch(frame.at(2, 2), blue, 4) || inkCount() != 0) {
+        return fail("a completed fade left a trace behind");
+    }
+
+    // 3. A cut swaps in one frame.
+    scene.setActiveScene(stage(0xE03030u, "ONE"), SceneTransitionKind::kCut);
+    if (!frame.render(scene, error, 21.0)) {
+        return false;
+    }
+    if (!channelsMatch(frame.at(2, 2), red, 4) || inkCount() < 5000) {
+        return fail("cut did not swap the scene in one frame");
+    }
+
+    // 4. A cut cancels a fade in flight: the next frame is the cut scene
+    //    exactly, not a blend.
+    scene.setActiveScene(blueScene);  // fade starts
+    if (!frame.render(scene, error, 30.0) || !frame.render(scene, error, 30.3)) {
+        return false;
+    }
+    scene.setActiveScene(stage(0xE03030u, "ONE"), SceneTransitionKind::kCut);
+    if (!frame.render(scene, error, 30.4)) {
+        return false;
+    }
+    if (!channelsMatch(frame.at(2, 2), red, 4)) {
+        return fail("cut did not cancel a fade in flight");
     }
     return true;
 }

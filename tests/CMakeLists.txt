@@ -47,6 +47,13 @@ add_test(NAME render_layer_composition
   COMMAND openshow-worker --check-layers
 )
 
+# Task 3.2 transitions: the fade's media (800ms) and text (500ms) tracks,
+# completion, cut, and cut-cancels-fade, timed from drawn frames through
+# the production layers. CPU only.
+add_test(NAME render_scene_transition
+  COMMAND openshow-worker --check-transition
+)
+
 # Task 3.1 scene typography: production layout (wrap, centring, fallback,
 # shrink-to-fit) rendered on the CPU through the same engine the audience
 # words layer uses. No display or Vulkan; exits 77 when no usable fonts.

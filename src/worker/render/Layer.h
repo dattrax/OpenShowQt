@@ -12,6 +12,10 @@
  * is functionally skipped: its draw() is never called, recording no Skia
  * work at all. Layers are toggled from the frontend over RPC (task 1.2+)
  * and take effect on the next frame without recreating GPU resources.
+ * The one exception (task 3.2) is the fade transition's words dissolve,
+ * which wraps the block in a group-alpha saveLayer — Skia's own way of
+ * putting the transparency in the paint; the layer is word-bounds sized and
+ * lives only while a fade is in flight.
  */
 
 #pragma once

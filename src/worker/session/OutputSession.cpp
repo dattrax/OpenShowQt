@@ -263,7 +263,8 @@ bool OutputSession::prepareScene(const openshow::scene::Scene& scene,
     return true;
 }
 
-bool OutputSession::presentScene(uint64_t prepared, uint64_t* revisionOut) {
+bool OutputSession::presentScene(uint64_t prepared, uint64_t* revisionOut,
+                                 SceneTransitionKind kind) {
     {
         std::lock_guard<std::mutex> lock(fMutex);
         if (prepared == 0 || fScenes.find(prepared) == fScenes.end()) {
@@ -272,6 +273,7 @@ bool OutputSession::presentScene(uint64_t prepared, uint64_t* revisionOut) {
         fStatus.scene.pending = prepared;
         if (prepared != fDesiredScene) {
             fDesiredScene = prepared;
+            fDesiredTransition = kind;  // travels with the change to the render thread
             ++fRevision;
         }
         if (revisionOut != nullptr) {
@@ -524,9 +526,11 @@ void OutputSession::applyPendingDisplayChange() {
 
 void OutputSession::applyPendingSceneChange() {
     uint64_t desired = 0;
+    SceneTransitionKind kind = SceneTransitionKind::kFade;
     {
         std::lock_guard<std::mutex> lock(fMutex);
         desired = fDesiredScene;
+        kind = fDesiredTransition;
     }
     if (desired == fAppliedScene) {
         return;
@@ -547,7 +551,7 @@ void OutputSession::applyPendingSceneChange() {
         fStatus.scene.active = fAppliedScene;
         fStatus.revision = fRevision;
     }
-    fScene->setActiveScene(std::move(applied));
+    fScene->setActiveScene(std::move(applied), kind);
 }
 
 void OutputSession::applyPreviewState() {

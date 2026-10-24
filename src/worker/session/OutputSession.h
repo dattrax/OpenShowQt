@@ -224,9 +224,14 @@ public:
     // new revision. Unknown revisions (and 0) are refused — to go black
     // the frontend prepares the cleared scene, which is an ordinary
     // scene. The applied scene is what the production layers draw
-    // (task 3.1): the background fills its colour and the words layer
-    // lays out its text; with nothing presented the demo picture renders.
-    bool presentScene(uint64_t prepared, uint64_t* revisionOut);
+    // (task 3.1): the background fills its colour (or its cover-fitted
+    // image, task 3.2) and the words layer lays out its text; with
+    // nothing presented the demo picture renders. `kind` decides how the
+    // switch is revealed: a fade crossfades the outgoing scene (FreeShow's
+    // default, task 3.2), a cut swaps in one frame; the first
+    // presentation always pops in — there is nothing to fade from.
+    bool presentScene(uint64_t prepared, uint64_t* revisionOut,
+                      SceneTransitionKind kind = SceneTransitionKind::kFade);
 
     // --- video (task 1.5e) ---
 
@@ -351,6 +356,7 @@ private:
     std::map<uint64_t, openshow::scene::Scene> fScenes;  // fMutex
     uint64_t fNextSceneRevision = 1;                     // fMutex (0 never handed out)
     uint64_t fDesiredScene = 0;                          // fMutex; 0 = nothing presented
+    SceneTransitionKind fDesiredTransition = SceneTransitionKind::kFade;  // fMutex (task 3.2)
     uint64_t fAppliedScene = 0;                          // render thread, published under fMutex
 
     // Preview pipeline (task 1.4). Desired state is set from the RPC
