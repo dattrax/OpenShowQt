@@ -1165,6 +1165,29 @@ of this work.
   - Boost.JSON trap for the *tests*: `json::array items =
     obj["items"].as_array();` **copies**; tampering the payload needed
     `auto&`. (The library itself only reads through references.)
+- **2.4b** DONE — worker scene store with acknowledged revisions:
+  - **`OutputSession`** gains a prepared-scene store keyed by a
+    monotonic revision (0 never handed out): `prepareScene` stores a
+    validated scene under the next revision (no output revision moves —
+    preparing renders nothing), bounded at `kMaxPreparedScenes` = 16,
+    evicting the oldest revision that is neither presented nor pending;
+    `presentScene` names a prepared revision as desired, and the render
+    thread applies it in the new `applyPendingSceneChange()` exactly
+    like the monitor/layer seams — bumping the output revision the ack
+    reports, then publishing `fStatus.scene.active`. Presenting the
+    already-desired revision is a no-op success; unknown/0 is refused.
+  - **RPC**: `scene.prepare` (validates the payload with
+    `scene::fromJson` and refuses malformed scenes with
+    `kInvalidParams`), `scene.present` (names a revision).
+    `output.status` now carries a `scene: {active, pending, prepared}`
+    object. Protocol minor 1→2, new `scene.store.v1` capability.
+  - `worker_rpc_lifecycle` grew **scenario E**: refuse an out-of-range
+    colour and a future-format scene, refuse presenting an unprepared
+    revision, prepare two (distinct non-zero revisions), status counts
+    them, present each watching `scene.active` settle to the named
+    revision at/past the ack, refuse a never-prepared revision, clean
+    exit. Worker stays Qt-free (scene lib is too). desktop **13/13**,
+    headless **10/10**.
 
 ## Verification and environment
 

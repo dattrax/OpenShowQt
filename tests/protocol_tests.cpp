@@ -209,7 +209,7 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 4, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 5, "hello lists capabilities");
     }
 
     // Major mismatch: structured refusal with both versions.

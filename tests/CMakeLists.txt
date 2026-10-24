@@ -72,7 +72,7 @@ add_executable(rpc_ipc_tests rpc_ipc_tests.cpp)
 target_link_libraries(rpc_ipc_tests PRIVATE openshow::protocol)
 add_test(NAME worker_rpc_lifecycle
   COMMAND rpc_ipc_tests $<TARGET_FILE:openshow-worker>)
-set_tests_properties(worker_rpc_lifecycle PROPERTIES LABELS display TIMEOUT 90)
+set_tests_properties(worker_rpc_lifecycle PROPERTIES LABELS display TIMEOUT 120)
 
 # Task 1.5e acceptance: the event-driven scheduler. --idle-check watches the
 # render loop from a second thread and fails (exit 1) if a static scene

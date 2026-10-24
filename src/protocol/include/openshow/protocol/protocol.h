@@ -24,7 +24,7 @@ namespace openshow::protocol {
 // Wire format version. Frontend and worker must agree on the major value
 // before any other message is exchanged.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 1;
+inline constexpr std::uint32_t kProtocolMinor = 2;
 
 // A framed message larger than this is treated as a protocol error: the
 // only legitimate payloads are control messages, never pixels.

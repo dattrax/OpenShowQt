@@ -237,6 +237,51 @@ std::vector<OutputSession::DisplayInfo> OutputSession::displays() const {
     return fDisplays;
 }
 
+bool OutputSession::prepareScene(const openshow::scene::Scene& scene,
+                                 uint64_t* revisionOut) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    const uint64_t revision = fNextSceneRevision++;
+    fScenes[revision] = scene;
+    // Bounded store: evict the oldest revision nobody can present
+    // again — a frontend that lost the revision number has to re-prepare
+    // anyway, and the audience's scene is never a victim.
+    while (fScenes.size() > kMaxPreparedScenes) {
+        const auto victim = std::find_if(fScenes.begin(), fScenes.end(),
+                                         [&](const auto& entry) {
+                                             return entry.first != fDesiredScene &&
+                                                    entry.first != fAppliedScene;
+                                         });
+        if (victim == fScenes.end()) {
+            break;
+        }
+        fScenes.erase(victim);
+    }
+    fStatus.scene.prepared = fScenes.size();
+    if (revisionOut != nullptr) {
+        *revisionOut = revision;
+    }
+    return true;
+}
+
+bool OutputSession::presentScene(uint64_t prepared, uint64_t* revisionOut) {
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (prepared == 0 || fScenes.find(prepared) == fScenes.end()) {
+            return false;
+        }
+        fStatus.scene.pending = prepared;
+        if (prepared != fDesiredScene) {
+            fDesiredScene = prepared;
+            ++fRevision;
+        }
+        if (revisionOut != nullptr) {
+            *revisionOut = fRevision;
+        }
+    }
+    wakeRenderThread();
+    return true;
+}
+
 bool OutputSession::startPreview(uint32_t width, uint32_t height, uint32_t fps,
                                  PreviewInfo* info, std::string* error) {
     // Geometry limits: a preview, not a second output.
@@ -477,6 +522,24 @@ void OutputSession::applyPendingDisplayChange() {
     fStatus.revision = fRevision;
 }
 
+void OutputSession::applyPendingSceneChange() {
+    uint64_t desired = 0;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        desired = fDesiredScene;
+    }
+    if (desired == fAppliedScene) {
+        return;
+    }
+    // Production layers will draw the active scene (task 3.1); applying
+    // today records it, which is what status() and the acknowledged
+    // revision report.
+    std::lock_guard<std::mutex> lock(fMutex);
+    fAppliedScene = desired;
+    fStatus.scene.active = fAppliedScene;
+    fStatus.revision = fRevision;
+}
+
 void OutputSession::applyPreviewState() {
     PreviewDesired desired;
     std::shared_ptr<PreviewStream> retire;
@@ -635,6 +698,7 @@ void OutputSession::frame() {
 
     applyPendingLayerChanges();
     applyPendingDisplayChange();
+    applyPendingSceneChange();
     applyPreviewState();
     glfwPollEvents();
 

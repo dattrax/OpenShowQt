@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -35,6 +36,7 @@
 #include "include/gpu/ganesh/GrDirectContext.h"
 
 #include "openshow/protocol/preview_wire.h"
+#include "openshow/scene/scene.h"
 
 #include "output/OutputWindow.h"
 #include "output/Swapchain.h"
@@ -91,6 +93,19 @@ public:
         std::string error;
     };
 
+    // Live scene-store state (task 2.4b). Prepared scenes are kept by
+    // the store revision prepareScene returns; active reports the
+    // revision the render thread has taken on (0 = nothing presented,
+    // the black start), pending the presentation in flight. Revision 0
+    // is never handed out, and once status().revision reaches the
+    // revision a scene.present was acknowledged with, active equals
+    // what that command named.
+    struct SceneStatus {
+        uint64_t active = 0;
+        uint64_t pending = 0;
+        uint64_t prepared = 0;  // how many scenes the store holds
+    };
+
     // Snapshot of output state, safe to take from any thread. layerMask
     // reports what has actually been applied on the render thread, so a
     // caller can wait for status().revision >= the revision its command
@@ -107,6 +122,7 @@ public:
         int monitor = -1;
         std::string monitorName;
         PreviewStatus preview;
+        SceneStatus scene;
     };
 
     // --- preview (task 1.4) ---
@@ -189,6 +205,28 @@ public:
     // that slot is all that matters.
     bool takePreviewReady(PreviewReady* out);
 
+    // --- scenes (task 2.4b) ---
+
+    // How many prepared scenes the store keeps: the oldest revision that
+    // is neither presented nor pending is evicted beyond this.
+    static constexpr std::size_t kMaxPreparedScenes = 16;
+
+    // Keeps a compiled scene and reports the store revision that
+    // presentScene accepts. Preparing changes nothing on screen, so no
+    // output revision moves and no frame is provoked; the count visible
+    // in status().scene.prepared does.
+    bool prepareScene(const openshow::scene::Scene& scene, uint64_t* revisionOut);
+
+    // Names a prepared revision as the output's scene. The switch lands
+    // on the render thread's next frame, like layer toggles, and
+    // *revisionOut reports the output revision it is included in;
+    // presenting the revision already desired is a success without a
+    // new revision. Unknown revisions (and 0) are refused — to go black
+    // the frontend prepares the cleared scene, which is an ordinary
+    // scene. Production layers consume the active scene in 3.x; what
+    // applying does today is record it as active for status.
+    bool presentScene(uint64_t prepared, uint64_t* revisionOut);
+
     // --- video (task 1.5e) ---
 
     // The seam a bench (later: the media layer) uses to present GPU slots:
@@ -252,6 +290,7 @@ private:
     void housekeep();
     void applyPendingLayerChanges();
     void applyPendingDisplayChange();
+    void applyPendingSceneChange();
     void applyPreviewState();
     void publishPreviewFrame(double elapsed, SkImage* video);
     void refreshDisplaySnapshot();
@@ -303,6 +342,15 @@ private:
     int fAppliedMonitor = -1;
     std::vector<DisplayInfo> fDisplays;
     Status fStatus;
+
+    // Scene store (task 2.4b). Prepared scenes live here keyed by a
+    // monotonic revision counter; desired is written by presentScene
+    // (RPC thread) and applied by the render thread. All guarded by
+    // fMutex so status() can read them alongside the rest.
+    std::map<uint64_t, openshow::scene::Scene> fScenes;  // fMutex
+    uint64_t fNextSceneRevision = 1;                     // fMutex (0 never handed out)
+    uint64_t fDesiredScene = 0;                          // fMutex; 0 = nothing presented
+    uint64_t fAppliedScene = 0;                          // render thread, published under fMutex
 
     // Preview pipeline (task 1.4). Desired state is set from the RPC
     // thread and a generation counter drives creation/retirement on the

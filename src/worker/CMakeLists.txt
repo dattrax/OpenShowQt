@@ -49,6 +49,7 @@ target_include_directories(openshow-worker-media PUBLIC ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(openshow-worker PRIVATE
   openshow::domain
   openshow::protocol
+  openshow::scene
   openshow::skia
   openshow::worker_gpu
   openshow::worker_media

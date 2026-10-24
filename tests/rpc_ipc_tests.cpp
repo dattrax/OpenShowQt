@@ -201,6 +201,45 @@ bool waitForMonitor(int fd, int wanted, std::uint64_t atLeastRevision, int secon
     return false;
 }
 
+// Reads the scene sub-object out of an output.status result.
+bool sceneField(const boost::json::value& status, const char* field,
+                std::uint64_t* out) {
+    if (!status.is_object()) {
+        return false;
+    }
+    const auto scene = status.as_object().find("scene");
+    if (scene == status.as_object().end() || !scene->value().is_object()) {
+        return false;
+    }
+    const auto found = scene->value().as_object().find(field);
+    if (found == scene->value().as_object().end()) {
+        return false;
+    }
+    *out = numberValue(found->value());
+    return true;
+}
+
+// Polls output.status until the scene store reports the wanted active
+// revision at or past atLeastRevision (or timeout).
+bool waitForSceneActive(int fd, std::uint64_t wanted, std::uint64_t atLeastRevision,
+                        int seconds) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    std::int64_t id = 400;
+    while (std::chrono::steady_clock::now() < deadline) {
+        boost::json::value reply;
+        if (call(fd, ++id, "output.status", {}, &reply)) {
+            const boost::json::value& status = reply.at("result");
+            std::uint64_t active = 0;
+            if (sceneField(status, "active", &active) && active == wanted &&
+                numberValue(status.as_object().at("revision")) >= atLeastRevision) {
+                return true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+}
+
 // Waits (bounded) for the next preview.ready notification, whether it
 // already arrived interleaved with some earlier reply or comes in now.
 bool nextPreviewReady(int fd, boost::json::object* ready, int seconds) {
@@ -371,7 +410,7 @@ void testServedSession() {
         const boost::json::value& result = reply.at("result");
         check(result.as_object().at("protocol").as_object().at("major").is_number(),
               "hello negotiates a protocol version");
-        check(result.as_object().at("capabilities").as_array().size() == 4,
+        check(result.as_object().at("capabilities").as_array().size() == 5,
               "hello lists worker capabilities");
     }
 
@@ -804,6 +843,117 @@ void testPreviewStream() {
 
 }  // namespace
 
+// Scenario E (task 2.4b): the compiled-scene store over the wire. Prepare
+// two scenes (the frontend's compiler is the producer), refuse a malformed
+// one, present each and watch the applied revision settle, and refuse a
+// present of an unknown revision.
+void testSceneStore() {
+    const std::string path = socketPath("scenes");
+    const pid_t pid = spawnWorker(path);
+    if (!check(pid > 0, "worker spawned (scene scenario)")) {
+        return;
+    }
+    const int fd = connectRetry(path);
+    if (!check(fd >= 0, "connected to the worker socket")) {
+        killWorker(pid);
+        return;
+    }
+    boost::json::value reply;
+    if (!check(call(fd, 1, "hello", proto::helloParams("ipc-test", 0, 2), &reply),
+               "hello succeeded (scene scenario)")) {
+        killWorker(pid);
+        return;
+    }
+
+    // A compiled scene as the frontend's scene::toJson would emit it.
+    const auto compiledScene = [](const char* line) {
+        return boost::json::object{
+            {"scene", 1},
+            {"showId", "show1"},
+            {"slideId", "slide2"},
+            {"backgroundColor", 0x202040},
+            {"background",
+             boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
+            {"items",
+             boost::json::array{boost::json::object{{"lines", boost::json::array{line}},
+                                                    {"color", 0xffffff},
+                                                    {"fontFamily", "DejaVu Serif"},
+                                                    {"fontSize", 64.0}}}}};
+    };
+
+    // Two malformed payloads are refused with the wire validator's reasons.
+    {
+        boost::json::object broken = compiledScene("x");
+        broken["backgroundColor"] = 0x1000000;  // beyond 24 bits
+        check(call(fd, 2, "scene.prepare", broken, &reply) &&
+                  isErrorCode(reply, proto::kInvalidParams),
+              "a scene with an out-of-range colour is refused by scene.prepare");
+    }
+    {
+        boost::json::object broken = compiledScene("x");
+        broken["scene"] = 2;  // unsupported scene format
+        check(call(fd, 3, "scene.prepare", broken, &reply) &&
+                  isErrorCode(reply, proto::kInvalidParams),
+              "a future scene format is refused by scene.prepare");
+    }
+
+    // Presenting before anything is prepared is refused.
+    check(call(fd, 4, "scene.present", boost::json::object{{"revision", 1}}, &reply) &&
+              isErrorCode(reply, proto::kInvalidParams),
+          "presenting an unprepared revision is refused");
+
+    // Prepare two valid scenes; each reports a distinct store revision.
+    std::uint64_t first = 0;
+    if (!check(call(fd, 5, "scene.prepare", compiledScene("First"), &reply) &&
+                   reply.as_object().contains("result"),
+               "the first scene.prepare is acknowledged")) {
+        killWorker(pid);
+        close(fd);
+        waitExit(pid, 5);
+        return;
+    }
+    first = numberValue(reply.at("result").as_object().at("revision"));
+    check(call(fd, 6, "scene.prepare", compiledScene("Second"), &reply) &&
+              reply.as_object().contains("result"),
+          "the second scene.prepare is acknowledged");
+    const std::uint64_t second = numberValue(reply.at("result").as_object().at("revision"));
+    check(first != second && first != 0 && second != 0,
+          "each prepared scene gets its own non-zero revision");
+
+    // Status reflects the store size.
+    if (check(call(fd, 7, "output.status", {}, &reply) && reply.at("result").is_object(),
+              "output.status answers during the scene scenario")) {
+        std::uint64_t prepared = 0;
+        check(sceneField(reply.at("result"), "prepared", &prepared) && prepared >= 2,
+              "status counts the prepared scenes");
+    }
+
+    // Present the second scene, then the first; each applied revision
+    // must settle to the value the command named.
+    if (check(call(fd, 8, "scene.present", boost::json::object{{"revision", second}}, &reply) &&
+                  reply.as_object().contains("result"),
+              "presenting the second scene is acknowledged")) {
+        check(waitForSceneActive(fd, second,
+                                 numberValue(reply.at("result").as_object().at("revision")), 6),
+              "status reports the second scene applied");
+    }
+    if (check(call(fd, 9, "scene.present", boost::json::object{{"revision", first}}, &reply) &&
+                  reply.as_object().contains("result"),
+              "presenting the first scene is acknowledged")) {
+        check(waitForSceneActive(fd, first,
+                                 numberValue(reply.at("result").as_object().at("revision")), 6),
+              "status reports the first scene applied");
+    }
+
+    check(call(fd, 10, "scene.present", boost::json::object{{"revision", 99999}}, &reply) &&
+              isErrorCode(reply, proto::kInvalidParams),
+          "presenting a never-prepared revision is refused");
+
+    call(fd, 11, "shutdown", {}, &reply);
+    close(fd);
+    check(waitExit(pid, 5) == 0, "scene-scenario worker exits cleanly");
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) {
         gWorkerBinary = argv[1];
@@ -812,6 +962,7 @@ int main(int argc, char** argv) {
     testDisconnectStopsWorker();
     testDisplaySelection();
     testPreviewStream();
+    testSceneStore();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "%d IPC check(s) failed\n", gFailures);

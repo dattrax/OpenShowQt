@@ -20,6 +20,7 @@
 
 #include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
+#include "openshow/scene/scene.h"
 
 #include "render/Layer.h"
 #include "session/OutputSession.h"
@@ -107,7 +108,10 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                                                {"fps", preview.fps},
                                                                {"published", preview.published},
                                                                {"dropped", preview.dropped},
-                                                               {"error", preview.error}}}};
+                                                               {"error", preview.error}}},
+                               {"scene", boost::json::object{{"active", status.scene.active},
+                                                             {"pending", status.scene.pending},
+                                                             {"prepared", status.scene.prepared}}}};
 }
 
 boost::json::value displaysResult(const std::vector<OutputSession::DisplayInfo>& displays) {
@@ -425,6 +429,63 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
         }
         // The toggle lands on the next composed frame; revision tells the
         // frontend which status confirms it.
+        proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                     {"revision", revision},
+                                                     {"pending", true}}),
+                           outbound);
+    } else if (name == "scene.prepare") {
+        // The compiled scene travels as JSON (the frontend's compiler
+        // produced it); validate it into the session's scene type before
+        // storing. Nothing renders here — prepare only grows the store.
+        if (!given.is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "scene.prepare requires a scene object"),
+                               outbound);
+            return true;
+        }
+        openshow::scene::Scene scene;
+        std::string sceneError;
+        if (!openshow::scene::fromJson(given, &scene, &sceneError)) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 sceneError.empty() ? "scene.prepare received an invalid scene"
+                                                    : sceneError),
+                outbound);
+            return true;
+        }
+        std::uint64_t revision = 0;
+        if (!fSession.prepareScene(scene, &revision)) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInternalError, "scene.prepare failed"),
+                outbound);
+            return true;
+        }
+        // The store revision names this scene for scene.present.
+        proto::appendFrame(
+            proto::makeResult(id, boost::json::object{{"revision", revision}}), outbound);
+    } else if (name == "scene.present") {
+        if (!given.is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "scene.present requires params"),
+                               outbound);
+            return true;
+        }
+        std::uint64_t prepared = 0;
+        if (!jsonUint(given.as_object(), "revision", &prepared)) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "scene.present requires a \"revision\""),
+                               outbound);
+            return true;
+        }
+        std::uint64_t revision = 0;
+        if (!fSession.presentScene(prepared, &revision)) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "no prepared scene with revision " +
+                                     std::to_string(prepared)),
+                outbound);
+            return true;
+        }
         proto::appendFrame(proto::makeResult(id, boost::json::object{
                                                      {"revision", revision},
                                                      {"pending", true}}),
