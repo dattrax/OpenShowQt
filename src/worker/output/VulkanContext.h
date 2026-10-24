@@ -18,6 +18,16 @@
  * enables VK_LAYER_KHRONOS_validation and installs a VK_EXT_debug_utils
  * messenger that logs errors and warnings to stderr with deduplication.
  * Requesting validation without the layer installed fails creation.
+ *
+ * Task 1.5i added the plumbing for decoding into Vulkan images: the device
+ * is created with the core samplerYcbcrConversion feature and reports it to
+ * Skia through the features2 pNext chain (Skia only registers the two-plane
+ * YUV formats, and only builds VkSamplerYcbcrConversion objects, when it
+ * sees it enabled), and when the device exposes a video-decode queue family
+ * the video decode extensions plus one decode queue are enabled for
+ * FFmpeg's vulkan hwaccel to submit AV1/VP9 decodes on. All of that is
+ * optional: devices without video decode (llvmpipe) stay selectable and
+ * behave exactly as before.
  */
 
 #pragma once
@@ -68,6 +78,13 @@ public:
     uint32_t uploadQueueIndex() const { return fUploadQueueIndex; }
     bool hasDedicatedUploadQueue() const { return fUploadQueueIndex != fQueueIndex; }
 
+    // Vulkan video decode queue (task 1.5i): a decode-bit queue family,
+    // enabled together with the video decode extensions. FFmpeg's vulkan
+    // hwaccel submits decodes here; only valid when hasVideoDecodeQueue().
+    VkQueue decodeQueue() const { return fDecodeQueue; }
+    uint32_t decodeQueueIndex() const { return fDecodeQueueIndex; }
+    bool hasVideoDecodeQueue() const { return fDecodeQueue != VK_NULL_HANDLE; }
+
     // Filled by create(); valid until destroy().
     skgpu::VulkanBackendContext& backendContext() { return *fBackendContext; }
 
@@ -76,6 +93,8 @@ private:
     bool selectPhysicalDevice();
     bool createDevice();
     int pickUploadFamily() const;  // -1 when no separate family exists
+    int pickVideoDecodeFamily() const;  // -1 when no decode-bit family exists
+    bool videoExtensionsEnabled() const;  // enabled only when selectable device had them
 
     VkInstance fInstance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT fMessenger = VK_NULL_HANDLE;  // only with validation
@@ -87,6 +106,8 @@ private:
     uint32_t fQueueIndex = 0;
     VkQueue fUploadQueue = VK_NULL_HANDLE;
     uint32_t fUploadQueueIndex = 0;
+    VkQueue fDecodeQueue = VK_NULL_HANDLE;
+    uint32_t fDecodeQueueIndex = 0;
     std::string fDeviceName;
     skgpu::VulkanBackendContext* fBackendContext = nullptr;
     // The backend context stores raw pointers to these, so they must live as
@@ -94,6 +115,10 @@ private:
     // extension list straight out of them.
     skgpu::VulkanExtensions fExtensions;
     VkPhysicalDeviceFeatures2 fDeviceFeatures2 = {};
+    // The 1.1 features requested at device creation (samplerYcbcrConversion
+    // only) and mirrored into fDeviceFeatures2's chain for Skia: vk-bootstrap
+    // enables exactly this set, so the mirror is truthful.
+    VkPhysicalDeviceVulkan11Features fFeatures11 = {};
     // Survive between create() phases so the queue/feature handover to Skia
     // can read them after the device exists.
     class PhysicalDeviceStorage;

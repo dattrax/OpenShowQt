@@ -840,6 +840,36 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   zero-copy `drm_prime` import wrapped as
   `VK_FORMAT_G8_B8R8_2PLANE_420_UNORM`. Gates: desktop **11/11**,
   headless **8/8**.
+- **1.5i** in progress — the redesign became a **Vulkan frames ring**
+  after measuring the stack. RADV (Mesa 26.2.5) exposes Vulkan *video*
+  decode for **AV1 + VP9 only** (no h264/hevc extension exists on Mesa
+  yet — the CLI says "Failed setup for format vulkan" for h264), and
+  FFmpeg 9's `vulkan` hwaccel decoded bribary end-to-end from the CLI,
+  downloading NV12. `AVVkFrame` is a proper consumer contract: optimal
+  multi-planar `VkImage`s, **timeline semaphores** (`sem[]` +
+  `sem_value[]`, consumer waits at the value and signals value+1) and
+  tracked `layout[]`/`access[]`, so cross-queue consumption needs a
+  layout barrier, not an ownership transfer (images are CONCURRENT —
+  `queue_family[]` is IGNORED). Skia's side checked in the vendored
+  tree: `GrYUVABackendTextures` demands one texture **per plane**, so
+  the single-two-plane wrap must go through `BorrowTextureFrom` with
+  `GrVkImageInfo::fYcbcrConversionInfo` (`skgpu::VulkanYcbcrConversionInfo`
+  in this revision); `G8_B8R8_2PLANE_420_UNORM` registers color type
+  kRGB_888x and `G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16` — the
+  Vulkan name for the P010 memory layout (there is no
+  `VK_FORMAT_G10_B10R10_2PLANE_...` at all) — registers kRGBA_1010102.
+  Device plumbing landed with this commit: `samplerYcbcrConversion` is
+  required at device creation and mirrored to Skia through the
+  `features2` pNext chain (Skia drops every two-plane format without
+  the node), `VK_KHR_synchronization2` (a required dependency of
+  `VK_KHR_video_queue`, VUID-vkCreateDevice-ppEnabledExtensionNames-01387)
+  plus the video decode extensions are enabled as **desired**
+  extensions — vk-bootstrap enables the supported subset and still
+  accepts partially suitable devices, so llvmpipe is unaffected — and a
+  decode-bit queue family joins the device when those extensions make
+  it (the 890M logs "video decode on queue 2"; FFmpeg submits there).
+  Gates: desktop **11/11**, headless **8/8**; `--av-bench` clean under
+  validation.
 
 ## Verification and environment
 
