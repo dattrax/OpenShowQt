@@ -89,6 +89,10 @@ public:
     void setActiveScene(ActiveScene scene,
                         SceneTransitionKind kind = SceneTransitionKind::kFade);
     const ActiveScene& activeScene() const { return fActiveScene; }
+    // True while a crossfade still owes frames: the event-driven loop must
+    // keep presenting until the blends complete, or the audience is stuck
+    // on the fade's first frame (which still looks like the old scene).
+    bool transitionRunning() const { return fTransitionRunning; }
 
     // Layer toggles, mirroring what the RPC will drive later.
     void setLayerEnabled(LayerId id, bool enabled) { fLayers.setEnabled(id, enabled); }

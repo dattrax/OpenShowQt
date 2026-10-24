@@ -125,6 +125,17 @@ add_test(NAME render_idle_check
   COMMAND openshow-worker --render-test --idle-check)
 set_tests_properties(render_idle_check PROPERTIES LABELS display TIMEOUT 60)
 
+# The M3 checkpoint demo caught the event-driven loop sleeping through a
+# crossfade (one frame at blend 0, then quiet: the audience never saw the
+# new scene). This pins the live contract from the frontend's side: frame
+# counts climb across a fade and plateau after it, and the preview stream
+# settles on the new scene. Needs a display; Qt-free.
+add_executable(live_fade_tests live_fade_tests.cpp)
+target_link_libraries(live_fade_tests PRIVATE openshow::protocol)
+add_test(NAME live_fade_tests
+  COMMAND live_fade_tests $<TARGET_FILE:openshow-worker>)
+set_tests_properties(live_fade_tests PROPERTIES LABELS display TIMEOUT 90)
+
 # Real FFmpeg get_buffer2 allocations into Vulkan linear images, independent
 # reference/presentation lifetimes, all native plane layouts and strict errors.
 add_executable(gpu_decode_tests gpu_decode_tests.cpp)

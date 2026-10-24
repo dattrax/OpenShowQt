@@ -1482,6 +1482,48 @@ of this work.
   out of the original one-call hand-off.
 - Gates: desktop **18/18**, headless **12/12**.
 
+## M3 checkpoint demo (2026-10-24) — and the fade bug it caught
+
+- **The demo** ran the operator's story through the real classes against
+  a live worker and captured the worker's actual output frames over the
+  shared-memory preview stream (the same stream the panel's monitor
+  tile reads): create *Be Thou My Vision* as a two-slide service in
+  `DocumentController`, save it, reload it in a fresh session ("loaded",
+  clean), put each verse on air over a background image, then the clear
+  sequence — clear slide (background left), restore, clear background
+  (every word left), clear all (black), one restore from black (full
+  slide back). Every step waited for the worker's acknowledgement, and
+  the saved `service.json` was checked to hold both verses under the
+  right slides. All assertions green.
+- **Background preserved across lyric changes** — the checkpoint's
+  clause, proven at the pixel level: the frames for verse 1 and verse 2
+  differ in the words and in nothing else; the night-sky background
+  rides through the change untouched (and it is the same asset path, so
+  the 3.2 path-keyed cache means the worker never even re-decodes it).
+- **The bug the demo caught**: the verse-2 frame showed *verse 1* —
+  clock advanced, words unchanged. The 1.5e event-driven loop presents
+  only on a reason, and nothing re-armed it while a crossfade ran: a
+  fade's presentation drew exactly one frame at blend 0 (still the old
+  picture), the loop slept, and the new scene never appeared — while
+  `output.status` cheerfully reported it active. The CPU fixtures missed
+  it because `--check-transition` drives `draw()` directly with a clock
+  instead of living in the loop. The fix is small and honest:
+  `TestScene::transitionRunning()`, and the frame loop re-arms
+  `fNeedsPresent` after every drawn frame while a fade runs, so the
+  crossfade animates (vsync-paced) and the loop goes quiet again when
+  the blends complete.
+- **The regression** (`live_fade_tests`, Qt-free, display-labelled)
+  asserts the live contract from the frontend's side: fade red to green
+  and the presented-frame counter must climb across the fade window and
+  then plateau (it animates, it settles, it does not busy-loop), and
+  the preview stream must settle on the *new* scene's mean colour, not
+  the old one's. Re-running the demo after the fix: all seven frames
+  now tell the honest story (full slide, full slide, background only,
+  restored, words on black, black, restored from black).
+- Gates after the fix: desktop **19/19** (the idle check from 1.5e
+  stays green — the re-arm only fires while a fade runs), headless
+  **12/12**.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -1738,10 +1780,20 @@ logged here from what is observable off screen rather than claimed as seen.
    mirrors each prepared revision's JSON and lights `wordsOnAir/
    backgroundOnAir/canRestore` only from the status-confirmed active
    revision, and restore re-presents the pre-clear revision) are DONE,
-   committed and pushed. Gates: desktop ctest **18/18**, headless
-   **12/12**. Next is the M3 checkpoint demo — create, save and present
-   a short lyric service with clears independent and an unchanged
-   background surviving lyric changes — and the `M3` tag.
+   committed and pushed. The **M3 checkpoint demo** then ran the full
+   operator story — create a two-slide service in `DocumentController`,
+   save it, reload it in a fresh session, present each verse over a
+   background image, and exercise every clear independently plus a
+   single-step restore from black — capturing the worker's real output
+   over the preview stream. It caught a genuine bug: the 1.5e
+   event-driven loop slept the moment a crossfade began (one frame at
+   blend 0, then quiet — the audience never saw the new scene while
+   `output.status` reported it active). Fixed by re-arming
+   `fNeedsPresent` after each drawn frame while a fade runs, pinned by
+   the Qt-free `live_fade_tests`. Gates: desktop ctest **19/19**,
+   headless **12/12**. **M3 is complete.** Next milestone:
+   **M4 — the workspace and asset management** (import images/video,
+   the media library, rename/reorder/groups), starting at task 4.1.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

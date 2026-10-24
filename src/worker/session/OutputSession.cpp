@@ -898,6 +898,14 @@ void OutputSession::frame() {
 
     fPresentedRevision = presentedFor;
     fNeedsPresent = false;
+    // The crossfade animates frame by frame, but this loop only presents
+    // on a reason — and the M3 demo caught it sleeping the moment a fade
+    // began: one frame at blend 0 (still the old picture) and the audience
+    // never saw the new scene. While the blends run, the next frame is
+    // due; the swap's vsync paces the chase.
+    if (fScene && fScene->transitionRunning()) {
+        fNeedsPresent = true;
+    }
 
     {
         std::lock_guard<std::mutex> lock(fMutex);
