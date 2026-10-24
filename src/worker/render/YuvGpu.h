@@ -105,6 +105,7 @@ public:
         uint64_t wraps = 0;            // SkImages borrowed from slots
         uint64_t waitsForFreeSlot = 0; // producer waits on held slots
         uint64_t decodeImagesCreated = 0;
+        uint64_t cachedDecodeImages = 0;
         uint64_t directCopies = 0;
         double totalStageMs = 0.0;     // upload() memcpy only
         double totalGpuMs = 0.0;       // copy submit + fence per commit
@@ -120,7 +121,9 @@ private:
 
     bool createSlotResources(Slot& slot, std::string* error, bool optimalOnly = false);
     bool createImage(VkImageTiling, VkImageUsageFlags, VkMemoryPropertyFlags, int, int,
-                     VkImage*, VkDeviceMemory*, VkDeviceSize*, std::string*);
+                     VkImage*, VkDeviceMemory*, VkDeviceSize*, std::string*,
+                     VkMemoryPropertyFlags preferred = 0,
+                     VkMemoryPropertyFlags* selectedProperties = nullptr);
     bool waitForFree(Slot& slot);
     bool commitSlot(Slot& slot, uint64_t sequence, DecodeImage* source = nullptr);
 

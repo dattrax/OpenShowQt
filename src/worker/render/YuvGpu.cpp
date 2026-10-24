@@ -31,14 +31,18 @@ int64_t steadyNowNs() {
 }
 
 bool findMemoryType(VkPhysicalDevice physical, uint32_t typeBits, VkMemoryPropertyFlags wanted,
-                    uint32_t* out) {
+                    uint32_t* out, VkMemoryPropertyFlags preferred = 0,
+                    VkMemoryPropertyFlags* selectedProperties = nullptr) {
     VkPhysicalDeviceMemoryProperties props = {};
     vkGetPhysicalDeviceMemoryProperties(physical, &props);
-    for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
-        if ((typeBits & (1u << i)) &&
-            (props.memoryTypes[i].propertyFlags & wanted) == wanted) {
-            *out = i;
-            return true;
+    for (const auto required : {wanted | preferred, wanted}) {
+        for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+            const auto flags = props.memoryTypes[i].propertyFlags;
+            if ((typeBits & (1u << i)) && (flags & required) == required) {
+                *out = i;
+                if (selectedProperties) *selectedProperties = flags;
+                return true;
+            }
         }
     }
     return false;
@@ -223,7 +227,8 @@ bool GpuYuvUploader::create(VkDevice device, VkPhysicalDevice physicalDevice,
 
 bool GpuYuvUploader::createImage(VkImageTiling tiling, VkImageUsageFlags usage,
         VkMemoryPropertyFlags memoryProperties, int width, int height,
-        VkImage* image, VkDeviceMemory* memory, VkDeviceSize* size, std::string* error) {
+        VkImage* image, VkDeviceMemory* memory, VkDeviceSize* size, std::string* error,
+        VkMemoryPropertyFlags preferred, VkMemoryPropertyFlags* selectedProperties) {
     const uint32_t families[2] = {fGraphicsQueueIndex, fUploadQueueIndex};
     const uint32_t familyCount = fGraphicsQueueIndex == fUploadQueueIndex ? 1u : 2u;
     VkImageCreateInfo imageInfo = {};
@@ -251,7 +256,7 @@ bool GpuYuvUploader::createImage(VkImageTiling tiling, VkImageUsageFlags usage,
     vkGetImageMemoryRequirements(fDevice, *image, &requirements);
     uint32_t memoryType = 0;
     if (!findMemoryType(fPhysicalDevice, requirements.memoryTypeBits, memoryProperties,
-                        &memoryType)) {
+                        &memoryType, preferred, selectedProperties)) {
         *error = "no compatible Vulkan memory type";
         return false;
     }
@@ -423,9 +428,14 @@ std::shared_ptr<openshow::media::FrameStorage> GpuYuvUploader::allocateDecodeFra
     image->width = request.width;
     image->height = request.height;
     VkDeviceSize size = 0;
+    VkMemoryPropertyFlags memoryProperties = 0;
+    // Software codecs repeatedly read their reference pictures. Prefer CPU
+    // cached memory: an uncached/write-combined upload mapping is suitable
+    // for sequential staging writes but makes these reference reads stall.
     if (!createImage(VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     request.width, request.height, &image->image, &image->memory, &size, error))
+                     request.width, request.height, &image->image, &image->memory, &size, error,
+                     VK_MEMORY_PROPERTY_HOST_CACHED_BIT, &memoryProperties))
         return {};
     void* mapping = nullptr;
     if (vkMapMemory(fDevice, image->memory, 0, size, 0, &mapping) != VK_SUCCESS)
@@ -453,6 +463,7 @@ std::shared_ptr<openshow::media::FrameStorage> GpuYuvUploader::allocateDecodeFra
     }
     fDecodeImages.push_back(image);
     ++fStats.decodeImagesCreated;
+    if (memoryProperties & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ++fStats.cachedDecodeImages;
     return image;
 }
 

@@ -234,8 +234,11 @@ device supplies compatible plane layouts. Each published frame uses one
 per presentation slot by Skia with its Vulkan YCbCr sampler.
 
 Decoder references use a separate pool capped at 64 linear images, with four
-codec threads and four presentation slots. Allocations include decoder padding;
-only visible pixels are copied. Images remain alive until both FFmpeg and the
+codec threads and four presentation slots. Decoder images prefer CPU-cached,
+coherent host memory because software codecs repeatedly read reference pictures;
+uncached memory is used only when no compatible cached type exists. The copying
+compatibility path keeps its staging-memory policy. Allocations include decoder
+padding; only visible pixels are copied. Images remain alive until both FFmpeg and the
 copy fence release them. Host access uses `PREINITIALIZED`/`GENERAL` layouts;
 semaphores order copies and Skia sampling, including slot reuse.
 
@@ -252,8 +255,9 @@ plane copies/conversion. `--no-hw-decode` disables VA-API in that fallback;
 it does not change the direct software path. Resolution or pixel-format
 changes after playback starts are terminal errors. The benchmark reports
 `direct`, `downloads`, `CPU-copies`, `conversions`, `vkCmdCopyImage`, and
-`decoder-images` counts; the first three copying counters stay zero in direct
-mode. Preview capture and test readbacks are separate from video ingestion.
+`decoder-images` / `cached-decoder-images` counts. Direct mode keeps downloads,
+CPU copies, and conversions at zero; cached decoder images should match total
+decoder images on devices offering a compatible cached, coherent memory type. Preview capture and test readbacks are separate from video ingestion.
 
 `gpu_decode_tests` checks real H.264/HEVC decoding, B-frame order, cropping,
 reference lifetimes, looping, all three native plane layouts, pool exhaustion,

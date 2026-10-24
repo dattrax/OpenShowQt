@@ -692,13 +692,14 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
     }
 
     std::printf("  direct=%llu downloads=%llu CPU-copies=%llu conversions=%llu "
-                "vkCmdCopyImage=%llu decoder-images=%llu\n",
+                "vkCmdCopyImage=%llu decoder-images=%llu cached-decoder-images=%llu\n",
                 static_cast<unsigned long long>(decoded.directFrames),
                 static_cast<unsigned long long>(decoded.downloadedFrames),
                 static_cast<unsigned long long>(decoded.copiedFrames),
                 static_cast<unsigned long long>(decoded.convertedFrames),
                 static_cast<unsigned long long>(gpu.uploads),
-                static_cast<unsigned long long>(gpu.decodeImagesCreated));
+                static_cast<unsigned long long>(gpu.decodeImagesCreated),
+                static_cast<unsigned long long>(gpu.cachedDecodeImages));
     if (!decoded.fatalError.empty()) return 1;
     if (report.presents == 0) {
         std::fprintf(stderr, "openshow-worker: av-bench presented nothing\n");

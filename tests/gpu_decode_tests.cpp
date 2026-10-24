@@ -180,6 +180,43 @@ bool allocationTests(VulkanContext& vk, GrDirectContext* gr) {
         FrameAllocation request{format, 128, 128, {64, 64, 64, 0}};
         auto storage = gpu.allocateDecodeFrame(request, &error);
         if (!storage) return check(false, error.c_str());
+        // Query the actual image's compatible memory types independently of
+        // the uploader. Drivers can list uncached upload memory before cached
+        // memory; decoder reference pictures must prefer the latter.
+        VkImageCreateInfo probeInfo = {};
+        probeInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        probeInfo.imageType = VK_IMAGE_TYPE_2D;
+        probeInfo.format = format == FrameFormat::kYUV420P ? VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM
+            : format == FrameFormat::kNV12 ? VK_FORMAT_G8_B8R8_2PLANE_420_UNORM
+            : VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
+        probeInfo.extent = {128, 128, 1};
+        probeInfo.mipLevels = probeInfo.arrayLayers = 1;
+        probeInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        probeInfo.tiling = VK_IMAGE_TILING_LINEAR;
+        probeInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        probeInfo.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
+        const uint32_t families[] = {vk.queueIndex(), vk.uploadQueueIndex()};
+        if (families[0] != families[1]) {
+            probeInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+            probeInfo.queueFamilyIndexCount = 2;
+            probeInfo.pQueueFamilyIndices = families;
+        }
+        VkImage probe = VK_NULL_HANDLE;
+        if (!check(vkCreateImage(vk.device(), &probeInfo, nullptr, &probe) == VK_SUCCESS,
+                   "create native decoder memory compatibility probe")) return false;
+        VkMemoryRequirements requirements = {};
+        vkGetImageMemoryRequirements(vk.device(), probe, &requirements);
+        vkDestroyImage(vk.device(), probe, nullptr);
+        VkPhysicalDeviceMemoryProperties properties = {};
+        vkGetPhysicalDeviceMemoryProperties(vk.physicalDevice(), &properties);
+        const VkMemoryPropertyFlags cachedFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        bool cachedAvailable = false;
+        for (uint32_t type = 0; type < properties.memoryTypeCount; ++type)
+            cachedAvailable |= (requirements.memoryTypeBits & (1u << type)) &&
+                (properties.memoryTypes[type].propertyFlags & cachedFlags) == cachedFlags;
+        ok &= check(gpu.stats().cachedDecodeImages == (cachedAvailable ? 1u : 0u),
+                    "decoder reference images prefer compatible CPU-cached coherent memory");
         auto* original = storage.get();
         for (int iteration = 0; iteration < 3; ++iteration) {
             const int y = 64 + iteration*30, u = 96, v = 160;

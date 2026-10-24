@@ -942,6 +942,63 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   validation clean, sampler wrapped as kRGBA_1010102. Gates after:
   desktop **11/11**, headless **8/8**.
 
+## Direct decode memory regression (2026-10-24)
+
+The direct software path in local commit `6809786` passed correctness and
+synchronization checks but regressed deadline pacing on
+`media-fixtures/av-10s.mp4` (H.264, 1920x1080, 25 fps, B frames).
+
+The decoder allocator selected the first HOST_VISIBLE | HOST_COHERENT memory
+type, which is **uncached** on this RADV device: type 2, flags `0x6`. Software
+codecs repeatedly read their mapped reference pictures, unlike sequential
+staging writes, so this is a poor decoder allocation even though it is valid
+Vulkan memory. Cached/coherent type 5 (`0xe`) is compatible with the same
+linear images. Pool exhaustion was not the cause: eight decoder images were
+allocated out of the 64-image cap, and allocation never waits for a pool slot.
+
+The fix prefers HOST_CACHED in addition to the required HOST_VISIBLE and
+HOST_COHERENT flags **for decoder images only**. It falls back to the original
+required flags when cached memory is incompatible. Compatibility staging,
+queue depth, codec threads, copy fences, semaphores, and AVBufferRef lifetimes
+are unchanged. No CPU frame copy or extra GPU copy was introduced.
+`cached-decoder-images` now reports the allocation choice alongside
+`decoder-images`. The GPU test queries the image's compatible memory types
+independently and verifies cached coherent memory is preferred when available.
+
+Repeated six-second runs, without competing GPU tests:
+
+```sh
+./build/src/worker/openshow-worker --av-bench media-fixtures/av-10s.mp4 \
+  --seconds 6 --no-audio
+```
+
+| Allocation | Late frames per run (>25 ms) | Mean drift | Maximum drift |
+| --- | --- | --- | --- |
+| Original, initial three runs | 22, 14, 1 | +1.7 to +8.1 ms | 61.2 to 75.0 ms |
+| Cached, initial four runs | 0, 0, 0, 0 | +0.8 to +0.9 ms | 13.4 to 17.6 ms |
+| Original, interleaved A/B runs | 5, 3 | +1.8 to +2.5 ms | 65.1 to 70.5 ms |
+| Cached, interleaved A/B runs | 0, 0 | +0.7 to +0.8 ms | 14.9 to 17.7 ms |
+
+The saved original executable (`/tmp/openshow-worker-before-cache`) was used
+between corrected runs. The corrected benchmark reports all eight decoder
+images cached, with zero downloads, CPU frame copies, conversions, or decode
+errors. GPU copy/fence cost remains around 0.6–1.2 ms per commit.
+A 20-second looping run also had **0/501** late presentations, mean drift
++0.8 ms, maximum 13.6 ms, and two decoder loops. A six-second audio-clock run
+(`--allow-video-copy`, still direct) had **0/150** late presentations, mean
++0.9 ms, maximum 1.8 ms, and zero audio underruns. Both retained eight cached
+decoder images and zero downloads, CPU copies, conversions, or decode errors.
+
+Validation: desktop **12/12** on RADV and headless **9/9** on software Vulkan,
+with `OPENSHOW_VULKAN_VALIDATION=1 VK_LAYER_VALIDATE_SYNC=1`. The corrected RADV
+API capture (`/tmp/openshow-cached-decoder.gfxr`) confirms eight decoder
+allocations using memory type 5 (`0xe`), 24 frames / 24 three-plane image copies,
+zero buffer-to-image uploads and zero blits. Image-to-buffer copies in this
+capture are test-only pixel readbacks.
+
+This memory-selection fix follows `6809786`; no push was performed as part
+of this work.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
