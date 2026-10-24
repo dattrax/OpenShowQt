@@ -40,6 +40,13 @@ if(OPENSHOW_BUILD_UI)
   target_link_libraries(document_controller_tests PRIVATE openshow::ui-core)
   add_test(NAME document_controller_tests COMMAND document_controller_tests)
 
+  # Task 3.4's clear transforms and content flags, pinned headless: the
+  # derived scenes must survive the strict wire validator and remove
+  # exactly one layer each (Qt Core only, like the controller fixtures).
+  add_executable(scene_edit_tests scene_edit_tests.cpp)
+  target_link_libraries(scene_edit_tests PRIVATE openshow::ui-core)
+  add_test(NAME scene_edit_tests COMMAND scene_edit_tests)
+
   # Task 3.3's acceptance sentence, end to end: DocumentController creates
   # and types a song, and the compiled slides are prepared and presented
   # on a real openshow-worker, status confirming each revision on air.

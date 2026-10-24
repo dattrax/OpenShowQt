@@ -27,6 +27,26 @@ Window {
         }
     }
 
+    // Task 3.4: the reference's presenter keys. Escape clears all — and
+    // restores when the output is already clear, matching the button's
+    // Clear-all/Restore toggle. Disabled controls (nothing on air) simply
+    // do nothing.
+    Shortcut {
+        sequence: StandardKey.Cancel
+        enabled: worker.wordsOnAir || worker.backgroundOnAir || worker.canRestore
+        onActivated: worker.canRestore ? worker.restoreOutput() : worker.clearAll()
+    }
+    Shortcut {
+        sequence: "F1"
+        enabled: worker.backgroundOnAir
+        onActivated: worker.clearBackground()
+    }
+    Shortcut {
+        sequence: "F2"
+        enabled: worker.wordsOnAir
+        onActivated: worker.clearSlide()
+    }
+
     Column {
         id: operatorPanel
         anchors.left: parent.left
@@ -369,6 +389,45 @@ Window {
                 text: "follow"
                 checked: root.following
                 onToggled: root.following = checked
+            }
+        }
+
+        // Task 3.4: output controls. Enabled state and live flags come
+        // from the worker's acknowledged active scene, never from a click:
+        // each clear is disabled while its own layer is off air (the
+        // reference's "independent per-layer clearing made visible"), and
+        // Clear all becomes Restore output once the output is clear.
+        Row {
+            spacing: 8
+
+            Button {
+                text: "Clear slide"
+                enabled: worker.wordsOnAir
+                onClicked: worker.clearSlide()
+            }
+
+            Button {
+                text: "Clear background"
+                enabled: worker.backgroundOnAir
+                onClicked: worker.clearBackground()
+            }
+
+            Button {
+                text: worker.canRestore ? "Restore output" : "Clear all"
+                enabled: worker.wordsOnAir || worker.backgroundOnAir || worker.canRestore
+                onClicked: worker.canRestore ? worker.restoreOutput() : worker.clearAll()
+            }
+
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                color: "#9a9a9a"
+                font.pixelSize: 12
+                text: {
+                    const onAir = []
+                    if (worker.backgroundOnAir) onAir.push("background")
+                    if (worker.wordsOnAir) onAir.push("words")
+                    return onAir.length > 0 ? "on air: " + onAir.join(" + ") : "output clear"
+                }
             }
         }
 

@@ -35,6 +35,9 @@ namespace {
 
 constexpr int kConnectRetryMs = 100;
 constexpr int kStatusPollMs = 500;
+// Revisions of prepared-scene JSON kept as a mirror for the clear
+// controls (task 3.4). Bounded; the worker prunes its own store too.
+constexpr int kSceneMirrorSize = 32;
 
 }  // namespace
 
@@ -124,6 +127,7 @@ void WorkerController::onSocketDisconnected() {
     fConnected = false;
     fHandshakeDone = false;
     closePreviewSegment();
+    resetSceneTracking();
     emit stateChanged();
     if (!fShutdownRequested) {
         setStatus(QStringLiteral("worker connection lost"));
@@ -134,6 +138,7 @@ void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exit
     fConnected = false;
     fOutputStopped = true;
     closePreviewSegment();
+    resetSceneTracking();
     emit stateChanged();
     if (fShutdownRequested) {
         setStatus(QStringLiteral("worker stopped (exit %1)").arg(exitCode));
@@ -280,6 +285,24 @@ void WorkerController::handleReply(const boost::json::object& message) {
         // present; a bare prepareScene waits for the caller to choose.
         const qint64 prepared =
             static_cast<qint64>(payload.at("revision").to_number<std::uint64_t>());
+        // Mirror the payload against the revision it was prepared under
+        // (task 3.4: the clear controls derive from what is on air, and an
+        // acknowledged revision is the only claim on air we have). Serial
+        // operator flow: one pending JSON at a time.
+        if (!fPendingPrepareJson.isEmpty()) {
+            fSceneJson.insert(prepared, fPendingPrepareJson);
+            fPendingPrepareJson.clear();
+            if (fSceneJson.size() > kSceneMirrorSize) {
+                const qint64 cutoff = prepared - kSceneMirrorSize;
+                for (auto entry = fSceneJson.begin(); entry != fSceneJson.end();) {
+                    if (entry.key() <= cutoff) {
+                        entry = fSceneJson.erase(entry);
+                    } else {
+                        ++entry;
+                    }
+                }
+            }
+        }
         if (fAutoPresentScene) {
             fAutoPresentScene = false;
             presentScene(prepared);
@@ -306,6 +329,11 @@ void WorkerController::handleReply(const boost::json::object& message) {
                 static_cast<qint64>(scene.at("pending").to_number<std::uint64_t>());
             fScenePrepared =
                 static_cast<qint64>(scene.at("prepared").to_number<std::uint64_t>());
+            // The live indicators describe the acknowledged active revision
+            // only (task 3.4): words/background flags come from the JSON that
+            // revision was prepared with, so a clear or present lights the
+            // indicator when the output has it, not when it was requested.
+            fSceneContent = sceneContent(fSceneJson.value(fSceneActive));
             emit sceneChanged();
         }
         if (payload.contains("preview") && payload.at("preview").is_object()) {
@@ -360,6 +388,7 @@ void WorkerController::prepareScene(const QString& sceneJson) {
     }
     // The scene object itself is the params (the worker validates it).
     fAutoPresentScene = false;
+    notePrepare(parsed.as_object());
     sendRequest("scene.prepare", parsed.as_object());
 }
 
@@ -372,6 +401,13 @@ void WorkerController::presentScene(qint64 revision) {
 }
 
 void WorkerController::presentSceneJson(const QString& sceneJson) {
+    // New content is a fresh go: whatever a clear sequence kept for
+    // restore is history now (the operator moved on).
+    fRestoreRevision = 0;
+    presentSceneInternal(sceneJson);
+}
+
+void WorkerController::presentSceneInternal(const QString& sceneJson) {
     if (!fConnected || !fHandshakeDone) {
         return;
     }
@@ -385,7 +421,82 @@ void WorkerController::presentSceneJson(const QString& sceneJson) {
     // Same hand-off as presentDemoSlide: present on the prepare ack, so
     // the audience switch lands as soon as the store names the revision.
     fAutoPresentScene = true;
+    notePrepare(parsed.as_object());
     sendRequest("scene.prepare", parsed.as_object());
+}
+
+// --- output controls (task 3.4) ------------------------------------------
+//
+// Each clear presents a scene derived from the one on air — words gone,
+// background gone, or both — so the layer promises hold: clears are
+// independent, the untouched layer rides through unchanged (its pixels
+// are identical, only the cleared part moves), and the reference's fade
+// covers the change with no special path. The revision cleared from is
+// held for a single restore until new content replaces it.
+
+void WorkerController::clearSlide() {
+    const QString onAir = fSceneJson.value(fSceneActive);
+    if (onAir.isEmpty()) {
+        return;  // nothing on air with a known payload: nothing to clear
+    }
+    const QString cleared = withWordsCleared(onAir);
+    if (cleared.isEmpty()) {
+        return;
+    }
+    if (fRestoreRevision == 0) {
+        fRestoreRevision = fSceneActive;
+    }
+    presentSceneInternal(cleared);
+}
+
+void WorkerController::clearBackground() {
+    const QString onAir = fSceneJson.value(fSceneActive);
+    if (onAir.isEmpty()) {
+        return;
+    }
+    const QString cleared = withBackgroundCleared(onAir);
+    if (cleared.isEmpty()) {
+        return;
+    }
+    if (fRestoreRevision == 0) {
+        fRestoreRevision = fSceneActive;
+    }
+    presentSceneInternal(cleared);
+}
+
+void WorkerController::clearAll() {
+    if (fSceneActive == 0 || !fSceneJson.contains(fSceneActive)) {
+        return;
+    }
+    if (fRestoreRevision == 0) {
+        fRestoreRevision = fSceneActive;
+    }
+    presentSceneInternal(clearedSceneJson());
+}
+
+void WorkerController::restoreOutput() {
+    if (fRestoreRevision == 0) {
+        return;
+    }
+    // The stored revision is still the worker's to hand out: restore is a
+    // plain present of the pre-clear revision, so a pruned store answers
+    // with its own honest refusal and the indicators do not move.
+    const qint64 revision = fRestoreRevision;
+    fRestoreRevision = 0;
+    presentScene(revision);
+}
+
+void WorkerController::notePrepare(const boost::json::object& scene) {
+    fPendingPrepareJson = QString::fromStdString(boost::json::serialize(scene));
+}
+
+void WorkerController::resetSceneTracking() {
+    fSceneJson.clear();
+    fPendingPrepareJson.clear();
+    fSceneContent = SceneContent{};
+    fRestoreRevision = 0;
+    fAutoPresentScene = false;
+    emit sceneChanged();
 }
 
 void WorkerController::presentDemoSlide(qint64 index) {
@@ -405,6 +516,8 @@ void WorkerController::presentDemoSlide(qint64 index) {
     // Present on the prepare acknowledgement: the revision is the
     // worker's to hand out, and the store only names it once stored.
     fAutoPresentScene = true;
+    fRestoreRevision = 0;  // a fresh go retires any clear's restore point
+    notePrepare(jsonScene.as_object());
     sendRequest("scene.prepare", jsonScene.as_object());
 }
 

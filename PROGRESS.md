@@ -1420,6 +1420,68 @@ of this work.
   against a real worker (two slides + an undone present; clean shutdown).
 - Gates: desktop **17/17**, headless **12/12**.
 
+## Task 3.4 log (2026-10-24) — output controls and acknowledged live state: DONE
+
+- **Deliverable**: clear controls and live indicators that match the
+  output. The design keeps every promise of the presentation model: a
+  clear is not worker state but a **derived presentation** — the scene
+  JSON on air with one layer's content removed, compiled on the frontend
+  and put through the ordinary prepare → present → acknowledgement chain.
+  Revisions stay immutable, the worker's store remains the only claim on
+  air, the untouched layer rides through byte-identical (its pixels
+  cannot move), successive clears compose in either order, and *restore*
+  is just re-presenting the revision the clear sequence cut from — the
+  store still holds it, so no re-prepare, and if the worker has pruned
+  it, its refusal is the honest answer.
+- **`SceneEdit`** (new, in `openshow::ui-core`): `withWordsCleared`
+  (items → `[]`), `withBackgroundCleared` (`backgroundColor` → 0,
+  `background.image` → false, asset strings blanked — the reference's
+  plain black with nothing left behind), `clearedSceneJson` (the scene
+  library's cleared scene, serialized), and `sceneContent` answering the
+  indicator question — words if items are non-empty, background if the
+  fill is non-black or carries an image. Edits are minimal in-place JSON
+  transforms, so every other wire field (provenance, style, the other
+  layer) carries over verbatim and the strict validator still accepts
+  the result.
+- **Acknowledged live state** (`WorkerController`): the controller now
+  mirrors the JSON sent with every `scene.prepare` against the revision
+  the acknowledgement hands out (`fSceneJson`, pruned to a 32-revision
+  window keyed by revision, since QHash order is not insertion order);
+  `wordsOnAir`/`backgroundOnAir` recompute **only** when `output.status`
+  reports the active revision — the indicator lights when the audience
+  has it, not when the operator clicked. `clearSlide`/`clearBackground`/
+  `clearAll` require a known JSON for the on-air revision (the initial
+  revision 0 has none, so clears before the first present are no-ops);
+  the first clear of a sequence records the restore point, presenting
+  new content (`presentSceneJson`/`presentDemoSlide` through the shared
+  `presentSceneInternal` split) retires it, and `restoreOutput` consumes
+  it. The whole mirror resets on both worker-disconnect paths.
+- **Panel**: a clear row between navigation and history — Clear slide
+  enabled only while words are on air, Clear background only while a
+  background is, Clear all ↔ Restore output toggling exactly once the
+  output is acknowledged-clear (the reference's button behaviour), and
+  an "on air: background + words / output clear" summary line.
+  Esc / F1 / F2 follow the reference's presenter keys (Esc clears all —
+  and restores when already clear). Live check: fresh session shows all
+  three buttons disabled and "output clear" — honesty verified visually.
+  Fade note: clears are ordinary presents, so the media layer fades over
+  the 800 ms track and words over the 500 ms text track; the reference
+  fades clears over the media duration, the difference is a nuance of
+  track choice, not of clear semantics.
+- **Verification**: `scene_edit_tests` (Qt Core) pins the content flags
+  (both layers / colour-only / black / garbage) and the transforms
+  round-tripping through the strict `scene::fromJson`: words gone with
+  the whole background and provenance intact, background black + asset
+  strings blanked with every word intact, both orders compose, garbage
+  in yields nothing presentable. `document_present_tests` grew the live
+  dance: typed slide (words over black — background legitimately off
+  air), a style-coloured scene on air, clear-slide acknowledged leaving
+  the background, both directions independent, clear-all presented,
+  restore re-presenting the remembered revision and reporting itself on
+  air; the test's prepare/present/wait-for-active helpers were factored
+  out of the original one-call hand-off.
+- Gates: desktop **18/18**, headless **12/12**.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -1666,16 +1728,20 @@ logged here from what is observable off screen rather than claimed as seen.
    (cover-fitted image backgrounds with a path-keyed decode cache, the
    two-track fade — media 800ms/text 500ms — and cut, `scene.present`'s
    optional `"transition"` parameter, `--check-transition` and four new
-   pixel fixtures) and 3.3 (the `DocumentController` document session +
+   pixel fixtures), 3.3 (the `DocumentController` document session +
    lyric panel: create/edit songs and slides, debounced text with full
    undo, service save/load with the autosave startup rule, and the
    end-to-end proof that a newly created song presents on a live worker)
-   are DONE, committed and pushed. Gates: desktop ctest **17/17**,
-   headless **12/12**. Next is 3.4: clear controls and live indicators
-   that match the output (independent clears, acknowledged state), then
-   the M3 checkpoint demo — create, save and present a short lyric
-   service with clears independent and an unchanged background surviving
-   lyric changes — and the `M3` tag.
+   and 3.4 (independent clear controls as *derived presentations* with
+   acknowledged live state: `SceneEdit` transforms the on-air scene JSON
+   — words or background — and presents the result, `WorkerController`
+   mirrors each prepared revision's JSON and lights `wordsOnAir/
+   backgroundOnAir/canRestore` only from the status-confirmed active
+   revision, and restore re-presents the pre-clear revision) are DONE,
+   committed and pushed. Gates: desktop ctest **18/18**, headless
+   **12/12**. Next is the M3 checkpoint demo — create, save and present
+   a short lyric service with clears independent and an unchanged
+   background surviving lyric changes — and the `M3` tag.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

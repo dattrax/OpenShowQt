@@ -5,6 +5,8 @@ qt_policy(SET QTP0001 NEW)
 add_library(openshow-ui-core STATIC
   DocumentController.cpp
   DocumentController.h
+  SceneEdit.cpp
+  SceneEdit.h
 )
 add_library(openshow::ui-core ALIAS openshow-ui-core)
 set_target_properties(openshow-ui-core PROPERTIES AUTOMOC TRUE)

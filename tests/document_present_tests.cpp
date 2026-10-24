@@ -35,6 +35,7 @@
 #include "openshow/protocol/protocol.h"
 
 #include "DocumentController.h"
+#include "SceneEdit.h"
 
 namespace {
 
@@ -128,11 +129,10 @@ std::uint64_t numberValue(const boost::json::value& value) {
                              : static_cast<std::uint64_t>(value.as_int64());
 }
 
-// The panel's one-call hand-off: prepare the compiled JSON and present
-// the revision the worker acknowledges (WorkerController::
-// presentSceneJson does exactly this with fAutoPresentScene). Returns the
-// revision on presentation, 0 on failure.
-std::uint64_t presentJson(int fd, std::int64_t& nextId, const QString& sceneJson) {
+// scene.prepare: hand the compiled JSON to the worker and return the
+// revision it stores it under (0 when the prepare is refused — an
+// invalid scene, say, is refused here and never reaches the store).
+std::uint64_t prepareRevision(int fd, std::int64_t& nextId, const QString& sceneJson) {
     boost::system::error_code parseError;
     const boost::json::value parsed = boost::json::parse(sceneJson.toStdString(), parseError);
     if (parseError || !parsed.is_object()) {
@@ -143,14 +143,22 @@ std::uint64_t presentJson(int fd, std::int64_t& nextId, const QString& sceneJson
         !reply.as_object().contains("result")) {
         return 0;
     }
-    const std::uint64_t revision =
-        numberValue(reply.at("result").as_object().at("revision"));
+    return numberValue(reply.at("result").as_object().at("revision"));
+}
+
+// scene.present, then wait for output.status to report the revision
+// actually on air — "presented" means acknowledged, not requested.
+// Returns the revision once it is on air, 0 otherwise.
+std::uint64_t presentRevision(int fd, std::int64_t& nextId, std::uint64_t revision) {
+    if (revision == 0) {
+        return 0;
+    }
+    boost::json::value reply;
     if (!call(fd, nextId++, "scene.present",
               boost::json::object{{"revision", revision}}, &reply) ||
         !reply.as_object().contains("result")) {
         return 0;
     }
-    // Wait for output.status to report the revision actually on air.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
     while (std::chrono::steady_clock::now() < deadline) {
         boost::json::value statusReply;
@@ -165,6 +173,13 @@ std::uint64_t presentJson(int fd, std::int64_t& nextId, const QString& sceneJson
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     return 0;
+}
+
+// The panel's one-call hand-off (WorkerController::presentSceneJson with
+// fAutoPresentScene): prepare the JSON and present what the worker
+// acknowledges. Returns the revision on air, 0 on failure.
+std::uint64_t presentJson(int fd, std::int64_t& nextId, const QString& sceneJson) {
+    return presentRevision(fd, nextId, prepareRevision(fd, nextId, sceneJson));
 }
 
 }  // namespace
@@ -204,8 +219,8 @@ int main(int argc, char* argv[]) {
 
     const QString first = docs.currentSceneJson();
     check(!first.isEmpty(), "the new slide compiles to a scene");
-    check(presentJson(fd, nextId, first) != 0,
-          "the newly created slide is presented and reports itself on air");
+    const std::uint64_t revFirst = presentJson(fd, nextId, first);
+    check(revFirst != 0, "the newly created slide is presented and reports itself on air");
 
     // Navigation and the second slide: the same loop an operator runs.
     check(docs.addSlide(), "the second slide is added");
@@ -213,8 +228,50 @@ int main(int argc, char* argv[]) {
     docs.flushText();
     const QString second = docs.currentSceneJson();
     check(!second.isEmpty() && second != first, "the second slide compiles differently");
-    check(presentJson(fd, nextId, second) != 0,
-          "navigating onward presents the second slide");
+    const std::uint64_t revSecond = presentJson(fd, nextId, second);
+    check(revSecond != 0, "navigating onward presents the second slide");
+
+    // --- task 3.4: independent clears and restore, on the live worker ---
+    // A freshly typed slide is words over black — which is exactly why
+    // the background clear would sit disabled. A style's colour puts a
+    // background on air the way compileSlide produces one; from there
+    // each clear derives a scene from the JSON on air (what
+    // WorkerController's per-revision mirror holds) and presents it, so
+    // the untouched layer rides through unchanged.
+    auto withColor = [](const QString& sceneJson) {
+        boost::json::value parsed = boost::json::parse(sceneJson.toStdString());
+        parsed.as_object()["backgroundColor"] = 0x1a2b3cu;
+        return QString::fromStdString(boost::json::serialize(parsed));
+    };
+    check(openshow::ui::sceneContent(second).words &&
+              !openshow::ui::sceneContent(second).background,
+          "a typed slide is words over a black background");
+
+    const QString styled = withColor(second);
+    const std::uint64_t revStyled = presentJson(fd, nextId, styled);
+    check(revStyled != 0, "the styled slide (words + background) is on air");
+    check(openshow::ui::sceneContent(styled).words &&
+              openshow::ui::sceneContent(styled).background,
+          "the styled slide's content flags name both layers");
+
+    const QString wordsGone = openshow::ui::withWordsCleared(styled);
+    check(!wordsGone.isEmpty() && presentJson(fd, nextId, wordsGone) != 0,
+          "clear-slide derives a revision the worker acknowledges");
+    check(openshow::ui::sceneContent(wordsGone).background &&
+              !openshow::ui::sceneContent(wordsGone).words,
+          "clearing the slide leaves the background — clears are independent");
+
+    const QString backgroundGone = openshow::ui::withBackgroundCleared(styled);
+    check(openshow::ui::sceneContent(backgroundGone).words &&
+              !openshow::ui::sceneContent(backgroundGone).background,
+          "clearing the background leaves the words");
+
+    // Clear all, then the single-step restore: re-present the revision
+    // the clear sequence cut from — the store still holds it.
+    check(presentJson(fd, nextId, openshow::ui::clearedSceneJson()) != 0,
+          "clear-all presents the empty scene cleanly");
+    check(presentRevision(fd, nextId, revStyled) == revStyled,
+          "restore re-presents the remembered revision; it reports itself on air");
 
     // Undo rolls the typing back; the slide then compiles its pre-typing
     // state (an empty slide is an interlude, which still presents).

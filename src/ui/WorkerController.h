@@ -16,6 +16,7 @@
 
 #include <boost/json.hpp>
 
+#include <QHash>
 #include <QImage>
 #include <QLocalSocket>
 #include <QProcess>
@@ -27,6 +28,8 @@
 #include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
 #include "openshow/scene/demo.h"
+
+#include "SceneEdit.h"
 
 namespace openshow::ui {
 
@@ -57,6 +60,15 @@ class WorkerController : public QObject {
     Q_PROPERTY(qint64 scenePending READ scenePending NOTIFY sceneChanged)
     Q_PROPERTY(qint64 scenePrepared READ scenePrepared NOTIFY sceneChanged)
     Q_PROPERTY(qint64 demoSlideCount READ demoSlideCount CONSTANT)
+    // Output controls (task 3.4): the clear buttons follow acknowledged
+    // state. The flags describe the scene the worker reports active -
+    // derived from the JSON that revision was prepared with, never from a
+    // hopeful click - and canRestore holds the clear's snapshot until the
+    // restore itself is on air, so the button cannot lie about output it
+    // does not yet have.
+    Q_PROPERTY(bool wordsOnAir READ wordsOnAir NOTIFY sceneChanged)
+    Q_PROPERTY(bool backgroundOnAir READ backgroundOnAir NOTIFY sceneChanged)
+    Q_PROPERTY(bool canRestore READ canRestore NOTIFY sceneChanged)
 
 public:
     explicit WorkerController(QObject* parent = nullptr);
@@ -88,6 +100,15 @@ public:
     // one call; the revision, as ever, is the worker's to hand out).
     Q_INVOKABLE void presentSceneJson(const QString& sceneJson);
 
+    // Output controls (task 3.4). Each clear is a derived presentation:
+    // the scene on air with one layer's content removed (the reference's
+    // independent per-layer clears), remembered so a single restore can
+    // re-present it. They do nothing until a scene is on air.
+    Q_INVOKABLE void clearSlide();
+    Q_INVOKABLE void clearBackground();
+    Q_INVOKABLE void clearAll();
+    Q_INVOKABLE void restoreOutput();
+
     QString statusText() const { return fStatusText; }
     bool isConnected() const { return fConnected; }
     bool outputLive() const { return fConnected && !fOutputStopped; }
@@ -100,6 +121,10 @@ public:
     qint64 sceneActive() const { return fSceneActive; }
     qint64 scenePending() const { return fScenePending; }
     qint64 scenePrepared() const { return fScenePrepared; }
+    bool wordsOnAir() const { return fSceneContent.words; }
+    bool backgroundOnAir() const { return fSceneContent.background; }
+    bool canRestore() const { return fRestoreRevision != 0; }
+
     qint64 demoSlideCount() const;
 
     // The copied frame for PreviewView (UI thread only).
@@ -133,6 +158,13 @@ private:
     void openPreviewSegment(const std::string& name, std::uint64_t bytesPerSlot);
     void closePreviewSegment();
     void setStatus(const QString& text);
+    // The prepare/present chain the public calls share; unlike
+    // presentSceneJson it does not touch the restore slot, so the clear
+    // operations can stage a derived scene without forgetting what they
+    // cleared.
+    void presentSceneInternal(const QString& sceneJson);
+    void notePrepare(const boost::json::object& scene);
+    void resetSceneTracking();
 
     QProcess fProcess;
     QLocalSocket fSocket;
@@ -163,6 +195,16 @@ private:
     qint64 fScenePrepared = 0;
     bool fAutoPresentScene = false;
     openshow::domain::Documents fDemoDocuments = openshow::scene::demoDocuments();
+
+    // Output controls (task 3.4): the JSON each revision was prepared with,
+    // so a clear can derive from what is actually on air and the live
+    // indicators can describe it. The worker may prune its store; this mirror
+    // is kept to the same recent window and is only a mirror, never the
+    // source of truth for what output shows.
+    QHash<qint64, QString> fSceneJson;
+    QString fPendingPrepareJson;  // JSON of the prepare awaiting its revision
+    SceneContent fSceneContent;   // derived from fSceneJson[fSceneActive]
+    qint64 fRestoreRevision = 0;  // full revision the current clear sequence cut from
 
     // Preview consumer state (UI thread only): the read-only mapping of
     // the worker's shm segment and the frame last copied out of it.
