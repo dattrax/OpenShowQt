@@ -1214,6 +1214,12 @@ of this work.
     and reports applied". rpc_ipc_tests links `openshow::scene`; qmllint
     shows only the file's pre-existing unqualified-`worker` pattern.
     Gates: desktop **13/13**, headless **10/10**.
+  - **Live smoke run** (post-tag): launched the real UI + worker; the
+    operator clicked all four demo scene buttons and the store label
+    settled at "scene 4 · 4 prepared" with the status footer's
+    revision tracking each present — the full compile → prepare →
+    present → applied loop, verified by eye. See the compositor caveat
+    under Blockers for the fullscreen wrinkle found during the run.
 
 ## Verification and environment
 
@@ -1412,6 +1418,19 @@ logged here from what is observable off screen rather than claimed as seen.
 
 ## Blockers and remaining work
 
+- **Compositor caveat for fullscreen output (found demoing M2)**: this
+  machine's second display (DP-4) runs rotated at 1.5× fractional
+  scale, and Plasma 5's KWin mishandles xdg-fullscreen windows there —
+  it re-sent window configs repeatedly (each one forcing a swapchain
+  recreate, which the resize path absorbed correctly) and dropped the
+  fullscreen window to minimized when focus moved to the UI. Not an
+  app bug: `--render-test`/socket fullscreen is fine on an unrotated,
+  unscaled panel. For demos on this machine, windowed output via
+  `OPENSHOW_WORKER_EXTRA_ARGS="--monitor -1"` is well-behaved, and the
+  Destination dropdown (or the worker's own monitor pick) still goes
+  fullscreen elsewhere. Re-test fullscreen on the projector in M3
+  acceptance; revisit `--window-monitor` semantics if Plasma 6 changes
+  the behaviour.
 - No blockers. The earlier screen-lock and unplugged-DP-4 incident
   resolved itself when the user unlocked and reconnected; task 1.1 was
   accepted on the second display (see the task 1.1 log).
