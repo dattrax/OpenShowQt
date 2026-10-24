@@ -83,6 +83,10 @@ public:
     Q_INVOKABLE void prepareScene(const QString& sceneJson);
     Q_INVOKABLE void presentScene(qint64 revision);
     Q_INVOKABLE void presentDemoSlide(qint64 index);
+    // Prepare compiled scene JSON and present it the moment the worker
+    // acknowledges (task 3.3: the lyric panel presents real slides with
+    // one call; the revision, as ever, is the worker's to hand out).
+    Q_INVOKABLE void presentSceneJson(const QString& sceneJson);
 
     QString statusText() const { return fStatusText; }
     bool isConnected() const { return fConnected; }

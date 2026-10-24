@@ -19,6 +19,7 @@
 #include "openshow/domain/version.h"
 #include "openshow/protocol/protocol.h"
 
+#include "DocumentController.h"
 #include "WorkerController.h"
 
 namespace {
@@ -39,6 +40,10 @@ int main(int argc, char* argv[]) {
     openshow::ui::WorkerController worker;
     worker.start();
 
+    // Task 3.3: the editable documents. Constructed after the application
+    // object so QStandardPaths resolves; the lyric panel binds to it.
+    openshow::ui::DocumentController documents;
+
     QObject::connect(&app, &QGuiApplication::aboutToQuit,
                      [&worker] { worker.shutdownNow(); });
 
@@ -58,6 +63,7 @@ int main(int argc, char* argv[]) {
                                             QString::fromStdString(
                                                 openshow::protocol::offerPayload()));
     engine.rootContext()->setContextProperty("worker", &worker);
+    engine.rootContext()->setContextProperty("docs", &documents);
 
     engine.loadFromModule("OpenShow", "Main");
     if (engine.rootObjects().isEmpty()) {

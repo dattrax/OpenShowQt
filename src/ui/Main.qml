@@ -3,8 +3,8 @@ import QtQuick.Controls
 
 Window {
     id: root
-    width: 960
-    height: 760
+    width: 1380
+    height: 800
     visible: true
     color: "#141414"
     title: "OpenShowQt " + applicationVersion
@@ -15,9 +15,26 @@ Window {
         worker.shutdownNow()
     }
 
+    // Task 3.3: once a slide has been presented from the panel, navigating
+    // follows it onto the output — that is the operator's expectation
+    // mid-service. Any Present click (re)arms it.
+    property bool following: false
+
+    function presentCurrentSlide() {
+        const json = docs.currentSceneJson()
+        if (json !== "") {
+            worker.presentSceneJson(json)
+        }
+    }
+
     Column {
-        anchors.centerIn: parent
-        spacing: 18
+        id: operatorPanel
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.margins: 16
+        width: 500
+        spacing: 14
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
@@ -149,11 +166,247 @@ Window {
                 color: "#9a9a9a"
                 font.pixelSize: 12
                 text: worker.previewActive
-                    ? "preview · " + worker.previewFrames + " frames shown · "
+                    ? "preview \u00b7 " + worker.previewFrames + " frames shown \u00b7 "
                       + worker.previewDropped + " dropped"
                     : (worker.previewError !== ""
                        ? "preview: " + worker.previewError : "preview starting...")
             }
+        }
+    }
+
+    /* ------------------------------------------------------------------
+     * Task 3.3: the lyric panel. Everything here drives DocumentController
+     * ("docs"): songs, their slides, the current slide's text, navigation,
+     * undo/redo and service save/load. Presenting compiles the selected
+     * slide to a scene (compileSlide) and hands the JSON to the worker,
+     * which prepares it and presents on the acknowledgement.
+     * ------------------------------------------------------------------ */
+    Column {
+        id: lyricPanel
+        anchors.left: operatorPanel.right
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: 16
+        anchors.topMargin: 16
+        anchors.bottomMargin: 16
+        spacing: 8
+
+        Row {
+            spacing: 8
+
+            TextField {
+                id: songName
+                width: 220
+                placeholderText: "new song name"
+                placeholderTextColor: "#6a6a6a"
+                color: "#e8e8e8"
+                onAccepted: createSongButton.clicked()
+            }
+
+            Button {
+                id: createSongButton
+                text: "New song"
+                enabled: songName.text.trim().length > 0
+                onClicked: if (docs.createSong(songName.text)) songName.text = ""
+            }
+
+            Button {
+                text: "Remove song"
+                enabled: docs.currentSongId !== ""
+                onClicked: docs.removeCurrentSong()
+            }
+        }
+
+        Rectangle {
+            width: parent.width
+            height: 108
+            color: "#1c1c1c"
+            border.color: "#3a3a3a"
+
+            ListView {
+                id: songList
+                anchors.fill: parent
+                anchors.margins: 1
+                clip: true
+                model: docs.songs
+
+                delegate: ItemDelegate {
+                    required property var modelData
+                    width: songList.width
+                    height: 28
+                    text: modelData.name + "  \u00b7  " + modelData.slideCount + " slides"
+                    highlighted: modelData.id === docs.currentSongId
+                    onClicked: docs.selectSong(modelData.id)
+                }
+
+                Text {
+                    anchors.centerIn: parent
+                    visible: songList.count === 0
+                    color: "#6a6a6a"
+                    font.pixelSize: 13
+                    text: "no songs \u2014 create one above"
+                }
+            }
+        }
+
+        Row {
+            spacing: 8
+
+            Button {
+                text: "Add slide"
+                enabled: docs.currentSongId !== ""
+                onClicked: docs.addSlide()
+            }
+
+            Button {
+                text: "Remove slide"
+                enabled: docs.slides.length > 0
+                onClicked: docs.removeCurrentSlide()
+            }
+
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                color: "#9a9a9a"
+                font.pixelSize: 12
+                text: docs.slides.length > 0
+                    ? "slide " + (docs.currentSlide + 1) + " of " + docs.slides.length
+                    : "no slides"
+            }
+        }
+
+        Rectangle {
+            width: parent.width
+            height: 132
+            color: "#1c1c1c"
+            border.color: "#3a3a3a"
+
+            ListView {
+                id: slideList
+                anchors.fill: parent
+                anchors.margins: 1
+                clip: true
+                model: docs.slides
+
+                delegate: ItemDelegate {
+                    required property var modelData
+                    width: slideList.width
+                    height: 26
+                    text: (modelData.index + 1) + ".  " + modelData.preview
+                    highlighted: modelData.index === docs.currentSlide
+                    onClicked: {
+                        docs.selectSlide(modelData.index)
+                        if (root.following) {
+                            root.presentCurrentSlide()
+                        }
+                    }
+                }
+            }
+        }
+
+        // The editor writes into the debounced controller slot; the
+        // binding is re-established (not just assigned) when navigation,
+        // undo or a load changes the slide under the operator, so future
+        // changes keep flowing without breaking typing again.
+        TextArea {
+            id: lyricText
+            width: parent.width
+            height: 200
+            text: docs.currentSlideText
+            onTextChanged: docs.setSlideText(text)
+            selectByMouse: true
+            wrapMode: TextArea.Wrap
+            color: "#e8e8e8"
+            background: Rectangle {
+                color: "#101010"
+                border.color: "#3a3a3a"
+            }
+
+            Connections {
+                target: docs
+                function onSlideTextChanged() {
+                    lyricText.text = Qt.binding(function () { return docs.currentSlideText })
+                    lyricText.cursorPosition = 0
+                }
+            }
+        }
+
+        Row {
+            spacing: 8
+
+            Button {
+                text: "\u25c0 Prev"
+                enabled: docs.slides.length > 0
+                onClicked: {
+                    docs.stepSlide(-1)
+                    if (root.following) {
+                        root.presentCurrentSlide()
+                    }
+                }
+            }
+
+            Button {
+                text: "Next \u25b6"
+                enabled: docs.slides.length > 0
+                onClicked: {
+                    docs.stepSlide(1)
+                    if (root.following) {
+                        root.presentCurrentSlide()
+                    }
+                }
+            }
+
+            Button {
+                text: "Present"
+                enabled: docs.slides.length > 0 && worker.outputLive
+                onClicked: {
+                    root.following = true
+                    root.presentCurrentSlide()
+                }
+            }
+
+            CheckBox {
+                text: "follow"
+                checked: root.following
+                onToggled: root.following = checked
+            }
+        }
+
+        Row {
+            spacing: 8
+
+            Button {
+                text: "Undo"
+                enabled: docs.canUndo
+                onClicked: docs.undo()
+            }
+
+            Button {
+                text: "Redo"
+                enabled: docs.canRedo
+                onClicked: docs.redo()
+            }
+
+            Button {
+                text: "Save"
+                enabled: docs.dirty
+                onClicked: docs.save()
+            }
+
+            Button {
+                text: "Load"
+                onClicked: docs.load()
+            }
+        }
+
+        Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            color: docs.dirty ? "#d8c07a" : "#9a9a9a"
+            font.pixelSize: 12
+            text: (docs.dirty ? "\u25cf unsaved  \u00b7  " : "")
+                  + (docs.status !== "" ? docs.status + "  \u00b7  " : "")
+                  + docs.serviceDirectory
         }
     }
 }

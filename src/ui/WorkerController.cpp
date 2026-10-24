@@ -371,6 +371,23 @@ void WorkerController::presentScene(qint64 revision) {
                 boost::json::object{{"revision", static_cast<std::uint64_t>(revision)}});
 }
 
+void WorkerController::presentSceneJson(const QString& sceneJson) {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    boost::system::error_code parseError;
+    const boost::json::value parsed =
+        boost::json::parse(sceneJson.toStdString(), parseError);
+    if (parseError || !parsed.is_object()) {
+        setStatus(QStringLiteral("scene.present: the scene JSON is not readable"));
+        return;
+    }
+    // Same hand-off as presentDemoSlide: present on the prepare ack, so
+    // the audience switch lands as soon as the store names the revision.
+    fAutoPresentScene = true;
+    sendRequest("scene.prepare", parsed.as_object());
+}
+
 void WorkerController::presentDemoSlide(qint64 index) {
     if (!fConnected || !fHandshakeDone) {
         return;

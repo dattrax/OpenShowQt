@@ -1360,6 +1360,66 @@ of this work.
     rejects `"spin"` and `true`.
 - Gates: desktop **15/15**, headless **12/12**.
 
+## Task 3.3 log (2026-10-24) — minimal lyric entry and navigation: DONE
+
+- **Deliverable**: the PLAN sentence, literally — a newly created song can
+  be presented. `document_present_tests` performs it end to end: type a
+  song with two slides into the same controller QML binds, compile each
+  slide with the ordinary `compileSlide`, and prepare + present it on a
+  live `openshow-worker`, with `output.status` confirming the revision on
+  air (and again after an undo, whose rolled-back state presents cleanly).
+- **`DocumentController`** (new, `src/ui`, built as the static
+  `openshow::ui-core` library — Qt Core only, AUTOMOC, so the headless
+  fixtures drive the very class the panel binds): owns the session's
+  `Documents` with `History` (2.3) and `Autosave`, exposed to QML as the
+  `docs` context property. Properties: `songs`/`slides` (plain
+  QVariantMaps), `currentSongId`, `currentSlide`, `currentSlideText`,
+  `dirty`, `serviceDirectory`, `canUndo/canRedo`, `status`. Operations:
+  create/remove song, add/remove slide, `setSlideText`, `selectSong/
+  selectSlide/stepSlide` (clamped), `currentSceneJson()/
+  sceneJsonForSlide()`, `save/load`, `undo/redo`.
+- **Every mutation runs through `History::apply`** (a refused edit stays
+  invisible, per the 2.1 contract), so undo covers everything the panel
+  does. Text editing is **debounced 600ms**: keystrokes park a pending
+  value; one history entry (and one autosave candidate) lands when typing
+  pauses or before any other operation runs (`flushText` is the synchronous
+  edge, which is what the tests drive). A net-zero burst commits nothing.
+  Undo/redo re-anchor navigation when the restored state removed the
+  current song or slide — no dangling index.
+- **Persistence**: service at `AppDataLocation/service`, autosave at
+  `AppDataLocation/autosave` (constructor takes a scratch base for tests).
+  Startup follows the 2.3 rule (autosave wins over the saved service — it
+  is newer), then: an explicit save clears the autosave (nothing is
+  unsaved); a discard-on-load clears it too, so thrown-away edits cannot
+  resurrect at next startup. One trap found on the way: a virgin
+  `Autosave::tick` always writes (its fingerprint is in-memory), so the
+  constructor and save must **not** baseline-tick, or autosave would
+  shadow the service forever and every start would "recover" nothing.
+  A commit deliberately does not emit `slideTextChanged` — QML re-reads
+  the editor field only when navigation/undo/load changes it (the panel
+  re-establishes the binding with `Qt.binding`, not assignment).
+- **Presentation hand-off**: `WorkerController::presentSceneJson(json)` —
+  the `presentDemoSlide` machinery generalised: parse, prepare with
+  `fAutoPresentScene`, present the revision the worker acknowledges. The
+  panel's Present button + `following` mode (navigate follows onto the
+  output once presenting has started) is all the UI this task needs;
+  rename/reorder/groups stay M4.
+- **Panel** (`Main.qml`): operator column (status, layers, demo scenes,
+  preview — unchanged) plus a lyric panel: name field + New/Remove song,
+  song list, Add/Remove slide, slide list (click to select, present when
+  following), the text editor, ◀ Prev / Next ▶ / Present / follow,
+  Undo/Redo/Save/Load, and a status line showing dirty state and the
+  service directory. Verified live (window grabbed under
+  `QT_QPA_PLATFORM=xcb`): clean QML run, honest disabled states.
+- **Verification**: `document_controller_tests` (Qt Core, scratch dir):
+  editing refusals, debounced-commit semantics, compiled hand-off (the
+  scene JSON satisfies the strict `scene::fromJson` validator and names
+  the right slide with the typed lines), navigation clamps, commit-silence
+  on the editor signal, undo/redo re-anchoring, and the full save/load/
+  autosave startup matrix. `document_present_tests`: the acceptance act
+  against a real worker (two slides + an undone present; clean shutdown).
+- Gates: desktop **17/17**, headless **12/12**.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -1602,16 +1662,20 @@ logged here from what is observable off screen rather than claimed as seen.
    `scene.store.v1` capability.
    **M3 is under way**: 3.1 (production scene typography through
    `SceneTextEngine`, scene-aware background/words layers, the
-   shared_ptr hand-off from the session, and the pixel fixtures) and 3.2
+   shared_ptr hand-off from the session, and the pixel fixtures), 3.2
    (cover-fitted image backgrounds with a path-keyed decode cache, the
    two-track fade — media 800ms/text 500ms — and cut, `scene.present`'s
    optional `"transition"` parameter, `--check-transition` and four new
-   pixel fixtures) are DONE, committed and pushed. Gates: desktop ctest
-   **15/15**, headless **12/12**. Next is 3.3: minimal lyric entry and
-   navigation in QML — type or edit a song, navigate slides, and present
-   a newly created song through the ordinary compile/prepare/present
-   path — then 3.4 (independent clear controls with acknowledged live
-   state) and the M3 checkpoint demo.
+   pixel fixtures) and 3.3 (the `DocumentController` document session +
+   lyric panel: create/edit songs and slides, debounced text with full
+   undo, service save/load with the autosave startup rule, and the
+   end-to-end proof that a newly created song presents on a live worker)
+   are DONE, committed and pushed. Gates: desktop ctest **17/17**,
+   headless **12/12**. Next is 3.4: clear controls and live indicators
+   that match the output (independent clears, acknowledged state), then
+   the M3 checkpoint demo — create, save and present a short lyric
+   service with clears independent and an unchanged background surviving
+   lyric changes — and the `M3` tag.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

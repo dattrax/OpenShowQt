@@ -1,5 +1,20 @@
 qt_policy(SET QTP0001 NEW)
 
+# The document session (task 3.3) is Qt Core only, so the headless test
+# drives the very class the QML panel binds to — no display server needed.
+add_library(openshow-ui-core STATIC
+  DocumentController.cpp
+  DocumentController.h
+)
+add_library(openshow::ui-core ALIAS openshow-ui-core)
+set_target_properties(openshow-ui-core PROPERTIES AUTOMOC TRUE)
+target_include_directories(openshow-ui-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(openshow-ui-core PUBLIC
+  Qt6::Core
+  openshow::domain
+  openshow::scene
+)
+
 qt_add_executable(openshow-ui
   main.cpp
   WorkerController.cpp
@@ -26,6 +41,7 @@ target_link_libraries(openshow-ui PRIVATE
   Qt6::Gui
   Qt6::Quick
   Qt6::Network
+  openshow::ui-core
   openshow::domain
   openshow::protocol
   openshow::scene

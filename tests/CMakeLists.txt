@@ -31,6 +31,24 @@ if(OPENSHOW_BUILD_UI)
             -DCHECK=linked
             -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoQt.cmake
   )
+
+  # Task 3.3: DocumentController, the document session behind the lyric
+  # panel (editing, debounced text, navigation, compile hand-off, service
+  # save/load, autosave startup rule, undo). Qt Core only - no display -
+  # but Qt arrives with the UI switch, so this follows ui_links_qt.
+  add_executable(document_controller_tests document_controller_tests.cpp)
+  target_link_libraries(document_controller_tests PRIVATE openshow::ui-core)
+  add_test(NAME document_controller_tests COMMAND document_controller_tests)
+
+  # Task 3.3's acceptance sentence, end to end: DocumentController creates
+  # and types a song, and the compiled slides are prepared and presented
+  # on a real openshow-worker, status confirming each revision on air.
+  # Needs a display, like the rpc lifecycle scenario.
+  add_executable(document_present_tests document_present_tests.cpp)
+  target_link_libraries(document_present_tests PRIVATE openshow::ui-core openshow::protocol)
+  add_test(NAME document_present_tests
+    COMMAND document_present_tests $<TARGET_FILE:openshow-worker>)
+  set_tests_properties(document_present_tests PROPERTIES LABELS display TIMEOUT 90)
 endif()
 
 # Runs the Qt-free worker with no display and no audio session.
