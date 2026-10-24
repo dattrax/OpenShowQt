@@ -1210,13 +1210,15 @@ logged here from what is observable off screen rather than claimed as seen.
 
 ## Exact next action
 
-1. **M1 is complete**: tasks 1.1–1.5 (1.5a–1.5i, including the
-   user-inserted 1.5g validation-layer option and the 1.5h/1.5i
-   GPU-slot video path) are DONE, committed and pushed to
-   `dattrax/OpenShowQt` main; the task 1.5 log records the pipeline
-   architecture and every trap hit along the way. Gates as of 1.5i:
-   desktop ctest **11/11**, headless **8/8**, and both GPU test paths
-   pass under `OPENSHOW_VULKAN_VALIDATION=1`.
+1. **M1 is complete and tagged**: tasks 1.1–1.5 (1.5a–1.5j, including
+   the user-inserted 1.5g validation-layer option, the 1.5h/1.5i
+   GPU-slot video path and the 1.5j direct `get_buffer2` decode) are
+   DONE, committed and pushed to `dattrax/OpenShowQt` main; the
+   annotated tag **`M1`** marks `68062a6`. Gates as of 1.5j: desktop
+   ctest **12/12**, headless **9/9** (now incl. `gpu_decode_tests`),
+   both GPU test paths pass under `OPENSHOW_VULKAN_VALIDATION=1`, and
+   the direct path benches 0 missed with the cached decoder-allocation
+   fix (see the direct-decode memory regression log).
 2. Next session starts **M2 — 2.1 documents and application state**
    (shows, slides, groups, styles, playlists as domain operations with
    focused tests). The domain library (`src/domain`) is the place; the
