@@ -840,36 +840,40 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   zero-copy `drm_prime` import wrapped as
   `VK_FORMAT_G8_B8R8_2PLANE_420_UNORM`. Gates: desktop **11/11**,
   headless **8/8**.
-- **1.5i** in progress — the redesign became a **Vulkan frames ring**
-  after measuring the stack. RADV (Mesa 26.2.5) exposes Vulkan *video*
-  decode for **AV1 + VP9 only** (no h264/hevc extension exists on Mesa
-  yet — the CLI says "Failed setup for format vulkan" for h264), and
-  FFmpeg 9's `vulkan` hwaccel decoded bribary end-to-end from the CLI,
-  downloading NV12. `AVVkFrame` is a proper consumer contract: optimal
-  multi-planar `VkImage`s, **timeline semaphores** (`sem[]` +
-  `sem_value[]`, consumer waits at the value and signals value+1) and
-  tracked `layout[]`/`access[]`, so cross-queue consumption needs a
-  layout barrier, not an ownership transfer (images are CONCURRENT —
-  `queue_family[]` is IGNORED). Skia's side checked in the vendored
-  tree: `GrYUVABackendTextures` demands one texture **per plane**, so
-  the single-two-plane wrap must go through `BorrowTextureFrom` with
-  `GrVkImageInfo::fYcbcrConversionInfo` (`skgpu::VulkanYcbcrConversionInfo`
-  in this revision); `G8_B8R8_2PLANE_420_UNORM` registers color type
-  kRGB_888x and `G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16` — the
-  Vulkan name for the P010 memory layout (there is no
-  `VK_FORMAT_G10_B10R10_2PLANE_...` at all) — registers kRGBA_1010102.
-  Device plumbing landed with this commit: `samplerYcbcrConversion` is
-  required at device creation and mirrored to Skia through the
-  `features2` pNext chain (Skia drops every two-plane format without
-  the node), `VK_KHR_synchronization2` (a required dependency of
-  `VK_KHR_video_queue`, VUID-vkCreateDevice-ppEnabledExtensionNames-01387)
-  plus the video decode extensions are enabled as **desired**
-  extensions — vk-bootstrap enables the supported subset and still
-  accepts partially suitable devices, so llvmpipe is unaffected — and a
-  decode-bit queue family joins the device when those extensions make
-  it (the 890M logs "video decode on queue 2"; FFmpeg submits there).
-  Gates: desktop **11/11**, headless **8/8**; `--av-bench` clean under
-  validation.
+- **1.5i** in progress — device groundwork for the two-plane YUV path
+  landed first: the device is created with the core
+  `samplerYcbcrConversion` feature and mirrors it into Skia through the
+  `features2` pNext chain. That node is load-bearing — Skia reads 1.1
+  features only from the chain (the old empty `pNext` made it drop every
+  multi-planar format from its caps and never build a
+  `VkSamplerYcbcrConversion`). With it enabled, the vendored Skia
+  registers `G8_B8R8_2PLANE_420_UNORM` (color type kRGB_888x) and
+  `G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16` (kRGBA_1010102) — the
+  latter being the Vulkan name for the P010 memory layout (there is no
+  `VK_FORMAT_G10_B10R10_2PLANE_...` format at all; my earlier "not in
+  Skia" note had chased that phantom name).
+  The design (user-directed, `get_buffer2`): FFmpeg's normal decoder is
+  handed **host-visible LINEAR** two-plane Vulkan images as its output
+  buffers, then each slot is copied LINEAR→OPTIMAL (same two-plane
+  format, one `vkCmdCopyImage`) and the optimal image is wrapped for
+  Skia via `BorrowTextureFrom` + a ycbcr sampler (`GrYUVABackendTextures`
+  needs one texture **per plane**, so the single two-plane wrap must go
+  through `BorrowTextureFrom`, not the YUVA-texture path). Probed on the
+  890M: RADV binds host-visible+coherent memory to LINEAR two-plane NV12
+  and P010 and returns per-plane offsets/rowPitch (NV12 1920→rowPitch
+  2048 padded, P010 rowPitch 3840) — exactly the mapped-plane pointers +
+  `linesize` a `get_buffer2` AVFrame needs. Because the pixels reach the
+  image through a CPU pointer write (software decode, or
+  `av_hwframe_transfer_data`'s NV12/P010 write for the VA-API path), the
+  scheme needs **no** `VK_KHR_video_decode_*`: the GPU video codec never
+  writes the Vulkan image, and the slots are identical whether or not the
+  hardware decoder is active. (A first pass added `VK_KHR_video_queue`/
+  `video_decode_*` + a dedicated decode queue believing FFmpeg's vulkan
+  hwaccel would be the producer — that is a different, true-zero-copy
+  path this task does not use, so that plumbing is removed here; noted
+  for the record: RADV 26.2.5 exposes Vulkan video decode for **AV1 +
+  VP9 only**, no h264/hevc.) Gates: desktop **11/11**, headless **8/8**;
+  `--av-bench` clean under validation.
 
 ## Verification and environment
 

@@ -165,9 +165,6 @@ bool VulkanContext::create(GLFWwindow* window, bool validation) {
     if (hasDedicatedUploadQueue()) {
         std::fprintf(stderr, ", uploads on queue %u", fUploadQueueIndex);
     }
-    if (hasVideoDecodeQueue()) {
-        std::fprintf(stderr, ", video decode on queue %u", fDecodeQueueIndex);
-    }
     if (fValidation) {
         std::fprintf(stderr, ", validation on");
     }
@@ -186,9 +183,6 @@ bool VulkanContext::createHeadless(bool validation) {
     std::fprintf(stderr, "openshow-worker: Vulkan device \"%s\" (headless", fDeviceName.c_str());
     if (hasDedicatedUploadQueue()) {
         std::fprintf(stderr, ", uploads on queue %u", fUploadQueueIndex);
-    }
-    if (hasVideoDecodeQueue()) {
-        std::fprintf(stderr, ", video decode on queue %u", fDecodeQueueIndex);
     }
     if (fValidation) {
         std::fprintf(stderr, ", validation on");
@@ -215,17 +209,6 @@ bool VulkanContext::selectPhysicalDevice() {
     fFeatures11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     fFeatures11.samplerYcbcrConversion = VK_TRUE;
     selector.set_required_features_11(fFeatures11);
-    // The video decode extensions are desired, not required: vk-bootstrap
-    // enables the subset the selected device supports and still accepts a
-    // partially suitable device, so llvmpipe (no video codecs) keeps working
-    // while RADV gets what FFmpeg's vulkan hwaccel needs. VK_KHR_video_queue
-    // pulls in VK_KHR_synchronization2 as a required dependency, which the
-    // enable list must spell out (VUID-vkCreateDevice-ppEnabledExtensionNames-01387).
-    selector.add_desired_extension("VK_KHR_synchronization2");
-    selector.add_desired_extension("VK_KHR_video_queue");
-    selector.add_desired_extension("VK_KHR_video_decode_queue");
-    selector.add_desired_extension("VK_KHR_video_decode_av1");
-    selector.add_desired_extension("VK_KHR_video_decode_vp9");
 
     auto selected = selector.select();
     if (!selected) {
@@ -259,28 +242,6 @@ int VulkanContext::pickUploadFamily() const {
     return separateTransfer;
 }
 
-int VulkanContext::pickVideoDecodeFamily() const {
-    const std::vector<VkQueueFamilyProperties> families = fPhysical->physical->get_queue_families();
-    for (size_t family = 0; family < families.size(); ++family) {
-        if (families[family].queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) {
-            return static_cast<int>(family);
-        }
-    }
-    return -1;
-}
-
-bool VulkanContext::videoExtensionsEnabled() const {
-    // vk-bootstrap only enables desired extensions the device supports, so
-    // their presence in the enabled list means the decode family is usable.
-    const std::vector<std::string> extensions = fPhysical->physical->get_extensions();
-    for (const std::string& extension : extensions) {
-        if (extension == "VK_KHR_video_decode_queue") {
-            return true;
-        }
-    }
-    return false;
-}
-
 bool VulkanContext::createDevice() {
     // The graphics family is the first one with the graphics bit; the
     // selector guaranteed one exists.
@@ -293,17 +254,11 @@ bool VulkanContext::createDevice() {
         }
     }
     const int uploadFamily = pickUploadFamily();
-    // A decode-bit family only makes it into the device when the video
-    // extensions were enabled with it (task 1.5i).
-    const int decodeFamily = videoExtensionsEnabled() ? pickVideoDecodeFamily() : -1;
 
     std::vector<vkb::CustomQueueDescription> queues;
     queues.emplace_back(graphicsFamily, 1u, std::vector<float>{1.0f});
     if (uploadFamily >= 0) {
         queues.emplace_back(static_cast<uint32_t>(uploadFamily), 1u, std::vector<float>{1.0f});
-    }
-    if (decodeFamily >= 0) {
-        queues.emplace_back(static_cast<uint32_t>(decodeFamily), 1u, std::vector<float>{1.0f});
     }
 
     auto builtDevice =
@@ -322,10 +277,6 @@ bool VulkanContext::createDevice() {
     } else {
         fUploadQueue = fQueue;
         fUploadQueueIndex = graphicsFamily;
-    }
-    if (decodeFamily >= 0) {
-        vkGetDeviceQueue(fDevice, static_cast<uint32_t>(decodeFamily), 0, &fDecodeQueue);
-        fDecodeQueueIndex = static_cast<uint32_t>(decodeFamily);
     }
 
     VkPhysicalDeviceProperties properties = {};
@@ -408,7 +359,6 @@ void VulkanContext::destroy() {
     }
     fQueue = VK_NULL_HANDLE;
     fUploadQueue = VK_NULL_HANDLE;
-    fDecodeQueue = VK_NULL_HANDLE;
     fPhysical.reset();
     if (fSurface != VK_NULL_HANDLE && fInstance != VK_NULL_HANDLE) {
         vkDestroySurfaceKHR(fInstance, fSurface, nullptr);
