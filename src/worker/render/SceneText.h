@@ -84,33 +84,38 @@ public:
     }
     const sk_sp<SkUnicode>& unicode() const { return fUnicode; }
 
-    // One item laid out: wrapped at maxWidth, centred, explicit line height.
+    // One item laid out: wrapped at its authored box width, centred,
+    // explicit line height. The box fields are the item's authored text
+    // box (task 4.3) — the region drawLayout centres the paragraph in.
     struct LaidOutItem {
         std::unique_ptr<skia::textlayout::Paragraph> paragraph;
         float fontSize = 0.0f;   // authored px actually used (after fit scale)
         float height = 0.0f;     // measured paragraph height
         int lineCount = 0;       // wrapped line count
         bool hasText = false;    // false: no lines at all, draws nothing
+        float boxX = 0.0f;
+        float boxY = 0.0f;
+        float boxWidth = 0.0f;
+        float boxHeight = 0.0f;
     };
 
     // scale multiplies the item's size before layout (the fit pass).
     LaidOutItem layout(const openshow::scene::TextItem& item, float scale,
                        float maxWidth) const;
 
-    // A whole scene's text: every item at scale, then re-laid out under a
-    // smaller scale until the block (heights plus the inter-item gap) fits
-    // maxHeight — the shrinkToFit rule. Items keep their relative sizes.
+    // A whole scene's text: each item laid out inside its own box and
+    // shrunk (FreeShow's per-item shrinkToFit) until it fits that box's
+    // height, floor at kSceneMinFontSize. Every scene item carries its
+    // authored box since 4.3, so items no longer stack into one block.
     struct SceneLayout {
         std::vector<LaidOutItem> items;
-        float blockHeight = 0.0f;  // heights + gaps, no margins
-        float gap = 0.0f;          // authored px between items
-        float scale = 1.0f;        // the fit scale that was applied
     };
     SceneLayout layoutScene(const openshow::scene::Scene& scene) const;
 
-    // Draws a laid-out scene's text centred in the authored canvas (which
-    // the caller's canvas transform must already implement). The optional
-    // paint's alpha dissolves the whole block for the fade transition.
+    // Draws a laid-out scene's text (which the caller's canvas transform
+    // must map from authored units): each paragraph centred in its item's
+    // box. The optional paint's alpha dissolves the whole block for the
+    // fade transition.
     void drawLayout(SkCanvas* canvas, const SceneLayout& layout,
                     const SkPaint* paint = nullptr) const;
 

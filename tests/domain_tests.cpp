@@ -7,6 +7,7 @@
  */
 
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -116,6 +117,38 @@ void exerciseSlides() {
               docs.findShow(show)->slides.size() == 3,
           "removeSlide drops exactly that slide");
     check(!docs.removeSlide(show, inserted, &error), "removing a slide twice fails");
+}
+
+void exerciseGeometry() {
+    Documents docs;
+    std::string error;
+    const Id show = docs.createShow("Deck", &error);
+    const Id slide = docs.appendSlide(show, &error);
+
+    // A fresh slide carries the authored lyric box: the canvas minus the
+    // margins, so untouched slides keep drawing exactly as pre-4.3 did.
+    const auto& fresh = docs.findShow(show)->slides[0];
+    check(fresh.x == 160.0 && fresh.y == 100.0 && fresh.width == 1600.0 &&
+              fresh.height == 880.0,
+          "a new slide starts on the default lyric box");
+
+    check(docs.setSlideGeometry(show, slide, 300.5, 200.0, 1200.0, 500.0, &error) &&
+              docs.findShow(show)->slides[0].x == 300.5 &&
+              docs.findShow(show)->slides[0].y == 200.0 &&
+              docs.findShow(show)->slides[0].width == 1200.0 &&
+              docs.findShow(show)->slides[0].height == 500.0,
+          "setSlideGeometry moves and resizes the box");
+    check(!docs.setSlideGeometry(show, slide, std::nan(""), 0.0, 100.0, 100.0, &error),
+          "a NaN box edge is refused");
+    check(!docs.setSlideGeometry(show, slide, 0.0, 0.0, 0.0, 100.0, &error) &&
+              !docs.setSlideGeometry(show, slide, 0.0, 0.0, 100.0, -5.0, &error),
+          "a non-positive width or height is refused");
+    check(!docs.setSlideGeometry(show, "slide999", 0.0, 0.0, 100.0, 100.0, &error),
+          "geometry on an unknown slide fails");
+    // Every refusal above left the accepted box untouched.
+    check(docs.findShow(show)->slides[0].x == 300.5 &&
+              docs.findShow(show)->slides[0].height == 500.0,
+          "a refused geometry edit leaves the box as it was");
 }
 
 void exerciseGroups() {
@@ -479,6 +512,52 @@ void exercisePersistence(const fs::path& tempRoot) {
               "PNGBYTES-not-really-a-jpeg",
           "the asset survives second-hand packaging");
 
+    // --- text box (task 4.3): authored geometry round-trips; a service
+    // written before boxes existed loads with the default box; a box that
+    // cannot be placed is refused naming its slide ---
+    {
+        Documents boxes;
+        const Id boxShow = boxes.createShow("Boxed", &error);
+        const Id boxSlide = boxes.appendSlide(boxShow, &error);
+        check(boxes.setSlideGeometry(boxShow, boxSlide, 240.25, 180.0, 1400.0, 720.0, &error),
+              "setSlideGeometry accepts an authored box");
+        const fs::path boxed = tempRoot / "boxed";
+        Documents back;
+        check(openshow::domain::saveService(boxes, boxed, &error) &&
+                  openshow::domain::loadService(&back, boxed, &error) &&
+                  back.findShow(boxShow)->slides[0].x == 240.25 &&
+                  back.findShow(boxShow)->slides[0].y == 180.0 &&
+                  back.findShow(boxShow)->slides[0].width == 1400.0 &&
+                  back.findShow(boxShow)->slides[0].height == 720.0,
+              "a text box round-trips through the manifest");
+
+        // A legacy manifest: the same shape without the four box fields.
+        const fs::path legacy = tempRoot / "legacy";
+        std::filesystem::create_directories(legacy);
+        writeFile(legacy / "service.json",
+                  R"({"format":1,"nextOrdinal":9,"shows":[{"id":"show1","name":"Legacy",)"
+                  R"("slides":[{"id":"slide1","lines":["Ancient line"]}]}],)"
+                  R"("styles":[],"assets":[],"playlists":[]})");
+        Documents oldBack;
+        check(openshow::domain::loadService(&oldBack, legacy, &error) &&
+                  oldBack.findShow("show1")->slides[0].x == 160.0 &&
+                  oldBack.findShow("show1")->slides[0].y == 100.0 &&
+                  oldBack.findShow("show1")->slides[0].width == 1600.0 &&
+                  oldBack.findShow("show1")->slides[0].height == 880.0,
+              "a manifest without geometry loads with the default box");
+
+        const fs::path warped = tempRoot / "warped";
+        std::filesystem::create_directories(warped);
+        writeFile(warped / "service.json",
+                  R"({"format":1,"nextOrdinal":9,"shows":[{"id":"show1","name":"Warped",)"
+                  R"("slides":[{"id":"slide1","lines":["x"],"x":0,"y":0,"width":0,)"
+                  R"("height":100}]}],"styles":[],"assets":[],"playlists":[]})");
+        Documents squashed;
+        check(!openshow::domain::loadService(&squashed, warped, &error) &&
+                  error.find("slide1") != std::string::npos,
+              "a slide whose box cannot be placed is refused on load");
+    }
+
     // --- id continuity: the reloaded store must not recycle ---
     const Id freshShow = reloaded.createShow("Later", &error);
     bool freshIsNew = !freshShow.empty();
@@ -747,6 +826,7 @@ int main() {
 
     exerciseShows();
     exerciseSlides();
+    exerciseGeometry();
     exerciseGroups();
     exerciseStyles();
     exercisePlaylists();

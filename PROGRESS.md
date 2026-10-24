@@ -1645,6 +1645,92 @@ of this work.
   logic is all in the C++ fixtures.
 - Gates: desktop **21/21**, headless **12/12**.
 
+## Task 4.3 log (2026-10-24) — object selection, move and resize: DONE
+
+- **Deliverable**: every slide carries an authored text box in the
+  1920x1080 space, and the operator can select it, drag it, resize it,
+  nudge it and type exact numbers — each edit one undo step, and the
+  renderer honours the box per item.
+- **Domain**: `Slide` gains `x/y/width/height` whose defaults
+  (160/100/1600/880 — the canvas minus the lyric margins, centred exactly
+  where M2/M3 centred the canvas block) make an untouched slide draw
+  pixel-identically to pre-4.3; `setSlideGeometry` refuses non-finite
+  edges and non-positive sizes, leaving the accepted box untouched.
+  Storage always writes the four numbers; the loader's
+  `wantOptionalNumber` lets pre-box ("legacy") manifests read with the
+  defaults, and a loaded box that cannot be placed is refused naming its
+  slide.
+- **Scene library**: `TextItem` carries the box, `compileSlide` copies the
+  slide's verbatim, and the wire format *requires* `x/y/width/height`
+  (strict `wantBoxEdge`/`wantBoxSize`). `scene_tests` pins the domain
+  defaults against the scene constants (`kCanvasWidth`, `kDefaultBox*` —
+  one promise written twice), the box's centring, and that a wire item
+  missing its box or holding a zero-width one refuses.
+- **Renderer** (`SceneText`): `layoutScene` lays out every item inside
+  its own box — wrapped at the box width, per-item shrinkToFit with the
+  4-pass convergence floored at `kSceneMinFontSize` — and `drawLayout`
+  centres each paragraph in its box, vertically as well as horizontally.
+  The shared block (accumulated heights, shared gap, shared scale) is
+  gone; `SceneLayout` is just the laid-out items. The fade `saveLayer`
+  bounds are the union of occupied boxes outset 8px — accumulated by
+  hand, because `SkRect::Inverted()` does not exist in this Skia fork.
+  Fixtures: the fit test now asserts per-item shrinking (size below the
+  authored 260, paragraph within the box height, a calm stanza keeping
+  exactly 72), and the new per-box test pins two boxes drawing as two
+  separated bands whose ink centroids land at their own box centres
+  (250/830 authored, at scale), with boxes travelling through layout and
+  fitting items keeping their own sizes.
+- **Controller**: `slides()` rows carry `x/y/width/height` (QML binds the
+  current box as `docs.slides[docs.currentSlide]` — re-evaluating on
+  `documentsChanged` *and* `navigationChanged`), and
+  `setSlideGeometry(x, y, w, h)` applies to the current slide through
+  `edit()`: one call is one history entry, so a drag commits once on
+  release. The fixture pins the row's default box, an accepted edit, one
+  undo reverting the whole box, redo, a refused degenerate box (status
+  naming "text box", box untouched) and refusal with no current slide.
+- **UI**: `Main.page` ("show"/"edit") drives the centre; the TopBar page
+  buttons are live for those two (stage/draw/settings stay dimmed), and
+  window **Ctrl+1..5** switch pages. The Ctrl+1/2 pair cedes to the
+  drawer's tab shortcuts exactly while the keyboard is inside the drawer:
+  `libraryDrawer.containsFocus` gates both owners, because two enabled
+  shortcuts on one key cancel each other out in Qt — and
+  `Qt.ShortcutItemContext` turned out not to exist in this Qt build, its
+  assignment silently falling back to window scope (journald is where
+  `openshow-ui`'s QML errors surface). New **`EditCanvas.qml`**: a 16:9
+  stage (zoom = width/1920), a text representation wrapped and shrunk to
+  the box (`Text.Fit`), the selection outline plus four corner handles;
+  dragging inside moves (clamped to the canvas), a corner resizes around
+  the opposite corner (≥20 authored px), and either commits whole
+  authored pixels on release; clicking empty canvas deselects; **arrows
+  nudge 1px / Ctrl+arrows 10px** (the reference's EditTools rule) when a
+  selection is live and nobody is typing; the first **Escape** drops the
+  selection, the second reaches the output clear-all (again gated as a
+  mutually exclusive pair). Below the canvas an **X/Y/W/H** row is the
+  deterministic path: the field that loses focus commits all four, and a
+  value that does not parse or that the domain refuses snaps the fields
+  back.
+- **Deviations noted**: the X/Y/W/H fields sit under the canvas on the
+  edit page rather than in the right dock, which 4.1 fixed as
+  preview + output tools — edit controls belong beside their target; the
+  canvas shows a representation (fixed 96px base through `Text.Fit`),
+  not the style-resolved render — style fidelity on the edit page is
+  4.4's job; drags clamp the box into the canvas while the numeric fields
+  allow authored off-canvas positions; arriving on the edit page selects
+  the slide's single item (deselect via empty-canvas click or Escape).
+- **Verification**: the fixtures above; live, 1680x1020 captures show the
+  edit page drawing slide one's authored 480/240/960/480 box offset on
+  the stage with handles and its text centred inside it, and the X/Y/W/H
+  fields reading exactly those numbers — an earlier round exposed that
+  nothing synced at startup (the document loads before any QML exists, so
+  no signal fires; fixed in `Component.onCompleted`), and the shipped
+  binary's journal shows no QML errors from the new code. A two-slide
+  sample service ("Capture Hymn", the first slide at the authored
+  480/240/960/480 box) now lives in `~/.local/share/openshow-ui/service`
+  for the hand-testing session. Drags, nudges and field edits stay
+  hand-tested (no XTEST); their semantics are pinned by the controller
+  fixture.
+- Gates: desktop **21/21**, headless **12/12**.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -1922,8 +2008,12 @@ logged here from what is observable off screen rather than claimed as seen.
    and Media live, the 300/40 height with the reference's snap and
    per-session reopen, the Ctrl+F search with the normalised word-start/
    tier contract and Enter-to-insert placement — plus playlist chips,
-   drag/▲▼ reorder handles and the media registry). Next is 4.3: object
-   selection, move and resize with undo.
+   drag/▲▼ reorder handles and the media registry).
+   **4.3 is DONE** (authored per-slide text boxes end to end — domain
+   fields with the pixel-identical default, storage that reads legacy
+   manifests, a per-box renderer with per-item shrinkToFit, the edit page
+   with drag/resize/nudge/X-Y-W-H and one-undo-per-gesture, and the page
+   key scheme). Next is 4.4: typography, layering, reusable styles.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

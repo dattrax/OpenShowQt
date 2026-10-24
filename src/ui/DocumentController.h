@@ -107,6 +107,10 @@ public:
     // Queues new text for the current slide; one history entry lands when
     // typing pauses or the next operation runs.
     Q_INVOKABLE void setSlideText(const QString& text);
+    // Resizes/moves the current slide's authored text box (task 4.3), in
+    // 1920x1080 canvas units. One history entry per call, so a drag commits
+    // once on release. Fails (with status) on a bad box or no current slide.
+    Q_INVOKABLE bool setSlideGeometry(double x, double y, double width, double height);
 
     // --- navigation ---
 

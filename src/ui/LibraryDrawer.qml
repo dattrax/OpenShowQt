@@ -31,6 +31,10 @@ Rectangle {
     property bool searchActive: false
     property string selectedAssetId: ""
 
+    // True while any part of the drawer holds the keyboard — Main's
+    // Ctrl+1/2 page keys step aside exactly while it does.
+    readonly property bool containsFocus: drawer.activeFocusItem !== null
+
     function openTab(id) {
         tab = id
         if (!open) {
@@ -41,6 +45,22 @@ Rectangle {
     function focusSearch() {
         searchActive = true
         Qt.callLater(() => searchField.forceActiveFocus())
+    }
+
+    // Ctrl+1/2 belong to the pages from the window (Main, task 4.3);
+    // from inside the drawer — where the search caret is — they still
+    // pick the Shows and Media tabs. The two owners gate on this flag,
+    // so exactly one of each pair is ever live (Qt treats two enabled
+    // shortcuts with the same key as ambiguous and drops both).
+    Shortcut {
+        sequence: "Ctrl+1"
+        enabled: drawer.containsFocus
+        onActivated: drawer.openTab("shows")
+    }
+    Shortcut {
+        sequence: "Ctrl+2"
+        enabled: drawer.containsFocus
+        onActivated: drawer.openTab("media")
     }
 
     // Enter with a query: the reference's placement — land the first

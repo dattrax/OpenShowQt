@@ -32,6 +32,17 @@ Window {
         worker.shutdownNow()
     }
 
+    // The workspace page under the top bar (4.3): "show" is the running
+    // order and lyric editor, "edit" the text-box canvas. The remaining
+    // reference pages arrive later and their buttons stay disabled.
+    property string page: "show"
+
+    // True while a text field holds the focus — the plain-arrow nudges
+    // must not steal keystrokes from someone typing.
+    readonly property bool typingIntoField: activeFocusItem !== null
+        && (activeFocusItem instanceof TextField || activeFocusItem instanceof TextArea
+            || activeFocusItem instanceof TextInput)
+
     // Task 3.3: once a slide has been presented from the panel, navigating
     // follows it onto the output — that is the operator's expectation
     // mid-service. Any Present click (re)arms it.
@@ -47,11 +58,19 @@ Window {
     // Task 3.4: the reference's presenter keys. Escape clears all — and
     // restores when the output is already clear, matching the button's
     // Clear-all/Restore toggle. Disabled controls (nothing on air) simply
-    // do nothing.
+    // do nothing. On the edit page the first Escape steps out of the
+    // selection first (4.3); the two owners gate on editCanvas.selected,
+    // so the key never lands on both at once.
     Shortcut {
         sequence: StandardKey.Cancel
-        enabled: worker.wordsOnAir || worker.backgroundOnAir || worker.canRestore
+        enabled: (worker.wordsOnAir || worker.backgroundOnAir || worker.canRestore)
+                 && !(page === "edit" && editCanvas.selected)
         onActivated: worker.canRestore ? worker.restoreOutput() : worker.clearAll()
+    }
+    Shortcut {
+        sequence: "Escape"
+        enabled: page === "edit" && editCanvas.selected
+        onActivated: editCanvas.selected = false
     }
     Shortcut {
         sequence: "F1"
@@ -65,8 +84,10 @@ Window {
     }
 
     // Task 4.2: the drawer keys the reference carries (Ctrl+D toggles the
-    // library strip, Ctrl+F opens its search, Ctrl+1..2 pick the tabs with
-    // content; 3..8 stay with the disabled tabs).
+    // library strip, Ctrl+F opens its search). Ctrl+1..2 inside the drawer
+    // still pick its tabs — see LibraryDrawer — but from the window they
+    // now pick pages, like the reference's Ctrl+1..5 (4.3); 3..5 belong to
+    // pages that do not exist yet and do nothing.
     Shortcut {
         sequence: "Ctrl+D"
         onActivated: panels.toggleDrawer()
@@ -75,17 +96,90 @@ Window {
         sequence: "Ctrl+F"
         onActivated: libraryDrawer.focusSearch()
     }
+    // The window's Ctrl+1..5 pick pages like the reference; 3..5 belong to
+    // pages that do not exist yet, so those stay switched off. While the
+    // keyboard is inside the drawer, Ctrl+1/2 stay with its tabs instead.
     Shortcut {
         sequence: "Ctrl+1"
-        onActivated: libraryDrawer.openTab("shows")
+        enabled: !libraryDrawer.containsFocus
+        onActivated: root.page = "show"
     }
     Shortcut {
         sequence: "Ctrl+2"
-        onActivated: libraryDrawer.openTab("media")
+        enabled: !libraryDrawer.containsFocus
+        onActivated: root.page = "edit"
+    }
+    Shortcut {
+        sequence: "Ctrl+3"
+        enabled: false  // stage page arrives later
+    }
+    Shortcut {
+        sequence: "Ctrl+4"
+        enabled: false  // draw page arrives later
+    }
+    Shortcut {
+        sequence: "Ctrl+5"
+        enabled: false  // settings page arrives with 4.5
+    }
+
+    // Task 4.3: the reference's nudge rule (EditTools.svelte:314-326) —
+    // arrows walk the selected text box 1px, Ctrl+arrows 10px. Every step
+    // is one undo entry, so it only runs on the edit page with a box
+    // selected and nobody typing.
+    function nudgeBox(dx, dy) {
+        if (docs.currentSlide < 0 || docs.slides.length === 0) {
+            return
+        }
+        const row = docs.slides[docs.currentSlide]
+        docs.setSlideGeometry(row.x + dx, row.y + dy, row.width, row.height)
+    }
+    readonly property bool nudging: page === "edit" && editCanvas.selected
+                                    && !typingIntoField && docs.slides.length > 0
+    Shortcut {
+        sequence: "Left"
+        enabled: root.nudging
+        onActivated: root.nudgeBox(-1, 0)
+    }
+    Shortcut {
+        sequence: "Right"
+        enabled: root.nudging
+        onActivated: root.nudgeBox(1, 0)
+    }
+    Shortcut {
+        sequence: "Up"
+        enabled: root.nudging
+        onActivated: root.nudgeBox(0, -1)
+    }
+    Shortcut {
+        sequence: "Down"
+        enabled: root.nudging
+        onActivated: root.nudgeBox(0, 1)
+    }
+    Shortcut {
+        sequence: "Ctrl+Left"
+        enabled: root.nudging
+        onActivated: root.nudgeBox(-10, 0)
+    }
+    Shortcut {
+        sequence: "Ctrl+Right"
+        enabled: root.nudging
+        onActivated: root.nudgeBox(10, 0)
+    }
+    Shortcut {
+        sequence: "Ctrl+Up"
+        enabled: root.nudging
+        onActivated: root.nudgeBox(0, -10)
+    }
+    Shortcut {
+        sequence: "Ctrl+Down"
+        enabled: root.nudging
+        onActivated: root.nudgeBox(0, 10)
     }
 
     TopBar {
         id: topBar
+        page: root.page
+        onPageSelected: name => root.page = name
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -580,12 +674,15 @@ Window {
     }
 
     /* ------------------------------------------------------------------
-     * Center — the Show page analogue: the current song's slide list and
-     * the lyric editor. Everything here drives DocumentController
-     * ("docs"); presenting compiles the selected slide and hands the JSON
-     * to the worker, which presents on the acknowledgement.
+     * Center — two pages (4.3) on the reference's show/edit split. The
+     * show page: the current song's slide list and the lyric editor.
+     * Everything here drives DocumentController ("docs"); presenting
+     * compiles the selected slide and hands the JSON to the worker,
+     * which presents on the acknowledgement.
      * ------------------------------------------------------------------ */
     Item {
+        id: showPage
+        visible: root.page === "show"
         anchors.left: leftDock.right
         anchors.right: rightDock.left
         anchors.top: topBar.bottom
@@ -768,6 +865,160 @@ Window {
                     lyricText.text = Qt.binding(function () { return docs.currentSlideText })
                     lyricText.cursorPosition = 0
                 }
+            }
+        }
+    }
+
+    /* ------------------------------------------------------------------
+     * The edit page (task 4.3): the current slide's text box on a 16:9
+     * stage — drag to move, corners to resize, arrows to nudge — with
+     * exact X/Y/W/H fields under it as the deterministic path. One undo
+     * entry per drag, per nudge, and per field commit.
+     * ------------------------------------------------------------------ */
+    Item {
+        id: editPage
+        visible: root.page === "edit"
+        anchors.left: leftDock.right
+        anchors.right: rightDock.left
+        anchors.top: topBar.bottom
+        anchors.bottom: libraryDrawer.top
+        anchors.margins: 12
+
+        EditCanvas {
+            id: editCanvas
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: boxFields.top
+            anchors.bottomMargin: 12
+        }
+
+        Row {
+            id: boxFields
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            spacing: 8
+
+            // The fields show the live box; the one that loses focus
+            // commits all four. A value the domain refuses (or that is
+            // not a number at all) snaps every field back.
+            function commit() {
+                const x = parseFloat(fieldX.text)
+                const y = parseFloat(fieldY.text)
+                const w = parseFloat(fieldW.text)
+                const h = parseFloat(fieldH.text)
+                if (!Number.isFinite(x) || !Number.isFinite(y)
+                        || !(w >= 1) || !(h >= 1)
+                        || !docs.setSlideGeometry(x, y, w, h)) {
+                    boxFields.sync()
+                }
+            }
+            function sync() {
+                fieldX.text = Qt.binding(function () { return editCanvas.boxX.toFixed(0) })
+                fieldY.text = Qt.binding(function () { return editCanvas.boxY.toFixed(0) })
+                fieldW.text = Qt.binding(function () { return editCanvas.boxW.toFixed(0) })
+                fieldH.text = Qt.binding(function () { return editCanvas.boxH.toFixed(0) })
+            }
+            Component.onCompleted: sync()
+            Connections {
+                target: docs
+                function onDocumentsChanged() { boxFields.sync() }
+                function onNavigationChanged() { boxFields.sync() }
+            }
+            Connections {
+                target: editPage
+                function onVisibleChanged() { if (editPage.visible) boxFields.sync() }
+            }
+
+            Column {
+                spacing: 2
+                Text {
+                    color: "#8f93a5"
+                    font.pixelSize: 10
+                    text: "X"
+                }
+                TextField {
+                    id: fieldX
+                    objectName: "geometryField"
+                    width: 72
+                    color: "#f0f0ff"
+                    font.pixelSize: 13
+                    onEditingFinished: boxFields.commit()
+                    background: Rectangle {
+                        color: "#12121c"
+                        border.color: "#2f3542"
+                    }
+                }
+            }
+
+            Column {
+                spacing: 2
+                Text {
+                    color: "#8f93a5"
+                    font.pixelSize: 10
+                    text: "Y"
+                }
+                TextField {
+                    id: fieldY
+                    objectName: "geometryField"
+                    width: 72
+                    color: "#f0f0ff"
+                    font.pixelSize: 13
+                    onEditingFinished: boxFields.commit()
+                    background: Rectangle {
+                        color: "#12121c"
+                        border.color: "#2f3542"
+                    }
+                }
+            }
+
+            Column {
+                spacing: 2
+                Text {
+                    color: "#8f93a5"
+                    font.pixelSize: 10
+                    text: "W"
+                }
+                TextField {
+                    id: fieldW
+                    objectName: "geometryField"
+                    width: 72
+                    color: "#f0f0ff"
+                    font.pixelSize: 13
+                    onEditingFinished: boxFields.commit()
+                    background: Rectangle {
+                        color: "#12121c"
+                        border.color: "#2f3542"
+                    }
+                }
+            }
+
+            Column {
+                spacing: 2
+                Text {
+                    color: "#8f93a5"
+                    font.pixelSize: 10
+                    text: "H"
+                }
+                TextField {
+                    id: fieldH
+                    objectName: "geometryField"
+                    width: 72
+                    color: "#f0f0ff"
+                    font.pixelSize: 13
+                    onEditingFinished: boxFields.commit()
+                    background: Rectangle {
+                        color: "#12121c"
+                        border.color: "#2f3542"
+                    }
+                }
+            }
+
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                color: "#6a6f80"
+                font.pixelSize: 11
+                text: "drag the box · corners resize · arrows nudge 1px, Ctrl 10px"
             }
         }
     }

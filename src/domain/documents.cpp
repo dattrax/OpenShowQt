@@ -215,6 +215,34 @@ bool Documents::setSlideNotes(const Id& showId, const Id& slideId, const std::st
     return true;
 }
 
+bool Documents::setSlideGeometry(const Id& showId, const Id& slideId, double x, double y,
+                                 double width, double height, std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    const int index = findSlideIndex(*show, slideId);
+    if (index < 0) {
+        fail(error, idError("slide", slideId));
+        return false;
+    }
+    // A box only paints if the math survives it: NaN/inf cannot be
+    // placed, and a non-positive width or height leaves nothing to draw.
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(width) ||
+        !std::isfinite(height) || width <= 0.0 || height <= 0.0) {
+        fail(error, "slide '" + slideId +
+                        "' needs a finite text box with positive width and height");
+        return false;
+    }
+    Slide& slide = show->slides[static_cast<size_t>(index)];
+    slide.x = x;
+    slide.y = y;
+    slide.width = width;
+    slide.height = height;
+    return true;
+}
+
 // --- groups ----------------------------------------------------------------
 
 bool Documents::setSlideGroup(const Id& showId, const Id& slideId, const std::string& group,

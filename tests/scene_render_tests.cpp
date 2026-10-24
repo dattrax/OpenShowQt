@@ -321,17 +321,20 @@ void testFitShrinksOversizedStanzas() {
         return;
     }
     const auto layout = engine.layoutScene(subject);
-    check(layout.scale < 1.0f, "oversized stanza applies a shrink (scale " +
-                                   std::to_string(layout.scale) + ")");
-    check(layout.blockHeight <= worker::kSceneCanvasHeight - 2 * worker::kSceneMarginY + 1.0f,
-          "fitted block height fits the vertical margins (" +
-              std::to_string(layout.blockHeight) + ")");
+    // Per-item shrinkToFit (task 4.3): the item shrank below its authored
+    // 260 px and the resulting paragraph fits the box height.
+    check(layout.items.size() == 1 && layout.items[0].fontSize < 260.0f,
+          "oversized stanza shrinks to fit its own box");
+    check(layout.items.empty() ||
+              layout.items[0].height <= layout.items[0].boxHeight + 1.0f,
+          "fitted paragraph fits its box height");
     check(!layout.items.empty() && layout.items[0].lineCount == 12,
           "each authored line survived the fit as one layout line");
 
-    // A stanza that already fits keeps scale 1 (no gratuitous shrinking).
+    // A stanza that already fits keeps its authored size (no gratuitous shrinking).
     const auto calm = engine.layoutScene(singleItemScene({"FINE LINE ONE", "FINE LINE TWO"}, 72.0));
-    check(calm.scale == 1.0f, "fits-with-room stanza is not shrunk");
+    check(!calm.items.empty() && calm.items[0].fontSize == 72.0f,
+          "fits-with-room stanza is not shrunk");
 
     // And the snapshot shows the whole shrunk block inside the content area.
     Frame frame;
@@ -392,38 +395,68 @@ void testFallbackAndShaping() {
     check(measureInk(frame).count > 400, "non-Latin script falls back to drawn glyphs");
 }
 
-void testMultiItemStacking() {
-    scene::Scene subject = singleItemScene({"FIRST BLOCK"}, 100.0);
+void testPerBoxPlacement() {
+    // Task 4.3: every item is centred inside its own authored box instead
+    // of stacking into one shared block — upper box in the top third, lower
+    // box in the bottom third of the authored 1920x1080 canvas.
+    scene::Scene subject = singleItemScene({"UPPER BOX"}, 100.0);
+    subject.items[0].x = 160.0;
+    subject.items[0].y = 100.0;
+    subject.items[0].width = 1600.0;
+    subject.items[0].height = 300.0;
     scene::TextItem second;
-    second.lines = {"second block of words"};
+    second.lines = {"lower box words"};
     second.fontSize = 60.0;
     second.color = 0xFFE0A0u;
+    second.x = 160.0;
+    second.y = 680.0;
+    second.width = 1600.0;
+    second.height = 300.0;
     subject.items.push_back(std::move(second));
 
     Frame frame;
     std::string error;
-    if (!renderFixture(subject, "stack", &frame, &error)) {
-        check(false, "stack fixture rendered: " + error);
+    if (!renderFixture(subject, "per-box", &frame, &error)) {
+        check(false, "two-box fixture rendered: " + error);
         return;
     }
-    const Ink ink = measureInk(frame);
-    check(inkBands(frame) >= 2, "two items draw as separate stacked bands");
-    check(std::abs(ink.centerY - kHeight / 2.0) <= 12.0,
-          "stacked block stays vertically centred (" + std::to_string(ink.centerY) + ")");
+    check(inkBands(frame) >= 2, "two boxes draw as two separated bands");
 
-    // Engine view: heights accumulate with a gap, sizes keep their ratio.
+    // Engine view: the boxes travel with their items, and two items that
+    // each fit their own box keep their authored sizes (no shared shrink).
     worker::SceneTextEngine engine;
     if (!engine.create(&error)) {
-        check(false, "engine created for stack assertions: " + error);
+        check(false, "engine created for box assertions: " + error);
         return;
     }
     const auto layout = engine.layoutScene(subject);
     check(layout.items.size() == 2, "layout visits both items");
-    check(layout.gap > 0.0f, "items are separated by a gap");
     if (layout.items.size() == 2) {
-        check(layout.items[0].fontSize > layout.items[1].fontSize,
-              "relative item sizes survive stacking");
+        check(layout.items[0].boxY == 100.0f && layout.items[1].boxY == 680.0f,
+              "authored boxes travel with their items");
+        check(layout.items[0].fontSize == 100.0f && layout.items[1].fontSize == 60.0f,
+              "items that fit their boxes keep their own sizes");
     }
+
+    // Vertical centring per box: rendered alone, each item's ink centroid
+    // lands at its own box centre (250 and 830 authored px, at kScale).
+    scene::Scene upperOnly = subject;
+    upperOnly.items.pop_back();
+    scene::Scene lowerOnly = subject;
+    lowerOnly.items.erase(lowerOnly.items.begin());
+    Frame upper;
+    Frame lower;
+    if (!renderFixture(upperOnly, "box-upper", &upper, &error) ||
+        !renderFixture(lowerOnly, "box-lower", &lower, &error)) {
+        check(false, "single-box fixture rendered: " + error);
+        return;
+    }
+    const double upperCenter = measureInk(upper).centerY;
+    const double lowerCenter = measureInk(lower).centerY;
+    check(std::abs(upperCenter - 250.0 * kScale) <= 12.0,
+          "upper item centres in its own box (" + std::to_string(upperCenter) + ")");
+    check(std::abs(lowerCenter - 830.0 * kScale) <= 12.0,
+          "lower item centres in its own box (" + std::to_string(lowerCenter) + ")");
 }
 
 void testWireSceneRendersIdentically() {
@@ -746,7 +779,7 @@ int main() {
     testWrapping();
     testFitShrinksOversizedStanzas();
     testFallbackAndShaping();
-    testMultiItemStacking();
+    testPerBoxPlacement();
     testWireSceneRendersIdentically();
     testDemoSlidesRender();
     testImageBackgroundCover();

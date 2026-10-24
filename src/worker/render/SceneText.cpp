@@ -386,70 +386,78 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Text
 SceneTextEngine::SceneLayout SceneTextEngine::layoutScene(
     const openshow::scene::Scene& scene) const {
     SceneLayout out;
-    if (scene.items.empty()) {
-        return out;
-    }
-
-    const float maxWidth = kSceneCanvasWidth - 2.0f * kSceneMarginX;
-    const float maxHeight = kSceneCanvasHeight - 2.0f * kSceneMarginY;
-
-    // The fit pass scales every item by one factor so relative sizes survive.
-    float maxBase = 0.0f;
+    out.items.reserve(scene.items.size());
     for (const auto& item : scene.items) {
-        maxBase = std::max(maxBase, effectiveSize(item, 1.0f));
-    }
-    const float gapBase = 0.4f * maxBase;
-    const float minScale = maxBase > 0.0f ? kSceneMinFontSize / maxBase : 1.0f;
+        // The authored box. A hand-built item with a degenerate box is
+        // clamped to one pixel rather than allowed to loop the fit pass.
+        const float boxX = static_cast<float>(item.x);
+        const float boxY = static_cast<float>(item.y);
+        const float boxWidth = std::max(static_cast<float>(item.width), 1.0f);
+        const float boxHeight = std::max(static_cast<float>(item.height), 1.0f);
 
-    float scale = 1.0f;
-    // Wrapping changes with the scale, so height is not linear in it: lay
-    // out, shrink, re-lay out; three iterations converge long before this
-    // cap in practice, and the last accepted layout is always returned.
-    for (int pass = 0; pass < 4; ++pass) {
-        out.items.clear();
-        out.blockHeight = 0.0f;
-        out.scale = scale;
-        out.gap = gapBase * scale;
-        for (const auto& item : scene.items) {
-            LaidOutItem laid = layout(item, scale, maxWidth);
-            out.blockHeight += laid.height;
-            out.items.push_back(std::move(laid));
+        // Per-item shrinkToFit (FreeShow's textFit): wrapping changes with
+        // the scale, so height is not linear in it — lay out, shrink,
+        // re-lay out. Three shrinks converge long before the cap; the
+        // floor keeps even an impossible box readable (kSceneMinFontSize).
+        const float base = effectiveSize(item, 1.0f);
+        const float minScale = base > 0.0f ? kSceneMinFontSize / base : 1.0f;
+        float scale = 1.0f;
+        for (int pass = 0;; ++pass) {
+            LaidOutItem laid = layout(item, scale, boxWidth);
+            laid.boxX = boxX;
+            laid.boxY = boxY;
+            laid.boxWidth = boxWidth;
+            laid.boxHeight = boxHeight;
+            const bool fits = !laid.hasText || laid.height <= boxHeight;
+            const float next =
+                fits || pass >= 3 ? scale : std::max(scale * boxHeight / laid.height, minScale);
+            const bool keep = next >= scale;  // done, or the floor stopped the shrink
+            scale = next;
+            if (keep) {
+                out.items.push_back(std::move(laid));
+                break;
+            }
         }
-        if (out.items.size() > 1) {
-            out.blockHeight += out.gap * static_cast<float>(out.items.size() - 1);
-        }
-        if (out.blockHeight <= maxHeight || out.blockHeight <= 0.0f) {
-            break;
-        }
-        const float next = std::max(scale * maxHeight / out.blockHeight, minScale);
-        if (next >= scale) {
-            break;  // at the floor already; shrink no further
-        }
-        scale = next;
     }
     return out;
 }
 
 void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
                                  const SkPaint* paint) const {
-    const float top = (kSceneCanvasHeight - layout.blockHeight) * 0.5f;
-    // Paragraph::paint in this fork takes no paint, so the fade's group
-    // alpha wraps the block in a saveLayer — Skia's own "transparency
-    // straight into the paint". The layer is word-bounds only and exists
-    // only while a fade is in flight; steady frames never take it.
+    // The fade's group alpha wraps every occupied box — Skia's
+    // "transparency straight into the paint" for a fork whose
+    // Paragraph::paint takes no paint. Steady frames never take the layer.
     const bool group = paint != nullptr && paint->getAlpha() < 255;
     if (group) {
-        canvas->saveLayer(SkRect::MakeLTRB(kSceneMarginX - 8.0f, top - 8.0f,
-                                           kSceneCanvasWidth - kSceneMarginX + 8.0f,
-                                           top + layout.blockHeight + 8.0f),
-                          paint);
+        SkRect bounds = SkRect::MakeEmpty();
+        bool any = false;
+        for (const auto& item : layout.items) {
+            if (!item.paragraph || !item.hasText) {
+                continue;
+            }
+            const SkRect box = SkRect::MakeLTRB(item.boxX, item.boxY,
+                                                item.boxX + item.boxWidth,
+                                                item.boxY + item.boxHeight);
+            if (any) {
+                bounds.join(box);
+            } else {
+                bounds = box;
+                any = true;
+            }
+        }
+        if (!any) {
+            return;
+        }
+        bounds.outset(8.0f, 8.0f);
+        canvas->saveLayer(bounds, paint);
     }
-    float y = top;
     for (const auto& item : layout.items) {
         if (item.paragraph && item.hasText) {
-            item.paragraph->paint(canvas, kSceneMarginX, y);
+            // Centred: the paragraph aligns its lines inside boxWidth, and
+            // the block sits at the box's vertical middle.
+            const float y = item.boxY + std::max(0.0f, (item.boxHeight - item.height) * 0.5f);
+            item.paragraph->paint(canvas, item.boxX, y);
         }
-        y += item.height + layout.gap;
     }
     if (group) {
         canvas->restore();

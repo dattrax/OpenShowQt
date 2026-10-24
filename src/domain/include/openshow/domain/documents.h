@@ -49,6 +49,15 @@ struct Slide {
     Id styleId;
     // Background image asset; empty means no background.
     Id backgroundAssetId;
+    // The authored text box in the 1920x1080 canvas space
+    // (docs/reference.md §7). Defaults to the canvas minus the lyric
+    // margins — the region M2/M3 laid text inside, so untouched slides
+    // render exactly as before — and the renderer centres the text in
+    // the box (task 4.3).
+    double x = 160.0;
+    double y = 100.0;
+    double width = 1600.0;
+    double height = 880.0;
 };
 
 struct Show {
@@ -130,6 +139,11 @@ public:
                        const std::vector<std::string>& lines, std::string* error = nullptr);
     bool setSlideNotes(const Id& showId, const Id& slideId, const std::string& notes,
                        std::string* error = nullptr);
+    // The slide's authored text box in the 1920x1080 canvas space
+    // (task 4.3): every value finite, width and height positive. The
+    // renderer wraps at the width and centres the text in the box.
+    bool setSlideGeometry(const Id& showId, const Id& slideId, double x, double y,
+                          double width, double height, std::string* error = nullptr);
 
     // --- groups ---
 

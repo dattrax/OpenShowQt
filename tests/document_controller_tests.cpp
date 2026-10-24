@@ -217,6 +217,52 @@ void exerciseUndoRedo(const std::filesystem::path& root) {
           "redo brings the song and its first slide back, navigation re-anchors");
 }
 
+// --- authored text boxes (task 4.3) ------------------------------------------
+
+void exerciseGeometryEdits(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong(QStringLiteral("Framed"));
+    docs.addSlide();
+
+    // The slides rows carry the box so the edit page can bind to it.
+    QVariantMap first = docs.slides().at(0).toMap();
+    check(first.value(QStringLiteral("x")).toDouble() == 160.0 &&
+              first.value(QStringLiteral("y")).toDouble() == 100.0 &&
+              first.value(QStringLiteral("width")).toDouble() == 1600.0 &&
+              first.value(QStringLiteral("height")).toDouble() == 880.0,
+          "a slide row carries the default text box");
+
+    check(docs.setSlideGeometry(240.0, 120.0, 1400.0, 800.0),
+          "the controller accepts a box for the current slide");
+    first = docs.slides().at(0).toMap();
+    check(first.value(QStringLiteral("x")).toDouble() == 240.0 &&
+              first.value(QStringLiteral("width")).toDouble() == 1400.0,
+          "the edited box reaches the slides view");
+
+    // One call is one history entry (a drag commits once, on release).
+    docs.undo();
+    first = docs.slides().at(0).toMap();
+    check(first.value(QStringLiteral("x")).toDouble() == 160.0 &&
+              first.value(QStringLiteral("height")).toDouble() == 880.0,
+          "one undo reverts a whole drag to the box it started from");
+    docs.redo();
+    first = docs.slides().at(0).toMap();
+    check(first.value(QStringLiteral("x")).toDouble() == 240.0,
+          "redo restores the committed box");
+
+    check(!docs.setSlideGeometry(0.0, 0.0, -10.0, 100.0),
+          "a degenerate box is refused by the controller");
+    check(docs.status().contains(QStringLiteral("text box")),
+          "the refusal explains itself on the status line");
+    first = docs.slides().at(0).toMap();
+    check(first.value(QStringLiteral("width")).toDouble() == 1400.0,
+          "the refused edit did not touch the box");
+
+    DocumentController bare(nullptr, root / "bare");
+    check(!bare.setSlideGeometry(10.0, 10.0, 100.0, 100.0),
+          "with no current slide there is nothing to resize");
+}
+
 // --- save, load and the startup rule ---------------------------------------
 
 void exercisePersistence(const std::filesystem::path& root) {
@@ -399,6 +445,7 @@ int main(int argc, char* argv[]) {
     exerciseEditingAndPresentation(tempRoot / "edit");
     exerciseCommitSilence(tempRoot / "silence");
     exerciseUndoRedo(tempRoot / "undo");
+    exerciseGeometryEdits(tempRoot / "geometry");
     exercisePersistence(tempRoot / "persist");
     exercisePlaylistAndLibrary(tempRoot / "playlist");
     std::filesystem::remove_all(tempRoot);

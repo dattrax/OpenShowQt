@@ -293,7 +293,11 @@ boost::json::object solidScene(const char* slideId, std::uint32_t color,
          boost::json::array{boost::json::object{{"lines", boost::json::array{word}},
                                                 {"color", 0xFFFFFFu},
                                                 {"fontFamily", ""},
-                                                {"fontSize", 120.0}}}},
+                                                {"fontSize", 120.0},
+                                                {"x", 160.0},
+                                                {"y", 100.0},
+                                                {"width", 1600.0},
+                                                {"height", 880.0}}}},
     };
 }
 

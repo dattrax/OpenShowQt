@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <set>
@@ -132,6 +133,23 @@ bool wantNumber(const boost::json::object& obj, const char* key, double* out,
     return true;
 }
 
+// An optional number that keeps its caller's current value when absent —
+// the slide text box (task 4.3) arrived after the first services, and one
+// without it reads as the authored default it was drawn with.
+bool wantOptionalNumber(const boost::json::object& obj, const char* key, double* out,
+                        std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;
+    }
+    if (!value->is_number()) {
+        fail(error, std::string("service.json: '") + key + "' must be a number");
+        return false;
+    }
+    *out = value->to_number<double>();
+    return true;
+}
+
 bool wantStringArray(const boost::json::object& obj, const char* key,
                      std::vector<std::string>* out, std::string* error) {
     const boost::json::value* value = field(obj, key);
@@ -202,6 +220,12 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             slideJson.emplace("notes", slide.notes);
             slideJson.emplace("styleId", slide.styleId);
             slideJson.emplace("backgroundAssetId", slide.backgroundAssetId);
+            // The authored text box (task 4.3); the loader defaults these
+            // so a service written before geometry existed still reads.
+            slideJson.emplace("x", slide.x);
+            slideJson.emplace("y", slide.y);
+            slideJson.emplace("width", slide.width);
+            slideJson.emplace("height", slide.height);
             slides.push_back(std::move(slideJson));
         }
         entry.emplace("slides", std::move(slides));
@@ -334,7 +358,18 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                 !wantOptionalString(jsonSlide, "notes", &slide.notes, error) ||
                 !wantOptionalString(jsonSlide, "styleId", &slide.styleId, error) ||
                 !wantOptionalString(jsonSlide, "backgroundAssetId",
-                                    &slide.backgroundAssetId, error)) {
+                                    &slide.backgroundAssetId, error) ||
+                !wantOptionalNumber(jsonSlide, "x", &slide.x, error) ||
+                !wantOptionalNumber(jsonSlide, "y", &slide.y, error) ||
+                !wantOptionalNumber(jsonSlide, "width", &slide.width, error) ||
+                !wantOptionalNumber(jsonSlide, "height", &slide.height, error)) {
+                return false;
+            }
+            if (!std::isfinite(slide.x) || !std::isfinite(slide.y) ||
+                !std::isfinite(slide.width) || !std::isfinite(slide.height) ||
+                slide.width <= 0.0 || slide.height <= 0.0) {
+                fail(error, "service.json: slide '" + slide.id +
+                                "' holds a text box that cannot be placed");
                 return false;
             }
             show.slides.push_back(std::move(slide));

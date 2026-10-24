@@ -116,6 +116,37 @@ bool wantFontSize(const boost::json::object& obj, const char* key, double* out,
     return true;
 }
 
+// One authored text-box edge: any finite coordinate.
+bool wantBoxEdge(const boost::json::object& obj, const char* key, double* out,
+                 std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr || !value->is_number()) {
+        fail(error, std::string("scene: '") + key + "' must be a number");
+        return false;
+    }
+    const double edge = value->to_number<double>();
+    if (!std::isfinite(edge)) {
+        fail(error, std::string("scene: '") + key + "' must be finite");
+        return false;
+    }
+    *out = edge;
+    return true;
+}
+
+// One authored text-box size: finite and strictly positive, or the item
+// could neither wrap at nor be centred in it.
+bool wantBoxSize(const boost::json::object& obj, const char* key, double* out,
+                 std::string* error) {
+    if (!wantBoxEdge(obj, key, out, error)) {
+        return false;
+    }
+    if (*out <= 0.0) {
+        fail(error, std::string("scene: '") + key + "' must be positive");
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 bool operator==(const Background& a, const Background& b) {
@@ -126,7 +157,8 @@ bool operator!=(const Background& a, const Background& b) { return !(a == b); }
 
 bool operator==(const TextItem& a, const TextItem& b) {
     return a.lines == b.lines && a.color == b.color && a.fontFamily == b.fontFamily &&
-           a.fontSize == b.fontSize;
+           a.fontSize == b.fontSize && a.x == b.x && a.y == b.y && a.width == b.width &&
+           a.height == b.height;
 }
 bool operator!=(const TextItem& a, const TextItem& b) { return !(a == b); }
 
@@ -193,6 +225,11 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
     item.color = textColor;
     item.fontFamily = fontFamily;
     item.fontSize = fontSize;
+    // The authored text box travels unchanged (task 4.3).
+    item.x = slide->x;
+    item.y = slide->y;
+    item.width = slide->width;
+    item.height = slide->height;
     scene.items.push_back(std::move(item));
 
     if (!slide->backgroundAssetId.empty()) {
@@ -243,6 +280,10 @@ boost::json::value toJson(const Scene& scene) {
         jsonItem.emplace("color", static_cast<std::uint32_t>(item.color));
         jsonItem.emplace("fontFamily", item.fontFamily);
         jsonItem.emplace("fontSize", item.fontSize);
+        jsonItem.emplace("x", item.x);
+        jsonItem.emplace("y", item.y);
+        jsonItem.emplace("width", item.width);
+        jsonItem.emplace("height", item.height);
         items.push_back(std::move(jsonItem));
     }
     root.emplace("items", std::move(items));
@@ -316,7 +357,11 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         }
         if (!wantColor(jsonItem, "color", &item.color, error) ||
             !wantString(jsonItem, "fontFamily", &item.fontFamily, error) ||
-            !wantFontSize(jsonItem, "fontSize", &item.fontSize, error)) {
+            !wantFontSize(jsonItem, "fontSize", &item.fontSize, error) ||
+            !wantBoxEdge(jsonItem, "x", &item.x, error) ||
+            !wantBoxEdge(jsonItem, "y", &item.y, error) ||
+            !wantBoxSize(jsonItem, "width", &item.width, error) ||
+            !wantBoxSize(jsonItem, "height", &item.height, error)) {
             return false;
         }
         scene.items.push_back(std::move(item));

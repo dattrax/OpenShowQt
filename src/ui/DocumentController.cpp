@@ -120,6 +120,10 @@ QVariantList DocumentController::slides() const {
         entry.insert(QStringLiteral("index"), static_cast<int>(i));
         entry.insert(QStringLiteral("preview"), QString::fromStdString(
             slide.lines.empty() ? std::string("(empty)") : slide.lines.front()));
+        entry.insert(QStringLiteral("x"), slide.x);
+        entry.insert(QStringLiteral("y"), slide.y);
+        entry.insert(QStringLiteral("width"), slide.width);
+        entry.insert(QStringLiteral("height"), slide.height);
         list.append(entry);
     }
     return list;
@@ -308,6 +312,24 @@ void DocumentController::selectSlide(int index) {
 
 void DocumentController::stepSlide(int delta) {
     selectSlide(fCurrentSlide + delta);
+}
+
+bool DocumentController::setSlideGeometry(double x, double y, double width, double height) {
+    flushText();
+    const openshow::domain::Id slideId = currentSlideId();
+    if (slideId.empty()) {
+        setStatus(QStringLiteral("text box: no current slide"));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setSlideGeometry(fCurrentSongId, slideId, x, y, width, height,
+                                               &error);
+        })) {
+        setStatus(QStringLiteral("text box: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
 }
 
 // --- playlist and library drawer (task 4.2) --------------------------------

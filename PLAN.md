@@ -287,7 +287,7 @@ background video across lyric changes when its asset/settings remain unchanged.
 |---|---|---|---|
 | 4.1 | DONE | Main workspace and resizable panels: the reference shell — 40px top bar (title, centred page buttons with the accent underline, output status, the 5x40 unsaved marker) over left/center/right; `WorkspacePanels` reproduces the measured resize exactly (default 290, floor 200.1, 270–310 home snap, 638 clamp, collapse below 100.05, click-to-open only, closed panels reopening at the default) with widths persisted to `workspace.ini`; the dark Material theme carries the reference palette (accent `--secondary`) | Layout pixel-probed at the agreed 1680x1020 capture: top bar bottom 40.0 logical, panel edges 290.0/1390.0 — exact; `workspace_panels_tests` pins every snap boundary and the persistence/startup rules; a written 450/638 pair loads verified end-to-end through the binary |
 | 4.2 | DONE | Searchable libraries, playlist ordering | Shows/media can be found and arranged |
-| 4.3 | TODO | Object selection, move and resize | Geometry edits render correctly; support undo |
+| 4.3 | DONE | Object selection, move and resize | Geometry edits render correctly; support undo |
 | 4.4 | TODO | Typography, layering, reusable styles | Styles apply consistently across slides |
 | 4.5 | TODO | Shortcuts, clipboard, essential settings | Core flows work by keyboard and mouse |
 

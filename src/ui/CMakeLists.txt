@@ -31,7 +31,7 @@ add_executable(openshow::ui ALIAS openshow-ui)
 qt_add_qml_module(openshow-ui
   URI OpenShow
   VERSION 1.0
-  QML_FILES Main.qml TopBar.qml SidePanel.qml LibraryDrawer.qml
+  QML_FILES Main.qml TopBar.qml SidePanel.qml LibraryDrawer.qml EditCanvas.qml
   SOURCES PreviewView.h PreviewView.cpp
 )
 

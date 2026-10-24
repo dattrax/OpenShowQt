@@ -200,6 +200,18 @@ void exerciseWireRoundTrip(const Fixture& fx) {
         refuses(boost::json::serialize(obj), "'fontSize' must be a number",
                 "a non-numeric font size refuses");
     }
+    {  // An item missing its authored box — required since task 4.3.
+        boost::json::object obj = scene::toJson(compiled).as_object();
+        obj["items"].as_array()[0].as_object().erase("x");
+        refuses(boost::json::serialize(obj), "'x' must be a number",
+                "an item without a text box refuses");
+    }
+    {  // A box with nothing in it can neither wrap at nor centre in it.
+        boost::json::object obj = scene::toJson(compiled).as_object();
+        obj["items"].as_array()[0].as_object()["width"] = 0.0;
+        refuses(boost::json::serialize(obj), "'width' must be positive",
+                "a zero-width text box refuses");
+    }
     {  // An item holding a non-string line.
         boost::json::object obj = scene::toJson(compiled).as_object();
         boost::json::array& items = obj["items"].as_array();
@@ -285,6 +297,24 @@ void exerciseDemoFixture() {
 
 }  // namespace
 
+void exerciseBoxConstants() {
+    // The domain's Slide defaults and the scene library's constants are
+    // one promise written twice (the domain cannot include scene.h):
+    // a fresh slide must carry exactly the scene's default text box...
+    const openshow::domain::Slide fresh;
+    check(fresh.x == scene::kDefaultBoxX && fresh.y == scene::kDefaultBoxY &&
+              fresh.width == scene::kDefaultBoxWidth &&
+              fresh.height == scene::kDefaultBoxHeight,
+          "a fresh Slide carries the scene library's default text box");
+    // ...and that box is the canvas minus its margins, centred: the region
+    // M2/M3 drew text in, so untouched slides keep drawing identically.
+    check(scene::kDefaultBoxX + scene::kDefaultBoxWidth / 2.0 ==
+              scene::kCanvasWidth / 2.0 &&
+              scene::kDefaultBoxY + scene::kDefaultBoxHeight / 2.0 ==
+                  scene::kCanvasHeight / 2.0,
+          "the default text box is centred on the authored canvas");
+}
+
 int main() {
     Fixture fx = buildFixture();
     exerciseCompile(fx);
@@ -292,6 +322,7 @@ int main() {
     exerciseWireRoundTrip(fx);
     exerciseClearedScene();
     exerciseDemoFixture();
+    exerciseBoxConstants();
 
     if (gFailed) {
         std::fprintf(stderr, "scene_tests: FAILED\n");

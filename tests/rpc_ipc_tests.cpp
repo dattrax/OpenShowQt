@@ -879,7 +879,11 @@ void testSceneStore() {
              boost::json::array{boost::json::object{{"lines", boost::json::array{line}},
                                                     {"color", 0xffffff},
                                                     {"fontFamily", "DejaVu Serif"},
-                                                    {"fontSize", 64.0}}}}};
+                                                    {"fontSize", 64.0},
+                                                    {"x", 160.0},
+                                                    {"y", 100.0},
+                                                    {"width", 1600.0},
+                                                    {"height", 880.0}}}}};
     };
 
     // Two malformed payloads are refused with the wire validator's reasons.
