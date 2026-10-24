@@ -1,5 +1,7 @@
 #include "media/VideoFrameSource.h"
 
+#include <cstdio>
+
 #include "media/FFmpeg.h"
 
 namespace openshow::media {
@@ -9,6 +11,27 @@ std::string ffError(int err) {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {};
     av_strerror(err, buf, sizeof(buf));
     return std::string(buf);
+}
+
+// get_format hook for the VA-API hwaccel: take surface format if the
+// decoder offers it, otherwise let FFmpeg pick as usual (software). The
+// owner rides in AVCodecContext.opaque so the outcome is logged once —
+// "hardware configured" only truly means hardware once a frame negotiates.
+enum AVPixelFormat negotiatePixelFormat(AVCodecContext* avctx,
+                                       const enum AVPixelFormat* formats) {
+    const char* decoderName = avctx->codec ? avctx->codec->name : "";
+    for (const enum AVPixelFormat* p = formats; *p != AV_PIX_FMT_NONE; ++p) {
+        if (*p == AV_PIX_FMT_VAAPI) {
+            if (auto* self = static_cast<VideoFrameSource*>(avctx->opaque)) {
+                self->noteFormatNegotiated(decoderName, true);
+            }
+            return *p;
+        }
+    }
+    if (auto* self = static_cast<VideoFrameSource*>(avctx->opaque)) {
+        self->noteFormatNegotiated(decoderName, false);
+    }
+    return avcodec_default_get_format(avctx, formats);
 }
 }  // namespace
 
@@ -64,33 +87,78 @@ bool VideoFrameSource::open(const std::string& path, unsigned ringDepth, std::st
 
     const AVStream* stream = format->streams[best->index];
     const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (fHardwareDecodeEnabled && codec) {
+        // VA-API hwaccels live on FFmpeg's native decoders; external
+        // wrapper decoders (this build resolves AV1 to libdav1d) ignore the
+        // hwaccel mechanism entirely and decode in software. Do what the
+        // ffmpeg CLI does for -hwaccel vaapi: prefer the decoder registered
+        // under the canonical codec name, which is the native one. Without
+        // hardware decoding the default stays as-is (libdav1d beats the
+        // native AV1 decoder on the CPU).
+        if (const AVCodec* native =
+                avcodec_find_decoder_by_name(avcodec_get_name(stream->codecpar->codec_id))) {
+            codec = native;
+        }
+    }
+
+    // Task 1.5h: prefer hardware decode. VA-API registers no standalone
+    // decoders (its "*_vaapi" codecs are encode-only), so GPU decode is a
+    // hwaccel attached to the normal decoder: an AV_HWDEVICE_TYPE_VAAPI
+    // device context plus a get_format hook that picks AV_PIX_FMT_VAAPI
+    // when the decoder offers it. Frames then come back as GPU surfaces
+    // the decode thread copies to system memory before the ring — the win
+    // is the decode work itself leaving the CPU. A machine without a VA
+    // driver (or a stream the driver cannot accelerate) decodes in
+    // software exactly as before; the effective path is logged once, at
+    // open when known and otherwise when the first frame negotiates.
     AVCodecContext* decoder = avcodec_alloc_context3(codec);
-    if (!decoder || avcodec_parameters_to_context(decoder, stream->codecpar) < 0 ||
-        avcodec_open2(decoder, codec, nullptr) < 0) {
+    bool hardwareConfigured = false;
+    std::string hardwareNote;
+    if (!decoder || avcodec_parameters_to_context(decoder, stream->codecpar) < 0) {
         if (decoder) {
             avcodec_free_context(&decoder);
         }
         avformat_close_input(&format);
         return fail("cannot open the " + best->codec + " decoder");
     }
+    if (fHardwareDecodeEnabled) {
+        AVBufferRef* hwDevice = nullptr;
+        const int err = av_hwdevice_ctx_create(&hwDevice, AV_HWDEVICE_TYPE_VAAPI, nullptr,
+                                               nullptr, 0);
+        if (err < 0) {
+            hardwareNote = "VA-API device unavailable: " + ffError(err);
+        } else {
+            fHwDeviceCtx = hwDevice;  // held for the source's lifetime too
+            decoder->hw_device_ctx = av_buffer_ref(hwDevice);
+            decoder->opaque = this;
+            decoder->get_format = &negotiatePixelFormat;
+            hardwareConfigured = true;
+        }
+    }
+    if (avcodec_open2(decoder, codec, nullptr) < 0) {
+        avcodec_free_context(&decoder);
+        avformat_close_input(&format);
+        return fail("cannot open the " + best->codec + " decoder");
+    }
+    if (hardwareConfigured) {
+        fDecodeDescription = best->codec + " (VA-API hardware decode)";  // definitive once frames flow
+    } else {
+        fDecodeDescription =
+            best->codec + " (software decode" + (hardwareNote.empty() ? "" : "; " + hardwareNote) +
+            ")";
+        std::fprintf(stderr, "openshow-worker: video decode: %s\n", fDecodeDescription.c_str());
+    }
 
     // The ring lives at the decoder's visible size; mid-stream resolution
     // changes are out of scope for 1.5 (the source reports, it does not
-    // adapt). I420 in, I420 out — conversion only when the stream differs.
+    // adapt). Any pixel format — yuv420p direct, another software format,
+    // or NV12/P010 transferred back from a VAAPI surface — is converted to
+    // I420 by a swscale context the decode thread builds lazily from the
+    // frames as they arrive, because only then is the real format known.
     if (!fRing.create(ringDepth, decoder->width, decoder->height, error)) {
         avcodec_free_context(&decoder);
         avformat_close_input(&format);
         return false;
-    }
-    if (decoder->pix_fmt != AV_PIX_FMT_YUV420P) {
-        fSwsContext = sws_getContext(decoder->width, decoder->height, decoder->pix_fmt,
-                                     decoder->width, decoder->height, AV_PIX_FMT_YUV420P,
-                                     SWS_BILINEAR, nullptr, nullptr, nullptr);
-        if (!fSwsContext) {
-            avcodec_free_context(&decoder);
-            avformat_close_input(&format);
-            return fail("cannot create the conversion to I420");
-        }
     }
 
     fPath = path;
@@ -98,6 +166,7 @@ bool VideoFrameSource::open(const std::string& path, unsigned ringDepth, std::st
     fVideoStreamIndex = best->index;
     fFormatContext = format;
     fCodecContext = decoder;
+    fNegotiatedLogged = false;
     fTimeBaseSeconds = av_q2d(stream->time_base);
     fSyntheticStepSeconds = 1.0 / (best->frameRate > 0.0 ? best->frameRate : 25.0);
     fSyntheticPtsSeconds = 0.0;
@@ -105,14 +174,15 @@ bool VideoFrameSource::open(const std::string& path, unsigned ringDepth, std::st
 }
 
 void VideoFrameSource::close() {
-    if (fSwsContext) {
-        sws_freeContext(static_cast<SwsContext*>(fSwsContext));
-        fSwsContext = nullptr;
-    }
     if (fCodecContext) {
         AVCodecContext* decoder = static_cast<AVCodecContext*>(fCodecContext);
         avcodec_free_context(&decoder);
         fCodecContext = nullptr;
+    }
+    if (fHwDeviceCtx) {
+        AVBufferRef* device = static_cast<AVBufferRef*>(fHwDeviceCtx);
+        av_buffer_unref(&device);
+        fHwDeviceCtx = nullptr;
     }
     if (fFormatContext) {
         AVFormatContext* format = static_cast<AVFormatContext*>(fFormatContext);
@@ -123,6 +193,7 @@ void VideoFrameSource::close() {
     fVideoStreamIndex = -1;
     fStreamInfo = {};
     fPath.clear();
+    fDecodeDescription.clear();
     std::lock_guard lock(fStatsMutex);
     fStats = {};
     fThreadWanted = false;
@@ -166,11 +237,31 @@ VideoFrameSource::Stats VideoFrameSource::stats() const {
     return fStats;
 }
 
+void VideoFrameSource::noteFormatNegotiated(const char* decoderName, bool hardware) {
+    // Called from the get_format hook on the decode thread, once at the
+    // start of decode (and again if a mid-stream reinitialisation ever
+    // negotiates afresh; the log stays one-shot either way).
+    if (fNegotiatedLogged.exchange(true)) {
+        return;
+    }
+    fDecodeDescription =
+        std::string(decoderName) +
+        (hardware ? " (VA-API hardware decode)" : " (software decode; no VAAPI format offered)");
+    std::fprintf(stderr, "openshow-worker: video decode: %s\n", fDecodeDescription.c_str());
+}
+
 void VideoFrameSource::run() {
     AVFormatContext* format = static_cast<AVFormatContext*>(fFormatContext);
     AVCodecContext* decoder = static_cast<AVCodecContext*>(fCodecContext);
-    SwsContext* sws = static_cast<SwsContext*>(fSwsContext);
     AVFrame* frame = av_frame_alloc();
+    // Scratch frame for av_hwframe_transfer_data(): brings a VAAPI surface
+    // back to system memory as NV12 (8-bit streams) or P010 (10-bit).
+    AVFrame* transfer = av_frame_alloc();
+    // The I420 converter, built lazily because only arriving frames reveal
+    // the real format (hardware negotiation, or a non-yuv420p software
+    // stream); rebuilt once should the format ever change mid-stream.
+    SwsContext* convert = nullptr;
+    AVPixelFormat convertFrom = AV_PIX_FMT_NONE;
 
     auto bump = [&](auto&& update) {
         std::lock_guard lock(fStatsMutex);
@@ -180,21 +271,51 @@ void VideoFrameSource::run() {
     // Returns false only when the ring refused a frame (stop) — every other
     // problem is counted and decoding continues.
     auto emitFrame = [&](AVFrame* decoded) -> bool {
+        // A VAAPI surface must be copied back to system memory before the
+        // ring can hold it; the PTS stays with the original frame because
+        // the transfer copies pixels only.
+        AVFrame* pixels = decoded;
+        if (decoded->format == AV_PIX_FMT_VAAPI) {
+            const int err = av_hwframe_transfer_data(transfer, decoded, 0);
+            if (err < 0) {
+                av_frame_unref(transfer);
+                bump([](Stats& s) { s.decodeErrors++; });
+                return true;
+            }
+            pixels = transfer;
+        }
         VideoFrame out;
         if (!fRing.claim(&out)) {
+            av_frame_unref(transfer);
             return false;
         }
-        if (decoded->format == AV_PIX_FMT_YUV420P) {
-            av_image_copy(out.data, out.linesize,
-                          const_cast<const uint8_t**>(decoded->data), decoded->linesize,
-                          AV_PIX_FMT_YUV420P, out.width, out.height);
-        } else if (sws) {
-            sws_scale(sws, const_cast<const uint8_t**>(decoded->data), decoded->linesize, 0,
-                      out.height, out.data, out.linesize);
+        const auto pixelFormat = static_cast<AVPixelFormat>(pixels->format);
+        if (pixelFormat == AV_PIX_FMT_YUV420P) {
+            av_image_copy(out.data, out.linesize, const_cast<const uint8_t**>(pixels->data),
+                          pixels->linesize, AV_PIX_FMT_YUV420P, out.width, out.height);
         } else {
-            fRing.abortClaim(out.slot);
-            bump([](Stats& s) { s.decodeErrors++; });
-            return true;
+            if (convert && convertFrom != pixelFormat) {
+                sws_freeContext(convert);
+                convert = nullptr;
+            }
+            if (!convert) {
+                convert = sws_getContext(pixels->width, pixels->height, pixelFormat, out.width,
+                                         out.height, AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr,
+                                         nullptr, nullptr);
+                convertFrom = pixelFormat;
+                if (convert) {
+                    std::fprintf(stderr, "openshow-worker: video decode: converting %s to I420\n",
+                                 av_get_pix_fmt_name(pixelFormat));
+                }
+            }
+            if (!convert) {
+                fRing.abortClaim(out.slot);
+                bump([](Stats& s) { s.decodeErrors++; });
+                av_frame_unref(transfer);
+                return true;
+            }
+            sws_scale(convert, const_cast<const uint8_t**>(pixels->data), pixels->linesize, 0,
+                      pixels->height, out.data, out.linesize);
         }
         const int64_t pts = decoded->best_effort_timestamp != AV_NOPTS_VALUE
                                 ? decoded->best_effort_timestamp
@@ -205,6 +326,7 @@ void VideoFrameSource::run() {
         fSyntheticPtsSeconds = out.ptsSeconds + fSyntheticStepSeconds;
         fRing.publish(out);
         bump([](Stats& s) { s.framesProduced++; });
+        av_frame_unref(transfer);
         return true;
     };
 
@@ -271,6 +393,10 @@ void VideoFrameSource::run() {
     }
 
     av_frame_free(&frame);
+    av_frame_free(&transfer);
+    if (convert) {
+        sws_freeContext(convert);
+    }
     // Whatever the exit reason, a stopped ring lets the consumer drain the
     // remaining frames and then see poll() return false.
     fRing.stop();

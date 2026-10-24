@@ -75,7 +75,7 @@ void printUsage(const char* program) {
                  "Usage: %s [--version] [--check-deps] [--socket PATH]\n"
                  "       %s --render-test [--monitor N] [--seconds S] [--idle-check]\n"
                  "       %s --av-bench FILE [--monitor N] [--seconds S] [--no-audio]\n"
-                 "                                  [--preview]\n"
+                 "                                  [--preview] [--no-hw-decode]\n"
                  "       %s --snapshot PATH [--width N] [--height N]\n"
                  "       %s --list-monitors\n"
                  "       %s --check-layers\n"
@@ -93,6 +93,9 @@ void printUsage(const char* program) {
                  "                       validation layer and log its warnings and\n"
                  "                       errors (also OPENSHOW_VULKAN_VALIDATION=1,\n"
                  "                       which additionally covers the GPU tests)\n"
+                 "  --no-hw-decode       with --av-bench: force software video decode\n"
+                 "                       (hardware is tried by default; the effective\n"
+                 "                       decoder is logged either way)\n"
                  "  --monitor N          destination override: fullscreen on monitor N\n"
                  "                       (socket mode defaults to the second display)\n"
                  "  --seconds S          with --render-test, exit after S seconds\n"
@@ -416,7 +419,7 @@ private:
 // with --no-audio or when FILE has no decodable audio). Reports the numbers
 // M5 is judged on: missed deadlines under 1%, drift under 50 ms.
 int runAvBench(const std::string& path, int monitorIndex, double seconds, bool useAudio,
-               bool preview, bool vulkanValidation) {
+               bool preview, bool vulkanValidation, bool hardwareDecode) {
     openshow::media::MediaInfo info;
     std::string error;
     if (openshow::media::probeMedia(path, &info, &error) != openshow::media::ProbeStatus::kOk) {
@@ -440,6 +443,7 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
     }
 
     openshow::media::VideoFrameSource source;
+    source.setHardwareDecodeEnabled(hardwareDecode);
     if (!source.open(path, 6, &error)) {
         std::fprintf(stderr, "openshow-worker: av-bench video: %s\n", error.c_str());
         return 1;
@@ -717,6 +721,7 @@ int main(int argc, char** argv) {
     bool noAudio = false;
     bool benchPreview = false;
     bool vulkanValidation = false;
+    bool hardwareDecode = true;
     int monitorIndex = openshow::worker::OutputSession::kAutoSecondDisplay;
     bool monitorGiven = false;
     double seconds = 0.0;
@@ -750,6 +755,8 @@ int main(int argc, char** argv) {
             benchPreview = true;
         } else if (argument == "--vulkan-validation") {
             vulkanValidation = true;
+        } else if (argument == "--no-hw-decode") {
+            hardwareDecode = false;
         } else if (argument == "--socket" && i + 1 < argc) {
             socketPath = argv[++i];
         } else if (argument == "--monitor" && i + 1 < argc) {
@@ -816,7 +823,7 @@ int main(int argc, char** argv) {
         // the decode -> GPU upload pipeline paced by the audio clock.
         return runAvBench(avBenchPath, monitorGiven ? monitorIndex : -1,
                           seconds > 0.0 ? seconds : 10.0, !noAudio, benchPreview,
-                          vulkanValidation);
+                          vulkanValidation, hardwareDecode);
     }
 
     if (renderTest) {

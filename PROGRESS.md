@@ -810,6 +810,36 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   canvas after the scene must set up its own matrix — the scene owns
   the transform but only restores on entry.** Gates after the fix:
   desktop **11/11**, headless **8/8**.
+- **1.5h** DONE (user-inserted: enable hardware decoding if available
+  and log the status). VA-API decode via the hwaccel API:
+  `av_hwdevice_ctx_create(AV_HWDEVICE_TYPE_VAAPI)` as the decoder's
+  `hw_device_ctx`, plus a `get_format` hook picking `AV_PIX_FMT_VAAPI`
+  when offered. Two discoveries worth keeping: FFmpeg's `*_vaapi` codecs
+  are **encode-only** (the first design, `avcodec_find_decoder_by_name
+  ("h264_vaapi")`, could therefore never match), and wrapper decoders
+  ignore hwaccels — this build resolves AV1 to **libdav1d**, which
+  decoded in software while silently skipping the hook; the ffmpeg CLI's
+  own remedy ("Selecting decoder 'av1' because of requested hwaccel
+  method vaapi") is reproduced by preferring the decoder registered
+  under `avcodec_get_name(codec_id)` whenever hardware is enabled.
+  VAAPI frames are copied back with `av_hwframe_transfer_data` (NV12 for
+  8-bit, P010 for 10-bit) and converted to the ring's I420 by a swscale
+  context built **lazily from the first frame's actual format** — which
+  also removed the old open-time `decoder->pix_fmt` assumption, so a
+  negotiated software fallback with a non-yuv420p stream now converts
+  instead of erroring every frame. Status logs once per open
+  ("openshow-worker: video decode: h264 (VA-API hardware decode)" /
+  "(software decode; VA-API device unavailable: ...)"), plus a
+  "converting nv12 to I420" line when conversion exists;
+  `--no-hw-decode` forces the software path for A/B runs. Measured on
+  the 890M: h264 and AV1 both negotiate VA-API; AV1 hardware max drift
+  **1.0 ms** vs 33–53 ms outliers in software; zero decode errors.
+  Known waste filed as **1.5i**: hardware frames still round-trip
+  NV12→I420→UV-re-interleave into GPU slots that are themselves
+  NV12-layout (R8 + R8G8) — the fast path is an NV12 ring or, best, a
+  zero-copy `drm_prime` import wrapped as
+  `VK_FORMAT_G8_B8R8_2PLANE_420_UNORM`. Gates: desktop **11/11**,
+  headless **8/8**.
 
 ## Verification and environment
 
