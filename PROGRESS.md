@@ -1524,6 +1524,55 @@ of this work.
   stays green — the re-arm only fires while a fade runs), headless
   **12/12**.
 
+## Task 4.1 log (2026-10-24) — main workspace and resizable panels: DONE
+
+- **Deliverable**: the reference's application shell (M4 opens). The old
+  two-column lyric panel becomes the three-region workspace the spec
+  measures (docs/reference.md §2): a 40px `TopBar` (title left, the five
+  page buttons centred with the `--secondary` accent underline, the
+  output-status pill right in the reference's connected/disconnected
+  greens/reds, and the 5x40 `rgba(255,0,0,.25)` unsaved marker at the
+  left edge) over a row of `SidePanel` left dock (the Projects/song
+  list), the Show centre (slide list + editor + nav/present/history),
+  and the `SidePanel` right dock (always the preview, with the output
+  tools below it — the reference's Preview + ShowTools). Everything M3
+  built still drives the same `DocumentController`/`WorkerController`;
+  nothing regressed, it just moved into the shell.
+- **`WorkspacePanels`** (new, in `openshow::ui-core`, Qt Core only): the
+  reference's resize is reproduced boundary-for-boundary in one pure
+  `widthFor` — below 100.05 the panel collapses to the 4px handle,
+  100.05–200.1 floors at 200.1, 270–310 snaps home to 290, above 638
+  clamps — so the exact numbers an operator feels mid-drag are
+  fixture-pinned with no window. Clicks restore a collapsed panel to the
+  default and do nothing else (the reference never closes on a click);
+  widths persist to `workspace.ini`, and a panel left closed reopens at
+  290 on startup, matching `Resizeable.svelte`. `SidePanel.qml` turns
+  pointer positions into candidate widths (the left dock uses scene-x
+  directly, the right the width at press minus the travel — using the
+  live width here would compound each event) and feeds them in; the
+  maths stays C++.
+- **Dark theme**: the default light controls sat wrong on the reference
+  palette, so the app sets the Material style (dark, accent `#f0008c`),
+  which makes the whole workspace read like FreeShow's flat dark UI.
+  The theme tokens (§3) are applied throughout — `--primary` panels,
+  `--primary-darkest` wells, `--primary-darker` canvas.
+- **Fixed-size capture seam**: `OPENSHOW_UI_SIZE` opens the window at an
+  agreed size so the layout can be pixel-probed (PLAN.md UI acceptance:
+  "agreed captures at fixed sizes"). The default stays 1380x800.
+- **Verification**: `workspace_panels_tests` pins every snap edge, the
+  click rules, and the persistence/start-up rules against a temp
+  `workspace.ini`. The layout was measured off a 1680x1020 capture (the
+  size the reference figures were taken at), correcting for the 1.5x
+  device pixel ratio: the top bar's bottom edge lands at 40.0 logical,
+  the left panel's inner edge at 290.0, and the right panel's at 1390.0
+  (1680−290) — all three exact. Writing `leftPanel=450`/`rightPanel=638`
+  and relaunching showed the binary honouring both (edges at 450 and
+  1042), proving the persistence path end to end. Live drags can't be
+  scripted (no XTEST tooling), so the drag affordance is verified by the
+  pure snap fixtures plus these persisted widths; the handle/arrow and
+  click-to-open are exercised by hand.
+- Gates: desktop **20/20**, headless **12/12**.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -1793,7 +1842,12 @@ logged here from what is observable off screen rather than claimed as seen.
    the Qt-free `live_fade_tests`. Gates: desktop ctest **19/19**,
    headless **12/12**. **M3 is complete.** Next milestone:
    **M4 — the workspace and asset management** (import images/video,
-   the media library, rename/reorder/groups), starting at task 4.1.
+   the media library, rename/reorder/groups). **4.1 is DONE** (the shell:
+   40px top bar, the three regions, `WorkspacePanels` with the reference's
+   exact resize snaps and persisted widths, dark Material theme, the
+   `OPENSHOW_UI_SIZE` capture seam; layout pixel-probed at 1680x1020).
+   Next is 4.2: searchable libraries and playlist ordering (the library
+   drawer), then 4.3 object geometry editing.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

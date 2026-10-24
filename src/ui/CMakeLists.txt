@@ -7,6 +7,8 @@ add_library(openshow-ui-core STATIC
   DocumentController.h
   SceneEdit.cpp
   SceneEdit.h
+  WorkspacePanels.cpp
+  WorkspacePanels.h
 )
 add_library(openshow::ui-core ALIAS openshow-ui-core)
 set_target_properties(openshow-ui-core PROPERTIES AUTOMOC TRUE)
@@ -27,7 +29,7 @@ add_executable(openshow::ui ALIAS openshow-ui)
 qt_add_qml_module(openshow-ui
   URI OpenShow
   VERSION 1.0
-  QML_FILES Main.qml
+  QML_FILES Main.qml TopBar.qml SidePanel.qml
   SOURCES PreviewView.h PreviewView.cpp
 )
 
@@ -42,6 +44,7 @@ target_link_libraries(openshow-ui PRIVATE
   Qt6::Core
   Qt6::Gui
   Qt6::Quick
+  Qt6::QuickControls2
   Qt6::Network
   openshow::ui-core
   openshow::domain

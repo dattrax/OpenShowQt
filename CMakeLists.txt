@@ -55,7 +55,7 @@ FetchContent_Declare(vk_bootstrap
 FetchContent_MakeAvailable(vk_bootstrap)
 
 if(OPENSHOW_BUILD_UI)
-  find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Network)
+  find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Network)
   qt_standard_project_setup()
 endif()
 

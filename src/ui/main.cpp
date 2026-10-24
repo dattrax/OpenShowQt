@@ -10,8 +10,12 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQuickStyle>
+#include <QSize>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
+#include <QVariant>
 
 #include <atomic>
 #include <csignal>
@@ -21,6 +25,7 @@
 
 #include "DocumentController.h"
 #include "WorkerController.h"
+#include "WorkspacePanels.h"
 
 namespace {
 
@@ -37,12 +42,21 @@ int main(int argc, char* argv[]) {
     app.setApplicationName("openshow-ui");
     app.setApplicationVersion(QString::fromLatin1(openshow::domain::applicationVersion()));
 
+    // M4: the reference is a flat dark UI; the default light controls sit
+    // wrong on its palette. Material's dark theme, with the reference's
+    // accent (--secondary #f0008c) attached on the root in QML.
+    QQuickStyle::setStyle("Material");
+
     openshow::ui::WorkerController worker;
     worker.start();
 
     // Task 3.3: the editable documents. Constructed after the application
     // object so QStandardPaths resolves; the lyric panel binds to it.
     openshow::ui::DocumentController documents;
+
+    // Task 4.1: the workspace shell's resizable side panels. The snap
+    // maths is C++ (fixture-tested); QML maps drags onto it.
+    openshow::ui::WorkspacePanels panels;
 
     QObject::connect(&app, &QGuiApplication::aboutToQuit,
                      [&worker] { worker.shutdownNow(); });
@@ -64,6 +78,16 @@ int main(int argc, char* argv[]) {
                                                 openshow::protocol::offerPayload()));
     engine.rootContext()->setContextProperty("worker", &worker);
     engine.rootContext()->setContextProperty("docs", &documents);
+    engine.rootContext()->setContextProperty("panels", &panels);
+    // Fixed-size capture seam for the workspace layout checks (PLAN.md UI
+    // acceptance: "agreed captures at fixed sizes"; the reference's
+    // measurements were taken at 1680x1020).
+    const QStringList wanted =
+        qEnvironmentVariable("OPENSHOW_UI_SIZE", "1380x800").split(QLatin1Char('x'));
+    const QSize uiSize(wanted.value(0).toInt(), wanted.value(1).toInt());
+    engine.rootContext()->setContextProperty(
+        "uiSize", uiSize.width() >= 400 && uiSize.height() >= 400 ? uiSize
+                                                                  : QSize(1380, 800));
 
     engine.loadFromModule("OpenShow", "Main");
     if (engine.rootObjects().isEmpty()) {

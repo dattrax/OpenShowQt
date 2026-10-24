@@ -47,6 +47,12 @@ if(OPENSHOW_BUILD_UI)
   target_link_libraries(scene_edit_tests PRIVATE openshow::ui-core)
   add_test(NAME scene_edit_tests COMMAND scene_edit_tests)
 
+  # Task 4.1's panel resize: the reference's snap boundaries and the
+  # persistence rules, pinned headless against a temp workspace.ini.
+  add_executable(workspace_panels_tests workspace_panels_tests.cpp)
+  target_link_libraries(workspace_panels_tests PRIVATE openshow::ui-core)
+  add_test(NAME workspace_panels_tests COMMAND workspace_panels_tests)
+
   # Task 3.3's acceptance sentence, end to end: DocumentController creates
   # and types a song, and the compiled slides are prepared and presented
   # on a real openshow-worker, status confirming each revision on air.
