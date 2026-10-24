@@ -1,23 +1,30 @@
 /*
- * VideoFrameSource: demux + decode on a dedicated thread (task 1.5b).
+ * VideoFrameSource: demux + decode on a dedicated thread (tasks 1.5b/1.5i).
  *
  * Owns one container, one decoder and one decode thread. Video packets go
- * through libavcodec; frames leave as I420 (converted only when the stream
- * is not yuv420p) into a FrameRing. The thread never blocks on anything
- * consumer-owned beyond the bounded ring, and requestStop() breaks even a
- * full-ring wait, so shutdown never waits on a stalled consumer.
+ * through libavcodec; frames leave the thread as NV12 (8-bit) or P010
+ * (10-bit) written into FrameRing slots — the ring's format is picked at
+ * open() from the stream's probed depth so that the hardware path's download
+ * format and the software path's native output need no colour conversion
+ * (1.5i: with a GPU backing attached, the slot planes are the mapped
+ * host-visible Vulkan image and av_hwframe_transfer_data writes into them
+ * directly; software yuv420p interleaves straight into the slot too). The
+ * thread never blocks on anything consumer-owned beyond the bounded ring —
+ * and, with a GPU backing, on its slot commit — and requestStop() breaks
+ * even a full-ring wait, so shutdown never waits on a stalled consumer.
  *
  * Since 1.5h open() prefers hardware decode: a VA-API device attached to
  * the native decoder as hw_device_ctx, plus a get_format hook that picks
  * AV_PIX_FMT_VAAPI when the decoder offers it (FFmpeg's *_vaapi codecs
  * are encode-only — VA-API decode is an hwaccel, not a decoder — and
  * external wrapper decoders like libdav1d ignore hwaccels, hence the
- * native-decoder preference). Frames then arrive as GPU surfaces that
- * the decode thread copies back to system memory (NV12/P010) and convert
- * to I420 before the ring — the win is the decode work itself leaving
- * the CPU, not the frame path. Anything that cannot accelerate decodes
- * in software exactly as before, and decodeDescription() says which path
- * was taken and why.
+ * native-decoder preference). Frames then arrive as GPU surfaces whose
+ * pixels the decode thread copies to system memory as NV12/P010 — the win
+ * is the decode work itself leaving the CPU. Anything that cannot
+ * accelerate decodes in software exactly as before, and
+ * decodeDescription() says which path was taken and why. A stream whose
+ * probe disagrees with the download format (rare) falls back to a swscale
+ * conversion into the slot, which stays correct rather than fast.
  *
  * Audio packets are skipped here on purpose: 1.5c runs its own feed from a
  * second file handle rather than sharing a demuxer, keeping every thread's
@@ -47,9 +54,21 @@ public:
     VideoFrameSource& operator=(const VideoFrameSource&) = delete;
 
     // Opens the container and the best video stream's decoder, and creates
-    // the ring with ringDepth I420 slots at the visible coded size. Fills
-    // streamInfo() from MediaProbe. No thread runs yet.
+    // the ring with ringDepth slots (plain memory) at the visible coded
+    // size. Fills streamInfo() from MediaProbe. No thread runs yet.
     bool open(const std::string& path, unsigned ringDepth, std::string* error);
+
+    // Task 1.5i split: open without a ring, then createRing() once the
+    // consumer's FrameBacking (the GPU uploader) exists to own the slot
+    // pixels. frameWidth()/frameHeight()/ringFormat() are valid after a
+    // successful open() and are exactly what createRing() will use — feed
+    // them to the backing's create() first so both sides agree.
+    bool open(const std::string& path, std::string* error);
+    bool createRing(unsigned ringDepth, FrameBacking* backing, std::string* error);
+    FrameFormat ringFormat() const { return fRingFormat; }
+    int frameWidth() const { return fFrameWidth; }
+    int frameHeight() const { return fFrameHeight; }
+
     void close();
 
     // Hardware decode is attempted at open() unless switched off beforehand
@@ -92,10 +111,16 @@ public:
 
 private:
     void run();
+    bool openInternal(const std::string& path, std::string* error);
 
     std::string fPath;
     VideoStreamInfo fStreamInfo;
     FrameRing fRing;
+    // Coded size and ring slot format, fixed at open(); createRing() and a
+    // GPU backing read these to agree on the slot layout before frames flow.
+    int fFrameWidth = 0;
+    int fFrameHeight = 0;
+    FrameFormat fRingFormat = FrameFormat::kNV12;
 
     // FFmpeg handles kept opaque so this header stays FFmpeg-free.
     void* fFormatContext = nullptr;   // AVFormatContext*

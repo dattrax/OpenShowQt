@@ -1,14 +1,20 @@
 /*
- * Task 1.5d: the YUV GPU upload path, proven headless.
+ * Tasks 1.5d/1.5i: the YUV GPU upload path, proven headless.
  *
  * Creates a surface-less Vulkan device (the same VulkanContext the windowed
- * worker uses, headless mode), uploads synthetic I420 frames through
- * GpuYuvUploader (staging → device-local R8/R8G8 images, transition to
- * shader-read, one persistent SkImage wrap per slot), draws the wrapped
- * image 1:1 into a GPU render target, reads it back, and compares probe
- * pixels against the very YUV→RGB matrix Skia applies (SkColorMatrix_YUV2RGB)
- * within a ±3 tolerance for dithering. Upload timings are reported from the
- * uploader's stats, split into staging (memcpy) and GPU (submit + fence).
+ * worker uses, headless mode), uploads synthetic NV12-shaped frames through
+ * GpuYuvUploader (host-mapped LINEAR two-plane slot → vkCmdCopyImage to the
+ * device-local OPTIMAL twin → shader-read, one persistent SkImage wrap per
+ * slot via BorrowTextureFrom + a ycbcr conversion), draws the wrapped image
+ * 1:1 into a GPU render target, reads it back, and compares probe pixels
+ * against the very YUV→RGB matrix the sampler applies
+ * (SkColorMatrix_YUV2RGB) within a ±3 tolerance — the Vulkan conversion is
+ * allowed a byte of quantisation of its own. Also drives the FrameBacking
+ * contract directly: slotPlanes() planes are written as the decode thread
+ * would and commit() carries them to the sampled image, proving the ring
+ * path's producer side without a decode thread. Upload timings are reported
+ * from the uploader's stats, split into staging (memcpy, upload() only) and
+ * GPU (submit + fence per commit).
  *
  * Exits 77 (ctest "skipped") when no Vulkan device or context can be
  * created — the headless preset runs on machines with and without GPUs.
@@ -17,6 +23,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -49,12 +56,12 @@ bool check(bool condition, const char* what) {
     return condition;
 }
 
-// I420, compact rows: Y is w*h, UV is (w/2)*(h/2) pairs.
-struct I420 {
+// NV12 with compact rows: Y is w*h, UV the interleaved (w/2)*(h/2) pairs.
+struct Nv12 {
     std::vector<uint8_t> y;
     std::vector<uint8_t> uv;
 
-    I420() : y(kW * kH), uv((kW / 2) * (kH / 2) * 2) {}
+    Nv12() : y(kW * kH), uv((kW / 2) * (kH / 2) * 2) {}
 
     void setUv(int uvX, int uvY, uint8_t u, uint8_t v) {
         const size_t index = (static_cast<size_t>(uvY) * (kW / 2) + uvX) * 2;
@@ -65,8 +72,8 @@ struct I420 {
 
 // variant 0: horizontal luma ramp, variant 1: all-bright, variant 2: all-dark.
 // Four horizontal chroma bands: neutral, red-ish, blue-ish, cyan-dim.
-I420 makePattern(int variant) {
-    I420 frame;
+Nv12 makePattern(int variant) {
+    Nv12 frame;
     for (int y = 0; y < kH; ++y) {
         for (int x = 0; x < kW; ++x) {
             int luma;
@@ -184,7 +191,8 @@ int main() {
     openshow::worker::GpuYuvUploader uploader;
     std::string error;
     if (!uploader.create(vk.device(), vk.physicalDevice(), vk.queueIndex(), vk.uploadQueueIndex(),
-                         vk.uploadQueue(), gr.get(), kW, kH, kRec601_Limited_SkYUVColorSpace,
+                         vk.uploadQueue(), gr.get(), kW, kH,
+                         openshow::media::FrameFormat::kNV12, kRec601_Limited_SkYUVColorSpace,
                          &error)) {
         std::fprintf(stderr, "gpu_yuv_tests: uploader.create failed: %s\n", error.c_str());
         return 1;
@@ -205,7 +213,7 @@ int main() {
     };
     int expectedUploads = 0;
     for (const VariantCase& testCase : cases) {
-        const I420 frame = makePattern(testCase.variant);
+        const Nv12 frame = makePattern(testCase.variant);
         unsigned uploadedSlot = 0;
         if (!uploader.upload(frame.y.data(), kW, frame.uv.data(), kW,
                              static_cast<uint64_t>(expectedUploads + 1), 0.0, &uploadedSlot)) {
@@ -258,7 +266,7 @@ int main() {
     // ---- ring behaviour: depth is bounded and enforced -------------------
     // Fill all kSlots without releasing: the next upload must refuse rather
     // than overwrite a slot the consumer still holds.
-    const I420 frame = makePattern(0);
+    const Nv12 frame = makePattern(0);
     for (int i = 0; i < openshow::worker::GpuYuvUploader::kSlots; ++i) {
         unsigned slot = 0;
         if (!uploader.upload(frame.y.data(), kW, frame.uv.data(), kW, 100 + i, 0.0, &slot)) {
@@ -282,6 +290,47 @@ int main() {
 
     check(uploader.imageForSlot(0, nullptr).get() == firstImage.get(),
           "a re-uploaded slot hands back the same wrapped image (one wrap per slot)");
+
+    // ---- FrameBacking contract: the path FrameRing drives (task 1.5i) ----
+    // slotPlanes() must hand out semi-planar planes, and commit() must carry
+    // what a producer wrote there to the sampled image without upload() —
+    // exactly what the decode thread does to a ring slot.
+    {
+        uint8_t* planes[4] = {};
+        int linesize[4] = {};
+        check(!uploader.slotPlanes(openshow::worker::GpuYuvUploader::kSlots, planes, linesize),
+              "slotPlanes rejects a slot index outside the ring");
+        check(uploader.slotPlanes(0, planes, linesize), "slotPlanes hands out slot 0's planes");
+        check(planes[0] != nullptr && planes[1] != nullptr && linesize[0] >= kW &&
+                  linesize[1] >= kW && planes[2] == planes[1] + 1 && linesize[2] == linesize[1] &&
+                  planes[3] == nullptr,
+              "planes follow the semi-planar convention (V at +1, strides set)");
+        if (gFailed) {
+            return 1;
+        }
+        const Nv12 pattern = makePattern(0);
+        for (int row = 0; row < kH; ++row) {
+            std::memcpy(planes[0] + static_cast<size_t>(row) * linesize[0],
+                        pattern.y.data() + static_cast<size_t>(row) * kW, kW);
+        }
+        for (int row = 0; row < kH / 2; ++row) {
+            std::memcpy(planes[1] + static_cast<size_t>(row) * linesize[1],
+                        pattern.uv.data() + static_cast<size_t>(row) * kW, kW);
+        }
+        check(uploader.commit(0), "commit copies a producer-written slot");
+        ++expectedUploads;
+        const std::vector<uint8_t> pixels =
+            drawAndRead(gr.get(), uploader.imageForSlot(0, nullptr).get());
+        if (pixels.empty()) {
+            std::fprintf(stderr, "gpu_yuv_tests: backing-path readback failed\n");
+            return 1;
+        }
+        probe(pixels, 8, 8, expected(0, 8, 8), "backing commit: luma ramp");
+        probe(pixels, 24, 24, expected(0, 24, 24), "backing commit: red band");
+        probe(pixels, 40, 40, expected(0, 40, 40), "backing commit: blue band");
+        probe(pixels, 56, 56, expected(0, 56, 56), "backing commit: dim cyan");
+        uploader.release(0);
+    }
 
     // ---- instrumented upload cost ----------------------------------------
     const auto& stats = uploader.stats();

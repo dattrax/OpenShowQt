@@ -21,7 +21,9 @@ enum class SlotState : uint8_t {
 
 struct FrameRing::Impl {
     struct Slot {
-        // Single av_image_alloc block per frame; data[1..3] point inside it.
+        // Ring-owned frames are one av_image_alloc block (data[1..3] point
+        // inside it); backing-owned frames are plane pointers handed over
+        // once at create() and freed by the backing.
         uint8_t* data[4] = {};
         int linesize[4] = {};
         SlotState state = SlotState::kFree;
@@ -39,6 +41,8 @@ struct FrameRing::Impl {
     unsigned slotCount = 0;
     int width = 0;
     int height = 0;
+    FrameFormat format = FrameFormat::kNV12;
+    FrameBacking* backing = nullptr;  // nullptr: the ring owns the pixels
     FrameRing::Stats stats;
 };
 
@@ -46,6 +50,11 @@ FrameRing::FrameRing() = default;
 FrameRing::~FrameRing() { destroy(); }
 
 bool FrameRing::create(unsigned slotCount, int width, int height, std::string* error) {
+    return create(slotCount, width, height, FrameFormat::kNV12, nullptr, error);
+}
+
+bool FrameRing::create(unsigned slotCount, int width, int height, FrameFormat format,
+                       FrameBacking* backing, std::string* error) {
     // Re-create is allowed: drop any previous buffers first.
     destroy();
     auto fail = [&](const std::string& message) {
@@ -59,19 +68,34 @@ bool FrameRing::create(unsigned slotCount, int width, int height, std::string* e
         return fail("FrameRing needs at least one slot");
     }
     if (width <= 0 || height <= 0 || (width & 1) || (height & 1)) {
-        return fail("FrameRing needs positive even dimensions for I420");
+        return fail("FrameRing needs positive even dimensions for NV12/P010");
     }
 
     fImpl = std::make_unique<Impl>();
     fImpl->slotCount = slotCount;
     fImpl->width = width;
     fImpl->height = height;
+    fImpl->format = format;
+    fImpl->backing = backing;
     fImpl->slots.resize(slotCount);
+    const AVPixelFormat pixFmt = format == FrameFormat::kP010 ? AV_PIX_FMT_P010LE
+                                                              : AV_PIX_FMT_NV12;
     for (unsigned i = 0; i < slotCount; ++i) {
         Impl::Slot& slot = fImpl->slots[i];
-        if (av_image_alloc(slot.data, slot.linesize, width, height, AV_PIX_FMT_YUV420P, 32) < 0) {
+        if (backing) {
+            if (!backing->slotPlanes(i, slot.data, slot.linesize)) {
+                return fail("FrameRing slot backing refused a slot");
+            }
+            continue;
+        }
+        if (av_image_alloc(slot.data, slot.linesize, width, height, pixFmt, 32) < 0) {
             return fail("FrameRing could not allocate frame buffers");
         }
+        // av_image_fill_arrays leaves the semi-planar second chroma entry
+        // unset; FFmpeg's convention hands V inside the same plane at +1
+        // bytes with the same stride, and a VAAPI transfer writes per
+        // component honouring linesize[2] — set it before anyone reads it.
+        slot.linesize[2] = slot.linesize[1];
     }
     return true;
 }
@@ -80,12 +104,14 @@ void FrameRing::destroy() {
     if (!fImpl) {
         return;
     }
-    for (Impl::Slot& slot : fImpl->slots) {
-        // av_image_alloc packs every plane into one block; the first
-        // pointer owns it. Works from any slot state — consumers must not
-        // touch frames after destroy(), the same contract as the worker's
-        // shm segment disappearing.
-        av_freep(&slot.data[0]);
+    if (!fImpl->backing) {
+        for (Impl::Slot& slot : fImpl->slots) {
+            // av_image_alloc packs every plane into one block; the first
+            // pointer owns it. Works from any slot state — consumers must
+            // not touch frames after destroy(), the same contract as the
+            // worker's shm segment disappearing.
+            av_freep(&slot.data[0]);
+        }
     }
     fImpl.reset();
 }
@@ -93,6 +119,7 @@ void FrameRing::destroy() {
 unsigned FrameRing::slotCount() const { return fImpl ? fImpl->slotCount : 0; }
 int FrameRing::width() const { return fImpl ? fImpl->width : 0; }
 int FrameRing::height() const { return fImpl ? fImpl->height : 0; }
+FrameFormat FrameRing::format() const { return fImpl ? fImpl->format : FrameFormat::kNV12; }
 
 bool FrameRing::claim(VideoFrame* out) {
     std::unique_lock lock(fImpl->mutex);
@@ -123,7 +150,15 @@ bool FrameRing::claim(VideoFrame* out) {
     return false;  // unreachable: the predicate just found a free slot
 }
 
-void FrameRing::publish(const VideoFrame& frame) {
+bool FrameRing::publish(const VideoFrame& frame) {
+    // Commit outside the lock: with a GPU backing this blocks until the
+    // slot's previous frame has been released (and its copy retired),
+    // which is exactly the back-pressure the producer thread should feel —
+    // nothing else may hold the ring mutex while it waits.
+    if (fImpl->backing && !fImpl->backing->commit(frame.slot)) {
+        abortClaim(frame.slot);
+        return false;
+    }
     {
         std::lock_guard lock(fImpl->mutex);
         Impl::Slot& slot = fImpl->slots[frame.slot];
@@ -136,6 +171,7 @@ void FrameRing::publish(const VideoFrame& frame) {
             std::max(fImpl->stats.peakFilled, static_cast<uint64_t>(fImpl->ready.size()));
     }
     fImpl->readyCv.notify_one();
+    return true;
 }
 
 void FrameRing::abortClaim(uint32_t slot) {
@@ -193,6 +229,14 @@ void FrameRing::stop() {
     }
     fImpl->freeCv.notify_all();
     fImpl->readyCv.notify_all();
+}
+
+bool FrameRing::stopped() const {
+    if (!fImpl) {
+        return true;  // a ring without storage can never take a frame anyway
+    }
+    std::lock_guard lock(fImpl->mutex);
+    return fImpl->stopped;
 }
 
 FrameRing::Stats FrameRing::stats() const {

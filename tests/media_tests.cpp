@@ -11,6 +11,7 @@
 
 #include <sys/stat.h>
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +19,7 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "media/AudioClock.h"
 #include "media/AudioRing.h"
@@ -87,6 +89,79 @@ bool exerciseRing() {
     const FrameRing::Stats stats = ring.stats();
     ok = check(stats.published == 3 && stats.consumed == 3 && stats.peakFilled <= 2,
                "stats count the traffic and stay inside the ring") && ok;
+    return ok;
+}
+
+// 1.5i: a ring driven by an external FrameBacking, the way the GPU uploader
+// is — slot planes come from the backing, publish commits before the frame
+// becomes visible, and a failed commit aborts the claim without losing the
+// slot. No GPU required: the "backing" here just mallocs.
+class FakeBacking final : public openshow::media::FrameBacking {
+public:
+    bool slotPlanes(unsigned slot, uint8_t* data[4], int linesize[4]) override {
+        if (slot >= kSlots) {
+            return false;
+        }
+        buffers[slot].assign(16 * 16 + 16 * 8, 0);  // NV12 16x16
+        data[0] = buffers[slot].data();
+        linesize[0] = 16;
+        data[1] = data[0] + 16 * 16;
+        linesize[1] = 16;
+        data[2] = data[1] + 1;
+        linesize[2] = 16;
+        data[3] = nullptr;
+        ++planeCalls;
+        lastPlane = static_cast<int>(slot);
+        return true;
+    }
+    bool commit(unsigned slot) override {
+        ++commits;
+        lastCommitted = static_cast<int>(slot);
+        return commits != refuseAt;  // fail exactly the Nth commit, once
+    }
+
+    static constexpr unsigned kSlots = 2;
+    unsigned planeCalls = 0;
+    int lastPlane = -1;
+    unsigned commits = 0;
+    int lastCommitted = -1;
+    unsigned refuseAt = 0;  // 0: never
+    std::array<std::vector<uint8_t>, kSlots> buffers;
+};
+
+bool exerciseBacking() {
+    bool ok = true;
+    FakeBacking backing;
+    FrameRing ring;
+    ok = check(ring.create(2, 16, 16, openshow::media::FrameFormat::kNV12, &backing, nullptr),
+               "backed ring creates") && ok;
+    ok = check(backing.planeCalls == 2 && backing.lastPlane == 1,
+               "create pulls every slot's planes from the backing") && ok;
+
+    VideoFrame frame;
+    ok = check(ring.claim(&frame) && frame.linesize[0] == 16 && frame.data[2] == frame.data[1] + 1,
+               "claimed planes are the backing's own") && ok;
+    frame.data[0][0] = 0x2a;  // the backing's buffer is the writable slot
+    frame.ptsSeconds = 3.0;
+    ok = check(ring.publish(frame) && backing.commits == 1 &&
+                   backing.lastCommitted == static_cast<int>(frame.slot),
+               "publish commits the slot it is about to reveal") && ok;
+    VideoFrame out;
+    ok = check(ring.poll(&out, std::chrono::milliseconds(10)) && out.ptsSeconds == 3.0 &&
+                   out.data[0][0] == 0x2a,
+               "committed pixels reach the consumer through the backing's memory") && ok;
+    ring.release(out.slot);
+
+    // A failed commit must abort the claim: nothing becomes visible, and
+    // the same slot claims cleanly again (GPU-side equivalent: a lost
+    // device stops copying, the producer must keep unwinding).
+    backing.refuseAt = backing.commits + 1;  // fail the next commit only
+    ok = check(ring.claim(&frame) && !ring.publish(frame),
+               "publish reports a failed commit") && ok;
+    ok = check(!ring.poll(&out, std::chrono::milliseconds(10)),
+               "a slot with a failed commit stays invisible") && ok;
+    ok = check(ring.claim(&frame), "the aborted slot is claimable again") && ok;
+    ring.abortClaim(frame.slot);
     return ok;
 }
 
@@ -388,6 +463,7 @@ int main() {
 
     // ---- 1.5b: FrameRing + VideoFrameSource ----
     ok = exerciseRing() && ok;
+    ok = exerciseBacking() && ok;
     ok = exerciseDecode(hd) && ok;
     ok = exerciseBackpressure(hd) && ok;
     ok = exerciseLoop(mp4) && ok;

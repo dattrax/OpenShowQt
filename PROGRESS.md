@@ -840,7 +840,7 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   zero-copy `drm_prime` import wrapped as
   `VK_FORMAT_G8_B8R8_2PLANE_420_UNORM`. Gates: desktop **11/11**,
   headless **8/8**.
-- **1.5i** in progress — device groundwork for the two-plane YUV path
+- **1.5i** DONE — device groundwork for the two-plane YUV path
   landed first: the device is created with the core
   `samplerYcbcrConversion` feature and mirrors it into Skia through the
   `features2` pNext chain. That node is load-bearing — Skia reads 1.1
@@ -874,6 +874,73 @@ New worker sources: `src/worker/output/OutputWindow.{h,cpp}`,
   for the record: RADV 26.2.5 exposes Vulkan video decode for **AV1 +
   VP9 only**, no h264/hevc.) Gates: desktop **11/11**, headless **8/8**;
   `--av-bench` clean under validation.
+- **1.5i implementation** (this commit): the raster-slot pipeline shipped
+  as designed, with the ring and the uploader unified through one small
+  contract. `media/FrameRing.h` gains `FrameFormat{kNV12,kP010}` and an
+  abstract `FrameBacking` (`slotPlanes()`/`commit()`):
+  `FrameRing::create(depth, w, h, format, backing)` drives `slotPlanes()`
+  for every slot (a null backing keeps the old malloc'd NV12 storage, so
+  the media library still carries no Vulkan/FFmpeg types and media_tests
+  stay GPU-free), and `publish()` calls `commit()` **outside the ring
+  lock** before making the frame visible — visible therefore means
+  GPU-ready — returning false and aborting the claim when the commit
+  fails. `VideoFrameSource::open()` no longer creates the ring (split
+  into `open()` probe/decoder + `createRing(depth, backing)`); the ring
+  format is derived at open from `av_pix_fmt_desc_get(...)->comp[0].depth
+  >= 10`, and the ring is sized to the **coded** frame so a VAAPI
+  transfer's `dst <= frames_ctx` dimension rule always holds.
+  `GpuYuvUploader` implements the backing: slot *i* is a host-visible
+  coherent **LINEAR** two-plane image mapped once for its life (plane
+  pointers + driver `rowPitch` handed out as FFmpeg `data[]`/`linesize[]`
+  under the semi-planar convention `data[2] = data[1] + 1`) plus a
+  device-local **OPTIMAL** twin; `commit()` records one `vkCmdCopyImage`
+  with two plane regions (COLOR-aspect barriers pin the LINEAR image to
+  TRANSFER_SRC once and ping-pong OPTIMAL SHADER_READ↔TRANSFER_DST),
+  submits it on the upload queue behind the slot's collected draw
+  semaphores and waits its fence, so the producer thread blocks only on
+  the GPU copy (~0.7 ms) and never on the render thread. `imageForSlot()`
+  wraps each slot exactly once via `SkImages::BorrowTextureFrom` with
+  `kBorrow` ownership — Skia never destroys these images — carrying a
+  `GrVkImageInfo.fYcbcrConversionInfo` whose chroma siting (MIDPOINT,
+  cosited fallback), chroma filter and 601/709 × limited/full model come
+  from `vkGetPhysicalDeviceFormatProperties`, so the YUV→RGB conversion
+  runs inside the compositing draw's sampler. The aliased hardware path
+  is the quiet trick: with `transfer->buf[0]` set to a kept 1-byte
+  `av_buffer_ref` ticket, `av_hwframe_transfer_data` writes **through the
+  caller's** `data[]`/`linesize[]` — the VA-API NV12/P010 readback lands
+  directly in the mapped slot, no intermediate frame at all.
+- The bench upload thread became pure pacing (poll → pts-continuity
+  lookahead sleep → `recordPts` + `submitVideo(token = slot)` →
+  `ring().release(slot)` **immediately**: the producer may rewrite the
+  LINEAR twin while the OPTIMAL image waits for its draw because the
+  next commit gates on that draw's `doneVk`), and teardown gained
+  `requestShutdown()`, which releases producers parked in a commit wait
+  so a decode thread can never outlive the session. A publish failure
+  while `ring.stopped()` is deliberately **not** a decode error — that
+  abort is the producer unwinding, and without the distinction
+  `decode-errors` was 0-or-1 per run purely on stop timing; now it is
+  deterministically 0.
+- Verification: gpu_yuv_tests renamed its fixture NV12 and gained a
+  `FrameBacking`-contract section — write through `slotPlanes()` exactly
+  as the decode thread does, `commit()`, read back through the wrapped
+  image — pixel-comparing against the Rec.601-limited matrix at **delta
+  0** on RADV (as do the upload-path variants; overflow-refusal and
+  one-wrap-per-slot invariants still hold). media_tests gained a
+  FakeBacking test: `create()` pulls every slot's planes, `publish()`
+  commits the slot it reveals, and a refused commit leaves nothing
+  visible with the slot claimable again. Acceptance runs (890M):
+  bribary AV1 hw `--seconds 5 --vulkan-validation` → missed=0,
+  decode-errors=0, copy 0.685 ms, zero validation messages, and the old
+  "converting nv12 to I420" log is gone; 25 s looping run 1/749 missed
+  (the historical noise band, cf. the 2/1795 soak note above); h264
+  av-10s and `--no-hw-decode` (yuv420p→NV12 interleave fast path) clean.
+  10-bit proof needed generated fixtures (all repo fixtures are 8-bit):
+  HEVC Main10 exercises the **aliased VA-API P010** transfer — the
+  "converting" log never appears — while h264 High10 fails VA-API init
+  on this driver (pre-existing: the driver lacks that hwaccel) and so
+  validates the sws fallback into a PACK16 slot instead; both 0 errors,
+  validation clean, sampler wrapped as kRGBA_1010102. Gates after:
+  desktop **11/11**, headless **8/8**.
 
 ## Verification and environment
 
@@ -1086,10 +1153,11 @@ logged here from what is observable off screen rather than claimed as seen.
 
 ## Exact next action
 
-1. **M1 is complete**: tasks 1.1–1.5 (1.5a–1.5f plus the inserted 1.5g
-   validation-layer option) are DONE, committed and pushed to
+1. **M1 is complete**: tasks 1.1–1.5 (1.5a–1.5i, including the
+   user-inserted 1.5g validation-layer option and the 1.5h/1.5i
+   GPU-slot video path) are DONE, committed and pushed to
    `dattrax/OpenShowQt` main; the task 1.5 log records the pipeline
-   architecture and every trap hit along the way. Gates as of 1.5g:
+   architecture and every trap hit along the way. Gates as of 1.5i:
    desktop ctest **11/11**, headless **8/8**, and both GPU test paths
    pass under `OPENSHOW_VULKAN_VALIDATION=1`.
 2. Next session starts **M2 — 2.1 documents and application state**

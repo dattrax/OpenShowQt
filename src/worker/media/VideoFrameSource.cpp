@@ -1,6 +1,8 @@
 #include "media/VideoFrameSource.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 #include "media/FFmpeg.h"
 
@@ -41,7 +43,58 @@ VideoFrameSource::~VideoFrameSource() {
     close();
 }
 
+namespace {
+// The ring's two-plane format follows the stream's bit depth (task 1.5i):
+// a 10-bit-or-deeper stream downloads as P010 from VA-API and decodes as
+// p010le in software, so both paths write the slot layout without any
+// colour conversion; everything else takes NV12. Format names the probe
+// cannot map take the 8-bit path — the decode thread's swscale fallback
+// still converts odd arriving formats correctly into it.
+FrameFormat deriveRingFormat(const std::string& pixelFormat) {
+    const AVPixelFormat probed = av_get_pix_fmt(pixelFormat.c_str());
+    if (probed != AV_PIX_FMT_NONE) {
+        const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(probed);
+        if (desc && desc->comp[0].depth >= 10) {
+            return FrameFormat::kP010;
+        }
+    }
+    return FrameFormat::kNV12;
+}
+}  // namespace
+
 bool VideoFrameSource::open(const std::string& path, unsigned ringDepth, std::string* error) {
+    if (!openInternal(path, error)) {
+        return false;
+    }
+    if (!createRing(ringDepth, nullptr, error)) {
+        close();
+        return false;
+    }
+    return true;
+}
+
+bool VideoFrameSource::open(const std::string& path, std::string* error) {
+    return openInternal(path, error);
+}
+
+bool VideoFrameSource::createRing(unsigned ringDepth, FrameBacking* backing,
+                                  std::string* error) {
+    if (!fFormatContext || !fCodecContext) {
+        if (error) {
+            *error = "VideoFrameSource is not open";
+        }
+        return false;
+    }
+    // The ring lives at the decoder's coded size; mid-stream resolution
+    // changes are out of scope for 1.5 (the source reports, it does not
+    // adapt). The arriving pixel format is either the slot's NV12/P010
+    // layout already (hardware download, yuv420p/p010le software) or is
+    // converted into it by a swscale context the decode thread builds
+    // lazily — only arriving frames reveal the real format.
+    return fRing.create(ringDepth, fFrameWidth, fFrameHeight, fRingFormat, backing, error);
+}
+
+bool VideoFrameSource::openInternal(const std::string& path, std::string* error) {
     auto fail = [&](std::string message) {
         if (error) {
             *error = std::move(message);
@@ -149,17 +202,15 @@ bool VideoFrameSource::open(const std::string& path, unsigned ringDepth, std::st
         std::fprintf(stderr, "openshow-worker: video decode: %s\n", fDecodeDescription.c_str());
     }
 
-    // The ring lives at the decoder's visible size; mid-stream resolution
-    // changes are out of scope for 1.5 (the source reports, it does not
-    // adapt). Any pixel format — yuv420p direct, another software format,
-    // or NV12/P010 transferred back from a VAAPI surface — is converted to
-    // I420 by a swscale context the decode thread builds lazily from the
-    // frames as they arrive, because only then is the real format known.
-    if (!fRing.create(ringDepth, decoder->width, decoder->height, error)) {
-        avcodec_free_context(&decoder);
-        avformat_close_input(&format);
-        return false;
-    }
+    // Task 1.5i: record the coded size and the ring's two-plane format here
+    // so the (optionally deferred) createRing() and a GPU backing's create()
+    // agree without any FFmpeg types crossing the header. Any arriving pixel
+    // format — yuv420p or p010le direct, another software format, or
+    // NV12/P010 transferred back from a VAAPI surface — lands in this layout,
+    // converted only when it differs.
+    fFrameWidth = decoder->width;
+    fFrameHeight = decoder->height;
+    fRingFormat = deriveRingFormat(best->pixelFormat);
 
     fPath = path;
     fStreamInfo = *best;
@@ -194,6 +245,8 @@ void VideoFrameSource::close() {
     fStreamInfo = {};
     fPath.clear();
     fDecodeDescription.clear();
+    fFrameWidth = fFrameHeight = 0;
+    fRingFormat = FrameFormat::kNV12;
     std::lock_guard lock(fStatsMutex);
     fStats = {};
     fThreadWanted = false;
@@ -254,68 +307,142 @@ void VideoFrameSource::run() {
     AVFormatContext* format = static_cast<AVFormatContext*>(fFormatContext);
     AVCodecContext* decoder = static_cast<AVCodecContext*>(fCodecContext);
     AVFrame* frame = av_frame_alloc();
-    // Scratch frame for av_hwframe_transfer_data(): brings a VAAPI surface
-    // back to system memory as NV12 (8-bit streams) or P010 (10-bit).
+    // Destination for av_hwframe_transfer_data(). Task 1.5i: the frame is
+    // normally filled with the claimed ring slot's plane pointers so the
+    // hardware download lands directly in the slot's (GPU-visible) memory —
+    // FFmpeg writes through caller buffers whenever dst->buf[0] is set, and
+    // the little buffer below is that non-owning ticket (the ring/backing
+    // owns the pixels). When a stream's download format disagrees with the
+    // ring format the frame stays clean, FFmpeg allocates its own scratch,
+    // and the swscale fallback converts into the slot.
     AVFrame* transfer = av_frame_alloc();
-    // The I420 converter, built lazily because only arriving frames reveal
-    // the real format (hardware negotiation, or a non-yuv420p software
-    // stream); rebuilt once should the format ever change mid-stream.
+    AVBufferRef* bufferTicket = av_buffer_alloc(1);
+    // The slot-format converter, built lazily because only arriving frames
+    // reveal the real format (hardware negotiation, or a stream whose
+    // software output is neither yuv420p/p010le nor the slot layout);
+    // rebuilt once should the format ever change mid-stream.
     SwsContext* convert = nullptr;
     AVPixelFormat convertFrom = AV_PIX_FMT_NONE;
+
+    const AVPixelFormat ringFormat =
+        fRingFormat == FrameFormat::kP010 ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
+    const int componentBytes = fRingFormat == FrameFormat::kP010 ? 2 : 1;
 
     auto bump = [&](auto&& update) {
         std::lock_guard lock(fStatsMutex);
         update(fStats);
     };
 
+    auto copyPlane = [](uint8_t* dst, int dstLinesize, const uint8_t* src, int srcLinesize,
+                        int rowBytes, int rows) {
+        for (int row = 0; row < rows; ++row) {
+            std::memcpy(dst + static_cast<size_t>(row) * dstLinesize,
+                        src + static_cast<size_t>(row) * srcLinesize,
+                        static_cast<size_t>(rowBytes));
+        }
+    };
+
+    // The general path: whatever arrived becomes the ring's two-plane
+    // layout through a lazily built swscale context.
+    auto toRingWithSws = [&](const AVFrame* pixels, const VideoFrame& out) -> bool {
+        const auto pixelFormat = static_cast<AVPixelFormat>(pixels->format);
+        if (convert && convertFrom != pixelFormat) {
+            sws_freeContext(convert);
+            convert = nullptr;
+        }
+        if (!convert) {
+            convert = sws_getContext(pixels->width, pixels->height, pixelFormat, out.width,
+                                     out.height, ringFormat, SWS_BILINEAR, nullptr, nullptr,
+                                     nullptr);
+            convertFrom = pixelFormat;
+            if (convert) {
+                std::fprintf(stderr, "openshow-worker: video decode: converting %s to %s\n",
+                             av_get_pix_fmt_name(pixelFormat), av_get_pix_fmt_name(ringFormat));
+            }
+        }
+        return convert != nullptr &&
+               sws_scale(convert, const_cast<const uint8_t**>(pixels->data), pixels->linesize, 0,
+                         pixels->height, out.data, out.linesize) > 0;
+    };
+
     // Returns false only when the ring refused a frame (stop) — every other
     // problem is counted and decoding continues.
     auto emitFrame = [&](AVFrame* decoded) -> bool {
-        // A VAAPI surface must be copied back to system memory before the
-        // ring can hold it; the PTS stays with the original frame because
-        // the transfer copies pixels only.
-        AVFrame* pixels = decoded;
-        if (decoded->format == AV_PIX_FMT_VAAPI) {
-            const int err = av_hwframe_transfer_data(transfer, decoded, 0);
-            if (err < 0) {
-                av_frame_unref(transfer);
-                bump([](Stats& s) { s.decodeErrors++; });
-                return true;
-            }
-            pixels = transfer;
-        }
+        // Claim first: with the slot's planes as the destination there is
+        // no intermediate frame between the decoder and the ring.
         VideoFrame out;
         if (!fRing.claim(&out)) {
-            av_frame_unref(transfer);
             return false;
         }
-        const auto pixelFormat = static_cast<AVPixelFormat>(pixels->format);
-        if (pixelFormat == AV_PIX_FMT_YUV420P) {
-            av_image_copy(out.data, out.linesize, const_cast<const uint8_t**>(pixels->data),
-                          pixels->linesize, AV_PIX_FMT_YUV420P, out.width, out.height);
-        } else {
-            if (convert && convertFrom != pixelFormat) {
-                sws_freeContext(convert);
-                convert = nullptr;
+        bool pixelsReady = false;
+        if (decoded->format == AV_PIX_FMT_VAAPI) {
+            // A VAAPI surface must be copied back to system memory; the
+            // PTS stays with the original frame because the transfer
+            // copies pixels only. When the download format is the ring
+            // format (the norm — both follow the stream's depth) the
+            // transfer writes the slot's mapped planes directly.
+            const AVHWFramesContext* surfaces =
+                decoded->hw_frames_ctx
+                    ? reinterpret_cast<const AVHWFramesContext*>(decoded->hw_frames_ctx->data)
+                    : nullptr;
+            if (surfaces && surfaces->sw_format == ringFormat) {
+                av_frame_unref(transfer);
+                transfer->format = ringFormat;
+                transfer->width = out.width;
+                transfer->height = out.height;
+                std::copy(std::begin(out.data), std::end(out.data), transfer->data);
+                std::copy(std::begin(out.linesize), std::end(out.linesize), transfer->linesize);
+                transfer->buf[0] = av_buffer_ref(bufferTicket);
+                const int err = av_hwframe_transfer_data(transfer, decoded, 0);
+                av_frame_unref(transfer);  // drops the alias and the ticket ref
+                pixelsReady = err >= 0;
+            } else {
+                // Probe and download format disagree (rare): allocate
+                // FFmpeg's own scratch and convert through swscale.
+                av_frame_unref(transfer);
+                const int err = av_hwframe_transfer_data(transfer, decoded, 0);
+                if (err >= 0) {
+                    pixelsReady = toRingWithSws(transfer, out);
+                }
+                av_frame_unref(transfer);
             }
-            if (!convert) {
-                convert = sws_getContext(pixels->width, pixels->height, pixelFormat, out.width,
-                                         out.height, AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr,
-                                         nullptr, nullptr);
-                convertFrom = pixelFormat;
-                if (convert) {
-                    std::fprintf(stderr, "openshow-worker: video decode: converting %s to I420\n",
-                                 av_get_pix_fmt_name(pixelFormat));
+        } else if (decoded->format == AV_PIX_FMT_YUV420P && ringFormat == AV_PIX_FMT_NV12) {
+            // Planar 8-bit is the software decoder's native output: luma
+            // rows copy verbatim, U and V interleave into the slot's
+            // chroma plane on the way (the old uvScratch fold, now landing
+            // directly in the destination).
+            copyPlane(out.data[0], out.linesize[0], decoded->data[0], decoded->linesize[0],
+                      out.width, out.height);
+            for (int row = 0; row < out.height / 2; ++row) {
+                const uint8_t* uRow =
+                    decoded->data[1] + static_cast<size_t>(row) * decoded->linesize[1];
+                const uint8_t* vRow =
+                    decoded->data[2] + static_cast<size_t>(row) * decoded->linesize[2];
+                uint8_t* uvRow = out.data[1] + static_cast<size_t>(row) * out.linesize[1];
+                for (int col = 0; col < out.width / 2; ++col) {
+                    uvRow[col * 2] = uRow[col];
+                    uvRow[col * 2 + 1] = vRow[col];
                 }
             }
-            if (!convert) {
-                fRing.abortClaim(out.slot);
-                bump([](Stats& s) { s.decodeErrors++; });
-                av_frame_unref(transfer);
-                return true;
-            }
-            sws_scale(convert, const_cast<const uint8_t**>(pixels->data), pixels->linesize, 0,
-                      pixels->height, out.data, out.linesize);
+            pixelsReady = true;
+        } else if ((decoded->format == AV_PIX_FMT_NV12 && ringFormat == AV_PIX_FMT_NV12) ||
+                   (decoded->format == AV_PIX_FMT_P010LE && ringFormat == AV_PIX_FMT_P010LE)) {
+            // Already the slot's layout (10-bit software decode lands
+            // here): plain plane copies, chroma row = width/2 pairs of
+            // two components = width * componentBytes bytes.
+            const int rowBytes = out.width * componentBytes;
+            copyPlane(out.data[0], out.linesize[0], decoded->data[0], decoded->linesize[0],
+                      rowBytes, out.height);
+            copyPlane(out.data[1], out.linesize[1], decoded->data[1], decoded->linesize[1],
+                      rowBytes, out.height / 2);
+            pixelsReady = true;
+        } else {
+            pixelsReady = toRingWithSws(decoded, out);
+        }
+        if (!pixelsReady) {
+            fRing.abortClaim(out.slot);
+            bump([](Stats& s) { s.decodeErrors++; });
+            return true;
         }
         const int64_t pts = decoded->best_effort_timestamp != AV_NOPTS_VALUE
                                 ? decoded->best_effort_timestamp
@@ -324,9 +451,17 @@ void VideoFrameSource::run() {
             pts != AV_NOPTS_VALUE ? static_cast<double>(pts) * fTimeBaseSeconds
                                   : fSyntheticPtsSeconds;
         fSyntheticPtsSeconds = out.ptsSeconds + fSyntheticStepSeconds;
-        fRing.publish(out);
+        if (!fRing.publish(out)) {
+            // The backing's commit refused the slot. Teardown releases a
+            // parked commit through requestShutdown() — that abort is the
+            // producer unwinding, not a decode error; only a GPU-side
+            // failure while the ring still runs counts.
+            if (!fRing.stopped()) {
+                bump([](Stats& s) { s.decodeErrors++; });
+            }
+            return true;
+        }
         bump([](Stats& s) { s.framesProduced++; });
-        av_frame_unref(transfer);
         return true;
     };
 
@@ -394,6 +529,7 @@ void VideoFrameSource::run() {
 
     av_frame_free(&frame);
     av_frame_free(&transfer);
+    av_buffer_unref(&bufferTicket);
     if (convert) {
         sws_freeContext(convert);
     }
