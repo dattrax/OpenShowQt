@@ -5,9 +5,9 @@ import QtQuick
  * title left, page buttons centred, output state right — plus the
  * reference's unsaved marker, a 5x40 red strip at the left edge while
  * the document has unwritten changes. Since 4.3 the show and edit pages
- * have content and their buttons switch root.page; stage/draw follow the
- * reference's later pages and settings with 4.5, so those buttons stay
- * present but disabled rather than pretending.
+ * have content and their buttons switch root.page; settings arrived with
+ * 4.5, and stage/draw follow the reference's later pages, so those two
+ * buttons stay present but disabled rather than pretending.
  */
 Rectangle {
     id: bar
@@ -47,8 +47,10 @@ Rectangle {
                 id: pageButton
 
                 required property string modelData
-                // Only show and edit have content (4.3); the rest wait.
+                // Show, edit and settings have content (4.3/4.5); stage
+                // and draw wait for their milestones.
                 readonly property bool usable: modelData === "show" || modelData === "edit"
+                                               || modelData === "settings"
                 readonly property bool active: modelData === bar.page
                 width: label.width + 20
                 height: 40

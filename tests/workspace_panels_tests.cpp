@@ -1,6 +1,7 @@
 /*
- * Task 4.1/4.2 fixtures: WorkspacePanels — the reference's panel resize
- * and drawer height, pinned without a window (Qt Core only).
+ * Task 4.1/4.2/4.5 fixtures: WorkspacePanels — the reference's panel
+ * resize and drawer height, and AppSettings' persisted toggles, pinned
+ * without a window (Qt Core only).
  *
  * The numbers are the measured ones (docs/reference.md §2/§4): default
  * 290, max 638, the 100.05/200.1 snap thresholds and the 270-310 home
@@ -15,6 +16,7 @@
 #include <QCoreApplication>
 
 #include "WorkspacePanels.h"
+#include "AppSettings.h"
 
 namespace {
 
@@ -29,6 +31,7 @@ bool check(bool condition, const char* what) {
 }
 
 using openshow::ui::WorkspacePanels;
+using openshow::ui::AppSettings;
 
 void exerciseSnap() {
     // Dragging to the window edge closes the panel to the handle.
@@ -120,6 +123,24 @@ void exerciseDrawer(const std::filesystem::path& settingsPath) {
 
 }  // namespace
 
+void exerciseAppSettings(const std::filesystem::path& settingsPath) {
+    // Task 4.5: the settings page's persisted toggles. Defaults follow
+    // the reference: number keys off, windowed.
+    AppSettings settings(nullptr, settingsPath);
+    check(!settings.numberKeysPresent() && !settings.fullscreen(),
+          "app settings default to number keys off and windowed");
+    settings.setNumberKeysPresent(true);
+    settings.setFullscreen(true);
+    const AppSettings reopened(nullptr, settingsPath);
+    check(reopened.numberKeysPresent() && reopened.fullscreen(),
+          "both toggles are remembered by a fresh session");
+    AppSettings back(nullptr, settingsPath);
+    back.setFullscreen(false);
+    const AppSettings again(nullptr, settingsPath);
+    check(!again.fullscreen() && again.numberKeysPresent(),
+          "switching one toggle back is remembered without disturbing the other");
+}
+
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     const std::filesystem::path settings =
@@ -129,6 +150,7 @@ int main(int argc, char* argv[]) {
     exerciseSnap();
     exerciseSession(settings);
     exerciseDrawer(settings);
+    exerciseAppSettings(settings);
     std::filesystem::remove(settings);
     if (gFailed) {
         return 1;

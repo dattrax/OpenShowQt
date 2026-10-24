@@ -528,6 +528,144 @@ bool DocumentController::setSlideBackground(const QString& assetId) {
     return true;
 }
 
+// --- slide clipboard (task 4.5) ---------------------------------------------
+
+bool DocumentController::copyCurrentSlide() {
+    flushText();
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    const openshow::domain::Id slideId = currentSlideId();
+    if (show == nullptr || slideId.empty()) {
+        setStatus(QStringLiteral("copy: no current slide"));
+        return false;
+    }
+    for (const openshow::domain::Slide& slide : show->slides) {
+        if (slide.id != slideId) {
+            continue;
+        }
+        fClip.valid = true;
+        fClip.lines = slide.lines;
+        fClip.notes = slide.notes;
+        fClip.x = slide.x;
+        fClip.y = slide.y;
+        fClip.width = slide.width;
+        fClip.height = slide.height;
+        fClip.styleId = slide.styleId;
+        fClip.backgroundAssetId = slide.backgroundAssetId;
+        emit stateChanged();  // canPaste
+        return true;
+    }
+    setStatus(QStringLiteral("copy: no current slide"));
+    return false;
+}
+
+bool DocumentController::cutCurrentSlide() {
+    // Capture first; the removal is the only edit, so one undo restores
+    // the slide exactly where it was.
+    if (!copyCurrentSlide()) {
+        return false;
+    }
+    return removeCurrentSlide();
+}
+
+bool DocumentController::pasteClip(const SlideClip& clip) {
+    flushText();
+    const openshow::domain::Id song = fCurrentSongId;
+    if (song.empty()) {
+        setStatus(QStringLiteral("paste: no current song"));
+        return false;
+    }
+    const int at = fCurrentSlide >= 0 ? fCurrentSlide + 1 : 0;
+    // A style or asset deleted since the capture falls away rather than
+    // refusing the whole paste.
+    std::string styleId = clip.styleId;
+    if (!styleId.empty() && fDocuments.findStyle(styleId) == nullptr) {
+        styleId.clear();
+    }
+    std::string background = clip.backgroundAssetId;
+    if (!background.empty() && fDocuments.findAsset(background) == nullptr) {
+        background.clear();
+    }
+    openshow::domain::Id inserted;
+    std::string error;
+    if (!edit([&] {
+            inserted = fDocuments.insertSlide(song, static_cast<size_t>(at), &error);
+            if (inserted.empty()) {
+                return false;
+            }
+            // History will not roll a refused mutation back for us, so a
+            // half-filled slide must leave on its own.
+            bool ok = fDocuments.setSlideLines(song, inserted, clip.lines, &error);
+            if (ok) {
+                ok = fDocuments.setSlideNotes(song, inserted, clip.notes, &error);
+            }
+            if (ok) {
+                ok = fDocuments.setSlideGeometry(
+                    song, inserted, clip.x, clip.y, clip.width, clip.height, &error);
+            }
+            if (ok) {
+                ok = fDocuments.setSlideStyle(song, inserted, styleId, &error);
+            }
+            if (ok) {
+                ok = fDocuments.setSlideBackground(song, inserted, background, &error);
+            }
+            if (!ok) {
+                fDocuments.removeSlide(song, inserted, nullptr);
+            }
+            return ok;
+        })) {
+        setStatus(QStringLiteral("paste: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    if (const openshow::domain::Show* show = fDocuments.findShow(song)) {
+        for (size_t i = 0; i < show->slides.size(); ++i) {
+            if (show->slides[i].id == inserted) {
+                fCurrentSlide = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    emit navigationChanged();
+    emit slideTextChanged();
+    return true;
+}
+
+bool DocumentController::pasteSlide() {
+    if (!fClip.valid) {
+        setStatus(QStringLiteral("paste: the clipboard is empty"));
+        return false;
+    }
+    return pasteClip(fClip);
+}
+
+bool DocumentController::duplicateCurrentSlide() {
+    flushText();
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    const openshow::domain::Id slideId = currentSlideId();
+    SlideClip clip;
+    bool found = false;
+    if (show != nullptr && !slideId.empty()) {
+        for (const openshow::domain::Slide& slide : show->slides) {
+            if (slide.id == slideId) {
+                clip.lines = slide.lines;
+                clip.notes = slide.notes;
+                clip.x = slide.x;
+                clip.y = slide.y;
+                clip.width = slide.width;
+                clip.height = slide.height;
+                clip.styleId = slide.styleId;
+                clip.backgroundAssetId = slide.backgroundAssetId;
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found) {
+        setStatus(QStringLiteral("duplicate: no current slide"));
+        return false;
+    }
+    return pasteClip(clip);
+}
+
 // --- playlist and library drawer (task 4.2) --------------------------------
 
 QVariantList DocumentController::playlists() const {

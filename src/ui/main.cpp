@@ -26,6 +26,7 @@
 #include "DocumentController.h"
 #include "WorkerController.h"
 #include "WorkspacePanels.h"
+#include "AppSettings.h"
 
 namespace {
 
@@ -58,6 +59,10 @@ int main(int argc, char* argv[]) {
     // maths is C++ (fixture-tested); QML maps drags onto it.
     openshow::ui::WorkspacePanels panels;
 
+    // Task 4.5: the settings page's persisted toggles (number keys,
+    // fullscreen); the page and the shortcut gates both bind to it.
+    openshow::ui::AppSettings settings;
+
     QObject::connect(&app, &QGuiApplication::aboutToQuit,
                      [&worker] { worker.shutdownNow(); });
 
@@ -79,6 +84,7 @@ int main(int argc, char* argv[]) {
     engine.rootContext()->setContextProperty("worker", &worker);
     engine.rootContext()->setContextProperty("docs", &documents);
     engine.rootContext()->setContextProperty("panels", &panels);
+    engine.rootContext()->setContextProperty("appSettings", &settings);
     // Fixed-size capture seam for the workspace layout checks (PLAN.md UI
     // acceptance: "agreed captures at fixed sizes"; the reference's
     // measurements were taken at 1680x1020).

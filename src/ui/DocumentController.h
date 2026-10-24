@@ -74,6 +74,10 @@ class DocumentController : public QObject {
     Q_PROPERTY(QString serviceDirectory READ serviceDirectory CONSTANT)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY stateChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY stateChanged)
+    // Task 4.5: the slide clipboard's paste-readiness (copy/cut fill it;
+    // the system clipboard stays with the text fields, as in the
+    // reference).
+    Q_PROPERTY(bool canPaste READ canPaste NOTIFY stateChanged)
     // One-line operator note: the last save/recovery/error worth showing.
     Q_PROPERTY(QString status READ status NOTIFY stateChanged)
 
@@ -105,6 +109,7 @@ public:
     }
     bool canUndo() const { return fHistory->canUndo(); }
     bool canRedo() const { return fHistory->canRedo(); }
+    bool canPaste() const { return fClip.valid; }
     QString status() const { return fStatus; }
 
     // --- editing (every call goes through History) ---
@@ -147,6 +152,20 @@ public:
     // Layering: an image behind the current slide's words; "" clears it
     // back to the style's background colour.
     Q_INVOKABLE bool setSlideBackground(const QString& assetId);
+
+    // --- slide clipboard (task 4.5) ---
+
+    // The reference's clipboard carries slides, not system text (text
+    // fields keep their native copy & paste). Copy and cut capture the
+    // current slide's lines, notes, box, style and background; paste
+    // inserts a slide carrying them right after the current one and
+    // selects it — one undo entry, and references that have since been
+    // deleted fall away instead of refusing the paste. Duplicate works
+    // from the current slide directly and leaves the clipboard alone.
+    Q_INVOKABLE bool copyCurrentSlide();
+    Q_INVOKABLE bool cutCurrentSlide();
+    Q_INVOKABLE bool pasteSlide();
+    Q_INVOKABLE bool duplicateCurrentSlide();
 
     // --- navigation ---
 
@@ -222,6 +241,21 @@ private:
     // Re-points the current playlist when an undo/redo or removal took it
     // away.
     void anchorPlaylistNavigation();
+    // The slide clipboard (task 4.5): one slide's whole presentation.
+    struct SlideClip {
+        bool valid = false;
+        std::vector<std::string> lines;
+        std::string notes;
+        double x = 0.0;
+        double y = 0.0;
+        double width = 0.0;
+        double height = 0.0;
+        std::string styleId;
+        std::string backgroundAssetId;
+    };
+    // Inserts a slide carrying the clip after the current position and
+    // selects it. References the service no longer holds are dropped.
+    bool pasteClip(const SlideClip& clip);
 
     openshow::domain::Documents fDocuments;
     std::unique_ptr<openshow::domain::History> fHistory;
@@ -231,6 +265,7 @@ private:
     openshow::domain::Id fCurrentSongId;
     openshow::domain::Id fCurrentPlaylistId;
     int fCurrentSlide = 0;
+    SlideClip fClip;
 
     // Debounced text edit.
     QTimer fTextCommit;

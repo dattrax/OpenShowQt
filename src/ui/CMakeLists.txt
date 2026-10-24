@@ -3,6 +3,8 @@ qt_policy(SET QTP0001 NEW)
 # The document session (task 3.3) is Qt Core only, so the headless test
 # drives the very class the QML panel binds to — no display server needed.
 add_library(openshow-ui-core STATIC
+  AppSettings.cpp
+  AppSettings.h
   DocumentController.cpp
   DocumentController.h
   LibrarySearch.cpp

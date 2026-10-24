@@ -1820,6 +1820,111 @@ of this work.
   the controller fixture's.
 - Gates: desktop **21/21**, headless **12/12**.
 
+## Task 4.5 log (2026-10-24) — shortcuts, clipboard, essential settings: DONE
+
+- **Deliverable**: the running show works from the keyboard — presenter
+  keys walk the current show straight onto the output, the core document
+  keys (undo/redo/save) and the slide clipboard (copy/cut/paste/duplicate)
+  sit beside them, and a real settings page (Ctrl+5, enabled in the top
+  bar) persists the essentials: presenter number keys and window
+  fullscreen, plus the shortcut cheat sheet that makes the whole scheme
+  learnable in-app.
+- **Controller clipboard**: `DocumentController` grew
+  `copyCurrentSlide`/`cutCurrentSlide`/`pasteSlide`/`duplicateCurrentSlide`
+  and a `canPaste` property. The clipboard is *internal to the session*
+  — the reference's clipboard carries slides, and system copy & paste
+  stays with the text fields (which is also why `QClipboard` never
+  enters this Qt-Core-only class). A clip captures the whole
+  presentation: lines, notes, box, style id, background asset. Paste
+  inserts a fresh slide right after the current one, carries every
+  field through `insertSlide` + the existing setters inside one
+  `edit()` — one undo entry, with the inserted slide removed again if
+  any carry step refuses (History does not roll refused mutations back
+  for you) — and selects it. References deleted since the capture are
+  *dropped, not fatal*: a style or asset that no longer exists simply
+  does not ride along. Cut is capture + the existing removal (one
+  entry); duplicate reads the current slide directly and never touches
+  the clipboard. Fixture: 30+ assertions — empty-clipboard refusal,
+  content identity through the compiled scene (colour/align/size/
+  line-spacing/background), selection placement, one-undo-per-entry,
+  clipboard surviving undo/redo and duplicate, the stale-asset paste,
+  and the no-slide refusals each naming themselves.
+- **`AppSettings`** (Qt Core, ui-core): two persisted toggles
+  (`numberKeysPresent` — off like the reference, `fullscreen`) in the
+  same `workspace.ini` as the panel widths, injectable path for the
+  fixture, sync-on-write since toggles are rare. Exposed to QML as
+  `appSettings` beside `docs`/`worker`/`panels`; `workspace_panels_tests`
+  now pins defaults and round-trip (one flipped, the other untouched).
+- **Presenter keys (Main.qml)**: Space/PageDown/Right/F5 advance,
+  PageUp/Left step back, Home/End jump, "." clears all — each select +
+  present, the exact pair a Present click performs. Gating is the
+  reference's: typing keeps its keys; a focused `AbstractButton` or
+  `ComboBox` (which eat Space) and the library drawer (which owns
+  arrows) silence the block; and the edit page's selected box owns
+  Left/Right through `nudging` — presenter arrows enable precisely when
+  `presenterNav && !nudging`, mutually exclusive like the Escape pair.
+- **Document keys**: Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z / Ctrl+S and the
+  clipboard letters, all gated `!typingIntoField` so text fields keep
+  their native meanings (Ctrl+Z inside a field must undo *text*); Ctrl+S
+  is ungated — no field wants it, and every controller call flushes the
+  pending edit first. Ctrl+D follows the reference's selection rule:
+  duplicate when there is a current slide, drawer toggle when there is
+  not — one pair of mutually-exclusive shortcuts. (Ctrl+C/X/V are bound
+  as literals rather than `StandardKey.*`: the standard keys carry
+  Ctrl+Ins-style aliases nobody here uses and each logs a binding
+  warning at startup.)
+- **Number keys and F11**: 1..9 play slide one..nine and 0 plays ten,
+  enabled only by the setting and silenced while typing, in the drawer
+  or on the edit page; F11 flips the window (and persists), so a
+  projector setup survives restarts.
+- **Settings page**: `page: "settings"` now has content — PRESENTER
+  checkbox (number keys), WINDOW checkbox (fullscreen), a 14-row
+  SHORTCUTS cheat sheet, and SERVICE rows (version + live worker status,
+  service directory, autosave note). Ctrl+5 is live (drawer tab cedes,
+  like Ctrl+1/2), the top-bar button is enabled, and stage/draw stay
+  honest-disabled. Captures at 1680x1020: the show page unchanged, the
+  settings page rendering every section; the journal shows no new QML
+  errors (the two pre-existing warnings — Esc's shared standard-key
+  binding and the 2.4c demo Flow — stand).
+- **Hand-test list grows**: presenter keys + "." + F5 in and out of the
+  edit page (with and without a selected box), clipboard chords on the
+  show page, Ctrl+D both states, number keys after enabling the
+  setting, F11, and the settings checkboxes surviving a restart.
+- Gates: desktop **21/21**, headless **12/12**.
+
+## M4 checkpoint (2026-10-24) — core operator workspace and editor
+
+- **The demo** ran the full M4 story through the real classes against a
+  live worker, capturing the worker's actual frames on the preview
+  stream: author a three-slide song (words, an authored 960/540 box, a
+  "Bright" style with colours/size/left-align, a background image, an
+  interlude), save it, reload in a fresh session, run the clipboard
+  (copy→paste→duplicate with one-undo-per-entry), then walk the
+  presentation the way the 4.5 keys do — select + present — and
+  exercise clear-all and restore. All 37 assertions green.
+- **Pixel proofs**: the style's amber words and navy background are
+  really on the output; a mid-service words edit changes the text band
+  while the background strip above the box is *identical* across the
+  two frames (≤1/255 per channel); clear-all lands on true black; and
+  the restore returns a frame whose background strip and amber coverage
+  match the original slide's.
+- **What the demo's first runs flagged** (all three were demo-side
+  expectations, no app bug — recorded because each names a real
+  contract): (1) a reloaded scene is *not* byte-identical across
+  save/reload — `background.assetPath` changes, because save **archives
+  the media into `<service>/assets/`** (PLAN storage rule: copy media,
+  reference the kept copy); the honest assertion is "identical with the
+  asset path set aside" plus "the archived file exists inside the
+  service". (2) Two undos after paste+duplicate legitimately land
+  navigation on the clamped index (the interlude), not on slide 1 —
+  history entries and navigation position are separate facts. (3) The
+  black→slide restore rides the media-timed fade, so the frame settles
+  after ~800 ms, not ~500 ms — the pump must outlast it.
+- **Milestones**: 4.1 shell + panels, 4.2 library drawer + playlist
+  ordering, 4.3 selection/move/resize, 4.4 styles + layering, 4.5
+  keyboard/clipboard/settings are all DONE, committed and pushed.
+  Gates at the tag: desktop **21/21**, headless **12/12**.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -2112,8 +2217,25 @@ logged here from what is observable off screen rather than claimed as seen.
    commit-on-focus-out and revert-on-refusal) and the background-image
    picker, a style-bound canvas representation, and the controller
    fixture proving one style edit lands identically on every following
-   slide's compiled scene). Next is 4.5: shortcuts, clipboard and
-   essential settings.
+   slide's compiled scene).
+   **4.5 is DONE** (the keyboard-driven show — presenter keys with the
+   reference's gating and a mutually-exclusive peace with the edit-page
+   nudge, undo/redo/save and the slide clipboard as controller ops with
+   one undo entry each and stale-reference sanitising, the Ctrl+D
+   duplicate-else-drawer rule, opt-in number keys, F11, and a settings
+   page that persists through the new `AppSettings` and documents every
+   shortcut). Gates: desktop **21/21**, headless **12/12**. The **M4
+   checkpoint** then ran the whole story — author (words, box, style
+   typography, background, interlude) → save/reload → clipboard →
+   presenter walk → clears → restore — against a live worker with
+   pixel proofs, all green; its first-run failures were all demo-side
+   expectation errors, the notable one being that save *archives media
+   into `<service>/assets/`* so a reloaded scene legitimately resolves
+   a different `assetPath` (the PLAN's storage rule, now asserted
+   honestly). **M4 is complete** — committed and pushed, annotated tag
+   **`M4`** on main's tip. Next milestone: **M5 — video and audio**
+   (video decode/presentation, embedded and standalone audio mixed,
+   volume/mute per source).
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

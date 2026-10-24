@@ -576,6 +576,134 @@ void exerciseStylePanel(const std::filesystem::path& root) {
           "with no current slide the style panel has nothing to act on");
 }
 
+// --- slide clipboard --------------------------------------------------------
+
+void exerciseClipboard(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong(QStringLiteral("Copycat"));
+    docs.addSlide();
+    docs.addSlide();
+    docs.selectSlide(0);  // addSlide leaves the newest slide current
+    const QString sourceId = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+
+    check(!docs.canPaste(), "the clipboard starts empty");
+    check(!docs.pasteSlide() && docs.status().contains(QStringLiteral("clipboard")),
+          "pasting with an empty clipboard is refused and explains itself");
+
+    // Give slide 1 a full presentation: words, a box, a pinned style and
+    // a background image.
+    docs.setSlideText(QStringLiteral("Amazing grace"));
+    check(docs.setSlideGeometry(240.0, 120.0, 1400.0, 800.0),
+          "the source slide carries a box");
+    check(docs.createStyleFromCurrent(QStringLiteral("Bright")),
+          "the source slide gets a style of its own");
+    const QString styleId = docs.currentStyle().value(QStringLiteral("id")).toString();
+    check(docs.editStyle(styleId, QStringLiteral("Bright"), QStringLiteral("#ffd23f"),
+                         QStringLiteral("#101828"), QString(), 64.0, QStringLiteral("left"),
+                         1.5),
+          "the style is edited into a distinctive look");
+    const QString mediaPath = QString::fromStdWString((root / "backdrop.jpg").wstring());
+    check(docs.importMediaFile(mediaPath) && docs.assets().size() == 1,
+          "a background image is imported");
+    const QString assetId = docs.assets().front().toMap().value(QStringLiteral("id")).toString();
+    check(docs.setSlideBackground(assetId), "the source slide gets the background");
+
+    check(docs.copyCurrentSlide(), "copy captures the current slide");
+    check(docs.canPaste(), "copy fills the clipboard");
+
+    check(docs.pasteSlide(), "paste is accepted");
+    check(docs.currentSlide() == 1, "the pasted slide is inserted after the source and selected");
+    const QVariantList rows = docs.slides();
+    check(rows.size() == 3, "paste inserts exactly one slide");
+    const QVariantMap pasted = rows.at(1).toMap();
+    const QString pastedId = pasted.value(QStringLiteral("id")).toString();
+    check(!pastedId.isEmpty() && pastedId != sourceId, "the pasted slide is a fresh slide");
+    check(pasted.value(QStringLiteral("preview")).toString() == QStringLiteral("Amazing grace"),
+          "the pasted slide carries the lines");
+    check(pasted.value(QStringLiteral("x")).toDouble() == 240.0 &&
+              pasted.value(QStringLiteral("width")).toDouble() == 1400.0 &&
+              pasted.value(QStringLiteral("y")).toDouble() == 120.0 &&
+              pasted.value(QStringLiteral("height")).toDouble() == 800.0,
+          "the pasted slide carries the box");
+    check(pasted.value(QStringLiteral("backgroundAssetId")).toString() == assetId,
+          "the pasted slide carries the background");
+    check(docs.currentStyleIsOverride() &&
+              docs.currentStyle().value(QStringLiteral("id")).toString() == styleId,
+          "the pasted slide wears the same style override");
+    const openshow::scene::Scene copyScene = compiledFor(docs, pastedId);
+    check(copyScene.background.hasImage && copyScene.items[0].color == 0xFFD23Fu &&
+              copyScene.items[0].align == "left" &&
+              copyScene.items[0].fontSize == 64.0 && copyScene.items[0].lineSpacing == 1.5,
+          "the pasted slide compiles with the same look as its source");
+
+    // One undo removes the whole pasted slide; the clipboard is not part
+    // of history, so it stays ready.
+    docs.undo();
+    check(docs.slides().size() == 2, "one undo removes the pasted slide entirely");
+    check(docs.canPaste(), "the clipboard is not part of undo/redo");
+    docs.redo();
+    check(docs.slides().size() == 3 &&
+              compiledFor(docs, docs.slides().at(1).toMap().value(QStringLiteral("id")).toString())
+                      .items[0].color == 0xFFD23Fu,
+          "redo brings the styled paste back");
+    docs.undo();
+
+    // Cut captures and removes; one undo puts the slide back with its
+    // content intact.
+    docs.selectSlide(0);
+    check(docs.cutCurrentSlide(), "cut captures the current slide and removes it");
+    check(docs.canPaste() && docs.slides().size() == 1,
+          "cut leaves one fewer slide and a full clipboard");
+    check(docs.slides().at(0).toMap().value(QStringLiteral("preview")).toString() !=
+              QStringLiteral("Amazing grace"),
+          "the cut slide really left the show");
+    docs.undo();
+    check(docs.slides().size() == 2 &&
+              docs.slides().at(0).toMap().value(QStringLiteral("preview")).toString() ==
+                  QStringLiteral("Amazing grace"),
+          "one undo restores the cut slide with its words");
+
+    // Duplicate works from the slide itself and never touches the
+    // clipboard: with "Amazing grace" loaded, duplicating the *second*
+    // (empty) slide must still paste the loaded one afterwards.
+    docs.selectSlide(1);
+    check(docs.duplicateCurrentSlide(), "a slide with no words can still be duplicated");
+    check(docs.slides().size() == 3 && docs.currentSlide() == 2,
+          "the duplicate lands after its source and is selected");
+    check(docs.slides().at(2).toMap().value(QStringLiteral("preview")).toString() ==
+              QStringLiteral("(empty)"),
+          "the duplicate is of the slide that was current, not of the clipboard");
+    docs.selectSlide(0);
+    check(docs.pasteSlide(), "the clipboard survived the duplicate");
+    check(docs.slides().at(1).toMap().value(QStringLiteral("preview")).toString() ==
+              QStringLiteral("Amazing grace"),
+          "the paste after a duplicate still yields the copied slide");
+
+    // The clipboard keeps its background reference, so deleting the asset
+    // makes that reference stale — paste drops it instead of refusing.
+    check(docs.removeAsset(assetId), "the background asset can be removed");
+    check(docs.pasteSlide(), "paste still succeeds once the captured asset is gone");
+    const QVariantMap stalePaste = docs.slides().at(2).toMap();
+    check(stalePaste.value(QStringLiteral("preview")).toString() ==
+                  QStringLiteral("Amazing grace") &&
+              stalePaste.value(QStringLiteral("backgroundAssetId")).toString().isEmpty() &&
+              !compiledFor(docs, stalePaste.value(QStringLiteral("id")).toString())
+                       .background.hasImage,
+          "the paste keeps the words and drops the deleted background");
+
+    // Refusals name themselves.
+    DocumentController bare(nullptr, root / "bare");
+    check(!bare.copyCurrentSlide() && bare.status().contains(QStringLiteral("copy")),
+          "with no slides copy has nothing to capture and says so");
+    check(!bare.cutCurrentSlide() && bare.status().contains(QStringLiteral("copy")),
+          "cut refuses where copy refuses");
+    check(!bare.duplicateCurrentSlide() &&
+              bare.status().contains(QStringLiteral("duplicate")),
+          "with no slides duplicate has nothing to copy");
+    check(!bare.pasteSlide() && bare.status().contains(QStringLiteral("clipboard")),
+          "with an empty clipboard paste says so");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -592,6 +720,7 @@ int main(int argc, char* argv[]) {
     exercisePersistence(tempRoot / "persist");
     exercisePlaylistAndLibrary(tempRoot / "playlist");
     exerciseStylePanel(tempRoot / "styles");
+    exerciseClipboard(tempRoot / "clipboard");
     std::filesystem::remove_all(tempRoot);
 
     if (gFailed) {

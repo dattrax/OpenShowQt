@@ -289,7 +289,7 @@ background video across lyric changes when its asset/settings remain unchanged.
 | 4.2 | DONE | Searchable libraries, playlist ordering | Shows/media can be found and arranged |
 | 4.3 | DONE | Object selection, move and resize | Geometry edits render correctly; support undo |
 | 4.4 | DONE | Typography, layering, reusable styles | Styles apply consistently across slides |
-| 4.5 | TODO | Shortcuts, clipboard, essential settings | Core flows work by keyboard and mouse |
+| 4.5 | DONE | Shortcuts, clipboard, essential settings | Core flows work by keyboard and mouse |
 
 Checkpoint: `M4: complete core operator workspace and editor`.
 
