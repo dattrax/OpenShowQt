@@ -26,6 +26,7 @@
 
 #include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
+#include "openshow/scene/demo.h"
 
 namespace openshow::ui {
 
@@ -49,6 +50,13 @@ class WorkerController : public QObject {
     Q_PROPERTY(qint64 previewFrames READ previewFrames NOTIFY previewChanged)
     Q_PROPERTY(qint64 previewDropped READ previewDropped NOTIFY previewChanged)
     Q_PROPERTY(QString previewError READ previewError NOTIFY previewChanged)
+    // Scene store (task 2.4c): what the worker has applied and is about
+    // to apply, and how many prepared scenes it keeps. demoSlideCount is
+    // the fixture's size, fixed for the session.
+    Q_PROPERTY(qint64 sceneActive READ sceneActive NOTIFY sceneChanged)
+    Q_PROPERTY(qint64 scenePending READ scenePending NOTIFY sceneChanged)
+    Q_PROPERTY(qint64 scenePrepared READ scenePrepared NOTIFY sceneChanged)
+    Q_PROPERTY(qint64 demoSlideCount READ demoSlideCount CONSTANT)
 
 public:
     explicit WorkerController(QObject* parent = nullptr);
@@ -67,6 +75,15 @@ public:
 
     Q_INVOKABLE void setLayerEnabled(const QString& name, bool enabled);
 
+    // Scenes (task 2.4c): prepare a scene object (the JSON the frontend's
+    // compiler emitted), present a prepared revision, or compile one of
+    // the demo fixture's slides and present it in one step — the same
+    // compileSlide path real content will take, so the demo exercises
+    // exactly the production code path.
+    Q_INVOKABLE void prepareScene(const QString& sceneJson);
+    Q_INVOKABLE void presentScene(qint64 revision);
+    Q_INVOKABLE void presentDemoSlide(qint64 index);
+
     QString statusText() const { return fStatusText; }
     bool isConnected() const { return fConnected; }
     bool outputLive() const { return fConnected && !fOutputStopped; }
@@ -76,6 +93,10 @@ public:
     QVariantMap layers() const { return fLayers; }
     qint64 currentMonitor() const { return fCurrentMonitor; }
     QVariantList displays() const { return fDisplays; }
+    qint64 sceneActive() const { return fSceneActive; }
+    qint64 scenePending() const { return fScenePending; }
+    qint64 scenePrepared() const { return fScenePrepared; }
+    qint64 demoSlideCount() const;
 
     // The copied frame for PreviewView (UI thread only).
     const QImage& previewImage() const { return fPreviewImage; }
@@ -89,6 +110,7 @@ signals:
     void outputStatusChanged();
     void displaysChanged();
     void previewChanged();
+    void sceneChanged();
 
 private slots:
     void tryConnect();
@@ -128,6 +150,15 @@ private:
     QVariantMap fLayers;
     qint64 fCurrentMonitor = -1;
     QVariantList fDisplays;
+
+    // Scene adapter state (task 2.4c): the worker's store revisions as
+    // last reported by output.status, plus the prepare-then-present
+    // chain presentDemoSlide uses (the present waits for prepare's ack).
+    qint64 fSceneActive = 0;
+    qint64 fScenePending = 0;
+    qint64 fScenePrepared = 0;
+    bool fAutoPresentScene = false;
+    openshow::domain::Documents fDemoDocuments = openshow::scene::demoDocuments();
 
     // Preview consumer state (UI thread only): the read-only mapping of
     // the worker's shm segment and the frame last copied out of it.

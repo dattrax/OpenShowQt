@@ -28,4 +28,5 @@ target_link_libraries(openshow-ui PRIVATE
   Qt6::Network
   openshow::domain
   openshow::protocol
+  openshow::scene
 )

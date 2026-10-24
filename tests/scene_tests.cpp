@@ -14,6 +14,7 @@
 
 #include "openshow/domain/documents.h"
 #include "openshow/domain/storage.h"
+#include "openshow/scene/demo.h"
 #include "openshow/scene/scene.h"
 
 namespace {
@@ -233,6 +234,55 @@ void exerciseClearedScene() {
           "the cleared scene crosses the wire intact");
 }
 
+void exerciseDemoFixture() {
+    const Documents docs = scene::demoDocuments();
+    check(scene::demoSlideCount(docs) == 4, "the demo fixture carries four slides");
+
+    std::string error;
+    bool allCompile = true;
+    bool distinct = true;
+    scene::Scene previous;
+    const std::size_t count = scene::demoSlideCount(docs);
+    for (std::size_t i = 0; i < count; ++i) {
+        scene::Scene compiled;
+        allCompile = allCompile && scene::compileDemoSlide(docs, i, &compiled, &error);
+        // Every slide of the fixture sits on the #14161f backdrop.
+        allCompile = allCompile && compiled.background.color == 0x14161Fu;
+        if (i > 0) {
+            distinct = distinct && !(compiled == previous);
+        }
+        previous = compiled;
+    }
+    check(allCompile, "every demo slide compiles");
+    check(distinct, "the demo slides compile to distinct scenes");
+
+    // The title card resolves its override, the stanza the show default,
+    // the interlude is empty — the three resolution shapes in one fixture.
+    scene::Scene title;
+    scene::Scene stanza;
+    scene::Scene interlude;
+    check(scene::compileDemoSlide(docs, 0, &title, &error) &&
+              scene::compileDemoSlide(docs, 1, &stanza, &error) &&
+              scene::compileDemoSlide(docs, 3, &interlude, &error),
+          "the fixture's three slide kinds compile");
+    check(title.items[0].fontSize == 110.0 && stanza.items[0].fontSize == 72.0,
+          "the title override beats the show default of the stanza");
+    check(stanza.items[0].lines.size() == 3 && stanza.items[0].lines[1].empty(),
+          "the stanza keeps its blank middle line");
+    check(interlude.items.size() == 1 && interlude.items[0].lines.empty(),
+          "the interlude compiles to a backdrop with no text");
+    check(!scene::compileDemoSlide(docs, count, &interlude, &error) && !error.empty(),
+          "an out-of-range demo slide refuses with an error");
+
+    // Wire round-trip of the picture the UI will actually prepare.
+    const std::string payload = boost::json::serialize(scene::toJson(title));
+    boost::system::error_code parseError;
+    scene::Scene readBack;
+    check(scene::fromJson(boost::json::parse(payload, parseError), &readBack, &error) &&
+              readBack == title,
+          "the demo title scene crosses the wire intact");
+}
+
 }  // namespace
 
 int main() {
@@ -241,6 +291,7 @@ int main() {
     exerciseImmutability(fx);
     exerciseWireRoundTrip(fx);
     exerciseClearedScene();
+    exerciseDemoFixture();
 
     if (gFailed) {
         std::fprintf(stderr, "scene_tests: FAILED\n");

@@ -1188,6 +1188,32 @@ of this work.
     revision at/past the ack, refuse a never-prepared revision, clean
     exit. Worker stays Qt-free (scene lib is too). desktop **13/13**,
     headless **10/10**.
+- **2.4c** DONE — Qt adapters and the demo fixture; M2 closes here:
+  - **`src/scene/demo.h/cpp`** — the 1.x picture as *data*: `demoDocuments()`
+    builds one show (title card with a 110px `Title` override over the
+    72px `Lyric` show default on the `#14161f` backdrop echoing
+    TestScene's colours, a stanza keeping its blank middle line, a
+    subtitle cue, a black interlude) and `compileDemoSlide` runs the
+    ordinary compiler, so the demo exercises exactly the production
+    path. `scene_tests` proves all four slides compile to distinct
+    scenes and the title survives the wire intact.
+  - **`WorkerController`**: `prepareScene(json)` sends the scene object
+    as params (the worker validates); `presentScene(revision)`; and
+    `presentDemoSlide(index)` compiles + prepares with an
+    `fAutoPresentScene` flag — `handleReply` detects the prepare
+    ack (payload carries `revision` but no `pending`/`frames`) and
+    chains the present, since the revision is the worker's to hand
+    out. `output.status`'s `scene` object lands in new
+    `sceneActive/Pending/Prepared` properties (NOTIFY `sceneChanged`);
+    Main.qml grew a scene row (button per fixture slide + store label)
+    mirroring the layer Repeater.
+  - **End-to-end acceptance**: scenario E's positive prepares are now
+    the frontend's own `compileDemoSlide` + `toJson` payloads (the
+    bytes `presentDemoSlide` puts on the socket), accepted and applied
+    by the worker — "frontend edits produce scenes the worker accepts
+    and reports applied". rpc_ipc_tests links `openshow::scene`; qmllint
+    shows only the file's pre-existing unqualified-`worker` pattern.
+    Gates: desktop **13/13**, headless **10/10**.
 
 ## Verification and environment
 
@@ -1409,13 +1435,17 @@ logged here from what is observable off screen rather than claimed as seen.
    both GPU test paths pass under `OPENSHOW_VULKAN_VALIDATION=1`, and
    the direct path benches 0 missed with the cached decoder-allocation
    fix (see the direct-decode memory regression log).
-2. **2.1–2.3 are DONE** (document model + operations; persistence as
-   a directory package with asset copying and validating load;
-   snapshot undo/redo with an id watermark plus fingerprint-driven
-   autosave — all logged above). Next session starts **2.4 Qt
-   adapters and scene compilation**: edits produce valid immutable
-   scenes — `History`/`Documents`/`styleForSlide` are the input, the
-   worker's existing render-scene path is the consumer.
+2. **M2 is complete**: 2.1 (document model), 2.2 (service packages with
+   asset copying and validating load), 2.3 (snapshot undo/redo with the
+   id watermark, fingerprint-driven autosave) and 2.4a–c (compiled
+   scene type + compiler, worker scene store with acknowledged
+   revisions, Qt adapters + demo fixture) are DONE, committed and
+   pushed; tag **`M2`** on main's tip. Gates: desktop ctest **13/13**
+   (new `scene_tests`), headless **10/10**; protocol minor 2 with the
+   `scene.store.v1` capability. Next milestone **M3 — working lyric
+   presentation**: production output layers that *draw* the active
+   scene (the session already applies and reports it), which retires
+   the hard-coded TestScene content behind scene-driven rendering.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

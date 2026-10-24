@@ -93,6 +93,36 @@ Window {
             }
         }
 
+        // Task 2.4c: compiled scenes through the same path real content
+        // will take — presentDemoSlide compiles the fixture's slide with
+        // compileSlide, prepares it, and presents the revision the
+        // worker acknowledges. The label shows the worker's store.
+        Row {
+            visible: worker.outputLive && worker.demoSlideCount > 0
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: 10
+
+            Repeater {
+                model: worker.demoSlideCount
+
+                Button {
+                    required property int index
+                    text: "scene " + (index + 1)
+                    onClicked: worker.presentDemoSlide(index)
+                }
+            }
+
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                color: "#9a9a9a"
+                font.pixelSize: 12
+                text: "scene " + worker.sceneActive
+                      + (worker.scenePending !== worker.sceneActive
+                         ? " \u2192 " + worker.scenePending : "")
+                      + " \u00b7 " + worker.scenePrepared + " prepared"
+            }
+        }
+
         // Task 1.4: the audience output as the worker sees it, streamed
         // over shared memory. Qt only paints bytes here; the scene is the
         // worker's Skia render, downscaled to preview size.

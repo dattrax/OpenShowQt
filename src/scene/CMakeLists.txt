@@ -1,4 +1,5 @@
 add_library(openshow_scene STATIC
+  demo.cpp
   scene.cpp
 )
 add_library(openshow::scene ALIAS openshow_scene)

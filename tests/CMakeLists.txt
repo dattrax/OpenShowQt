@@ -69,7 +69,7 @@ set_tests_properties(gpu_yuv_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 # frontend going away). It opens a window, so it carries the `display`
 # label, which the headless test preset excludes.
 add_executable(rpc_ipc_tests rpc_ipc_tests.cpp)
-target_link_libraries(rpc_ipc_tests PRIVATE openshow::protocol)
+target_link_libraries(rpc_ipc_tests PRIVATE openshow::protocol openshow::scene)
 add_test(NAME worker_rpc_lifecycle
   COMMAND rpc_ipc_tests $<TARGET_FILE:openshow-worker>)
 set_tests_properties(worker_rpc_lifecycle PROPERTIES LABELS display TIMEOUT 120)

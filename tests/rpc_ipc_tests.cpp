@@ -35,6 +35,7 @@
 
 #include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
+#include "openshow/scene/demo.h"
 
 namespace {
 
@@ -902,20 +903,35 @@ void testSceneStore() {
               isErrorCode(reply, proto::kInvalidParams),
           "presenting an unprepared revision is refused");
 
+    // The positive payloads are the ones the frontend really sends: demo
+    // fixture slides put through scene::compileDemoSlide + toJson — byte
+    // for byte what WorkerController::presentDemoSlide puts on the socket.
+    const openshow::domain::Documents demo = openshow::scene::demoDocuments();
+    const auto fixturePayload = [&demo](std::size_t index) {
+        openshow::scene::Scene scene;
+        std::string error;
+        if (!openshow::scene::compileDemoSlide(demo, index, &scene, &error)) {
+            check(false, "the demo fixture slide compiles for the wire");
+            return boost::json::object{};
+        }
+        boost::json::value json = openshow::scene::toJson(scene);
+        return json.as_object();
+    };
+
     // Prepare two valid scenes; each reports a distinct store revision.
     std::uint64_t first = 0;
-    if (!check(call(fd, 5, "scene.prepare", compiledScene("First"), &reply) &&
+    if (!check(call(fd, 5, "scene.prepare", fixturePayload(0), &reply) &&
                    reply.as_object().contains("result"),
-               "the first scene.prepare is acknowledged")) {
+               "the frontend's compiled title slide is accepted by scene.prepare")) {
         killWorker(pid);
         close(fd);
         waitExit(pid, 5);
         return;
     }
     first = numberValue(reply.at("result").as_object().at("revision"));
-    check(call(fd, 6, "scene.prepare", compiledScene("Second"), &reply) &&
+    check(call(fd, 6, "scene.prepare", fixturePayload(1), &reply) &&
               reply.as_object().contains("result"),
-          "the second scene.prepare is acknowledged");
+              "the frontend's compiled stanza slide is accepted too");
     const std::uint64_t second = numberValue(reply.at("result").as_object().at("revision"));
     check(first != second && first != 0 && second != 0,
           "each prepared scene gets its own non-zero revision");

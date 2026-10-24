@@ -273,6 +273,21 @@ void WorkerController::handleReply(const boost::json::object& message) {
         return;
     }
 
+    if (payload.contains("revision") && !payload.contains("pending") &&
+        !payload.contains("frames")) {  // scene.prepare's answer
+        // The scene now lives in the worker's store under this revision.
+        // A prepare that began as presentDemoSlide continues as its
+        // present; a bare prepareScene waits for the caller to choose.
+        const qint64 prepared =
+            static_cast<qint64>(payload.at("revision").to_number<std::uint64_t>());
+        if (fAutoPresentScene) {
+            fAutoPresentScene = false;
+            presentScene(prepared);
+        }
+        emit sceneChanged();
+        return;
+    }
+
     if (payload.contains("frames")) {  // output.status
         fFrames = static_cast<qint64>(payload.at("frames").to_number<std::uint64_t>());
         fRevision = static_cast<qint64>(payload.at("revision").to_number<std::uint64_t>());
@@ -282,6 +297,16 @@ void WorkerController::handleReply(const boost::json::object& message) {
         if (payload.contains("monitor")) {
             fCurrentMonitor =
                 static_cast<qint64>(payload.at("monitor").to_number<std::int64_t>());
+        }
+        if (payload.contains("scene") && payload.at("scene").is_object()) {
+            const boost::json::object& scene = payload.at("scene").as_object();
+            fSceneActive =
+                static_cast<qint64>(scene.at("active").to_number<std::uint64_t>());
+            fScenePending =
+                static_cast<qint64>(scene.at("pending").to_number<std::uint64_t>());
+            fScenePrepared =
+                static_cast<qint64>(scene.at("prepared").to_number<std::uint64_t>());
+            emit sceneChanged();
         }
         if (payload.contains("preview") && payload.at("preview").is_object()) {
             const boost::json::object& preview = payload.at("preview").as_object();
@@ -320,6 +345,54 @@ void WorkerController::setLayerEnabled(const QString& name, bool enabled) {
     sendRequest("layer.setEnabled",
                 boost::json::object{{"layer", name.toStdString()},
                                     {"enabled", enabled}});
+}
+
+void WorkerController::prepareScene(const QString& sceneJson) {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    boost::system::error_code parseError;
+    const boost::json::value parsed =
+        boost::json::parse(sceneJson.toStdString(), parseError);
+    if (parseError || !parsed.is_object()) {
+        setStatus(QStringLiteral("scene.prepare: the scene JSON is not readable"));
+        return;
+    }
+    // The scene object itself is the params (the worker validates it).
+    fAutoPresentScene = false;
+    sendRequest("scene.prepare", parsed.as_object());
+}
+
+void WorkerController::presentScene(qint64 revision) {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    sendRequest("scene.present",
+                boost::json::object{{"revision", static_cast<std::uint64_t>(revision)}});
+}
+
+void WorkerController::presentDemoSlide(qint64 index) {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    openshow::scene::Scene scene;
+    std::string error;
+    if (!openshow::scene::compileDemoSlide(fDemoDocuments,
+                                           static_cast<std::size_t>(index), &scene, &error)) {
+        setStatus(QStringLiteral("demo slide %1: %2")
+                      .arg(index)
+                      .arg(QString::fromStdString(error)));
+        return;
+    }
+    boost::json::value jsonScene = openshow::scene::toJson(scene);
+    // Present on the prepare acknowledgement: the revision is the
+    // worker's to hand out, and the store only names it once stored.
+    fAutoPresentScene = true;
+    sendRequest("scene.prepare", jsonScene.as_object());
+}
+
+qint64 WorkerController::demoSlideCount() const {
+    return static_cast<qint64>(openshow::scene::demoSlideCount(fDemoDocuments));
 }
 
 void WorkerController::selectDisplay(qint64 index) {
