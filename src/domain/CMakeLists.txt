@@ -1,4 +1,5 @@
 add_library(openshow_domain STATIC
+  documents.cpp
   version.cpp
 )
 add_library(openshow::domain ALIAS openshow_domain)

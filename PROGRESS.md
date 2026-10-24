@@ -999,6 +999,47 @@ capture are test-only pixel readbacks.
 This memory-selection fix follows `6809786`; no push was performed as part
 of this work.
 
+## Task 2.1 log (2026-10-24)
+
+- **2.1** DONE — M2 opens with the document model:
+  `src/domain/include/openshow/domain/documents.h` + `documents.cpp`,
+  namespace `openshow::domain`. Plain data (std only — the Qt-free/
+  GPU-free boundary holds) plus every edit as a named operation on one
+  `Documents` registry, because persistence (2.2) and undo (2.3) will
+  wrap exactly these calls. Design decisions worth recording:
+  - **Vocabulary** follows `docs/reference.md`'s mapping table: show =
+    deck of slides; group = a chorus/verse **label carried by slides**
+    (not a container — a group exists exactly while some slide wears
+    it, so `renameGroup` cascades and `dissolveGroup` ungroups);
+    playlist = FreeShow's "project" = ordered show references with
+    optional section markers and repeat show entries allowed.
+  - **Identity**: store-issued string ids (`"show1"`, `"slide2"`, …)
+    from one store-wide counter — unique across kinds, never recycled,
+    deterministic for tests. Slides live in their show's vector
+    (presentation order **is** vector order) but are addressed by id.
+  - **Failure contract** matches the rest of the project: `bool` +
+    optional error string; a rejected operation mutates nothing (a
+    dedicated test proves five different refusals leave the model
+    byte-identical). Names are stored trimmed — `"Chorus "` would
+    silently fork a group otherwise.
+  - **Styles** are named appearance records (`#rgb`/`#rrggbb` + finite
+    font size, 0 = renderer default) with a two-level resolution:
+    per-slide override → show default → none. Removing a style clears
+    every reference (show default and slide overrides) rather than
+    leaving dangling ids. Scene compilation (2.4) consumes them.
+  - **Cascade**: deleting a show reaps playlist entries naming it (a
+    playlist that could never run a slide is worse than a hole);
+    deleting a playlist keeps shows.
+  - `domain_tests` covers all five areas with success paths, failure
+    paths, ordering invariants (first-appearance groups, move
+    semantics where destination names the final list), and the
+    no-trace-on-refusal check. Gates: desktop **12/12**, headless
+    **9/9**.
+  - Test-writing traps hit (both my test's bugs, the model was right
+    first pass): group expectations must match the setup they just
+    performed, and "refusal leaves no trace" needs genuinely invalid
+    arguments — a valid slide id in `setSlideLines` simply succeeds.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -1219,10 +1260,12 @@ logged here from what is observable off screen rather than claimed as seen.
    both GPU test paths pass under `OPENSHOW_VULKAN_VALIDATION=1`, and
    the direct path benches 0 missed with the cached decoder-allocation
    fix (see the direct-decode memory regression log).
-2. Next session starts **M2 — 2.1 documents and application state**
-   (shows, slides, groups, styles, playlists as domain operations with
-   focused tests). The domain library (`src/domain`) is the place; the
-   worker's JSON surface grows from there.
+2. **2.1 is DONE** (document model + operations + focused tests, logged
+   above). Next session starts **2.2 persistence and asset copying**
+   — serialise `Documents` (the store is built so every change is a
+   named operation: the serialiser walks the final state, not a
+   journal) and survive save/reopen of a sample service. The worker's
+   JSON surface grows from the same model.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

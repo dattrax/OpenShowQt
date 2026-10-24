@@ -258,7 +258,7 @@ Resolve integration failures before expanding the application.
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| 2.1 | TODO | Shows, slides, groups, styles and playlists | Domain operations pass focused tests |
+| 2.1 | DONE | Shows, slides, groups, styles and playlists as `openshow::domain::Documents`: value-semantic model (no Qt/FFmpeg/Vulkan/files) with stable store-issued ids and named operations — show CRUD; slide append/insert/move/remove with lines and notes; groups as slide labels with rename-cascade, dissolve and first-appearance listing; styles with `#rgb`/`#rrggbb` and font-size validation, show-default + per-slide override resolution; playlists as ordered show references with sections, entry moves, and entry reaping when a show is deleted. Every failing operation refuses with an error and changes nothing | `domain_tests` exercises all five areas with success and failure paths plus a "refusals leave no trace" check; desktop 12/12, headless 9/9 |
 | 2.2 | TODO | Persistence and asset copying | Sample service survives save/reopen |
 | 2.3 | TODO | Undo/redo and recovery autosave | Edits reverse; interrupted sessions recover |
 | 2.4 | TODO | Qt adapters and scene compilation | Edits produce valid immutable scenes |
