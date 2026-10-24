@@ -32,6 +32,7 @@
 #include "output/OutputWindow.h"
 #include "output/Swapchain.h"
 #include "output/VulkanContext.h"
+#include "output/VulkanQueueGuard.h"
 #include "preview/PreviewStream.h"
 #include "render/TestScene.h"
 
@@ -622,6 +623,7 @@ void OutputSession::publishPreviewFrame(double elapsed, SkImage* video) {
 }
 
 void OutputSession::frame() {
+    std::lock_guard queueLock(graphicsQueueMutex());
     // The revision this frame represents: a command landing while the
     // frame is in flight must re-dirty the loop rather than be swallowed
     // (task 1.5e).
@@ -828,6 +830,7 @@ void OutputSession::frame() {
 }
 
 void OutputSession::housekeep() {
+    std::lock_guard queueLock(graphicsQueueMutex());
     // Time-based chores that must not depend on frames being presented:
     // the event-driven loop presents nothing while content sits still.
 

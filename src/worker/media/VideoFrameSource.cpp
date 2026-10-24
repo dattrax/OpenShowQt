@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <new>
+#include <vector>
 
 #include "media/FFmpeg.h"
 
@@ -35,21 +37,29 @@ enum AVPixelFormat negotiatePixelFormat(AVCodecContext* avctx,
     }
     return avcodec_default_get_format(avctx, formats);
 }
+int directBuffer(AVCodecContext* codec, AVFrame* frame, int) {
+    try {
+        return static_cast<VideoFrameSource*>(codec->opaque)->allocateDecoderBuffer(codec, frame);
+    } catch (...) {
+        return AVERROR(ENOMEM); // no C++ exception may escape into FFmpeg
+    }
+}
+AVPixelFormat softwareFormat(AVCodecContext*, const AVPixelFormat* formats) {
+    for (const auto* p = formats; *p != AV_PIX_FMT_NONE; ++p) {
+        const auto* desc = av_pix_fmt_desc_get(*p);
+        if (desc && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) return *p;
+    }
+    return AV_PIX_FMT_NONE;
+}
 }  // namespace
 
 VideoFrameSource::~VideoFrameSource() {
-    requestStop();
-    join();
     close();
 }
 
 namespace {
-// The ring's two-plane format follows the stream's bit depth (task 1.5i):
-// a 10-bit-or-deeper stream downloads as P010 from VA-API and decodes as
-// p010le in software, so both paths write the slot layout without any
-// colour conversion; everything else takes NV12. Format names the probe
-// cannot map take the 8-bit path — the decode thread's swscale fallback
-// still converts odd arriving formats correctly into it.
+// Compatibility output follows the probed depth. Software decoders often
+// return planar 10-bit, which still needs conversion to P010 in that mode.
 FrameFormat deriveRingFormat(const std::string& pixelFormat) {
     const AVPixelFormat probed = av_get_pix_fmt(pixelFormat.c_str());
     if (probed != AV_PIX_FMT_NONE) {
@@ -63,6 +73,7 @@ FrameFormat deriveRingFormat(const std::string& pixelFormat) {
 }  // namespace
 
 bool VideoFrameSource::open(const std::string& path, unsigned ringDepth, std::string* error) {
+    fDirectDecode = false; // CPU-only convenience API explicitly uses copying storage
     if (!openInternal(path, error)) {
         return false;
     }
@@ -85,13 +96,14 @@ bool VideoFrameSource::createRing(unsigned ringDepth, FrameBacking* backing,
         }
         return false;
     }
-    // The ring lives at the decoder's coded size; mid-stream resolution
-    // changes are out of scope for 1.5 (the source reports, it does not
-    // adapt). The arriving pixel format is either the slot's NV12/P010
-    // layout already (hardware download, yuv420p/p010le software) or is
-    // converted into it by a swscale context the decode thread builds
-    // lazily — only arriving frames reveal the real format.
-    return fRing.create(ringDepth, fFrameWidth, fFrameHeight, fRingFormat, backing, error);
+    fBacking = backing;
+    if (fDirectDecode && !backing) {
+        if (error) *error = "direct decoding requires a GPU frame backing";
+        return false;
+    }
+    if (fDirectDecode && !primeDirect(error)) return false;
+    return fRing.create(ringDepth, fFrameWidth, fFrameHeight, fRingFormat, backing, error,
+                        fDirectDecode);
 }
 
 bool VideoFrameSource::openInternal(const std::string& path, std::string* error) {
@@ -140,7 +152,7 @@ bool VideoFrameSource::openInternal(const std::string& path, std::string* error)
 
     const AVStream* stream = format->streams[best->index];
     const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
-    if (fHardwareDecodeEnabled && codec) {
+    if (!fDirectDecode && fHardwareDecodeEnabled && codec) {
         // VA-API hwaccels live on FFmpeg's native decoders; external
         // wrapper decoders (this build resolves AV1 to libdav1d) ignore the
         // hwaccel mechanism entirely and decode in software. Do what the
@@ -154,7 +166,7 @@ bool VideoFrameSource::openInternal(const std::string& path, std::string* error)
         }
     }
 
-    // Task 1.5h: prefer hardware decode. VA-API registers no standalone
+    // Compatibility mode may prefer hardware decode. VA-API registers no standalone
     // decoders (its "*_vaapi" codecs are encode-only), so GPU decode is a
     // hwaccel attached to the normal decoder: an AV_HWDEVICE_TYPE_VAAPI
     // device context plus a get_format hook that picks AV_PIX_FMT_VAAPI
@@ -174,7 +186,7 @@ bool VideoFrameSource::openInternal(const std::string& path, std::string* error)
         avformat_close_input(&format);
         return fail("cannot open the " + best->codec + " decoder");
     }
-    if (fHardwareDecodeEnabled) {
+    if (!fDirectDecode && fHardwareDecodeEnabled) {
         AVBufferRef* hwDevice = nullptr;
         const int err = av_hwdevice_ctx_create(&hwDevice, AV_HWDEVICE_TYPE_VAAPI, nullptr,
                                                nullptr, 0);
@@ -188,12 +200,32 @@ bool VideoFrameSource::openInternal(const std::string& path, std::string* error)
             hardwareConfigured = true;
         }
     }
+    if (fDirectDecode) {
+        const AVPixelFormat native = av_get_pix_fmt(best->pixelFormat.c_str());
+        if (!codec || !(codec->capabilities & AV_CODEC_CAP_DR1) ||
+            (native != AV_PIX_FMT_YUV420P && native != AV_PIX_FMT_NV12 &&
+             native != AV_PIX_FMT_P010LE)) {
+            avcodec_free_context(&decoder);
+            avformat_close_input(&format);
+            return fail("direct video decode requires a get_buffer2-capable software decoder "
+                        "and native yuv420p, nv12 or p010le (stream: " + best->codec + " " +
+                        best->pixelFormat + "); use --allow-video-copy for compatibility");
+        }
+        fNativePixelFormat = native;
+        decoder->thread_count = 4;
+        decoder->opaque = this;
+        decoder->get_buffer2 = &directBuffer;
+        decoder->get_format = &softwareFormat;
+    }
     if (avcodec_open2(decoder, codec, nullptr) < 0) {
         avcodec_free_context(&decoder);
         avformat_close_input(&format);
         return fail("cannot open the " + best->codec + " decoder");
     }
-    if (hardwareConfigured) {
+    if (fDirectDecode) {
+        fDecodeDescription = std::string(codec->name) + " (direct software decode into Vulkan linear images)";
+        std::fprintf(stderr, "openshow-worker: video decode: %s\n", fDecodeDescription.c_str());
+    } else if (hardwareConfigured) {
         fDecodeDescription = best->codec + " (VA-API hardware decode)";  // definitive once frames flow
     } else {
         fDecodeDescription =
@@ -202,15 +234,12 @@ bool VideoFrameSource::openInternal(const std::string& path, std::string* error)
         std::fprintf(stderr, "openshow-worker: video decode: %s\n", fDecodeDescription.c_str());
     }
 
-    // Task 1.5i: record the coded size and the ring's two-plane format here
-    // so the (optionally deferred) createRing() and a GPU backing's create()
-    // agree without any FFmpeg types crossing the header. Any arriving pixel
-    // format — yuv420p or p010le direct, another software format, or
-    // NV12/P010 transferred back from a VAAPI surface — lands in this layout,
-    // converted only when it differs.
+    // Direct mode preserves the native byte layout; compatibility uses
+    // NV12/P010 staging and may convert into that layout.
     fFrameWidth = decoder->width;
     fFrameHeight = decoder->height;
-    fRingFormat = deriveRingFormat(best->pixelFormat);
+    fRingFormat = fDirectDecode && fNativePixelFormat == AV_PIX_FMT_YUV420P
+        ? FrameFormat::kYUV420P : deriveRingFormat(best->pixelFormat);
 
     fPath = path;
     fStreamInfo = *best;
@@ -225,6 +254,13 @@ bool VideoFrameSource::openInternal(const std::string& path, std::string* error)
 }
 
 void VideoFrameSource::close() {
+    requestStop();
+    join();
+    if (fPrimedFrame) {
+        auto* frame = static_cast<AVFrame*>(fPrimedFrame);
+        av_frame_free(&frame);
+        fPrimedFrame = nullptr;
+    }
     if (fCodecContext) {
         AVCodecContext* decoder = static_cast<AVCodecContext*>(fCodecContext);
         avcodec_free_context(&decoder);
@@ -241,6 +277,7 @@ void VideoFrameSource::close() {
         fFormatContext = nullptr;
     }
     fRing.destroy();
+    fBacking = nullptr;
     fVideoStreamIndex = -1;
     fStreamInfo = {};
     fPath.clear();
@@ -249,6 +286,8 @@ void VideoFrameSource::close() {
     fRingFormat = FrameFormat::kNV12;
     std::lock_guard lock(fStatsMutex);
     fStats = {};
+    fAllocationError.clear();
+    fDecodeAllocations.clear();
     fThreadWanted = false;
     fLoop = false;
 }
@@ -258,6 +297,10 @@ bool VideoFrameSource::startDecode(bool loop, std::string* error) {
         if (error) {
             *error = "VideoFrameSource is not open";
         }
+        return false;
+    }
+    if (!fRing.slotCount()) {
+        if (error) *error = "createRing must succeed before startDecode";
         return false;
     }
     if (fThread.joinable()) {
@@ -277,6 +320,7 @@ void VideoFrameSource::requestStop() {
     // Wakes a decode thread parked on a full ring, and lets a consumer's
     // poll() drain what is visible and then fail fast.
     fRing.stop();
+    if (fBacking) fBacking->requestShutdown();
 }
 
 void VideoFrameSource::join() {
@@ -303,20 +347,144 @@ void VideoFrameSource::noteFormatNegotiated(const char* decoderName, bool hardwa
     std::fprintf(stderr, "openshow-worker: video decode: %s\n", fDecodeDescription.c_str());
 }
 
+int VideoFrameSource::allocateDecoderBuffer(void* codecPtr, void* framePtr) {
+    auto* codec = static_cast<AVCodecContext*>(codecPtr);
+    auto* frame = static_cast<AVFrame*>(framePtr);
+    auto fail = [&](const std::string& message) {
+        std::lock_guard lock(fStatsMutex);
+        if (fAllocationError.empty()) fAllocationError = message;
+        return AVERROR(EINVAL);
+    };
+    // FFmpeg requests coded dimensions here (e.g. 144x112 for visible
+    // 130x98 H.264), then applies codec cropping to the returned AVFrame.
+    if (!fBacking || frame->format != fNativePixelFormat ||
+        codec->width != fFrameWidth || codec->height != fFrameHeight ||
+        frame->width < fFrameWidth || frame->height < fFrameHeight)
+        return fail("decoder requested a different native format or resolution");
+
+    FrameAllocation request;
+    request.format = fRingFormat;
+    request.width = frame->width;
+    request.height = frame->height;
+    avcodec_align_dimensions2(codec, &request.width, &request.height, request.alignment);
+    // Reserve SIMD overread/edge padding inside every plane, including the
+    // last chroma plane. These extra rows are never copied to presentation.
+    request.height += 64;
+    for (auto& alignment : request.alignment)
+        alignment = std::max(alignment, static_cast<int>(av_cpu_max_align()));
+    std::string error;
+    auto storage = fBacking->allocateDecodeFrame(request, &error);
+    if (!storage) return fail(error.empty() ? "direct frame allocation failed" : error);
+    if (!storage->base || !storage->size || storage->format != fRingFormat ||
+        storage->width < request.width || storage->height < request.height)
+        return fail("backing returned an invalid decoder allocation");
+    const int planes = fRingFormat == FrameFormat::kYUV420P ? 3 : 2;
+    for (int p = 0; p < planes; ++p) {
+        const auto base = reinterpret_cast<uintptr_t>(storage->base);
+        const auto address = reinterpret_cast<uintptr_t>(storage->data[p]);
+        const size_t rows = p ? request.height / 2 : request.height;
+        const int rowBytes = (p && planes == 3 ? request.width / 2 : request.width) *
+                            (fRingFormat == FrameFormat::kP010 ? 2 : 1);
+        if (address < base || address - base >= storage->size ||
+            storage->linesize[p] < rowBytes || address % request.alignment[p] ||
+            storage->linesize[p] % request.alignment[p] ||
+            rows * static_cast<size_t>(storage->linesize[p]) > storage->size - (address - base))
+            return fail("mapped plane does not satisfy FFmpeg alignment or padding");
+    }
+    auto* owner = new (std::nothrow) std::shared_ptr<FrameStorage>(storage);
+    if (!owner) return AVERROR(ENOMEM);
+    frame->buf[0] = av_buffer_create(storage->base, storage->size,
+        [](void* opaque, uint8_t*) { delete static_cast<std::shared_ptr<FrameStorage>*>(opaque); },
+        owner, 0);
+    if (!frame->buf[0]) { delete owner; return AVERROR(ENOMEM); }
+    std::copy(std::begin(storage->data), std::end(storage->data), frame->data);
+    std::copy(std::begin(storage->linesize), std::end(storage->linesize), frame->linesize);
+    frame->extended_data = frame->data;
+    {
+        std::lock_guard lock(fStatsMutex);
+        fDecodeAllocations.erase(std::remove_if(fDecodeAllocations.begin(), fDecodeAllocations.end(),
+            [](const auto& ref) { return ref.expired(); }), fDecodeAllocations.end());
+        const bool known = std::any_of(fDecodeAllocations.begin(), fDecodeAllocations.end(),
+            [&](const auto& ref) { return ref.lock() == storage; });
+        if (!known) fDecodeAllocations.push_back(storage);
+    }
+    return 0;
+}
+
+std::shared_ptr<FrameStorage> VideoFrameSource::decoderStorage(void* framePtr) const {
+    const auto* frame = static_cast<const AVFrame*>(framePtr);
+    if (frame->format != fNativePixelFormat || frame->width != fFrameWidth ||
+        frame->height != fFrameHeight || !frame->buf[0]) return {};
+    std::lock_guard lock(fStatsMutex);
+    for (const auto& ref : fDecodeAllocations) {
+        auto storage = ref.lock();
+        if (!storage || frame->buf[0]->data != storage->base ||
+            frame->buf[0]->size != storage->size) continue;
+        const int planes = fRingFormat == FrameFormat::kYUV420P ? 3 : 2;
+        bool matches = true;
+        for (int p = 0; p < planes; ++p)
+            matches &= frame->data[p] == storage->data[p] &&
+                       frame->linesize[p] == storage->linesize[p];
+        if (matches) return storage;
+    }
+    return {};
+}
+
+void VideoFrameSource::failDecode(const std::string& error) {
+    std::lock_guard lock(fStatsMutex);
+    if (fStats.fatalError.empty()) {
+        fStats.fatalError = fAllocationError.empty() ? error : fAllocationError;
+        ++fStats.decodeErrors;
+        std::fprintf(stderr, "openshow-worker: video decode failed: %s\n", fStats.fatalError.c_str());
+    }
+}
+
+bool VideoFrameSource::primeDirect(std::string* error) {
+    auto* decoder = static_cast<AVCodecContext*>(fCodecContext);
+    auto* format = static_cast<AVFormatContext*>(fFormatContext);
+    AVFrame* frame = av_frame_alloc();
+    AVPacket* packet = av_packet_alloc();
+    bool flushed = false;
+    int result = frame && packet ? 0 : AVERROR(ENOMEM);
+    while (result >= 0) {
+        result = avcodec_receive_frame(decoder, frame);
+        if (result == 0) {
+            if (decoderStorage(frame)) {
+                fPrimedFrame = frame;
+                av_packet_free(&packet);
+                return true;
+            }
+            failDecode("decoder bypassed the mapped Vulkan allocator or changed format");
+            break;
+        }
+        if (result != AVERROR(EAGAIN) || flushed) break;
+        do {
+            result = av_read_frame(format, packet);
+            if (result >= 0 && packet->stream_index != fVideoStreamIndex) av_packet_unref(packet);
+            else break;
+        } while (true);
+        if (result == AVERROR_EOF) {
+            flushed = true;
+            result = avcodec_send_packet(decoder, nullptr);
+        } else if (result >= 0) {
+            result = avcodec_send_packet(decoder, packet);
+            av_packet_unref(packet);
+        }
+    }
+    failDecode("cannot prime direct decoder: " + ffError(result));
+    if (error) *error = stats().fatalError;
+    av_frame_free(&frame);
+    av_packet_free(&packet);
+    return false;
+}
+
 void VideoFrameSource::run() {
     AVFormatContext* format = static_cast<AVFormatContext*>(fFormatContext);
     AVCodecContext* decoder = static_cast<AVCodecContext*>(fCodecContext);
     AVFrame* frame = av_frame_alloc();
-    // Destination for av_hwframe_transfer_data(). Task 1.5i: the frame is
-    // normally filled with the claimed ring slot's plane pointers so the
-    // hardware download lands directly in the slot's (GPU-visible) memory —
-    // FFmpeg writes through caller buffers whenever dst->buf[0] is set, and
-    // the little buffer below is that non-owning ticket (the ring/backing
-    // owns the pixels). When a stream's download format disagrees with the
-    // ring format the frame stays clean, FFmpeg allocates its own scratch,
-    // and the swscale fallback converts into the slot.
+    // Only compatibility mode uses a transfer frame. Its temporary buffer
+    // reference describes the actual mapped destination, not a dummy ticket.
     AVFrame* transfer = av_frame_alloc();
-    AVBufferRef* bufferTicket = av_buffer_alloc(1);
     // The slot-format converter, built lazily because only arriving frames
     // reveal the real format (hardware negotiation, or a stream whose
     // software output is neither yuv420p/p010le nor the slot layout);
@@ -365,22 +533,42 @@ void VideoFrameSource::run() {
                          pixels->height, out.data, out.linesize) > 0;
     };
 
-    // Returns false only when the ring refused a frame (stop) — every other
-    // problem is counted and decoding continues.
+    int receivedFormat = AV_PIX_FMT_NONE;
+    // Direct-path and format/size failures are terminal; never silently stage.
     auto emitFrame = [&](AVFrame* decoded) -> bool {
-        // Claim first: with the slot's planes as the destination there is
-        // no intermediate frame between the decoder and the ring.
+        // Direct mode attaches the existing decoder allocation to a token;
+        // compatibility writes the token's separate staging buffers.
         VideoFrame out;
         if (!fRing.claim(&out)) {
             return false;
         }
         bool pixelsReady = false;
-        if (decoded->format == AV_PIX_FMT_VAAPI) {
+        if (receivedFormat != AV_PIX_FMT_NONE && receivedFormat != decoded->format) {
+            fRing.abortClaim(out.slot);
+            failDecode("midstream video pixel format changes are unsupported");
+            return false;
+        }
+        receivedFormat = decoded->format;
+        if (decoded->width != fFrameWidth || decoded->height != fFrameHeight) {
+            fRing.abortClaim(out.slot);
+            failDecode("midstream video resolution changes are unsupported");
+            return false;
+        }
+        if (fDirectDecode) {
+            out.storage = decoderStorage(decoded);
+            if (!out.storage) {
+                fRing.abortClaim(out.slot);
+                failDecode("decoder changed format or bypassed the mapped Vulkan allocator");
+                return false;
+            }
+            pixelsReady = true;
+        } else if (decoded->format == AV_PIX_FMT_VAAPI) {
             // A VAAPI surface must be copied back to system memory; the
             // PTS stays with the original frame because the transfer
             // copies pixels only. When the download format is the ring
             // format (the norm — both follow the stream's depth) the
             // transfer writes the slot's mapped planes directly.
+            bump([](Stats& s) { ++s.downloadedFrames; });
             const AVHWFramesContext* surfaces =
                 decoded->hw_frames_ctx
                     ? reinterpret_cast<const AVHWFramesContext*>(decoded->hw_frames_ctx->data)
@@ -392,9 +580,16 @@ void VideoFrameSource::run() {
                 transfer->height = out.height;
                 std::copy(std::begin(out.data), std::end(out.data), transfer->data);
                 std::copy(std::begin(out.linesize), std::end(out.linesize), transfer->linesize);
-                transfer->buf[0] = av_buffer_ref(bufferTicket);
+                const auto y = reinterpret_cast<uintptr_t>(out.data[0]);
+                const auto uv = reinterpret_cast<uintptr_t>(out.data[1]);
+                const auto start = std::min(y, uv);
+                const auto end = std::max(y + static_cast<size_t>(out.linesize[0]) * out.height,
+                    uv + static_cast<size_t>(out.linesize[1]) * (out.height / 2));
+                transfer->buf[0] = av_buffer_create(reinterpret_cast<uint8_t*>(start), end - start,
+                    [](void*, uint8_t*) {}, nullptr, 0);
+                if (!transfer->buf[0]) { fRing.abortClaim(out.slot); failDecode("transfer buffer allocation failed"); return false; }
                 const int err = av_hwframe_transfer_data(transfer, decoded, 0);
-                av_frame_unref(transfer);  // drops the alias and the ticket ref
+                av_frame_unref(transfer);  // drops the temporary mapping reference
                 pixelsReady = err >= 0;
             } else {
                 // Probe and download format disagree (rare): allocate
@@ -402,6 +597,7 @@ void VideoFrameSource::run() {
                 av_frame_unref(transfer);
                 const int err = av_hwframe_transfer_data(transfer, decoded, 0);
                 if (err >= 0) {
+                    bump([](Stats& s) { ++s.convertedFrames; });
                     pixelsReady = toRingWithSws(transfer, out);
                 }
                 av_frame_unref(transfer);
@@ -411,6 +607,7 @@ void VideoFrameSource::run() {
             // rows copy verbatim, U and V interleave into the slot's
             // chroma plane on the way (the old uvScratch fold, now landing
             // directly in the destination).
+            bump([](Stats& s) { ++s.copiedFrames; });
             copyPlane(out.data[0], out.linesize[0], decoded->data[0], decoded->linesize[0],
                       out.width, out.height);
             for (int row = 0; row < out.height / 2; ++row) {
@@ -427,16 +624,18 @@ void VideoFrameSource::run() {
             pixelsReady = true;
         } else if ((decoded->format == AV_PIX_FMT_NV12 && ringFormat == AV_PIX_FMT_NV12) ||
                    (decoded->format == AV_PIX_FMT_P010LE && ringFormat == AV_PIX_FMT_P010LE)) {
-            // Already the slot's layout (10-bit software decode lands
-            // here): plain plane copies, chroma row = width/2 pairs of
+            // Already the compatibility slot layout: plain plane copies.
+            // Chroma row = width/2 pairs of
             // two components = width * componentBytes bytes.
             const int rowBytes = out.width * componentBytes;
+            bump([](Stats& s) { ++s.copiedFrames; });
             copyPlane(out.data[0], out.linesize[0], decoded->data[0], decoded->linesize[0],
                       rowBytes, out.height);
             copyPlane(out.data[1], out.linesize[1], decoded->data[1], decoded->linesize[1],
                       rowBytes, out.height / 2);
             pixelsReady = true;
         } else {
+            bump([](Stats& s) { ++s.convertedFrames; });
             pixelsReady = toRingWithSws(decoded, out);
         }
         if (!pixelsReady) {
@@ -457,11 +656,11 @@ void VideoFrameSource::run() {
             // producer unwinding, not a decode error; only a GPU-side
             // failure while the ring still runs counts.
             if (!fRing.stopped()) {
-                bump([](Stats& s) { s.decodeErrors++; });
+                failDecode("Vulkan frame copy failed");
             }
-            return true;
+            return false;
         }
-        bump([](Stats& s) { s.framesProduced++; });
+        bump([&](Stats& s) { ++s.framesProduced; if (fDirectDecode) ++s.directFrames; });
         return true;
     };
 
@@ -473,6 +672,10 @@ void VideoFrameSource::run() {
             const int r = avcodec_receive_frame(decoder, frame);
             if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) {
                 return true;
+            }
+            if (r < 0 && fDirectDecode) {
+                failDecode("direct decoder receive failed: " + ffError(r));
+                return false;
             }
             if (r < 0) {
                 bump([](Stats& s) { s.decodeErrors++; });
@@ -486,6 +689,13 @@ void VideoFrameSource::run() {
         }
     };
 
+    if (fPrimedFrame) {
+        auto* primed = static_cast<AVFrame*>(fPrimedFrame);
+        if (!emitFrame(primed)) fThreadWanted = false;
+        av_frame_free(&primed);
+        fPrimedFrame = nullptr;
+        if (fThreadWanted && !drain(false)) fThreadWanted = false;
+    }
     while (fThreadWanted.load()) {
         AVPacket* packet = av_packet_alloc();
         const int readResult = av_read_frame(format, packet);
@@ -499,6 +709,7 @@ void VideoFrameSource::run() {
                         break;
                     }
                 } else {
+                    if (fDirectDecode) { failDecode("direct decoder send failed: " + ffError(sendResult)); break; }
                     bump([](Stats& s) { s.decodeErrors++; });
                 }
             } else {
@@ -523,13 +734,12 @@ void VideoFrameSource::run() {
             bump([](Stats& s) { s.eof = true; });
             break;
         }
-        bump([](Stats& s) { s.decodeErrors++; });
+        failDecode("video demux failed: " + ffError(readResult));
         break;  // a read failure is terminal; the caller sees decodeErrors
     }
 
     av_frame_free(&frame);
     av_frame_free(&transfer);
-    av_buffer_unref(&bufferTicket);
     if (convert) {
         sws_freeContext(convert);
     }

@@ -75,7 +75,7 @@ void printUsage(const char* program) {
                  "Usage: %s [--version] [--check-deps] [--socket PATH]\n"
                  "       %s --render-test [--monitor N] [--seconds S] [--idle-check]\n"
                  "       %s --av-bench FILE [--monitor N] [--seconds S] [--no-audio]\n"
-                 "                                  [--preview] [--no-hw-decode]\n"
+                 "                                  [--preview] [--allow-video-copy] [--no-hw-decode]\n"
                  "       %s --snapshot PATH [--width N] [--height N]\n"
                  "       %s --list-monitors\n"
                  "       %s --check-layers\n"
@@ -93,9 +93,8 @@ void printUsage(const char* program) {
                  "                       validation layer and log its warnings and\n"
                  "                       errors (also OPENSHOW_VULKAN_VALIDATION=1,\n"
                  "                       which additionally covers the GPU tests)\n"
-                 "  --no-hw-decode       with --av-bench: force software video decode\n"
-                 "                       (hardware is tried by default; the effective\n"
-                 "                       decoder is logged either way)\n"
+                 "  --allow-video-copy   permit copying fallback if direct decode is unsupported\n"
+                 "  --no-hw-decode       disable VA-API in the optional copying fallback\n"
                  "  --monitor N          destination override: fullscreen on monitor N\n"
                  "                       (socket mode defaults to the second display)\n"
                  "  --seconds S          with --render-test, exit after S seconds\n"
@@ -421,7 +420,7 @@ private:
 // or when FILE has no decodable audio). Reports the numbers M5 is judged
 // on: missed deadlines under 1%, drift under 50 ms.
 int runAvBench(const std::string& path, int monitorIndex, double seconds, bool useAudio,
-               bool preview, bool vulkanValidation, bool hardwareDecode) {
+               bool preview, bool vulkanValidation, bool hardwareDecode, bool allowVideoCopy) {
     openshow::media::MediaInfo info;
     std::string error;
     if (openshow::media::probeMedia(path, &info, &error) != openshow::media::ProbeStatus::kOk) {
@@ -446,29 +445,31 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
 
     openshow::media::VideoFrameSource source;
     source.setHardwareDecodeEnabled(hardwareDecode);
-    // No ring yet (1.5i): its slots belong to the GPU uploader, which is
-    // created just below once the coded size and ring format are known.
-    if (!source.open(path, &error)) {
+    const auto handles = session.gpuHandles();
+    bool ready = false;
+    for (int attempt = 0; attempt < (allowVideoCopy ? 2 : 1); ++attempt) {
+        source.setDirectDecodeEnabled(attempt == 0);
+        ready = source.open(path, &error) &&
+            uploader.create(handles.device, handles.physicalDevice, handles.graphicsQueueIndex,
+                            handles.uploadQueueIndex, handles.uploadQueue, handles.context,
+                            source.frameWidth(), source.frameHeight(), source.ringFormat(),
+                            pickYuvColorSpace(source.streamInfo()), &error) &&
+            source.createRing(openshow::worker::GpuYuvUploader::kSlots, &uploader, &error);
+        if (ready) break;
+        // No presentation has started: release all decoder references before
+        // rebuilding the backing and reopening the file from its beginning.
+        source.close();
+        uploader.destroy();
+        if (attempt == 0 && allowVideoCopy) {
+            std::fprintf(stderr, "openshow-worker: copying video fallback enabled: %s\n",
+                         error.c_str());
+        }
+    }
+    if (!ready) {
         std::fprintf(stderr, "openshow-worker: av-bench video: %s\n", error.c_str());
         return 1;
     }
     const openshow::media::VideoStreamInfo& video = source.streamInfo();
-
-    // The uploader exists before the ring does: FrameRing::create drives
-    // slotPlanes() on it, so ring slot i and GPU slot i are the same pair
-    // of images from the first frame on.
-    const auto handles = session.gpuHandles();
-    if (!uploader.create(handles.device, handles.physicalDevice, handles.graphicsQueueIndex,
-                         handles.uploadQueueIndex, handles.uploadQueue, handles.context,
-                         source.frameWidth(), source.frameHeight(), source.ringFormat(),
-                         pickYuvColorSpace(video), &error)) {
-        std::fprintf(stderr, "openshow-worker: av-bench gpu: %s\n", error.c_str());
-        return 1;
-    }
-    if (!source.createRing(openshow::worker::GpuYuvUploader::kSlots, &uploader, &error)) {
-        std::fprintf(stderr, "openshow-worker: av-bench ring: %s\n", error.c_str());
-        return 1;
-    }
 
     openshow::media::PipeWireSink sink;
     openshow::media::AudioFileFeeder feeder;
@@ -582,6 +583,12 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
         double loopBase = 0.0;
         while (!benchStop.load() && !gStopRequested.load()) {
             if (!source.ring().poll(&frame, std::chrono::milliseconds(100))) {
+                if (!source.stats().fatalError.empty()) {
+                    gStopRequested.store(true);
+                    glfwPostEmptyEvent();
+                    break;
+                }
+                if (source.ring().stopped()) break;
                 continue;  // timeout now; the teardown's stop() ends the loop
             }
             if (lastPts >= 0.0 && frame.ptsSeconds + 0.5 < lastPts && clipSeconds > 0.0) {
@@ -637,6 +644,7 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
     // stopped ring.
     uploader.requestShutdown();
     uploadThread.join();
+    source.join();
     feeder.requestStop();
     feeder.join();
     if (audio) {
@@ -652,11 +660,12 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
     const auto previewStatus = session.status().preview;
     session.setVideoPresenter(nullptr);
     session.setVideoClock(nullptr);
+    const auto decoded = source.stats();
+    source.close(); // frees codec-held reference images before Vulkan teardown
     uploader.destroy();
 
     const auto report = presenter.report();
     const auto gpu = uploader.stats();
-    const auto decoded = source.stats();
     std::printf(
         "av-bench %s: presents=%llu missed(>%.0fms)=%llu drops=%llu "
         "drift mean=%+.1fms max=%.1fms\n",
@@ -682,6 +691,15 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
                     static_cast<unsigned long long>(previewStatus.dropped));
     }
 
+    std::printf("  direct=%llu downloads=%llu CPU-copies=%llu conversions=%llu "
+                "vkCmdCopyImage=%llu decoder-images=%llu\n",
+                static_cast<unsigned long long>(decoded.directFrames),
+                static_cast<unsigned long long>(decoded.downloadedFrames),
+                static_cast<unsigned long long>(decoded.copiedFrames),
+                static_cast<unsigned long long>(decoded.convertedFrames),
+                static_cast<unsigned long long>(gpu.uploads),
+                static_cast<unsigned long long>(gpu.decodeImagesCreated));
+    if (!decoded.fatalError.empty()) return 1;
     if (report.presents == 0) {
         std::fprintf(stderr, "openshow-worker: av-bench presented nothing\n");
         return 1;
@@ -706,6 +724,7 @@ int main(int argc, char** argv) {
     bool benchPreview = false;
     bool vulkanValidation = false;
     bool hardwareDecode = true;
+    bool allowVideoCopy = false;
     int monitorIndex = openshow::worker::OutputSession::kAutoSecondDisplay;
     bool monitorGiven = false;
     double seconds = 0.0;
@@ -739,6 +758,8 @@ int main(int argc, char** argv) {
             benchPreview = true;
         } else if (argument == "--vulkan-validation") {
             vulkanValidation = true;
+        } else if (argument == "--allow-video-copy") {
+            allowVideoCopy = true;
         } else if (argument == "--no-hw-decode") {
             hardwareDecode = false;
         } else if (argument == "--socket" && i + 1 < argc) {
@@ -807,7 +828,7 @@ int main(int argc, char** argv) {
         // the decode -> GPU upload pipeline paced by the audio clock.
         return runAvBench(avBenchPath, monitorGiven ? monitorIndex : -1,
                           seconds > 0.0 ? seconds : 10.0, !noAudio, benchPreview,
-                          vulkanValidation, hardwareDecode);
+                          vulkanValidation, hardwareDecode, allowVideoCopy);
     }
 
     if (renderTest) {

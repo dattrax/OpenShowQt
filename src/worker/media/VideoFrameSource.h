@@ -1,35 +1,13 @@
 /*
- * VideoFrameSource: demux + decode on a dedicated thread (tasks 1.5b/1.5i).
+ * Dedicated demux/decode thread. Deferred open defaults to direct software
+ * decode: get_buffer2 allocates native YUV planes in the GPU backing's mapped
+ * linear images. createRing primes and validates the first frame before the
+ * render loop starts. The bounded ring then carries presentation tokens;
+ * publishing copies the retained decoder image to an optimal image on the GPU.
  *
- * Owns one container, one decoder and one decode thread. Video packets go
- * through libavcodec; frames leave the thread as NV12 (8-bit) or P010
- * (10-bit) written into FrameRing slots — the ring's format is picked at
- * open() from the stream's probed depth so that the hardware path's download
- * format and the software path's native output need no colour conversion
- * (1.5i: with a GPU backing attached, the slot planes are the mapped
- * host-visible Vulkan image and av_hwframe_transfer_data writes into them
- * directly; software yuv420p interleaves straight into the slot too). The
- * thread never blocks on anything consumer-owned beyond the bounded ring —
- * and, with a GPU backing, on its slot commit — and requestStop() breaks
- * even a full-ring wait, so shutdown never waits on a stalled consumer.
- *
- * Since 1.5h open() prefers hardware decode: a VA-API device attached to
- * the native decoder as hw_device_ctx, plus a get_format hook that picks
- * AV_PIX_FMT_VAAPI when the decoder offers it (FFmpeg's *_vaapi codecs
- * are encode-only — VA-API decode is an hwaccel, not a decoder — and
- * external wrapper decoders like libdav1d ignore hwaccels, hence the
- * native-decoder preference). Frames then arrive as GPU surfaces whose
- * pixels the decode thread copies to system memory as NV12/P010 — the win
- * is the decode work itself leaving the CPU. Anything that cannot
- * accelerate decodes in software exactly as before, and
- * decodeDescription() says which path was taken and why. A stream whose
- * probe disagrees with the download format (rare) falls back to a swscale
- * conversion into the slot, which stays correct rather than fast.
- *
- * Audio packets are skipped here on purpose: 1.5c runs its own feed from a
- * second file handle rather than sharing a demuxer, keeping every thread's
- * blocking behaviour simple (PLAN.md: never mix decode on the render or RPC
- * threads — and here, never share one demux context across threads).
+ * setDirectDecodeEnabled(false) explicitly selects the copying compatibility
+ * path (VA-API download or software plane copy/conversion). The CPU-only
+ * open(path, depth) convenience overload also uses that path.
  */
 
 #pragma once
@@ -39,6 +17,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "media/FrameRing.h"
 #include "media/MediaProbe.h"
@@ -58,11 +37,8 @@ public:
     // size. Fills streamInfo() from MediaProbe. No thread runs yet.
     bool open(const std::string& path, unsigned ringDepth, std::string* error);
 
-    // Task 1.5i split: open without a ring, then createRing() once the
-    // consumer's FrameBacking (the GPU uploader) exists to own the slot
-    // pixels. frameWidth()/frameHeight()/ringFormat() are valid after a
-    // successful open() and are exactly what createRing() will use — feed
-    // them to the backing's create() first so both sides agree.
+    // Deferred open: GPU-backed, direct software decode by default. Create
+    // the uploader from the exposed dimensions/native format, then createRing.
     bool open(const std::string& path, std::string* error);
     bool createRing(unsigned ringDepth, FrameBacking* backing, std::string* error);
     FrameFormat ringFormat() const { return fRingFormat; }
@@ -70,9 +46,13 @@ public:
     int frameHeight() const { return fFrameHeight; }
 
     void close();
+    void setDirectDecodeEnabled(bool enabled) { fDirectDecode = enabled; }
+    bool directDecodeEnabled() const { return fDirectDecode; }
 
-    // Hardware decode is attempted at open() unless switched off beforehand
-    // (--no-hw-decode exists to A/B the bench against software decoding).
+    // Private FFmpeg callback bridge; arguments remain opaque in public headers.
+    int allocateDecoderBuffer(void* codec, void* frame);
+
+    // Applies only to the explicitly selected compatibility path.
     void setHardwareDecodeEnabled(bool enabled) { fHardwareDecodeEnabled = enabled; }
 
     // Human-readable record of what decode ended up with, e.g.
@@ -105,14 +85,28 @@ public:
         uint64_t framesProduced = 0;
         uint64_t decodeErrors = 0;
         uint64_t loops = 0;
+        uint64_t directFrames = 0;
+        uint64_t downloadedFrames = 0;
+        uint64_t copiedFrames = 0;
+        uint64_t convertedFrames = 0;
+        std::string fatalError;
         bool eof = false;  // the thread ended at EOF (loop was off)
     };
     Stats stats() const;
 
 private:
     void run();
+    bool primeDirect(std::string* error);
+    std::shared_ptr<FrameStorage> decoderStorage(void* frame) const;
+    void failDecode(const std::string& error);
     bool openInternal(const std::string& path, std::string* error);
 
+    bool fDirectDecode = true;
+    FrameBacking* fBacking = nullptr;
+    void* fPrimedFrame = nullptr; // AVFrame*, validated before starting the thread
+    int fNativePixelFormat = -1;
+    std::vector<std::weak_ptr<FrameStorage>> fDecodeAllocations;
+    std::string fAllocationError; // guarded by fStatsMutex (codec callbacks)
     std::string fPath;
     VideoStreamInfo fStreamInfo;
     FrameRing fRing;

@@ -1,34 +1,13 @@
 /*
- * FrameRing: the bounded NV12/P010 frame queue (tasks 1.5b, 1.5i).
+ * Bounded producer/consumer presentation queue. In direct mode slots contain
+ * only tokens: publish copies a retained decoder allocation through the GPU
+ * backing before making its token visible. Decoder images are independent of
+ * these tokens and may remain referenced by FFmpeg after presentation.
  *
- * Fixed-depth ring of two-plane 4:2:0 frames between the decode thread
- * (producer) and one consumer — the benchmark harness and, since 1.5i, the
- * GPU uploader whose host-visible slot images *are* the slot storage. The
- * slot bookkeeping follows PreviewStream: a slot is claimable only once the
- * consumer has released it, and the queue never grows (PLAN.md: "decoding
- * queues... without growing"). The difference is direction of pressure: the
- * preview producer drops, this producer *waits*, because silently dropped
- * decode output would be a benchmark lie. A wait always honours stop(), so
- * no thread blocks forever.
- *
- * Slot buffers are allocated once at create() for a fixed resolution —
- * either by the ring itself (plain memory) or by an attached FrameBacking
- * (the GPU slot pair's mapped linear image, task 1.5i). Frames cross as
- * pointers into those buffers. With a backing attached, publish() commits
- * the slot first: a frame only becomes visible to poll() once the GPU can
- * read its pixels (the LINEAR→OPTIMAL copy has completed), which is what
- * lets the consumer draw slot contents with no further synchronisation.
- * Frames are visible strictly in production order; a clocked consumer skips
- * late frames by polling and releasing them unused.
- *
- * Plane conventions follow FFmpeg's semi-planar formats: data[0] is the Y
- * plane, data[1] the interleaved UV plane and data[2] = data[1] + 1; every
- * row is addressed by its linesize, which an external backing may pad
- * beyond the visible width (a Vulkan LINEAR image's rowPitch).
- *
- * Threading: one producer and one consumer; claim/publish from the producer
- * thread, poll/release from the consumer thread. stop() may come from
- * anywhere. FFmpeg types live only in the .cpp (Impl).
+ * Compatibility/CPU mode owns fixed native plane buffers or obtains them
+ * from the backing. All rows honor linesize; unused planes are null.
+ * claim/publish run on the producer, poll/release on one consumer. stop is
+ * idempotent and wakes waiters, including before initialization/after teardown.
  */
 
 #pragma once
@@ -38,23 +17,17 @@
 #include <memory>
 #include <string>
 
+#include "media/FrameStorage.h"
+
 namespace openshow::media {
 
-// Two-plane 4:2:0 slot layouts: 8-bit NV12 and 16-bit little-endian P010.
-enum class FrameFormat {
-    kNV12,
-    kP010,
-};
-
-// Optional external owner of the ring's slot pixels (task 1.5i: the GPU
-// uploader hands out mappings of its host-visible LINEAR images, so the
-// decode side's destination pointer *is* the GPU-visible staging memory).
+// GPU backing for direct allocations/copies and compatibility slot buffers.
 class FrameBacking {
 public:
     virtual ~FrameBacking() = default;
 
-    // Fills the semi-planar plane pointers and linesizes for one slot
-    // (data[2] = data[1] + 1, data[3] = nullptr). Called once per slot by
+    // Fills native plane pointers and linesizes for a compatibility slot
+    // (unused planes are null). Called once per slot by
     // FrameRing::create(); the memory must stay valid until destroy().
     virtual bool slotPlanes(unsigned slot, uint8_t* data[4], int linesize[4]) = 0;
 
@@ -63,10 +36,21 @@ public:
     // done with it. Called by publish() before the frame becomes visible;
     // false aborts the publish.
     virtual bool commit(unsigned slot) = 0;
+
+    // Direct decoding: allocation may run on a codec worker thread. It must
+    // fail rather than wait for decoder-held reference frames to be released.
+    virtual std::shared_ptr<FrameStorage> allocateDecodeFrame(const FrameAllocation&,
+                                                            std::string* error) {
+        if (error) *error = "backing does not support direct decoder allocation";
+        return {};
+    }
+    virtual bool commitFrame(unsigned, const std::shared_ptr<FrameStorage>&) { return false; }
+    virtual void requestShutdown() {}
 };
 
 // Valid from claim() (producer) or poll() (consumer) until publish()/
-// abortClaim()/release(). `data` points into ring-or-backing-owned buffers.
+// abortClaim()/release(). Compatibility `data` points into owned buffers;
+// direct producers attach decoder storage, which the consumer does not need.
 struct VideoFrame {
     uint32_t slot = 0;
     int width = 0;
@@ -76,6 +60,7 @@ struct VideoFrame {
     double ptsSeconds = 0.0;
     uint64_t sequence = 0;  // 1, 2, 3… in production order; never reset,
                             // not even across loops
+    std::shared_ptr<FrameStorage> storage; // producer-only, released after the copy fence
 };
 
 class FrameRing {
@@ -90,10 +75,10 @@ public:
     // Returns false with *error on bad parameters or allocation failure.
     bool create(unsigned slotCount, int width, int height, std::string* error);
 
-    // Full form (task 1.5i): pick the two-plane format and optionally let a
-    // FrameBacking own the slot pixels instead of the ring allocating them.
+    // Select native plane storage, or direct presentation tokens without
+    // per-slot pixel buffers (requires a backing and publish(frame.storage)).
     bool create(unsigned slotCount, int width, int height, FrameFormat format,
-                FrameBacking* backing, std::string* error);
+                FrameBacking* backing, std::string* error, bool direct = false);
     void destroy();
 
     unsigned slotCount() const;

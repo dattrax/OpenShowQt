@@ -302,9 +302,9 @@ int main() {
               "slotPlanes rejects a slot index outside the ring");
         check(uploader.slotPlanes(0, planes, linesize), "slotPlanes hands out slot 0's planes");
         check(planes[0] != nullptr && planes[1] != nullptr && linesize[0] >= kW &&
-                  linesize[1] >= kW && planes[2] == planes[1] + 1 && linesize[2] == linesize[1] &&
+                  linesize[1] >= kW && planes[2] == nullptr && linesize[2] == 0 &&
                   planes[3] == nullptr,
-              "planes follow the semi-planar convention (V at +1, strides set)");
+              "semi-planar images expose exactly two planes");
         if (gFailed) {
             return 1;
         }
@@ -346,6 +346,9 @@ int main() {
     check(stats.wraps == 3, "three distinct slots ever handed to Skia (one wrap each)");
 
     uploader.destroy();
+    firstImage.reset();
     gr.reset();
+    vk.destroy();
+    check(vk.validationErrors() == 0, "no Vulkan validation or synchronization errors");
     return gFailed ? 1 : 0;
 }

@@ -107,8 +107,8 @@ public:
         linesize[0] = 16;
         data[1] = data[0] + 16 * 16;
         linesize[1] = 16;
-        data[2] = data[1] + 1;
-        linesize[2] = 16;
+        data[2] = nullptr;
+        linesize[2] = 0;
         data[3] = nullptr;
         ++planeCalls;
         lastPlane = static_cast<int>(slot);
@@ -139,7 +139,9 @@ bool exerciseBacking() {
                "create pulls every slot's planes from the backing") && ok;
 
     VideoFrame frame;
-    ok = check(ring.claim(&frame) && frame.linesize[0] == 16 && frame.data[2] == frame.data[1] + 1,
+    ok = check(ring.claim(&frame) && frame.linesize[0] == 16 &&
+                   frame.data[0] == backing.buffers[frame.slot].data() &&
+                   frame.data[1] == frame.data[0] + 16 * 16 && frame.data[2] == nullptr,
                "claimed planes are the backing's own") && ok;
     frame.data[0][0] = 0x2a;  // the backing's buffer is the writable slot
     frame.ptsSeconds = 3.0;

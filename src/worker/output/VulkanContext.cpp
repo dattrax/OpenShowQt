@@ -45,11 +45,13 @@ ValidationLog gValidationLog;
 // identical message is printed in full three times and then once every 60th
 // occurrence with a repeat count.
 VKAPI_ATTR VkBool32 VKAPI_CALL validationMessage(
-    VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT,
-    const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
+    const VkDebugUtilsMessengerCallbackDataEXT* data, void* user) {
     // Only WARNING and ERROR severities are registered, so the bits arrive
     // singly (VkDebugUtilsMessageSeverityFlagBitsEXT).
     const bool isError = severity == VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    if (isError && (type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) && user)
+        ++*static_cast<std::atomic<uint64_t>*>(user);
     const char* level = isError ? "error" : "warn";
     std::string key = data->pMessageIdName != nullptr ? data->pMessageIdName
                                                       : (data->pMessage != nullptr ? data->pMessage
@@ -107,6 +109,7 @@ bool VulkanContext::createInstance(bool withWindowExtensions, bool validation) {
         // are lost, as in every vk-bootstrap application.
         instanceBuilder.enable_validation_layers(true);
         instanceBuilder.set_debug_callback(&validationMessage);
+        instanceBuilder.set_debug_callback_user_data_pointer(&fValidationErrors);
         instanceBuilder.set_debug_messenger_severity(
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT);

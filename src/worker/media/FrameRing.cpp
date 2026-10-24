@@ -43,6 +43,7 @@ struct FrameRing::Impl {
     int height = 0;
     FrameFormat format = FrameFormat::kNV12;
     FrameBacking* backing = nullptr;  // nullptr: the ring owns the pixels
+    bool direct = false;
     FrameRing::Stats stats;
 };
 
@@ -54,7 +55,7 @@ bool FrameRing::create(unsigned slotCount, int width, int height, std::string* e
 }
 
 bool FrameRing::create(unsigned slotCount, int width, int height, FrameFormat format,
-                       FrameBacking* backing, std::string* error) {
+                       FrameBacking* backing, std::string* error, bool direct) {
     // Re-create is allowed: drop any previous buffers first.
     destroy();
     auto fail = [&](const std::string& message) {
@@ -68,7 +69,7 @@ bool FrameRing::create(unsigned slotCount, int width, int height, FrameFormat fo
         return fail("FrameRing needs at least one slot");
     }
     if (width <= 0 || height <= 0 || (width & 1) || (height & 1)) {
-        return fail("FrameRing needs positive even dimensions for NV12/P010");
+        return fail("FrameRing needs positive even dimensions for 4:2:0");
     }
 
     fImpl = std::make_unique<Impl>();
@@ -77,11 +78,14 @@ bool FrameRing::create(unsigned slotCount, int width, int height, FrameFormat fo
     fImpl->height = height;
     fImpl->format = format;
     fImpl->backing = backing;
+    fImpl->direct = direct;
+    if (direct && !backing) return fail("direct ring needs a frame backing");
     fImpl->slots.resize(slotCount);
-    const AVPixelFormat pixFmt = format == FrameFormat::kP010 ? AV_PIX_FMT_P010LE
-                                                              : AV_PIX_FMT_NV12;
+    const AVPixelFormat pixFmt = format == FrameFormat::kYUV420P ? AV_PIX_FMT_YUV420P
+        : format == FrameFormat::kP010 ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
     for (unsigned i = 0; i < slotCount; ++i) {
         Impl::Slot& slot = fImpl->slots[i];
+        if (direct) continue; // only presentation tokens; decoder owns the pixels
         if (backing) {
             if (!backing->slotPlanes(i, slot.data, slot.linesize)) {
                 return fail("FrameRing slot backing refused a slot");
@@ -91,11 +95,6 @@ bool FrameRing::create(unsigned slotCount, int width, int height, FrameFormat fo
         if (av_image_alloc(slot.data, slot.linesize, width, height, pixFmt, 32) < 0) {
             return fail("FrameRing could not allocate frame buffers");
         }
-        // av_image_fill_arrays leaves the semi-planar second chroma entry
-        // unset; FFmpeg's convention hands V inside the same plane at +1
-        // bytes with the same stride, and a VAAPI transfer writes per
-        // component honouring linesize[2] — set it before anyone reads it.
-        slot.linesize[2] = slot.linesize[1];
     }
     return true;
 }
@@ -145,6 +144,7 @@ bool FrameRing::claim(VideoFrame* out) {
         std::copy(std::begin(slot.linesize), std::end(slot.linesize), out->linesize);
         out->ptsSeconds = 0.0;
         out->sequence = 0;
+        out->storage.reset();
         return true;
     }
     return false;  // unreachable: the predicate just found a free slot
@@ -155,7 +155,9 @@ bool FrameRing::publish(const VideoFrame& frame) {
     // slot's previous frame has been released (and its copy retired),
     // which is exactly the back-pressure the producer thread should feel —
     // nothing else may hold the ring mutex while it waits.
-    if (fImpl->backing && !fImpl->backing->commit(frame.slot)) {
+    if (fImpl->backing && !(fImpl->direct
+            ? fImpl->backing->commitFrame(frame.slot, frame.storage)
+            : fImpl->backing->commit(frame.slot))) {
         abortClaim(frame.slot);
         return false;
     }
@@ -223,6 +225,7 @@ void FrameRing::release(uint32_t slot) {
 }
 
 void FrameRing::stop() {
+    if (!fImpl) return;
     {
         std::lock_guard lock(fImpl->mutex);
         fImpl->stopped = true;
@@ -240,6 +243,7 @@ bool FrameRing::stopped() const {
 }
 
 FrameRing::Stats FrameRing::stats() const {
+    if (!fImpl) return {};
     std::lock_guard lock(fImpl->mutex);
     return fImpl->stats;
 }

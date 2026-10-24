@@ -223,12 +223,60 @@ cmake --preset desktop \
 The same options work with the headless preset. Keep headers and libraries
 from the same Skia revision and configuration.
 
-## Optional FFmpeg hardware decoding
+## Video decode and GPU composition
 
-**OpenShowQt currently uses software decoding and GPU composition.** Installing
-hardware-decoding drivers enables system capabilities; application support for
-hardware frames still needs to be implemented. No additional FFmpeg build is
-needed for the installed FFmpeg 9.0.2 to use VA-API.
+`--av-bench FILE` defaults to software decoding directly into host-mapped
+Vulkan linear images through FFmpeg's `get_buffer2` allocator. There is no
+post-decode CPU frame copy or conversion. Native planar 8-bit YUV420, NV12,
+and P010 are supported when the decoder honors custom buffers and the Vulkan
+device supplies compatible plane layouts. Each published frame uses one
+`vkCmdCopyImage()` (all plane regions) into an optimal image, borrowed once
+per presentation slot by Skia with its Vulkan YCbCr sampler.
+
+Decoder references use a separate pool capped at 64 linear images, with four
+codec threads and four presentation slots. Allocations include decoder padding;
+only visible pixels are copied. Images remain alive until both FFmpeg and the
+copy fence release them. Host access uses `PREINITIALIZED`/`GENERAL` layouts;
+semaphores order copies and Skia sampling, including slot reuse.
+
+Unsupported decoders, native formats (including low-bit-aligned planar 10-bit
+YUV), or device layouts fail explicitly. To permit a copying compatibility
+fallback during initial setup:
+
+```sh
+build/src/worker/openshow-worker --av-bench /path/to/video.mp4 --allow-video-copy
+```
+
+This reopens the file using VA-API downloads when available, or software
+plane copies/conversion. `--no-hw-decode` disables VA-API in that fallback;
+it does not change the direct software path. Resolution or pixel-format
+changes after playback starts are terminal errors. The benchmark reports
+`direct`, `downloads`, `CPU-copies`, `conversions`, `vkCmdCopyImage`, and
+`decoder-images` counts; the first three copying counters stay zero in direct
+mode. Preview capture and test readbacks are separate from video ingestion.
+
+`gpu_decode_tests` checks real H.264/HEVC decoding, B-frame order, cropping,
+reference lifetimes, looping, all three native plane layouts, pool exhaustion,
+and explicit High10 compatibility conversion. Enable Vulkan synchronization
+validation with:
+
+```sh
+OPENSHOW_VULKAN_VALIDATION=1 \
+VK_LAYER_VALIDATE_SYNC=1 \
+ctest --test-dir build-headless -R 'gpu_(decode|yuv)_tests' --output-on-failure
+```
+
+For an API capture, run `./gpu_decode_tests --capture-direct` from
+`build-headless/tests` under a Vulkan capture layer. This mode decodes
+24 H.264 frames; the capture should contain 24 three-plane `vkCmdCopyImage`
+commands, with no extra video upload or RGB conversion image.
+
+## Optional FFmpeg hardware decoding in compatibility mode
+
+The installed FFmpeg 9.0.2 already supports VA-API; no additional FFmpeg build
+is needed. Hardware decode is used only by the explicitly permitted copying
+fallback, because downloading its surfaces does not meet the direct-path
+contract.
 
 On this AMD/Fedora setup, H.264 and HEVC hardware decoding need the Freeworld
 Mesa codec packages. For VA-API:
@@ -277,5 +325,6 @@ As of 24 October 2026 on this machine:
 - `mesa-vulkan-drivers-freeworld` is not installed, and H.264/HEVC Vulkan
   decoding has not been verified.
 
-These are functionality checks, not performance benchmarks or evidence that
-OpenShowQt itself is using hardware decoding.
+These driver checks do not select an application decode path. OpenShowQt logs
+its effective decoder; direct mode uses software decoding, while the optional
+compatibility fallback may use VA-API.

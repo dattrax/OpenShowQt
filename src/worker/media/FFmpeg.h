@@ -16,6 +16,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/buffer.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/cpu.h>
 #include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>

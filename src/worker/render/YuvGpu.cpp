@@ -1,20 +1,9 @@
-/*
- * Two-plane slot uploads on the upload queue, wrapped for Skia through a
- * ycbcr conversion — see YuvGpu.h for the contract; this file is the
- * Vulkan recording.
- *
- * Layout bookkeeping worth spelling out: the LINEAR images never leave
- * TRANSFER_SRC_OPTIMAL after their first barrier (host writes to coherent
- * memory need no GPU stage — availability rides on the queue submit that
- * performs the copy), and the OPTIMAL images ping-pong
- * SHADER_READ_ONLY ↔ TRANSFER_DST with exactly one barrier per direction.
- * Both transitions use the COLOR aspect, which for a multi-planar image
- * names all its planes.
- */
-
 #include "render/YuvGpu.h"
+#include "output/VulkanQueueGuard.h"
 
 #include <chrono>
+#include <climits>
+#include <algorithm>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -29,6 +18,7 @@
 #include "include/gpu/ganesh/SkImageGanesh.h"
 #include "include/gpu/ganesh/vk/GrVkBackendSurface.h"
 #include "include/gpu/ganesh/vk/GrVkTypes.h"
+#include "include/gpu/ganesh/vk/GrVkBackendSemaphore.h"
 
 namespace openshow::worker {
 
@@ -69,7 +59,7 @@ struct GpuYuvUploader::Slot {
     VkDeviceMemory linearMemory = VK_NULL_HANDLE;
     VkDeviceSize linearSize = 0;
     void* linearMap = nullptr;
-    VkSubresourceLayout plane[2] = {};
+    VkSubresourceLayout plane[3] = {};
     // The sample side: device-local OPTIMAL twin of the same format.
     VkImage optimal = VK_NULL_HANDLE;
     VkDeviceMemory optimalMemory = VK_NULL_HANDLE;
@@ -85,10 +75,25 @@ struct GpuYuvUploader::Slot {
     // Recording side (producer thread only).
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
+    VkSemaphore ready = VK_NULL_HANDLE;
+    bool readyPending = false; // producer/consumer handoff, protected by slot ownership
 
     // Draw-thread only.
     sk_sp<SkImage> wrapped;
     bool wrapFailed = false;
+};
+
+struct GpuYuvUploader::DecodeImage final : openshow::media::FrameStorage {
+    const GpuYuvUploader* owner = nullptr;
+    VkDevice device = VK_NULL_HANDLE;
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    bool firstTransfer = true;
+    ~DecodeImage() override {
+        if (base) vkUnmapMemory(device, memory);
+        if (image) vkDestroyImage(device, image, nullptr);
+        if (memory) vkFreeMemory(device, memory, nullptr);
+    }
 };
 
 GpuYuvUploader::GpuYuvUploader() = default;
@@ -115,13 +120,15 @@ bool GpuYuvUploader::create(VkDevice device, VkPhysicalDevice physicalDevice,
     }
 
     fFormat = format;
-    fVulkanFormat = format == openshow::media::FrameFormat::kP010
+    fVulkanFormat = format == openshow::media::FrameFormat::kYUV420P
+                        ? VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM
+                        : format == openshow::media::FrameFormat::kP010
                         ? VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
                         : VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
     fSkColorType = format == openshow::media::FrameFormat::kP010 ? kRGBA_1010102_SkColorType
                                                                  : kRGB_888x_SkColorType;
 
-    // The wrap in imageForSlot() needs the device to sample the two-plane
+    // The wrap in imageForSlot() needs the device to sample the native YUV
     // format optimally, and the conversion's chroma siting and filter must
     // be ones this format actually reports — query once and build the
     // persistent ycbcr info from the answer rather than letting a wrap
@@ -138,7 +145,7 @@ bool GpuYuvUploader::create(VkDevice device, VkPhysicalDevice physicalDevice,
     const VkFormatFeatureFlags features =
         optimalQuery == VK_SUCCESS ? formatFeatures.optimalTilingFeatures : 0;
     if (!(features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) {
-        return fail("device cannot sample the two-plane YUV format the stream needs");
+        return fail("device cannot sample the native YUV format the stream needs");
     }
     // Midpoint siting matches how the old raw-plane path sampled chroma
     // (same texture coordinates as luma); cosited is the fallback only if
@@ -149,7 +156,7 @@ bool GpuYuvUploader::create(VkDevice device, VkPhysicalDevice physicalDevice,
     } else if (features & VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT) {
         siting = VK_CHROMA_LOCATION_COSITED_EVEN;
     } else {
-        return fail("two-plane YUV format supports neither midpoint nor cosited chroma siting");
+        return fail("native YUV format supports neither midpoint nor cosited chroma siting");
     }
     const VkFilter chromaFilter =
         (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT)
@@ -196,7 +203,7 @@ bool GpuYuvUploader::create(VkDevice device, VkPhysicalDevice physicalDevice,
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 0, &linearCreatable);
     if (linearQuery != VK_SUCCESS ||
         !(formatFeatures.linearTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT)) {
-        return fail("device cannot use the two-plane YUV format with linear tiling");
+        return fail("device cannot use the native YUV format with linear tiling");
     }
 
     fDevice = device;
@@ -214,80 +221,82 @@ bool GpuYuvUploader::create(VkDevice device, VkPhysicalDevice physicalDevice,
     return true;
 }
 
-bool GpuYuvUploader::createSlotResources(Slot& slot, std::string* error) {
+bool GpuYuvUploader::createImage(VkImageTiling tiling, VkImageUsageFlags usage,
+        VkMemoryPropertyFlags memoryProperties, int width, int height,
+        VkImage* image, VkDeviceMemory* memory, VkDeviceSize* size, std::string* error) {
     const uint32_t families[2] = {fGraphicsQueueIndex, fUploadQueueIndex};
     const uint32_t familyCount = fGraphicsQueueIndex == fUploadQueueIndex ? 1u : 2u;
-
-    auto createImage = [&](VkImageTiling tiling, VkImageUsageFlags usage,
-                           VkMemoryPropertyFlags memoryProperties, VkImage* image,
-                           VkDeviceMemory* memory, VkDeviceSize* size,
-                           const char* what) -> bool {
-        VkImageCreateInfo imageInfo = {};
-        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.format = fVulkanFormat;
-        imageInfo.extent.width = static_cast<uint32_t>(fWidth);
-        imageInfo.extent.height = static_cast<uint32_t>(fHeight);
-        imageInfo.extent.depth = 1;
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.tiling = tiling;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = usage;
-        imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
-        imageInfo.queueFamilyIndexCount = familyCount;
-        imageInfo.pQueueFamilyIndices = families;
-        if (vkCreateImage(fDevice, &imageInfo, nullptr, image) != VK_SUCCESS) {
-            *error = std::string("vkCreateImage (") + what + ") failed";
-            return false;
-        }
-        VkMemoryRequirements requirements = {};
-        vkGetImageMemoryRequirements(fDevice, *image, &requirements);
-        uint32_t memoryType = 0;
-        if (!findMemoryType(fPhysicalDevice, requirements.memoryTypeBits, memoryProperties,
-                            &memoryType)) {
-            *error = std::string("no host/device memory type for ") + what;
-            return false;
-        }
-        VkMemoryAllocateInfo allocate = {};
-        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocate.allocationSize = requirements.size;
-        allocate.memoryTypeIndex = memoryType;
-        if (vkAllocateMemory(fDevice, &allocate, nullptr, memory) != VK_SUCCESS) {
-            *error = std::string("vkAllocateMemory for ") + what + " failed";
-            return false;
-        }
-        if (vkBindImageMemory(fDevice, *image, *memory, 0) != VK_SUCCESS) {
-            *error = std::string("vkBindImageMemory for ") + what + " failed";
-            return false;
-        }
-        *size = requirements.size;
-        return true;
-    };
-
-    // Write side. LINEAR tiling is what makes the planes addressable from
-    // the host: the driver hands back a plane offset and rowPitch per
-    // aspect, and the decode side writes through that mapping (host-
-    // coherent memory: no flushes). TRANSFER_SRC is all the image ever
-    // does on the GPU.
-    if (!createImage(VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     &slot.linear, &slot.linearMemory, &slot.linearSize, "linear write slot")) {
+    VkImageCreateInfo imageInfo = {};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = fVulkanFormat;
+    imageInfo.extent.width = static_cast<uint32_t>(width);
+    imageInfo.extent.height = static_cast<uint32_t>(height);
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = tiling;
+    imageInfo.initialLayout = tiling == VK_IMAGE_TILING_LINEAR
+        ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = usage;
+    imageInfo.sharingMode = familyCount > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.queueFamilyIndexCount = familyCount > 1 ? familyCount : 0;
+    imageInfo.pQueueFamilyIndices = families;
+    if (vkCreateImage(fDevice, &imageInfo, nullptr, image) != VK_SUCCESS) {
+        *error = "vkCreateImage failed";
         return false;
     }
-    if (vkMapMemory(fDevice, slot.linearMemory, 0, slot.linearSize, 0, &slot.linearMap) !=
-        VK_SUCCESS) {
-        slot.linearMap = nullptr;
-        *error = "vkMapMemory for the linear write slot failed";
+    VkMemoryRequirements requirements = {};
+    vkGetImageMemoryRequirements(fDevice, *image, &requirements);
+    uint32_t memoryType = 0;
+    if (!findMemoryType(fPhysicalDevice, requirements.memoryTypeBits, memoryProperties,
+                        &memoryType)) {
+        *error = "no compatible Vulkan memory type";
         return false;
     }
-    for (int plane = 0; plane < 2; ++plane) {
-        VkImageSubresource sub = {};
-        sub.aspectMask = plane == 0 ? VK_IMAGE_ASPECT_PLANE_0_BIT : VK_IMAGE_ASPECT_PLANE_1_BIT;
-        sub.mipLevel = 0;
-        sub.arrayLayer = 0;
-        vkGetImageSubresourceLayout(fDevice, slot.linear, &sub, &slot.plane[plane]);
+    VkMemoryAllocateInfo allocate = {};
+    allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex = memoryType;
+    if (vkAllocateMemory(fDevice, &allocate, nullptr, memory) != VK_SUCCESS) {
+        *error = "vkAllocateMemory failed";
+        return false;
+    }
+    if (vkBindImageMemory(fDevice, *image, *memory, 0) != VK_SUCCESS) {
+        *error = "vkBindImageMemory failed";
+        return false;
+    }
+    *size = requirements.size;
+    return true;
+}
+
+bool GpuYuvUploader::createSlotResources(Slot& slot, std::string* error, bool optimalOnly) {
+    if (!optimalOnly) {
+        // Write side. LINEAR tiling is what makes the planes addressable from
+        // the host: the driver hands back a plane offset and rowPitch per
+        // aspect, and the decode side writes through that mapping (host-
+        // coherent memory: no flushes). TRANSFER_SRC is all the image ever
+        // does on the GPU.
+        if (!createImage(VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         fWidth, fHeight, &slot.linear, &slot.linearMemory, &slot.linearSize, error)) {
+            return false;
+        }
+        if (vkMapMemory(fDevice, slot.linearMemory, 0, slot.linearSize, 0, &slot.linearMap) !=
+            VK_SUCCESS) {
+            slot.linearMap = nullptr;
+            *error = "vkMapMemory for the linear write slot failed";
+            return false;
+        }
+        for (int plane = 0; plane < (fFormat == openshow::media::FrameFormat::kYUV420P ? 3 : 2); ++plane) {
+            VkImageSubresource sub = {};
+            sub.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT << plane;
+            sub.mipLevel = 0;
+            sub.arrayLayer = 0;
+            vkGetImageSubresourceLayout(fDevice, slot.linear, &sub, &slot.plane[plane]);
+        }
+
     }
 
     // Sample side. TRANSFER_SRC sits alongside the obvious bits because
@@ -296,8 +305,8 @@ bool GpuYuvUploader::createSlotResources(Slot& slot, std::string* error) {
     if (!createImage(VK_IMAGE_TILING_OPTIMAL,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_SAMPLED_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &slot.optimal, &slot.optimalMemory,
-                     &slot.optimalSize, "optimal sample slot")) {
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, fWidth, fHeight, &slot.optimal, &slot.optimalMemory,
+                     &slot.optimalSize, error)) {
         return false;
     }
 
@@ -312,6 +321,12 @@ bool GpuYuvUploader::createSlotResources(Slot& slot, std::string* error) {
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     if (vkCreateFence(fDevice, &fenceInfo, nullptr, &slot.fence) != VK_SUCCESS) {
         *error = "vkCreateFence for the upload slot failed";
+        return false;
+    }
+    VkSemaphoreCreateInfo semaphoreInfo = {};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    if (vkCreateSemaphore(fDevice, &semaphoreInfo, nullptr, &slot.ready) != VK_SUCCESS) {
+        *error = "vkCreateSemaphore for the upload handoff failed";
         return false;
     }
 
@@ -332,17 +347,17 @@ bool GpuYuvUploader::slotPlanes(unsigned slot, uint8_t* data[4], int linesize[4]
             return false;
         }
     }
-    // FFmpeg's semi-planar convention: V lives one byte into the UV plane
-    // it shares with U, same stride. The rows the caller writes span the
-    // visible width; rowPitch padding between them is don't-care — the
-    // GPU copy transfers visible extents only.
+    // Expose the actual planes. Unused semi-planar entries stay null;
+    // rowPitch padding is not part of the visible GPU copy.
     auto* base = static_cast<uint8_t*>(target.linearMap);
     data[0] = base + target.plane[0].offset;
     linesize[0] = static_cast<int>(target.plane[0].rowPitch);
     data[1] = base + target.plane[1].offset;
     linesize[1] = static_cast<int>(target.plane[1].rowPitch);
-    data[2] = data[1] + 1;
-    linesize[2] = linesize[1];
+    data[2] = fFormat == openshow::media::FrameFormat::kYUV420P
+        ? base + target.plane[2].offset : nullptr;
+    linesize[2] = fFormat == openshow::media::FrameFormat::kYUV420P
+        ? static_cast<int>(target.plane[2].rowPitch) : 0;
     data[3] = nullptr;
     return true;
 }
@@ -374,7 +389,97 @@ bool GpuYuvUploader::commit(unsigned slot) {
     return commitSlot(target, 0);
 }
 
-bool GpuYuvUploader::commitSlot(Slot& slot, uint64_t sequence) {
+std::shared_ptr<openshow::media::FrameStorage> GpuYuvUploader::allocateDecodeFrame(
+        const openshow::media::FrameAllocation& request, std::string* error) {
+    std::lock_guard lock(fDecodeMutex);
+    auto fail = [&](const char* message) -> std::shared_ptr<openshow::media::FrameStorage> {
+        if (error) *error = message;
+        return {};
+    };
+    if (!fDevice || request.format != fFormat || request.width < fWidth ||
+        request.height < fHeight || (request.width & 1) || (request.height & 1)) {
+        return fail("decoder requested an incompatible image format or extent");
+    }
+    for (const auto& image : fDecodeImages) {
+        if (image.use_count() == 1 && image->width == request.width &&
+            image->height == request.height) {
+            bool aligned = true;
+            const int planes = fFormat == openshow::media::FrameFormat::kYUV420P ? 3 : 2;
+            for (int p = 0; p < planes; ++p) {
+                const size_t alignment = std::max(request.alignment[p], 1);
+                aligned &= image->linesize[p] % alignment == 0 &&
+                           reinterpret_cast<uintptr_t>(image->data[p]) % alignment == 0;
+            }
+            if (aligned) return image;
+        }
+    }
+    if (fDecodeImages.size() == kMaxDecodeImages)
+        return fail("direct decoder image pool exhausted (64 retained images)");
+
+    auto image = std::make_shared<DecodeImage>();
+    image->owner = this;
+    image->device = fDevice;
+    image->format = fFormat;
+    image->width = request.width;
+    image->height = request.height;
+    VkDeviceSize size = 0;
+    if (!createImage(VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     request.width, request.height, &image->image, &image->memory, &size, error))
+        return {};
+    void* mapping = nullptr;
+    if (vkMapMemory(fDevice, image->memory, 0, size, 0, &mapping) != VK_SUCCESS)
+        return fail("cannot map direct decoder image");
+    image->base = static_cast<uint8_t*>(mapping);
+    image->size = size;
+    const int planes = fFormat == openshow::media::FrameFormat::kYUV420P ? 3 : 2;
+    for (int p = 0; p < planes; ++p) {
+        VkImageSubresource sub = {};
+        sub.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT << p;
+        VkSubresourceLayout layout = {};
+        vkGetImageSubresourceLayout(fDevice, image->image, &sub, &layout);
+        const size_t alignment = std::max(request.alignment[p], 1);
+        if (layout.rowPitch > INT_MAX || layout.offset >= size ||
+            layout.rowPitch * static_cast<uint64_t>(p ? request.height / 2 : request.height)
+                > size - layout.offset || layout.rowPitch % alignment ||
+            (reinterpret_cast<uintptr_t>(image->base) + layout.offset) % alignment) {
+            return fail("Vulkan plane layout does not satisfy decoder alignment or padding");
+        }
+        image->data[p] = image->base + layout.offset;
+        image->linesize[p] = static_cast<int>(layout.rowPitch);
+    }
+    if (planes == 3 && image->linesize[1] != image->linesize[2]) {
+        return fail("Vulkan chroma planes require matching decoder strides");
+    }
+    fDecodeImages.push_back(image);
+    ++fStats.decodeImagesCreated;
+    return image;
+}
+
+bool GpuYuvUploader::commitFrame(unsigned index,
+        const std::shared_ptr<openshow::media::FrameStorage>& storage) {
+    auto image = std::dynamic_pointer_cast<DecodeImage>(storage);
+    if (!fSlots || index >= kSlots || !image || image->owner != this) return false;
+    Slot& slot = fSlots[index];
+    if (!waitForFree(slot)) return false;
+    if (!slot.onDevice) {
+        std::string error;
+        if (!createSlotResources(slot, &error, true)) {
+            std::fprintf(stderr, "openshow-worker: gpu direct slot: %s\n", error.c_str());
+            return false;
+        }
+    }
+    // The caller retains the AVFrame until this synchronous copy fence passes;
+    // the allocation is additionally retained here independently of the slot.
+    return commitSlot(slot, 0, image.get());
+}
+
+bool GpuYuvUploader::commitSlot(Slot& slot, uint64_t sequence, DecodeImage* source) {
+    // Also serialize with redraws of the last presented texture. Such draws
+    // can append a sampling semaphore after the token was already released.
+    std::lock_guard queueLock(graphicsQueueMutex());
+    VkImage linear = source ? source->image : slot.linear;
+    bool firstLinear = source ? source->firstTransfer : slot.firstTransfer;
     // Fresh command every commit: reset the pool (which frees the previous
     // one) rather than re-recording over a primary buffer.
     if (vkResetCommandPool(fDevice, slot.commandPool, 0) != VK_SUCCESS) {
@@ -422,41 +527,31 @@ bool GpuYuvUploader::commitSlot(Slot& slot, uint64_t sequence) {
                              &memoryBarrier);
     };
 
-    if (slot.firstTransfer) {
-        // From UNDEFINED: content is garbage anyway, the barrier only
-        // pins the layout the first copy declares. Host writes into
-        // coherent memory need no GPU stage — the submit below is where
-        // they become device-visible.
-        barrier(slot.linear, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_ACCESS_TRANSFER_READ_BIT);
-    }
+    barrier(linear, firstLinear ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_GENERAL,
+            VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_WRITE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     barrier(slot.optimal,
             slot.firstTransfer ? VK_IMAGE_LAYOUT_UNDEFINED
                                : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
 
-    // One command, two plane regions: copies between same-format images
-    // with matching single-plane aspects, the chroma extent in that
-    // plane's own texels (4:2:0 halves both dimensions).
-    VkImageCopy regions[2] = {};
-    regions[0].srcSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT;
-    regions[0].srcSubresource.layerCount = 1;
-    regions[0].dstSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT;
-    regions[0].dstSubresource.layerCount = 1;
-    regions[0].extent.width = static_cast<uint32_t>(fWidth);
-    regions[0].extent.height = static_cast<uint32_t>(fHeight);
-    regions[0].extent.depth = 1;
-    regions[1].srcSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT;
-    regions[1].srcSubresource.layerCount = 1;
-    regions[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT;
-    regions[1].dstSubresource.layerCount = 1;
-    regions[1].extent.width = static_cast<uint32_t>(fWidth / 2);
-    regions[1].extent.height = static_cast<uint32_t>(fHeight / 2);
-    regions[1].extent.depth = 1;
-    vkCmdCopyImage(command, slot.linear, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, slot.optimal,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2, regions);
+    const int planeCount = fFormat == openshow::media::FrameFormat::kYUV420P ? 3 : 2;
+    VkImageCopy regions[3] = {};
+    for (int p = 0; p < planeCount; ++p) {
+        regions[p].srcSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT << p;
+        regions[p].srcSubresource.layerCount = 1;
+        regions[p].dstSubresource = regions[p].srcSubresource;
+        regions[p].extent = {static_cast<uint32_t>(p ? fWidth / 2 : fWidth),
+                             static_cast<uint32_t>(p ? fHeight / 2 : fHeight), 1};
+    }
+    vkCmdCopyImage(command, linear, VK_IMAGE_LAYOUT_GENERAL, slot.optimal,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, planeCount, regions);
+    // Return ownership of host access after the fence, including allocations
+    // that FFmpeg keeps as reference frames and may later make writable.
+    barrier(linear, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_WRITE_BIT);
 
     // Drain the writes into shader-visible state before the render queue
     // can sample the image (BOTTOM_OF_PIPE so this queue does the
@@ -476,19 +571,23 @@ bool GpuYuvUploader::commitSlot(Slot& slot, uint64_t sequence) {
         return false;
     }
     // The consumer's sampling-completion semaphores ride into the submit:
-    // the copy may only touch the OPTIMAL image once the draws that
-    // sampled it have signalled. Bottom-of-pipe waits — the semaphores
-    // stand for work on another queue, this queue's own first stage has
-    // nothing to order against.
-    std::vector<VkPipelineStageFlags> waitStages(slot.pendingDone.size(),
-                                                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    // the TRANSFER stage cannot touch OPTIMAL until the previous sampling
+    // has completed, including when graphics and upload use different queues.
+    // A dropped frame was never acquired by Skia: consume its still-signalled
+    // ready semaphore before signalling it for the replacement frame.
+    std::vector<VkSemaphore> waits = slot.pendingDone;
+    if (slot.readyPending) waits.push_back(slot.ready);
+    std::vector<VkPipelineStageFlags> waitStages(waits.size(),
+                                                 VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkSubmitInfo submit = {};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.waitSemaphoreCount = static_cast<uint32_t>(slot.pendingDone.size());
-    submit.pWaitSemaphores = slot.pendingDone.data();
+    submit.waitSemaphoreCount = static_cast<uint32_t>(waits.size());
+    submit.pWaitSemaphores = waits.data();
     submit.pWaitDstStageMask = waitStages.data();
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &command;
+    submit.signalSemaphoreCount = 1;
+    submit.pSignalSemaphores = &slot.ready;
     if (vkQueueSubmit(fUploadQueue, 1, &submit, slot.fence) != VK_SUCCESS) {
         std::fprintf(stderr, "openshow-worker: gpu commit: submit failed\n");
         return false;
@@ -504,6 +603,8 @@ bool GpuYuvUploader::commitSlot(Slot& slot, uint64_t sequence) {
     }
     slot.pendingDone.clear();
     slot.firstTransfer = false;
+    slot.readyPending = true;
+    if (source) { source->firstTransfer = false; ++fStats.directCopies; }
     fStats.totalGpuMs += static_cast<double>(steadyNowNs() - gpuStart) / 1e6;
     ++fStats.uploads;
 
@@ -520,8 +621,10 @@ bool GpuYuvUploader::upload(const uint8_t* yPlane, int yRowBytes, const uint8_t*
                             int uvRowBytes, uint64_t sequence, double ptsSeconds,
                             unsigned* slotOut) {
     (void)ptsSeconds;  // carried by the caller's own bookkeeping, as in the ring path
-    if (!fSlots || yPlane == nullptr || uvPlane == nullptr || yRowBytes < fWidth ||
-        uvRowBytes < fWidth) {
+    const int rowBytes = fWidth * (fFormat == openshow::media::FrameFormat::kP010 ? 2 : 1);
+    if (fFormat == openshow::media::FrameFormat::kYUV420P) return false;
+    if (!fSlots || yPlane == nullptr || uvPlane == nullptr || yRowBytes < rowBytes ||
+        uvRowBytes < rowBytes) {
         return false;
     }
 
@@ -565,12 +668,12 @@ bool GpuYuvUploader::upload(const uint8_t* yPlane, int yRowBytes, const uint8_t*
     for (int row = 0; row < fHeight; ++row) {
         std::memcpy(base + chosen->plane[0].offset +
                         static_cast<size_t>(row) * chosen->plane[0].rowPitch,
-                    yPlane + static_cast<size_t>(row) * yRowBytes, static_cast<size_t>(fWidth));
+                    yPlane + static_cast<size_t>(row) * yRowBytes, static_cast<size_t>(rowBytes));
     }
     for (int row = 0; row < fHeight / 2; ++row) {
         std::memcpy(base + chosen->plane[1].offset +
                         static_cast<size_t>(row) * chosen->plane[1].rowPitch,
-                    uvPlane + static_cast<size_t>(row) * uvRowBytes, static_cast<size_t>(fWidth));
+                    uvPlane + static_cast<size_t>(row) * uvRowBytes, static_cast<size_t>(rowBytes));
     }
     fStats.totalStageMs += static_cast<double>(steadyNowNs() - stageStart) / 1e6;
 
@@ -584,6 +687,7 @@ bool GpuYuvUploader::upload(const uint8_t* yPlane, int yRowBytes, const uint8_t*
 }
 
 sk_sp<SkImage> GpuYuvUploader::imageForSlot(unsigned slot, std::string* error) {
+    std::lock_guard queueLock(graphicsQueueMutex());
     if (!fSlots || slot >= static_cast<unsigned>(kSlots) || fContext == nullptr) {
         if (error) {
             *error = "uploader not created";
@@ -596,6 +700,22 @@ sk_sp<SkImage> GpuYuvUploader::imageForSlot(unsigned slot, std::string* error) {
             *error = "slot has no image yet";
         }
         return nullptr;
+    }
+    if (target.readyPending) {
+        const auto semaphore = GrBackendSemaphores::MakeVk(target.ready);
+        if (!fContext->wait(1, &semaphore, false)) {
+            if (error) *error = "Skia refused the upload completion semaphore";
+            return nullptr;
+        }
+        // Submit the wait even if the caller only acquires the wrapper and
+        // drops it without drawing. Otherwise reuse could re-signal the same
+        // binary semaphore while its first signal is still unconsumed.
+        fContext->flush();
+        if (!fContext->submit()) {
+            if (error) *error = "Skia failed to submit the upload semaphore wait";
+            return nullptr;
+        }
+        target.readyPending = false;
     }
     // One wrap per slot: the commit leaves the OPTIMAL image in
     // shader-read layout from then on, so the same SkImage carries every
@@ -625,9 +745,11 @@ sk_sp<SkImage> GpuYuvUploader::imageForSlot(unsigned slot, std::string* error) {
                                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.fSampleCount = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.fLevelCount = 1;
-    imageInfo.fCurrentQueueFamily = VK_QUEUE_FAMILY_IGNORED;
+    imageInfo.fCurrentQueueFamily = fGraphicsQueueIndex == fUploadQueueIndex
+        ? fGraphicsQueueIndex : VK_QUEUE_FAMILY_IGNORED;
     imageInfo.fProtected = skgpu::Protected::kNo;
-    imageInfo.fSharingMode = VK_SHARING_MODE_CONCURRENT;
+    imageInfo.fSharingMode = fGraphicsQueueIndex == fUploadQueueIndex
+        ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT;
     // The heart of the wrap: a valid ycbcr info turns the backend format
     // into a YUV format, and Skia's image view and sampler then run the
     // YUV→RGB conversion inside the sampling of the compositing draw.
@@ -641,7 +763,7 @@ sk_sp<SkImage> GpuYuvUploader::imageForSlot(unsigned slot, std::string* error) {
     if (!target.wrapped) {
         target.wrapFailed = true;
         if (error) {
-            *error = "BorrowTextureFrom refused the two-plane slot";
+            *error = "BorrowTextureFrom refused the native YUV slot";
         }
         return nullptr;
     }
@@ -656,9 +778,6 @@ void GpuYuvUploader::release(unsigned slot, VkSemaphore doneVk) {
     {
         std::lock_guard lock(fSync->mutex);
         Slot& target = fSlots[slot];
-        if (!target.inUse) {
-            return;
-        }
         if (doneVk != VK_NULL_HANDLE) {
             target.pendingDone.push_back(doneVk);
         }
@@ -711,6 +830,10 @@ void GpuYuvUploader::destroy() {
                 vkDestroyFence(fDevice, slot.fence, nullptr);
                 slot.fence = VK_NULL_HANDLE;
             }
+            if (slot.ready != VK_NULL_HANDLE) {
+                vkDestroySemaphore(fDevice, slot.ready, nullptr);
+                slot.ready = VK_NULL_HANDLE;
+            }
             if (slot.commandPool != VK_NULL_HANDLE) {
                 vkDestroyCommandPool(fDevice, slot.commandPool, nullptr);
                 slot.commandPool = VK_NULL_HANDLE;
@@ -741,6 +864,7 @@ void GpuYuvUploader::destroy() {
             slot.wrapFailed = false;
         }
     }
+    { std::lock_guard lock(fDecodeMutex); fDecodeImages.clear(); }
     fSlots.reset();
     fSync.reset();
     fContext = nullptr;

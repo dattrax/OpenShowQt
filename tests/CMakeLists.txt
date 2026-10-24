@@ -75,3 +75,10 @@ set_tests_properties(worker_rpc_lifecycle PROPERTIES LABELS display TIMEOUT 90)
 add_test(NAME render_idle_check
   COMMAND openshow-worker --render-test --idle-check)
 set_tests_properties(render_idle_check PROPERTIES LABELS display TIMEOUT 60)
+
+# Real FFmpeg get_buffer2 allocations into Vulkan linear images, independent
+# reference/presentation lifetimes, all native plane layouts and strict errors.
+add_executable(gpu_decode_tests gpu_decode_tests.cpp)
+target_link_libraries(gpu_decode_tests PRIVATE openshow::worker_gpu openshow::worker_media PkgConfig::FFMPEG)
+add_test(NAME gpu_decode_tests COMMAND gpu_decode_tests)
+set_tests_properties(gpu_decode_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)

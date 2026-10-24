@@ -33,6 +33,7 @@
 #include <string>
 
 #include <vulkan/vulkan.h>
+#include <atomic>
 
 #include "include/gpu/vk/VulkanExtensions.h"
 
@@ -67,6 +68,7 @@ public:
     VkSurfaceKHR surface() const { return fSurface; }
     const std::string& deviceName() const { return fDeviceName; }
     bool validationEnabled() const { return fValidation; }
+    uint64_t validationErrors() const { return fValidationErrors.load(); }
 
     // Copy/upload queue: a distinct transfer family when the GPU has one,
     // otherwise the graphics queue itself.
@@ -86,6 +88,7 @@ private:
     VkInstance fInstance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT fMessenger = VK_NULL_HANDLE;  // only with validation
     bool fValidation = false;
+    std::atomic<uint64_t> fValidationErrors{0};
     VkSurfaceKHR fSurface = VK_NULL_HANDLE;
     VkPhysicalDevice fPhysicalDevice = VK_NULL_HANDLE;
     VkDevice fDevice = VK_NULL_HANDLE;
