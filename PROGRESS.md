@@ -1132,6 +1132,40 @@ of this work.
     correctly failed; test reordered so recovery starts from a ticked
     state.
 
+## Task 2.4 log (2026-10-24) — 2.4a done, 2.4b/c remaining
+
+- **2.4 split** (PLAN rows): 2.4a shared compiled-scene type +
+  compiler, 2.4b worker scene store (`scene.prepare`/`scene.present`
+  with acknowledged revisions), 2.4c Qt adapters (WorkerController +
+  demo fixture).
+- **2.4a** DONE — new Qt-free library `openshow::scene`
+  (`src/scene/`, links `openshow::domain` + Boost.JSON):
+  - **`Scene`** is the frontend↔worker boundary type PLAN's ownership
+    section calls for: provenance ids, a `Background` (fill colour +
+    optional image asset resolved to `assetId` + path) and `TextItem`s
+    whose colours (packed `0xRRGGBB`), font family and size are the
+    *result* of resolving the style chain — the renderer asks nothing.
+    `clearedScene()` is the black/empty restart state PLAN's recovery
+    rule wants.
+  - **`compileSlide(docs, show, slide, &out)`** collapses slide
+    override → show default → built-in white-on-black via the model's
+    own `styleForSlide`; `#rgb` short forms expand; a background
+    asset's id+sourcePath are baked in; unknown show/slide fails with
+    the target untouched. File existence stays the renderer's
+    question (mirrors 2.2: save checks bytes, the model doesn't).
+  - **Wire codec**: `toJson`/`fromJson` ("scene": 1, fixed key order
+    ⇒ deterministic serialisation, so equal scenes produce byte-equal
+    payloads). `fromJson` is the worker's trust boundary — wrong
+    format, wrong types, colours beyond 24 bits, non-finite/negative
+    font sizes are each refused naming the cause, target intact.
+  - `scene_tests` (new ctest, desktop 13/13, headless 10/10):
+    resolution branches, provenance, blank-stanza preservation,
+    "compiled scenes don't follow later edits", byte-stable round-trip,
+    six malformed-payload refusals, cleared-scene round trip.
+  - Boost.JSON trap for the *tests*: `json::array items =
+    obj["items"].as_array();` **copies**; tampering the payload needed
+    `auto&`. (The library itself only reads through references.)
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —

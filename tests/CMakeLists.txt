@@ -4,6 +4,12 @@ add_executable(domain_tests
 target_link_libraries(domain_tests PRIVATE openshow::domain)
 add_test(NAME domain_tests COMMAND domain_tests)
 
+add_executable(scene_tests
+  scene_tests.cpp
+)
+target_link_libraries(scene_tests PRIVATE openshow::scene)
+add_test(NAME scene_tests COMMAND scene_tests)
+
 add_executable(protocol_tests
   protocol_tests.cpp
 )
