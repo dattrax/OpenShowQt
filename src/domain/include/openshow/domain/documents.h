@@ -216,8 +216,10 @@ public:
 private:
     // storage.cpp reconstructs a loaded model wholesale (ids and all)
     // after validating the file; operations stay the only mutation path
-    // for everything else.
+    // for everything else. History snapshots whole states and needs to
+    // keep the id counter monotonic across restores.
     friend class ServiceCodec;
+    friend class History;
 
     Show* findShow_mut(const Id& showId);
     Style* findStyle_mut(const Id& styleId);

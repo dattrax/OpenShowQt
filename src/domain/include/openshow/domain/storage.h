@@ -45,4 +45,46 @@ bool saveService(const Documents& documents, const std::filesystem::path& direct
 bool loadService(Documents* documents, const std::filesystem::path& directory,
                  std::string* error = nullptr);
 
+// Periodic crash insurance (task 2.3): keeps a live service mirrored
+// into a scratch package so an interrupted session can recover. The
+// package format is the one above, so recovery is just loadService and
+// the crash-ordered save (assets, then tmp+rename manifest) means an
+// autosave package is always loadable or absent — never half-written.
+//
+// Nothing here schedules itself: the editor (or a test) calls tick()
+// when it likes — after each edit, from a timer, wherever. tick()
+// compares the serialised state against what it last wrote and skips
+// the disk entirely when nothing changed, so calling it liberally is
+// cheap.
+class Autosave {
+public:
+    explicit Autosave(std::filesystem::path directory);
+
+    const std::filesystem::path& directory() const { return fDirectory; }
+
+    // Writes the package when the state differs from the last write
+    // (manifest bytes compared; the codec is deterministic, so equal
+    // bytes mean an unchanged service). An unchanged state performs no
+    // disk access at all.
+    bool tick(const Documents& documents, std::string* error = nullptr);
+
+    // Loads the scratch package into *documents — that is the whole
+    // recovery story — and adopts it as the new baseline. After the
+    // operator decides, the caller owns the recovered Documents and
+    // calls clear() once the service itself has been saved (or the
+    // recovery discarded).
+    bool recover(Documents* documents, std::string* error = nullptr);
+
+    // Removes the scratch package (used after a real save, or when the
+    // operator declines recovery).
+    bool clear(std::string* error = nullptr);
+
+    // True when a scratch package is waiting (manifest present).
+    static bool exists(const std::filesystem::path& directory);
+
+private:
+    std::filesystem::path fDirectory;
+    std::string fLastManifest;  // what tick() last wrote ("" = never)
+};
+
 }  // namespace openshow::domain

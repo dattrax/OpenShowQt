@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "openshow/domain/documents.h"
+#include "openshow/domain/history.h"
 #include "openshow/domain/storage.h"
 #include "openshow/domain/version.h"
 
@@ -37,6 +38,8 @@ bool check(bool condition, const char* what) {
 using openshow::domain::Documents;
 using openshow::domain::Id;
 using Asset = openshow::domain::Asset;
+using Autosave = openshow::domain::Autosave;
+using History = openshow::domain::History;
 using Playlist = openshow::domain::Playlist;
 using Show = openshow::domain::Show;
 using Slide = openshow::domain::Slide;
@@ -575,6 +578,163 @@ void exercisePersistence(const fs::path& tempRoot) {
     }
 }
 
+// --- undo/redo and autosave (task 2.3) ---------------------------------------
+
+void exerciseHistory() {
+    std::string error;
+    Documents docs;
+    History history(&docs);
+    check(!history.canUndo() && !history.canRedo(),
+          "a fresh history has nothing to undo or redo");
+    check(!history.undo(&error) && !error.empty(),
+          "undo with an empty stack refuses with a message");
+
+    Id show;
+    check(history.apply([&] { show = docs.createShow("Order"); return !show.empty(); }),
+          "apply runs a creation");
+    Id slide;
+    check(history.apply([&] { slide = docs.appendSlide(show); return !slide.empty(); }),
+          "apply runs an append");
+    check(history.apply([&] { return docs.setSlideLines(show, slide, {"First"}); }),
+          "apply runs an edit");
+    check(docs.findShow(show)->slides[0].lines == std::vector<std::string>({"First"}),
+          "the edit is live in the store");
+    check(history.undoDepth() == 3, "three edits sit on the undo stack");
+
+    check(history.undo(&error), "undo succeeds");
+    check(docs.findShow(show)->slides.size() == 1 &&
+              docs.findShow(show)->slides[0].lines.empty(),
+          "undo reverses the lines edit");
+    check(history.canRedo(), "the undone edit waits on the redo stack");
+    check(history.redo(&error), "redo replays the edit");
+    check(docs.findShow(show)->slides[0].lines == std::vector<std::string>({"First"}),
+          "the edit is back");
+
+    check(history.undo(&error) && history.undo(&error), "undo twice more");
+    check(docs.findShow(show)->slides.empty(), "undoing the append removed the slide");
+    check(history.redo(&error) && history.redo(&error), "redo twice back to the edge");
+    check(docs.findShow(show)->slides.size() == 1 &&
+              docs.findShow(show)->slides[0].id == slide,
+          "redo restores the very same slide, id included");
+
+    const std::size_t depth = history.undoDepth();
+    check(!history.apply([&] { return docs.setSlideLines(show, "slide-missing", {"X"}); }),
+          "apply reports a refused edit as false");
+    check(history.undoDepth() == depth && !history.canRedo(),
+          "a refusal leaves both stacks untouched");
+
+    check(history.undo(&error), "undo one");
+    check(history.canRedo(), "the undone edit could be replayed");
+    check(history.apply([&] { return docs.setShowNotes(show, "new direction"); }),
+          "an edit made after undoing branches the history");
+    check(!history.canRedo(), "the abandoned branch is discarded");
+
+    // Undoing a creation must not put its id back into circulation.
+    Id doomed;
+    check(history.apply([&] { doomed = docs.createShow("Doomed"); return !doomed.empty(); }),
+          "a show is created through history");
+    check(history.undo(&error) && docs.findShow(doomed) == nullptr,
+          "undo removes the created show");
+    Id replacement;
+    check(history.apply([&] { replacement = docs.createShow("Replacement");
+                              return !replacement.empty(); }),
+          "a later creation succeeds");
+    check(replacement != doomed,
+          "ids never recycle across undo (the watermark keeps the counter moving)");
+
+    // Whole-service rewind: undo everything to an empty store, redo it
+    // all back, comparing field by field.
+    Documents whole;
+    History wholeHistory(&whole);
+    Id wholeShow;
+    wholeHistory.apply([&] { wholeShow = whole.createShow("Whole"); return !wholeShow.empty(); });
+    Id wholeSlide;
+    wholeHistory.apply([&] { wholeSlide = whole.appendSlide(wholeShow); return !wholeSlide.empty(); });
+    wholeHistory.apply([&] { return whole.setSlideGroup(wholeShow, wholeSlide, "Tag"); });
+    wholeHistory.apply([&] { return whole.setShowNotes(wholeShow, "note"); });
+    const Documents edited = whole;
+    const std::size_t applied = wholeHistory.undoDepth();
+    std::size_t undoneCount = 0;
+    while (wholeHistory.canUndo() && wholeHistory.undo(&error)) {
+        ++undoneCount;
+    }
+    check(undoneCount == applied && whole.showIds().empty(),
+          "undoing all the way back leaves an empty store");
+    std::size_t redoneCount = 0;
+    while (wholeHistory.canRedo() && wholeHistory.redo(&error)) {
+        ++redoneCount;
+    }
+    check(redoneCount == applied && sameService(whole, edited),
+          "redoing all the way forward rebuilds the exact service");
+
+    for (std::size_t i = 0; i < History::kMaxDepth + 5; ++i) {
+        wholeHistory.apply([&] { return whole.setShowNotes(wholeShow, "note " + std::to_string(i)); });
+    }
+    check(wholeHistory.undoDepth() == History::kMaxDepth,
+          "the undo stack stays bounded at kMaxDepth");
+}
+
+void exerciseAutosave(const fs::path& tempRoot) {
+    std::string error;
+    std::filesystem::create_directories(tempRoot);
+    const fs::path scratch = tempRoot / "autosave";
+    const fs::path assetSource = tempRoot / "autosave-src.jpg";
+    writeFile(assetSource, "AUTOSAVEBYTES");
+
+    Documents docs;
+    buildSampleService(&docs, assetSource);
+    History history(&docs);
+
+    Autosave autosave(scratch);
+    check(!Autosave::exists(scratch), "no scratch package exists before the first tick");
+    check(autosave.tick(docs, &error), "the first tick writes the scratch package");
+    check(Autosave::exists(scratch), "the autosave package appears");
+    const Id asset = docs.assetIds().front();
+    check(fs::is_regular_file(scratch / "assets" / (asset + "-stage_loop.jpg")),
+          "autosave packages assets too");
+
+    // Unchanged state means no disk access: delete the manifest and a
+    // tick must not put it back. A refused edit must not either.
+    fs::remove(scratch / "service.json");
+    check(autosave.tick(docs, &error) && !fs::exists(scratch / "service.json"),
+          "an unchanged tick touches no disk");
+
+    history.apply([&] { return docs.setShowNotes("show-missing", "nope"); });  // refused
+    check(autosave.tick(docs, &error) && !fs::exists(scratch / "service.json"),
+          "a refused edit does not dirty the autosave baseline");
+
+    const Id order = docs.showIds()[0];
+    check(history.apply([&] { return docs.setShowNotes(order, "touched"); }),
+          "an edit goes through history");
+    check(autosave.tick(docs, &error) && fs::is_regular_file(scratch / "service.json"),
+          "the edit reaches the next tick");
+
+    // The interruption: everything is thrown away, a fresh session
+    // finds the scratch package and recovers the whole service.
+    Documents recovered;
+    Autosave nextSession(scratch);
+    check(nextSession.recover(&recovered, &error), "a new session recovers the scratch package");
+    check(sameService(docs, recovered), "the recovered service matches the interrupted one");
+    fs::remove(scratch / "service.json");
+    check(nextSession.tick(recovered, &error) && !fs::exists(scratch / "service.json"),
+          "the recovered baseline is not immediately rewritten");
+
+    // Crash debris: a half-written scratch must be refused, not
+    // trusted, and must leave the recovery target alone.
+    Documents keeper;
+    keeper.createShow("Keeper", &error);
+    writeFile(scratch / "service.json", "{ \"format\": 1, trunca");
+    Autosave debrisSession(scratch);
+    check(!debrisSession.recover(&keeper, &error) && keeper.showIds().size() == 1,
+          "a corrupted scratch package is refused and the target survives");
+
+    check(debrisSession.clear(&error) && !fs::exists(scratch),
+          "clear removes the scratch package");
+    Documents nowhere;
+    check(!Autosave(scratch).recover(&nowhere, &error),
+          "recovering from a cleared scratch fails cleanly");
+}
+
 }  // namespace
 
 int main() {
@@ -598,6 +758,14 @@ int main() {
     std::filesystem::remove_all(tempRoot);
     exercisePersistence(tempRoot);
     std::filesystem::remove_all(tempRoot);
+
+    exerciseHistory();
+
+    const std::filesystem::path autosaveRoot = std::filesystem::temp_directory_path() /
+                                              ("openshow-domain-autosave-" + std::to_string(getpid()));
+    std::filesystem::remove_all(autosaveRoot);
+    exerciseAutosave(autosaveRoot);
+    std::filesystem::remove_all(autosaveRoot);
 
     if (!ok || gFailed) {
         return 1;

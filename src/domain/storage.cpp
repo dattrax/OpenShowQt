@@ -613,4 +613,50 @@ bool loadService(Documents* documents, const std::filesystem::path& directory,
     return ServiceCodec::load(documents, directory, error);
 }
 
+// --- autosave -----------------------------------------------------------------
+
+Autosave::Autosave(std::filesystem::path directory) : fDirectory(std::move(directory)) {}
+
+bool Autosave::tick(const Documents& documents, std::string* error) {
+    // The codec is deterministic, so manifest bytes are a fingerprint:
+    // equal means the service is unchanged and no disk access follows.
+    const std::string manifest = boost::json::serialize(ServiceCodec::toJson(documents));
+    if (manifest == fLastManifest) {
+        return true;
+    }
+    if (!ServiceCodec::save(documents, fDirectory, error)) {
+        return false;
+    }
+    fLastManifest = std::move(manifest);
+    return true;
+}
+
+bool Autosave::recover(Documents* documents, std::string* error) {
+    if (documents == nullptr) {
+        fail(error, "recover needs a target");
+        return false;
+    }
+    if (!ServiceCodec::load(documents, fDirectory, error)) {
+        return false;
+    }
+    fLastManifest = boost::json::serialize(ServiceCodec::toJson(*documents));
+    return true;
+}
+
+bool Autosave::clear(std::string* error) {
+    std::error_code ec;
+    std::filesystem::remove_all(fDirectory, ec);
+    if (ec) {
+        fail(error, "removing '" + fDirectory.string() + "' failed: " + ec.message());
+        return false;
+    }
+    fLastManifest.clear();
+    return true;
+}
+
+bool Autosave::exists(const std::filesystem::path& directory) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(directory / kManifestName, ec);
+}
+
 }  // namespace openshow::domain

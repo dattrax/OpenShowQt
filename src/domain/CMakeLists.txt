@@ -1,5 +1,6 @@
 add_library(openshow_domain STATIC
   documents.cpp
+  history.cpp
   storage.cpp
   version.cpp
 )

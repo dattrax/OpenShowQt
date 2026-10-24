@@ -1086,6 +1086,52 @@ of this work.
     the two stability FAILs were my test editing the store (creating
     "Later") *before* re-saving it, not a codec bug.
 
+## Task 2.3 log (2026-10-24)
+
+- **2.3** DONE — edits reverse, interruptions recover. Two new pieces
+  in the Qt-free domain:
+  - **`domain/history.h/cpp` — `History`**: bounded (128) whole-state
+    snapshot undo over the observed `Documents`. Whole-state was a
+    deliberate choice over hand-written inverse operations: the model
+    is plain value-semantic text data, snapshots cannot drift out of
+    sync, and every domain operation wraps with one
+    `history.apply([&] { return docs.op(...); })`. The edit callback's
+    bool *is* the operation's bool — a refused edit (2.1 contract:
+    false, model untouched) is invisible to both stacks; success
+    pushes the pre-edit state and clears redo (branching discards the
+    abandoned branch). `undo()`/`redo()` fail with a message when the
+    stack is empty.
+  - **Id watermark**: snapshot restore rolls the store's id counter
+    back, which would reissue an undone creation's id. History tracks
+    the highest counter it has ever seen (bumped in apply, undo and
+    redo) and raises the restored store to it, so the 2.1 promise —
+    ids never recycle — survives undo; `clear()` (opening a different
+    service) absorbs the current counter without lowering the
+    watermark. Needs `friend class History` in Documents.
+  - **`Autosave` (in `domain/storage.h/cpp`)**: a scratch service
+    package — same format as 2.2, so recovery *is* the validating
+    loadService and crash-ordered saving makes the package always
+    loadable-or-absent. Nothing schedules itself (no timers in the
+    domain): the caller ticks when it likes; `tick()` compares the
+    deterministic manifest bytes against the last write and performs
+    zero disk access when unchanged — proven in tests by deleting the
+    manifest and asserting a no-change tick does not recreate it.
+    `recover()` adopts the scratch as baseline, `clear()` removes the
+    package after the operator saves for real or declines.
+  - `domain_tests` gained `exerciseHistory()` (undo/redo of edits *and*
+    creations with id identity across redo, refusal-invisibility,
+    branch discard, whole-service rewind-to-empty and rebuild,
+    bounded depth, id non-recycling across undo) and
+    `exerciseAutosave()` (sample service with assets through the
+    scratch package, no-op ticks touch no disk, refused edits do not
+    dirty the baseline, fresh-session recovery matches field-by-field,
+    crash-debris scratch refused with target alive, `clear`).
+    Gates: desktop **12/12**, headless **9/9**.
+  - Trap hit: one autosave check sequence deleted the manifest for
+    the no-op assertion and then tried to recover from it — the load
+    correctly failed; test reordered so recovery starts from a ticked
+    state.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -1306,14 +1352,13 @@ logged here from what is observable off screen rather than claimed as seen.
    both GPU test paths pass under `OPENSHOW_VULKAN_VALIDATION=1`, and
    the direct path benches 0 missed with the cached decoder-allocation
    fix (see the direct-decode memory regression log).
-2. **2.1 and 2.2 are DONE** (document model + operations + focused
-   tests; persistence as a directory package with asset copying,
-   validating load and byte-stable re-saves — both logged above).
-   Next session starts **2.3 undo/redo and recovery autosave** — the
-   2.1 failure contract (named operations, refusals mutate nothing)
-   and 2.2's whole-state codec are exactly the seams an undo stack
-   and a periodic autosave wrap; the autosave can reuse
-   `saveService` into a scratch package.
+2. **2.1–2.3 are DONE** (document model + operations; persistence as
+   a directory package with asset copying and validating load;
+   snapshot undo/redo with an id watermark plus fingerprint-driven
+   autosave — all logged above). Next session starts **2.4 Qt
+   adapters and scene compilation**: edits produce valid immutable
+   scenes — `History`/`Documents`/`styleForSlide` are the input, the
+   worker's existing render-scene path is the consumer.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;
