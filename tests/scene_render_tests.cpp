@@ -210,6 +210,39 @@ bool frameUniform(const Frame& frame) {
     return true;
 }
 
+// Pixel-weighted centre Y of each consecutive band of inked rows — one
+// entry per drawn line. The distance between two entries is the rendered
+// line pitch (task 4.4: it scales with the item's line spacing).
+std::vector<double> bandCenterYs(const Frame& frame) {
+    const SkColor background = frame.at(2, 2);
+    std::vector<double> centers;
+    double sum = 0.0;
+    long long count = 0;
+    bool inside = false;
+    for (int y = 0; y < frame.height; ++y) {
+        long long rowInk = 0;
+        for (int x = 0; x < frame.width; ++x) {
+            if (differs(frame.at(x, y), background)) {
+                ++rowInk;
+            }
+        }
+        if (rowInk > 0) {
+            inside = true;
+            sum += static_cast<double>(y) * static_cast<double>(rowInk);
+            count += rowInk;
+        } else if (inside) {
+            centers.push_back(sum / static_cast<double>(count));
+            sum = 0.0;
+            count = 0;
+            inside = false;
+        }
+    }
+    if (count > 0) {
+        centers.push_back(sum / static_cast<double>(count));
+    }
+    return centers;
+}
+
 scene::Scene singleItemScene(std::vector<std::string> lines, double fontSize,
                              const std::string& family = "") {
     scene::Scene subject;
@@ -457,6 +490,72 @@ void testPerBoxPlacement() {
           "upper item centres in its own box (" + std::to_string(upperCenter) + ")");
     check(std::abs(lowerCenter - 830.0 * kScale) <= 12.0,
           "lower item centres in its own box (" + std::to_string(lowerCenter) + ")");
+}
+
+void testTypographyAlignsAndSpaces() {
+    // Task 4.4: the style's align places the lines inside the authored
+    // box, lineSpacing opens the line box, and an item that carries
+    // neither still draws centred at the renderer's own line box.
+    scene::Scene centred = singleItemScene({"Edge ink"}, 100.0);  // struct defaults
+    scene::Scene leftAligned = centred;
+    leftAligned.items[0].align = "left";
+    scene::Scene rightAligned = centred;
+    rightAligned.items[0].align = "right";
+
+    Frame centreFrame;
+    Frame leftFrame;
+    Frame rightFrame;
+    std::string error;
+    if (!renderFixture(centred, "align-centre", &centreFrame, &error) ||
+        !renderFixture(leftAligned, "align-left", &leftFrame, &error) ||
+        !renderFixture(rightAligned, "align-right", &rightFrame, &error)) {
+        check(false, "alignment fixtures rendered: " + error);
+        return;
+    }
+    const Ink centreInk = measureInk(centreFrame);
+    const Ink leftInk = measureInk(leftFrame);
+    const Ink rightInk = measureInk(rightFrame);
+
+    // The default box spans authored x 160..1760 (device 80..880).
+    const double boxLeft = scene::kDefaultBoxX * kScale;
+    const double boxRight = (scene::kDefaultBoxX + scene::kDefaultBoxWidth) * kScale;
+    check(leftInk.left >= boxLeft - 3.0 && leftInk.left <= boxLeft + 14.0,
+          "left-aligned ink hugs the box's left edge (" + std::to_string(leftInk.left) + ")");
+    check(rightInk.right <= boxRight + 3.0 && rightInk.right >= boxRight - 16.0,
+          "right-aligned ink hugs the box's right edge (" + std::to_string(rightInk.right) + ")");
+    check(leftInk.centerX < centreInk.centerX - 100.0 &&
+              rightInk.centerX > centreInk.centerX + 100.0,
+          "the default (no align set) sits between the aligned edges");
+
+    // Line spacing: the pitch between two drawn lines scales with the
+    // multiplier. 100px at the default 1.25 is a 62.5px device pitch;
+    // doubling the multiplier doubles the measured pitch.
+    scene::Scene tight = singleItemScene({"line one", "line two"}, 100.0);
+    scene::Scene loose = tight;
+    loose.items[0].lineSpacing = 2.5;
+    Frame tightFrame;
+    Frame looseFrame;
+    if (!renderFixture(tight, "spacing-tight", &tightFrame, &error) ||
+        !renderFixture(loose, "spacing-loose", &looseFrame, &error)) {
+        check(false, "spacing fixtures rendered: " + error);
+        return;
+    }
+    const std::vector<double> tightCentres = bandCenterYs(tightFrame);
+    const std::vector<double> looseCentres = bandCenterYs(looseFrame);
+    check(tightCentres.size() == 2 && looseCentres.size() == 2,
+          "two lines draw as two bands at both spacings");
+    if (tightCentres.size() == 2 && looseCentres.size() == 2) {
+        const double tightPitch = tightCentres[1] - tightCentres[0];
+        const double loosePitch = looseCentres[1] - looseCentres[0];
+        const double expectedTight =
+            100.0 * openshow::domain::kDefaultLineSpacing * kScale;
+        check(std::abs(tightPitch - expectedTight) <= 4.0,
+              "the default line box measures 1.25 x fontSize (" +
+                  std::to_string(tightPitch) + ")");
+        check(std::abs(loosePitch - tightPitch * 2.0) <= tightPitch * 0.15,
+              "lineSpacing 2.5 doubles the pitch (" + std::to_string(loosePitch) + " vs " +
+                  std::to_string(tightPitch) + ")");
+    }
 }
 
 void testWireSceneRendersIdentically() {
@@ -780,6 +879,7 @@ int main() {
     testFitShrinksOversizedStanzas();
     testFallbackAndShaping();
     testPerBoxPlacement();
+    testTypographyAlignsAndSpaces();
     testWireSceneRendersIdentically();
     testDemoSlidesRender();
     testImageBackgroundCover();

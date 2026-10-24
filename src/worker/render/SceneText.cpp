@@ -48,9 +48,11 @@ namespace openshow::worker {
 
 namespace {
 
-// Line boxes are lineHeight = fontSize * this factor, so stanza rhythm does
-// not depend on which font the platform resolves.
-constexpr float kLineHeightFactor = 1.25f;
+// The fallback line box: a TextItem that carries no line spacing (a
+// hand-built item, or a NaN the wire would have refused) lays out at the
+// domain's default, so it looks exactly as scenes did before task 4.4.
+constexpr float kDefaultLineSpacing =
+    static_cast<float>(openshow::domain::kDefaultLineSpacing);
 
 }  // namespace
 
@@ -339,7 +341,16 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Text
     out.hasText = true;
 
     skia::textlayout::ParagraphStyle paragraphStyle;
-    paragraphStyle.setTextAlign(skia::textlayout::TextAlign::kCenter);
+    // Where the lines sit inside the box (task 4.4); anything unknown
+    // falls back to centred, the contract both the domain and the wire
+    // enforce, so this only guards a hand-built TextItem.
+    skia::textlayout::TextAlign align = skia::textlayout::TextAlign::kCenter;
+    if (item.align == "left") {
+        align = skia::textlayout::TextAlign::kLeft;
+    } else if (item.align == "right") {
+        align = skia::textlayout::TextAlign::kRight;
+    }
+    paragraphStyle.setTextAlign(align);
     paragraphStyle.setTextDirection(skia::textlayout::TextDirection::kLtr);
 
     skia::textlayout::TextStyle textStyle;
@@ -347,8 +358,16 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Text
     // Explicit line box so stanza rhythm does not depend on which font the
     // platform resolves. This fork's setHeight is a *multiplier* of the font
     // size (Run::calculateMetrics: runHeight = multiplier * fontSize) with
-    // half-leading so text sits centred in its box — verified by probe.
-    textStyle.setHeight(kLineHeightFactor);
+    // half-leading so text sits centred in its box — verified by probe. The
+    // multiplier is the item's line spacing (task 4.4), clamped to the band
+    // the layout assumes so a rogue value cannot collapse or explode a box.
+    float lineSpacing = static_cast<float>(item.lineSpacing);
+    if (!(lineSpacing >= 0.25f)) {  // also catches NaN
+        lineSpacing = kDefaultLineSpacing;
+    } else if (lineSpacing > 8.0f) {
+        lineSpacing = 8.0f;
+    }
+    textStyle.setHeight(lineSpacing);
     textStyle.setHeightOverride(true);
     textStyle.setHalfLeading(true);
     textStyle.setColor(SkColorSetARGB(0xFF, (item.color >> 16) & 0xFF, (item.color >> 8) & 0xFF,

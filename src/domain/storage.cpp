@@ -242,6 +242,10 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
         entry.emplace("backgroundColor", style.backgroundColor);
         entry.emplace("fontFamily", style.fontFamily);
         entry.emplace("fontSize", style.fontSize);
+        // Typography (task 4.4) always travels; the loader defaults it
+        // for styles written before it existed.
+        entry.emplace("align", style.align);
+        entry.emplace("lineSpacing", style.lineSpacing);
         styles.push_back(std::move(entry));
     }
     root.emplace("styles", std::move(styles));
@@ -395,7 +399,25 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             !wantString(jsonStyle, "textColor", &style.textColor, error) ||
             !wantString(jsonStyle, "backgroundColor", &style.backgroundColor, error) ||
             !wantOptionalString(jsonStyle, "fontFamily", &style.fontFamily, error) ||
-            !wantNumber(jsonStyle, "fontSize", &style.fontSize, error)) {
+            !wantNumber(jsonStyle, "fontSize", &style.fontSize, error) ||
+            !wantOptionalString(jsonStyle, "align", &style.align, error) ||
+            !wantOptionalNumber(jsonStyle, "lineSpacing", &style.lineSpacing, error)) {
+            return false;
+        }
+        // "align" arrived after the first services: wantOptionalString
+        // blanks an absent key, and blank is how a pre-typography style
+        // says "centred", the only drawing it ever knew.
+        if (style.align.empty()) {
+            style.align = "center";
+        }
+        // A loaded style must be one the renderer can honour: the same
+        // contract createStyle/updateStyle enforce.
+        if (!std::isfinite(style.fontSize) || style.fontSize < 0.0 ||
+            !openshow::domain::isStyleAlign(style.align) ||
+            !std::isfinite(style.lineSpacing) || style.lineSpacing < 0.25 ||
+            style.lineSpacing > 8.0) {
+            fail(error, "service.json: style '" + style.id +
+                            "' holds typography the renderer cannot honour");
             return false;
         }
         styleIds.insert(style.id);

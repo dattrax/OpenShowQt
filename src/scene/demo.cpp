@@ -24,11 +24,14 @@ domain::Documents demoDocuments() {
     // A show default for lyric body text, and an override for the title
     // card, so the fixture exercises both resolution branches.
     const domain::Id lyric =
-        documents.createStyle("Lyric", "#ffffff", kBackdrop, "", 72.0);
+        documents.createStyle("Lyric", "#ffffff", kBackdrop, "", 72.0, "center",
+                              domain::kDefaultLineSpacing);
     const domain::Id title =
-        documents.createStyle("Title", "#ffffff", kBackdrop, "", 110.0);
+        documents.createStyle("Title", "#ffffff", kBackdrop, "", 110.0, "center",
+                              domain::kDefaultLineSpacing);
     const domain::Id subtitle =
-        documents.createStyle("Subtitle", "#c5cfe4", kBackdrop, "", 40.0);
+        documents.createStyle("Subtitle", "#c5cfe4", kBackdrop, "", 40.0, "center",
+                              domain::kDefaultLineSpacing);
 
     const domain::Id show = documents.createShow("OpenShowQt demo");
     documents.setShowDefaultStyle(show, lyric);

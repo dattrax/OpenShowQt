@@ -48,6 +48,30 @@ Window {
     // mid-service. Any Present click (re)arms it.
     property bool following: false
 
+    // Panel building blocks (task 4.4): Material's default TextField is
+    // too tall for a 250px column once the background is replaced (the
+    // placeholder and text split vertically), and its Button is too wide
+    // for three in a row. These carry the workspace palette and metrics.
+    component PanelField: TextField {
+        color: "#f0f0ff"
+        font.pixelSize: 13
+        height: 30
+        verticalAlignment: Text.AlignVCenter
+        leftPadding: 6
+        rightPadding: 6
+        background: Rectangle {
+            color: "#12121c"
+            border.color: "#2f3542"
+        }
+    }
+    component PanelButton: Button {
+        font.pixelSize: 11
+        topPadding: 6
+        bottomPadding: 6
+        leftPadding: 8
+        rightPadding: 8
+    }
+
     function presentCurrentSlide() {
         const json = docs.currentSceneJson()
         if (json !== "") {
@@ -888,7 +912,8 @@ Window {
             id: editCanvas
             anchors.top: parent.top
             anchors.left: parent.left
-            anchors.right: parent.right
+            anchors.right: stylePanel.left
+            anchors.rightMargin: 12
             anchors.bottom: boxFields.top
             anchors.bottomMargin: 12
         }
@@ -1019,6 +1044,301 @@ Window {
                 color: "#6a6f80"
                 font.pixelSize: 11
                 text: "drag the box · corners resize · arrows nudge 1px, Ctrl 10px"
+            }
+        }
+
+        /*
+         * The style panel (task 4.4): one style object is under edit —
+         * the one the current slide resolves through, override or show
+         * default. Editing it changes every slide that follows it, which
+         * is the reuse the reference gives its themes; New forks the
+         * look for this slide alone, Show default hands it to every
+         * un-overridden slide, and Follow show (the empty id) gives the
+         * override back. Fields commit on focus-out and snap back on a
+         * refusal, exactly like the box fields beside them.
+         */
+        Column {
+            id: stylePanel
+            objectName: "stylePanel"
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            width: 250
+            spacing: 10
+
+            // The style the fields edit right now ("" = none anywhere).
+            function targetId() {
+                return docs.currentStyle.id || ""
+            }
+            // Combo row 0 is "follow show" (the empty id); the rest name
+            // the styles view's rows in order.
+            function styleIdAt(index) {
+                if (index <= 0) {
+                    return ""
+                }
+                var i = index - 1
+                return i < docs.styles.length ? docs.styles[i].id : ""
+            }
+            // Name, colours, font and typography commit as one edit.
+            // A slide following nothing creates its style on first edit.
+            function commit(newAlign) {
+                const size = parseFloat(fieldStyleSize.text)
+                const spacing = parseFloat(fieldLineSpacing.text)
+                const align = newAlign !== undefined ? newAlign
+                                                     : (docs.currentStyle.align || "center")
+                const name = fieldStyleName.text.trim() || "Style"
+                const colour = fieldTextColor.text.trim()
+                const back = fieldBackColour.text.trim()
+                const family = fieldFontFamily.text.trim()
+                const spacingValue = Number.isFinite(spacing) ? spacing : 1.25
+                const sizeValue = Number.isFinite(size) && size >= 0 ? size : 0
+                if (targetId() === "") {
+                    if (!docs.createStyleFromCurrent(name)) {
+                        stylePanel.sync()
+                        return
+                    }
+                    // The creation took the built-in look; carry the
+                    // operator's values onto it, undoing the creation too
+                    // if the domain refuses them.
+                    if (!docs.editStyle(targetId(), name, colour, back, family,
+                                        sizeValue, align, spacingValue)) {
+                        docs.undo()
+                        stylePanel.sync()
+                    }
+                    return
+                }
+                if (!docs.editStyle(targetId(), name, colour, back, family,
+                                    sizeValue, align, spacingValue)) {
+                    stylePanel.sync()
+                }
+            }
+            function sync() {
+                fieldStyleName.text = Qt.binding(function () {
+                    return docs.currentStyle.name || ""
+                })
+                fieldTextColor.text = Qt.binding(function () {
+                    return docs.currentStyle.textColor || "#ffffff"
+                })
+                fieldBackColour.text = Qt.binding(function () {
+                    return docs.currentStyle.backgroundColor || "#000000"
+                })
+                fieldFontFamily.text = Qt.binding(function () {
+                    return docs.currentStyle.fontFamily || ""
+                })
+                fieldStyleSize.text = Qt.binding(function () {
+                    const size = docs.currentStyle.fontSize
+                    return size === undefined ? "0" : String(size)
+                })
+                fieldLineSpacing.text = Qt.binding(function () {
+                    const spacing = docs.currentStyle.lineSpacing
+                    return spacing === undefined ? "1.25" : String(spacing)
+                })
+                // The combo names the followed default as its first row;
+                // an override selects its own style instead.
+                var index = 0
+                if (docs.currentStyleIsOverride) {
+                    for (var i = 0; i < docs.styles.length; ++i) {
+                        if (docs.styles[i].id === stylePanel.targetId()) {
+                            index = i + 1
+                            break
+                        }
+                    }
+                }
+                styleCombo.currentIndex = index
+                var background = ""
+                if (docs.currentSlide >= 0 && docs.slides.length > docs.currentSlide) {
+                    background = docs.slides[docs.currentSlide].backgroundAssetId || ""
+                }
+                backgroundCombo.currentIndex = 0
+                for (var j = 0; j < docs.assets.length; ++j) {
+                    if (docs.assets[j].id === background) {
+                        backgroundCombo.currentIndex = j + 1
+                        break
+                    }
+                }
+            }
+            Component.onCompleted: sync()
+            Connections {
+                target: docs
+                function onDocumentsChanged() { stylePanel.sync() }
+                function onNavigationChanged() { stylePanel.sync() }
+            }
+            Connections {
+                target: editPage
+                function onVisibleChanged() { if (editPage.visible) stylePanel.sync() }
+            }
+
+            Text {
+                color: "#8f93a5"
+                font.pixelSize: 10
+                text: "STYLE"
+            }
+
+            ComboBox {
+                id: styleCombo
+                objectName: "styleCombo"
+                width: parent.width
+                textRole: "name"
+                model: [{ id: "", name: "— show default —" }].concat(docs.styles)
+                // Choosing a style overrides the current slide with it;
+                // the first row (empty id) hands the slide back.
+                onActivated: function (index) {
+                    if (!docs.applyStyleToCurrentSlide(stylePanel.styleIdAt(index))) {
+                        stylePanel.sync()
+                    }
+                }
+            }
+
+            Row {
+                spacing: 6
+                PanelButton {
+                    objectName: "styleNewButton"
+                    text: "New"
+                    // Forks what the slide draws now for this slide only.
+                    onClicked: docs.createStyleFromCurrent(
+                                   fieldStyleName.text.trim() || "Style")
+                }
+                PanelButton {
+                    objectName: "styleDefaultButton"
+                    text: "Show default"
+                    enabled: stylePanel.targetId() !== ""
+                    onClicked: docs.setShowDefaultStyle(stylePanel.targetId())
+                }
+                PanelButton {
+                    objectName: "styleFollowButton"
+                    text: "Follow show"
+                    enabled: docs.currentStyleIsOverride
+                    onClicked: docs.applyStyleToCurrentSlide("")
+                }
+            }
+
+            PanelField {
+                id: fieldStyleName
+                objectName: "styleNameField"
+                width: parent.width
+                onEditingFinished: stylePanel.commit()
+            }
+
+            Row {
+                spacing: 8
+                Column {
+                    spacing: 2
+                    Text {
+                        color: "#8f93a5"
+                        font.pixelSize: 10
+                        text: "TEXT COLOUR"
+                    }
+                    PanelField {
+                        id: fieldTextColor
+                        objectName: "styleColourField"
+                        width: 116
+                        onEditingFinished: stylePanel.commit()
+                    }
+                }
+                Column {
+                    spacing: 2
+                    Text {
+                        color: "#8f93a5"
+                        font.pixelSize: 10
+                        text: "BACKGROUND"
+                    }
+                    PanelField {
+                        id: fieldBackColour
+                        objectName: "styleBackField"
+                        width: 116
+                        onEditingFinished: stylePanel.commit()
+                    }
+                }
+            }
+
+            Row {
+                spacing: 8
+                Column {
+                    spacing: 2
+                    Text {
+                        color: "#8f93a5"
+                        font.pixelSize: 10
+                        text: "FONT"
+                    }
+                    PanelField {
+                        id: fieldFontFamily
+                        objectName: "styleFontField"
+                        width: 156
+                        onEditingFinished: stylePanel.commit()
+                    }
+                }
+                Column {
+                    spacing: 2
+                    Text {
+                        color: "#8f93a5"
+                        font.pixelSize: 10
+                        text: "SIZE"
+                    }
+                    PanelField {
+                        id: fieldStyleSize
+                        objectName: "styleSizeField"
+                        width: 60
+                        onEditingFinished: stylePanel.commit()
+                    }
+                }
+            }
+
+            Row {
+                spacing: 8
+                Row {
+                    spacing: 4
+                    Repeater {
+                        model: [
+                            { key: "left", label: "L" },
+                            { key: "center", label: "C" },
+                            { key: "right", label: "R" },
+                        ]
+                        delegate: PanelButton {
+                            required property var modelData
+                            objectName: "styleAlign" + modelData.key
+                            text: modelData.label
+                            highlighted: (docs.currentStyle.align || "center") === modelData.key
+                            onClicked: stylePanel.commit(modelData.key)
+                        }
+                    }
+                }
+                Column {
+                    spacing: 2
+                    Text {
+                        color: "#8f93a5"
+                        font.pixelSize: 10
+                        text: "LINE SPACING"
+                    }
+                    PanelField {
+                        id: fieldLineSpacing
+                        objectName: "styleSpacingField"
+                        width: 60
+                        onEditingFinished: stylePanel.commit()
+                    }
+                }
+            }
+
+            Text {
+                color: "#8f93a5"
+                font.pixelSize: 10
+                text: "BACKGROUND IMAGE"
+            }
+
+            ComboBox {
+                id: backgroundCombo
+                objectName: "backgroundCombo"
+                width: parent.width
+                textRole: "name"
+                model: [{ id: "", name: "None" }].concat(docs.assets)
+                onActivated: function (index) {
+                    var assetId = ""
+                    if (index > 0 && index - 1 < docs.assets.length) {
+                        assetId = docs.assets[index - 1].id
+                    }
+                    if (!docs.setSlideBackground(assetId)) {
+                        stylePanel.sync()
+                    }
+                }
             }
         }
     }

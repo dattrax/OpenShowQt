@@ -297,7 +297,9 @@ boost::json::object solidScene(const char* slideId, std::uint32_t color,
                                                 {"x", 160.0},
                                                 {"y", 100.0},
                                                 {"width", 1600.0},
-                                                {"height", 880.0}}}},
+                                                {"height", 880.0},
+                                                {"align", "center"},
+                                                {"lineSpacing", 1.25}}}},
     };
 }
 

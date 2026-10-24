@@ -433,6 +433,149 @@ void exercisePlaylistAndLibrary(const std::filesystem::path& root) {
     }
 }
 
+// --- the style panel (task 4.4) ---------------------------------------------
+
+// The compiled wire scene for one slide, through the very path QML uses.
+openshow::scene::Scene compiledFor(DocumentController& docs, const QString& slideId) {
+    openshow::scene::Scene scene;
+    const QString json = docs.sceneJsonForSlide(slideId);
+    if (!json.isEmpty()) {
+        (void)openshow::scene::fromJson(boost::json::parse(json.toStdString()), &scene);
+    }
+    return scene;
+}
+
+void exerciseStylePanel(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong(QStringLiteral("Consistency"));
+    docs.addSlide();
+    docs.addSlide();
+    docs.selectSlide(0);  // addSlide leaves slide 2 current; start from slide 1
+    const QString slideA = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+    const QString slideB = docs.slides().at(1).toMap().value(QStringLiteral("id")).toString();
+
+    check(docs.currentStyle().isEmpty() && !docs.currentStyleIsOverride(),
+          "a song with no styles has no current style to show");
+
+    check(docs.createStyleFromCurrent(QStringLiteral("Chorus")),
+          "a style is created from the current slide's built-in look");
+    const QVariantMap chorus = docs.currentStyle();
+    const QString chorusId = chorus.value(QStringLiteral("id")).toString();
+    check(chorus.value(QStringLiteral("name")).toString() == QStringLiteral("Chorus") &&
+              chorus.value(QStringLiteral("textColor")).toString() == QStringLiteral("#ffffff") &&
+              chorus.value(QStringLiteral("backgroundColor")).toString() ==
+                  QStringLiteral("#000000") &&
+              chorus.value(QStringLiteral("fontSize")).toDouble() == 0.0 &&
+              chorus.value(QStringLiteral("align")).toString() == QStringLiteral("center") &&
+              chorus.value(QStringLiteral("lineSpacing")).toDouble() == 1.25 &&
+              docs.currentStyleIsOverride(),
+          "the new style wears the built-in look and overrides only this slide");
+    check(docs.styles().size() == 1, "the styles view lists the new style");
+
+    check(docs.setShowDefaultStyle(chorusId), "the style can become the show's default");
+    docs.selectSlide(1);
+    check(!docs.currentStyleIsOverride() &&
+              docs.currentStyle().value(QStringLiteral("id")).toString() == chorusId,
+          "the second slide follows the show default with no override of its own");
+
+    check(docs.editStyle(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
+                         QStringLiteral("#101010"), QStringLiteral("DejaVu Serif"), 72.0,
+                         QStringLiteral("left"), 1.5),
+          "editing the style once is accepted");
+    const openshow::scene::Scene a = compiledFor(docs, slideA);
+    const openshow::scene::Scene b = compiledFor(docs, slideB);
+    check(a.items.size() == 1 && b.items.size() == 1 &&
+              a.items[0].color == 0xFF0000u && b.items[0].color == 0xFF0000u &&
+              a.items[0].align == "left" && b.items[0].align == "left" &&
+              a.items[0].lineSpacing == 1.5 && b.items[0].lineSpacing == 1.5 &&
+              a.items[0].fontSize == 72.0 && b.items[0].fontSize == 72.0,
+          "one edit reaches every slide following the style identically");
+
+    docs.undo();
+    check(compiledFor(docs, slideA).items[0].color == 0xFFFFFFu &&
+              compiledFor(docs, slideB).items[0].color == 0xFFFFFFu,
+          "one undo returns both slides to the pre-edit look");
+    docs.redo();
+    check(compiledFor(docs, slideB).items[0].color == 0xFF0000u,
+          "redo restyles both again");
+
+    // Per-slide override: fork the followed style for one slide.
+    check(docs.createStyleFromCurrent(QStringLiteral("Whisper")),
+          "a slide can fork the style it follows into its own");
+    const QString whisperId = docs.currentStyle().value(QStringLiteral("id")).toString();
+    check(!whisperId.isEmpty() && whisperId != chorusId && docs.currentStyleIsOverride(),
+          "the fork overrides only this slide");
+    check(docs.editStyle(whisperId, QStringLiteral("Whisper"), QStringLiteral("#00ff00"),
+                         QStringLiteral("#000000"), QString(), 0.0, QStringLiteral("right"),
+                         1.25),
+          "the fork edits independently");
+    check(compiledFor(docs, slideB).items[0].color == 0x00FF00u &&
+              compiledFor(docs, slideB).items[0].align == "right" &&
+              compiledFor(docs, slideA).items[0].color == 0xFF0000u,
+          "the override changes only its own slide");
+    docs.undo();  // the fork's appearance back
+    check(compiledFor(docs, slideB).items[0].color == 0xFF0000u,
+          "undoing the fork edit returns the slide to the shared look");
+    docs.undo();  // the fork itself back (creation + override were one entry)
+    check(docs.styles().size() == 1 && !docs.currentStyleIsOverride() &&
+              compiledFor(docs, slideB).items[0].color == 0xFF0000u,
+          "undoing the fork removes the extra style and hands the slide back");
+
+    // Explicitly point a slide at a style, then hand it back (empty id).
+    check(docs.applyStyleToCurrentSlide(chorusId) && docs.currentStyleIsOverride(),
+          "a slide can be pinned to a style by id");
+    check(docs.applyStyleToCurrentSlide(QString()) && !docs.currentStyleIsOverride() &&
+              docs.currentStyle().value(QStringLiteral("id")).toString() == chorusId,
+          "the empty id follows the show default again");
+
+    // Refusals name themselves and leave everything alone.
+    check(!docs.editStyle(QStringLiteral("style999"), QStringLiteral("Ghost"),
+                          QStringLiteral("#ffffff"), QStringLiteral("#000000"), QString(), 0.0,
+                          QStringLiteral("center"), 1.25) &&
+              docs.status().contains(QStringLiteral("edit style")),
+          "editing an unknown style is refused on the status line");
+    check(!docs.editStyle(chorusId, QStringLiteral("   "), QStringLiteral("#ffffff"),
+                          QStringLiteral("#000000"), QString(), 0.0,
+                          QStringLiteral("center"), 1.25),
+          "a blank name is refused before anything is recorded");
+    check(!docs.applyStyleToCurrentSlide(QStringLiteral("style999")) &&
+              !docs.currentStyleIsOverride(),
+          "an unknown style id is refused and the follow-show state survives");
+    check(!docs.setShowDefaultStyle(QStringLiteral("style999")) &&
+              docs.currentStyle().value(QStringLiteral("id")).toString() == chorusId,
+          "an unknown show default is refused too");
+    check(!docs.applyStyleToCurrentSlide(QStringLiteral("Chorus")) &&
+              !docs.currentStyleIsOverride(),
+          "styles are addressed by id — a name is refused and the state survives");
+
+    // Layering: the background image lands on the current slide and its
+    // compiled scene, and undo takes it back.
+    const QString mediaPath = QString::fromStdWString((root / "backdrop.jpg").wstring());
+    check(docs.importMediaFile(mediaPath) && docs.assets().size() == 1,
+          "a media file is imported for the background picker");
+    const QString assetId =
+        docs.assets().front().toMap().value(QStringLiteral("id")).toString();
+    check(docs.setSlideBackground(assetId), "the current slide gets the image behind its words");
+    check(docs.slides().at(1).toMap().value(QStringLiteral("backgroundAssetId")).toString() ==
+              assetId,
+          "the slide row carries the background for the picker");
+    check(compiledFor(docs, slideB).background.hasImage,
+          "the compiled scene draws the background image");
+    check(docs.setSlideBackground(QString()) &&
+              !compiledFor(docs, slideB).background.hasImage,
+          "the empty id clears the background back to the style's colour");
+    check(!docs.setSlideBackground(QStringLiteral("asset999")),
+          "an unknown asset is refused for a background");
+
+    DocumentController bare(nullptr, root / "bare");
+    check(!bare.createStyleFromCurrent(QStringLiteral("Orphan")) &&
+              !bare.setSlideBackground(QString()) &&
+              !bare.editStyle(QStringLiteral("style1"), QStringLiteral("x"),
+                              QStringLiteral("#fff"), QStringLiteral("#000"), QString(), 0.0,
+                              QStringLiteral("center"), 1.25),
+          "with no current slide the style panel has nothing to act on");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -448,6 +591,7 @@ int main(int argc, char* argv[]) {
     exerciseGeometryEdits(tempRoot / "geometry");
     exercisePersistence(tempRoot / "persist");
     exercisePlaylistAndLibrary(tempRoot / "playlist");
+    exerciseStylePanel(tempRoot / "styles");
     std::filesystem::remove_all(tempRoot);
 
     if (gFailed) {

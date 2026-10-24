@@ -72,6 +72,14 @@ struct Show {
 // A named appearance. Colours are "#rgb" or "#rrggbb"; a zero font size
 // means "renderer default". Scene compilation (2.4) maps these onto
 // Skia paint state; 2.1 only validates syntax it can actually check.
+// The renderer's line-box factor doubles as the domain default, so a
+// style created before typography existed keeps drawing as it did.
+inline constexpr double kDefaultLineSpacing = 1.25;
+
+inline bool isStyleAlign(const std::string& align) {
+    return align == "left" || align == "center" || align == "right";
+}
+
 struct Style {
     Id id;
     std::string name;
@@ -79,6 +87,11 @@ struct Style {
     std::string backgroundColor;
     std::string fontFamily;
     double fontSize = 0.0;
+    // Typography (task 4.4): horizontal alignment inside the slide's text
+    // box ("left" | "center" | "right") and the line-box multiplier the
+    // renderer applies (its own default, 1.25, is kDefaultLineSpacing).
+    std::string align = "center";
+    double lineSpacing = kDefaultLineSpacing;
 };
 
 // One media file belonging to the service. The model records only the
@@ -168,15 +181,19 @@ public:
     // --- styles ---
 
     // Colours must be "#rgb" or "#rrggbb" (hex); fontSize must be
-    // finite and >= 0. Returns the new style's Id, or "" on failure.
+    // finite and >= 0; align one of "left"/"center"/"right"; lineSpacing
+    // a finite line-box multiplier in 0.25..8. Returns the new style's
+    // Id, or "" on failure.
     Id createStyle(const std::string& name, const std::string& textColor,
                    const std::string& backgroundColor, const std::string& fontFamily,
-                   double fontSize, std::string* error = nullptr);
+                   double fontSize, const std::string& align, double lineSpacing,
+                   std::string* error = nullptr);
     bool removeStyle(const Id& styleId, std::string* error = nullptr);
     bool renameStyle(const Id& styleId, const std::string& name, std::string* error = nullptr);
     bool updateStyle(const Id& styleId, const std::string& textColor,
                      const std::string& backgroundColor, const std::string& fontFamily,
-                     double fontSize, std::string* error = nullptr);
+                     double fontSize, const std::string& align, double lineSpacing,
+                     std::string* error = nullptr);
     // Points a show's default (and therefore its unstyled slides) at a
     // style; "" clears back to none.
     bool setShowDefaultStyle(const Id& showId, const Id& styleId, std::string* error = nullptr);

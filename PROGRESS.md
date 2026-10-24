@@ -1731,6 +1731,95 @@ of this work.
   fixture.
 - Gates: desktop **21/21**, headless **12/12**.
 
+## Task 4.4 log (2026-10-24) — typography, layering, reusable styles: DONE
+
+- **Deliverable**: styles carry typography (horizontal alignment and a
+  line-box multiplier) beside their colours/font, the edit page gains a
+  STYLE panel and a background-image picker, and editing one style
+  changes every slide that resolves through it — the acceptance, pinned
+  end-to-end through the compiled-scene path.
+- **Domain**: `Style` gains `align` ("left"/"center"/"right") and
+  `lineSpacing`, whose defaults ("center", `kDefaultLineSpacing` = 1.25
+  — the renderer's own line-box factor) keep pre-4.4 styles drawing
+  identically. `createStyle`/`updateStyle` take the two values before the
+  trailing `error` — no defaults, so every call site was forced into the
+  review — and share one `validTypography` validator (size finite ≥0,
+  align the three words, line spacing finite within 0.25..8).
+- **Storage**: always writes both fields; the loader reads them
+  optionally and *validates* them ("holds typography the renderer cannot
+  honour", naming the style). A trap surfaced via the fixture:
+  `wantOptionalString` **blanks** an absent key, so a legacy style's
+  align arrives empty — the loader now defaults empty to "center"
+  explicitly (an absent align is exactly how a pre-typography style says
+  centred). `sameService` compares the two new fields.
+- **Scene library**: `TextItem` carries `align`/`lineSpacing` (defaults
+  matching the domain's — `domain::kDefaultLineSpacing` is used directly,
+  one promise once); `compileSlide` copies the resolved style's
+  typography (built-in centre/1.25 with no style anywhere); the wire
+  *requires* both (`wantAlign` in the three-word set, `wantLineSpacing`
+  within 0.25..8), and the two hand-written payloads in `rpc_ipc_tests`
+  and `live_fade_tests` grew the fields like 4.3's box did.
+- **Renderer** (`SceneText`): `layout()` maps `item.align` to the
+  paragraph's `TextAlign` (unknown → centred, guarding hand-built items)
+  and takes the line-box multiplier from `item.lineSpacing`, clamped to
+  0.25..8 with a NaN-safe `!(x >= 0.25f)` guard; the old
+  `kLineHeightFactor` constant is now a local mirror of the domain
+  default, so fallback and model cannot drift.
+- **Controller**: `styles` (list), `currentStyle` (the resolved map —
+  override or show default, empty when neither) and
+  `currentStyleIsOverride` properties; five undoable ops —
+  `applyStyleToCurrentSlide` (empty id follows the show again),
+  `setShowDefaultStyle`, `editStyle` (appearance first, then rename, all
+  in one history entry; blank names refused before anything records),
+  `createStyleFromCurrent` (forks the resolved look and overrides the
+  current slide — create+apply are one entry, and a refused apply
+  removes the style it made), and `setSlideBackground` ("" clears; the
+  domain refuses unknown assets). `slides()` rows carry
+  `backgroundAssetId`.
+- **UI**: a 250px **STYLE panel** right of the edit canvas: style
+  ComboBox (row 0 "— show default —" is the empty id), **New / Show
+  default / Follow show** buttons, and Name / Text colour / Background /
+  Font / Size / Line-spacing fields plus **L·C·R** align buttons — all
+  commit the whole panel on focus-out (align buttons on click) through
+  `editStyle` and snap back on refusal, the box-field pattern; a slide
+  following *nothing* creates its style on first edit (and the creation
+  is undone too if the values refuse). A **BACKGROUND IMAGE** combo
+  (None + media assets) drives `setSlideBackground` — the
+  colour→image→words layer stack. `EditCanvas`'s representation now
+  binds the resolved style: family, colour, size (0 → 96 cap),
+  alignment, `lineHeight`, and the stage paints the style's background
+  colour — closing 4.3's noted deviation.
+- **Deviations/caveats**: the panel edits the *resolved* style (that is
+  the reuse; per-slide change means forking with New); Material floats a
+  non-empty field's `placeholderText` as a ghost label above the box, so
+  panel fields carry no placeholders (the headers name them), and two
+  inline components (`PanelField`, `PanelButton`) replace Material's
+  too-wide/too-tall defaults in the column; `lineHeight`/`lineHeightMode`
+  live on `Text` directly, not under `font`, in this Qt build (qmlcache
+  stays silent — journald caught it).
+- **Verification**: fixtures — domain (update carries typography,
+  refuses bad align/spacing, manifest round-trip, legacy style loads
+  centred at 1.25, un-honourable align/spacing refused naming the style);
+  scene (compile passthrough on all three resolution branches, wire
+  refuses missing/unknown align and collapsed/exploded spacing);
+  scene_render (left ink hugs the box's left edge, right hugs right, the
+  default straddles; measured band pitch 62.5px = 100×1.25×0.5 and
+  lineSpacing 2.5 doubles it); controller (one `editStyle` lands the
+  same colour/align/spacing/size on **both** slides' compiled scenes,
+  undo/redo it, fork-edit-undo-back, follow/pin, every refusal silent on
+  the model, background set/clear + row + compiled `hasImage`, the
+  no-current-slide refusals). Live 1680x1020 capture (via a temporary
+  default-page patch, reverted): the "Capture Hymn" service now carries
+  a left-aligned 64px `#ffd23f`-on-`#101828` "Bright" show default — the
+  edit page paints the navy stage, amber text left-set in the authored
+  480/240/960/480 box, L lit on the panel, fields reading the style, and
+  Follow show correctly dimmed with no override. The shipped binary's
+  journal shows no new QML errors (the two pre-existing warnings —
+  the shared Ctrl+1 binding and the demo Flow — stand). ComboBox clicks,
+  forks and the background picker stay hand-tested; their semantics are
+  the controller fixture's.
+- Gates: desktop **21/21**, headless **12/12**.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -2013,7 +2102,18 @@ logged here from what is observable off screen rather than claimed as seen.
    fields with the pixel-identical default, storage that reads legacy
    manifests, a per-box renderer with per-item shrinkToFit, the edit page
    with drag/resize/nudge/X-Y-W-H and one-undo-per-gesture, and the page
-   key scheme). Next is 4.4: typography, layering, reusable styles.
+   key scheme).
+   **4.4 is DONE** (style typography end to end — `Style.align`/
+   `lineSpacing` with the draw-identical defaults, one shared validator,
+   storage round-trip with the legacy-style default and load-time
+   honourability checks, required wire fields, renderer alignment and
+   per-item line box, the edit-page STYLE panel (combo, New/Show
+   default/Follow show, name/colours/font/size/align/line-spacing with
+   commit-on-focus-out and revert-on-refusal) and the background-image
+   picker, a style-bound canvas representation, and the controller
+   fixture proving one style edit lands identically on every following
+   slide's compiled scene). Next is 4.5: shortcuts, clipboard and
+   essential settings.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

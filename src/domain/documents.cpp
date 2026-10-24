@@ -40,6 +40,28 @@ std::string idError(const char* what, const Id& id) {
     return std::string(what) + " '" + id + "' does not exist";
 }
 
+// Typography (task 4.4): the size convention is the domain's (0 = the
+// renderer's default), the alignment is the three words the scene wire
+// carries, and the line box is a sane multiplier — beyond these the
+// renderer would either not place the text or stack lines into each
+// other.
+bool validTypography(double fontSize, const std::string& align, double lineSpacing,
+                     std::string* error) {
+    if (!std::isfinite(fontSize) || fontSize < 0.0) {
+        fail(error, "font size must be finite and >= 0 (0 means renderer default)");
+        return false;
+    }
+    if (!isStyleAlign(align)) {
+        fail(error, "align must be \"left\", \"center\" or \"right\" (got '" + align + "')");
+        return false;
+    }
+    if (!std::isfinite(lineSpacing) || lineSpacing < 0.25 || lineSpacing > 8.0) {
+        fail(error, "line spacing must be a finite multiplier within 0.25..8");
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 // --- shows ----------------------------------------------------------------
@@ -340,7 +362,8 @@ std::vector<Id> Documents::slidesInGroup(const Id& showId, const std::string& gr
 
 Id Documents::createStyle(const std::string& name, const std::string& textColor,
                           const std::string& backgroundColor, const std::string& fontFamily,
-                          double fontSize, std::string* error) {
+                          double fontSize, const std::string& align, double lineSpacing,
+                          std::string* error) {
     const std::string clean = trimmed(name);
     if (clean.empty()) {
         fail(error, "a style needs a name");
@@ -352,8 +375,7 @@ Id Documents::createStyle(const std::string& name, const std::string& textColor,
         }
         return {};
     }
-    if (!std::isfinite(fontSize) || fontSize < 0.0) {
-        fail(error, "font size must be finite and >= 0 (0 means renderer default)");
+    if (!validTypography(fontSize, align, lineSpacing, error)) {
         return {};
     }
     Style style;
@@ -363,6 +385,8 @@ Id Documents::createStyle(const std::string& name, const std::string& textColor,
     style.backgroundColor = backgroundColor;
     style.fontFamily = fontFamily;
     style.fontSize = fontSize;
+    style.align = align;
+    style.lineSpacing = lineSpacing;
     fStyles.push_back(std::move(style));
     return fStyles.back().id;
 }
@@ -407,7 +431,8 @@ bool Documents::renameStyle(const Id& styleId, const std::string& name, std::str
 
 bool Documents::updateStyle(const Id& styleId, const std::string& textColor,
                             const std::string& backgroundColor, const std::string& fontFamily,
-                            double fontSize, std::string* error) {
+                            double fontSize, const std::string& align, double lineSpacing,
+                            std::string* error) {
     Style* style = findStyle_mut(styleId);
     if (style == nullptr) {
         fail(error, idError("style", styleId));
@@ -419,14 +444,15 @@ bool Documents::updateStyle(const Id& styleId, const std::string& textColor,
         }
         return false;
     }
-    if (!std::isfinite(fontSize) || fontSize < 0.0) {
-        fail(error, "font size must be finite and >= 0 (0 means renderer default)");
+    if (!validTypography(fontSize, align, lineSpacing, error)) {
         return false;
     }
     style->textColor = textColor;
     style->backgroundColor = backgroundColor;
     style->fontFamily = fontFamily;
     style->fontSize = fontSize;
+    style->align = align;
+    style->lineSpacing = lineSpacing;
     return true;
 }
 

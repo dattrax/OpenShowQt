@@ -883,7 +883,9 @@ void testSceneStore() {
                                                     {"x", 160.0},
                                                     {"y", 100.0},
                                                     {"width", 1600.0},
-                                                    {"height", 880.0}}}}};
+                                                    {"height", 880.0},
+                                                    {"align", "center"},
+                                                    {"lineSpacing", 1.25}}}}};
     };
 
     // Two malformed payloads are refused with the wire validator's reasons.

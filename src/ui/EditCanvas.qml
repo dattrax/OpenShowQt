@@ -37,7 +37,7 @@ Item {
     property point dragOrigin
     property rect startBox
 
-    readonly property color canvasColor: "#000000"
+    readonly property color canvasColor: docs.currentStyle.backgroundColor || "#000000"
 
     function clamp(v, lo, hi) {
         return Math.max(lo, Math.min(hi, v))
@@ -131,22 +131,30 @@ Item {
         color: canvas.canvasColor
         border.color: "#2f3542"
 
-        // The text representation: this Text element shrinks to fit its
-        // box the way the worker's layout does, at a fixed representation
-        // size rather than the style's.
+        // The text representation (task 4.4): the resolved style's font,
+        // colour, alignment and line box, shrunk to fit the way the
+        // worker's layout does. The size cap is the style's own when it
+        // sets one — this is a representation, not the render, and the
+        // true picture stays on the preview.
         Text {
             visible: canvas.hasSlide
             x: canvas.boxX * canvas.zoom
             y: canvas.boxY * canvas.zoom
             width: canvas.boxW * canvas.zoom
             height: canvas.boxH * canvas.zoom
-            horizontalAlignment: Text.AlignHCenter
+            horizontalAlignment: docs.currentStyle.align === "left" ? Text.AlignLeft
+                : docs.currentStyle.align === "right" ? Text.AlignRight
+                : Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             wrapMode: Text.WordWrap
             fontSizeMode: Text.Fit
-            font.pixelSize: Math.round(96 * canvas.zoom)
+            font.family: docs.currentStyle.fontFamily || ""
+            font.pixelSize: Math.round((docs.currentStyle.fontSize > 0
+                                        ? docs.currentStyle.fontSize : 96) * canvas.zoom)
+            lineHeight: docs.currentStyle.lineSpacing || 1.25
+            lineHeightMode: Text.ProportionalHeight
             minimumPixelSize: 8
-            color: "#f0f0ff"
+            color: docs.currentStyle.textColor || "#f0f0ff"
             text: docs.currentSlideText
         }
 

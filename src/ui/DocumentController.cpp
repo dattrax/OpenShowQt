@@ -124,6 +124,8 @@ QVariantList DocumentController::slides() const {
         entry.insert(QStringLiteral("y"), slide.y);
         entry.insert(QStringLiteral("width"), slide.width);
         entry.insert(QStringLiteral("height"), slide.height);
+        entry.insert(QStringLiteral("backgroundAssetId"),
+                     QString::fromStdString(slide.backgroundAssetId));
         list.append(entry);
     }
     return list;
@@ -327,6 +329,200 @@ bool DocumentController::setSlideGeometry(double x, double y, double width, doub
                                                &error);
         })) {
         setStatus(QStringLiteral("text box: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+// --- style panel (task 4.4) -------------------------------------------------
+
+QVariantList DocumentController::styles() const {
+    QVariantList list;
+    for (const openshow::domain::Id& id : fDocuments.styleIds()) {
+        const openshow::domain::Style* style = fDocuments.findStyle(id);
+        if (style == nullptr) {
+            continue;
+        }
+        QVariantMap entry;
+        entry.insert(QStringLiteral("id"), QString::fromStdString(style->id));
+        entry.insert(QStringLiteral("name"), QString::fromStdString(style->name));
+        entry.insert(QStringLiteral("textColor"), QString::fromStdString(style->textColor));
+        entry.insert(QStringLiteral("backgroundColor"),
+                     QString::fromStdString(style->backgroundColor));
+        entry.insert(QStringLiteral("fontFamily"), QString::fromStdString(style->fontFamily));
+        entry.insert(QStringLiteral("fontSize"), style->fontSize);
+        entry.insert(QStringLiteral("align"), QString::fromStdString(style->align));
+        entry.insert(QStringLiteral("lineSpacing"), style->lineSpacing);
+        list.append(entry);
+    }
+    return list;
+}
+
+// The current slide's domain Slide, or nullptr. Navigation already keeps
+// fCurrentSlide inside the show, but every panel re-checks rather than
+// trusting a stale index across a slide removal.
+namespace {
+
+const openshow::domain::Slide* findCurrentSlide(const openshow::domain::Documents& documents,
+                                                const openshow::domain::Id& showId,
+                                                const openshow::domain::Id& slideId) {
+    const openshow::domain::Show* show = documents.findShow(showId);
+    if (show == nullptr || slideId.empty()) {
+        return nullptr;
+    }
+    for (const openshow::domain::Slide& slide : show->slides) {
+        if (slide.id == slideId) {
+            return &slide;
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+QVariantMap DocumentController::currentStyle() const {
+    QVariantMap map;
+    const openshow::domain::Style* style =
+        fDocuments.styleForSlide(fCurrentSongId, currentSlideId());
+    if (style == nullptr) {
+        return map;
+    }
+    map.insert(QStringLiteral("id"), QString::fromStdString(style->id));
+    map.insert(QStringLiteral("name"), QString::fromStdString(style->name));
+    map.insert(QStringLiteral("textColor"), QString::fromStdString(style->textColor));
+    map.insert(QStringLiteral("backgroundColor"),
+               QString::fromStdString(style->backgroundColor));
+    map.insert(QStringLiteral("fontFamily"), QString::fromStdString(style->fontFamily));
+    map.insert(QStringLiteral("fontSize"), style->fontSize);
+    map.insert(QStringLiteral("align"), QString::fromStdString(style->align));
+    map.insert(QStringLiteral("lineSpacing"), style->lineSpacing);
+    return map;
+}
+
+bool DocumentController::currentStyleIsOverride() const {
+    const openshow::domain::Slide* slide =
+        findCurrentSlide(fDocuments, fCurrentSongId, currentSlideId());
+    return slide != nullptr && !slide->styleId.empty();
+}
+
+bool DocumentController::applyStyleToCurrentSlide(const QString& styleId) {
+    flushText();
+    const openshow::domain::Id slideId = currentSlideId();
+    if (slideId.empty()) {
+        setStatus(QStringLiteral("style: no current slide"));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setSlideStyle(fCurrentSongId, slideId, styleId.toStdString(),
+                                            &error);
+        })) {
+        setStatus(QStringLiteral("style: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::setShowDefaultStyle(const QString& styleId) {
+    flushText();
+    if (fCurrentSongId.empty()) {
+        setStatus(QStringLiteral("style: no current song"));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setShowDefaultStyle(fCurrentSongId, styleId.toStdString(),
+                                                  &error);
+        })) {
+        setStatus(QStringLiteral("style: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::editStyle(const QString& styleId, const QString& name,
+                                   const QString& textColor, const QString& backgroundColor,
+                                   const QString& fontFamily, double fontSize,
+                                   const QString& align, double lineSpacing) {
+    flushText();
+    const std::string cleanName = name.trimmed().toStdString();
+    if (cleanName.empty()) {
+        setStatus(QStringLiteral("edit style: a style needs a name"));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            // Appearance first: it is the part the renderer cannot honour
+            // a lie about, and its refusal must leave the name alone too.
+            if (!fDocuments.updateStyle(styleId.toStdString(), textColor.toStdString(),
+                                        backgroundColor.toStdString(), fontFamily.toStdString(),
+                                        fontSize, align.toStdString(), lineSpacing, &error)) {
+                return false;
+            }
+            const openshow::domain::Style* style =
+                fDocuments.findStyle(styleId.toStdString());
+            if (style != nullptr && style->name != cleanName) {
+                return fDocuments.renameStyle(styleId.toStdString(), cleanName, &error);
+            }
+            return true;
+        })) {
+        setStatus(QStringLiteral("edit style: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::createStyleFromCurrent(const QString& name) {
+    flushText();
+    const openshow::domain::Id slideId = currentSlideId();
+    if (slideId.empty()) {
+        setStatus(QStringLiteral("new style: no current slide"));
+        return false;
+    }
+    // Snapshot what the slide draws now — resolved style or the built-in
+    // defaults the renderer would reach without one — before history runs.
+    const openshow::domain::Style* base = fDocuments.styleForSlide(fCurrentSongId, slideId);
+    const std::string text = base != nullptr ? base->textColor : "#ffffff";
+    const std::string background = base != nullptr ? base->backgroundColor : "#000000";
+    const std::string family = base != nullptr ? base->fontFamily : "";
+    const double size = base != nullptr ? base->fontSize : 0.0;
+    const std::string alignment = base != nullptr ? base->align : "center";
+    const double spacing =
+        base != nullptr ? base->lineSpacing : openshow::domain::kDefaultLineSpacing;
+    std::string error;
+    openshow::domain::Id created;
+    if (!edit([&] {
+            created = fDocuments.createStyle(name.toStdString(), text, background, family,
+                                             size, alignment, spacing, &error);
+            if (created.empty()) {
+                return false;
+            }
+            if (!fDocuments.setSlideStyle(fCurrentSongId, slideId, created, &error)) {
+                // Nothing may survive a refused half of one history entry.
+                fDocuments.removeStyle(created, nullptr);
+                return false;
+            }
+            return true;
+        })) {
+        setStatus(QStringLiteral("new style: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::setSlideBackground(const QString& assetId) {
+    flushText();
+    const openshow::domain::Id slideId = currentSlideId();
+    if (slideId.empty()) {
+        setStatus(QStringLiteral("background: no current slide"));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setSlideBackground(fCurrentSongId, slideId,
+                                                 assetId.toStdString(), &error);
+        })) {
+        setStatus(QStringLiteral("background: %1").arg(QString::fromStdString(error)));
         return false;
     }
     return true;

@@ -73,6 +73,8 @@ struct Background {
 // blank strings (stanza breaks), exactly as authored. The x/y/width/height
 // box is in authored canvas units (task 4.3): the text wraps at width and
 // is centred — horizontally in the box, vertically in its height.
+// align places the lines inside the box (task 4.4), and lineSpacing is
+// the renderer's line-box multiplier.
 struct TextItem {
     std::vector<std::string> lines;
     Color color = kWhite;
@@ -82,6 +84,8 @@ struct TextItem {
     double y = kDefaultBoxY;
     double width = kDefaultBoxWidth;
     double height = kDefaultBoxHeight;
+    std::string align = "center";  // "left" | "center" | "right"
+    double lineSpacing = domain::kDefaultLineSpacing;
 };
 
 // One slide compiled for presentation. showId/slideId are provenance
@@ -120,14 +124,16 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 // {"scene":1,"showId":...,"slideId":...,"backgroundColor":<int>,
 //  "background":{"image":bool,"assetId":...,"assetPath":...},
 //  "items":[{"lines":[...],"color":<int>,"fontFamily":...,"fontSize":<num>,
-//            "x":<num>,"y":<num>,"width":<num>,"height":<num>}]}
+//            "x":<num>,"y":<num>,"width":<num>,"height":<num>,
+//            "align":"left"|"center"|"right","lineSpacing":<num>}]}
 // Colours are packed 0xRRGGBB integers. Serialisation order is fixed.
 boost::json::value toJson(const Scene& scene);
 
 // Strict reader for the above; see the header for the contract. Fails
 // on: wrong scene format number, malformed or wrongly-typed fields,
 // colours outside 0xRRGGBB, non-finite or negative font sizes, non-finite
-// text-box edges, non-positive box width or height.
+// text-box edges, non-positive box width or height, an alignment outside
+// left/center/right, a line spacing outside 0.25..8.
 bool fromJson(const boost::json::value& value, Scene* out, std::string* error = nullptr);
 
 }  // namespace openshow::scene

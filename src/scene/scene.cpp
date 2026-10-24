@@ -147,6 +147,34 @@ bool wantBoxSize(const boost::json::object& obj, const char* key, double* out,
     return true;
 }
 
+// Where the lines sit inside the box (task 4.4) — the three words the
+// domain stores, and nothing else.
+bool wantAlign(const boost::json::object& obj, const char* key, std::string* out,
+               std::string* error) {
+    if (!wantString(obj, key, out, error)) {
+        return false;
+    }
+    if (*out != "left" && *out != "center" && *out != "right") {
+        fail(error, std::string("scene: '") + key +
+                        "' must be \"left\", \"center\" or \"right\"");
+        return false;
+    }
+    return true;
+}
+
+// The line-box multiplier, in the sane band the layout assumes.
+bool wantLineSpacing(const boost::json::object& obj, const char* key, double* out,
+                     std::string* error) {
+    if (!wantBoxEdge(obj, key, out, error)) {
+        return false;
+    }
+    if (*out < 0.25 || *out > 8.0) {
+        fail(error, std::string("scene: '") + key + "' must be within 0.25..8");
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 bool operator==(const Background& a, const Background& b) {
@@ -158,7 +186,7 @@ bool operator!=(const Background& a, const Background& b) { return !(a == b); }
 bool operator==(const TextItem& a, const TextItem& b) {
     return a.lines == b.lines && a.color == b.color && a.fontFamily == b.fontFamily &&
            a.fontSize == b.fontSize && a.x == b.x && a.y == b.y && a.width == b.width &&
-           a.height == b.height;
+           a.height == b.height && a.align == b.align && a.lineSpacing == b.lineSpacing;
 }
 bool operator!=(const TextItem& a, const TextItem& b) { return !(a == b); }
 
@@ -230,6 +258,10 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
     item.y = slide->y;
     item.width = slide->width;
     item.height = slide->height;
+    // Typography: the resolved style's alignment and line box (task 4.4),
+    // falling back to the item defaults when the slide carries no style.
+    item.align = style != nullptr ? style->align : std::string("center");
+    item.lineSpacing = style != nullptr ? style->lineSpacing : domain::kDefaultLineSpacing;
     scene.items.push_back(std::move(item));
 
     if (!slide->backgroundAssetId.empty()) {
@@ -284,6 +316,8 @@ boost::json::value toJson(const Scene& scene) {
         jsonItem.emplace("y", item.y);
         jsonItem.emplace("width", item.width);
         jsonItem.emplace("height", item.height);
+        jsonItem.emplace("align", item.align);
+        jsonItem.emplace("lineSpacing", item.lineSpacing);
         items.push_back(std::move(jsonItem));
     }
     root.emplace("items", std::move(items));
@@ -361,7 +395,9 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
             !wantBoxEdge(jsonItem, "x", &item.x, error) ||
             !wantBoxEdge(jsonItem, "y", &item.y, error) ||
             !wantBoxSize(jsonItem, "width", &item.width, error) ||
-            !wantBoxSize(jsonItem, "height", &item.height, error)) {
+            !wantBoxSize(jsonItem, "height", &item.height, error) ||
+            !wantAlign(jsonItem, "align", &item.align, error) ||
+            !wantLineSpacing(jsonItem, "lineSpacing", &item.lineSpacing, error)) {
             return false;
         }
         scene.items.push_back(std::move(item));

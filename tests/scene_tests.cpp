@@ -31,6 +31,7 @@ bool check(bool condition, const char* what) {
 
 using openshow::domain::Documents;
 using openshow::domain::Id;
+using openshow::domain::kDefaultLineSpacing;
 namespace scene = openshow::scene;
 
 // A small service exercising every resolution branch: one slide under a
@@ -49,8 +50,9 @@ struct Fixture {
 Fixture buildFixture() {
     Fixture fx;
     const Id house =
-        fx.docs.createStyle("House", "#ffffff", "#202040", "DejaVu Serif", 64.0);
-    const Id loud = fx.docs.createStyle("Loud", "#ff0", "#000", "Impact", 96.0);
+        fx.docs.createStyle("House", "#ffffff", "#202040", "DejaVu Serif", 64.0, "center",
+                            kDefaultLineSpacing);
+    const Id loud = fx.docs.createStyle("Loud", "#ff0", "#000", "Impact", 96.0, "right", 1.5);
     fx.asset = fx.docs.addAsset("stage loop.jpg", "/services/svc/assets/asset-loop.jpg");
 
     const Id show = fx.docs.createShow("Order");
@@ -87,6 +89,8 @@ void exerciseCompile(const Fixture& fx) {
     check(out.showId == fx.show && out.slideId == fx.defaulted, "provenance ids travel");
     check(out.items[0].lines.size() == 3 && out.items[0].lines[1].empty(),
           "lines keep their blank stanza break");
+    check(out.items[0].align == "center" && out.items[0].lineSpacing == kDefaultLineSpacing,
+          "a centre-set style compiles to a centred item at the default line box");
 
     // Override wins over the default; the #rgb short form expands.
     check(scene::compileSlide(fx.docs, fx.show, fx.overridden, &out, &error),
@@ -95,6 +99,8 @@ void exerciseCompile(const Fixture& fx) {
               out.items[0].fontSize == 96.0,
           "the per-slide override wins over the show default");
     check(out.background.color == 0x000000u, "#ff0/#000 short forms expand correctly");
+    check(out.items[0].align == "right" && out.items[0].lineSpacing == 1.5,
+          "the resolved style's typography (task 4.4) is baked into the text item");
 
     // No style anywhere: the built-in white on black.
     // find the Bare show: the unstyled slide's show
@@ -111,7 +117,9 @@ void exerciseCompile(const Fixture& fx) {
     check(out.items[0].color == scene::kWhite &&
               out.background.color == scene::kBlack &&
               out.items[0].fontFamily.empty() &&
-              out.items[0].fontSize == scene::kRendererDefaultFontSize,
+              out.items[0].fontSize == scene::kRendererDefaultFontSize &&
+              out.items[0].align == "center" &&
+              out.items[0].lineSpacing == kDefaultLineSpacing,
           "no style at all yields the built-in defaults");
 
     // Background asset resolves to id + path.
@@ -143,7 +151,8 @@ void exerciseImmutability(Fixture& fx) {
 
     // Edit the model every way a live session would.
     fx.docs.setSlideLines(fx.show, fx.defaulted, {"Replaced"});
-    fx.docs.createStyle("Newer", "#123456", "#000000", "Newer Font", 12.0);
+    fx.docs.createStyle("Newer", "#123456", "#000000", "Newer Font", 12.0, "center",
+                        kDefaultLineSpacing);
 
     check(compiled == before, "an already compiled scene does not follow later edits");
     scene::Scene fresh;
@@ -211,6 +220,27 @@ void exerciseWireRoundTrip(const Fixture& fx) {
         obj["items"].as_array()[0].as_object()["width"] = 0.0;
         refuses(boost::json::serialize(obj), "'width' must be positive",
                 "a zero-width text box refuses");
+    }
+    {  // An item missing its typography — required since task 4.4.
+        boost::json::object obj = scene::toJson(compiled).as_object();
+        obj["items"].as_array()[0].as_object().erase("align");
+        refuses(boost::json::serialize(obj), "'align' must be a string",
+                "an item without an alignment refuses");
+    }
+    {  // An alignment that is none of the renderer's three.
+        boost::json::object obj = scene::toJson(compiled).as_object();
+        obj["items"].as_array()[0].as_object()["align"] = "middle";
+        refuses(boost::json::serialize(obj), "must be \"left\", \"center\" or \"right\"",
+                "an unknown alignment refuses");
+    }
+    {  // Line boxes that collapse into each other or blow the box apart.
+        boost::json::object obj = scene::toJson(compiled).as_object();
+        obj["items"].as_array()[0].as_object()["lineSpacing"] = 0.1;
+        refuses(boost::json::serialize(obj), "'lineSpacing' must be within 0.25..8",
+                "a collapsed line box refuses");
+        obj["items"].as_array()[0].as_object()["lineSpacing"] = 9.0;
+        refuses(boost::json::serialize(obj), "'lineSpacing' must be within 0.25..8",
+                "an exploded line box refuses");
     }
     {  // An item holding a non-string line.
         boost::json::object obj = scene::toJson(compiled).as_object();

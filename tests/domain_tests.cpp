@@ -38,6 +38,7 @@ bool check(bool condition, const char* what) {
 
 using openshow::domain::Documents;
 using openshow::domain::Id;
+using openshow::domain::kDefaultLineSpacing;
 using Asset = openshow::domain::Asset;
 using Autosave = openshow::domain::Autosave;
 using History = openshow::domain::History;
@@ -199,21 +200,28 @@ void exerciseStyles() {
     const Id slide = docs.appendSlide(show, &error);
 
     const Id style = docs.createStyle("House", "#ffffff", "#202040", "DejaVu Serif", 64.0,
-                                      &error);
+                                      "center", kDefaultLineSpacing, &error);
     check(!style.empty(), "createStyle returns an id");
-    check(docs.createStyle("Bad", "#12g456", "#000000", "x", 10, &error).empty() &&
+    check(docs.createStyle("Bad", "#12g456", "#000000", "x", 10, "center",
+                           kDefaultLineSpacing, &error)
+                  .empty() &&
               !error.empty(),
           "a non-hex text colour is refused");
-    check(docs.createStyle("Bad", "#fff", "white", "x", 10, &error).empty(),
+    check(docs.createStyle("Bad", "#fff", "white", "x", 10, "center", kDefaultLineSpacing,
+                           &error)
+                  .empty(),
           "a named background colour is refused too");
-    check(docs.createStyle("Bad", "#fff", "#fff", "x", -1, &error).empty(),
+    check(docs.createStyle("Bad", "#fff", "#fff", "x", -1, "center", kDefaultLineSpacing,
+                           &error)
+                  .empty(),
           "a negative font size is refused");
 
     check(docs.setShowDefaultStyle(show, style, &error) &&
               docs.styleForSlide(show, slide) != nullptr &&
               docs.styleForSlide(show, slide)->id == style,
           "the show default style resolves for unstyled slides");
-    const Id other = docs.createStyle("Loud", "#ffff00", "#000000", "Impact", 96.0, &error);
+    const Id other = docs.createStyle("Loud", "#ffff00", "#000000", "Impact", 96.0, "center",
+                                      kDefaultLineSpacing, &error);
     check(docs.setSlideStyle(show, slide, other, &error) &&
               docs.styleForSlide(show, slide)->id == other,
           "a per-slide override beats the default");
@@ -223,11 +231,19 @@ void exerciseStyles() {
     check(!docs.setSlideStyle(show, slide, "style999", &error),
           "an unknown override id is refused");
 
-    check(docs.updateStyle(other, "#ff0000", "#000", "Arial", 0.0, &error) &&
+    check(docs.updateStyle(other, "#ff0000", "#000", "Arial", 0.0, "left", 2.0, &error) &&
               docs.findStyle(other)->textColor == "#ff0000" &&
               docs.findStyle(other)->backgroundColor == "#000" &&
-              docs.findStyle(other)->fontSize == 0.0,
-          "updateStyle replaces the appearance (0 size = renderer default)");
+              docs.findStyle(other)->fontSize == 0.0 &&
+              docs.findStyle(other)->align == "left" &&
+              docs.findStyle(other)->lineSpacing == 2.0,
+          "updateStyle replaces the appearance and typography (0 size = renderer default)");
+    check(!docs.updateStyle(other, "#ff0000", "#000", "Arial", 0.0, "middle",
+                            kDefaultLineSpacing, &error),
+          "an alignment outside left/center/right is refused");
+    check(!docs.updateStyle(other, "#ff0000", "#000", "Arial", 0.0, "center", 0.0, &error) &&
+              !docs.updateStyle(other, "#ff0000", "#000", "Arial", 0.0, "center", 99.0, &error),
+          "line spacing outside 0.25..8 is refused");
     check(docs.renameStyle(other, "Louder", &error) && docs.findStyle(other)->name == "Louder",
           "styles rename");
 
@@ -345,8 +361,10 @@ bool replaceOnce(std::string& text, const std::string& from, const std::string& 
 // sections, and one background asset whose file lives outside the
 // package (created at assetSource).
 void buildSampleService(Documents* docs, const fs::path& assetSource) {
-    const Id house = docs->createStyle("House", "#ffffff", "#202040", "DejaVu Serif", 64.0);
-    const Id loud = docs->createStyle("Loud", "#ffff00", "#000000", "Impact", 96.0);
+    const Id house = docs->createStyle("House", "#ffffff", "#202040", "DejaVu Serif", 64.0,
+                                       "center", kDefaultLineSpacing);
+    const Id loud = docs->createStyle("Loud", "#ffff00", "#000000", "Impact", 96.0, "center",
+                                      kDefaultLineSpacing);
     const Id asset = docs->addAsset("stage loop.jpg", assetSource.string());
 
     const Id order = docs->createShow("Service Order");
@@ -407,7 +425,8 @@ bool sameService(const Documents& a, const Documents& b) {
         const Style* xb = b.findStyle(styleId);
         if (xa == nullptr || xb == nullptr || xa->name != xb->name ||
             xa->textColor != xb->textColor || xa->backgroundColor != xb->backgroundColor ||
-            xa->fontFamily != xb->fontFamily || xa->fontSize != xb->fontSize) {
+            xa->fontFamily != xb->fontFamily || xa->fontSize != xb->fontSize ||
+            xa->align != xb->align || xa->lineSpacing != xb->lineSpacing) {
             return false;
         }
     }
@@ -556,6 +575,65 @@ void exercisePersistence(const fs::path& tempRoot) {
         check(!openshow::domain::loadService(&squashed, warped, &error) &&
                   error.find("slide1") != std::string::npos,
               "a slide whose box cannot be placed is refused on load");
+    }
+
+    // --- typography (task 4.4): a style's align and line spacing
+    // round-trip; a service written before typography existed loads with
+    // centred text at the renderer's line box; typography the renderer
+    // cannot honour is refused naming its style ---
+    {
+        Documents typed;
+        const Id sharp = typed.createStyle("Sharp", "#ff8800", "#000000", "DejaVu Sans", 88.0,
+                                           "right", 1.75, &error);
+        check(!sharp.empty(), "createStyle accepts typography");
+        const fs::path typeset = tempRoot / "typeset";
+        Documents typeBack;
+        check(openshow::domain::saveService(typed, typeset, &error) &&
+                  openshow::domain::loadService(&typeBack, typeset, &error) &&
+                  typeBack.findStyle(sharp)->align == "right" &&
+                  typeBack.findStyle(sharp)->lineSpacing == 1.75,
+              "style typography round-trips through the manifest");
+
+        // A legacy manifest: the style entry simply lacks the two fields.
+        const fs::path oldType = tempRoot / "old-type";
+        std::filesystem::create_directories(oldType);
+        writeFile(oldType / "service.json",
+                  R"({"format":1,"nextOrdinal":9,"shows":[],)"
+                  R"("styles":[{"id":"style1","name":"House","textColor":"#ffffff",)"
+                  R"("backgroundColor":"#000000","fontFamily":"","fontSize":64}],)"
+                  R"("assets":[],"playlists":[]})");
+        Documents oldTypeBack;
+        check(openshow::domain::loadService(&oldTypeBack, oldType, &error) &&
+                  oldTypeBack.findStyle("style1") != nullptr &&
+                  oldTypeBack.findStyle("style1")->align == "center" &&
+                  oldTypeBack.findStyle("style1")->lineSpacing == kDefaultLineSpacing,
+              "a manifest without typography loads centred at the default line box");
+
+        const fs::path skewed = tempRoot / "skewed";
+        std::filesystem::create_directories(skewed);
+        writeFile(skewed / "service.json",
+                  R"({"format":1,"nextOrdinal":9,"shows":[],)"
+                  R"("styles":[{"id":"style9","name":"Odd","textColor":"#ffffff",)"
+                  R"("backgroundColor":"#000000","fontFamily":"","fontSize":64,)"
+                  R"("align":"middle","lineSpacing":1.25}],)"
+                  R"("assets":[],"playlists":[]})");
+        Documents tiltBack;
+        check(!openshow::domain::loadService(&tiltBack, skewed, &error) &&
+                  error.find("style9") != std::string::npos,
+              "a style with an unknown align is refused on load naming its id");
+
+        const fs::path crushed = tempRoot / "crushed";
+        std::filesystem::create_directories(crushed);
+        writeFile(crushed / "service.json",
+                  R"({"format":1,"nextOrdinal":9,"shows":[],)"
+                  R"("styles":[{"id":"style2","name":"Flat","textColor":"#ffffff",)"
+                  R"("backgroundColor":"#000000","fontFamily":"","fontSize":64,)"
+                  R"("align":"center","lineSpacing":0.01}],)"
+                  R"("assets":[],"playlists":[]})");
+        Documents flatBack;
+        check(!openshow::domain::loadService(&flatBack, crushed, &error) &&
+                  error.find("style2") != std::string::npos,
+              "a style with a collapsed line spacing is refused on load");
     }
 
     // --- id continuity: the reloaded store must not recycle ---

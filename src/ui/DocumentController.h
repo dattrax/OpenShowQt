@@ -27,6 +27,7 @@
 #include <QString>
 #include <QTimer>
 #include <QVariantList>
+#include <QVariantMap>
 
 #include <filesystem>
 #include <functional>
@@ -60,6 +61,14 @@ class DocumentController : public QObject {
     // The media library (drawer Media tab): [{id, name, sourcePath}],
     // import order. save() is where the bytes join the package.
     Q_PROPERTY(QVariantList assets READ assets NOTIFY documentsChanged)
+    // The style panel (task 4.4): every style in the service, and the one
+    // the current slide actually resolves through (override or show
+    // default; empty map when the slide has no style anywhere). The map
+    // also depends on navigation, so views of it sync on both signals —
+    // the same contract as the box fields.
+    Q_PROPERTY(QVariantList styles READ styles NOTIFY documentsChanged)
+    Q_PROPERTY(QVariantMap currentStyle READ currentStyle NOTIFY documentsChanged)
+    Q_PROPERTY(bool currentStyleIsOverride READ currentStyleIsOverride NOTIFY documentsChanged)
     // Edit-since-explicit-save, and the directory save()/load() use.
     Q_PROPERTY(bool dirty READ dirty NOTIFY stateChanged)
     Q_PROPERTY(QString serviceDirectory READ serviceDirectory CONSTANT)
@@ -81,6 +90,9 @@ public:
     QVariantList playlists() const;
     QVariantList playlistEntries() const;
     QVariantList assets() const;
+    QVariantList styles() const;
+    QVariantMap currentStyle() const;
+    bool currentStyleIsOverride() const;
     QString currentPlaylistId() const {
         return QString::fromStdString(fCurrentPlaylistId);
     }
@@ -111,6 +123,30 @@ public:
     // 1920x1080 canvas units. One history entry per call, so a drag commits
     // once on release. Fails (with status) on a bad box or no current slide.
     Q_INVOKABLE bool setSlideGeometry(double x, double y, double width, double height);
+
+    // --- style panel (task 4.4) ---
+
+    // Every mutation here is one history entry, and every refusal lands a
+    // status line without touching the model (the 2.1 contract).
+    // Points the current slide at a style — a per-slide override; the
+    // panel's "Follow show" hands it back with the empty id.
+    Q_INVOKABLE bool applyStyleToCurrentSlide(const QString& styleId);
+    // Makes a style the whole show's default: every slide that follows the
+    // show starts drawing it. This is the reuse half of "styles apply
+    // consistently across slides".
+    Q_INVOKABLE bool setShowDefaultStyle(const QString& styleId);
+    // Edits one style in place — name, colours, font and typography — and
+    // every slide using it changes at once.
+    Q_INVOKABLE bool editStyle(const QString& styleId, const QString& name,
+                               const QString& textColor, const QString& backgroundColor,
+                               const QString& fontFamily, double fontSize,
+                               const QString& align, double lineSpacing);
+    // Creates a style wearing whatever the current slide draws now
+    // (resolved style or built-in defaults) and overrides only that slide.
+    Q_INVOKABLE bool createStyleFromCurrent(const QString& name);
+    // Layering: an image behind the current slide's words; "" clears it
+    // back to the style's background colour.
+    Q_INVOKABLE bool setSlideBackground(const QString& assetId);
 
     // --- navigation ---
 
