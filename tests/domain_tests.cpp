@@ -8,11 +8,18 @@
 
 #include <cctype>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <unistd.h>
+
 #include "openshow/domain/documents.h"
+#include "openshow/domain/storage.h"
 #include "openshow/domain/version.h"
 
 namespace {
@@ -29,6 +36,11 @@ bool check(bool condition, const char* what) {
 
 using openshow::domain::Documents;
 using openshow::domain::Id;
+using Asset = openshow::domain::Asset;
+using Playlist = openshow::domain::Playlist;
+using Show = openshow::domain::Show;
+using Slide = openshow::domain::Slide;
+using Style = openshow::domain::Style;
 
 void exerciseShows() {
     Documents docs;
@@ -266,6 +278,303 @@ void exerciseFailureLeavesNoTrace() {
           "the model is untouched after the refusals");
 }
 
+// --- persistence (task 2.2) ---------------------------------------------------
+
+namespace fs = std::filesystem;
+
+bool writeFile(const fs::path& path, const std::string& bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << bytes;
+    return out.good();
+}
+
+std::string readFile(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+bool replaceOnce(std::string& text, const std::string& from, const std::string& to) {
+    const size_t position = text.find(from);
+    if (position == std::string::npos) {
+        return false;
+    }
+    text.replace(position, from.size(), to);
+    return true;
+}
+
+// Builds the "sample service": two shows with groups and notes, two
+// styles with default + override, a playlist with a repeat show and
+// sections, and one background asset whose file lives outside the
+// package (created at assetSource).
+void buildSampleService(Documents* docs, const fs::path& assetSource) {
+    const Id house = docs->createStyle("House", "#ffffff", "#202040", "DejaVu Serif", 64.0);
+    const Id loud = docs->createStyle("Loud", "#ffff00", "#000000", "Impact", 96.0);
+    const Id asset = docs->addAsset("stage loop.jpg", assetSource.string());
+
+    const Id order = docs->createShow("Service Order");
+    docs->setShowDefaultStyle(order, house);
+    const Id intro = docs->appendSlide(order);
+    const Id psalm = docs->appendSlide(order);
+    const Id chorus1 = docs->appendSlide(order);
+    const Id chorus2 = docs->appendSlide(order);
+    docs->setShowNotes(order, "communion after the second chorus");
+    docs->setSlideLines(order, intro, {"Come, all people", ""});
+    docs->setSlideLines(order, psalm, {"The earth is the Lord's", "and the fullness thereof"});
+    docs->setSlideGroup(order, intro, "Intro");
+    docs->setSlideGroup(order, psalm, "Psalm");
+    docs->setSlideGroup(order, chorus1, "Chorus");
+    docs->setSlideGroup(order, chorus2, "Chorus");
+    docs->setSlideNotes(order, chorus1, "repeat ad lib");
+    docs->setSlideBackground(order, chorus1, asset);
+
+    const Id hymn = docs->createShow("Hymn");
+    const Id verse = docs->appendSlide(hymn);
+    const Id finalVerse = docs->appendSlide(hymn);
+    docs->setSlideLines(hymn, verse, {"Old 100th, line one"});
+    docs->setSlideLines(hymn, finalVerse, {"Old 100th, amen"});
+    docs->setSlideStyle(hymn, finalVerse, loud);
+
+    const Id playlist = docs->createPlaylist("Sunday");
+    docs->addPlaylistEntry(playlist, order, "Gathering");
+    docs->addPlaylistEntry(playlist, hymn, "");
+    docs->addPlaylistEntry(playlist, order, "Dismiss");
+}
+
+// Field-by-field model comparison (the Documents API is the only view).
+bool sameService(const Documents& a, const Documents& b) {
+    if (a.showIds() != b.showIds() || a.styleIds() != b.styleIds() ||
+        a.playlistIds() != b.playlistIds() || a.assetIds() != b.assetIds()) {
+        return false;
+    }
+    for (const Id& showId : a.showIds()) {
+        const Show* sa = a.findShow(showId);
+        const Show* sb = b.findShow(showId);
+        if (sa == nullptr || sb == nullptr || sa->name != sb->name ||
+            sa->notes != sb->notes || sa->defaultStyleId != sb->defaultStyleId ||
+            sa->slides.size() != sb->slides.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < sa->slides.size(); ++i) {
+            const Slide& x = sa->slides[i];
+            const Slide& y = sb->slides[i];
+            if (x.id != y.id || x.group != y.group || x.lines != y.lines ||
+                x.notes != y.notes || x.styleId != y.styleId ||
+                x.backgroundAssetId != y.backgroundAssetId) {
+                return false;
+            }
+        }
+    }
+    for (const Id& styleId : a.styleIds()) {
+        const Style* xa = a.findStyle(styleId);
+        const Style* xb = b.findStyle(styleId);
+        if (xa == nullptr || xb == nullptr || xa->name != xb->name ||
+            xa->textColor != xb->textColor || xa->backgroundColor != xb->backgroundColor ||
+            xa->fontFamily != xb->fontFamily || xa->fontSize != xb->fontSize) {
+            return false;
+        }
+    }
+    for (const Id& playlistId : a.playlistIds()) {
+        const Playlist* pa = a.findPlaylist(playlistId);
+        const Playlist* pb = b.findPlaylist(playlistId);
+        if (pa == nullptr || pb == nullptr || pa->name != pb->name ||
+            pa->entries.size() != pb->entries.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < pa->entries.size(); ++i) {
+            if (pa->entries[i].id != pb->entries[i].id ||
+                pa->entries[i].showId != pb->entries[i].showId ||
+                pa->entries[i].section != pb->entries[i].section) {
+                return false;
+            }
+        }
+    }
+    for (const Id& assetId : a.assetIds()) {
+        const Asset* aa = a.findAsset(assetId);
+        const Asset* ab = b.findAsset(assetId);
+        if (aa == nullptr || ab == nullptr || aa->name != ab->name) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Writes a tampered copy of the good package to `target` applying
+// `tamper` to the manifest text; returns false if the tamper did not
+// even find its anchor (a broken test, not a passing load).
+bool tamperedPackage(const fs::path& good, const fs::path& target,
+                     const std::function<bool(std::string&)>& tamper) {
+    std::string manifest = readFile(good / "service.json");
+    if (!tamper(manifest)) {
+        return false;
+    }
+    std::filesystem::create_directories(target);
+    std::filesystem::copy(good / "assets", target / "assets",
+                          std::filesystem::copy_options::recursive);
+    return writeFile(target / "service.json", manifest);
+}
+
+void exercisePersistence(const fs::path& tempRoot) {
+    std::string error;
+    std::filesystem::create_directories(tempRoot);
+    const fs::path package = tempRoot / "service";
+    const fs::path assetSource = tempRoot / "outside";
+    writeFile(assetSource, "PNGBYTES-not-really-a-jpeg");
+
+    Documents source;
+    buildSampleService(&source, assetSource);
+    check(!source.showIds().empty() && !source.assetIds().empty(),
+          "the sample service builds");
+
+    // --- save: manifest appears, asset bytes join the package ---
+    check(openshow::domain::saveService(source, package, &error), "saveService succeeds");
+    check(fs::is_regular_file(package / "service.json"), "the package holds service.json");
+    const Id asset = source.assetIds().front();
+    const fs::path packaged = package / "assets" / (asset + "-stage_loop.jpg");
+    check(readFile(packaged) == "PNGBYTES-not-really-a-jpeg",
+          "the asset was copied into assets/ under '<id>-stage_loop.jpg' with its bytes");
+
+    // --- load: field-by-field identical service ---
+    Documents reloaded;
+    check(openshow::domain::loadService(&reloaded, package, &error),
+          "loadService reads the package back");
+    check(sameService(source, reloaded),
+          "the reloaded service matches field by field (ids, order, refs)");
+    const Id order = source.showIds()[0];
+    check(reloaded.groups(order) == source.groups(order) &&
+              reloaded.slidesInGroup(order, "Chorus") == source.slidesInGroup(order, "Chorus"),
+          "groups resolve identically after the round-trip");
+    const Id hymn = source.showIds()[1];
+    const Id amen = source.findShow(hymn)->slides[1].id;
+    check(reloaded.styleForSlide(hymn, amen) != nullptr &&
+              source.styleForSlide(hymn, amen) != nullptr &&
+              reloaded.styleForSlide(hymn, amen)->id == source.styleForSlide(hymn, amen)->id,
+          "style resolution survives (override and default)");
+    const Asset* reloadedAsset = reloaded.findAsset(asset);
+    check(reloadedAsset != nullptr && readFile(reloadedAsset->sourcePath) ==
+              "PNGBYTES-not-really-a-jpeg",
+          "the loaded asset's sourcePath points at the packaged file");
+
+    // --- re-save stability: the manifest is byte-identical, and a
+    // reloaded service re-saves identically too ---
+    const std::string firstManifest = readFile(package / "service.json");
+    const Id freshAsset = reloaded.findAsset(asset)->id;  // now points into the package
+    check(openshow::domain::saveService(reloaded, package, &error),
+          "re-saving over an existing package succeeds");
+    check(readFile(package / "service.json") == firstManifest,
+          "re-save writes a byte-identical manifest");
+    (void)freshAsset;
+
+    const fs::path copied = tempRoot / "resaved";
+    Documents fromPackage;
+    check(openshow::domain::loadService(&fromPackage, package, &error) &&
+              openshow::domain::saveService(fromPackage, copied, &error) &&
+              readFile(copied / "service.json") == firstManifest,
+          "save(load(save(s))) is byte-stable");
+    check(readFile(copied / "assets" / (asset + "-stage_loop.jpg")) ==
+              "PNGBYTES-not-really-a-jpeg",
+          "the asset survives second-hand packaging");
+
+    // --- id continuity: the reloaded store must not recycle ---
+    const Id freshShow = reloaded.createShow("Later", &error);
+    bool freshIsNew = !freshShow.empty();
+    for (const Id& id : source.showIds()) {
+        freshIsNew = freshIsNew && id != freshShow;
+    }
+    check(freshIsNew && reloaded.findShow(freshShow) != nullptr,
+          "a show created after loading gets a brand-new id");
+
+    // --- save fails loudly on a missing source file ---
+    Documents broken;
+    buildSampleService(&broken, tempRoot / "gone.jpg");
+    const fs::path brokenDir = tempRoot / "broken-save";
+    check(!openshow::domain::saveService(broken, brokenDir, &error) &&
+              error.find("gone.jpg") != std::string::npos,
+          "saving an asset whose file vanished fails naming the asset");
+
+    // --- load refusals: each names its cause, the target survives ---
+    Documents keeper;
+    keeper.createShow("Untouched", &error);
+    const auto refuses = [&](const fs::path& dir, const char* expectIn, const char* what) {
+        error.clear();
+        Documents attempt;
+        attempt.createShow("Keeper");
+        check(!openshow::domain::loadService(&attempt, dir, &error) &&
+                  error.find(expectIn) != std::string::npos &&
+                  attempt.showIds().size() == 1 &&
+                  attempt.findShow(attempt.showIds()[0])->name == "Keeper",
+              what);
+        (void)keeper;
+    };
+    {
+        const fs::path dir = tempRoot / "garbage";
+        fs::create_directories(dir);
+        writeFile(dir / "service.json", readFile(package / "service.json") + "}}broken");
+        refuses(dir, "malformed", "a corrupt manifest is refused");
+    }
+    {
+        const fs::path dir = tempRoot / "future";
+        check(tamperedPackage(package, dir, [](std::string& m) {
+                  return replaceOnce(m, "\"format\":1", "\"format\":999");
+              }),
+              "test tamper anchors exist (format)");
+        refuses(dir, "unsupported format", "a future format version is refused");
+    }
+    {
+        const fs::path dir = tempRoot / "dangling-show";
+        check(tamperedPackage(package, dir, [](std::string& m) {
+                  return replaceOnce(m, "\"showId\":\"", "\"showId\":\"ghost-");
+              }),
+              "test tamper anchors exist (showId)");
+        refuses(dir, "unknown show", "an entry naming a vanished show is refused");
+    }
+    {
+        const fs::path dir = tempRoot / "dangling-style";
+        const Id loud = [&] {
+            for (const Id& id : source.styleIds()) {
+                if (source.findStyle(id)->name == "Loud") {
+                    return id;
+                }
+            }
+            return Id();
+        }();
+        check(tamperedPackage(package, dir, [&](std::string& m) {
+                  return replaceOnce(m, "\"styleId\":\"" + loud + "\"",
+                                     "\"styleId\":\"style-gone\"");
+              }),
+              "test tamper anchors exist (styleId)");
+        refuses(dir, "unknown style", "a slide naming a vanished style is refused");
+    }
+    {
+        const fs::path dir = tempRoot / "no-asset-bytes";
+        check(tamperedPackage(package, dir, [](std::string& m) { return true; }),
+              "test tamper anchors exist (copy)");
+        fs::remove_all(dir / "assets");
+        refuses(dir, "missing from the package",
+                "an asset file deleted from the package fails the load");
+    }
+    {
+        const fs::path dir = tempRoot / "duplicate";
+        const Id first = source.findShow(order)->slides[0].id;
+        const Id second = source.findShow(order)->slides[1].id;
+        check(tamperedPackage(package, dir, [&](std::string& m) {
+                  return replaceOnce(m, "\"" + second + "\"",
+                                     "\"" + first + "\"");
+              }),
+              "test tamper anchors exist (duplicate)");
+        refuses(dir, "duplicate id", "a repeated id is refused");
+    }
+    {
+        Documents attempt;
+        attempt.createShow("Keeper");
+        error.clear();
+        check(!openshow::domain::loadService(&attempt, tempRoot / "nowhere", &error) &&
+                  attempt.showIds().size() == 1,
+              "loading a directory with no manifest fails and leaves the target alone");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -282,6 +591,13 @@ int main() {
     exerciseStyles();
     exercisePlaylists();
     exerciseFailureLeavesNoTrace();
+
+    // Persistence works in a private temp directory, removed at exit.
+    const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() /
+                                           ("openshow-domain-tests-" + std::to_string(getpid()));
+    std::filesystem::remove_all(tempRoot);
+    exercisePersistence(tempRoot);
+    std::filesystem::remove_all(tempRoot);
 
     if (!ok || gFailed) {
         return 1;

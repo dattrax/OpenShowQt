@@ -47,6 +47,8 @@ struct Slide {
     std::string notes;
     // Style override; empty follows the show's default style.
     Id styleId;
+    // Background image asset; empty means no background.
+    Id backgroundAssetId;
 };
 
 struct Show {
@@ -68,6 +70,16 @@ struct Style {
     std::string backgroundColor;
     std::string fontFamily;
     double fontSize = 0.0;
+};
+
+// One media file belonging to the service. The model records only the
+// name and where to find the bytes; storage (task 2.2) copies them into
+// the service package at save time. sourcePath is a plain OS path —
+// existence is only checked when saving, so Documents stays fs-free.
+struct Asset {
+    Id id;
+    std::string name;       // display/filename, e.g. "stage-loop.jpg"
+    std::string sourcePath; // current location of the file's bytes
 };
 
 // One playlist row: a show, optionally introduced by a section marker.
@@ -163,6 +175,24 @@ public:
     // show default, else nullptr.
     const Style* styleForSlide(const Id& showId, const Id& slideId) const;
 
+    // --- assets ---
+
+    // Records a media file. Neither name nor path is touched on disk —
+    // saveService() is where bytes get copied into the package — so an
+    // add of a currently-missing path succeeds and fails at save with
+    // the asset named. The name must be non-blank; the path must be
+    // non-empty but is never trimmed (spaces are legal in paths).
+    // Returns the new asset's Id, or "" on failure.
+    Id addAsset(const std::string& name, const std::string& sourcePath,
+                std::string* error = nullptr);
+    // Drops the asset and clears every slide's background reference.
+    bool removeAsset(const Id& assetId, std::string* error = nullptr);
+    // Points a slide's background at an asset; "" means no background.
+    bool setSlideBackground(const Id& showId, const Id& slideId, const Id& assetId,
+                            std::string* error = nullptr);
+    const Asset* findAsset(const Id& assetId) const;
+    std::vector<Id> assetIds() const;  // creation order
+
     // --- playlists ---
 
     Id createPlaylist(const std::string& name, std::string* error = nullptr);
@@ -184,6 +214,11 @@ public:
     std::vector<Id> playlistIds() const;  // creation order
 
 private:
+    // storage.cpp reconstructs a loaded model wholesale (ids and all)
+    // after validating the file; operations stay the only mutation path
+    // for everything else.
+    friend class ServiceCodec;
+
     Show* findShow_mut(const Id& showId);
     Style* findStyle_mut(const Id& styleId);
     Playlist* findPlaylist_mut(const Id& playlistId);
@@ -196,6 +231,7 @@ private:
 
     std::vector<Show> fShows;
     std::vector<Style> fStyles;
+    std::vector<Asset> fAssets;
     std::vector<Playlist> fPlaylists;
     unsigned long long fNextOrdinal = 1;  // store-wide, ids never recycle
 };

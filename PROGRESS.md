@@ -1040,6 +1040,52 @@ of this work.
     performed, and "refusal leaves no trace" needs genuinely invalid
     arguments — a valid slide id in `setSlideLines` simply succeeds.
 
+## Task 2.2 log (2026-10-24)
+
+- **2.2** DONE — the model survives disk. Two pieces:
+  - **Assets join the model** (`documents.h/cpp`): `Asset{id, name,
+    sourcePath}` in a store-level registry + `Slide.backgroundAssetId`,
+    with `addAsset`/`removeAsset`/`setSlideBackground`/`findAsset`/
+    `assetIds`. Deliberately fs-free: `addAsset` only records the
+    path (existence fails at save, naming the asset), `removeAsset`
+    clears every slide's background reference exactly like styles.
+    Names trimmed, paths never trimmed (spaces are legal in paths).
+  - **`domain/storage.h/cpp`** — `saveService`/`loadService` over a
+    directory package: `service.json` (format 1, camelCase, ids
+    verbatim, `nextOrdinal`) plus `assets/<asset id>-<sanitised
+    name>`. Boost.JSON is the project's one JSON library (same choice
+    as `openshow::protocol`, linked PUBLIC into the domain); the
+    domain stays free of Qt/FFmpeg/Vulkan. Ordering gives crash
+    safety: asset bytes are copied **before** the manifest, which is
+    written tmp+rename, so a `service.json` that exists always names
+    files that exist.
+  - **Load is a validator, not a parser**: unsupported format,
+    malformed JSON, empty/duplicate ids (one id space across kinds),
+    dangling style/asset/show references, and `nextOrdinal` not past
+    the highest id in use are each refused with a message naming the
+    cause — and the caller's `Documents` is untouched (built into a
+    temporary, swapped only on success). Ids are restored verbatim
+    through `friend class ServiceCodec` (defined in storage.cpp; the
+    public save/load are delegates), so ids keep never recycling
+    across a save/reopen boundary.
+  - **Byte-stable re-saves**: the manifest records only
+    package-relative paths, never the loaded absolute `sourcePath`,
+    so `save(load(save(s)))` is byte-identical and re-saving skips
+    copies whose source already *is* the packaged file
+    (`equivalent()` short-circuit).
+  - `domain_tests` `exercisePersistence()`: sample-service round-trip
+    (field-by-field, incl. groups, style resolution, playlist order),
+    asset copied with its bytes and reloaded pointing into the
+    package, id continuity after load, byte-stable re-save, missing-
+    source save failure, and six load refusals each verifying the
+    target survives. Gates: desktop **12/12**, headless **9/9**.
+  - Traps hit: `std::filesystem::error_code` does not exist (it is
+    `std::error_code`), `boost::json::parse` takes a
+    `boost::system::error_code`, `Id` is a plain `std::string`
+    (no `.string()`), ofstream won't create parent directories — and
+    the two stability FAILs were my test editing the store (creating
+    "Later") *before* re-saving it, not a codec bug.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -1260,12 +1306,14 @@ logged here from what is observable off screen rather than claimed as seen.
    both GPU test paths pass under `OPENSHOW_VULKAN_VALIDATION=1`, and
    the direct path benches 0 missed with the cached decoder-allocation
    fix (see the direct-decode memory regression log).
-2. **2.1 is DONE** (document model + operations + focused tests, logged
-   above). Next session starts **2.2 persistence and asset copying**
-   — serialise `Documents` (the store is built so every change is a
-   named operation: the serialiser walks the final state, not a
-   journal) and survive save/reopen of a sample service. The worker's
-   JSON surface grows from the same model.
+2. **2.1 and 2.2 are DONE** (document model + operations + focused
+   tests; persistence as a directory package with asset copying,
+   validating load and byte-stable re-saves — both logged above).
+   Next session starts **2.3 undo/redo and recovery autosave** — the
+   2.1 failure contract (named operations, refusals mutate nothing)
+   and 2.2's whole-state codec are exactly the seams an undo stack
+   and a periodic autosave wrap; the autosave can reuse
+   `saveService` into a scratch package.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

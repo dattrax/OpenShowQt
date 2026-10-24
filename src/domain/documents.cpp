@@ -467,6 +467,81 @@ const Style* Documents::styleForSlide(const Id& showId, const Id& slideId) const
     return show->defaultStyleId.empty() ? nullptr : findStyle(show->defaultStyleId);
 }
 
+// --- assets ----------------------------------------------------------------
+
+Id Documents::addAsset(const std::string& name, const std::string& sourcePath,
+                       std::string* error) {
+    const std::string clean = trimmed(name);
+    if (clean.empty()) {
+        fail(error, "an asset needs a name");
+        return {};
+    }
+    if (sourcePath.empty()) {
+        fail(error, "asset '" + clean + "' has no source path");
+        return {};
+    }
+    Asset asset;
+    asset.id = nextId("asset");
+    asset.name = clean;
+    asset.sourcePath = sourcePath;
+    fAssets.push_back(std::move(asset));
+    return fAssets.back().id;
+}
+
+bool Documents::removeAsset(const Id& assetId, std::string* error) {
+    const auto found = std::find_if(fAssets.begin(), fAssets.end(),
+                                    [&](const Asset& a) { return a.id == assetId; });
+    if (found == fAssets.end()) {
+        fail(error, idError("asset", assetId));
+        return false;
+    }
+    fAssets.erase(found);
+    // Backgrounds naming the asset degrade to none, mirroring styles.
+    for (Show& show : fShows) {
+        for (Slide& slide : show.slides) {
+            if (slide.backgroundAssetId == assetId) {
+                slide.backgroundAssetId.clear();
+            }
+        }
+    }
+    return true;
+}
+
+bool Documents::setSlideBackground(const Id& showId, const Id& slideId, const Id& assetId,
+                                   std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    const int index = findSlideIndex(*show, slideId);
+    if (index < 0) {
+        fail(error, idError("slide", slideId));
+        return false;
+    }
+    if (!assetId.empty() && findAsset(assetId) == nullptr) {
+        fail(error, idError("asset", assetId));
+        return false;
+    }
+    show->slides[static_cast<size_t>(index)].backgroundAssetId = assetId;
+    return true;
+}
+
+const Asset* Documents::findAsset(const Id& assetId) const {
+    const auto found = std::find_if(fAssets.begin(), fAssets.end(),
+                                    [&](const Asset& a) { return a.id == assetId; });
+    return found == fAssets.end() ? nullptr : &*found;
+}
+
+std::vector<Id> Documents::assetIds() const {
+    std::vector<Id> ids;
+    ids.reserve(fAssets.size());
+    for (const Asset& asset : fAssets) {
+        ids.push_back(asset.id);
+    }
+    return ids;
+}
+
 // --- playlists ---------------------------------------------------------------
 
 Id Documents::createPlaylist(const std::string& name, std::string* error) {
