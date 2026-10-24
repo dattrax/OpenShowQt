@@ -64,6 +64,26 @@ Window {
         onActivated: worker.clearSlide()
     }
 
+    // Task 4.2: the drawer keys the reference carries (Ctrl+D toggles the
+    // library strip, Ctrl+F opens its search, Ctrl+1..2 pick the tabs with
+    // content; 3..8 stay with the disabled tabs).
+    Shortcut {
+        sequence: "Ctrl+D"
+        onActivated: panels.toggleDrawer()
+    }
+    Shortcut {
+        sequence: "Ctrl+F"
+        onActivated: libraryDrawer.focusSearch()
+    }
+    Shortcut {
+        sequence: "Ctrl+1"
+        onActivated: libraryDrawer.openTab("shows")
+    }
+    Shortcut {
+        sequence: "Ctrl+2"
+        onActivated: libraryDrawer.openTab("media")
+    }
+
     TopBar {
         id: topBar
         anchors.left: parent.left
@@ -72,15 +92,18 @@ Window {
     }
 
     /* ------------------------------------------------------------------
-     * Left panel — the Projects analogue: the song list, with the song
-     * name field that creates one.
+     * Left panel — the show page of the reference: the playlist projects
+     * on top (with the current one) and the running order itself below.
+     * Rows reorder by drag or the small handles (drop targets compute
+     * the gap), rows arriving from the drawer insert at the drop point,
+     * and everything goes through the undoable controller (§5).
      * ------------------------------------------------------------------ */
     SidePanel {
         id: leftDock
         side: "left"
         anchors.left: parent.left
         anchors.top: topBar.bottom
-        anchors.bottom: parent.bottom
+        anchors.bottom: libraryDrawer.top
         width: panels.leftWidth
         onDraggedTo: candidate => panels.resizeLeft(candidate)
         onStripClicked: panels.clickLeft()
@@ -90,95 +113,249 @@ Window {
             anchors.margins: 10
 
             Text {
-                id: songsTitle
+                id: playlistsTitle
                 anchors.top: parent.top
                 anchors.left: parent.left
                 color: "#8f93a5"
                 font.pixelSize: 11
                 font.bold: true
-                text: "SONGS"
+                text: "PLAYLISTS"
             }
 
             Row {
-                id: songAddRow
-                anchors.top: songsTitle.bottom
-                anchors.topMargin: 6
+                id: playlistRow
+                anchors.top: playlistsTitle.bottom
+                anchors.topMargin: 4
                 anchors.left: parent.left
                 anchors.right: parent.right
                 spacing: 6
 
-                TextField {
-                    id: songName
-                    width: parent.width - createSongButton.width - 6
-                    placeholderText: "new song name"
-                    placeholderTextColor: "#6a6f80"
-                    color: "#f0f0ff"
-                    onAccepted: createSongButton.clicked()
+                ListView {
+                    id: playlistList
+                    orientation: ListView.Horizontal
+                    width: playlistRow.width - newPlaylistButton.width - 6
+                    height: 26
+                    spacing: 6
+                    clip: true
+                    model: docs.playlists
+
+                    delegate: Rectangle {
+                        id: playlistChip
+
+                        required property var modelData
+                        width: chipText.width + 18
+                        height: 26
+                        radius: 4
+                        color: playlistChip.modelData.id === docs.currentPlaylistId ? "#f0008c" : "#12121c"
+                        border.color: "#2f3542"
+
+                        Text {
+                            id: chipText
+                            anchors.centerIn: parent
+                            font.pixelSize: 12
+                            color: playlistChip.modelData.id === docs.currentPlaylistId ? "#ffffff" : "#f0f0ff"
+                            text: playlistChip.modelData.name
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: docs.selectPlaylist(playlistChip.modelData.id)
+                        }
+                    }
                 }
 
-                Button {
-                    id: createSongButton
-                    text: "New"
-                    enabled: songName.text.trim().length > 0
-                    onClicked: if (docs.createSong(songName.text)) songName.text = ""
+                // Chip-styled (the Controls Button rendered its "+" pill
+                // without the glyph at this size).
+                Rectangle {
+                    id: newPlaylistButton
+
+                    width: 32
+                    height: 26
+                    radius: 4
+                    color: newPlaylistMouse.containsMouse ? "#2f3542" : "#12121c"
+                    border.color: "#2f3542"
+
+                    Text {
+                        anchors.centerIn: parent
+                        font.pixelSize: 15
+                        color: "#f0f0ff"
+                        text: "+"
+                    }
+
+                    MouseArea {
+                        id: newPlaylistMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onClicked: docs.createPlaylist("Playlist " + (docs.playlists.length + 1))
+                    }
                 }
             }
 
-            Button {
-                id: removeSongButton
-                anchors.top: songAddRow.bottom
-                anchors.topMargin: 6
+            Text {
+                id: playlistTitle
+                anchors.top: playlistRow.bottom
+                anchors.topMargin: 10
                 anchors.left: parent.left
-                text: "Remove song"
-                enabled: docs.currentSongId !== ""
-                onClicked: docs.removeCurrentSong()
+                color: "#8f93a5"
+                font.pixelSize: 11
+                font.bold: true
+                text: "PLAYLIST"
             }
 
             Rectangle {
-                id: songListBox
-                anchors.top: removeSongButton.bottom
-                anchors.topMargin: 8
+                id: playlistBox
+                anchors.top: playlistTitle.bottom
+                anchors.topMargin: 6
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: serviceDirText.top
                 anchors.bottomMargin: 8
-                color: "#12121c"  // --primary-darkest
+                color: "#12121c"
                 border.color: "#2f3542"
 
                 ListView {
-                    id: songList
+                    id: entryList
                     anchors.fill: parent
                     anchors.margins: 1
                     clip: true
-                    model: docs.songs
+                    model: docs.playlistEntries
 
-                    delegate: ItemDelegate {
-                        id: control
+                    delegate: Item {
+                        id: entryRow
+
                         required property var modelData
-                        width: songList.width
-                        height: 28
-                        text: modelData.name + "  \u00b7  " + modelData.slideCount + " slides"
-                        highlighted: modelData.id === docs.currentSongId
-                        contentItem: Text {
-                            text: control.text
-                            color: control.highlighted ? "#ffffff" : "#f0f0ff"
-                            font.pixelSize: 13
-                            verticalAlignment: Text.AlignVCenter
+                        required property int index
+                        width: entryList.width
+                        height: 30
+
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: 1
+                            color: entryRow.modelData.showId === docs.currentSongId ? "#f0008c"
+                                 : (entryMouse.containsMouse ? "#2f3542" : "transparent")
+                        }
+
+                        Text {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 6
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: entryRow.width - 76
                             elide: Text.ElideRight
+                            font.pixelSize: 13
+                            color: entryRow.modelData.showId === docs.currentSongId ? "#ffffff" : "#f0f0ff"
+                            text: (entryRow.modelData.section !== ""
+                                   ? entryRow.modelData.section + " \u00b7 " : "")
+                                  + entryRow.modelData.showName
                         }
-                        background: Rectangle {
-                            color: control.highlighted ? "#f0008c"
-                                 : (control.hovered ? "#2f3542" : "transparent")
+
+                        // The reorder handles: the drag is the reference's
+                        // path, these make the same move without a mouse.
+                        Row {
+                            anchors.right: parent.right
+                            anchors.rightMargin: 2
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 2
+
+                            Repeater {
+                                model: [
+                                    {glyph: "\u25b2", enabled: entryRow.index > 0,
+                                     step: -1, action: "move"},
+                                    {glyph: "\u25bc",
+                                     enabled: entryRow.index < entryList.count - 1,
+                                     step: 1, action: "move"},
+                                    {glyph: "\u2715", enabled: true, step: 0, action: "remove"}
+                                ]
+
+                                delegate: Text {
+                                    id: handle
+
+                                    required property var modelData
+                                    width: 20
+                                    height: 24
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                    font.pixelSize: modelData.action === "remove" ? 11 : 9
+                                    color: !modelData.enabled ? "#3a3f4e"
+                                         : (handleMouse.containsMouse ? "#f0f0ff" : "#8f93a5")
+                                    text: modelData.glyph
+
+                                    MouseArea {
+                                        id: handleMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        enabled: handle.modelData.enabled
+                                        onClicked: {
+                                            if (handle.modelData.action === "move") {
+                                                docs.movePlaylistEntry(
+                                                    entryRow.modelData.entryId,
+                                                    entryRow.index + handle.modelData.step)
+                                            } else {
+                                                docs.removePlaylistEntry(entryRow.modelData.entryId)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        onClicked: docs.selectSong(modelData.id)
+
+                        MouseArea {
+                            id: entryMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            drag.target: entryRow
+                            onClicked: docs.selectSong(entryRow.modelData.showId)
+                            onReleased: if (entryRow.Drag.active) entryRow.Drag.drop()
+                        }
+
+                        Drag.active: entryMouse.drag.active
+                        Drag.keys: ["text/plain"]
+                        Drag.mimeData: ({ "text/plain": "entry:" + entryRow.modelData.entryId })
+                        Drag.hotSpot: Qt.point(width / 2, height / 2)
                     }
 
                     Text {
                         anchors.centerIn: parent
-                        visible: songList.count === 0
+                        visible: entryList.count === 0
                         color: "#6a6f80"
                         font.pixelSize: 13
-                        text: "no songs \u2014 create one above"
+                        text: "Nothing here"  // the reference's empty playlist
+                    }
+                }
+
+                // The drop target: drops land in the gap nearest the
+                // pointer (rows are 30 high), shows insert and entries
+                // move around the row being dragged.
+                DropArea {
+                    anchors.fill: parent
+                    keys: ["text/plain"]
+
+                    onDropped: function (drop) {
+                        const parts = drop.mimeData.text.split(":")
+                        const kind = parts[0]
+                        const id = parts[1]
+                        if (!id) {
+                            return
+                        }
+                        // Round to the nearest row boundary: above the
+                        // middle of row b means index b, below means b+1.
+                        const index = Math.round((drop.y - entryList.y) / 30)
+                        if (kind === "show") {
+                            docs.insertShowInPlaylist(id, index)
+                            drop.accept()
+                        } else if (kind === "entry") {
+                            // toIndex is the position after the move, so a
+                            // row moving downwards past the gap shifts by one.
+                            const entries = docs.playlistEntries
+                            let from = -1
+                            for (let i = 0; i < entries.length; ++i) {
+                                if (entries[i].entryId === id) {
+                                    from = i
+                                    break
+                                }
+                            }
+                            docs.movePlaylistEntry(id, from >= 0 && from < index ? index - 1 : index)
+                            drop.accept()
+                        }
                     }
                 }
             }
@@ -207,7 +384,7 @@ Window {
         side: "right"
         anchors.right: parent.right
         anchors.top: topBar.bottom
-        anchors.bottom: parent.bottom
+        anchors.bottom: libraryDrawer.top
         width: panels.rightWidth
         onDraggedTo: candidate => panels.resizeRight(candidate)
         onStripClicked: panels.clickRight()
@@ -412,7 +589,7 @@ Window {
         anchors.left: leftDock.right
         anchors.right: rightDock.left
         anchors.top: topBar.bottom
-        anchors.bottom: parent.bottom
+        anchors.bottom: libraryDrawer.top
         anchors.margins: 12
 
         Row {
@@ -593,5 +770,17 @@ Window {
                 }
             }
         }
+    }
+
+    /* ------------------------------------------------------------------
+     * Bottom library drawer (task 4.2): the searchable Shows/Media strip.
+     * Its height is WorkspacePanels' (300 open, 40 closed). The type is
+     * named LibraryDrawer so it doesn't shadow QtQuick.Controls' Drawer.
+     * ------------------------------------------------------------------ */
+    LibraryDrawer {
+        id: libraryDrawer
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
     }
 }

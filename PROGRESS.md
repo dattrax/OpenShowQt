@@ -1573,6 +1573,78 @@ of this work.
   click-to-open are exercised by hand.
 - Gates: desktop **20/20**, headless **12/12**.
 
+## Task 4.2 log (2026-10-24) — searchable libraries, playlist ordering: DONE
+
+- **Deliverable**: the operator can find shows and media and arrange the
+  service. The reference's bottom **library drawer** (`LibraryDrawer.qml`)
+  spans the window: its 40px bar carries the eight tabs in order (Shows
+  and Media live; the six whose milestones have not arrived render
+  disabled) plus the 100px Search button that swaps for the 290px input
+  on Ctrl+F (Esc clears and collapses, Ctrl+1/2 pick the enabled tabs),
+  and the open body (300 default) runs the list plus the right-hand
+  item-info column. The Shows tab holds the song library (create/remove
+  moved there, per the reference — the left dock is now the show page's
+  Projects analogue: playlist chips with a `+`, then the running order);
+  the Media tab imports files into the domain's asset registry
+  (`addAsset`, bytes joined by `save()`) and lists them. Height is
+  `WorkspacePanels`' again: pure `heightFor` snaps a drag shut below 80
+  and clamps at the viewport, closes remember the open height and reopen
+  at `max(stored, 300)`, and — like the reference, whose store is
+  per-session — a session that starts closed reopens at 300. The top
+  edge drags with those rules; the bar click toggles.
+- **Search** (`LibrarySearch`, pure Qt Core): reproduces the reference's
+  contract from `utils/search.ts` — normalise both sides (lowercase,
+  strip the `.,/#!?$%^&*;:{}=-_'"´`~()` set, NFD + drop diacritics,
+  collapse whitespace), then a show matches only when EVERY query word
+  matches at a WORD START in the title or content ("here" never matches
+  "There's", every word narrows), with the documented confidence tiers
+  (exact/leading title 100, all words in title 90, split 65,
+  content-only 50) sorted stably. Quoted phrases, fuzzy typos and the
+  CCLI/song-number exactness lean on fields OpenShowQt does not carry
+  yet and are left out deliberately. Enter in the search field drops the
+  first match into the playlist after the current show (the reference's
+  placement rule) and opens it.
+- **Controller surface** (`DocumentController`): `playlists`,
+  `playlistEntries` (resolved names/slide counts), `currentPlaylistId`,
+  `assets`, and history-wrapped `createPlaylist`, `selectPlaylist`,
+  `addShowToPlaylist`, `insertShowInPlaylist` (clamped; −1 appends),
+  `insertShowAfterCurrentShow`, `removePlaylistEntry`,
+  `movePlaylistEntry` (toIndex = position after the move, clamped — the
+  drag handles, ▲▼ buttons and drops all call it), `searchShows`,
+  `importMediaFile`, `removeAsset`. Every session seeds one "Service"
+  playlist directly at construction/load — baseline, not an undoable
+  edit, so undo can never land on "no playlist" — and undo/redo
+  re-anchor the current playlist when a restore took it away. Removing a
+  show drops the entries naming it (the domain's cascade).
+- **Ordering UX**: rows reorder by drag (`text/plain` `entry:<id>`, the
+  drop side splits on the first colon) or the ▲▼ handles; drops from the
+  drawer (`show:<id>`) insert at the gap nearest the pointer (single
+  DropArea, `Math.round((drop.y − list.y) / 30)`, shifted by one around
+  the moved row). Double-click a library row appends it. The handles
+  exist because drags cannot be scripted here — they guarantee the same
+  move the reference only offers via drag, and the move semantics
+  themselves are fixture-pinned. Sections ride along in the row data
+  (header rendering is 4.3+). The left dock's old songs list is gone —
+  the drawer is the reference's place for it.
+- **Deviations noted**: no categories column (no tag concept in the
+  domain yet); drawer widths follow the window instead of a third pair of
+  persisted widths; seeded playlist is not undoable (baseline by design);
+  the drawer remembers its open height in memory only, matching the
+  reference's per-session store.
+- **Verification**: new `library_search_tests` pins the normalisation,
+  the word-start contract and the tiers/ordering; `document_controller_tests`
+  gained a playlist/library pass (seed, add/insert/Enter-placement,
+  move/clamp, undo/redo, multi-playlist isolation, the delete cascade,
+  media import/undo/redo/remove, search integration, save/load of the
+  arrangement); `workspace_panels_tests` pins `heightFor` and the
+  close/reopen/persist rules. Live: a 1680x1020 capture shows the open
+  drawer (tabs, Search button, info column, list empty state) and the
+  new left dock; writing `drawerHeight=40` and relaunching pixel-verified
+  the closed bar at logical y=980 with tabs and Search showing. Tab
+  clicks, the search swap and drags stay hand-tested (no XTEST); their
+  logic is all in the C++ fixtures.
+- Gates: desktop **21/21**, headless **12/12**.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -1846,8 +1918,12 @@ logged here from what is observable off screen rather than claimed as seen.
    40px top bar, the three regions, `WorkspacePanels` with the reference's
    exact resize snaps and persisted widths, dark Material theme, the
    `OPENSHOW_UI_SIZE` capture seam; layout pixel-probed at 1680x1020).
-   Next is 4.2: searchable libraries and playlist ordering (the library
-   drawer), then 4.3 object geometry editing.
+   **4.2 is DONE** (the searchable library drawer — eight tabs with Shows
+   and Media live, the 300/40 height with the reference's snap and
+   per-session reopen, the Ctrl+F search with the normalised word-start/
+   tier contract and Enter-to-insert placement — plus playlist chips,
+   drag/▲▼ reorder handles and the media registry). Next is 4.3: object
+   selection, move and resize with undo.
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

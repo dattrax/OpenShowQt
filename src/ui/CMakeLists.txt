@@ -5,6 +5,8 @@ qt_policy(SET QTP0001 NEW)
 add_library(openshow-ui-core STATIC
   DocumentController.cpp
   DocumentController.h
+  LibrarySearch.cpp
+  LibrarySearch.h
   SceneEdit.cpp
   SceneEdit.h
   WorkspacePanels.cpp
@@ -29,7 +31,7 @@ add_executable(openshow::ui ALIAS openshow-ui)
 qt_add_qml_module(openshow-ui
   URI OpenShow
   VERSION 1.0
-  QML_FILES Main.qml TopBar.qml SidePanel.qml
+  QML_FILES Main.qml TopBar.qml SidePanel.qml LibraryDrawer.qml
   SOURCES PreviewView.h PreviewView.cpp
 )
 

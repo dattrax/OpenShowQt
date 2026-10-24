@@ -29,6 +29,7 @@ class WorkspacePanels : public QObject {
     Q_OBJECT
     Q_PROPERTY(qreal leftWidth READ leftWidth NOTIFY geometryChanged)
     Q_PROPERTY(qreal rightWidth READ rightWidth NOTIFY geometryChanged)
+    Q_PROPERTY(qreal drawerHeight READ drawerHeight NOTIFY geometryChanged)
 
 public:
     // Measured at 1680x1020 (docs/reference.md §2): the panel is 290 wide,
@@ -61,6 +62,27 @@ public:
     Q_INVOKABLE void clickLeft();
     Q_INVOKABLE void clickRight();
 
+    // --- the library drawer (task 4.2) ---
+
+    // Bottom library strip: 300 open, a 40px tab bar closed. Its drag has
+    // its own rules (Drawer.svelte getHeight): below twice the closed
+    // height the drag snaps shut, and it clamps at the available
+    // viewport; closing stores the open height and the reopen goes to
+    // max(stored, 300). A session that starts closed opens at the
+    // default, because the reference's "stored" survives a close, not
+    // a restart.
+    static inline constexpr qreal kDrawerHeight = 300.0;
+    static inline constexpr qreal kDrawerClosed = 40.0;
+
+    // The drawer's drag snap, pure like widthFor.
+    static qreal heightFor(qreal candidate, qreal maxHeight);
+
+    qreal drawerHeight() const { return fDrawerHeight; }
+
+    Q_INVOKABLE void resizeDrawer(qreal candidate, qreal maxHeight);
+    // Strip click / Ctrl+D.
+    Q_INVOKABLE void toggleDrawer();
+
 signals:
     void geometryChanged();
 
@@ -69,6 +91,8 @@ private:
 
     qreal fLeftWidth = kDefaultWidth;
     qreal fRightWidth = kDefaultWidth;
+    qreal fDrawerHeight = kDrawerHeight;
+    qreal fDrawerStored = 0.0;  // height remembered by a close; 0 = none
     QSettings fSettings;
 };
 

@@ -53,6 +53,12 @@ if(OPENSHOW_BUILD_UI)
   target_link_libraries(workspace_panels_tests PRIVATE openshow::ui-core)
   add_test(NAME workspace_panels_tests COMMAND workspace_panels_tests)
 
+  # Task 4.2's drawer search: the reference's normalisation, the
+  # every-word-at-a-word-start contract and the confidence tiers.
+  add_executable(library_search_tests library_search_tests.cpp)
+  target_link_libraries(library_search_tests PRIVATE openshow::ui-core)
+  add_test(NAME library_search_tests COMMAND library_search_tests)
+
   # Task 3.3's acceptance sentence, end to end: DocumentController creates
   # and types a song, and the compiled slides are prepared and presented
   # on a real openshow-worker, status confirming each revision on air.

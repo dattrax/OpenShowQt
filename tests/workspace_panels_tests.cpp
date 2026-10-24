@@ -1,11 +1,12 @@
 /*
- * Task 4.1 fixtures: WorkspacePanels — the reference's panel resize,
- * pinned without a window (Qt Core only).
+ * Task 4.1/4.2 fixtures: WorkspacePanels — the reference's panel resize
+ * and drawer height, pinned without a window (Qt Core only).
  *
- * The numbers are the measured ones (docs/reference.md §2): default 290,
- * max 638, the 100.05/200.1 snap thresholds and the 270-310 home snap.
- * The boundaries are the product — an operator dragging through the snap
- * zone feels exactly those jumps — so the exact endpoints get checked.
+ * The numbers are the measured ones (docs/reference.md §2/§4): default
+ * 290, max 638, the 100.05/200.1 snap thresholds and the 270-310 home
+ * snap; the drawer opens at 300 and snaps shut under 80. The boundaries
+ * are the product — an operator dragging through the snap zone feels
+ * exactly those jumps — so the exact endpoints get checked.
  */
 
 #include <cstdio>
@@ -81,6 +82,42 @@ void exerciseSession(const std::filesystem::path& settingsPath) {
     }
 }
 
+void exerciseDrawer(const std::filesystem::path& settingsPath) {
+    check(WorkspacePanels::heightFor(0, 5000) == WorkspacePanels::kDrawerClosed &&
+              WorkspacePanels::heightFor(79.9, 5000) == WorkspacePanels::kDrawerClosed,
+          "a drawer dragged under twice its closed height snaps shut");
+    check(WorkspacePanels::heightFor(81, 5000) == 81 &&
+              WorkspacePanels::heightFor(5000, 900) == 900,
+          "between the snap and the viewport the drawer follows the mouse");
+
+    {
+        WorkspacePanels panels(nullptr, settingsPath);
+        check(panels.drawerHeight() == 300, "the drawer starts open at the default 300");
+        panels.toggleDrawer();
+        check(panels.drawerHeight() == 40, "Ctrl+D (or the strip click) shuts it to the bar");
+        panels.toggleDrawer();
+        check(panels.drawerHeight() == 300, "and back to 300");
+        panels.resizeDrawer(500, 900);
+        check(panels.drawerHeight() == 500, "a taller drag stays taller");
+        panels.toggleDrawer();
+        panels.toggleDrawer();
+        check(panels.drawerHeight() == 500, "the reopen remembers the remembered height");
+    }
+    {   // An open height persists across restarts; the close-remembered
+        // value does not (the reference store is per-session).
+        WorkspacePanels panels(nullptr, settingsPath);
+        check(panels.drawerHeight() == 500, "a session that saved 500 restarts at 500");
+        panels.toggleDrawer();  // shut it, leaving 500 in the file
+        check(panels.drawerHeight() == 40, "closed at exit");
+    }
+    {
+        WorkspacePanels panels(nullptr, settingsPath);
+        check(panels.drawerHeight() == 40, "the closed bar is how the next session starts");
+        panels.toggleDrawer();
+        check(panels.drawerHeight() == 300, "and it reopens at the default, not the old 500");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -91,6 +128,7 @@ int main(int argc, char* argv[]) {
     std::filesystem::remove(settings);
     exerciseSnap();
     exerciseSession(settings);
+    exerciseDrawer(settings);
     std::filesystem::remove(settings);
     if (gFailed) {
         return 1;

@@ -1,14 +1,16 @@
 /*
- * DocumentController: the document session behind the lyric panel (task 3.3).
+ * DocumentController: the document session behind the workspace (tasks
+ * 3.3, 4.2).
  *
  * The frontend owns the editable documents (PLAN.md's ownership split), so
  * this is the object that holds them: a domain::Documents with its History
  * (task 2.3 snapshots) and the Autosave seam, exposed to QML with just
- * enough surface to enter and navigate lyrics — songs, their slides, the
- * current slide's text, and compiled scene JSON ready for
- * WorkerController::presentSceneJson. It is deliberately not the M4
- * workspace: plain QVariantList views, create/edit/remove only, and every
- * mutation runs through History so undo covers everything the panel does.
+ * enough surface to author and arrange — songs, their slides and text,
+ * compiled scene JSON ready for WorkerController::presentSceneJson, and
+ * since task 4.2 the service playlist (ordered show references the drawer
+ * adds and reorders), the searchable library view, and the media registry.
+ * Views stay plain QVariantLists, and every mutation runs through History
+ * so undo covers everything the workspace does.
  *
  * Text editing is debounced: keystrokes park a pending value, and one
  * history entry (and one autosave candidate) is committed when typing
@@ -47,6 +49,17 @@ class DocumentController : public QObject {
     Q_PROPERTY(int currentSlide READ currentSlide NOTIFY navigationChanged)
     // The current slide's lyrics, lines joined with '\n'.
     Q_PROPERTY(QString currentSlideText READ currentSlideText NOTIFY slideTextChanged)
+    // Playlists (the reference's "projects"): [{id, name, entryCount}],
+    // creation order; every session keeps at least one.
+    Q_PROPERTY(QVariantList playlists READ playlists NOTIFY documentsChanged)
+    // The current playlist's rows in running order: [{entryId, index,
+    // showId, showName, section, slideCount}]. selectPlaylist also emits
+    // documentsChanged so this view rebuilds.
+    Q_PROPERTY(QVariantList playlistEntries READ playlistEntries NOTIFY documentsChanged)
+    Q_PROPERTY(QString currentPlaylistId READ currentPlaylistId NOTIFY navigationChanged)
+    // The media library (drawer Media tab): [{id, name, sourcePath}],
+    // import order. save() is where the bytes join the package.
+    Q_PROPERTY(QVariantList assets READ assets NOTIFY documentsChanged)
     // Edit-since-explicit-save, and the directory save()/load() use.
     Q_PROPERTY(bool dirty READ dirty NOTIFY stateChanged)
     Q_PROPERTY(QString serviceDirectory READ serviceDirectory CONSTANT)
@@ -65,6 +78,12 @@ public:
 
     QVariantList songs() const;
     QVariantList slides() const;
+    QVariantList playlists() const;
+    QVariantList playlistEntries() const;
+    QVariantList assets() const;
+    QString currentPlaylistId() const {
+        return QString::fromStdString(fCurrentPlaylistId);
+    }
     QString currentSongId() const { return QString::fromStdString(fCurrentSongId); }
     int currentSlide() const { return fCurrentSlide; }
     QString currentSlideText() const;
@@ -95,6 +114,30 @@ public:
     Q_INVOKABLE void selectSlide(int index);
     // Moves within the current song, clamped; no-op without a song.
     Q_INVOKABLE void stepSlide(int delta);
+
+    // --- playlist and library drawer (task 4.2) ---
+
+    // A named playlist becomes current on creation. Entries address the
+    // current playlist (the drawer's list); insert indices clamp, and
+    // size() appends. movePlaylistEntry's toIndex is the row's position
+    // after the move, clamped. The reference reorders by drag; the same
+    // op serves its keyboard-less paths too.
+    Q_INVOKABLE bool createPlaylist(const QString& name);
+    Q_INVOKABLE void selectPlaylist(const QString& playlistId);
+    Q_INVOKABLE bool addShowToPlaylist(const QString& showId);
+    Q_INVOKABLE bool insertShowInPlaylist(const QString& showId, int index);
+    // The drawer's Enter: insert after the current show when it is in
+    // the playlist (the reference's placement rule), otherwise append.
+    Q_INVOKABLE bool insertShowAfterCurrentShow(const QString& showId);
+    Q_INVOKABLE bool removePlaylistEntry(const QString& entryId);
+    Q_INVOKABLE bool movePlaylistEntry(const QString& entryId, int toIndex);
+    // Songs matching the query by name and lyrics, best match first
+    // (LibrarySearch); the full creation-order list when blank.
+    Q_INVOKABLE QVariantList searchShows(const QString& query) const;
+    // Media tab: register a file (bytes are copied by save(), the
+    // domain's rule) and remove one from the library.
+    Q_INVOKABLE bool importMediaFile(const QString& filePath);
+    Q_INVOKABLE bool removeAsset(const QString& assetId);
 
     // --- presentation hand-off ---
 
@@ -131,6 +174,14 @@ private:
     QString compileSlideJson(const openshow::domain::Id& slideId) const;
     // The current slide's id, or "" when navigation points nowhere.
     openshow::domain::Id currentSlideId() const;
+    // Every session has a playlist to run: seed a default "Service" when
+    // neither the loaded service nor autosave brought one. Direct, not
+    // history-wrapped — like the loaded state it is baseline, so undo
+    // never lands on "no playlist at all".
+    void seedDefaultPlaylist();
+    // Re-points the current playlist when an undo/redo or removal took it
+    // away.
+    void anchorPlaylistNavigation();
 
     openshow::domain::Documents fDocuments;
     std::unique_ptr<openshow::domain::History> fHistory;
@@ -138,6 +189,7 @@ private:
     std::unique_ptr<openshow::domain::Autosave> fAutosave;
 
     openshow::domain::Id fCurrentSongId;
+    openshow::domain::Id fCurrentPlaylistId;
     int fCurrentSlide = 0;
 
     // Debounced text edit.

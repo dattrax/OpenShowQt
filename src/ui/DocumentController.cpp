@@ -1,10 +1,15 @@
 #include "DocumentController.h"
 
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QStandardPaths>
 #include <QStringList>
 
+#include <algorithm>
+
 #include "openshow/scene/scene.h"
+
+#include "LibrarySearch.h"
 
 namespace openshow::ui {
 
@@ -79,6 +84,7 @@ DocumentController::DocumentController(QObject* parent, std::filesystem::path ba
         fCurrentSongId = ids.front();
         fCurrentSlide = 0;
     }
+    seedDefaultPlaylist();
 
     fTextCommit.setSingleShot(true);
     fTextCommit.setInterval(600);
@@ -304,6 +310,246 @@ void DocumentController::stepSlide(int delta) {
     selectSlide(fCurrentSlide + delta);
 }
 
+// --- playlist and library drawer (task 4.2) --------------------------------
+
+QVariantList DocumentController::playlists() const {
+    QVariantList list;
+    for (const openshow::domain::Id& id : fDocuments.playlistIds()) {
+        const openshow::domain::Playlist* playlist = fDocuments.findPlaylist(id);
+        if (playlist == nullptr) {
+            continue;
+        }
+        QVariantMap entry;
+        entry.insert(QStringLiteral("id"), QString::fromStdString(id));
+        entry.insert(QStringLiteral("name"), QString::fromStdString(playlist->name));
+        entry.insert(QStringLiteral("entryCount"), static_cast<int>(playlist->entries.size()));
+        list.append(entry);
+    }
+    return list;
+}
+
+QVariantList DocumentController::playlistEntries() const {
+    QVariantList list;
+    const openshow::domain::Playlist* playlist = fDocuments.findPlaylist(fCurrentPlaylistId);
+    if (playlist == nullptr) {
+        return list;
+    }
+    int index = 0;
+    for (const openshow::domain::PlaylistEntry& row : playlist->entries) {
+        const openshow::domain::Show* show = fDocuments.findShow(row.showId);
+        QVariantMap entry;
+        entry.insert(QStringLiteral("entryId"), QString::fromStdString(row.id));
+        entry.insert(QStringLiteral("index"), index++);
+        entry.insert(QStringLiteral("showId"), QString::fromStdString(row.showId));
+        entry.insert(QStringLiteral("showName"),
+                     show != nullptr ? QString::fromStdString(show->name) : QStringLiteral("?"));
+        entry.insert(QStringLiteral("slideCount"),
+                     show != nullptr ? static_cast<int>(show->slides.size()) : 0);
+        entry.insert(QStringLiteral("section"), QString::fromStdString(row.section));
+        list.append(entry);
+    }
+    return list;
+}
+
+QVariantList DocumentController::assets() const {
+    QVariantList list;
+    for (const openshow::domain::Id& id : fDocuments.assetIds()) {
+        const openshow::domain::Asset* asset = fDocuments.findAsset(id);
+        if (asset == nullptr) {
+            continue;
+        }
+        QVariantMap entry;
+        entry.insert(QStringLiteral("id"), QString::fromStdString(id));
+        entry.insert(QStringLiteral("name"), QString::fromStdString(asset->name));
+        entry.insert(QStringLiteral("sourcePath"), QString::fromStdString(asset->sourcePath));
+        list.append(entry);
+    }
+    return list;
+}
+
+bool DocumentController::createPlaylist(const QString& name) {
+    flushText();
+    openshow::domain::Id created;
+    std::string error;
+    if (!edit([&] {
+            created = fDocuments.createPlaylist(name.toStdString(), &error);
+            return !created.empty();
+        })) {
+        setStatus(QStringLiteral("new playlist: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    fCurrentPlaylistId = created;
+    emit navigationChanged();
+    return true;
+}
+
+void DocumentController::selectPlaylist(const QString& playlistId) {
+    const openshow::domain::Id id = playlistId.toStdString();
+    if (id == fCurrentPlaylistId || fDocuments.findPlaylist(id) == nullptr) {
+        return;
+    }
+    fCurrentPlaylistId = id;
+    emit navigationChanged();
+    // playlistEntries follows the current playlist and its NOTIFY is
+    // documentsChanged, so the drawer's rows need this nudge too.
+    emit documentsChanged();
+}
+
+bool DocumentController::addShowToPlaylist(const QString& showId) {
+    // An index past the end clamps to append inside insertShowInPlaylist.
+    return insertShowInPlaylist(showId, -1);
+}
+
+bool DocumentController::insertShowInPlaylist(const QString& showId, int index) {
+    flushText();
+    if (fCurrentPlaylistId.empty()) {
+        setStatus(QStringLiteral("playlist: nothing to add to"));
+        return false;
+    }
+    const openshow::domain::Playlist* playlist = fDocuments.findPlaylist(fCurrentPlaylistId);
+    const std::size_t count = playlist != nullptr ? playlist->entries.size() : 0;
+    // -1 (and anything past the end) appends, like the domain's insert.
+    const std::size_t at =
+        index < 0 ? count
+                  : std::min(static_cast<std::size_t>(index), count);
+    const openshow::domain::Id id = showId.toStdString();
+    std::string error;
+    if (!edit([&] {
+            return !fDocuments
+                        .insertPlaylistEntry(fCurrentPlaylistId, id, std::string(), at, &error)
+                        .empty();
+        })) {
+        setStatus(QStringLiteral("add to playlist: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::insertShowAfterCurrentShow(const QString& showId) {
+    // The reference's Enter-from-search rule: land after the current show
+    // when the playlist contains it, otherwise append.
+    flushText();
+    const openshow::domain::Playlist* playlist = fDocuments.findPlaylist(fCurrentPlaylistId);
+    if (playlist != nullptr) {
+        for (std::size_t i = 0; i < playlist->entries.size(); ++i) {
+            if (playlist->entries[i].showId == fCurrentSongId) {
+                return insertShowInPlaylist(showId, static_cast<int>(i) + 1);
+            }
+        }
+    }
+    return insertShowInPlaylist(showId, -1);
+}
+
+bool DocumentController::removePlaylistEntry(const QString& entryId) {
+    flushText();
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.removePlaylistEntry(fCurrentPlaylistId, entryId.toStdString(),
+                                                  &error);
+        })) {
+        setStatus(QStringLiteral("remove from playlist: %1")
+                      .arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::movePlaylistEntry(const QString& entryId, int toIndex) {
+    flushText();
+    const openshow::domain::Playlist* playlist = fDocuments.findPlaylist(fCurrentPlaylistId);
+    if (playlist == nullptr || playlist->entries.empty()) {
+        return false;
+    }
+    // toIndex is the row's position after the move; clamp so keyboard and
+    // drop paths can overshoot safely.
+    const int last = static_cast<int>(playlist->entries.size()) - 1;
+    const int clamped = toIndex < 0 ? 0 : (toIndex > last ? last : toIndex);
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.movePlaylistEntry(fCurrentPlaylistId, entryId.toStdString(),
+                                                static_cast<std::size_t>(clamped), &error);
+        })) {
+        setStatus(QStringLiteral("reorder playlist: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+QVariantList DocumentController::searchShows(const QString& query) const {
+    QList<LibraryRow> rows;
+    for (const openshow::domain::Id& id : fDocuments.showIds()) {
+        const openshow::domain::Show* show = fDocuments.findShow(id);
+        if (show == nullptr) {
+            continue;
+        }
+        LibraryRow row;
+        row.id = QString::fromStdString(id);
+        row.name = QString::fromStdString(show->name);
+        QStringList lines;
+        for (const openshow::domain::Slide& slide : show->slides) {
+            for (const std::string& line : slide.lines) {
+                lines.append(QString::fromStdString(line));
+            }
+        }
+        row.content = lines.join(QLatin1Char('\n'));
+        rows.append(row);
+    }
+    QVariantList list;
+    for (const LibraryRow& row : librarysearch::filter(rows, query)) {
+        const openshow::domain::Show* show = fDocuments.findShow(row.id.toStdString());
+        QVariantMap entry;
+        entry.insert(QStringLiteral("id"), row.id);
+        entry.insert(QStringLiteral("name"), row.name);
+        entry.insert(QStringLiteral("slideCount"),
+                     show != nullptr ? static_cast<int>(show->slides.size()) : 0);
+        list.append(entry);
+    }
+    return list;
+}
+
+bool DocumentController::importMediaFile(const QString& filePath) {
+    flushText();
+    const QString name = QFileInfo(filePath).fileName();
+    openshow::domain::Id created;
+    std::string error;
+    if (!edit([&] {
+            created = fDocuments.addAsset(name.toStdString(), filePath.toStdString(), &error);
+            return !created.empty();
+        })) {
+        setStatus(QStringLiteral("import media: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    setStatus(QStringLiteral("added %1 to the media library (save copies the bytes)")
+                  .arg(name));
+    return true;
+}
+
+bool DocumentController::removeAsset(const QString& assetId) {
+    flushText();
+    std::string error;
+    if (!edit([&] { return fDocuments.removeAsset(assetId.toStdString(), &error); })) {
+        setStatus(QStringLiteral("remove media: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+void DocumentController::seedDefaultPlaylist() {
+    if (fDocuments.playlistIds().empty()) {
+        fDocuments.createPlaylist("Service");
+    }
+    anchorPlaylistNavigation();
+}
+
+void DocumentController::anchorPlaylistNavigation() {
+    if (!fCurrentPlaylistId.empty() &&
+        fDocuments.findPlaylist(fCurrentPlaylistId) != nullptr) {
+        return;
+    }
+    const std::vector<openshow::domain::Id> ids = fDocuments.playlistIds();
+    fCurrentPlaylistId = ids.empty() ? openshow::domain::Id{} : ids.front();
+}
+
 QString DocumentController::compileSlideJson(const openshow::domain::Id& slideId) const {
     openshow::scene::Scene scene;
     std::string error;
@@ -367,6 +613,7 @@ bool DocumentController::load() {
     const std::vector<openshow::domain::Id> ids = fDocuments.showIds();
     fCurrentSongId = ids.empty() ? openshow::domain::Id{} : ids.front();
     fCurrentSlide = 0;
+    seedDefaultPlaylist();
     // Discarding local changes must also discard their autosave trail —
     // otherwise the next startup would recover the edits just thrown away.
     std::string clearError;
@@ -402,10 +649,13 @@ void DocumentController::undo() {
             emit navigationChanged();
         }
     }
+    // Undo/redo can take the current playlist away too.
+    anchorPlaylistNavigation();
     fDirty = true;
     std::string tickError;
     fAutosave->tick(fDocuments, &tickError);
     emit documentsChanged();
+    emit navigationChanged();
     emit slideTextChanged();
     emit stateChanged();
 }
@@ -430,10 +680,13 @@ void DocumentController::redo() {
             emit navigationChanged();
         }
     }
+    // Undo/redo can take the current playlist away too.
+    anchorPlaylistNavigation();
     fDirty = true;
     std::string tickError;
     fAutosave->tick(fDocuments, &tickError);
     emit documentsChanged();
+    emit navigationChanged();
     emit slideTextChanged();
     emit stateChanged();
 }

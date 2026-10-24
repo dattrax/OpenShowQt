@@ -9,6 +9,7 @@ namespace {
 
 const char* const kLeftKey = "leftPanel";
 const char* const kRightKey = "rightPanel";
+const char* const kDrawerKey = "drawerHeight";
 
 std::filesystem::path defaultSettingsPath() {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
@@ -32,6 +33,11 @@ WorkspacePanels::WorkspacePanels(QObject* parent, std::filesystem::path settings
     };
     fLeftWidth = stored(kLeftKey);
     fRightWidth = stored(kRightKey);
+    // The drawer persists its height (open or closed); a stored value
+    // under the closed height means a hand-edited file and clamps shut,
+    // and the reopen memory starts empty like a fresh session's.
+    const qreal drawer = fSettings.value(QLatin1String(kDrawerKey), kDrawerHeight).toReal();
+    fDrawerHeight = drawer < kDrawerClosed ? kDrawerClosed : drawer;
 }
 
 qreal WorkspacePanels::widthFor(qreal candidate) {
@@ -75,6 +81,40 @@ void WorkspacePanels::clickRight() {
         return;
     }
     apply(kRightKey, &fRightWidth, kDefaultWidth);
+}
+
+qreal WorkspacePanels::heightFor(qreal candidate, qreal maxHeight) {
+    // Drawer.svelte getHeight(): shut below twice the closed height,
+    // clamp at the viewport the caller measured.
+    if (candidate < kDrawerClosed * 2.0) {
+        return kDrawerClosed;
+    }
+    if (maxHeight > 0.0 && candidate > maxHeight) {
+        return maxHeight;
+    }
+    return candidate;
+}
+
+void WorkspacePanels::resizeDrawer(qreal candidate, qreal maxHeight) {
+    const qreal snapped = heightFor(candidate, maxHeight);
+    if (qFuzzyCompare(fDrawerHeight, snapped)) {
+        return;
+    }
+    fDrawerHeight = snapped;
+    fSettings.setValue(QLatin1String(kDrawerKey), snapped);
+    emit geometryChanged();
+}
+
+void WorkspacePanels::toggleDrawer() {
+    if (fDrawerHeight > kDrawerClosed) {
+        fDrawerStored = fDrawerHeight;  // remembered for the reopen
+        fDrawerHeight = kDrawerClosed;
+    } else {
+        fDrawerHeight = fDrawerStored < kDrawerHeight ? kDrawerHeight : fDrawerStored;
+        fDrawerStored = 0.0;
+    }
+    fSettings.setValue(QLatin1String(kDrawerKey), fDrawerHeight);
+    emit geometryChanged();
 }
 
 }  // namespace openshow::ui

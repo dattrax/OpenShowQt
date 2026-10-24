@@ -50,6 +50,25 @@ std::vector<std::string> mapIds(const QVariantList& list) {
     return ids;
 }
 
+// The drawer reads rows by entryId/showName; the fixtures want the same.
+std::vector<std::string> mapEntryIds(const QVariantList& list) {
+    std::vector<std::string> ids;
+    for (const QVariant& entry : list) {
+        ids.push_back(
+            entry.toMap().value(QStringLiteral("entryId")).toString().toStdString());
+    }
+    return ids;
+}
+
+std::vector<std::string> entryShowNames(const QVariantList& list) {
+    std::vector<std::string> names;
+    for (const QVariant& entry : list) {
+        names.push_back(
+            entry.toMap().value(QStringLiteral("showName")).toString().toStdString());
+    }
+    return names;
+}
+
 // --- editing, navigation and the presentation hand-off -------------------
 
 void exerciseEditingAndPresentation(const std::filesystem::path& root) {
@@ -258,6 +277,116 @@ void exercisePersistence(const std::filesystem::path& root) {
     }
 }
 
+// --- task 4.2: playlist, drawer search and the media library -----------
+
+void exercisePlaylistAndLibrary(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    check(docs.playlists().size() == 1 && !docs.currentPlaylistId().isEmpty() &&
+              docs.playlistEntries().isEmpty(),
+          "a session seeds one (empty) service playlist");
+
+    docs.createSong("Amazing Grace");
+    docs.addSlide();
+    docs.setSlideText("amazing grace how sweet the sound");
+    docs.flushText();
+    docs.createSong("Cafe Grace");
+    docs.addSlide();
+    docs.setSlideText("searching me O Lord");
+    docs.flushText();
+    docs.createSong("Third Song");
+    const std::vector<std::string> songIds = mapIds(docs.songs());
+    const QString first = QString::fromStdString(songIds[0]);
+    const QString second = QString::fromStdString(songIds[1]);
+    const QString third = QString::fromStdString(songIds[2]);
+
+    check(docs.addShowToPlaylist(first) && docs.playlistEntries().size() == 1,
+          "the drawer can add a show to the running order");
+    check(!docs.addShowToPlaylist(QStringLiteral("show999")) &&
+              docs.playlistEntries().size() == 1,
+          "a show that does not exist is refused");
+    check(docs.insertShowInPlaylist(second, 0) &&
+              entryShowNames(docs.playlistEntries())[0] == "Cafe Grace",
+          "insert lands at the requested index");
+
+    // The drawer's Enter: the match lands after the current show when the
+    // playlist already runs it.
+    docs.selectSong(first);
+    check(docs.insertShowAfterCurrentShow(third) &&
+              entryShowNames(docs.playlistEntries()) ==
+                  std::vector<std::string>{"Cafe Grace", "Amazing Grace", "Third Song"},
+          "Enter inserts after the current show");
+
+    // Reordering (the drag handle calls this; toIndex is the position after
+    // the move), and overshoot clamps.
+    const QString thirdEntry = QString::fromStdString(mapEntryIds(docs.playlistEntries())[2]);
+    check(docs.movePlaylistEntry(thirdEntry, 0) &&
+              entryShowNames(docs.playlistEntries())[0] == "Third Song",
+          "a row moves to the front");
+    check(docs.movePlaylistEntry(thirdEntry, 99) &&
+              entryShowNames(docs.playlistEntries())[2] == "Third Song",
+          "overshoot clamps to the end");
+
+    // Arrangement edits undo and redo like everything else.
+    const int before = static_cast<int>(docs.playlistEntries().size());
+    const QString frontEntry = QString::fromStdString(mapEntryIds(docs.playlistEntries())[0]);
+    check(docs.removePlaylistEntry(frontEntry) &&
+              docs.playlistEntries().size() == before - 1,
+          "a row can be removed");
+    docs.undo();
+    check(docs.playlistEntries().size() == before, "undo brings the row back");
+
+    // More than one playlist: rows belong to the current one.
+    const QString service = docs.currentPlaylistId();
+    check(docs.createPlaylist("Evening") && docs.playlistEntries().isEmpty(),
+          "a new playlist becomes current, starting empty");
+    const QString evening = docs.currentPlaylistId();
+    check(docs.addShowToPlaylist(second), "the new playlist takes its own rows");
+    docs.selectPlaylist(service);
+    check(docs.currentPlaylistId() == service &&
+              docs.playlistEntries().size() == static_cast<std::size_t>(before),
+          "each playlist keeps its own running order");
+
+    // The domain rule: removing a show drops the entries naming it.
+    docs.selectSong(second);
+    check(docs.removeCurrentSong(), "the show is removed");
+    check(docs.playlistEntries().size() == 2,
+          "playlist rows naming a deleted show go with it");
+
+    // Media library: registered by file name, undoable, removable.
+    const QString mediaPath = QString::fromStdWString((root / "loop.mp4").wstring());
+    check(docs.importMediaFile(mediaPath) && docs.assets().size() == 1 &&
+              docs.assets().front().toMap().value(QStringLiteral("name")) ==
+                  QStringLiteral("loop.mp4"),
+          "import registers media under its file name");
+    docs.undo();
+    check(docs.assets().isEmpty(), "undo takes the import back");
+    docs.redo();
+    check(docs.assets().size() == 1, "redo restores it");
+    const QString assetId =
+        docs.assets().front().toMap().value(QStringLiteral("id")).toString();
+    check(docs.removeAsset(assetId) && docs.assets().isEmpty(), "and it can be removed");
+
+    // The drawer's find: title and lyrics both answer (the scoring itself
+    // is library_search_tests' job).
+    QVariantList hits = docs.searchShows(QStringLiteral("sweet"));
+    check(hits.size() == 1 &&
+              hits.front().toMap().value(QStringLiteral("name")) ==
+                  QStringLiteral("Amazing Grace"),
+          "lyrics answer a search");
+    check(docs.searchShows(QStringLiteral("grace")).size() == 1,
+          "the deleted song drops out of the library");
+    check(docs.searchShows(QString()).size() == docs.songs().size(),
+          "a blank query is the whole library");
+
+    // And the arrangement survives the round trip.
+    check(docs.save(), "the service saves");
+    {
+        DocumentController reloaded(nullptr, root);
+        check(reloaded.playlists().size() == 2 && reloaded.playlistEntries().size() == 2,
+              "playlists and their rows persist through save/load");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -271,6 +400,7 @@ int main(int argc, char* argv[]) {
     exerciseCommitSilence(tempRoot / "silence");
     exerciseUndoRedo(tempRoot / "undo");
     exercisePersistence(tempRoot / "persist");
+    exercisePlaylistAndLibrary(tempRoot / "playlist");
     std::filesystem::remove_all(tempRoot);
 
     if (gFailed) {
