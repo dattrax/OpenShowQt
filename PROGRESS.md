@@ -1221,6 +1221,72 @@ of this work.
     present → applied loop, verified by eye. See the compositor caveat
     under Blockers for the fullscreen wrinkle found during the run.
 
+## Task 3.1 log (2026-10-24) — text layout and typography: DONE
+
+- **Deliverable**: the audience picture becomes data. A presented Scene now
+  *renders*: the background layer fills the scene colour, the words layer
+  lays the scene's text out through the new production engine, and the
+  demo photo stands down; with nothing presented the 1.x demo picture
+  draws exactly as before (what `--check-layers` pins).
+- **New module**: `src/worker/render/SceneText.{h,cpp}` in a new static
+  library `openshow-worker-render` / `openshow::worker_render`
+  (Layer.cpp + SceneText.cpp; PUBLIC scene/skia/FONTCONFIG/HARFBUZZ —
+  libskshaper needs harfbuzz propagated). The worker executable now
+  links it; `scene_render_tests` links the same library, so the fixtures
+  exercise the exact code the window draws with.
+- **`SceneTextEngine`**: the worker's single font setup (fontconfig
+  manager, Liberation/DejaVu typefaces, FontCollection, hard-coded
+  SkUnicode — all graduated out of TestScene, whose demo title now
+  borrows the engine's faces). `layout()` builds one centred paragraph
+  per TextItem (lines joined with `\n`, so stanza blank lines survive);
+  `layoutScene()` runs the shrink-to-fit loop: lay out, scale =
+  available/needed across *all* items (relative sizes survive), at most
+  four passes, floor `kSceneMinFontSize`; `drawLayout()` stacks the
+  paragraphs with a `0.4 × maxBase` gap, block centred vertically.
+  Constants: canvas 1920×1080, margins 160/100 authored px, default
+  size 96, line-height factor 1.25.
+- **SkParagraph fork API discoveries** (this Skia predates the modern
+  names; probed against `/home/jim/skia/modules/skparagraph/`):
+  - `TextStyle::setHeight(x)` is a **multiplier** of the font size, not
+    absolute px (`Run.cpp`: `runHeight = multiplier * fontSize`) — the
+    first cut passed 90 px and got a 90× tall line box, which the fit
+    loop then punished by crushing glyphs to the 12 px floor (visible
+    as ~2 px text). Fix: `setHeight(1.25)` + `setHeightOverride(true)`
+    + `setHalfLeading(true)` for symmetric line boxes.
+  - Line count is `Paragraph::lineNumber()`, not `getLineCount()`.
+  - `TextStyle::setFontFamilies` takes a plain `std::vector<SkString>`.
+- **`SkUnicodes::ICU::Make()` shim** (the libskshaper link dependency)
+  moved with `HardCodedUnicode` to the bottom of SceneText.cpp; the
+  class now has external linkage inside `openshow::worker` for it.
+  `SceneText.cpp` gets `-fno-rtti` (derives from RTTI-off Skia classes).
+- **Live wiring**: `OutputSession::applyPendingSceneChange` copies the
+  store entry into a `shared_ptr<const Scene>` under the lock and hands
+  it to `TestScene::setActiveScene` (render thread only). The shared_ptr
+  matters: the store can evict the revision while it is still on air.
+  WordsLayer caches the layout per scene pointer, rebuilt only when a
+  new scene arrives. The clock footer keeps drawing over scenes — a
+  development diagnostic, and its layer toggles independently.
+- **Worker CLI**: `--snapshot PATH --scene-file FILE [--width --height]`
+  renders any `scene.prepare` wire JSON on the CPU through the same
+  engine (JSON parse via `boost::json::parse(text, ec)`, then
+  `scene::fromJson`).
+- **Fixtures** (`tests/scene_render_tests.cpp`, `-fno-rtti`,
+  SKIP_RETURN_CODE 77 when no fonts): cleared scene draws zero ink; demo
+  interlude is one flat colour; ink centres horizontally/vertically;
+  wrapping respects margins and fills ≥80 % of the wrap width; a
+  12-line 260 px stanza fits with `scale < 1`, 12 layout lines and the
+  snapshot contained by the margins, while a stanza that already fits
+  keeps `scale == 1`; unknown family, Greek/accented/em-dash shaping
+  and a CJK string all draw real ink through fallback; stacked items
+  keep their size ratio; a `toJson`→`fromJson` round trip renders a
+  **byte-identical** PNG. Two measurement policies earned their keep:
+  background comes from a corner pixel (the PNG round trip shifts
+  nominal colours through colour management), and multi-line alignment
+  is judged by bounding-box centre — per-line glyph *mass* centroid
+  legitimately drifts with text density (492 vs 480 on the demo title
+  card).
+- Gates: desktop **14/14**, headless **11/11**.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -1459,12 +1525,18 @@ logged here from what is observable off screen rather than claimed as seen.
    id watermark, fingerprint-driven autosave) and 2.4a–c (compiled
    scene type + compiler, worker scene store with acknowledged
    revisions, Qt adapters + demo fixture) are DONE, committed and
-   pushed; tag **`M2`** on main's tip. Gates: desktop ctest **13/13**
-   (new `scene_tests`), headless **10/10**; protocol minor 2 with the
-   `scene.store.v1` capability. Next milestone **M3 — working lyric
-   presentation**: production output layers that *draw* the active
-   scene (the session already applies and reports it), which retires
-   the hard-coded TestScene content behind scene-driven rendering.
+   pushed; tag **`M2`** on main's tip. Protocol minor 2 with the
+   `scene.store.v1` capability.
+   **M3 is under way**: 3.1 (production scene typography through
+   `SceneTextEngine`, scene-aware background/words layers, the
+   shared_ptr hand-off from the session, and the pixel fixtures) is
+   DONE, committed and pushed. Gates: desktop ctest **14/14**, headless
+   **11/11**. Next is 3.2: image/background composition (contain/cover/
+   fill/blur fit rules over `background.assetPath`, cut + crossfade
+   transitions) plus the layer on/off dispatch check from the UI, then
+   3.3 (minimal lyric entry/navigation in QML — a newly created song
+   can be presented) and 3.4 (independent clear controls with
+   acknowledged live state).
 3. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

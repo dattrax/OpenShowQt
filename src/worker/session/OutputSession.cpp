@@ -531,13 +531,23 @@ void OutputSession::applyPendingSceneChange() {
     if (desired == fAppliedScene) {
         return;
     }
-    // Production layers will draw the active scene (task 3.1); applying
-    // today records it, which is what status() and the acknowledged
-    // revision report.
-    std::lock_guard<std::mutex> lock(fMutex);
-    fAppliedScene = desired;
-    fStatus.scene.active = fAppliedScene;
-    fStatus.revision = fRevision;
+    // Task 3.1: the applied scene is what the production layers draw. The
+    // store may evict its entry later, so a copy shared with the
+    // composition keeps the on-air scene alive as long as it is drawn.
+    // Applying also records it as active for status and the acknowledged
+    // revision.
+    std::shared_ptr<const openshow::scene::Scene> applied;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        const auto entry = fScenes.find(desired);
+        if (entry != fScenes.end()) {
+            applied = std::make_shared<const openshow::scene::Scene>(entry->second);
+        }
+        fAppliedScene = desired;
+        fStatus.scene.active = fAppliedScene;
+        fStatus.revision = fRevision;
+    }
+    fScene->setActiveScene(std::move(applied));
 }
 
 void OutputSession::applyPreviewState() {

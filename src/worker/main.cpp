@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -44,9 +45,11 @@
 
 #include "openshow/domain/version.h"
 #include "openshow/protocol/protocol.h"
+#include "openshow/scene/scene.h"
 
 #include "output/OutputWindow.h"
 #include "render/Layer.h"
+#include "render/SceneText.h"
 #include "render/TestScene.h"
 #include "render/YuvGpu.h"
 #include "rpc/RpcServer.h"
@@ -76,7 +79,7 @@ void printUsage(const char* program) {
                  "       %s --render-test [--monitor N] [--seconds S] [--idle-check]\n"
                  "       %s --av-bench FILE [--monitor N] [--seconds S] [--no-audio]\n"
                  "                                  [--preview] [--allow-video-copy] [--no-hw-decode]\n"
-                 "       %s --snapshot PATH [--width N] [--height N]\n"
+                 "       %s --snapshot PATH [--scene-file FILE] [--width N] [--height N]\n"
                  "       %s --list-monitors\n"
                  "       %s --check-layers\n"
                  "       %s --pw-check [--seconds S]\n"
@@ -101,6 +104,8 @@ void printUsage(const char* program) {
                  "  --idle-check         with --render-test: verify a static scene\n"
                  "                       presents nothing and a command wakes the loop\n"
                  "  --snapshot PATH      render the test scene to a PNG (no display needed)\n"
+                "  --scene-file FILE    with --snapshot: render the wire scene in FILE\n"
+                "                       (the scene.prepare JSON object) instead of the demo\n"
                  "  --list-monitors      print the GLFW monitor list and exit\n"
                  "  --check-layers       verify layer composition on the CPU and exit\n"
                  "  --pw-check           feed a quiet tone through PipeWire and report the\n"
@@ -714,6 +719,7 @@ int main(int argc, char** argv) {
     installStopHandlers();
     const char* socketPath = nullptr;
     const char* snapshotPath = nullptr;
+    const char* sceneFilePath = nullptr;
     bool checkDependencies = false;
     bool renderTest = false;
     bool listMonitors = false;
@@ -772,6 +778,8 @@ int main(int argc, char** argv) {
             seconds = std::atof(argv[++i]);
         } else if (argument == "--snapshot" && i + 1 < argc) {
             snapshotPath = argv[++i];
+        } else if (argument == "--scene-file" && i + 1 < argc) {
+            sceneFilePath = argv[++i];
         } else if (argument == "--width" && i + 1 < argc) {
             snapshotWidth = std::atoi(argv[++i]);
         } else if (argument == "--height" && i + 1 < argc) {
@@ -815,8 +823,35 @@ int main(int argc, char** argv) {
 
     if (snapshotPath) {
         std::string error;
-        if (!openshow::worker::renderTestSnapshot(snapshotPath, snapshotWidth, snapshotHeight,
-                                                  layerOverrides, &error)) {
+        bool ok = false;
+        if (sceneFilePath != nullptr) {
+            // Task 3.1: render a compiled wire scene through the production
+            // text engine — the same layout the audience layers draw.
+            std::ifstream in(sceneFilePath, std::ios::binary);
+            if (!in) {
+                error = std::string("cannot read ") + sceneFilePath;
+            } else {
+                const std::string text((std::istreambuf_iterator<char>(in)),
+                                       std::istreambuf_iterator<char>());
+                boost::system::error_code ec;
+                const boost::json::value value = boost::json::parse(text, ec);
+                if (ec) {
+                    error = std::string("invalid JSON in ") + sceneFilePath + ": " + ec.message();
+                } else {
+                    openshow::scene::Scene scene;
+                    if (!openshow::scene::fromJson(value, &scene, &error)) {
+                        error = "scene file rejected: " + error;
+                    } else {
+                        ok = openshow::worker::renderSceneSnapshot(
+                            scene, snapshotPath, snapshotWidth, snapshotHeight, &error);
+                    }
+                }
+            }
+        } else {
+            ok = openshow::worker::renderTestSnapshot(snapshotPath, snapshotWidth,
+                                                      snapshotHeight, layerOverrides, &error);
+        }
+        if (!ok) {
             std::fprintf(stderr, "openshow-worker: snapshot failed: %s\n", error.c_str());
             return 1;
         }

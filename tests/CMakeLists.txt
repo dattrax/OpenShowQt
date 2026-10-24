@@ -47,6 +47,17 @@ add_test(NAME render_layer_composition
   COMMAND openshow-worker --check-layers
 )
 
+# Task 3.1 scene typography: production layout (wrap, centring, fallback,
+# shrink-to-fit) rendered on the CPU through the same engine the audience
+# words layer uses. No display or Vulkan; exits 77 when no usable fonts.
+add_executable(scene_render_tests scene_render_tests.cpp)
+target_link_libraries(scene_render_tests PRIVATE openshow::worker_render)
+set_source_files_properties(scene_render_tests.cpp PROPERTIES
+  COMPILE_OPTIONS "-fno-rtti"
+)
+add_test(NAME scene_render_tests COMMAND scene_render_tests)
+set_tests_properties(scene_render_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
 # Task 1.5 media foundation, linked straight into the Qt-free test binary.
 # Fixtures are generated with the ffmpeg CLI; the test exits 77 (skipped)
 # when the CLI is not available to produce them.

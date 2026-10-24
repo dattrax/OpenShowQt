@@ -1,12 +1,10 @@
 #include "TestScene.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <fstream>
-#include <initializer_list>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -28,226 +26,18 @@
 #include "include/core/SkSamplingOptions.h"
 #include "include/core/SkSurface.h"
 #include "include/core/SkTextBlob.h"
+#include "include/core/SkTypeface.h"
 #include "include/effects/SkGradient.h"
 #include "include/encode/SkPngEncoder.h"
-#include "include/ports/SkFontMgr_fontconfig.h"
-#include "include/ports/SkFontScanner_FreeType.h"
-#include "include/private/base/SkTArray.h"
-#include "src/base/SkUTF.h"
+#include "modules/skparagraph/include/Paragraph.h"
 #include "modules/skparagraph/include/ParagraphBuilder.h"
 #include "modules/skparagraph/include/ParagraphStyle.h"
 #include "modules/skparagraph/include/TextStyle.h"
-#include "modules/skunicode/include/SkUnicode.h"
-#include "modules/skunicode/include/SkUnicode_icu.h"
-#include "modules/skunicode/src/SkUnicode_hardcoded.h"
 
 namespace openshow::worker {
 
 namespace {
 
-// The hard-coded SkUnicode backend implements the character properties but
-// leaves breaking, bidi and upper-casing abstract (full ICU is blocked on an
-// ICU version mismatch; see PROGRESS.md). These implementations cover the
-// ASCII rules the test scene needs: whitespace, newlines as hard breaks, a
-// soft break after whitespace, and a grapheme start per code point.
-class HardCodedUnicode final : public SkUnicodeHardCodedCharProperties {
-public:
-    SkString toUpper(const SkString& text) override {
-        SkString upper(text);
-        char* data = upper.data();
-        for (size_t i = 0; i < upper.size(); ++i) {
-            data[i] = static_cast<char>(std::toupper(static_cast<unsigned char>(data[i])));
-        }
-        return upper;
-    }
-
-    SkString toUpper(const SkString& text, const char*) override { return toUpper(text); }
-
-    std::unique_ptr<SkBidiIterator> makeBidiIterator(const uint16_t[], int,
-                                                     SkBidiIterator::Direction) override {
-        return nullptr;
-    }
-
-    std::unique_ptr<SkBidiIterator> makeBidiIterator(const char[], int,
-                                                     SkBidiIterator::Direction) override {
-        return nullptr;
-    }
-
-    std::unique_ptr<SkBreakIterator> makeBreakIterator(const char[], BreakType) override {
-        return nullptr;
-    }
-
-    std::unique_ptr<SkBreakIterator> makeBreakIterator(BreakType) override { return nullptr; }
-
-    bool getBidiRegions(const char[], int utf8Units, TextDirection direction,
-                        std::vector<BidiRegion>* results) override {
-        if (!results) {
-            return false;
-        }
-        // Single-level text in the task 1.1 scene (no mixed directions).
-        results->clear();
-        results->emplace_back(0, static_cast<Position>(utf8Units),
-                              direction == TextDirection::kRTL ? BidiLevel(1) : BidiLevel(0));
-        return true;
-    }
-
-    bool getWords(const char[], int, const char*, std::vector<Position>*) override {
-        return false;
-    }
-
-    bool getUtf8Words(const char[], int, const char*, std::vector<Position>*) override {
-        return false;
-    }
-
-    bool getSentences(const char[], int, const char*, std::vector<Position>*) override {
-        return false;
-    }
-
-    void reorderVisual(const BidiLevel[], int levelCount, int32_t* reorderMap) override {
-        // Single direction (LTR) in the test scene: the identity mapping.
-        for (int i = 0; i < levelCount; ++i) {
-            reorderMap[i] = i;
-        }
-    }
-
-    bool computeCodeUnitFlags(char utf8[], int utf8Units, bool,
-                              skia_private::TArray<CodeUnitFlags, true>* results) override {
-        if (!results) {
-            return false;
-        }
-        results->clear();
-        results->push_back_n(utf8Units + 1, CodeUnitFlags::kNoCodeUnitFlag);
-        const char* current = utf8;
-        const char* end = utf8 + utf8Units;
-        bool previousWasWhitespace = false;
-        bool pendingHardBreak = false;
-        while (current < end) {
-            const int before = static_cast<int>(current - utf8);
-            SkUnichar unichar = SkUTF::NextUTF8(&current, end);
-            if (unichar < 0) {
-                unichar = 0xFFFD;
-            }
-            const int after = static_cast<int>(current - utf8);
-            // A hard break belongs to the position *after* the newline so the
-            // newline stays trailing whitespace of its own line, matching
-            // SkUnicode_icu's UTF-8 path.
-            if (pendingHardBreak) {
-                (*results)[before] = static_cast<CodeUnitFlags>(
-                    (*results)[before] | CodeUnitFlags::kHardLineBreakBefore);
-            }
-            const bool whitespace = isWhitespace(unichar);
-            int flags = CodeUnitFlags::kGraphemeStart;
-            if (isControl(unichar)) {
-                flags |= CodeUnitFlags::kControl;
-            }
-            if (isTabulation(unichar)) {
-                flags |= CodeUnitFlags::kTabulation;
-            }
-            if (whitespace) {
-                flags |= CodeUnitFlags::kPartOfWhiteSpaceBreak;
-                for (int i = before; i < after; ++i) {
-                    (*results)[i] = static_cast<CodeUnitFlags>(
-                        (*results)[i] | CodeUnitFlags::kPartOfWhiteSpaceBreak);
-                }
-            }
-            if (!whitespace && previousWasWhitespace) {
-                flags |= CodeUnitFlags::kSoftLineBreakBefore;
-            }
-            (*results)[before] = static_cast<CodeUnitFlags>((*results)[before] | flags);
-            pendingHardBreak = isHardBreak(unichar);
-            previousWasWhitespace = whitespace;
-        }
-        // ICU reports a hard break after a trailing newline and a final soft
-        // break at the end of the text.
-        CodeUnitFlags tail = CodeUnitFlags::kSoftLineBreakBefore;
-        if (pendingHardBreak) {
-            tail = static_cast<CodeUnitFlags>(tail | CodeUnitFlags::kHardLineBreakBefore);
-        }
-        (*results)[utf8Units] = static_cast<CodeUnitFlags>((*results)[utf8Units] | tail);
-        return true;
-    }
-
-    bool computeCodeUnitFlags(char16_t utf16[], int utf16Units, bool,
-                              skia_private::TArray<CodeUnitFlags, true>* results) override {
-        if (!results) {
-            return false;
-        }
-        results->clear();
-        results->push_back_n(utf16Units + 1, CodeUnitFlags::kNoCodeUnitFlag);
-        const char16_t* current = utf16;
-        const char16_t* end = utf16 + utf16Units;
-        bool previousWasWhitespace = false;
-        bool pendingHardBreak = false;
-        while (current < end) {
-            const int before = static_cast<int>(current - utf16);
-            SkUnichar unichar = SkUTF::NextUTF16(reinterpret_cast<const uint16_t**>(&current),
-                                                 reinterpret_cast<const uint16_t*>(end));
-            if (unichar < 0) {
-                unichar = 0xFFFD;
-            }
-            const int after = static_cast<int>(current - utf16);
-            if (pendingHardBreak) {
-                (*results)[before] = static_cast<CodeUnitFlags>(
-                    (*results)[before] | CodeUnitFlags::kHardLineBreakBefore);
-            }
-            const bool whitespace = isWhitespace(unichar);
-            int flags = CodeUnitFlags::kGraphemeStart;
-            if (isControl(unichar)) {
-                flags |= CodeUnitFlags::kControl;
-            }
-            if (isTabulation(unichar)) {
-                flags |= CodeUnitFlags::kTabulation;
-            }
-            if (whitespace) {
-                flags |= CodeUnitFlags::kPartOfWhiteSpaceBreak;
-                for (int i = before; i < after; ++i) {
-                    (*results)[i] = static_cast<CodeUnitFlags>(
-                        (*results)[i] | CodeUnitFlags::kPartOfWhiteSpaceBreak);
-                }
-            }
-            if (!whitespace && previousWasWhitespace) {
-                flags |= CodeUnitFlags::kSoftLineBreakBefore;
-            }
-            (*results)[before] = static_cast<CodeUnitFlags>((*results)[before] | flags);
-            pendingHardBreak = isHardBreak(unichar);
-            previousWasWhitespace = whitespace;
-        }
-        CodeUnitFlags tail = CodeUnitFlags::kSoftLineBreakBefore;
-        if (pendingHardBreak) {
-            tail = static_cast<CodeUnitFlags>(tail | CodeUnitFlags::kHardLineBreakBefore);
-        }
-        (*results)[utf16Units] = static_cast<CodeUnitFlags>((*results)[utf16Units] | tail);
-        return true;
-    }
-};
-
-sk_sp<SkTypeface> matchTypeface(SkFontMgr* mgr, const char* family, const SkFontStyle& style,
-                                std::initializer_list<const char*> fallbackFiles) {
-    if (mgr) {
-        sk_sp<SkTypeface> typeface = mgr->matchFamilyStyle(family, style);
-        if (typeface) {
-            return typeface;
-        }
-        for (const char* path : fallbackFiles) {
-            typeface = mgr->makeFromFile(path);
-            if (typeface) {
-                return typeface;
-            }
-        }
-    }
-    // Last resort before giving up: load the file through an empty manager.
-    sk_sp<SkFontMgr> loader = SkFontMgr::RefEmpty();
-    for (const char* path : fallbackFiles) {
-        sk_sp<SkData> data = SkData::MakeFromFileName(path);
-        if (data) {
-            sk_sp<SkTypeface> typeface = loader->makeFromData(std::move(data));
-            if (typeface) {
-                return typeface;
-            }
-        }
-    }
-    return nullptr;
-}
 
 // The authored-canvas regions each layer draws into. --check-layers asserts
 // the diff of every single-layer toggle stays inside its region, so moving
@@ -258,14 +48,26 @@ constexpr SkRect kAuxBadge = SkRect::MakeLTRB(1560.0f, 40.0f, 1880.0f, 112.0f);
 constexpr SkRect kAuxRegion = SkRect::MakeLTRB(1545.0f, 25.0f, 1895.0f, 125.0f);
 constexpr SkRect kClockRegion = SkRect::MakeLTRB(130.0f, 965.0f, 1500.0f, 1035.0f);
 
-// Bottom of the stack: the gradient background. FreeShow puts video here
-// too; the M5 background layer will replace this shader with decoded frames
-// through the same draw() entry point.
+// Bottom of the stack: the gradient background, or the presented scene's
+// colour fill while one is on air (task 3.1; image backgrounds are 3.2).
+// FreeShow puts video here too; the M5 background layer will replace this
+// shader with decoded frames through the same draw() entry point.
 class BackgroundLayer final : public RenderLayer {
 public:
+    explicit BackgroundLayer(const ActiveScene* active) : fActive(active) {}
+
     LayerId id() const override { return LayerId::kBackground; }
 
     void draw(const FrameContext& ctx) override {
+        if (*fActive) {
+            const openshow::scene::Color color = (*fActive)->background.color;
+            SkPaint fill;
+            fill.setColor(SkColorSetARGB(0xFF, (color >> 16) & 0xFF, (color >> 8) & 0xFF,
+                                         color & 0xFF));
+            ctx.canvas->drawRect(
+                SkRect::MakeWH(TestScene::kCanvasWidth, TestScene::kCanvasHeight), fill);
+            return;
+        }
         const SkPoint points[2] = {{0, 0}, {0, TestScene::kCanvasHeight}};
         const SkColor4f colors[2] = {
             SkColor4f::FromColor(SkColorSetRGB(0x14, 0x16, 0x1F)),
@@ -277,18 +79,23 @@ public:
         ctx.canvas->drawRect(SkRect::MakeWH(TestScene::kCanvasWidth, TestScene::kCanvasHeight),
                              background);
     }
+
+private:
+    const ActiveScene* fActive;  // TestScene-owned; outlives the layer
 };
 
-// Slide images: the PNG-round-tripped photo with a border and caption.
+// Slide images: the PNG-round-tripped photo with a border and caption. The
+// demo picture only — a presented scene stands it down until real slide
+// images arrive with the scene (task 3.2).
 class ImageLayer final : public RenderLayer {
 public:
-    ImageLayer(sk_sp<SkImage> photo, sk_sp<SkTypeface> regular)
-        : fPhoto(std::move(photo)), fRegular(std::move(regular)) {}
+    ImageLayer(sk_sp<SkImage> photo, sk_sp<SkTypeface> regular, const ActiveScene* active)
+        : fPhoto(std::move(photo)), fRegular(std::move(regular)), fActive(active) {}
 
     LayerId id() const override { return LayerId::kImages; }
 
     void draw(const FrameContext& ctx) override {
-        if (!fPhoto) {
+        if (*fActive || !fPhoto) {
             return;
         }
         const float photoWidth = 820.0f;
@@ -321,17 +128,30 @@ public:
 private:
     sk_sp<SkImage> fPhoto;
     sk_sp<SkTypeface> fRegular;
+    const ActiveScene* fActive;  // TestScene-owned; outlives the layer
 };
 
-// Words: the SkParagraph heading, exactly what M3 lyrics will use.
+// Words: while a scene is on air, its text laid out through
+// SceneTextEngine (wrap, centre, fallback, fit — task 3.1); otherwise the
+// demo SkParagraph title. The layout is rebuilt when the active scene
+// changes, drawn every frame.
 class WordsLayer final : public RenderLayer {
 public:
-    explicit WordsLayer(std::unique_ptr<skia::textlayout::Paragraph> title)
-        : fTitle(std::move(title)) {}
+    WordsLayer(std::unique_ptr<skia::textlayout::Paragraph> title,
+               const SceneTextEngine* engine, const ActiveScene* active)
+        : fTitle(std::move(title)), fEngine(engine), fActive(active) {}
 
     LayerId id() const override { return LayerId::kWords; }
 
     void draw(const FrameContext& ctx) override {
+        if (*fActive) {
+            if (fCachedScene != *fActive) {
+                fCached = fEngine->layoutScene(**fActive);
+                fCachedScene = *fActive;
+            }
+            fEngine->drawLayout(ctx.canvas, fCached);
+            return;
+        }
         if (fTitle) {
             fTitle->paint(ctx.canvas, 1040, 220);
         }
@@ -339,6 +159,10 @@ public:
 
 private:
     std::unique_ptr<skia::textlayout::Paragraph> fTitle;
+    const SceneTextEngine* fEngine;
+    const ActiveScene* fActive;  // TestScene-owned; outlives the layer
+    ActiveScene fCachedScene;    // last scene fCached was built from
+    SceneTextEngine::SceneLayout fCached;
 };
 
 // Aux: placeholder for future overlay content, off by default. A badge so
@@ -447,50 +271,16 @@ std::unique_ptr<skia::textlayout::Paragraph> makeTitle(
 TestScene::~TestScene() = default;
 
 bool TestScene::create(std::string* error) {
-    // System fonts through fontconfig with the internal FreeType scanner.
-    // SkFontMgr::RefDefault() is gone from this Skia revision, so the manager
-    // is assembled explicitly.
-    std::unique_ptr<SkFontScanner> scanner = SkFontScanner_Make_FreeType();
-    if (scanner) {
-        fFontMgr = SkFontMgr_New_FontConfig(nullptr, std::move(scanner));
-    }
-    if (!fFontMgr) {
-        fFontMgr = SkFontMgr::RefEmpty();
-        if (error) {
-            error->append("fontconfig font manager unavailable, using fallbacks; ");
-        }
-    }
-
-    fRegular = matchTypeface(fFontMgr.get(), "Liberation Sans", SkFontStyle::Normal(),
-                             {"/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
-                              "/usr/share/fonts/dejavu/DejaVuSans.ttf"});
-    sk_sp<SkTypeface> bold = matchTypeface(fFontMgr.get(), "Liberation Sans",
-                                           SkFontStyle::Bold(),
-                                           {"/usr/share/fonts/liberation-sans-fonts/LiberationSans-Bold.ttf",
-                                            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"});
-    if (!fRegular) {
-        // fontconfig default sans when the named matches both failed.
-        fRegular = fFontMgr->matchFamilyStyle(nullptr, SkFontStyle::Normal());
-    }
-    if (!bold) {
-        bold = fRegular;
-    }
-    if (!fRegular) {
-        if (error) {
-            *error = "no usable typeface";
-        }
+    // One font setup for the whole worker (task 3.1): the engine assembles
+    // the fontconfig manager, typefaces and FontCollection, and the
+    // production layers lay scene text out through it too.
+    fText = std::make_unique<SceneTextEngine>();
+    if (!fText->create(error)) {
         return false;
     }
 
-    fFontCollection = sk_make_sp<skia::textlayout::FontCollection>();
-    fFontCollection->setDynamicFontManager(fFontMgr);
-    // Full ICU-backed SkUnicode needs an ICU matching the Skia build (it
-    // expects v77 symbols, this Fedora has 78); the hard-coded backend is
-    // enough for the task 1.1 text and the swap is recorded in PROGRESS.md.
-    fUnicode = sk_make_sp<HardCodedUnicode>();
-
     std::unique_ptr<skia::textlayout::Paragraph> title =
-        makeTitle(fFontCollection, fUnicode, bold, fRegular);
+        makeTitle(fText->fontCollection(), fText->unicode(), fText->bold(), fText->regular());
     if (!title) {
         if (error) {
             *error = "SkParagraph title layout failed";
@@ -506,11 +296,11 @@ bool TestScene::create(std::string* error) {
     // One layer per composition tab, stacked bottom to top in the order the
     // compositor will dispatch them (PLAN.md "Output layer model"). Audio is
     // not here: it is a playback source, never a composition item.
-    fLayers.add(std::make_unique<BackgroundLayer>());
-    fLayers.add(std::make_unique<ImageLayer>(std::move(photo), fRegular));
-    fLayers.add(std::make_unique<WordsLayer>(std::move(title)));
-    fLayers.add(std::make_unique<AuxLayer>(fRegular));
-    fLayers.add(std::make_unique<ClockLayer>(fRegular));
+    fLayers.add(std::make_unique<BackgroundLayer>(&fActiveScene));
+    fLayers.add(std::make_unique<ImageLayer>(std::move(photo), fText->regular(), &fActiveScene));
+    fLayers.add(std::make_unique<WordsLayer>(std::move(title), fText.get(), &fActiveScene));
+    fLayers.add(std::make_unique<AuxLayer>(fText->regular()));
+    fLayers.add(std::make_unique<ClockLayer>(fText->regular()));
     // Aux is not part of the agreed use case and starts off; the clock stays
     // on in this development scene as the live-frame indicator.
     fLayers.setEnabled(LayerId::kAux, false);
@@ -646,37 +436,7 @@ bool renderTestSnapshot(const std::string& path, int width, int height,
         return false;
     }
     scene.draw(surface->getCanvas(), width, height, 0.0, "snapshot (CPU raster)");
-
-    SkPixmap pixmap;
-    if (!surface->peekPixels(&pixmap)) {
-        if (error) {
-            *error = "snapshot pixels unavailable";
-        }
-        return false;
-    }
-    sk_sp<SkData> png = SkPngEncoder::Encode(pixmap, SkPngEncoder::Options{});
-    if (!png) {
-        if (error) {
-            *error = "snapshot PNG encode failed";
-        }
-        return false;
-    }
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        if (error) {
-            *error = "cannot write " + path;
-        }
-        return false;
-    }
-    out.write(static_cast<const char*>(png->data()), static_cast<std::streamsize>(png->size()));
-    out.close();
-    if (!out) {
-        if (error) {
-            *error = "write failed for " + path;
-        }
-        return false;
-    }
-    return true;
+    return writePngRaster(surface.get(), path, error);
 }
 
 namespace {
@@ -857,13 +617,3 @@ bool verifyLayerComposition(std::string* error) {
 }
 
 }  // namespace openshow::worker
-
-// Compatibility definition: libskshaper's default shaping entry point calls
-// SkUnicodes::ICU::Make(), and the prebuilt libskunicode_icu expects ICU v77
-// versioned symbols this Fedora (ICU 78) does not provide (see PROGRESS.md).
-// Supplying the hard-coded backend here keeps the linker happy and hands the
-// shaper the same Unicode provider the paragraph uses. Retire this when the
-// ICU match is resolved for M3.
-namespace SkUnicodes::ICU {
-sk_sp<SkUnicode> Make() { return sk_make_sp<openshow::worker::HardCodedUnicode>(); }
-}  // namespace SkUnicodes::ICU

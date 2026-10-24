@@ -3,10 +3,30 @@ add_executable(openshow-worker
   output/OutputWindow.cpp
   output/Swapchain.cpp
   preview/PreviewStream.cpp
-  render/Layer.cpp
   render/TestScene.cpp
   rpc/RpcServer.cpp
   session/OutputSession.cpp
+)
+
+# The output layer model and production scene text (task 3.1). A library so
+# the headless fixture tests can lay out and render scenes without the
+# worker's main(), window or Vulkan.
+add_library(openshow-worker-render STATIC
+  render/Layer.cpp
+  render/SceneText.cpp
+)
+add_library(openshow::worker_render ALIAS openshow-worker-render)
+target_link_libraries(openshow-worker-render PUBLIC
+  openshow::scene
+  openshow::skia
+  PkgConfig::FONTCONFIG
+  PkgConfig::HARFBUZZ
+)
+target_include_directories(openshow-worker-render PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# The prebuilt Skia is compiled with RTTI off; SceneText derives from its
+# classes, whose typeinfo does not exist, so this TU must also be -fno-rtti.
+set_source_files_properties(render/SceneText.cpp PROPERTIES
+  COMPILE_OPTIONS "-fno-rtti"
 )
 
 # Vulkan device setup and the YUV GPU upload ring (task 1.5d). A library so
@@ -53,6 +73,7 @@ target_link_libraries(openshow-worker PRIVATE
   openshow::skia
   openshow::worker_gpu
   openshow::worker_media
+  openshow::worker_render
   PkgConfig::GLFW
   PkgConfig::PIPEWIRE
   PkgConfig::FFMPEG

@@ -223,8 +223,9 @@ public:
     // presenting the revision already desired is a success without a
     // new revision. Unknown revisions (and 0) are refused — to go black
     // the frontend prepares the cleared scene, which is an ordinary
-    // scene. Production layers consume the active scene in 3.x; what
-    // applying does today is record it as active for status.
+    // scene. The applied scene is what the production layers draw
+    // (task 3.1): the background fills its colour and the words layer
+    // lays out its text; with nothing presented the demo picture renders.
     bool presentScene(uint64_t prepared, uint64_t* revisionOut);
 
     // --- video (task 1.5e) ---
