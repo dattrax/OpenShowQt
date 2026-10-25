@@ -113,16 +113,25 @@ public:
     };
 
     // Live scene-store state (task 2.4b). Prepared scenes are kept by
-    // the store revision prepareScene returns; active reports the
-    // revision the render thread has taken on (0 = nothing presented,
-    // the black start), pending the presentation in flight. Revision 0
-    // is never handed out, and once status().revision reaches the
-    // revision a scene.present was acknowledged with, active equals
-    // what that command named.
+    // the store revision prepareScene returns; revision 0 is never
+    // handed out. The fields keep the lifecycle states distinct, per the
+    // publication rule on Status (task 6.4, review R4):
+    //   queued         pending names the newest accepted scene.present
+    //                  whose scene has not reached a presented frame
+    //                  yet (0 = nothing queued).
+    //   transitioning active carries the revision the compositor is
+    //                  committed to on air and transitioning says the
+    //                  presented frames still blend the previous scene
+    //                  in — the switch has landed but is not visually
+    //                  settled.
+    //   confirmed      active == the revision a scene.present was
+    //                  acknowledged with, pending == 0 and
+    //                  revision >= that command's revision.
     struct SceneStatus {
-        uint64_t active = 0;
-        uint64_t pending = 0;
-        uint64_t prepared = 0;  // how many scenes the store holds
+        uint64_t active = 0;        // scene carried by the newest presented frame
+        uint64_t pending = 0;       // accepted present not yet presented (0 = none)
+        bool transitioning = false; // that presented frame was mid-crossfade
+        uint64_t prepared = 0;      // how many scenes the store holds
     };
 
     // Background media visibility (task 5.5d). playing says the session
@@ -153,14 +162,27 @@ public:
         std::string message;
     };
 
-    // Snapshot of output state, safe to take from any thread. layerMask
-    // reports what has actually been applied on the render thread, so a
-    // caller can wait for status().revision >= the revision its command
-    // was acknowledged with.
+    // Snapshot of output state, safe to take from any thread.
+    //
+    // Publication rule (task 6.4, review R4): the applied fields —
+    // revision, layerMask, monitor and scene.active — describe the
+    // newest SUCCESSFULLY PRESENTED frame, never the moment the render
+    // thread picked a command up. The run loop stages one immutable
+    // FrameSnapshot of the desired state, the frame draws exactly that
+    // snapshot, and only a successful submit/present publishes it. An
+    // acquire or present failure therefore publishes nothing: active
+    // keeps naming the scene the audience actually has, pending keeps
+    // the command alive, and presentFailures honestly counts the failed
+    // submits. So waiting for status().revision >= the revision a
+    // command was acknowledged with now means "a frame carrying it
+    // reached the compositor", not "the worker noticed".
     struct Status {
         uint32_t layerMask = 0;
         uint64_t revision = 0;
         unsigned long long frames = 0;
+        // Failed acquires/presents since start: the honest evidence that
+        // a confirmation took the long way around (task 6.4).
+        unsigned long long presentFailures = 0;
         int width = 0;
         int height = 0;
         std::string deviceName;
@@ -339,21 +361,43 @@ public:
     bool running() const;
 
 private:
+    // One immutable capture of the desired output state (task 6.4, the
+    // snapshot stage of the publication rule): taken under fMutex at the
+    // run loop's present decision, drawn exactly by frame(), and published
+    // by that frame's successful present. Commands arriving after the
+    // capture belong to the next snapshot — they can neither ride into
+    // this frame's pixels unnoticed nor borrow its status credit.
+    struct FrameSnapshot {
+        uint64_t revision = 0;
+        uint32_t mask = 0;
+        uint64_t scene = 0;  // scene-store id, 0 = nothing presented
+        SceneTransitionKind kind = SceneTransitionKind::kFade;
+        int monitor = -1;
+        // The scene's content, pinned at capture (one copy per scene id,
+        // cached in fCapturedScene). Without the pin a scene prepared
+        // after this capture could evict the snapshot's store entry before
+        // the frame applied it — the store race R4 hid behind the old
+        // apply-time read of fDesiredScene.
+        ActiveScene content;
+    };
+
     bool createSwapchain();
-    // Presents exactly one frame. presentedFor is the command revision
-    // captured at the run loop's present decision — under fMutex and
-    // BEFORE this frame applies any pending change — so the presented
-    // frame can never claim a command it did not include: a change
+    // Presents exactly one frame, drawn from the staged snapshot. The
+    // snapshot's revision is what a successful present credits: a command
     // landing after the capture re-dirties the loop instead of being
-    // swallowed (task 1.5e's invariant; the 5.5 scene-apply move made
-    // the capture's placement load-bearing).
-    void frame(uint64_t presentedFor);
+    // swallowed or borrowed (task 1.5e's invariant, given the honest
+    // publication of task 6.4).
+    void frame(const FrameSnapshot& snapshot);
     void housekeep();
-    void applyPendingLayerChanges();
-    void applyPendingDisplayChange();
-    void applyPendingSceneChange();
+    void applyPendingLayerChanges(const FrameSnapshot& snapshot);
+    void applyPendingDisplayChange(const FrameSnapshot& snapshot);
+    void applyPendingSceneChange(const FrameSnapshot& snapshot);
     void applyPreviewState();
-    void publishPreviewFrame(double elapsed, SkImage* video);
+    // Tags the published frame with the revision of the snapshot it drew
+    // (frame()), or of the last presented frame when the run loop
+    // republishes without presenting (task 6.4: tags name drawn content,
+    // never merely desired state).
+    void publishPreviewFrame(double elapsed, SkImage* video, uint64_t snapshotRevision);
     void refreshDisplaySnapshot();
 
     // Wakes the thread blocked in run()'s glfwWaitEventsTimeout. Safe from
@@ -445,6 +489,11 @@ private:
     uint64_t fDesiredScene = 0;                          // fMutex; 0 = nothing presented
     SceneTransitionKind fDesiredTransition = SceneTransitionKind::kFade;  // fMutex (task 3.2)
     uint64_t fAppliedScene = 0;                          // render thread, published under fMutex
+    // Snapshot capture cache (render thread, run() only): store entries are
+    // immutable per id and revisions are never reused, so the content copy
+    // a snapshot pins can be shared across every capture of one scene id.
+    uint64_t fCapturedSceneId = 0;
+    ActiveScene fCapturedScene;
 
     // Preview pipeline (task 1.4). Desired state is set from the RPC
     // thread and a generation counter drives creation/retirement on the

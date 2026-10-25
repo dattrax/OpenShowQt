@@ -418,13 +418,20 @@ void exerciseBackgroundMedia(int fd, const std::string& videoA,
         preparePresent(fd, lyricScene("Recovered", "v4", videoA, true));
     check(sceneBack != 0 && waitActive(fd, sceneBack, nullptr),
           "the good scene comes back on air");
+    // A successful reopen clears the sticky error and plays again. The
+    // position contract (mediaPlaying): -1.0 until the transport presents
+    // its head, so the wait requires a real position, not merely the
+    // playing flag — task 6.4 made this visible: honest confirmation now
+    // lands within milliseconds of the reopen, where the early status lie
+    // used to start the polling a whole transport-open earlier.
     double recoveredPosition = -1.0;
     const auto recoverDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
     while (std::chrono::steady_clock::now() < recoverDeadline) {
         const boost::json::object media = mediaOf(status(fd));
+        const double position = numberOf(media, "position");
         if (media.contains("playing") && media.at("playing").as_bool() &&
-            textOf(media, "error").empty()) {
-            recoveredPosition = numberOf(media, "position");
+            textOf(media, "error").empty() && position >= 0.0) {
+            recoveredPosition = position;
             break;
         }
         sleepMs(50);

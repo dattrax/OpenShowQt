@@ -184,13 +184,39 @@ Updated: 2026-10-25 (Europe/London).
   consumption, missing retire-on-confirmation). Gates desktop **32/32**,
   headless **20/20** (headless re-run three times green after one flaky
   parallel run whose failure no 6.3b code path touches).
-- Exact next action: **6.4**, publish applied scene/revision only from the
-  frame snapshot actually submitted/presented; define pending/transition/
-  confirmed states (see the 6.4 row for full acceptance wording: command-
-  during-apply and acquire/present failure injection, no early live
-  indicator, pending settles, preview tags name the drawn revision,
-  remeasure present→air against pixels). Then continue the focused M6
-  leaves in order.
+- **6.4 DONE (2026-10-25).** Honest publication of applied state (review
+  R4). The run loop stages one immutable `FrameSnapshot` (revision, mask,
+  scene id, transition kind, monitor, and a per-scene-id **content pin**
+  so a slow apply cannot be evicted out from under the frame) under
+  `fMutex` in the same critical section as the present decision; the
+  frame draws exactly it and only its successful present **commits**
+  `layerMask/monitor/scene.active/scene.transitioning/scene.pending/
+  revision` — failed acquires/presents publish nothing, retry, and are
+  counted in the new `presentFailures`. Lifecycle documented and pinned:
+  queued (pending names the accepted command), transitioning (committed
+  but still blending), confirmed (active + pending 0 + revision caught
+  up; pending recomputed every commit, so it self-heals). Preview frames
+  are tagged with the revision they drew, never the latest desired one.
+  Fault knobs (`OPENSHOW_FAULT_SCENE_APPLY_MS`,
+  `OPENSHOW_FAULT_SCENE_PRESENT_FAILS` armed per scene change,
+  `OPENSHOW_FAULT_HOLD_MS`) force the two windows R4 named;
+  `output_status_tests` S1 (present failures: honest queued window, no
+  early live indicator, exact failure count, correctly tagged first red
+  frame) and S2 (command mid-apply: B never credited with C's revision,
+  B's preview frame tagged B) are non-vacuous under four mutations
+  (apply-time publication, pending-never-clears, latest-revision tags,
+  latest-revision commit). present→air remeasured against honest status:
+  p95 16.9–18.2 ms of 100 ms. The `background_media_tests` recovery wait
+  now requires the transport's real head position — the old early-active
+  lie had been starting that poll a transport-open early, and honest
+  timing exposed the fixture's assumption (mediaPlaying's contract sets
+  position −1.0 until the head frame). Gates desktop **33/33** (8-run
+  stress green on the media fixture), headless **20/20**.
+- Exact next action: **6.5**, make preview ready/release ownership
+  stream-specific and sequence-exact; validate mapping geometry (review
+  R5: delayed old-stream, duplicate, odd and future releases cannot free
+  an owned slot; replacement notification race covered; no overwrite
+  during copy). Then continue the focused M6 leaves in order.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -2649,6 +2675,17 @@ of this work.
   retries stay available. Clears derive from the newest go's payload (the
   pending logical presentation) so successive clears compose without
   waiting for confirmations.
+- (2026-10-25, task 6.4) Status's applied fields describe the newest
+  SUCCESSFULLY PRESENTED frame, never the moment a command was noticed:
+  the run loop captures one immutable `FrameSnapshot` (with a per-scene-id
+  content pin) under `fMutex` at the present decision, the frame draws
+  exactly it, and only a successful present commits applied
+  mask/monitor/scene/revision; failures publish nothing, retry, and bump
+  `presentFailures`. Queued/transitioning/confirmed stay distinct and
+  pending recomputes at every commit. Preview tags name drawn content.
+  Fault injection is env-gated, render-thread-only, and re-armed per
+  scene change so fixtures force the command-during-apply and
+  present-failure windows instead of racing them.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.

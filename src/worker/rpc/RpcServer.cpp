@@ -97,6 +97,9 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                {"width", status.width},
                                {"height", status.height},
                                {"frames", status.frames},
+                               // Failed acquires/presents since start (task 6.4): the honest
+                               // evidence that a confirmation took the long way around.
+                               {"presentFailures", status.presentFailures},
                                {"revision", status.revision},
                                {"monitor", status.monitor},
                                {"monitorName", status.monitorName},
@@ -111,6 +114,8 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                                                {"error", preview.error}}},
                                {"scene", boost::json::object{{"active", status.scene.active},
                                                              {"pending", status.scene.pending},
+                                                             {"transitioning",
+                                                              status.scene.transitioning},
                                                              {"prepared", status.scene.prepared}}},
                                // Background media (task 5.5d): the video
                                // transport's live state; error is sticky

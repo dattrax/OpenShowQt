@@ -224,6 +224,17 @@ add_test(NAME production_output_tests
   COMMAND production_output_tests $<TARGET_FILE:openshow-worker>)
 set_tests_properties(production_output_tests PROPERTIES LABELS display TIMEOUT 90)
 
+# Task 6.4 (review R4): output.status publishes only presented frames.
+# Injected fault knobs force the two windows R4 named — presents that
+# fail while a scene is queued, and a command landing mid scene-apply —
+# and the fixtures read the live status stream and preview tags against
+# them. Needs a display.
+add_executable(output_status_tests output_status_tests.cpp)
+target_link_libraries(output_status_tests PRIVATE openshow::protocol)
+add_test(NAME output_status_tests
+  COMMAND output_status_tests $<TARGET_FILE:openshow-worker>)
+set_tests_properties(output_status_tests PROPERTIES LABELS display TIMEOUT 120)
+
 # Real FFmpeg get_buffer2 allocations into Vulkan linear images, independent
 # reference/presentation lifetimes, all native plane layouts and strict errors.
 add_executable(gpu_decode_tests gpu_decode_tests.cpp)

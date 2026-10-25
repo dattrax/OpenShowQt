@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -50,6 +52,38 @@ constexpr uint32_t layerMaskOf(const SceneRenderer& scene) {
         }
     }
     return mask;
+}
+
+// Test-only fault injection (task 6.4, review R4): the fixtures must
+// force two windows rather than race for a millisecond — a command
+// landing while the render thread is mid scene-apply (transport opens
+// really do take hundreds of ms, so this models reality), and present
+// failures that must not be acknowledged. Failure arming belongs to a
+// real scene change so a worker's startup frames are never the ones
+// eaten: OPENSHOW_FAULT_SCENE_PRESENT_FAILS re-arms on every applied
+// scene switch and the next that-many presents fail. Absent the
+// environment every knob is off and production pays nothing but two
+// never-taken branches per scene apply / present.
+struct Faults {
+    int applyDelayMs = 0;         // OPENSHOW_FAULT_SCENE_APPLY_MS
+    int scenePresentFails = 0;    // OPENSHOW_FAULT_SCENE_PRESENT_FAILS
+    int armedPresents = 0;        // runtime: scene-change failures left to burn
+    int holdMs = 0;               // OPENSHOW_FAULT_HOLD_MS: sleep after a failure
+    Faults() {
+        const auto read = [](const char* name) {
+            const char* value = std::getenv(name);
+            return value != nullptr ? std::atoi(value) : 0;
+        };
+        applyDelayMs = read("OPENSHOW_FAULT_SCENE_APPLY_MS");
+        scenePresentFails = read("OPENSHOW_FAULT_SCENE_PRESENT_FAILS");
+        holdMs = read("OPENSHOW_FAULT_HOLD_MS");
+    }
+};
+
+// Render-thread only (mutated by frame()/applyPendingSceneChange alone).
+Faults& faults() {
+    static Faults instance;
+    return instance;
 }
 
 }  // namespace
@@ -316,7 +350,13 @@ bool OutputSession::presentScene(uint64_t prepared, uint64_t* revisionOut,
         if (prepared == 0 || fScenes.find(prepared) == fScenes.end()) {
             return false;
         }
-        fStatus.scene.pending = prepared;
+        // Queued state (task 6.4): pending names the accepted command
+        // until a presented frame carries its scene. Re-presenting exactly
+        // what is confirmed on air starts no frame, so it queues nothing.
+        const bool alreadyConfirmed = fStatus.scene.active == prepared &&
+                                      fDesiredScene == prepared &&
+                                      !fStatus.scene.transitioning;
+        fStatus.scene.pending = alreadyConfirmed ? 0 : prepared;
         if (prepared != fDesiredScene) {
             fDesiredScene = prepared;
             fDesiredTransition = kind;  // travels with the change to the render thread
@@ -552,12 +592,13 @@ bool OutputSession::running() const {
     return !fStop && fWindow && !fWindow->shouldClose();
 }
 
-void OutputSession::applyPendingLayerChanges() {
-    uint32_t desired = 0;
-    {
-        std::lock_guard<std::mutex> lock(fMutex);
-        desired = fDesiredMask;
-    }
+void OutputSession::applyPendingLayerChanges(const FrameSnapshot& snapshot) {
+    // The snapshot is captured and drawn by this same thread: read it
+    // directly, no second opinion from the guarded desired state (that
+    // read is what let a late command ride into an early frame). Staging
+    // fAppliedMask here is bookkeeping for the frame's commit; the status
+    // publication itself happens only after a successful present.
+    const uint32_t desired = snapshot.mask;
     if (desired == fAppliedMask) {
         return;
     }
@@ -569,17 +610,10 @@ void OutputSession::applyPendingLayerChanges() {
         }
     }
     fAppliedMask = desired;
-    std::lock_guard<std::mutex> lock(fMutex);
-    fStatus.layerMask = fAppliedMask;
-    fStatus.revision = fRevision;
 }
 
-void OutputSession::applyPendingDisplayChange() {
-    int desired = fAppliedMonitor;
-    {
-        std::lock_guard<std::mutex> lock(fMutex);
-        desired = fDesiredMonitor;
-    }
+void OutputSession::applyPendingDisplayChange(const FrameSnapshot& snapshot) {
+    const int desired = snapshot.monitor;
     if (desired == fAppliedMonitor) {
         return;
     }
@@ -601,56 +635,49 @@ void OutputSession::applyPendingDisplayChange() {
         return;  // the resize path retries on the next frame
     }
     fWindow->resetFramebufferResize();  // setMonitor's resize is done here
-
-    std::lock_guard<std::mutex> lock(fMutex);
-    fStatus.monitor = fAppliedMonitor;
-    fStatus.monitorName = fAppliedMonitor >= 0 &&
-                                 fAppliedMonitor < static_cast<int>(fDisplays.size())
-                             ? fDisplays[fAppliedMonitor].name
-                             : "";
-    fStatus.revision = fRevision;
+    // monitor/monitorName join the other applied fields in the frame's
+    // commit block: a moved window is on air when its frame presents.
 }
 
-void OutputSession::applyPendingSceneChange() {
-    uint64_t desired = 0;
-    SceneTransitionKind kind = SceneTransitionKind::kFade;
-    {
-        std::lock_guard<std::mutex> lock(fMutex);
-        desired = fDesiredScene;
-        kind = fDesiredTransition;
-    }
+void OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
+    const uint64_t desired = snapshot.scene;
     if (desired == fAppliedScene) {
         return;
     }
+    // Fault injection (task 6.4): real applies take time — opening a
+    // background transport really runs hundreds of ms. The fixture uses
+    // this to land a command squarely inside a live apply instead of
+    // racing a microsecond window. Arming belongs to the change too: the
+    // scene's next presents are the ones that must fail, not the worker's
+    // startup frames.
+    if (faults().applyDelayMs > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(faults().applyDelayMs));
+    }
+    if (faults().scenePresentFails > 0) {
+        faults().armedPresents = faults().scenePresentFails;
+    }
     // Task 3.1: the applied scene is what the production layers draw. The
     // store may evict its entry later, so a copy shared with the
-    // composition keeps the on-air scene alive as long as it is drawn.
-    // Applying also records it as active for status and the acknowledged
-    // revision.
-    std::shared_ptr<const openshow::scene::Scene> applied;
-    {
-        std::lock_guard<std::mutex> lock(fMutex);
-        const auto entry = fScenes.find(desired);
-        if (entry != fScenes.end()) {
-            applied = std::make_shared<const openshow::scene::Scene>(entry->second);
-        }
-        fAppliedScene = desired;
-        fStatus.scene.active = fAppliedScene;
-        fStatus.revision = fRevision;
-    }
+    // composition keeps the on-air scene alive as long as it is drawn —
+    // here that copy is the snapshot's pin, so what is applied is exactly
+    // what the run loop captured, whatever commands arrived since.
+    fAppliedScene = desired;
     // Task 5.5: the render thread keeps its own handle on the on-air scene
     // (the composition gets a copy) — the draw path and the background
     // transport both read the same thing from here.
-    fRenderScene = applied;
-    fScene->setActiveScene(applied, kind);
+    fRenderScene = snapshot.content;
+    fScene->setActiveScene(snapshot.content, snapshot.kind);
     if (fBackgroundMedia) {
         // The transport follows the scene in the same breath — and this
         // whole function runs ahead of frame()'s graphics queue lock
         // precisely because the swap's join() waits on threads that may
         // be blocked acquiring it (deadlock otherwise).
-        applyBackgroundTransport(applied ? applied->background
-                                         : openshow::scene::Background{});
+        applyBackgroundTransport(snapshot.content ? snapshot.content->background
+                                                 : openshow::scene::Background{});
     }
+    // active/revision are NOT published here (task 6.4, review R4): the
+    // apply only stages the scene. The commit after a successful present
+    // is what tells callers the scene is on air.
 }
 
 void OutputSession::applyBackgroundTransport(const openshow::scene::Background& wanted) {
@@ -837,11 +864,11 @@ void OutputSession::applyPreviewState() {
     }
 }
 
-void OutputSession::publishPreviewFrame(double elapsed, SkImage* video) {
+void OutputSession::publishPreviewFrame(double elapsed, SkImage* video,
+                                        uint64_t snapshotRevision) {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t fps = 0;
-    uint32_t revision = 0;
     std::shared_ptr<PreviewStream> stream;
     {
         std::lock_guard<std::mutex> lock(fMutex);
@@ -852,8 +879,12 @@ void OutputSession::publishPreviewFrame(double elapsed, SkImage* video) {
         height = fStatus.preview.height;
         fps = fStatus.preview.fps;
         stream = fPreviewStream;
-        revision = static_cast<uint32_t>(fRevision);
     }
+    // Task 6.4 (review R4): the tag names the revision of the content this
+    // publish draws — the snapshot the presenting frame drew, or the last
+    // presented frame on a republish. Reading the latest desired fRevision
+    // here tagged frames with scenes nobody had drawn yet.
+    const uint32_t revision = static_cast<uint32_t>(snapshotRevision);
     if (!stream) {
         return;
     }
@@ -947,16 +978,23 @@ void OutputSession::publishPreviewFrame(double elapsed, SkImage* video) {
     ++fStatus.preview.published;
 }
 
-void OutputSession::frame(uint64_t presentedFor) {
+void OutputSession::frame(const FrameSnapshot& snapshot) {
     std::lock_guard queueLock(graphicsQueueMutex());
-    // presentedFor comes from the run loop's decision (see the header
-    // note): capturing here instead would let a command that lands
-    // between applyPendingSceneChange and this function be attributed
-    // to a frame that never drew it.
-    applyPendingLayerChanges();
-    applyPendingDisplayChange();
+    // Everything this frame draws comes from the run loop's snapshot —
+    // captured under fMutex at the present decision, ahead of every apply
+    // below. A command that lands after the capture belongs to the next
+    // snapshot: it re-dirties the loop, draws in the next frame, and is
+    // credited by that frame's present (task 6.4, review R4).
+    applyPendingLayerChanges(snapshot);
+    applyPendingDisplayChange(snapshot);
     applyPreviewState();
     glfwPollEvents();
+
+    // True only after flushAndPresent succeeds for this frame's drawn
+    // content. It is the sole gate on publishing applied state: an acquire
+    // or present failure publishes nothing, keeps pending alive, and is
+    // honestly counted in presentFailures.
+    bool presentedFrame = false;
 
     int width = 0;
     int height = 0;
@@ -974,7 +1012,11 @@ void OutputSession::frame(uint64_t presentedFor) {
     VkResult result = VK_SUCCESS;
     if (!fSwapchain->acquire(&imageIndex, &result)) {
         if (result == VK_TIMEOUT) {
-            return;
+            return;  // routine backpressure, not a failed submit
+        }
+        {
+            std::lock_guard<std::mutex> lock(fMutex);
+            ++fStatus.presentFailures;
         }
         fSwapchain->destroy();
         createSwapchain();
@@ -982,11 +1024,20 @@ void OutputSession::frame(uint64_t presentedFor) {
     }
 
     SkSurface* surface = fSwapchain->surface(imageIndex);
+    if (!surface) {
+        // An acquired index without a surface means the swapchain's images
+        // are broken: rebuild rather than credit a frame that cannot be
+        // drawn (the old code fell through and acknowledged the revision
+        // with nothing presented — task 6.4).
+        fSwapchain->destroy();
+        createSwapchain();
+        return;
+    }
     // Video hand-off state for this frame (task 1.5e).
     SkImage* videoImage = nullptr;
     unsigned videoToken = 0;
     VkSemaphore videoDone = VK_NULL_HANDLE;
-    if (surface) {
+    {
         // The footer line (tasks 6.1a/6.1b): a development affordance
         // only. A production compositor gets the empty string — the same
         // one the preview already draws with — so output and preview
@@ -1127,8 +1178,15 @@ void OutputSession::frame(uint64_t presentedFor) {
             }
         }
 
-        const bool presented =
+        bool presented =
             fSwapchain->flushAndPresent(surface, imageIndex, &result, videoDone);
+        if (presented && faults().armedPresents > 0) {
+            // Fault injection (task 6.4): a submit the driver refused. The
+            // fixture counts on the run loop retrying and on NOTHING being
+            // published for this attempt, exactly as for a real failure.
+            --faults().armedPresents;
+            presented = false;
+        }
         if (!presented) {
             // flushAndPresent only fails after flushing, so an attached
             // semaphore will still be signalled: the hand-off stands.
@@ -1137,18 +1195,31 @@ void OutputSession::frame(uint64_t presentedFor) {
             }
             fSwapchain->destroy();
             createSwapchain();
+            {
+                std::lock_guard<std::mutex> lock(fMutex);
+                ++fStatus.presentFailures;
+            }
+            if (faults().holdMs > 0) {
+                // Give the fixture a stable window to read the honest
+                // mid-failure status (pending still queued, active still
+                // the old scene, presentFailures climbing).
+                std::this_thread::sleep_for(std::chrono::milliseconds(faults().holdMs));
+            }
             return;
         }
+        presentedFrame = true;
     }
 
     // Preview (task 1.4) runs after the audience frame is presented: the
     // extra pass never delays the swapchain work it follows, and its
     // throttling, content gate and drop policy live in publishPreviewFrame.
+    // The tag is the snapshot's revision — the scene these pixels carry —
+    // not whatever a later command has meanwhile made desired (task 6.4).
     if (fFrames > 0) {
         const double elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - fStartTime)
                 .count();
-        publishPreviewFrame(elapsed, videoImage);
+        publishPreviewFrame(elapsed, videoImage, snapshot.revision);
     }
 
     // The video slot is handed back last: publishPreviewFrame's readback
@@ -1159,7 +1230,9 @@ void OutputSession::frame(uint64_t presentedFor) {
         fVideoPresenter->onPresented(videoToken, videoDone);
     }
 
-    fPresentedRevision = presentedFor;
+    if (presentedFrame) {
+        fPresentedRevision = snapshot.revision;
+    }
     fNeedsPresent = false;
     // The crossfade animates frame by frame, but this loop only presents
     // on a reason — and the M3 demo caught it sleeping the moment a fade
@@ -1180,6 +1253,26 @@ void OutputSession::frame(uint64_t presentedFor) {
         // the one honest place to sample it.
         if (fBackground != nullptr) {
             fStatus.media.position = fBackground->position();
+        }
+        // The commit (task 6.4, review R4): applied state is published
+        // only from a frame that reached the compositor, and it describes
+        // exactly what that frame drew — the staged applied fields, all
+        // written by this frame's apply* calls, plus the snapshot's
+        // revision. Queued state (pending) is recomputed against the newest
+        // accepted command, so it settles only when the audience really
+        // has it; transitioning says the committed switch has not visually
+        // settled yet.
+        if (presentedFrame) {
+            fStatus.layerMask = fAppliedMask;
+            fStatus.monitor = fAppliedMonitor;
+            fStatus.monitorName =
+                fAppliedMonitor >= 0 && fAppliedMonitor < static_cast<int>(fDisplays.size())
+                    ? fDisplays[fAppliedMonitor].name
+                    : "";
+            fStatus.scene.active = fAppliedScene;
+            fStatus.scene.transitioning = fScene && fScene->transitionRunning();
+            fStatus.scene.pending = fDesiredScene == fAppliedScene ? 0 : fDesiredScene;
+            fStatus.revision = snapshot.revision;
         }
     }
 }
@@ -1238,7 +1331,7 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
 
         bool presentNow = false;
         bool previewDue = false;
-        uint64_t presentedFor = 0;
+        FrameSnapshot snapshot;
         auto wakeAt = hardDeadline;
         {
             std::lock_guard<std::mutex> lock(fMutex);
@@ -1249,7 +1342,6 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             // The revision this frame represents, captured in the same
             // critical section as the decision and therefore ahead of
             // every apply the frame performs (see frame()'s header note).
-            presentedFor = fRevision;
             if (!presentNow && fPendingVideo && fVideoPresenter) {
                 const double clock = videoClockSecondsLocked(now);
                 if (clock >= fPendingVideo->ptsSeconds) {
@@ -1262,6 +1354,30 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
                                       fPendingVideo->ptsSeconds - clock)));
                 }
             }
+            // The capture (task 6.4): taken in the same critical section as
+            // the decision — unconditionally, because housekeeping can add
+            // a present reason after the lock — so this snapshot is
+            // everything owed as of now and nothing that arrives later.
+            // frame() draws exactly it and its successful present credits
+            // exactly its revision.
+            snapshot.revision = fRevision;
+            snapshot.mask = fDesiredMask;
+            snapshot.scene = fDesiredScene;
+            snapshot.kind = fDesiredTransition;
+            snapshot.monitor = fDesiredMonitor;
+            if (snapshot.scene != fCapturedSceneId) {
+                // Entries are immutable per id and fDesiredScene is
+                // eviction-exempt, so the lookup under this same lock is
+                // the one pin the snapshot needs (shared across all
+                // captures of one scene id).
+                const auto entry = fScenes.find(snapshot.scene);
+                fCapturedScene = entry != fScenes.end()
+                                     ? std::make_shared<const openshow::scene::Scene>(
+                                           entry->second)
+                                     : nullptr;
+                fCapturedSceneId = snapshot.scene;
+            }
+            snapshot.content = fCapturedScene;
             if (!presentNow && fStatus.preview.running &&
                 fFrames != fPreviewPublishedFrames) {
                 // A change is owed to the preview but the cadence throttled
@@ -1301,9 +1417,10 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             // joins pipeline threads that may themselves be waiting on
             // that lock, so it must not run while frame() holds it.
             // Composition and transport still switch together, directly
-            // ahead of the draw.
-            applyPendingSceneChange();
-            frame(presentedFor);
+            // ahead of the draw — both from the same snapshot the frame
+            // draws and gets credited for (task 6.4).
+            applyPendingSceneChange(snapshot);
+            frame(snapshot);
             continue;
         }
         if (previewDue) {
@@ -1314,7 +1431,10 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             if (fVideoPresenter && fDrawnVideo) {
                 held = fVideoPresenter->acquireImage(fDrawnVideo->token);
             }
-            publishPreviewFrame(elapsed, held);
+            // No present this round, so the honest tag is the revision of
+            // the last presented frame — the content a republish redraws
+            // (task 6.4: presentNow==false means nothing newer was applied).
+            publishPreviewFrame(elapsed, held, fPresentedRevision);
             continue;
         }
         const auto waitUntil = std::min(nextHousekeeping, wakeAt);
