@@ -128,6 +128,27 @@ public:
     // the count while real stalls count, as the bench's threshold did.
     void setMissedWindowMs(double ms);
 
+    // --- playback control (task 5.2) ---
+    //
+    // All thread-safe after open. Pause stops polling: the ring fills, the
+    // producer parks on it (the queue stays the bound), and on resume the
+    // pacing re-anchors media to the clock — a gap-less gap for a paused
+    // audio clock, the paused duration for a wall clock. seekTo lands on
+    // the decode thread: the demuxer jumps, the decoder flushes, the ring
+    // purges, and frames short of the target are skipped before claiming.
+    // The pacing thread drains anything polled across those steps and
+    // re-anchors at the seek target, so a seek never presents a stale
+    // frame and never trips the loop-wrap heuristic. Loop toggles live;
+    // the value at the next EOF decides rewind or finish.
+    void play();
+    void pause();
+    bool paused() const { return fPaused.load(); }
+    void seekTo(double seconds);
+    void setLoop(bool enabled);
+    // Media position presented so far (loop-continuous pts); -1 before the
+    // first submission, frozen while paused.
+    double position() const;
+
     unsigned ringDepth() const { return fDepth; }
     const media::VideoStreamInfo& streamInfo() const { return fSource.streamInfo(); }
     const std::string& decodeDescription() const { return fSource.decodeDescription(); }
@@ -149,6 +170,10 @@ public:
         uint64_t decoded = 0;
         uint64_t decodeErrors = 0;
         uint64_t loops = 0;
+        // Playback control (task 5.2).
+        uint64_t seeks = 0;          // applied by the decode thread
+        uint64_t seekDiscards = 0;   // decoded frames skipped before target
+        uint64_t ringDiscarded = 0;  // published frames purged by a seek
         uint64_t directFrames = 0;
         uint64_t downloadedFrames = 0;
         uint64_t copiedFrames = 0;
@@ -181,8 +206,8 @@ private:
     media::VideoFrameSource fSource;
     GpuYuvUploader fUploader;
     unsigned fDepth = 0;
-    bool fLoop = false;
-    double fClipSeconds = 0.0;  // probe duration; 0 = container does not say
+    std::atomic<bool> fLoop{false};  // start value and live toggle
+    double fClipSeconds = 0.0;       // probe duration; 0 = container does not say
 
     std::function<double()> fClock;                  // fStatsMutex
     std::chrono::steady_clock::time_point fClockStart;  // default clock anchor
@@ -190,7 +215,9 @@ private:
 
     std::thread fPacing;
     std::atomic<bool> fStop{false};
+    std::atomic<bool> fPaused{false};  // task 5.2 control
     bool fDecodeStarted = false;
+    double fPositionPts = -1.0;  // fStatsMutex: last submitted media pts
 
     // pts by presentation token (the slot index), stamped before the
     // submission so the render thread can never observe a frame without

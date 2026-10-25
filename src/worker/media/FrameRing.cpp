@@ -224,6 +224,23 @@ void FrameRing::release(uint32_t slot) {
     fImpl->freeCv.notify_one();
 }
 
+unsigned FrameRing::discardReady() {
+    unsigned dropped = 0;
+    {
+        std::lock_guard lock(fImpl->mutex);
+        for (const uint32_t index : fImpl->ready) {
+            fImpl->slots[index].state = SlotState::kFree;
+            ++dropped;
+        }
+        fImpl->ready.clear();
+        fImpl->stats.discarded += dropped;
+    }
+    if (dropped != 0) {
+        fImpl->freeCv.notify_all();  // a parked producer can fill again
+    }
+    return dropped;
+}
+
 void FrameRing::stop() {
     if (!fImpl) return;
     {

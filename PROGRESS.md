@@ -1995,6 +1995,70 @@ of this work.
   semantics; the 5.2 acceptance sentence is playback transitions and
   seek flushing passing tests).
 
+## Task 5.2 log (2026-10-25) — video controls, seeking and looping: DONE
+
+- **Goal**: PLAN 5.2 — "Video controls, seeking and looping; acceptance:
+  playback transitions/seek flushing pass tests". `play()`, `pause()`,
+  `seekTo()`, `setLoop()` and `position()` became real `PlaybackPipeline`
+  operations acting through the existing decode/pacing seams, not a
+  control shell beside them.
+- **Approach**:
+  - *Seek inside the decode thread*: `VideoFrameSource::requestSeek`
+    stamps the target and counts the request up; between frames the run
+    loop applies it — `av_seek_frame` BACKWARD (stream time base),
+    `avcodec_flush_buffers`, the new `FrameRing::discardReady()` purge of
+    everything visible, and a skip-until-target gate that runs **before**
+    `claim()` in `emitFrame`, so pre-target frames never occupy a slot.
+    `seekRequested()`/`seekGeneration()` are the pacing thread's flush
+    protocol: `requested != applied` means "flush in flight, drain, present
+    nothing", and the generation is published only *after* the purge, so
+    any frame polled once both counters agree post-dates the flush.
+    Consecutive requests coalesce. Loop rewind clears the skip gate.
+  - *Pause in the pacing thread*: pause stops polling, so the ring fills
+    and the producer parks on `claim()` — the queue's own bound doubles as
+    the pause parking spot, the media position holds exactly, and no
+    unbounded decode-ahead exists to become stale.
+  - *Clock re-anchoring*: pause and seek both break "pts 0 at clock 0".
+    Deadlines now run against `pts + clockOffset + loopBase`, and resume
+    or a landed seek anchors the first following frame due *now* — the
+    right shift for a running wall clock and a no-op for an audio clock
+    that paused or jumped with the media (the session's wiring, 5.4).
+    `fPtsByToken` now stores the deadline, so drift still means
+    "late relative to when it was due".
+  - *Backward-seek regression pinned*: the effective-pts loop-wrap
+    heuristic (`pts + 0.5 < lastPts`) would have read a backward seek as
+    a loop and presented at target + clip length; the landed-seek path
+    resets the wrap base instead. A dedicated scenario asserts the tail
+    stays at the target on a 4 s clip.
+  - *Live loop toggle* reaches the decode thread's EOF decision; loop-pts
+    continuity keeps working across the wrap and the toggle-off finishes
+    the clip.
+- **Decisions**: (1) the pacing thread drops at most one frame around a
+  landed seek (polled-before-purge frames cannot be told apart from fresh
+  ones by generation alone) — bounded, documented, test-tolerated with a
+  skip-one slot; (2) a seek issued while parked applies when playback
+  moves again rather than force-waking the decode thread — the parked
+  scenario pins the observable contract (nothing presents, resume shows
+  the target); (3) `seekTo` clamps negatives and the pacing thread, not
+  the source, owns the clock anchor — the pipeline never mutates the
+  injected clock; (4) `position()` is the last *submitted* effective pts
+  (frozen across pause, drops backward across a backward seek — it is
+  what the operator has seen).
+- **Checks**: new `playback_control_tests` (CPU mode, wall clock,
+  ffmpeg-CLI fixtures, skips 77 without the CLI) — five scenarios:
+  pause/resume freeze and continue with `missed==0`; forward seek
+  (seeks==1, ≥30 skipped pre-target, tail presents at target);
+  backward seek (tail ∈ [0.45, 1.1] after seeking 1.2→0.5 on the 4 s
+  clip — pins the +clip regression); seek-while-paused; loop wrap with
+  climbing effective pts then toggle-off to EOF. Ran green twice
+  back-to-back headless (a `bool ok = ... && ok` self-use in the test —
+  not the pipeline — caused the first exit-1 and is fixed). Gates:
+  desktop **23/23**, headless **14/14**. `--av-bench av-10s.mp4
+  --preview` rerun unchanged: 250 presents, **0 missed**, drift mean
+  +0.8 ms max 2.4 ms, ring peak 3/4, loops=1 with pts continuity.
+- **Next**: task **5.3** — PipeWire output and stereo mixing (independent
+  volume and mute for video audio and standalone audio files).
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -2306,17 +2370,21 @@ logged here from what is observable off screen rather than claimed as seen.
    **`M4`** on main's tip. Next milestone: **M5 — video and audio**
    (video decode/presentation, embedded and standalone audio mixed,
    volume/mute per source).
-3. **M5 is under way**: **5.1 is DONE** — the production
-   `PlaybackPipeline` (new Qt-free `playback/` library) now owns the
-   decode thread, GPU ring, paced submission and presenter role that
-   the 1.5 bench improvised; `--av-bench` is a thin driver over it with
-   parity numbers (0 missed, drift +0.8/+1.5 ms), and
-   `playback_queue_tests` pins the acceptance sentence — fixtures
-   decode without the queue growing — at depth, under a frozen clock,
-   and against a stuck presenter, on the CPU ring and the headless GPU
-   path. Gates: desktop **22/22**, headless **13/13**. Next: **5.2** —
-   video controls, seeking and looping (play/pause/seek/loop as
-   pipeline operations; flush semantics proven by tests).
+3. **M5 is under way**: **5.1 and 5.2 are DONE** — the production
+   `PlaybackPipeline` (new Qt-free `playback/` library) owns the decode
+   thread, GPU ring, paced submission and presenter role that the 1.5
+   bench improvised; `--av-bench` is a thin driver over it with parity
+   numbers (0 missed, drift +0.8/+1.5 ms), and `playback_queue_tests`
+   pins the boundedness contract at depth, under a frozen clock, and
+   against a stuck presenter. Task **5.2** made playback controllable:
+   play/pause/seek/loop are pipeline operations — the decode thread
+   applies seeks between frames (flush, ring purge, skip-before-claim),
+   the pacing thread drains stale frames across the flush and re-anchors
+   the clock at resume/seek targets, pause parks the producer on the
+   bounded ring, and `playback_control_tests` pins all five transitions
+   including the backward-seek wrap regression. Gates: desktop
+   **23/23**, headless **14/14**. Next: **5.3** — PipeWire output and
+   stereo mixing (independent volume and mute).
 4. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

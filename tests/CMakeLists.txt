@@ -166,3 +166,15 @@ target_link_libraries(playback_queue_tests PRIVATE
 )
 add_test(NAME playback_queue_tests COMMAND playback_queue_tests)
 set_tests_properties(playback_queue_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+# Task 5.2: playback controls — pause/resume freeze and re-anchor, forward
+# and backward seek flushing through the decode thread and pacing seam, a
+# parked seek, and the live loop toggle. CPU mode against the wall clock;
+# skips (77) without the ffmpeg CLI.
+add_executable(playback_control_tests playback_control_tests.cpp)
+target_link_libraries(playback_control_tests PRIVATE
+  openshow::worker_playback
+  openshow::worker_gpu
+)
+add_test(NAME playback_control_tests COMMAND playback_control_tests)
+set_tests_properties(playback_control_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)

@@ -152,6 +152,19 @@ void PlaybackPipeline::runPacing() {
     // so drift against the clock means what M5 needs it to mean.
     double lastPts = -1.0;
     double loopBase = 0.0;
+    // Clock anchoring (task 5.2): pause and seek both break the "pts 0 at
+    // clock 0" assumption, so deadlines run against pts + clockOffset.
+    // Resume and a landed seek each anchor the first following frame due
+    // *now* — correct for a wall clock (which ran while paused) and a
+    // no-op for an audio clock that paused or jumped with the media.
+    double clockOffset = 0.0;
+    bool anchorNext = false;
+    bool wasPaused = false;
+    // Seek flush: frames polled across a queued or landed seek are stale;
+    // the decode thread purges the ring and skips to the target, this
+    // thread drains what it already holds and re-anchors. A drained frame
+    // that could be the target frame itself costs at most one present.
+    uint64_t seekGen = fSource.seekGeneration();
     // Supply pacing: submit no further ahead of the clock than the session
     // can hold. The seam keeps one pending frame and drops the replaced
     // one, so the lookahead must stay under a frame interval — otherwise
@@ -160,6 +173,18 @@ void PlaybackPipeline::runPacing() {
     const double lookahead =
         frameRate > 0.0 ? std::min(0.05, std::max(0.004, 0.4 / frameRate)) : 0.015;
     while (!fStop.load()) {
+        if (fPaused.load()) {
+            // Frozen: stop polling, so the ring fills and the producer
+            // parks on it — the queue's own bound is the pause parking
+            // spot, and the media position holds exactly where it was.
+            wasPaused = true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            continue;
+        }
+        if (wasPaused) {
+            wasPaused = false;
+            anchorNext = true;
+        }
         if (!fSource.ring().poll(&frame, std::chrono::milliseconds(100))) {
             // A dead producer never publishes again: end rather than spin.
             // (The decode thread has already recorded the error.)
@@ -173,16 +198,40 @@ void PlaybackPipeline::runPacing() {
             fSource.ring().release(frame.slot);
             break;
         }
+        const uint64_t seekWanted = fSource.seekRequested();
+        const uint64_t seekNow = fSource.seekGeneration();
+        if (seekNow != seekGen) {  // a seek landed, maybe during the poll
+            seekGen = seekNow;
+            lastPts = -1.0;  // the position jumped; the loop heuristic restarts
+            anchorNext = true;
+            fSource.ring().release(frame.slot);
+            continue;
+        }
+        if (seekWanted != seekNow) {  // one is queued, not yet applied
+            fSource.ring().release(frame.slot);
+            continue;
+        }
         if (lastPts >= 0.0 && frame.ptsSeconds + 0.5 < lastPts && fClipSeconds > 0.0) {
             loopBase += fClipSeconds;  // the decoder rewound; pts restarts
         }
         lastPts = frame.ptsSeconds;
         const double pts = loopBase + frame.ptsSeconds;
+        if (anchorNext) {
+            anchorNext = false;
+            std::lock_guard<std::mutex> lock(fStatsMutex);
+            clockOffset = clockSecondsLocked(std::chrono::steady_clock::now()) - pts;
+        }
+        const double deadline = pts + clockOffset;
         // Hold the frame near its presentation time before offering it
         // (small sleeps; the stop flag cuts them short). Holding *here* —
         // one frame in flight, the rest parked in the bounded ring — is
         // what keeps the queue from growing when the clock stalls.
+        bool abandoned = false;
         while (!fStop.load()) {
+            if (fPaused.load() || fSource.seekRequested() != fSource.seekGeneration()) {
+                abandoned = true;  // a control op arrived; this frame is history
+                break;
+            }
             std::chrono::steady_clock::time_point now;
             double clockSeconds;
             {
@@ -190,17 +239,22 @@ void PlaybackPipeline::runPacing() {
                 now = std::chrono::steady_clock::now();
                 clockSeconds = clockSecondsLocked(now);
             }
-            if (clockSeconds >= pts - lookahead) {
+            if (clockSeconds >= deadline - lookahead) {
                 break;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        if (!fStop.load()) {
+        if (fStop.load()) {
+            fSource.ring().release(frame.slot);
+            break;
+        }
+        if (!abandoned) {
             {
                 std::lock_guard<std::mutex> lock(fStatsMutex);
                 if (frame.slot < fPtsByToken.size()) {
-                    fPtsByToken[frame.slot] = pts;
+                    fPtsByToken[frame.slot] = deadline;  // drift against the clock
                 }
+                fPositionPts = pts;  // media position, frozen while paused
                 ++fSubmitted;
             }
             VideoSubmission submission;
@@ -208,6 +262,15 @@ void PlaybackPipeline::runPacing() {
             submission.ptsSeconds = pts;
             submission.sequence = frame.sequence;
             fSubmit(submission);
+        } else {
+            // Re-check like a fresh poll would: a seek that landed while
+            // holding must still flush and re-anchor.
+            const uint64_t seekAfter = fSource.seekGeneration();
+            if (seekAfter != seekGen) {
+                seekGen = seekAfter;
+                lastPts = -1.0;
+                anchorNext = true;
+            }
         }
         // Return the ring slot immediately: the presentation token lives
         // on through the GPU seam. In GPU mode the producer may rewrite
@@ -303,6 +366,30 @@ void PlaybackPipeline::setMissedWindowMs(double ms) {
     fMissedWindowMs = ms;
 }
 
+// --- playback control (task 5.2) ---
+
+void PlaybackPipeline::play() {
+    fPaused.store(false);
+}
+
+void PlaybackPipeline::pause() {
+    fPaused.store(true);
+}
+
+void PlaybackPipeline::seekTo(double seconds) {
+    fSource.requestSeek(seconds < 0.0 ? 0.0 : seconds);
+}
+
+void PlaybackPipeline::setLoop(bool enabled) {
+    fLoop.store(enabled);
+    fSource.setLoopEnabled(enabled);
+}
+
+double PlaybackPipeline::position() const {
+    std::lock_guard<std::mutex> lock(fStatsMutex);
+    return fPositionPts;
+}
+
 PlaybackPipeline::Stats PlaybackPipeline::stats() const {
     Stats out;
     out.ringDepth = fDepth;
@@ -310,10 +397,13 @@ PlaybackPipeline::Stats PlaybackPipeline::stats() const {
     out.ringPeakFilled = ring.peakFilled;
     out.ringPublished = ring.published;
     out.ringConsumed = ring.consumed;
+    out.ringDiscarded = ring.discarded;
     const auto decoded = fSource.stats();
     out.decoded = decoded.framesProduced;
     out.decodeErrors = decoded.decodeErrors;
     out.loops = decoded.loops;
+    out.seeks = decoded.seeks;
+    out.seekDiscards = decoded.seekDiscards;
     out.directFrames = decoded.directFrames;
     out.downloadedFrames = decoded.downloadedFrames;
     out.copiedFrames = decoded.copiedFrames;

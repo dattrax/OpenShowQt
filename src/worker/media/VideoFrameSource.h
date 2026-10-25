@@ -81,11 +81,33 @@ public:
     void requestStop();
     void join();
 
+    // --- playback control (task 5.2) ---
+
+    // Seeks are applied by the decode thread between frames: the demuxer
+    // jumps to the keyframe at or before `seconds`, the decoder flushes,
+    // frames already published are purged from the ring, and decoded
+    // frames still short of the target are skipped before their slot is
+    // claimed. Thread-safe any time; a producer parked on a full ring is
+    // parked for the seek too — it applies as soon as it moves again.
+    void requestSeek(double seconds);
+    // Requests received vs. seeks applied. Both count up; a consumer sees
+    // applied != its tracked value right after a flush, and
+    // requested != applied while one is queued but not yet applied.
+    uint64_t seekRequested() const { return fSeekRequested.load(); }
+    uint64_t seekGeneration() const { return fSeekGeneration.load(); }
+
+    // Loop live-toggle: the value at the next EOF decides whether the
+    // thread rewinds to the start or finishes the clip.
+    void setLoopEnabled(bool enabled) { fLoop = enabled; }
+    bool loopEnabled() const { return fLoop.load(); }
+
     struct Stats {
         uint64_t packetsRead = 0;
         uint64_t framesProduced = 0;
         uint64_t decodeErrors = 0;
         uint64_t loops = 0;
+        uint64_t seeks = 0;          // applied by the decode thread
+        uint64_t seekDiscards = 0;   // decoded frames skipped before target
         uint64_t directFrames = 0;
         uint64_t downloadedFrames = 0;
         uint64_t copiedFrames = 0;
@@ -132,6 +154,14 @@ private:
     std::thread fThread;
     std::atomic<bool> fLoop{false};
     std::atomic<bool> fThreadWanted{false};
+    // Seek request queue: requestSeek() stamps the target under the mutex
+    // and then counts the request up; the decode thread reads the count,
+    // then the target under the same mutex, so a counted request always
+    // carries its seconds. Consecutive requests coalesce to the last.
+    std::mutex fSeekMutex;
+    double fPendingSeekSeconds = 0.0;
+    std::atomic<uint64_t> fSeekRequested{0};
+    std::atomic<uint64_t> fSeekGeneration{0};
     mutable std::mutex fStatsMutex;
     Stats fStats;
 };

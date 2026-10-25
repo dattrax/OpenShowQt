@@ -105,6 +105,13 @@ public:
     // or shutdown between claim and publish).
     void abortClaim(uint32_t slot);
 
+    // Playback control (task 5.2): discards every currently visible frame,
+    // returning its slot to the free pool, and returns how many. A frame
+    // the consumer already polled is untouched — it knows to drop it from
+    // the seek generation instead. A consumer parked in poll() keeps
+    // waiting: after a purge the queue legitimately holds nothing yet.
+    unsigned discardReady();
+
     // --- consumer (one thread) ---
 
     // Waits up to `timeout` for the oldest visible frame; the slot is then
@@ -124,6 +131,7 @@ public:
     struct Stats {
         uint64_t published = 0;   // frames made visible
         uint64_t consumed = 0;    // frames handed to the consumer
+        uint64_t discarded = 0;   // frames purged by discardReady()
         uint64_t peakFilled = 0;  // high-water of visible-but-unconsumed
     };
     Stats stats() const;

@@ -290,6 +290,23 @@ void VideoFrameSource::close() {
     fDecodeAllocations.clear();
     fThreadWanted = false;
     fLoop = false;
+    fSeekRequested = 0;
+    fSeekGeneration = 0;
+    std::lock_guard seekLock(fSeekMutex);
+    fPendingSeekSeconds = 0.0;
+}
+
+void VideoFrameSource::requestSeek(double seconds) {
+    {
+        std::lock_guard lock(fSeekMutex);
+        fPendingSeekSeconds = seconds > 0.0 ? seconds : 0.0;
+    }
+    // Release-ordered count: the decode thread acquires it before reading
+    // the target back under the mutex.
+    fSeekRequested.fetch_add(1);
+    // A producer parked on a full ring keeps the seek queued until the
+    // consumer moves again (documented); nothing here may touch the ring,
+    // which a concurrent claim() owns.
 }
 
 bool VideoFrameSource::startDecode(bool loop, std::string* error) {
@@ -534,8 +551,32 @@ void VideoFrameSource::run() {
     };
 
     int receivedFormat = AV_PIX_FMT_NONE;
+    // Seek skip state (task 5.2), decode-thread-local: while skipping,
+    // frames decoded short of the seek target never claim a ring slot.
+    bool seekSkipping = false;
+    double seekSkipTo = 0.0;
+    const double skipEpsilon =
+        fStreamInfo.frameRate > 0.0 ? 0.5 / fStreamInfo.frameRate : 0.02;
     // Direct-path and format/size failures are terminal; never silently stage.
     auto emitFrame = [&](AVFrame* decoded) -> bool {
+        // The pts is read up front: the seek skip must run before the
+        // claim, so a dropped frame never parks on a slot it will free.
+        const int64_t ptsRaw = decoded->best_effort_timestamp != AV_NOPTS_VALUE
+                                   ? decoded->best_effort_timestamp
+                                   : decoded->pts;
+        const double ptsSeconds =
+            ptsRaw != AV_NOPTS_VALUE ? static_cast<double>(ptsRaw) * fTimeBaseSeconds
+                                     : fSyntheticPtsSeconds;
+        if (seekSkipping) {
+            // BACKWARD lands on a keyframe before the target; keep the
+            // first frame that reaches it (within half a frame interval).
+            if (ptsSeconds + skipEpsilon < seekSkipTo) {
+                fSyntheticPtsSeconds = ptsSeconds + fSyntheticStepSeconds;
+                bump([](Stats& s) { ++s.seekDiscards; });
+                return true;
+            }
+            seekSkipping = false;
+        }
         // Direct mode attaches the existing decoder allocation to a token;
         // compatibility writes the token's separate staging buffers.
         VideoFrame out;
@@ -643,12 +684,7 @@ void VideoFrameSource::run() {
             bump([](Stats& s) { s.decodeErrors++; });
             return true;
         }
-        const int64_t pts = decoded->best_effort_timestamp != AV_NOPTS_VALUE
-                                ? decoded->best_effort_timestamp
-                                : decoded->pts;
-        out.ptsSeconds =
-            pts != AV_NOPTS_VALUE ? static_cast<double>(pts) * fTimeBaseSeconds
-                                  : fSyntheticPtsSeconds;
+        out.ptsSeconds = ptsSeconds;
         fSyntheticPtsSeconds = out.ptsSeconds + fSyntheticStepSeconds;
         if (!fRing.publish(out)) {
             // The backing's commit refused the slot. Teardown releases a
@@ -697,6 +733,37 @@ void VideoFrameSource::run() {
         if (fThreadWanted && !drain(false)) fThreadWanted = false;
     }
     while (fThreadWanted.load()) {
+        // Apply a queued seek between frames (task 5.2): the demuxer jumps
+        // to the keyframe at or before the target, the decoder flushes,
+        // and everything already published is purged so no pre-seek frame
+        // survives. The generation count only rises after the purge, and
+        // skip-until-target starts here — the pacing thread treats
+        // requested != applied as "flush in progress" and presents nothing
+        // from the old position in between.
+        const uint64_t seekWanted = fSeekRequested.load();
+        if (seekWanted != fSeekGeneration.load()) {
+            double target = 0.0;
+            {
+                std::lock_guard lock(fSeekMutex);
+                target = fPendingSeekSeconds;
+            }
+            const int64_t seekTs = fTimeBaseSeconds > 0.0
+                                       ? static_cast<int64_t>(target / fTimeBaseSeconds)
+                                       : 0;
+            if (av_seek_frame(format, fVideoStreamIndex, seekTs, AVSEEK_FLAG_BACKWARD) < 0) {
+                failDecode("video seek failed");
+                break;
+            }
+            avcodec_flush_buffers(decoder);
+            fSyntheticPtsSeconds = 0.0;
+            seekSkipping = true;
+            seekSkipTo = target;
+            fRing.discardReady();
+            bump([](Stats& s) { ++s.seeks; });
+            // Requests that queued while applying coalesce into this one.
+            fSeekGeneration.store(fSeekRequested.load());
+            continue;
+        }
         AVPacket* packet = av_packet_alloc();
         const int readResult = av_read_frame(format, packet);
         if (readResult >= 0) {
@@ -727,6 +794,7 @@ void VideoFrameSource::run() {
                 if (av_seek_frame(format, fVideoStreamIndex, 0, AVSEEK_FLAG_BACKWARD) >= 0) {
                     avcodec_flush_buffers(decoder);
                     fSyntheticPtsSeconds = 0.0;
+                    seekSkipping = false;  // a rewind restarts the clip at 0
                     bump([](Stats& s) { s.loops++; });
                     continue;
                 }
