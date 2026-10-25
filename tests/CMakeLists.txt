@@ -190,3 +190,19 @@ target_link_libraries(audio_mix_tests PRIVATE
 )
 add_test(NAME audio_mix_tests COMMAND audio_mix_tests)
 set_tests_properties(audio_mix_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+# Task 5.4: playback clocks and synchronization — AudioClock transport
+# primitives, a real-chain feeder seek (feeder -> mixer -> paced fake
+# device over an internally written pattern wav: the stale queue is
+# flushed and the target region is heard), AvPlayer on the monotonic
+# fallback, and AvPlayer's live transport (pause holds, play continues,
+# seek rebases) against the PipeWire daemon — the live scenario reports
+# an honest skip when there is no daemon.
+add_executable(av_sync_tests av_sync_tests.cpp)
+target_link_libraries(av_sync_tests PRIVATE
+  openshow::worker_playback
+  openshow::worker_media
+  PkgConfig::FFMPEG
+)
+add_test(NAME av_sync_tests COMMAND av_sync_tests)
+set_tests_properties(av_sync_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)

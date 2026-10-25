@@ -71,6 +71,13 @@ size_t AudioMixer::write(int input, const float* interleavedStereo, size_t frame
     return taken;
 }
 
+void AudioMixer::requestInputFlush(int input) {
+    if (input < 0 || input >= static_cast<int>(fInputCount)) {
+        return;
+    }
+    fInputs[input]->flushRequested.store(true, std::memory_order_release);
+}
+
 bool AudioMixer::start(WriteFn out, uint32_t rate, std::string* error) {
     if (!out) {
         if (error) *error = "AudioMixer needs a write callback";
@@ -123,11 +130,21 @@ void AudioMixer::run() {
             if (gain[i] < 0.0f) {
                 gain[i] = target;  // first block: start at the set level
             }
+            // A transport flush drops queued-but-unmixed content before
+            // this input's next read; the resulting short block is not
+            // starvation, so the flag keeps that counter honest.
+            const bool flushed = input.flushRequested.exchange(false, std::memory_order_relaxed);
+            if (flushed) {
+                input.ring.dropAll();
+                input.flushes.fetch_add(1, std::memory_order_relaxed);
+            }
             const size_t filled = input.ring.read(readScratch.data(), blockFrames);
             if (filled < blockFrames) {
                 std::memset(readScratch.data() + filled * 2, 0,
                             (blockFrames - filled) * 2 * sizeof(float));
-                input.starvedBlocks.fetch_add(1, std::memory_order_relaxed);
+                if (!flushed) {
+                    input.starvedBlocks.fetch_add(1, std::memory_order_relaxed);
+                }
             }
             input.framesMixed.fetch_add(filled, std::memory_order_relaxed);
 
@@ -193,6 +210,7 @@ AudioMixer::Stats AudioMixer::stats() const {
         out.input[i].framesWritten = fInputs[i]->framesWritten.load(std::memory_order_relaxed);
         out.input[i].framesMixed = fInputs[i]->framesMixed.load(std::memory_order_relaxed);
         out.input[i].starvedBlocks = fInputs[i]->starvedBlocks.load(std::memory_order_relaxed);
+        out.input[i].flushes = fInputs[i]->flushes.load(std::memory_order_relaxed);
     }
     std::lock_guard<std::mutex> lock(fStatsMutex);
     out.blocks = fBlocks;

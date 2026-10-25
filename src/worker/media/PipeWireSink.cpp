@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <mutex>
@@ -62,6 +63,15 @@ struct PipeWireSink::Impl {
 
     std::atomic<uint32_t> negotiatedRate{0};
 
+    // Transport (task 5.4). The stream starts inactive; resume()/pause()
+    // toggle server consumption (and the clock's frozen state together
+    // with it). The flush request is answered by the process callback,
+    // which owns the ring's consumer end.
+    std::atomic<bool> activeFlag{false};
+    std::atomic<bool> pausedFlag{false};
+    std::atomic<bool> flushRequested{false};
+    std::atomic<uint64_t> flushes{0};
+
     // Written only by the PipeWire data thread; relaxed loads elsewhere.
     std::atomic<uint64_t> callbacks{0};
     std::atomic<uint64_t> underrunEvents{0};
@@ -69,11 +79,17 @@ struct PipeWireSink::Impl {
     std::atomic<int64_t> lastProcessNs{-1};
     std::array<std::atomic<uint32_t>, kHistogramBuckets> intervals{};
 
-    bool start(uint32_t preferredRate, std::string* error);
+    bool start(uint32_t preferredRate, std::string* error, size_t capacityFrames);
     void stop();
     void process();
     void stateChanged(enum pw_stream_state state);
     void paramChanged(uint32_t id, const spa_pod* param);
+    // Activation is a control operation: PipeWire refuses it from foreign
+    // threads ("called from wrong context"), so it runs under the loop's
+    // control lock — the same discipline pw_thread_loop users get from
+    // pw_thread_loop_lock(). The lock is re-entrant for the owner, so the
+    // loop thread itself (or a stream callback) may call this too.
+    int setStreamActive(bool active);
 
     double p99Ms() const {
         uint64_t total = 0;
@@ -94,15 +110,14 @@ struct PipeWireSink::Impl {
     }
 };
 
-bool PipeWireSink::Impl::start(uint32_t preferredRate, std::string* error) {
+bool PipeWireSink::Impl::start(uint32_t preferredRate, std::string* error,
+                               size_t capacityFrames) {
     // pw_init is process-wide; nothing de-inits it, same as every long-lived
     // client application does.
     static std::once_flag pwOnce;
     std::call_once(pwOnce, [] { pw_init(nullptr, nullptr); });
 
-    // Two seconds of slack: enough for a feeder hiccup to stay inaudible,
-    // small enough that start-up latency after a drop stays visible.
-    if (!ring.create(static_cast<size_t>(preferredRate) * 2)) {
+    if (!ring.create(capacityFrames)) {
         if (error) {
             *error = "could not allocate the audio ring";
         }
@@ -174,7 +189,8 @@ bool PipeWireSink::Impl::start(uint32_t preferredRate, std::string* error) {
 
     const int rc = pw_stream_connect(
         stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
-        static_cast<enum pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS),
+        static_cast<enum pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
+                                          PW_STREAM_FLAG_INACTIVE),
         &param, 1);
     if (rc < 0) {
         if (error) {
@@ -232,6 +248,21 @@ bool PipeWireSink::Impl::start(uint32_t preferredRate, std::string* error) {
     return true;
 }
 
+int PipeWireSink::Impl::setStreamActive(bool active) {
+    if (!stream) {
+        return -EINVAL;
+    }
+    struct pw_loop* control = loop ? pw_main_loop_get_loop(loop) : nullptr;
+    if (control) {
+        pw_loop_lock(control);  // blocks until the loop thread yields control
+    }
+    const int res = pw_stream_set_active(stream, active);
+    if (control) {
+        pw_loop_unlock(control);
+    }
+    return res;
+}
+
 void PipeWireSink::Impl::stop() {
     if (loopThread.joinable()) {
         pw_main_loop_quit(loop);  // thread-safe by contract
@@ -263,6 +294,12 @@ void PipeWireSink::Impl::stop() {
 }
 
 void PipeWireSink::Impl::process() {
+    // A transport flush belongs to this thread: it owns the ring's
+    // consumer end, so discarding queued-but-unheard audio is safe here.
+    if (flushRequested.exchange(false, std::memory_order_relaxed)) {
+        ring.dropAll();
+        flushes.fetch_add(1, std::memory_order_relaxed);
+    }
     struct pw_buffer* buffer = pw_stream_dequeue_buffer(stream);
     if (!buffer) {
         // The server needed a buffer we could not be given: that is its own
@@ -321,6 +358,14 @@ void PipeWireSink::Impl::stateChanged(enum pw_stream_state state) {
         case PW_STREAM_STATE_STREAMING:
             waitResult = Wait::kStreaming;
             break;
+        case PW_STREAM_STATE_PAUSED:
+            // The stream connects INACTIVE (task 5.4): PAUSED is where a
+            // connected, not-yet-resumed stream settles, so readiness —
+            // and negotiation — completes here.
+            if (waitResult == Wait::kNothing) {
+                waitResult = Wait::kStreaming;
+            }
+            break;
         case PW_STREAM_STATE_ERROR:
             waitResult = Wait::kFailed;
             failure = "PipeWire stream error";
@@ -355,8 +400,8 @@ PipeWireSink::~PipeWireSink() {
     fImpl->stop();
 }
 
-bool PipeWireSink::start(uint32_t preferredRate, std::string* error) {
-    return fImpl->start(preferredRate, error);
+bool PipeWireSink::start(uint32_t preferredRate, std::string* error, size_t capacityFrames) {
+    return fImpl->start(preferredRate, error, capacityFrames);
 }
 
 void PipeWireSink::stop() {
@@ -375,6 +420,71 @@ const AudioClock& PipeWireSink::clock() const {
     return fImpl->clock;
 }
 
+void PipeWireSink::resume() {
+    Impl& impl = *fImpl;
+    if (!impl.stream) {
+        return;
+    }
+    const bool wasPaused = impl.pausedFlag.exchange(false, std::memory_order_acq_rel);
+    const bool wasActive = impl.activeFlag.load(std::memory_order_relaxed);
+    if (wasPaused) {
+        // Continuing from pause(): fold the stale-extrapolation overshoot
+        // into the clock offset so the position continues from the hold.
+        impl.clock.resume();
+    } else if (!wasActive) {
+        // First activation (the stream connected INACTIVE): the media
+        // clock starts exactly now, with the ring pre-filled by the
+        // owner so the first frame the server pulls is real content.
+        impl.clock.anchor();
+    }
+    const int res = impl.setStreamActive(true);
+    if (res < 0) {
+        // Do not claim an activation the server refused (silent failure
+        // here was the original 5.4 bug): rewind the transport flags.
+        std::fprintf(stderr, "openshow-worker: sink: activation failed (%s)\n",
+                     pwErrorText(res).c_str());
+        impl.pausedFlag.store(wasPaused, std::memory_order_release);
+        if (wasPaused) {
+            impl.clock.pause();  // re-latches essentially the same hold
+        }
+        return;
+    }
+    impl.activeFlag.store(true, std::memory_order_release);
+}
+
+void PipeWireSink::pause() {
+    Impl& impl = *fImpl;
+    if (!impl.stream) {
+        return;
+    }
+    // Freeze the clock before deactivating: stream time stops advancing
+    // once the server stops the stream, but the clock's extrapolation
+    // would not, so the hold must latch the current position first.
+    impl.clock.pause();
+    impl.pausedFlag.store(true, std::memory_order_release);
+    const int res = impl.setStreamActive(false);
+    if (res < 0) {
+        std::fprintf(stderr, "openshow-worker: sink: deactivation failed (%s)\n",
+                     pwErrorText(res).c_str());
+        impl.pausedFlag.store(false, std::memory_order_release);
+        impl.clock.resume();
+        return;
+    }
+    impl.activeFlag.store(false, std::memory_order_release);
+}
+
+bool PipeWireSink::active() const {
+    return fImpl->activeFlag.load(std::memory_order_acquire);
+}
+
+void PipeWireSink::requestFlush() {
+    fImpl->flushRequested.store(true, std::memory_order_release);
+}
+
+void PipeWireSink::rebaseClock(double mediaSeconds) {
+    fImpl->clock.rebase(mediaSeconds);
+}
+
 PipeWireSink::Stats PipeWireSink::stats() const {
     Stats out;
     out.negotiatedRate = fImpl->negotiatedRate.load(std::memory_order_relaxed);
@@ -382,6 +492,8 @@ PipeWireSink::Stats PipeWireSink::stats() const {
     out.callbacks = fImpl->callbacks.load(std::memory_order_relaxed);
     out.underrunEvents = fImpl->underrunEvents.load(std::memory_order_relaxed);
     out.underrunFrames = fImpl->underrunFrames.load(std::memory_order_relaxed);
+    out.flushes = fImpl->flushes.load(std::memory_order_relaxed);
+    out.active = fImpl->activeFlag.load(std::memory_order_relaxed);
     out.callbackP99Ms = fImpl->p99Ms();
     out.clockSeconds = fImpl->clock.clockSeconds();
     out.wallSeconds = fImpl->clock.wallElapsedSeconds();

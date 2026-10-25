@@ -72,6 +72,7 @@ target_include_directories(openshow-worker-media PUBLIC ${CMAKE_CURRENT_SOURCE_D
 # neither the worker's main() nor a window.
 add_library(openshow-worker-playback STATIC
   playback/PlaybackPipeline.cpp
+  playback/AvPlayer.cpp
 )
 add_library(openshow::worker_playback ALIAS openshow-worker-playback)
 target_link_libraries(openshow-worker-playback PUBLIC

@@ -40,6 +40,15 @@ public:
     // caller zero-fills the remainder (that shortfall is an underrun).
     size_t read(float* interleavedStereo, size_t frames);
 
+    // Consumer thread only (task 5.4): discards everything unread. Safe
+    // against the producer because tail never moves past head and the
+    // producer re-reads tail before computing free space. A write racing
+    // the drop either lands in the freed space and survives (one block
+    // of fuzziness at a flush boundary — every real flusher follows the
+    // drop with its own seek/quiet), or is dropped along with the queue.
+    void dropAll() { fTail.store(fHead.load(std::memory_order_acquire),
+                                 std::memory_order_release); }
+
 private:
     std::vector<float> fSamples;  // 2 * capacity
     size_t fCapacity = 0;

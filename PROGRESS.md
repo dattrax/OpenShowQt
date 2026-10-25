@@ -2128,6 +2128,97 @@ of this work.
   session's A/V sync: audio clock drives video, acceptance: A/V timing
   meets the PLAN targets).
 
+## Task 5.4 log (2026-10-25) — playback clocks and synchronization: DONE
+
+- **Goal**: PLAN 5.4 — "Playback clocks and synchronization; acceptance:
+  A/V timing meets the targets" (M5 checkpoint: audio clock when audio
+  is present, monotonic otherwise; steady A/V offset < 50 ms, < 1%
+  missed deadlines). Graduated into production `openshow::worker::AvPlayer`
+  (Qt-free, `playback/`): the one component that owns sink + mixer +
+  feeders + attached pipelines as a transport, so `--av-bench` drives
+  real seams rather than bench glue.
+- **Approach** — the sync invariant, expressed as start order:
+  - *Queue depth is latency, never skew*: the sink connects with
+    `PW_STREAM_FLAG_INACTIVE`, the server consumes nothing until
+    `resume()`. Start order is sink (inactive) → feeders → pre-roll
+    (every feeder has written ≥ `preRollFrames`, default 100 ms, within
+    a ≤ 2 s window) → mixer → `sink.resume()` — and resume is exactly
+    where the media clock anchors, so the first frame the server pulls
+    is real content at the clock's zero. Against the 5.3 baseline (which
+    pre-filled ~2 s of silence, `starved=201`) the audience now hears
+    content from frame one: `starved=0`.
+  - *Pause/resume never flush*: pause freezes the clock first, then
+    deactivates the stream; the bounded rings park the feeders and that
+    pile-up IS the seamless continuation. Flushing on resume would punch
+    a hole of exactly the unheard queue.
+  - *Seek is the only re-anchor*: `AudioFileFeeder::requestSeek` (latest
+    request wins) applies on the decode thread — backward container seek,
+    decoder flush, resampler rebuild, pre-target frames resampled into
+    silence and counted (`seekDiscards`), never dropped; the emit retry
+    loop aborts on a pending seek so a sprinting feeder parked on a full
+    ring cannot delay it. The feeder's `seeked` callback fires at the
+    instant it is quiet — the race-free moment for the owner to drop that
+    input's queue via `AudioMixer::requestInputFlush` (mix-thread side,
+    counted as flush not starvation, consumer-side `AudioRing::dropAll`).
+    After all feeders report `waitSeekApplied`, AvPlayer flushes the
+    sink queue (lands on the next process callback; while paused, on
+    resume — disclosed fuzz: ≤ 1 mix block + 1 server slice at a flush
+    boundary, transient) and rebases the clock to the target.
+  - *Clock transport*: `AudioClock` gained pause/resume/rebase/anchor —
+    pause latches `raw − offset`, resume folds the stale-extrapolation
+    overshoot into the offset so the position continues from the hold
+    without a jump; a rebase while paused sets the hold only. With no
+    daemon (`enableSink=false`) one monotonic clock anchored at start
+    drives everything — degrade, never fail.
+- **Live bug found while proving this**: `pw_stream_set_active` from a
+  foreign thread fails EPERM ("called from wrong context") and *silently*
+  left the stream state unchanged — activation is now marshalled under
+  the main loop's control lock (`pw_loop_lock` /
+  `pw_main_loop_get_loop`), the discipline `pw_thread_loop_lock` gives
+  PipeWire apps, and `AvPlayer` mirrors `sink.active()` rather than
+  claiming an activation the server refused (refusals warn to stderr and
+  rewind the transport flags).
+- **Machine-level finding** (explains days of flaky "hangs" and garbage
+  diagnostics): this box's glibc 2.44.9000/kernel 7.3.0-rc7 futex path
+  intermittently starves a `std::mutex` waiter for **6–142 s** behind a
+  10 ms holder cycle — gdb caught the process in `__lll_lock_wait` while
+  the holder cycled normally; simple ping-pong benches stay clean, no RT
+  pressure, no throttling, no seccomp, no sched_ext. The test's
+  mutex-guarded capture vector hit it (and a `printf("%.0f",
+  int64.count())` UB-format beside it manufactured the red herring). The
+  fake device now captures **lock-free** (preallocated 60 s buffer +
+  atomic published watermark — the production SPSC discipline); no
+  production data path needed touching. Future threaded tests must not
+  capture through a per-block mutex-guarded growing vector.
+- **Checks**: new `av_sync_tests` (ctest, both presets): four layers —
+  clock transport primitives (hold exact under delivered-frame and
+  wall-time growth, resume ±20 ms, rebase lands also while paused,
+  stream-time path obeys the same transport); real-chain feeder seek
+  (feeder → mixer → paced fake device over a loud/silence/tone pattern
+  wav: post-seek capture RMS 0.0000 at the silence target, 0.354 at the
+  tone target, seeks and flushes counted, dead-thread wait returns false
+  < 250 ms); `AvPlayer` on the monotonic fallback (silent-start, volume
+  pass-through, transport flags honest); live transport (server pulling,
+  clock advancing with consumption, underruns ≪ 0.5 s, pause holds
+  ±2 ms, seamless resume without a jump, seek rebase + flush answered,
+  paused-seek flush landing on resume; loop-off proof is the free-running
+  feeder reaching eof). Live assertions matched to the real slice
+  cadence (~200 ms slices on the 24000-frame sink ring). **60 checks
+  green, 5×5 back-to-back runs.** Gates: desktop **25/25**, headless
+  **16/16**.
+- **Live reruns against the acceptance numbers**: 60 s
+  `--av-bench av-10s.mp4 --preview`: presents=1501 **missed 1 (0.07% <
+  1%)**, drops 0, drift mean **+0.6 ms** max 37.0 ms (**< 50 ms**), sink
+  underruns **0** (235 callbacks), mixer starved **0** (was 201); 30 s
+  `--second-audio probe.wav`: missed 1/751, underruns 0, both inputs
+  starved=0; `--pw-check`: underruns 0, clock-vs-wall drift −18.8 ms.
+  300 s soak (`--av-bench av-10s.mp4 --preview --seconds 300`):
+  presents=7501 **missed 1 (0.013%)**, drops 0, drift mean **+0.6 ms**
+  max 37.3 ms, sink underruns **0** (1172 callbacks), starved **0**
+  across 30 loops.
+- **Next**: task **5.5** — preload, continuous backgrounds, error
+  handling (lyrics preserve playback; failures are visible).
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -2439,7 +2530,7 @@ logged here from what is observable off screen rather than claimed as seen.
    **`M4`** on main's tip. Next milestone: **M5 — video and audio**
    (video decode/presentation, embedded and standalone audio mixed,
    volume/mute per source).
-3. **M5 is under way**: **5.1, 5.2 and 5.3 are DONE**. 5.1 graduated
+3. **M5 is under way**: **5.1, 5.2, 5.3 and 5.4 are DONE**. 5.1 graduated
    the bench glue into the production `PlaybackPipeline` (Qt-free
    `playback/` library: decode thread, GPU ring, paced submission,
    presenter role), with `playback_queue_tests` pinning boundedness.
@@ -2455,10 +2546,21 @@ logged here from what is observable off screen rather than claimed as seen.
    clickless ramp (max jump 0.0004), starvation safety and live
    independent mute at the real decode seam (RMS 0.768→0.300→0.768),
    and `--av-bench --second-audio` proves the live two-input PipeWire
-   path (underruns 0, 0 missed). Gates: desktop **24/24**, headless
-   **15/15**. Next: **5.4** — playback clocks and synchronization (the
-   session's A/V sync against the audio clock; PLAN acceptance: A/V
-   timing meets the targets).
+   path (underruns 0, 0 missed). 5.4 graduated the transport itself
+   into `openshow::worker::AvPlayer` (sink + mixer + feeders +
+   pipelines): INACTIVE connect with pre-roll-then-`resume()` as the
+   clock anchor (queue depth is latency, never skew), pause/resume
+   that never flush, seek as the only re-anchor (feeder `seeked`
+   callback → per-input queue drop → sink flush → clock rebase), the
+   loop-locked `pw_stream_set_active` marshal (foreign-thread
+   activation silently fails with EPERM — real bug, fixed), and a
+   monotonic fallback clock without a daemon; `av_sync_tests` (60
+   checks, both presets) plus live reruns met the M5 targets: 60 s run
+   missed 1/1501 (0.07% < 1%), drift mean +0.6 ms max 37.0 ms (< 50
+   ms), sink underruns 0, mixer starved 0 (was 201). Gates: desktop
+   **25/25**, headless **16/16**. Next: **5.5** — preload, continuous
+   backgrounds, error handling (lyrics preserve playback; failures are
+   visible).
 4. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

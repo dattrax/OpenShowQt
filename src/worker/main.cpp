@@ -40,6 +40,7 @@
 #include "media/MediaProbe.h"
 #include "media/AudioMixer.h"
 #include "media/PipeWireSink.h"
+#include "playback/AvPlayer.h"
 
 #include "include/core/SkGraphics.h"
 #include "include/core/SkImageInfo.h"
@@ -285,6 +286,13 @@ int runPipeWireCheck(double seconds) {
         }
     });
 
+    // The stream connects inactive (task 5.4): let the feeder put real
+    // audio in the ring first, then wake the server — the pre-roll
+    // discipline AvPlayer applies, so the callbacks never read a silent
+    // head. resume() also anchors the clock here.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    sink.resume();
+
     const double warmup = seconds > 1.5 ? 0.5 : 0.0;
     std::this_thread::sleep_for(std::chrono::duration<double>(warmup));
     const auto steadyStart = sink.stats();
@@ -374,84 +382,30 @@ int runAvBench(const std::string& path, const std::string& secondAudio, int moni
         return 1;
     }
 
-    openshow::media::PipeWireSink sink;
-    openshow::media::AudioMixer mixer;
-    openshow::media::AudioFileFeeder feeder;
-    openshow::media::AudioFileFeeder extraFeeder;
-    bool audio = false;  // the sink clock paces video
+    // Task 5.4: the audio path is the production AvPlayer (sink + mixer +
+    // feeders, inactive-start with pre-roll and flush-at-resume); the
+    // bench keeps only the clock hand-off and reporting.
+    openshow::worker::AvPlayer player;
     if (useAudio) {
         const bool wantVideo =
             !info.audioStreams.empty() && info.audioStreams.front().decoderAvailable;
-        const bool wantExtra = !secondAudio.empty();
-        if (!wantVideo && !wantExtra) {
-            std::fprintf(stderr, "openshow-worker: av-bench: no decodable audio stream, "
-                                 "pacing on the wall clock\n");
-        } else if (!sink.start(48000, &error)) {
-            std::fprintf(stderr,
-                         "openshow-worker: av-bench: PipeWire unavailable (%s), "
-                         "pacing on the wall clock\n",
+        openshow::worker::AvPlayer::Config audioConfig;
+        audioConfig.videoAudioPath = wantVideo ? path : "";
+        audioConfig.secondAudioPath = secondAudio;
+        audioConfig.loop = true;  // the bench runs until told to stop
+        if (!player.start(audioConfig, &error)) {
+            std::fprintf(stderr, "openshow-worker: av-bench: audio player: %s, "
+                                 "pacing on the monotonic clock\n",
                          error.c_str());
-        } else {
-            const uint32_t rate =
-                sink.negotiatedRate() != 0 ? sink.negotiatedRate() : 48000;
-            const int videoInput = wantVideo ? mixer.addInput()
-                                             : openshow::media::AudioMixer::kNoInput;
-            const int extraInput = wantExtra ? mixer.addInput()
-                                             : openshow::media::AudioMixer::kNoInput;
-            if (!mixer.start(
-                    [&sink](const float* frames, size_t count) {
-                        return sink.feed(frames, count);
-                    },
-                    rate, &error)) {
-                std::fprintf(stderr, "openshow-worker: av-bench: audio mixer: %s\n",
-                             error.c_str());
-            } else {
-                audio = true;  // the output is live; a failed input is silence
-                if (wantVideo) {
-                    if (!feeder.open(path, rate, &error) ||
-                        !feeder.start(
-                            // The input ids are captured by value: the
-                            // feeder thread outlives this block, so a
-                            // reference capture would dangle.
-                            [&mixer, videoInput](const float* frames, size_t count) {
-                                return mixer.write(videoInput, frames, count);
-                            },
-                            true, &error)) {
-                        std::fprintf(stderr,
-                                     "openshow-worker: av-bench: video audio unavailable (%s)\n",
-                                     error.c_str());
-                    }
-                }
-                if (wantExtra) {
-                    if (!extraFeeder.open(secondAudio, rate, &error) ||
-                        !extraFeeder.start(
-                            [&mixer, extraInput](const float* frames, size_t count) {
-                                return mixer.write(extraInput, frames, count);
-                            },
-                            true, &error)) {
-                        std::fprintf(stderr,
-                                     "openshow-worker: av-bench: second audio unavailable (%s)\n",
-                                     error.c_str());
-                    }
-                }
-            }
         }
     }
+    player.attachPipeline(&pipeline);
 
     // The scheduler and the pipeline's drift stats read the same function:
-    // on the audio path the sink's stream time, otherwise one wall clock
-    // anchored here so drift compares against the scheduler's actual notion
-    // of now.
-    const auto clockStart = std::chrono::steady_clock::now();
-    std::function<double()> clock;
-    if (audio) {
-        clock = [&sink] { return sink.clock().clockSeconds(); };
-    } else {
-        clock = [clockStart] {
-            return std::chrono::duration<double>(std::chrono::steady_clock::now() - clockStart)
-                .count();
-        };
-    }
+    // the player's audio clock while live, its monotonic fallback
+    // otherwise — one anchor for both so drift compares against the
+    // scheduler's actual notion of now.
+    const std::function<double()> clock = player.clockFn();
     session.setVideoClock(clock);
     session.setVideoPresenter(&pipeline);
 
@@ -499,33 +453,30 @@ int runAvBench(const std::string& path, const std::string& secondAudio, int moni
 
     const unsigned long long presented = session.run(seconds, &gStopRequested);
 
-    // Snapshot the sink before stopping it (the stats keep counting while
-    // the stream lives, and the meaningful window ends with run()).
+    // Snapshot the player before stopping it (the stats keep counting
+    // while the stream lives, and the meaningful window ends with run();
+    // stop() also clears the feeder table, so the feeder/mixer snapshots
+    // must precede it).
+    const bool audio = player.audioLive();
     uint64_t sinkCallbacks = 0;
     uint64_t sinkUnderruns = 0;
     double sinkDriftMs = 0.0;
     if (audio) {
-        const auto stats = sink.stats();
+        const auto stats = player.sinkStats();
         sinkCallbacks = stats.callbacks;
         sinkUnderruns = stats.underrunEvents;
         sinkDriftMs = (stats.wallSeconds - stats.clockSeconds) * 1000.0;
     }
+    const auto mixerStats = player.mixerStats();
+    const auto feederStats = player.feederStats(false);
+    const auto extraStats = player.feederStats(true);
 
     // Teardown order (the pipeline owns the producer ladder now: stop
     // flags, then the ring and decode thread, then the GPU waits): audio
-    // next — feeders, mixer, sink — GPU objects last while the context
-    // is still open.
+    // next — the player unwinds feeders, mixer, sink — GPU objects last
+    // while the context is still open.
     pipeline.requestStop();
-    feeder.requestStop();
-    extraFeeder.requestStop();
-    feeder.join();
-    extraFeeder.join();
-    const auto mixerStats = mixer.stats();
-    mixer.requestStop();
-    mixer.join();
-    if (audio) {
-        sink.stop();
-    }
+    player.stop();
     previewStop.store(true);
     if (previewThread.joinable()) {
         previewThread.join();
@@ -557,10 +508,9 @@ int runAvBench(const std::string& path, const std::string& secondAudio, int moni
                 static_cast<unsigned long long>(sinkCallbacks),
                 static_cast<unsigned long long>(sinkUnderruns), sinkDriftMs);
     if (useAudio && mixerStats.inputs != 0) {
-        const auto feederStats = feeder.stats();
-        const auto extraStats = extraFeeder.stats();
         std::printf("  mixer inputs=%u video written=%llu mixed=%llu starved=%llu | extra "
-                    "written=%llu mixed=%llu starved=%llu | delivered=%llu retries=%llu\n",
+                    "written=%llu mixed=%llu starved=%llu | delivered=%llu retries=%llu "
+                    "flushes video=%llu extra=%llu sink=%llu\n",
                     mixerStats.inputs,
                     static_cast<unsigned long long>(mixerStats.input[0].framesWritten),
                     static_cast<unsigned long long>(mixerStats.input[0].framesMixed),
@@ -575,17 +525,26 @@ int runAvBench(const std::string& path, const std::string& secondAudio, int moni
                         ? static_cast<unsigned long long>(mixerStats.input[1].starvedBlocks)
                         : 0ULL,
                     static_cast<unsigned long long>(mixerStats.deliveredFrames),
-                    static_cast<unsigned long long>(mixerStats.writeRetries));
-        std::printf("  feeders video fed=%llu retries=%llu errors=%llu loops=%llu | extra "
-                    "fed=%llu retries=%llu errors=%llu loops=%llu eof=%d\n",
+                    static_cast<unsigned long long>(mixerStats.writeRetries),
+                    static_cast<unsigned long long>(mixerStats.input[0].flushes),
+                    mixerStats.inputs > 1
+                        ? static_cast<unsigned long long>(mixerStats.input[1].flushes)
+                        : 0ULL,
+                    static_cast<unsigned long long>(player.sinkStats().flushes));
+        std::printf("  feeders video fed=%llu retries=%llu errors=%llu loops=%llu seeks=%llu "
+                    "seek-discards=%llu | extra fed=%llu retries=%llu errors=%llu loops=%llu "
+                    "seeks=%llu eof=%d\n",
                     static_cast<unsigned long long>(feederStats.framesFed),
                     static_cast<unsigned long long>(feederStats.writeRetries),
                     static_cast<unsigned long long>(feederStats.decodeErrors),
                     static_cast<unsigned long long>(feederStats.loops),
+                    static_cast<unsigned long long>(feederStats.seeks),
+                    static_cast<unsigned long long>(feederStats.seekDiscards),
                     static_cast<unsigned long long>(extraStats.framesFed),
                     static_cast<unsigned long long>(extraStats.writeRetries),
                     static_cast<unsigned long long>(extraStats.decodeErrors),
                     static_cast<unsigned long long>(extraStats.loops),
+                    static_cast<unsigned long long>(extraStats.seeks),
                     extraStats.eof ? 1 : 0);
     }
     std::printf("  ring peak=%llu of %u slots (the bounded queue), session presented %llu frames total\n",

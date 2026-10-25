@@ -76,6 +76,12 @@ public:
     // is the pacing signal).
     size_t write(int input, const float* interleavedStereo, size_t frames);
 
+    // Transport side (task 5.4): asks the mix thread to discard this
+    // input's queued-but-unmixed audio before its next read — the pairing
+    // a seek needs (feeder jumps, then flushes so stale content already
+    // in the input ring is not mixed after the jump). Counted per input.
+    void requestInputFlush(int input);
+
     // The mix thread: pulls blocks at the given rate until stopped.
     bool start(WriteFn out, uint32_t rate, std::string* error);
     void requestStop();  // idempotent, safe before start
@@ -85,6 +91,7 @@ public:
         uint64_t framesWritten = 0;  // accepted from the source
         uint64_t framesMixed = 0;    // consumed and summed
         uint64_t starvedBlocks = 0;  // blocks that zero-padded this input
+        uint64_t flushes = 0;        // transport flushes performed
     };
     struct Stats {
         unsigned inputs = 0;
@@ -101,12 +108,14 @@ private:
         AudioRing ring;
         std::atomic<float> volume{1.0f};
         std::atomic<bool> mute{false};
+        std::atomic<bool> flushRequested{false};  // transport -> mix thread
         // Stats: one writer per field (the mix thread, or the source for
         // framesWritten), relaxed atomics so stats() is safe from any
         // thread.
         std::atomic<uint64_t> framesMixed{0};
         std::atomic<uint64_t> starvedBlocks{0};
         std::atomic<uint64_t> framesWritten{0};
+        std::atomic<uint64_t> flushes{0};
     };
 
     void run();
