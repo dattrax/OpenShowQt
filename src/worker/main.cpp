@@ -179,6 +179,9 @@ int runRenderTest(int monitorIndex, double seconds,
     options.monitor = monitorIndex;
     options.diagnostics = true;
     options.vulkanValidation = vulkanValidation;
+    // Task 6.1b: the development picture is an opt-in decoration on the
+    // production compositor (the old default, explicitly requested).
+    options.demo = openshow::worker::demoBuilder();
 
     openshow::worker::OutputSession session;
     std::string error;
@@ -359,6 +362,9 @@ int runAvBench(const std::string& path, const std::string& secondAudio, int moni
     options.title = "OpenShowQt A/V bench (task 1.5e)";
     options.monitor = monitorIndex;
     options.vulkanValidation = vulkanValidation;
+    // Task 6.1b: the bench is a development driver — keep the demo
+    // backdrop the video quad has always drawn over.
+    options.demo = openshow::worker::demoBuilder();
 
     // Session first, pipeline second: the reverse destruction order keeps
     // the GrDirectContext alive for the pipeline's uploader teardown.
@@ -798,11 +804,11 @@ int main(int argc, char** argv) {
         // frontend; benches and checks never present, so they keep the
         // plain seam.
         options.backgroundMedia = true;
-        // Task 6.1a (review R1): the audience gets the production
-        // compositor — black before the first presentation, clock/aux and
-        // the diagnostic footer off — so startup, clear-all and fresh
-        // workers are uniformly black and preview mirrors the output.
-        options.production = true;
+        // Task 6.1b (review R1): no demo builder — the audience gets the
+        // undecorated production compositor: black before the first
+        // presentation, clock/aux and the diagnostic footer off, so
+        // startup, clear-all and fresh workers are uniformly black and
+        // preview mirrors the output.
         if (!session.open(options, &error)) {
             std::fprintf(stderr, "openshow-worker: %s\n", error.c_str());
             return 1;

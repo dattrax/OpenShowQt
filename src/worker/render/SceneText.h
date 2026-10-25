@@ -11,7 +11,8 @@
  * (3.2), with a per-layer alpha dissolve for the fade transition — no
  * render-to-texture, transparency goes straight into the paint, per
  * render/Layer.h. The engine is the one font setup the worker has:
- * TestScene borrows its typefaces, and the production layers draw through
+ * SceneRenderer owns one, the development decoration (render/TestScene.h)
+ * builds its demo title through it, and the layers draw through
  * layoutScene()/drawLayout(), so what the fixture tests assert is what the
  * audience window renders.
  *

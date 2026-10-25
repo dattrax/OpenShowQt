@@ -629,7 +629,7 @@ bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string&
     canvas->resetMatrix();
     canvas->clear(SK_ColorBLACK);
 
-    // The output rule, identical to TestScene::draw.
+    // The output rule, identical to SceneRenderer::draw.
     const float scale = std::min(static_cast<float>(width) / kSceneCanvasWidth,
                                  static_cast<float>(height) / kSceneCanvasHeight);
     canvas->translate((static_cast<float>(width) - kSceneCanvasWidth * scale) * 0.5f,

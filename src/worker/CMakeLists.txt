@@ -8,11 +8,15 @@ add_executable(openshow-worker
   session/OutputSession.cpp
 )
 
-# The output layer model and production scene text (task 3.1). A library so
-# the headless fixture tests can lay out and render scenes without the
-# worker's main(), window or Vulkan.
+# The output layer model, the production compositor (task 6.1b) and scene
+# text (task 3.1). A library so the headless fixture tests can lay out and
+# render scenes without the worker's main(), window or Vulkan. The
+# development harness (render/TestScene.cpp, the demo decoration and the
+# pixel checks) stays out of it: production code does not depend on the
+# demo, only the CLI drives both.
 add_library(openshow-worker-render STATIC
   render/Layer.cpp
+  render/SceneRenderer.cpp
   render/SceneText.cpp
 )
 add_library(openshow::worker_render ALIAS openshow-worker-render)
@@ -42,8 +46,8 @@ target_link_libraries(openshow-worker-gpu PUBLIC
   vk-bootstrap::vk-bootstrap
 )
 target_include_directories(openshow-worker-gpu PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-# The prebuilt Skia is compiled with RTTI off; TestScene derives from its
-# classes, whose typeinfo does not exist, so this TU must also be -fno-rtti.
+# The prebuilt Skia is compiled with RTTI off; this TU builds SkParagraph
+# content whose classes carry no typeinfo, so it must also be -fno-rtti.
 set_source_files_properties(render/TestScene.cpp PROPERTIES
   COMPILE_OPTIONS "-fno-rtti"
 )

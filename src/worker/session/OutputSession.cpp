@@ -35,13 +35,13 @@
 #include "output/VulkanQueueGuard.h"
 #include "media/MediaProbe.h"
 #include "preview/PreviewStream.h"
-#include "render/TestScene.h"
+#include "render/SceneRenderer.h"
 
 namespace openshow::worker {
 
 namespace {
 
-constexpr uint32_t layerMaskOf(const TestScene& scene) {
+constexpr uint32_t layerMaskOf(const SceneRenderer& scene) {
     uint32_t mask = 0;
     for (uint32_t i = 0; i < static_cast<uint32_t>(LayerId::kCount); ++i) {
         const LayerId id = static_cast<LayerId>(i);
@@ -104,12 +104,13 @@ bool OutputSession::open(const Options& options, std::string* error) {
     }
     fContext->setResourceCacheLimit(64 * 1024 * 1024);
 
-    // Task 6.1a (R1): a --socket session composes with the production
-    // profile — black start, clock/aux off, no demo assets — and open()
-    // reports the resulting defaults in the initial layer mask.
-    fScene = std::make_unique<TestScene>();
-    if (!fScene->create(error, options.production ? TestScene::Profile::kProduction
-                                                  : TestScene::Profile::kDemo)) {
+    // Task 6.1b (R1): the session drives the production compositor. With
+    // no demo builder in Options — what --socket passes — it starts black
+    // with nothing presented, clock and aux off, and open() reports those
+    // defaults in the initial layer mask. A development driver hands in
+    // demoBuilder() and gets the decorated 1.x picture instead.
+    fScene = std::make_unique<SceneRenderer>();
+    if (!fScene->create(error, options.demo)) {
         close();
         return false;
     }
@@ -134,7 +135,6 @@ bool OutputSession::open(const Options& options, std::string* error) {
     }
     fDiagnostics = options.diagnostics;
     fBackgroundMedia = options.backgroundMedia;
-    fProduction = options.production;
 
     fSwapchain = std::make_unique<Swapchain>();
     if (!createSwapchain()) {
@@ -987,15 +987,15 @@ void OutputSession::frame(uint64_t presentedFor) {
     unsigned videoToken = 0;
     VkSemaphore videoDone = VK_NULL_HANDLE;
     if (surface) {
-        // The footer line (task 6.1a): a development affordance only. The
-        // production profile passes the empty string — the same one the
-        // preview already draws with — so output and preview compose the
-        // identical scene. The production compositor's clock layer starts
-        // off anyway; if an operator toggles the audience clock up, the
-        // audience gets the time, not this process's device and frame
+        // The footer line (tasks 6.1a/6.1b): a development affordance
+        // only. A production compositor gets the empty string — the same
+        // one the preview already draws with — so output and preview
+        // compose the identical scene. The clock layer starts off in
+        // production anyway; if an operator toggles the audience clock up,
+        // the audience gets the time, not this process's device and frame
         // numbers.
         std::string statusLine;
-        if (!fProduction) {
+        if (!fScene->production()) {
             char status[160];
             std::snprintf(status, sizeof(status), "live: %s \xc2\xb7 %dx%d \xc2\xb7 frame %llu",
                           fVk->deviceName().c_str(), fSwapchain->width(), fSwapchain->height(),
@@ -1045,7 +1045,7 @@ void OutputSession::frame(uint64_t presentedFor) {
         // inside the whole output, aspect preserved, the scene background
         // showing through as letterbox bars (real media layers bring their
         // own geometry; assumes square pixels, which the wrapped YUV slots
-        // always are). NOTE: TestScene::draw leaves its output-rule
+        // always are). NOTE: SceneRenderer::draw leaves its output-rule
         // transform (the fit of the authored 1920x1080 canvas) on this
         // canvas — the dev video rect is in swapchain pixels, so it must
         // be drawn on the identity.

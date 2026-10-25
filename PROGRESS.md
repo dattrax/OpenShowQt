@@ -69,11 +69,23 @@ Updated: 2026-10-25 (Europe/London).
   the review described. `rpc_ipc_tests`' preview scenario went scene-driven
   (its old premise was the demo picture). Gates desktop **28/28**, headless
   **17/17**.
-- Exact next action: **6.1b**, finish TestScene graduation — production
-  sources own the scene layers/transitions; demo photo/title and the snapshot/
-  assertion harnesses move to development/test targets; the production session
-  no longer constructs `TestScene`. Then continue the focused M6 leaves in
-  order. Review completion does not mark any finding fixed; no new
+- **6.1b DONE (2026-10-25).** TestScene graduated. `render/SceneRenderer.{h,cpp}`
+  (production `openshow-worker-render` library) owns the five layers, the fade
+  state machine and the output-rule composition; the `TestScene` class no
+  longer exists. The 1.x picture is now an opt-in `DemoDecoration` built by
+  `demoBuilder()` in `render/TestScene.{h,cpp}` — the development harness
+  (demo assets, snapshot, `--check-layers`/`--check-transition`/
+  `--check-production` pixel harnesses), which stays out of the library and
+  is driven only by the worker CLI. `OutputSession` constructs `SceneRenderer`
+  with `Options::demo` (socket: empty ⇒ production), and the footer status
+  line is gated on `fScene->production()`. Behaviour-preserving split: the
+  harnesses drive the real compositor and all pixel claims — layer regions,
+  fade timing, production/dev identity, black start — pass unchanged.
+  Gates desktop **28/28**, headless **17/17** (live display tests included).
+- Exact next action: **6.2a**, remove direct private Skia GPU dependencies /
+  own an allocator through the public VulkanMemoryAllocator contract (see the
+  6.2a row for the full acceptance wording). Then continue the focused M6
+  leaves in order. Review completion does not mark any finding fixed; no new
   implementation blocker was found.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
