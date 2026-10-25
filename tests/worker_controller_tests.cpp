@@ -1,10 +1,13 @@
 /*
- * Task 6.3a fixtures (review R3): WorkerController correlates worker replies
- * by request id and connection generation, mirrors each prepare's own
+ * Task 6.3a + 6.3b fixtures (review R3): WorkerController correlates worker
+ * replies by request id and connection generation, mirrors each prepare's own
  * payload under the revision that prepare was acknowledged with, and follows
  * the latest-go rule: the audience moves only when the newest go's prepare
  * is acknowledged. A failed or superseded go must never auto-present, and a
- * dropped connection resets every pending intent.
+ * dropped connection resets every pending intent. Clears compose against the
+ * pending logical presentation, the restore keeps its CONTENT (not just a
+ * store revision) until confirmed on air, and a refused restore stays
+ * retryable with honest indicators.
  *
  * These properties need a worker that is slow, refuses, and dies on cue, so
  * the fixtures supervise a scripted stand-in: this very binary re-executes
@@ -16,7 +19,13 @@
  *   slow-first       acknowledge the first prepare 400 ms late, the rest now
  *   error-first      answer the first prepare with a JSON-RPC error
  *   die-first-prepare exit(44) without answering the first prepare
+ *   fail-second-full answer the SECOND prepare carrying "RETAINME" with an
+ *                    error (a restore that fails must stay retryable)
  *   clean            answer everything immediately
+ *
+ * scene.present of a revision more than kStoreWindow (16, mirroring the
+ * real worker's bounded store) behind the newest handed out is refused, so
+ * a restore that still depended on the store being asked cannot hide that.
  *
  * Each child writes a small report (prepares, presents, presented revision
  * list) to OPENSHOW_FAKE_REPORT so the parent can prove WHICH presents the
@@ -54,6 +63,11 @@ namespace {
 
 namespace proto = openshow::protocol;
 using openshow::ui::WorkerController;
+
+// The scripted peer's store window: presents of revisions older than this
+// many behind the newest handed out are refused, like the real worker's
+// bounded scene store (task 6.3b's ">16 prepares" acceptance).
+constexpr std::int64_t kStoreWindow = 16;
 
 int gFailures = 0;
 
@@ -254,6 +268,13 @@ private:
                 sendError(id, "fake rejection");
                 return;
             }
+            if (boost::json::serialize(request).find("RETAINME") != std::string::npos) {
+                ++fFullPrepares;
+                if (fScenario == "fail-second-full" && fFullPrepares == 2) {
+                    sendError(id, "fake restore rejection");
+                    return;
+                }
+            }
             const std::int64_t revision = ++fLastRevision;
             ++fPrepared;
             std::string wire;
@@ -285,8 +306,15 @@ private:
             ++fPresents;
             if (request.contains("params") && request.at("params").is_object() &&
                 request.at("params").as_object().contains("revision")) {
-                fActive = static_cast<int>(
-                    request.at("params").as_object().at("revision").to_number<std::int64_t>());
+                const std::int64_t revision =
+                    request.at("params").as_object().at("revision").to_number<std::int64_t>();
+                if (fLastRevision - revision > kStoreWindow) {
+                    // The real worker prunes its store: a present of a
+                    // retired revision is honestly refused.
+                    sendError(id, "fake store pruned");
+                    return;
+                }
+                fActive = static_cast<int>(revision);
                 fPresented.push_back(fActive);
             }
             sendResult(id, boost::json::object{{"presented", static_cast<std::uint64_t>(fActive)}});
@@ -335,6 +363,7 @@ private:
     int fPresents = 0;
     int fPrepared = 0;
     int fLastRevision = 0;
+    int fFullPrepares = 0;  // prepares carrying the "RETAINME" marker
     int fActive = 0;
 };
 
@@ -573,6 +602,209 @@ void scenarioDisconnectAndReconnect() {
     controller.shutdownNow();
 }
 
+// S5 (task 6.3b): two clears clicked back to back must compose — the
+// background clear derives from the words-cleared scene the first clear
+// staged, not from the stale confirmed snapshot that still has both. The
+// restore then brings the full pre-clear scene back, and canRestore only
+// goes quiet once the restored revision is confirmed on air.
+void scenarioBackToBackClears() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
+    const std::string report = tempPath("clears");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "clears: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    controller.presentSceneJson(QString::fromStdString(sceneWordsAndBackground("FULL", 0x550000)));
+    const bool fullOnAir = waitUntil([&controller] {
+        return controller.sceneActive() == 1 && controller.wordsOnAir() &&
+               controller.backgroundOnAir();
+    });
+    if (!check(fullOnAir, "clears: the full scene is on air before the clears")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    controller.clearSlide();
+    controller.clearBackground();  // same tick: the peer has acknowledged neither yet
+
+    const bool composed = waitUntil([&controller] {
+        return controller.sceneActive() == 3 && controller.scenePending() == 0;
+    });
+    check(composed, "clears: the composed clear reaches the audience");
+    digestThenRefresh(controller, 50);
+    check(!controller.wordsOnAir() && !controller.backgroundOnAir(),
+          "clears: back-to-back clears compose (neither layer survives)");
+    check(controller.canRestore(), "clears: restore stays available after the clear sequence");
+
+    controller.restoreOutput();
+    const bool restored = waitUntil([&controller] {
+        return controller.sceneActive() == 4 && controller.wordsOnAir() &&
+               controller.backgroundOnAir();
+    });
+    check(restored, "clears: restore brings both cleared layers back");
+    check(waitUntil([&controller] { return !controller.canRestore(); }, 1500),
+          "clears: canRestore retires once the restore is confirmed on air");
+
+    controller.shutdownNow();
+    const boost::json::object counts = readReport(report);
+    const boost::json::array& presented = counts.at("presented").as_array();
+    // Full go, the composed clear (the first clear's go is superseded by
+    // the second per the latest-go rule), and the restore.
+    check(counts.at("presents").to_number<std::int64_t>() == 3 && presented.size() == 3 &&
+              presented[0].to_number<std::int64_t>() == 1 &&
+              presented[1].to_number<std::int64_t>() == 3 &&
+              presented[2].to_number<std::int64_t>() == 4,
+          "clears: presented full, composed clear, restored — nothing else");
+}
+
+// S6 (task 6.3b): more prepares than the worker's store window must not
+// cost the restore its content. The pre-fix restore presented the pre-clear
+// REVISION; once the store pruned it the audience was out of luck. The
+// retained payload must re-prepare instead.
+void scenarioRestoreSurvivesStoreWindow() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
+    const std::string report = tempPath("window");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "window: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    controller.presentSceneJson(
+        QString::fromStdString(sceneWordsAndBackground("KEPT", 0x660000)));
+    const bool onAir = waitUntil([&controller] {
+        return controller.sceneActive() == 1 && controller.wordsOnAir();
+    });
+    if (!check(onAir, "window: the full scene is on air")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    controller.clearSlide();
+    const bool cleared = waitUntil([&controller] {
+        return controller.sceneActive() == 2 && !controller.wordsOnAir();
+    });
+    check(cleared, "window: the clear is on air");
+
+    // Push the store far past its window with bare prepares (they store
+    // without presenting, so the clear's pre-clear revision is what ages).
+    for (int i = 0; i < 20; ++i) {
+        controller.prepareScene(QString::fromStdString(sceneWordsOnly("filler")));
+    }
+    const bool stored = waitUntil([&controller] { return controller.scenePrepared() == 22; });
+    if (!check(stored, "window: twenty more prepares filled the store")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(controller.canRestore(), "window: the retained restore content is still available");
+
+    controller.restoreOutput();
+    const bool restored =
+        waitUntil([&controller] {
+            return controller.sceneActive() == 23 && controller.wordsOnAir() &&
+                   controller.backgroundOnAir();
+        },
+                  10000);
+    check(restored, "window: restore re-prepared the retained content past the store window");
+    check(waitUntil([&controller] { return !controller.canRestore(); }, 1500),
+          "window: the confirmed restore retires the snapshot");
+
+    controller.shutdownNow();
+    const boost::json::object counts = readReport(report);
+    const boost::json::array& presented = counts.at("presented").as_array();
+    // Full scene, the clear, and the restore of re-prepared content. The
+    // restore's present names the fresh revision 23: revision 1 is far
+    // outside the window and a present of it would have been refused.
+    check(counts.at("presents").to_number<std::int64_t>() == 3 && presented.size() == 3 &&
+              presented.back().to_number<std::int64_t>() == 23,
+          "window: the restore presented the re-prepared revision, not the pruned one");
+}
+
+// S7 (task 6.3b): a restore the worker refuses must leave the retry
+// available and the indicators honest — the pre-fix code consumed the
+// restore slot before any acknowledgement, so one error lost restore.
+void scenarioFailedRestoreRetry() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "fail-second-full", 1);
+    const std::string report = tempPath("retry");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "retry: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    controller.presentSceneJson(
+        QString::fromStdString(sceneWordsAndBackground("RETAINME", 0x770000)));
+    const bool onAir = waitUntil([&controller] {
+        return controller.sceneActive() == 1 && controller.wordsOnAir() &&
+               controller.backgroundOnAir();
+    });
+    if (!check(onAir, "retry: the full scene is on air")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    controller.clearSlide();
+    const bool cleared = waitUntil([&controller] {
+        return controller.sceneActive() == 2 && !controller.wordsOnAir();
+    });
+    check(cleared, "retry: the words clear is on air");
+
+    controller.restoreOutput();  // refused by the scripted peer
+    const bool reported = waitUntil([&controller] {
+        return controller.statusText().contains(QStringLiteral("worker error"));
+    });
+    check(reported, "retry: the refused restore is reported honestly");
+    check(controller.canRestore(), "retry: a failed restore keeps the retry available");
+    digestThenRefresh(controller, 300);
+    check(controller.sceneActive() == 2 && !controller.wordsOnAir(),
+          "retry: the refused restore did not move the audience");
+
+    controller.restoreOutput();  // the retry is accepted
+    const bool restored = waitUntil([&controller] {
+        return controller.sceneActive() == 3 && controller.wordsOnAir() &&
+               controller.backgroundOnAir();
+    });
+    check(restored, "retry: the retried restore brings the retained content on air");
+    check(waitUntil([&controller] { return !controller.canRestore(); }, 1500),
+          "retry: the confirmed restore retires the snapshot");
+
+    controller.shutdownNow();
+    const boost::json::object counts = readReport(report);
+    // Three presents total: the full scene, the clear's go, and the
+    // retried restore. The refused restore never presented — a fourth
+    // present, or one naming a revision that never stored, would show the
+    // controller lying about the rejection.
+    const boost::json::array& presented = counts.at("presented").as_array();
+    check(counts.at("presents").to_number<std::int64_t>() == 3 && presented.size() == 3 &&
+              presented[0].to_number<std::int64_t>() == 1 &&
+              presented[1].to_number<std::int64_t>() == 2 &&
+              presented[2].to_number<std::int64_t>() == 3,
+          "retry: the refused restore presented nothing; the retry did");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -602,6 +834,9 @@ int main(int argc, char* argv[]) {
     scenarioSlowReply();
     scenarioErrorReply();
     scenarioDisconnectAndReconnect();
+    scenarioBackToBackClears();
+    scenarioRestoreSurvivesStoreWindow();
+    scenarioFailedRestoreRetry();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "worker_controller_tests: %d failure(s)\n", gFailures);

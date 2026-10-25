@@ -106,10 +106,15 @@ public:
     // one call; the revision, as ever, is the worker's to hand out).
     Q_INVOKABLE void presentSceneJson(const QString& sceneJson);
 
-    // Output controls (task 3.4). Each clear is a derived presentation:
-    // the scene on air with one layer's content removed (the reference's
-    // independent per-layer clears), remembered so a single restore can
-    // re-present it. They do nothing until a scene is on air.
+    // Output controls (task 3.4, hardened by task 6.3b). Each clear is a
+    // derived presentation: the pending logical scene (the newest go's
+    // payload — not merely the last confirmed status, so back-to-back
+    // clears compose) with one layer's content removed. The scene the
+    // first clear of a sequence cut from is retained as CONTENT, not just
+    // as a store revision, so a restore survives the worker pruning its
+    // store; the intent lives until the restored scene is confirmed on
+    // air, and an error leaves it in place so the retry stays available.
+    // They do nothing until a scene is on air.
     Q_INVOKABLE void clearSlide();
     Q_INVOKABLE void clearBackground();
     Q_INVOKABLE void clearAll();
@@ -129,7 +134,7 @@ public:
     qint64 scenePrepared() const { return fScenePrepared; }
     bool wordsOnAir() const { return fSceneContent.words; }
     bool backgroundOnAir() const { return fSceneContent.background; }
-    bool canRestore() const { return fRestoreRevision != 0; }
+    bool canRestore() const { return !fRestoreJson.isEmpty(); }
 
     qint64 demoSlideCount() const;
 
@@ -182,8 +187,14 @@ private:
     // The prepare/present chain the public calls share; unlike
     // presentSceneJson it does not touch the restore slot, so the clear
     // operations can stage a derived scene without forgetting what they
-    // cleared.
-    void presentSceneInternal(const QString& sceneJson);
+    // cleared. Returns the request id of the prepare, or 0 when the JSON
+    // was unreadable or the session not live.
+    std::int64_t presentSceneInternal(const QString& sceneJson);
+    // The scene a clear derives from: the pending logical presentation
+    // (latest go) when one exists, else the last confirmed on-air payload
+    // (task 6.3b: clears issued before an earlier clear's confirmation
+    // must compose with it, not resurrect what it removed).
+    QString clearSourceScene() const;
     // Attach the per-request prepare context (payload, and the go intent
     // when this prepare should present its ack).
     void armPrepare(std::int64_t requestId, const boost::json::object& scene,
@@ -232,7 +243,17 @@ private:
     QHash<qint64, QString> fSceneJson;
     qint64 fMirrorMax = 0;        // highest revision mirrored (prune bound)
     SceneContent fSceneContent;   // derived from fSceneJson[fSceneActive]
-    qint64 fRestoreRevision = 0;  // full revision the current clear sequence cut from
+    // Restore state (task 6.3b): the payload the first clear of a sequence
+    // cut from, retained as content so the worker's store window cannot
+    // retire it; the id of a restore whose prepare is still in flight; and
+    // the revision that must reach "active" before the snapshot retires.
+    QString fRestoreJson;
+    std::int64_t fRestoreArmedGo = 0;
+    qint64 fRestoreDoneRevision = 0;
+    // The payload of the newest go: what the output will show once that
+    // go is acknowledged. Clears derive from this, not from the last
+    // confirmed status, so rapid successive clears compose (task 6.3b).
+    QString fDesiredSceneJson;
     // Id of the most recent go-intent still awaiting its presentation.
     // A prepare ack presents only while its request is still the newest
     // go (the latest-go rule): an older go acknowledged late must not

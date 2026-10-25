@@ -218,6 +218,11 @@ void WorkerController::handleReply(const boost::json::object& message) {
     if (error != message.end() && error->value().is_object()) {
         // An error answers its request's intent: drop that context so a
         // failed go cannot resurface on some later reply.
+        if (id == fRestoreArmedGo) {
+            // A rejected restore keeps its retained content (task 6.3b):
+            // only the in-flight marker clears, so the retry is available.
+            fRestoreArmedGo = 0;
+        }
         const boost::json::object& reported = error->value().as_object();
         const auto text = reported.find("message");
         setStatus(QStringLiteral("worker error (%1): %2")
@@ -364,6 +369,14 @@ void WorkerController::handleReply(const boost::json::object& message) {
         if (pending.autoPresent && id == fLatestGoId) {
             fLatestGoId = 0;
             presentScene(prepared);
+            if (id == fRestoreArmedGo) {
+                // The restore's own go moved the audience; its snapshot
+                // retires once a status poll confirms this revision on
+                // air — until then canRestore honestly says the restored
+                // scene is not yet confirmed (task 6.3b).
+                fRestoreArmedGo = 0;
+                fRestoreDoneRevision = prepared;
+            }
         }
         emit sceneChanged();
         return;
@@ -390,6 +403,13 @@ void WorkerController::handleReply(const boost::json::object& message) {
                 static_cast<qint64>(scene.at("pending").to_number<std::uint64_t>());
             fScenePrepared =
                 static_cast<qint64>(scene.at("prepared").to_number<std::uint64_t>());
+            // A restore is confirmed when the revision it re-prepared is
+            // the one on air: only now does the retained snapshot retire
+            // and canRestore go quiet (task 6.3b).
+            if (fRestoreDoneRevision != 0 && fSceneActive == fRestoreDoneRevision) {
+                fRestoreDoneRevision = 0;
+                fRestoreJson.clear();
+            }
             // The live indicators describe the acknowledged active revision
             // only (task 3.4): words/background flags come from the JSON that
             // revision was prepared with, so a clear or present lights the
@@ -467,6 +487,9 @@ void WorkerController::presentScene(qint64 revision) {
     if (!fConnected || !fHandshakeDone) {
         return;
     }
+    // An explicit present re-targets the logical presentation: later
+    // clears derive from what this revision was prepared with (task 6.3b).
+    fDesiredSceneJson = fSceneJson.value(revision);
     sendRequest("scene.present",
                 boost::json::object{{"revision", static_cast<std::uint64_t>(revision)}});
 }
@@ -474,86 +497,111 @@ void WorkerController::presentScene(qint64 revision) {
 void WorkerController::presentSceneJson(const QString& sceneJson) {
     // New content is a fresh go: whatever a clear sequence kept for
     // restore is history now (the operator moved on).
-    fRestoreRevision = 0;
+    fRestoreJson.clear();
+    fRestoreArmedGo = 0;
+    fRestoreDoneRevision = 0;
     presentSceneInternal(sceneJson);
 }
 
-void WorkerController::presentSceneInternal(const QString& sceneJson) {
+std::int64_t WorkerController::presentSceneInternal(const QString& sceneJson) {
     if (!fConnected || !fHandshakeDone) {
-        return;
+        return 0;
     }
     boost::system::error_code parseError;
     const boost::json::value parsed =
         boost::json::parse(sceneJson.toStdString(), parseError);
     if (parseError || !parsed.is_object()) {
         setStatus(QStringLiteral("scene.present: the scene JSON is not readable"));
-        return;
+        return 0;
     }
     // Same hand-off as presentDemoSlide: present on the prepare ack, so
     // the audience switch lands as soon as the store names the revision.
     const std::int64_t id = sendRequest("scene.prepare", parsed.as_object());
     armPrepare(id, parsed.as_object(), /*autoPresent=*/true);
+    return id;
 }
 
-// --- output controls (task 3.4) ------------------------------------------
+// --- output controls (task 3.4, hardened by task 6.3b) --------------------
 //
-// Each clear presents a scene derived from the one on air — words gone,
-// background gone, or both — so the layer promises hold: clears are
-// independent, the untouched layer rides through unchanged (its pixels
-// are identical, only the cleared part moves), and the reference's fade
-// covers the change with no special path. The revision cleared from is
-// held for a single restore until new content replaces it.
+// Each clear presents a scene derived from the PENDING logical
+// presentation — the newest go's payload, not merely the last confirmed
+// status — so two clears clicked back to back compose: the second removes
+// its layer from what the first already staged instead of resurrecting it
+// from a stale snapshot. The layer promises hold: clears are independent,
+// the untouched layer rides through unchanged, and the latest-go rule
+// (task 6.3a) means the audience only ever moves to the composed result.
+// The scene the first clear of a sequence cut from is retained as content,
+// so a restore survives the worker pruning its store; the retained intent
+// lives until the restore is confirmed on air, and a failed restore leaves
+// it in place so the retry stays available.
+
+QString WorkerController::clearSourceScene() const {
+    if (!fDesiredSceneJson.isEmpty()) {
+        return fDesiredSceneJson;
+    }
+    return fSceneJson.value(fSceneActive);
+}
 
 void WorkerController::clearSlide() {
-    const QString onAir = fSceneJson.value(fSceneActive);
-    if (onAir.isEmpty()) {
+    const QString source = clearSourceScene();
+    if (source.isEmpty()) {
         return;  // nothing on air with a known payload: nothing to clear
     }
-    const QString cleared = withWordsCleared(onAir);
-    if (cleared.isEmpty()) {
-        return;
+    const QString cleared = withWordsCleared(source);
+    if (cleared.isEmpty() || cleared == source) {
+        return;  // nothing to clear, or already gone: coalesce to a no-op
     }
-    if (fRestoreRevision == 0) {
-        fRestoreRevision = fSceneActive;
+    if (fRestoreJson.isEmpty()) {
+        fRestoreJson = source;
     }
     presentSceneInternal(cleared);
 }
 
 void WorkerController::clearBackground() {
-    const QString onAir = fSceneJson.value(fSceneActive);
-    if (onAir.isEmpty()) {
+    const QString source = clearSourceScene();
+    if (source.isEmpty()) {
         return;
     }
-    const QString cleared = withBackgroundCleared(onAir);
-    if (cleared.isEmpty()) {
-        return;
+    const QString cleared = withBackgroundCleared(source);
+    if (cleared.isEmpty() || cleared == source) {
+        return;  // already gone: coalesce to a no-op
     }
-    if (fRestoreRevision == 0) {
-        fRestoreRevision = fSceneActive;
+    if (fRestoreJson.isEmpty()) {
+        fRestoreJson = source;
     }
     presentSceneInternal(cleared);
 }
 
 void WorkerController::clearAll() {
-    if (fSceneActive == 0 || !fSceneJson.contains(fSceneActive)) {
+    const QString source = clearSourceScene();
+    if (source.isEmpty()) {
         return;
     }
-    if (fRestoreRevision == 0) {
-        fRestoreRevision = fSceneActive;
+    const QString cleared = clearedSceneJson();
+    if (cleared.isEmpty() || cleared == source) {
+        return;
     }
-    presentSceneInternal(clearedSceneJson());
+    if (fRestoreJson.isEmpty()) {
+        fRestoreJson = source;
+    }
+    presentSceneInternal(cleared);
 }
 
 void WorkerController::restoreOutput() {
-    if (fRestoreRevision == 0) {
-        return;
+    if (fRestoreJson.isEmpty() || fRestoreArmedGo != 0) {
+        return;  // nothing retained, or a restore is already in flight
     }
-    // The stored revision is still the worker's to hand out: restore is a
-    // plain present of the pre-clear revision, so a pruned store answers
-    // with its own honest refusal and the indicators do not move.
-    const qint64 revision = fRestoreRevision;
-    fRestoreRevision = 0;
-    presentScene(revision);
+    // Restore re-prepares the RETAINED content rather than presenting the
+    // pre-clear revision: the worker may have pruned its store since the
+    // clear, and the audience is owed the scene the clear cut from
+    // regardless (task 6.3b). Until a status poll confirms the restored
+    // revision on air the snapshot stays, so canRestore never goes quiet
+    // on a restore the output has not taken — and an error reply leaves it
+    // here, keeping the retry available.
+    const std::int64_t id = presentSceneInternal(fRestoreJson);
+    if (id != 0) {
+        fRestoreArmedGo = id;
+    }
 }
 
 void WorkerController::armPrepare(std::int64_t requestId, const boost::json::object& scene,
@@ -566,7 +614,10 @@ void WorkerController::armPrepare(std::int64_t requestId, const boost::json::obj
     entry->autoPresent = autoPresent;
     if (autoPresent) {
         // This go supersedes any older one still awaiting its ack; only
-        // the newest go's acknowledgement moves the audience.
+        // the newest go's acknowledgement moves the audience. Its payload
+        // is the pending logical presentation the clears compose against
+        // (task 6.3b).
+        fDesiredSceneJson = entry->prepareJson;
         fLatestGoId = requestId;
     }
 }
@@ -575,7 +626,10 @@ void WorkerController::resetSceneTracking() {
     fSceneJson.clear();
     fMirrorMax = 0;
     fSceneContent = SceneContent{};
-    fRestoreRevision = 0;
+    fRestoreJson.clear();
+    fRestoreArmedGo = 0;
+    fRestoreDoneRevision = 0;
+    fDesiredSceneJson.clear();
     fLatestGoId = 0;
     // In-flight intents die with the connection; a reply can no longer
     // arrive for them, and none must survive to act on a later one.
@@ -599,7 +653,9 @@ void WorkerController::presentDemoSlide(qint64 index) {
     boost::json::value jsonScene = openshow::scene::toJson(scene);
     // Present on the prepare acknowledgement: the revision is the
     // worker's to hand out, and the store only names it once stored.
-    fRestoreRevision = 0;  // a fresh go retires any clear's restore point
+    fRestoreJson.clear();  // a fresh go retires any clear's restore point
+    fRestoreArmedGo = 0;
+    fRestoreDoneRevision = 0;
     const std::int64_t id = sendRequest("scene.prepare", jsonScene.as_object());
     armPrepare(id, jsonScene.as_object(), /*autoPresent=*/true);
 }

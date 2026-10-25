@@ -166,12 +166,31 @@ Updated: 2026-10-25 (Europe/London).
   rule; mutation (latest-go → old flag semantics) fails burst and slow
   scenarios, and building the fixtures flushed out — and fixed — a vacuous
   delayed-ack queue of their own. Gates desktop **32/32**, headless **20/20**.
-- Exact next action: **6.3b**, serialize/coalesce clear and restore intent
-  against the pending logical presentation; retain restore content until
-  acknowledged (see the 6.3b row for full acceptance wording: back-to-back
-  words/background clears compose, >16 prepares cannot lose restore content,
-  a failed restore keeps retry available and confirmed indicators remain
-  honest). Then continue the focused M6 leaves in order.
+- **6.3b DONE (2026-10-25).** Clear/restore serialization and content
+  retention (review R3). Clears derive from the **pending logical
+  presentation** (`clearSourceScene()` = newest go's payload, falling back
+  to the confirmed mirror), so back-to-back words+background clears compose
+  instead of the second resurrecting what the first removed; a clear that
+  changes nothing coalesces to a no-op. The restore keeps the pre-clear
+  scene as **content**, not a store revision: `restoreOutput()` re-prepares
+  the retained payload, so the worker pruning its store (>16 prepares)
+  cannot lose the scene; the snapshot retires only when a status poll
+  confirms the restore's revision on air, and an error reply leaves the
+  retry available while indicators stay honest. `worker_controller_tests`
+  gained a pruned store in the scripted peer plus three scenarios —
+  composed clears with exact present history, restore surviving a 20-prepare
+  window overrun, and a refused restore staying retryable — all proven to
+  bite via three mutations (confirmed-snapshot derivation, early slot
+  consumption, missing retire-on-confirmation). Gates desktop **32/32**,
+  headless **20/20** (headless re-run three times green after one flaky
+  parallel run whose failure no 6.3b code path touches).
+- Exact next action: **6.4**, publish applied scene/revision only from the
+  frame snapshot actually submitted/presented; define pending/transition/
+  confirmed states (see the 6.4 row for full acceptance wording: command-
+  during-apply and acquire/present failure injection, no early live
+  indicator, pending settles, preview tags name the drawn revision,
+  remeasure present→air against pixels). Then continue the focused M6
+  leaves in order.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -2622,6 +2641,14 @@ of this work.
   itself as a scripted JSON-RPC peer. Replies correlate by request id plus
   a connection generation (decoder reset with it); the latest-go rule lets
   only the newest go's prepare acknowledgement move the audience.
+- (2026-10-25, task 6.3b) The restore promise is CONTENT, not a store
+  handle: the first clear of a sequence retains the pre-clear scene JSON
+  and `restoreOutput()` re-prepares it, so worker store pruning cannot
+  retire the operator's undo; the retained intent lives until a status
+  poll confirms the restored revision on air and survives error replies so
+  retries stay available. Clears derive from the newest go's payload (the
+  pending logical presentation) so successive clears compose without
+  waiting for confirmations.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.
