@@ -16,6 +16,19 @@
  * colours and laid-out text instead of the demo content, and the demo photo
  * stands down. With no active scene the 1.x picture renders exactly as
  * before, which is what --check-layers and the snapshots pin.
+ *
+ * Task 6.1a (M6 review R1) separates the two lives this class has been
+ * leading. A Profile decides at create() time: kDemo keeps the 1.x picture
+ * exactly as the development drivers and snapshots always had it;
+ * kProduction is what a --socket session composes for the audience — a
+ * black start (no demo gradient, photo or title before the first
+ * presentation), the clock and aux layers off, and no diagnostic text, so
+ * startup and clear-all are uniformly black including the footer region,
+ * and output and preview carry the identical scene. The scene layers and
+ * transitions themselves are shared: presenting a scene composes the same
+ * pixels in either profile (pinned by --check-production). 6.1b completes
+ * the graduation by splitting the sources; the profile is what makes the
+ * production behaviour true now.
  */
 
 #pragma once
@@ -37,7 +50,8 @@
 namespace openshow::worker {
 
 // The presentation currently on air, shared with the layers that read it.
-// Null means nothing has been presented: the demo picture renders.
+// Null means nothing has been presented: the demo picture renders (and in
+// the production profile, the black clear stays untouched).
 using ActiveScene = std::shared_ptr<const openshow::scene::Scene>;
 
 // How a presentation takes effect. FreeShow defaults every transition to
@@ -68,6 +82,15 @@ public:
     TestScene& operator=(const TestScene&) = delete;
 
     bool create(std::string* error);
+    // Task 6.1a: which life this compositor leads. kDemo (the default, and
+    // what every development driver and snapshot always used) builds the
+    // full 1.x picture. kProduction is the audience compositor of a
+    // --socket session: no demo assets are even built, the clock and aux
+    // layers start disabled, and with no active scene the layers draw
+    // nothing — the black clear is the startup and clear-all frame.
+    enum class Profile { kDemo, kProduction };
+    bool create(std::string* error, Profile profile);
+    bool production() const { return fProduction; }
 
     // Draws the scene into width x height device pixels, scaling the canvas
     // with the output rule and centring it. statusLine is the small line of
@@ -126,6 +149,7 @@ private:
     double fTransitionStart = -1.0;  // first draw timeSeconds of the fade
     LayerStack fLayers;
     ActiveScene fActiveScene;
+    bool fProduction = false;  // from create()'s Profile (6.1a)
 };
 
 // Renders the test scene on the CPU and writes a PNG. No display, Vulkan or
@@ -146,5 +170,15 @@ bool verifyLayerComposition(std::string* error);
 // swaps in one frame — including cancelling a fade in flight. Pixel
 // assertions through the same layers the audience window uses.
 bool verifySceneTransition(std::string* error);
+
+// Task 6.1a (review R1): the production profile's composition rules on
+// the CPU. The production compositor starts with clock and aux off and
+// draws a uniformly black frame with nothing presented — every pixel
+// black, the footer/clock region included; a presented scene composes
+// pixel-identical production and demo (clock-off) frames, so the audience
+// scene is the proven layer path, not a demo-flavoured one; and the demo
+// profile still paints the full 1.x picture when asked for explicitly.
+// Backs --check-production.
+bool verifyProductionCompositor(std::string* error);
 
 }  // namespace openshow::worker

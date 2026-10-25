@@ -663,12 +663,66 @@ void testPreviewStream() {
                     boost::json::object{{"layer", layerName}, {"enabled", on}}, &reply) &&
                reply.as_object().contains("result");
     };
-    std::vector<std::uint8_t> frameWithImages;
+
+    // The production compositor (task 6.1a, review R1) starts a socket
+    // session uniformly black — the 1.x demo picture this scenario grew up
+    // with is no longer on air (production_output_tests pins the black
+    // start itself). The frame mechanics here need real composition
+    // content, so present a solid-colour scene with words first; a cut
+    // means the very next frame is already the scene.
+    const boost::json::object redScene{
+        {"scene", 1},
+        {"showId", "ipc-preview"},
+        {"slideId", "content"},
+        {"backgroundColor", 0xFF0000u},
+        {"background",
+         boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
+        {"items", boost::json::array{boost::json::object{{"lines", boost::json::array{"IPC"}},
+                                                         {"color", 0xFFFFFFu},
+                                                         {"fontFamily", ""},
+                                                         {"fontSize", 120.0},
+                                                         {"x", 160.0},
+                                                         {"y", 100.0},
+                                                         {"width", 1600.0},
+                                                         {"height", 880.0},
+                                                         {"align", "center"},
+                                                         {"lineSpacing", 1.25}}}},
+    };
+    bool onAir = false;
+    if (call(fd, static_cast<std::int64_t>(rpcId++), "scene.prepare", redScene, &reply) &&
+        reply.as_object().contains("result")) {
+        const std::uint64_t revision =
+            numberValue(reply.at("result").as_object().at("revision"));
+        if (call(fd, static_cast<std::int64_t>(rpcId++), "scene.present",
+                 boost::json::object{{"revision", revision}, {"transition", "cut"}},
+                 &reply) &&
+            reply.as_object().contains("result")) {
+            const auto onAirDeadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!onAir && std::chrono::steady_clock::now() < onAirDeadline) {
+                boost::json::value statusReply;
+                if (call(fd, static_cast<std::int64_t>(rpcId++), "output.status", {},
+                         &statusReply) &&
+                    statusReply.at("result").as_object().contains("scene") &&
+                    numberValue(statusReply.at("result").as_object()
+                                    .at("scene")
+                                    .as_object()
+                                    .at("active")) == revision) {
+                    onAir = true;
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+            }
+        }
+    }
+    check(onAir, "a solid-colour scene is on air for the preview frames");
+
+    std::vector<std::uint8_t> frameWithScene;
     const bool wokeOnce = toggleLayer("clock", false);
     const bool gotFirst =
         wokeOnce &&
         copyOneFrame(fd, reinterpret_cast<const std::uint8_t*>(segment), bytesPerSlot,
-                     width, height, &frameWithImages);
+                     width, height, &frameWithScene);
     check(gotFirst, "a frame copied intact after a command woke the loop");
     std::vector<std::uint8_t> frameSecond;
     check(toggleLayer("clock", true) &&
@@ -676,9 +730,9 @@ void testPreviewStream() {
                            width, height, &frameSecond),
           "a second frame copied intact through the slot seqlock");
     bool frameHadContent = false;
-    for (std::size_t i = 3; gotFirst && i < frameWithImages.size(); i += 4) {
-        if (frameWithImages[i] == 0xFF &&
-            (frameWithImages[i - 3] | frameWithImages[i - 2] | frameWithImages[i - 1]) !=
+    for (std::size_t i = 3; gotFirst && i < frameWithScene.size(); i += 4) {
+        if (frameWithScene[i] == 0xFF &&
+            (frameWithScene[i - 3] | frameWithScene[i - 2] | frameWithScene[i - 1]) !=
                 0) {
             frameHadContent = true;
             break;
@@ -686,14 +740,15 @@ void testPreviewStream() {
     }
     check(frameHadContent, "the copied frame is not a blank buffer");
 
-    // The preview is not a snapshot: toggling the images layer must change
-    // what the slots carry. Many pixels have to differ because the photo
-    // covers a fifth of the canvas, while the ticking clock alone repaints
-    // a thin text strip.
+    // The preview is not a snapshot: toggling the scene's background layer
+    // must change what the slots carry. Many pixels have to differ because
+    // the colour fill covers the whole canvas, while the ticking clock
+    // alone repaints a thin text strip. (Before 6.1a this proved the demo
+    // photo's images layer; the scene colour fill is production's content.)
     if (gotFirst) {
-        const bool imagesOffAcked = toggleLayer("images", false);
-        if (check(imagesOffAcked,
-                  "turning the images layer off is acknowledged (preview scenario)")) {
+        const bool backgroundOffAcked = toggleLayer("background", false);
+        if (check(backgroundOffAcked,
+                  "turning the background layer off is acknowledged (preview scenario)")) {
             const std::uint64_t ackedRevision =
                 numberValue(reply.at("result").as_object().at("revision"));
             bool applied = false;
@@ -704,25 +759,25 @@ void testPreviewStream() {
                 if (call(fd, static_cast<std::int64_t>(rpcId++), "output.status", {},
                          &statusReply)) {
                     const boost::json::object& status = statusReply.at("result").as_object();
-                    applied = !status.at("layers").as_object().at("images").as_bool() &&
+                    applied = !status.at("layers").as_object().at("background").as_bool() &&
                               numberValue(status.at("revision")) >= ackedRevision;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
-            check(applied, "the render thread applied the images-layer change");
-            std::vector<std::uint8_t> frameWithoutImages;
+            check(applied, "the render thread applied the background-layer change");
+            std::vector<std::uint8_t> frameWithoutBackground;
             if (check(copyOneFrame(fd, reinterpret_cast<const std::uint8_t*>(segment),
-                                   bytesPerSlot, width, height, &frameWithoutImages),
+                                   bytesPerSlot, width, height, &frameWithoutBackground),
                       "a frame copied after the layer toggle")) {
                 std::size_t differing = 0;
-                for (std::size_t i = 0; i + 2 < frameWithoutImages.size(); i += 4) {
-                    if (frameWithImages[i] != frameWithoutImages[i] ||
-                        frameWithImages[i + 1] != frameWithoutImages[i + 1] ||
-                        frameWithImages[i + 2] != frameWithoutImages[i + 2]) {
+                for (std::size_t i = 0; i + 2 < frameWithoutBackground.size(); i += 4) {
+                    if (frameWithScene[i] != frameWithoutBackground[i] ||
+                        frameWithScene[i + 1] != frameWithoutBackground[i + 1] ||
+                        frameWithScene[i + 2] != frameWithoutBackground[i + 2]) {
                         ++differing;
                     }
                 }
-                check(differing * 100 > frameWithoutImages.size() / 4 * 5,
+                check(differing * 100 > frameWithoutBackground.size() / 4 * 5,
                       "preview content followed the layer toggle");
             }
         }

@@ -91,6 +91,14 @@ add_test(NAME render_scene_transition
   COMMAND openshow-worker --check-transition
 )
 
+# Task 6.1a (review R1): the production compositor profile — uniform black
+# start incl. the footer region, clock/aux off, scene composition identical
+# to the proven demo path, and the demo picture intact when asked for.
+# CPU only.
+add_test(NAME render_production_compositor
+  COMMAND openshow-worker --check-production
+)
+
 # Task 3.1 scene typography: production layout (wrap, centring, fallback,
 # shrink-to-fit) rendered on the CPU through the same engine the audience
 # words layer uses. No display or Vulkan; exits 77 when no usable fonts.
@@ -141,6 +149,7 @@ target_link_libraries(background_media_tests PRIVATE openshow::protocol openshow
 add_test(NAME background_media_tests
   COMMAND background_media_tests $<TARGET_FILE:openshow-worker>)
 set_tests_properties(background_media_tests PROPERTIES LABELS display TIMEOUT 240)
+# Task 1.5e acceptance: the event-driven scheduler. --idle-check watches the
 # render loop from a second thread and fails (exit 1) if a static scene
 # presents anything, burns more than 5% CPU over the window, or ignores a
 # layer toggle. Needs a display like the rpc scenario.
@@ -158,6 +167,17 @@ target_link_libraries(live_fade_tests PRIVATE openshow::protocol)
 add_test(NAME live_fade_tests
   COMMAND live_fade_tests $<TARGET_FILE:openshow-worker>)
 set_tests_properties(live_fade_tests PROPERTIES LABELS display TIMEOUT 90)
+
+# Task 6.1a (review R1): the production composition rules over a real
+# --socket session: the fresh worker's live preview is uniformly black
+# incl. the footer band, output.status reports the production layer
+# defaults, a presented scene (colour + words) carries no diagnostics in
+# the footer, and clear-all returns to uniform black. Needs a display.
+add_executable(production_output_tests production_output_tests.cpp)
+target_link_libraries(production_output_tests PRIVATE openshow::protocol)
+add_test(NAME production_output_tests
+  COMMAND production_output_tests $<TARGET_FILE:openshow-worker>)
+set_tests_properties(production_output_tests PROPERTIES LABELS display TIMEOUT 90)
 
 # Real FFmpeg get_buffer2 allocations into Vulkan linear images, independent
 # reference/presentation lifetimes, all native plane layouts and strict errors.

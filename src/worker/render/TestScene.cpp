@@ -67,8 +67,9 @@ constexpr SkRect kClockRegion = SkRect::MakeLTRB(130.0f, 965.0f, 1500.0f, 1035.0
 class BackgroundLayer final : public RenderLayer {
 public:
     BackgroundLayer(const ActiveScene* active, SceneImageCache* images,
-                    const SceneTransition* transition)
-        : fActive(active), fImages(images), fTransition(transition) {}
+                    const SceneTransition* transition, bool demoBackdrop = true)
+        : fActive(active), fImages(images), fTransition(transition),
+          fDemoBackdrop(demoBackdrop) {}
 
     LayerId id() const override { return LayerId::kBackground; }
 
@@ -91,6 +92,13 @@ public:
             }
             return;
         }
+        // Task 6.1a: the production profile has no demo backdrop. With
+        // nothing presented it draws nothing at all, leaving the frame's
+        // black clear as the startup and clear-all picture — footer
+        // region included.
+        if (!fDemoBackdrop) {
+            return;
+        }
         const SkPoint points[2] = {{0, 0}, {0, TestScene::kCanvasHeight}};
         const SkColor4f colors[2] = {
             SkColor4f::FromColor(SkColorSetRGB(0x14, 0x16, 0x1F)),
@@ -107,6 +115,7 @@ private:
     const ActiveScene* fActive;            // TestScene-owned; outlives the layer
     SceneImageCache* fImages;              // TestScene-owned image cache
     const SceneTransition* fTransition;    // TestScene-owned fade state
+    const bool fDemoBackdrop;              // production starts black (6.1a)
 };
 
 // Slide images: the PNG-round-tripped photo with a border and caption. The
@@ -331,6 +340,12 @@ std::unique_ptr<skia::textlayout::Paragraph> makeTitle(
 TestScene::~TestScene() = default;
 
 bool TestScene::create(std::string* error) {
+    return create(error, Profile::kDemo);
+}
+
+bool TestScene::create(std::string* error, Profile profile) {
+    fProduction = profile == Profile::kProduction;
+
     // One font setup for the whole worker (task 3.1): the engine assembles
     // the fontconfig manager, typefaces and FontCollection, and the
     // production layers lay scene text out through it too.
@@ -339,32 +354,45 @@ bool TestScene::create(std::string* error) {
         return false;
     }
 
-    std::unique_ptr<skia::textlayout::Paragraph> title =
-        makeTitle(fText->fontCollection(), fText->unicode(), fText->bold(), fText->regular());
-    if (!title) {
-        if (error) {
-            *error = "SkParagraph title layout failed";
-        }
-        return false;
-    }
-
+    // The demo picture's assets exist only for the demo profile (6.1a):
+    // the production compositor never builds the photo or the title, so a
+    // --socket worker cannot fall back onto them and pays no start-up
+    // cost for content it must not show.
+    std::unique_ptr<skia::textlayout::Paragraph> title;
     sk_sp<SkImage> photo;
-    if (!createPhoto(&photo, error)) {
-        return false;
+    if (!fProduction) {
+        title = makeTitle(fText->fontCollection(), fText->unicode(), fText->bold(),
+                          fText->regular());
+        if (!title) {
+            if (error) {
+                *error = "SkParagraph title layout failed";
+            }
+            return false;
+        }
+        if (!createPhoto(&photo, error)) {
+            return false;
+        }
     }
 
     // One layer per composition tab, stacked bottom to top in the order the
     // compositor will dispatch them (PLAN.md "Output layer model"). Audio is
     // not here: it is a playback source, never a composition item.
-    fLayers.add(std::make_unique<BackgroundLayer>(&fActiveScene, &fImages, &fTransition));
+    fLayers.add(std::make_unique<BackgroundLayer>(&fActiveScene, &fImages, &fTransition,
+                                                  !fProduction));
     fLayers.add(std::make_unique<ImageLayer>(std::move(photo), fText->regular(), &fActiveScene));
     fLayers.add(
         std::make_unique<WordsLayer>(std::move(title), fText.get(), &fActiveScene, &fTransition));
     fLayers.add(std::make_unique<AuxLayer>(fText->regular()));
     fLayers.add(std::make_unique<ClockLayer>(fText->regular()));
-    // Aux is not part of the agreed use case and starts off; the clock stays
-    // on in this development scene as the live-frame indicator.
+    // Aux is not part of the agreed use case and starts off in both
+    // profiles. The clock is the development scene's live-frame indicator;
+    // production starts with it off too (6.1a): the audience must not get
+    // diagnostics or an unasked-for clock, and the RPC layer toggle still
+    // lets an operator call the audience clock up explicitly.
     fLayers.setEnabled(LayerId::kAux, false);
+    if (fProduction) {
+        fLayers.setEnabled(LayerId::kClock, false);
+    }
     return true;
 }
 
@@ -882,6 +910,152 @@ bool verifySceneTransition(std::string* error) {
     }
     if (!channelsMatch(frame.at(2, 2), red, 4)) {
         return fail("cut did not cancel a fade in flight");
+    }
+    return true;
+}
+
+bool verifyProductionCompositor(std::string* error) {
+    const auto fail = [&](const char* what) {
+        if (error) {
+            *error = what;
+        }
+        return false;
+    };
+
+    // 1. Layer defaults. The scene tabs are the production composition;
+    //    aux and the clock/diagnostics footer start disabled (R1).
+    TestScene production;
+    if (!production.create(error, TestScene::Profile::kProduction)) {
+        return false;
+    }
+    if (!production.production()) {
+        return fail("production profile does not report itself");
+    }
+    if (!production.layerEnabled(LayerId::kBackground) ||
+        !production.layerEnabled(LayerId::kImages) ||
+        !production.layerEnabled(LayerId::kWords)) {
+        return fail("production scene layers do not start enabled");
+    }
+    if (production.layerEnabled(LayerId::kAux) || production.layerEnabled(LayerId::kClock)) {
+        return fail("production aux/clock layers do not start disabled");
+    }
+
+    // 2. Empty black initial scene: with nothing presented every pixel is
+    //    black — the footer/clock band included, which is exactly where
+    //    the review found diagnostics painted onto the audience output.
+    RasterFrame frame;
+    if (!frame.render(production, error)) {
+        return false;
+    }
+    const SkIRect footer = SkIRect::MakeLTRB(0, static_cast<int>(kClockRegion.fTop) - 5,
+                                             frame.width, frame.height);
+    for (int y = 0; y < frame.height; ++y) {
+        for (int x = 0; x < frame.width; ++x) {
+            if (frame.at(x, y) != SK_ColorBLACK) {
+                return fail("production start-up frame is not pure black");
+            }
+        }
+    }
+
+    // 3. A presented scene composes identical pixels in either profile
+    //    (clock off on the demo side, since that is the production
+    //    default): the audience scene is the proven layer path, and
+    //    output/preview sharing one compositor means they carry the same
+    //    scene by construction.
+    auto subject = std::make_shared<openshow::scene::Scene>();
+    subject->showId = "check";
+    subject->slideId = "production";
+    subject->background.color = 0xE03030u;  // scene colours are 0xRRGGBB
+    openshow::scene::TextItem item;
+    item.lines = {"PROD"};
+    item.fontSize = 300.0;
+    item.color = 0xFFFFFFu;
+    subject->items.push_back(std::move(item));
+
+    production.setActiveScene(subject, SceneTransitionKind::kCut);
+    if (!frame.render(production, error, 5.0)) {
+        return false;
+    }
+    if (!channelsMatch(frame.at(2, 2), SkColorSetRGB(0xE0, 0x30, 0x30), 4)) {
+        return fail("production presentation lost the scene background");
+    }
+    {  // the words made it, and the footer band stays scene-colour
+        int ink = 0;
+        for (int y = 0; y < frame.height; y += 2) {
+            for (int x = 0; x < frame.width; x += 2) {
+                const SkColor c = frame.at(x, y);
+                if (SkColorGetR(c) > 235 && SkColorGetG(c) > 235 && SkColorGetB(c) > 235) {
+                    ++ink;
+                }
+            }
+        }
+        if (ink < 100) {
+            return fail("production presentation lost the scene words");
+        }
+        const SkColor red = SkColorSetRGB(0xE0, 0x30, 0x30);
+        for (int y = footer.top(); y < footer.bottom(); y += 3) {
+            for (int x = footer.left(); x < footer.right(); x += 3) {
+                if (!channelsMatch(frame.at(x, y), red, 4)) {
+                    return fail("production draws diagnostics into the footer band");
+                }
+            }
+        }
+    }
+
+    TestScene demo;
+    if (!demo.create(error, TestScene::Profile::kDemo)) {
+        return false;
+    }
+    demo.setLayerEnabled(LayerId::kClock, false);  // production's default
+    demo.setActiveScene(subject, SceneTransitionKind::kCut);
+    RasterFrame demoFrame;
+    if (!demoFrame.render(demo, error, 5.0)) {
+        return false;
+    }
+    SkIRect bounds;
+    if (diffBounds(frame, demoFrame, &bounds)) {
+        if (error) {
+            *error = "production and demo scene composition differ: diff " + describe(bounds);
+        }
+        return false;
+    }
+
+    // 4. The demo picture remains fully available when asked for
+    //    explicitly: gradient, photo, title and footer all paint again.
+    TestScene full;
+    if (!full.create(error)) {
+        return false;
+    }
+    RasterFrame demoStart;
+    if (!demoStart.render(full, error)) {
+        return false;
+    }
+    if (demoStart.at(960, 540) == SK_ColorBLACK || demoStart.at(1800, 60) == SK_ColorBLACK) {
+        return fail("demo profile lost its gradient backdrop");
+    }
+    if (demoStart.at(500, 500) == SK_ColorBLACK) {
+        return fail("demo profile lost the demo photo");
+    }
+    {  // some ink in the title and footer regions proves text came back
+        int words = 0;
+        int footerInk = 0;
+        for (int y = 0; y < demoStart.height; ++y) {
+            for (int x = 0; x < demoStart.width; ++x) {
+                const SkColor c = demoStart.at(x, y);
+                if (c != SK_ColorBLACK && y >= 205 && y < 600 && x >= 1025) {
+                    ++words;
+                }
+                if (c != SK_ColorBLACK && y >= 965 && y < 1035 && x >= 130 && x < 1500) {
+                    ++footerInk;
+                }
+            }
+        }
+        if (words == 0) {
+            return fail("demo profile lost the demo title");
+        }
+        if (footerInk == 0) {
+            return fail("demo profile lost the status/clock footer");
+        }
     }
     return true;
 }

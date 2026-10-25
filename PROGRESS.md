@@ -52,15 +52,29 @@ Updated: 2026-10-25 (Europe/London).
     sequence frees an owned slot; appendFrame emits >1 MiB that Decoder rejects;
     recover→save→clear deletes the live source path and a second save fails.
     These are review probes, not committed regression fixes.
-- Working changes: PLAN.md milestone replacement, this handoff, and new review
-  document only. The pre-existing OutputSession.cpp clock log is unchanged.
-  User authorized committing and pushing the three documentation files on
-  2026-10-25 before implementation begins. Documentation checkpoint message:
-  `docs: review M5 code and plan M6 remediation before M7 productization`.
-- Exact next action: **6.1a**, production compositor startup/clear black and
-  clock/diagnostics-off defaults, with pixel checks at the real output/preview
-  boundary. Then execute the focused M6 leaves in order. Review completion
-  does not mark any finding fixed; no new implementation blocker was found.
+- Working changes at review time: PLAN.md milestone replacement, this handoff,
+  and the new review document only; the pre-existing OutputSession.cpp clock
+  log was committed after the review as
+  `worker/session: task 5.5 - log which clock paces a background transport`.
+- **6.1a DONE (2026-10-25).** `--socket` composes with the production
+  compositor: uniform black start/clear-all including the footer band, clock
+  and aux layers off, no diagnostics in the footer, and output/preview drawing
+  one identical scene (`TestScene::Profile`, `OutputSession::Options::
+  production`). Pinned by `--check-production` (CPU: black incl. footer,
+  presented scene pixel-identical to the demo path, demo picture intact when
+  asked for) and `production_output_tests` (live `--socket` preview stream:
+  black startup incl. footer pixel-for-pixel, RPC layer defaults, scene
+  colour/words with a diagnostics-free footer band, black clear-all);
+  negative-checked — with the profile off the R1 assertions fail exactly as
+  the review described. `rpc_ipc_tests`' preview scenario went scene-driven
+  (its old premise was the demo picture). Gates desktop **28/28**, headless
+  **17/17**.
+- Exact next action: **6.1b**, finish TestScene graduation — production
+  sources own the scene layers/transitions; demo photo/title and the snapshot/
+  assertion harnesses move to development/test targets; the production session
+  no longer constructs `TestScene`. Then continue the focused M6 leaves in
+  order. Review completion does not mark any finding fixed; no new
+  implementation blocker was found.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 

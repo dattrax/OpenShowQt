@@ -3,8 +3,10 @@
  * graduation"), carved out of task 1.1's runRenderTest loop.
  *
  * The session owns the output window, Vulkan device, Skia Ganesh context,
- * swapchain and the demo scene, and composites frames from the thread that
- * calls open()/run(). This is the object RPC commands act on: handler
+ * the swapchain and the compositor (demo profile for the development
+ * drivers, production profile for a --socket session, task 6.1a), and
+ * composites frames from the thread that calls open()/run(). This is the
+ * object RPC commands act on: handler
  * threads may only call the thread-safe operations below. Layer toggles
  * land on the next frame (never mid-frame), bump an output revision the
  * acknowledgement reports, and apply on the render thread from the guarded
@@ -74,6 +76,15 @@ public:
         // turns it on; benches and checks that never present scenes leave
         // it off, and the dev video-quad seam stays exactly as built.
         bool backgroundMedia = false;
+        // Task 6.1a (review R1): compose for an audience, not a demo. The
+        // compositor starts with the production profile: black with
+        // nothing presented (no demo gradient/photo/title), the clock and
+        // aux layers off, and no diagnostic text in the footer — so the
+        // startup and clear-all frames are uniformly black including the
+        // footer region, and output and preview carry the identical
+        // scene. --socket sets it; the development drivers keep the demo
+        // profile explicitly.
+        bool production = false;
     };
 
     // One physical panel, as the frontend sees it. index is the value
@@ -410,6 +421,7 @@ private:
     openshow::scene::Background fAppliedBackground;        // identity in service
     ActiveScene fRenderScene;                              // = the composition's scene
     bool fBackgroundMedia = false;                         // from Options
+    bool fProduction = false;                              // from Options (6.1a)
     std::optional<MediaError> fPendingMediaError;          // fMutex; media.error push
 
     // Guards fDesiredMask, fRevision and the fields of fStatus that the

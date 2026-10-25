@@ -104,8 +104,12 @@ bool OutputSession::open(const Options& options, std::string* error) {
     }
     fContext->setResourceCacheLimit(64 * 1024 * 1024);
 
+    // Task 6.1a (R1): a --socket session composes with the production
+    // profile — black start, clock/aux off, no demo assets — and open()
+    // reports the resulting defaults in the initial layer mask.
     fScene = std::make_unique<TestScene>();
-    if (!fScene->create(error)) {
+    if (!fScene->create(error, options.production ? TestScene::Profile::kProduction
+                                                  : TestScene::Profile::kDemo)) {
         close();
         return false;
     }
@@ -130,6 +134,7 @@ bool OutputSession::open(const Options& options, std::string* error) {
     }
     fDiagnostics = options.diagnostics;
     fBackgroundMedia = options.backgroundMedia;
+    fProduction = options.production;
 
     fSwapchain = std::make_unique<Swapchain>();
     if (!createSwapchain()) {
@@ -982,10 +987,21 @@ void OutputSession::frame(uint64_t presentedFor) {
     unsigned videoToken = 0;
     VkSemaphore videoDone = VK_NULL_HANDLE;
     if (surface) {
-        char status[160];
-        std::snprintf(status, sizeof(status), "live: %s \xc2\xb7 %dx%d \xc2\xb7 frame %llu",
-                      fVk->deviceName().c_str(), fSwapchain->width(), fSwapchain->height(),
-                      fFrames);
+        // The footer line (task 6.1a): a development affordance only. The
+        // production profile passes the empty string — the same one the
+        // preview already draws with — so output and preview compose the
+        // identical scene. The production compositor's clock layer starts
+        // off anyway; if an operator toggles the audience clock up, the
+        // audience gets the time, not this process's device and frame
+        // numbers.
+        std::string statusLine;
+        if (!fProduction) {
+            char status[160];
+            std::snprintf(status, sizeof(status), "live: %s \xc2\xb7 %dx%d \xc2\xb7 frame %llu",
+                          fVk->deviceName().c_str(), fSwapchain->width(), fSwapchain->height(),
+                          fFrames);
+            statusLine = status;
+        }
         const double elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - fStartTime)
                 .count();
@@ -1036,7 +1052,7 @@ void OutputSession::frame(uint64_t presentedFor) {
         const bool videoIsBackground =
             videoImage != nullptr && fRenderScene && fRenderScene->background.isVideo;
         fScene->draw(surface->getCanvas(), fSwapchain->width(), fSwapchain->height(), elapsed,
-                     status, videoIsBackground ? videoImage : nullptr);
+                     statusLine, videoIsBackground ? videoImage : nullptr);
         ++fFrames;
         if (videoImage && !videoIsBackground) {
             surface->getCanvas()->save();

@@ -86,6 +86,7 @@ void printUsage(const char* program) {
                  "       %s --list-monitors\n"
                  "       %s --check-layers\n"
                  "       %s --check-transition\n"
+                 "       %s --check-production\n"
                  "       %s --pw-check [--seconds S]\n"
                  "  --version            print the application version and exit\n"
                  "  --check-deps         report the libraries this build linked and exit\n"
@@ -116,12 +117,16 @@ void printUsage(const char* program) {
                  "  --check-layers       verify layer composition on the CPU and exit\n"
                  "  --check-transition   verify scene cut/crossfade timing on the CPU\n"
                  "                       and exit (no display needed)\n"
+                 "  --check-production   verify the production compositor profile on the\n"
+                 "                       CPU and exit (black start incl. footer, scene\n"
+                 "                       layers identical to the demo path, demo intact)\n"
                  "  --pw-check           feed a quiet tone through PipeWire and report the\n"
                  "                       sink's timing numbers (audible, ~5 s by default)\n"
                  "  --disable-layer NAME composition layer off: background, images,\n"
                  "                       words, aux or clock (repeatable)\n"
                  "  --enable-layer NAME  the converse, e.g. --enable-layer aux\n",
-                 program, program, program, program, program, program, program, program);
+                 program, program, program, program, program, program, program, program,
+                 program);
 }
 
 void printVersion(const char* label, unsigned int packed) {
@@ -587,6 +592,7 @@ int main(int argc, char** argv) {
     bool listMonitors = false;
     bool checkLayers = false;
     bool checkTransition = false;
+    bool checkProduction = false;
     bool pwCheck = false;
     const char* avBenchPath = nullptr;
     std::string secondAudioPath;  // with --av-bench: a second mixer input (5.3)
@@ -619,6 +625,8 @@ int main(int argc, char** argv) {
             checkLayers = true;
         } else if (argument == "--check-transition") {
             checkTransition = true;
+        } else if (argument == "--check-production") {
+            checkProduction = true;
         } else if (argument == "--pw-check") {
             pwCheck = true;
         } else if (argument == "--av-bench" && i + 1 < argc) {
@@ -693,6 +701,17 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::printf("scene transition checks passed\n");
+        return 0;
+    }
+
+    if (checkProduction) {
+        std::string error;
+        if (!openshow::worker::verifyProductionCompositor(&error)) {
+            std::fprintf(stderr, "openshow-worker: production compositor check failed: %s\n",
+                         error.c_str());
+            return 1;
+        }
+        std::printf("production compositor checks passed\n");
         return 0;
     }
 
@@ -779,6 +798,11 @@ int main(int argc, char** argv) {
         // frontend; benches and checks never present, so they keep the
         // plain seam.
         options.backgroundMedia = true;
+        // Task 6.1a (review R1): the audience gets the production
+        // compositor — black before the first presentation, clock/aux and
+        // the diagnostic footer off — so startup, clear-all and fresh
+        // workers are uniformly black and preview mirrors the output.
+        options.production = true;
         if (!session.open(options, &error)) {
             std::fprintf(stderr, "openshow-worker: %s\n", error.c_str());
             return 1;
