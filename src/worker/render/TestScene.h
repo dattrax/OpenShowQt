@@ -72,12 +72,16 @@ public:
     // Draws the scene into width x height device pixels, scaling the canvas
     // with the output rule and centring it. statusLine is the small line of
     // diagnostics; timeSeconds drives the clock so a live loop visibly moves.
+    // backgroundVideo (task 5.5) is the frame the session's scheduler
+    // decided to draw; the background layer consumes it when the on-air
+    // scene's background names a video asset, and nothing else looks at it.
     void draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
-              const std::string& statusLine);
+              const std::string& statusLine, const SkImage* backgroundVideo = nullptr);
     // Deterministic variant: fixed wall clock so two frames with the same
     // layer configuration are pixel identical (used by --check-layers).
     void draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
-              std::time_t wallClock, const std::string& statusLine);
+              std::time_t wallClock, const std::string& statusLine,
+              const SkImage* backgroundVideo = nullptr);
 
     // Renders the compiled scene instead of the demo content (task 3.1):
     // the background fills the scene colour (or its cover-fitted image),

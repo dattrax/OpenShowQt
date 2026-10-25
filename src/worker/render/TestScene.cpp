@@ -49,12 +49,21 @@ constexpr SkRect kAuxRegion = SkRect::MakeLTRB(1545.0f, 25.0f, 1895.0f, 125.0f);
 constexpr SkRect kClockRegion = SkRect::MakeLTRB(130.0f, 965.0f, 1500.0f, 1035.0f);
 
 // Bottom of the stack: the gradient background, or the presented scene's
-// colour fill (and cover-fitted image, task 3.2) while one is on air. When
-// a crossfade is in flight the outgoing scene draws first, then the on-air
-// scene dissolves over it at the media blend — the whole background fading
-// as one, with the transparency straight in the paint (no render-to-
-// texture). FreeShow puts video here too; the M5 background layer will
-// replace this shader with decoded frames through the same draw() entry.
+// colour fill and cover-fitted media (still image task 3.2, video frames
+// task 5.5) while one is on air. When a crossfade is in flight the
+// outgoing scene draws first, then the on-air scene dissolves over it at
+// the media blend — the whole background fading as one, with the
+// transparency straight in the paint (no render-to-texture).
+//
+// Task 5.5's rule: a background that involves video CROSSES OVER ON THE
+// MEDIA TRACK ONLY AS A CUT — either side being video means the media
+// blend snaps to the on-air scene. Two identical video frames do not
+// crossfade with themselves (a lyric change over the same background
+// video just keeps rolling — the M3 continuity rule), and swapping
+// between different videos (or a video and a still) cuts the picture
+// rather than compositing two live GPU slots at once. The text track
+// fades independently either way: the audience cross-dissolves words
+// while the background plays on.
 class BackgroundLayer final : public RenderLayer {
 public:
     BackgroundLayer(const ActiveScene* active, SceneImageCache* images,
@@ -65,13 +74,20 @@ public:
 
     void draw(const FrameContext& ctx) override {
         if (*fActive) {
-            if (fTransition->fading()) {
+            const bool videoInvolved =
+                (*fActive)->background.isVideo ||
+                (fTransition->fading() && fTransition->fFrom &&
+                 fTransition->fFrom->background.isVideo);
+            if (fTransition->fading() && !videoInvolved) {
                 drawSceneBackground(ctx.canvas, *fTransition->fFrom, fImages, nullptr);
                 SkPaint fade;
                 fade.setAlpha(static_cast<uint8_t>(fTransition->fMediaBlend * 255.0f + 0.5f));
                 drawSceneBackground(ctx.canvas, **fActive, fImages, &fade);
             } else {
-                drawSceneBackground(ctx.canvas, **fActive, fImages, nullptr);
+                // Steady state, and the video media cut: on-air only,
+                // full strength.
+                drawSceneBackground(ctx.canvas, **fActive, fImages, nullptr,
+                                    ctx.backgroundVideo);
             }
             return;
         }
@@ -495,12 +511,14 @@ void TestScene::advanceTransition(double timeSeconds) {
 }
 
 void TestScene::draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
-                     const std::string& statusLine) {
-    draw(canvas, widthPx, heightPx, timeSeconds, std::time(nullptr), statusLine);
+                     const std::string& statusLine, const SkImage* backgroundVideo) {
+    draw(canvas, widthPx, heightPx, timeSeconds, std::time(nullptr), statusLine,
+         backgroundVideo);
 }
 
 void TestScene::draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
-                     std::time_t wallClock, const std::string& statusLine) {
+                     std::time_t wallClock, const std::string& statusLine,
+                     const SkImage* backgroundVideo) {
     // The swapchain surface hands out the same canvas every frame and Skia
     // keeps its matrix: without this reset the output-rule scale below
     // compounds frame after frame and the scene collapses into the top-left
@@ -524,7 +542,8 @@ void TestScene::draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSec
 
     // Single pass, no render-to-texture: the layer stack dispatches each
     // enabled layer into this canvas in z order and skips disabled ones.
-    const FrameContext ctx{canvas, timeSeconds, wallClock, statusLine.c_str()};
+    const FrameContext ctx{canvas, timeSeconds, wallClock, statusLine.c_str(),
+                           backgroundVideo};
     fLayers.draw(ctx);
 }
 

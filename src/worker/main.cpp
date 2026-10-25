@@ -774,6 +774,11 @@ int main(int argc, char** argv) {
         options.title = "OpenShowQt output";
         options.monitor = monitorIndex;
         options.vulkanValidation = vulkanValidation;
+        // Task 5.5: a presented scene's video background plays through the
+        // session's transport. Only socket mode drives scenes from a real
+        // frontend; benches and checks never present, so they keep the
+        // plain seam.
+        options.backgroundMedia = true;
         if (!session.open(options, &error)) {
             std::fprintf(stderr, "openshow-worker: %s\n", error.c_str());
             return 1;

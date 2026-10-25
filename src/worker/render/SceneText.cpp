@@ -511,7 +511,8 @@ sk_sp<SkImage> SceneImageCache::imageFor(const std::string& path) {
 }
 
 void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
-                         SceneImageCache* images, const SkPaint* paint) {
+                         SceneImageCache* images, const SkPaint* paint,
+                         const SkImage* video) {
     const uint32_t color = scene.background.color;
     SkPaint fill;
     fill.setColor(SkColorSetARGB(0xFF, (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF));
@@ -519,12 +520,28 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
         fill.setAlpha(paint->getAlpha());
     }
     canvas->drawRect(SkRect::MakeWH(kSceneCanvasWidth, kSceneCanvasHeight), fill);
-    if (!scene.background.hasImage || images == nullptr) {
+    if (!scene.background.hasImage) {
         return;
     }
-    sk_sp<SkImage> image = images->imageFor(scene.background.assetPath);
-    if (!image) {
-        return;  // missing or undecodable: the colour fill stands alone
+    // Task 5.5: the media kind decides where the picture comes from —
+    // the offered video frame, or the cached decode of the image. Either
+    // absent leaves the colour fill standing alone (a video with no
+    // frame yet, or one that failed to open, is the same degradation as
+    // a missing image; the session reports the failure).
+    sk_sp<SkImage> image;
+    if (scene.background.isVideo) {
+        if (video == nullptr) {
+            return;
+        }
+        image = sk_ref_sp(const_cast<SkImage*>(video));
+    } else {
+        if (images == nullptr) {
+            return;
+        }
+        image = images->imageFor(scene.background.assetPath);
+        if (!image) {
+            return;  // missing or undecodable: the colour fill stands alone
+        }
     }
     // Cover fit: scale to fill the authored canvas, centre, crop overflow
     // (clip so a portrait window's letterbox bars stay black).

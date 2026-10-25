@@ -142,14 +142,20 @@ private:
     std::map<std::string, sk_sp<SkImage>> fImages;
 };
 
-// Draws a scene's background: the colour fill, and the cover-fitted image
-// on top when hasImage. Cover scales to fill the authored canvas (the
-// lyric default), centring and cropping the overflow; the paint's alpha
-// applies to the whole background for a fade. Image load failure leaves
-// the colour fill standing alone. The caller's canvas already carries the
-// output-rule transform.
+// Draws a scene's background: the colour fill, and the cover-fitted
+// media on top when hasImage. Cover scales to fill the authored canvas
+// (the lyric default), centring and cropping the overflow; the paint's
+// alpha applies to the whole background for a fade. Image load failure
+// leaves the colour fill standing alone. The caller's canvas already
+// carries the output-rule transform.
+//
+// Task 5.5: a video background draws the frame the session's scheduler
+// offered via `video` (cover-fit like the image); no frame yet — or a
+// video that never opened — leaves the colour fill, the same degradation
+// as a missing image, and the session reports the failure (media status).
 void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
-                         SceneImageCache* images, const SkPaint* paint = nullptr);
+                         SceneImageCache* images, const SkPaint* paint = nullptr,
+                         const SkImage* video = nullptr);
 
 // Options for renderSceneSnapshot: which layers to draw (mirroring the
 // LayerStack enable mask) and an optional crossfade stage to render.

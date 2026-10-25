@@ -41,6 +41,8 @@
 #include "output/OutputWindow.h"
 #include "output/Swapchain.h"
 #include "output/VulkanContext.h"
+#include "playback/AvPlayer.h"
+#include "playback/PlaybackPipeline.h"
 #include "playback/VideoSeam.h"
 #include "render/Layer.h"
 #include "render/TestScene.h"
@@ -67,6 +69,11 @@ public:
         // Task 1.5g: VK_LAYER_KHRONOS_validation + debug messenger on the
         // Vulkan instance (dev tool, off by default).
         bool vulkanValidation = false;
+        // Task 5.5: drive a presented scene's video background through the
+        // production transport (PlaybackPipeline + AvPlayer). --socket mode
+        // turns it on; benches and checks that never present scenes leave
+        // it off, and the dev video-quad seam stays exactly as built.
+        bool backgroundMedia = false;
     };
 
     // One physical panel, as the frontend sees it. index is the value
@@ -292,6 +299,18 @@ private:
     // is its portable equivalent of writing an eventfd).
     void wakeRenderThread();
 
+    // Background media transport (task 5.5). Both run on the render thread
+    // only, and OUTSIDE frame()'s graphics queue lock (the run loop applies
+    // scene changes before the lock is taken): the swap's join() waits on
+    // pipeline threads that may be blocked acquiring that lock. Apply
+    // compares the scene's background against the identity the transport
+    // currently serves — unchanged means untouched (the M3 continuity rule:
+    // a lyric change must not disturb a playing background video) — and
+    // anything else tears the transport down before opening the replacement
+    // through the same PlaybackPipeline + AvPlayer pair the bench drives.
+    void applyBackgroundTransport(const openshow::scene::Background& wanted);
+    void teardownBackgroundTransport();
+
     // Seconds against the installed video clock; caller holds fMutex.
     double videoClockSecondsLocked(std::chrono::steady_clock::time_point now) const;
 
@@ -321,6 +340,17 @@ private:
     std::optional<VideoSubmission> fPendingVideo;          // fMutex
     std::optional<VideoSubmission> fDrawnVideo;            // render thread
     std::chrono::steady_clock::time_point fRunStart;       // render thread
+
+    // Background media transport (task 5.5, render thread; declared after
+    // fContext/fVk so their destruction order frees the pipeline's device
+    // objects before the context they live on). The applied scene copy is
+    // what the draw path consults to decide whether the offered video
+    // frame belongs to the background layer.
+    AvPlayer fAudio;
+    std::unique_ptr<PlaybackPipeline> fBackground;
+    openshow::scene::Background fAppliedBackground;        // identity in service
+    ActiveScene fRenderScene;                              // = the composition's scene
+    bool fBackgroundMedia = false;                         // from Options
 
     // Guards fDesiredMask, fRevision and the fields of fStatus that the
     // render thread refreshes (frames, extent, applied mask, revision).

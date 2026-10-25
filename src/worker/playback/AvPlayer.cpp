@@ -162,11 +162,32 @@ void AvPlayer::stop() {
     fSink.stop();
     fSinkActive.store(false);
     fAudioLive.store(false);
+    // Re-armable: the session's background transport stops and restarts
+    // the player as backgrounds change (every component's stop is
+    // idempotent, so a never-started player tears down cleanly too).
+    fStarted.store(false);
 }
 
 void AvPlayer::attachPipeline(PlaybackPipeline* pipeline) {
-    if (pipeline != nullptr) {
-        fPipelines.push_back(pipeline);
+    if (pipeline == nullptr) {
+        return;
+    }
+    // Deduplicated: a transport that swaps files re-attaches after
+    // detaching, and a double entry would double-fan transport commands.
+    for (PlaybackPipeline* existing : fPipelines) {
+        if (existing == pipeline) {
+            return;
+        }
+    }
+    fPipelines.push_back(pipeline);
+}
+
+void AvPlayer::detachPipeline(PlaybackPipeline* pipeline) {
+    for (size_t i = 0; i < fPipelines.size(); ++i) {
+        if (fPipelines[i] == pipeline) {
+            fPipelines.erase(fPipelines.begin() + static_cast<ptrdiff_t>(i));
+            return;
+        }
     }
 }
 

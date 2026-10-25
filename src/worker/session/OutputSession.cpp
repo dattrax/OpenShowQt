@@ -33,6 +33,7 @@
 #include "output/Swapchain.h"
 #include "output/VulkanContext.h"
 #include "output/VulkanQueueGuard.h"
+#include "media/MediaProbe.h"
 #include "preview/PreviewStream.h"
 #include "render/TestScene.h"
 
@@ -128,6 +129,7 @@ bool OutputSession::open(const Options& options, std::string* error) {
         }
     }
     fDiagnostics = options.diagnostics;
+    fBackgroundMedia = options.backgroundMedia;
 
     fSwapchain = std::make_unique<Swapchain>();
     if (!createSwapchain()) {
@@ -144,6 +146,11 @@ bool OutputSession::open(const Options& options, std::string* error) {
 }
 
 void OutputSession::close() {
+    // The background transport decodes into frame slots on this device
+    // and context, so it goes before every GPU resource it references
+    // (task 5.5). fAudio.stop() is idempotent: a never-started player
+    // tears down as cleanly as a running one.
+    teardownBackgroundTransport();
     if (fSwapchain) {
         fSwapchain->destroy();
         fSwapchain.reset();
@@ -551,7 +558,133 @@ void OutputSession::applyPendingSceneChange() {
         fStatus.scene.active = fAppliedScene;
         fStatus.revision = fRevision;
     }
-    fScene->setActiveScene(std::move(applied), kind);
+    // Task 5.5: the render thread keeps its own handle on the on-air scene
+    // (the composition gets a copy) — the draw path and the background
+    // transport both read the same thing from here.
+    fRenderScene = applied;
+    fScene->setActiveScene(applied, kind);
+    if (fBackgroundMedia) {
+        // The transport follows the scene in the same breath — and this
+        // whole function runs ahead of frame()'s graphics queue lock
+        // precisely because the swap's join() waits on threads that may
+        // be blocked acquiring it (deadlock otherwise).
+        applyBackgroundTransport(applied ? applied->background
+                                         : openshow::scene::Background{});
+    }
+}
+
+void OutputSession::applyBackgroundTransport(const openshow::scene::Background& wanted) {
+    // The identity rule (M3 continuity): same asset id, same path, same
+    // kind — the transport stays exactly as it is. A lyric change over the
+    // same background video therefore disturbs nothing: decode position,
+    // the audio clock and the sink all keep rolling.
+    const bool sameIdentity =
+        fBackground != nullptr && fAppliedBackground.hasImage == wanted.hasImage &&
+        fAppliedBackground.isVideo == wanted.isVideo &&
+        fAppliedBackground.assetId == wanted.assetId &&
+        fAppliedBackground.assetPath == wanted.assetPath;
+    if (sameIdentity) {
+        return;
+    }
+    teardownBackgroundTransport();
+    fAppliedBackground = wanted;
+    if (!wanted.hasImage || !wanted.isVideo) {
+        return;  // colour fill or still image: the scene draws itself, no media
+    }
+
+    std::string error;
+    const GpuHandles handles = gpuHandles();
+    PlaybackPipeline::Gpu gpu;
+    gpu.device = handles.device;
+    gpu.physicalDevice = handles.physicalDevice;
+    gpu.graphicsQueueIndex = handles.graphicsQueueIndex;
+    gpu.uploadQueueIndex = handles.uploadQueueIndex;
+    gpu.uploadQueue = handles.uploadQueue;
+    gpu.context = handles.context;
+
+    PlaybackPipeline::Options options;
+    options.path = wanted.assetPath;
+    // A background loops: the lyric service expects the visual to keep
+    // running (FreeShow's loop-by-default rule; a per-slide setting can
+    // come with the editor UI). The 1.5i copying-compatibility reopen is
+    // allowed — losing a background to a decoder gap is worse than a
+    // frame-copy.
+    options.loop = true;
+    options.allowVideoCopy = true;
+    auto pipeline = std::make_unique<PlaybackPipeline>();
+    if (!pipeline->openGpu(gpu, options, &error)) {
+        std::fprintf(stderr, "openshow-worker: background video %s: %s\n",
+                     wanted.assetPath.c_str(), error.c_str());
+        return;  // the colour fill stands; the scene stays legible
+    }
+
+    // Embedded audio, when it can be decoded, becomes the audible mix and
+    // the clock video paces against (the M5 checkpoint rule); a silent
+    // file plays silent on the player's monotonic clock. Either way the
+    // player is up: transport commands have one owner.
+    openshow::media::MediaInfo info;
+    AvPlayer::Config config;
+    config.loop = true;
+    if (openshow::media::probeMedia(wanted.assetPath, &info, &error) ==
+        openshow::media::ProbeStatus::kOk) {
+        if (!info.audioStreams.empty() && info.audioStreams.front().decoderAvailable) {
+            config.videoAudioPath = wanted.assetPath;
+        }
+    } else {
+        std::fprintf(stderr, "openshow-worker: background audio probe %s: %s\n",
+                     wanted.assetPath.c_str(), error.c_str());
+    }
+    if (!fAudio.start(config, &error)) {
+        std::fprintf(stderr, "openshow-worker: background audio: %s (video continues, "
+                             "paced by the monotonic clock)\n",
+                     error.c_str());
+    }
+    fAudio.attachPipeline(pipeline.get());
+
+    // The seam swaps before frames can flow: presenter and clock together,
+    // so a submission is never paced by the previous background's clock.
+    fBackground = std::move(pipeline);
+    setVideoClock(fAudio.clockFn());
+    fVideoPresenter = fBackground.get();
+    if (!fBackground->start(
+            [this](const VideoSubmission& submission) { submitVideo(submission); },
+            fAudio.clockFn(), &error)) {
+        std::fprintf(stderr, "openshow-worker: background decode %s: %s\n",
+                     wanted.assetPath.c_str(), error.c_str());
+        setVideoClock(nullptr);
+        fVideoPresenter = nullptr;
+        fAudio.detachPipeline(fBackground.get());
+        fBackground->close();
+        fBackground.reset();
+        return;
+    }
+    fNeedsPresent = true;  // the head frame arrives soon; redraw when it does
+}
+
+void OutputSession::teardownBackgroundTransport() {
+    fAudio.stop();
+    if (!fBackground) {
+        fAppliedBackground = openshow::scene::Background{};
+        return;
+    }
+    // Presenter and clock down first, then the seam forgets the slots:
+    // their GPU lifetime belongs to the pipeline being closed, and with no
+    // presenter registered the render thread can neither acquire nor
+    // release them (this all runs on the render thread, so no frame is
+    // mid-draw against them).
+    fVideoPresenter = nullptr;
+    setVideoClock(nullptr);
+    fAudio.detachPipeline(fBackground.get());
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        fPendingVideo.reset();
+        fDrawnVideo.reset();
+    }
+    fBackground->requestStop();
+    fBackground->join();
+    fBackground->close();
+    fBackground.reset();
+    fAppliedBackground = openshow::scene::Background{};
 }
 
 void OutputSession::applyPreviewState() {
@@ -656,13 +789,18 @@ void OutputSession::publishPreviewFrame(double elapsed, SkImage* video) {
 
     // The same scene through the same draw path as the audience output,
     // only smaller; the diagnostics status line stays empty so it does
-    // not crowd the preview. Video (task 1.5e) belongs to what the
-    // audience sees, so the held frame is drawn over it here too — the
-    // readPixels below is CPU-synchronous, which keeps this sampling of
-    // a released slot ordered ahead of any later reuse.
+    // not crowd the preview. Video belongs to what the audience sees: a
+    // background video (task 5.5) goes into the scene's background layer
+    // through draw() itself, anything else (the 1.5e bench) stays the dev
+    // overlay over the whole preview — the readPixels below is
+    // CPU-synchronous, which keeps this sampling of a released slot
+    // ordered ahead of any later reuse.
+    const bool asSceneBackground =
+        video != nullptr && fRenderScene && fRenderScene->background.isVideo;
     fScene->draw(fPreviewSurface->getCanvas(), static_cast<int>(width),
-                 static_cast<int>(height), elapsed, std::string());
-    if (video) {
+                 static_cast<int>(height), elapsed, std::string(),
+                 asSceneBackground ? video : nullptr);
+    if (video && !asSceneBackground) {
         fPreviewSurface->getCanvas()->drawImageRect(
             video, SkRect::MakeIWH(static_cast<int>(width), static_cast<int>(height)),
             SkSamplingOptions(SkFilterMode::kLinear));
@@ -712,7 +850,6 @@ void OutputSession::frame() {
 
     applyPendingLayerChanges();
     applyPendingDisplayChange();
-    applyPendingSceneChange();
     applyPreviewState();
     glfwPollEvents();
 
@@ -752,14 +889,13 @@ void OutputSession::frame() {
         const double elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - fStartTime)
                 .count();
-        fScene->draw(surface->getCanvas(), fSwapchain->width(), fSwapchain->height(), elapsed,
-                     status);
-        ++fFrames;
 
-        // Video (task 1.5e): the pending slot is drawn once the clock has
-        // reached its pts; until then — and on every dirty redraw between
-        // video frames — the last presented frame is held, so a layer
-        // toggle in the middle of a video never blanks it.
+        // Video hand-off for this frame (tasks 1.5e, 5.5): the pending
+        // slot is drawn once the clock has reached its pts; until then —
+        // and on every dirty redraw between video frames — the last
+        // presented frame is held, so a layer toggle in the middle of a
+        // video never blanks it. The decision runs before the scene draw
+        // because task 5.5 may hand the frame to the composition itself.
         std::optional<VideoSubmission> toDraw;
         {
             std::lock_guard<std::mutex> lock(fMutex);
@@ -783,44 +919,55 @@ void OutputSession::frame() {
                 }
             } else {
                 videoToken = toDraw->token;
-                // Dev-bench placement: fit centred inside the whole
-                // output, aspect preserved, the scene background showing
-                // through as letterbox bars (real media layers bring their
-                // own geometry in M2; assumes square pixels, which the
-                // wrapped YUV slots always are). NOTE: TestScene::draw
-                // leaves its output-rule transform (the fit of the authored
-                // 1920x1080 canvas) on this canvas — the video rect is in
-                // swapchain pixels, so it must be drawn on the identity.
-                surface->getCanvas()->save();
-                surface->getCanvas()->resetMatrix();
-                const SkISize srcSize = videoImage->dimensions();
-                const float fitScale = std::min(
-                    static_cast<float>(fSwapchain->width()) / srcSize.width(),
-                    static_cast<float>(fSwapchain->height()) / srcSize.height());
-                // Round to whole pixels: the scale is a float division and
-                // multiplying it back leaves ~1e-5 px error on the axis that
-                // decides the fit (a 972-height returning 972.00006), which
-                // is noise but reads as a bug in the quad log.
-                const float fitWidth = std::round(srcSize.width() * fitScale);
-                const float fitHeight = std::round(srcSize.height() * fitScale);
-                const SkRect fitRect = SkRect::MakeLTRB(
-                    (fSwapchain->width() - fitWidth) * 0.5f,
-                    (fSwapchain->height() - fitHeight) * 0.5f,
-                    (fSwapchain->width() + fitWidth) * 0.5f,
-                    (fSwapchain->height() + fitHeight) * 0.5f);
-                if (!fLoggedVideoQuad) {
-                    fLoggedVideoQuad = true;
-                    std::fprintf(stderr,
-                                 "openshow-worker: video quad: image %dx%d -> (%g,%g,%g,%g) "
-                                 "on surface %dx%d\n",
-                                 srcSize.width(), srcSize.height(), fitRect.left(),
-                                 fitRect.top(), fitRect.right(), fitRect.bottom(),
-                                 surface->width(), surface->height());
-                }
-                surface->getCanvas()->drawImageRect(videoImage, fitRect,
-                                                    SkSamplingOptions(SkFilterMode::kLinear));
-                surface->getCanvas()->restore();
             }
+        }
+
+        // Where the frame belongs (task 5.5): with a video background on
+        // air it is part of the composition — the background layer draws
+        // it cover-fitted inside the scene, text over it. With no video
+        // background the 1.5e dev placement stands unchanged: fit centred
+        // inside the whole output, aspect preserved, the scene background
+        // showing through as letterbox bars (real media layers bring their
+        // own geometry; assumes square pixels, which the wrapped YUV slots
+        // always are). NOTE: TestScene::draw leaves its output-rule
+        // transform (the fit of the authored 1920x1080 canvas) on this
+        // canvas — the dev video rect is in swapchain pixels, so it must
+        // be drawn on the identity.
+        const bool videoIsBackground =
+            videoImage != nullptr && fRenderScene && fRenderScene->background.isVideo;
+        fScene->draw(surface->getCanvas(), fSwapchain->width(), fSwapchain->height(), elapsed,
+                     status, videoIsBackground ? videoImage : nullptr);
+        ++fFrames;
+        if (videoImage && !videoIsBackground) {
+            surface->getCanvas()->save();
+            surface->getCanvas()->resetMatrix();
+            const SkISize srcSize = videoImage->dimensions();
+            const float fitScale = std::min(
+                static_cast<float>(fSwapchain->width()) / srcSize.width(),
+                static_cast<float>(fSwapchain->height()) / srcSize.height());
+            // Round to whole pixels: the scale is a float division and
+            // multiplying it back leaves ~1e-5 px error on the axis that
+            // decides the fit (a 972-height returning 972.00006), which
+            // is noise but reads as a bug in the quad log.
+            const float fitWidth = std::round(srcSize.width() * fitScale);
+            const float fitHeight = std::round(srcSize.height() * fitScale);
+            const SkRect fitRect = SkRect::MakeLTRB(
+                (fSwapchain->width() - fitWidth) * 0.5f,
+                (fSwapchain->height() - fitHeight) * 0.5f,
+                (fSwapchain->width() + fitWidth) * 0.5f,
+                (fSwapchain->height() + fitHeight) * 0.5f);
+            if (!fLoggedVideoQuad) {
+                fLoggedVideoQuad = true;
+                std::fprintf(stderr,
+                             "openshow-worker: video quad: image %dx%d -> (%g,%g,%g,%g) "
+                             "on surface %dx%d\n",
+                             srcSize.width(), srcSize.height(), fitRect.left(),
+                             fitRect.top(), fitRect.right(), fitRect.bottom(),
+                             surface->width(), surface->height());
+            }
+            surface->getCanvas()->drawImageRect(videoImage, fitRect,
+                                                SkSamplingOptions(SkFilterMode::kLinear));
+            surface->getCanvas()->restore();
         }
 
         // Diagnostic (task 1.1): read the wrapped GPU image back on the CPU
@@ -1022,6 +1169,13 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
         }
 
         if (presentNow) {
+            // The scene change is applied outside the frame's graphics
+            // queue lock on purpose (task 5.5): a background-video swap
+            // joins pipeline threads that may themselves be waiting on
+            // that lock, so it must not run while frame() holds it.
+            // Composition and transport still switch together, directly
+            // ahead of the draw.
+            applyPendingSceneChange();
             frame();
             continue;
         }

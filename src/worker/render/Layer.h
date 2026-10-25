@@ -27,6 +27,7 @@
 #include <vector>
 
 class SkCanvas;
+class SkImage;
 
 namespace openshow::worker {
 
@@ -54,6 +55,12 @@ struct FrameContext {
     double timeSeconds = 0.0;  // steady clock since output started
     std::time_t wallClock = 0;  // fixed by selftests for deterministic text
     const char* statusLine = "";
+    // The video frame the session's scheduler decided to draw this frame
+    // (task 5.5): null when no video is on offer. The background layer
+    // consumes it when the on-air scene's background names a video asset;
+    // whoever offered the frame decides everything else about it (timing,
+    // lifetime), the layers only sample it.
+    const SkImage* backgroundVideo = nullptr;
 };
 
 class RenderLayer {

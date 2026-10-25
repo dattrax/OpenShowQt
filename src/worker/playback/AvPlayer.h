@@ -36,8 +36,8 @@
  * fully usable — video still runs, just paced by the wall.
  *
  * Thread discipline: start()/stop() and the transport methods run on one
- * transport thread; attachPipeline() before start(); the feeder seeked
- * callback runs on a decode thread and touches only atomics.
+ * transport thread, attach/detach with it; the feeder seeked callback
+ * runs on a decode thread and touches only atomics.
  */
 
 #pragma once
@@ -103,7 +103,12 @@ public:
     void stop();
 
     // Video transport followers; pointers must outlive the player.
+    // Attaching is deduplicated, and a pipeline being destroyed must be
+    // detached first (the background transport swaps pipelines as scene
+    // backgrounds change: attach the replacement, detach the dying one
+    // before closing it).
     void attachPipeline(PlaybackPipeline* pipeline);
+    void detachPipeline(PlaybackPipeline* pipeline);
 
     // --- transport (single transport thread) ---
     void play();   // resume sink (no flush — the queue IS the continuation)
