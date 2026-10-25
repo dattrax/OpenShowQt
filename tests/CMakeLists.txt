@@ -178,3 +178,15 @@ target_link_libraries(playback_control_tests PRIVATE
 )
 add_test(NAME playback_control_tests COMMAND playback_control_tests)
 set_tests_properties(playback_control_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+# Task 5.3: the production AudioMixer — bounded per-input rings, independent
+# volume/mute with a clickless ramp, starvation accounting — against a fake
+# output device, plus real AudioFileFeeders decoding locally written sine
+# wavs (no CLI dependency; no environment skip applies).
+add_executable(audio_mix_tests audio_mix_tests.cpp)
+target_link_libraries(audio_mix_tests PRIVATE
+  openshow::worker_media
+  PkgConfig::FFMPEG
+)
+add_test(NAME audio_mix_tests COMMAND audio_mix_tests)
+set_tests_properties(audio_mix_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)

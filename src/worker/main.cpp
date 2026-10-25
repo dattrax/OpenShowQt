@@ -38,6 +38,7 @@
 #include "media/AudioClock.h"
 #include "media/AudioFeeder.h"
 #include "media/MediaProbe.h"
+#include "media/AudioMixer.h"
 #include "media/PipeWireSink.h"
 
 #include "include/core/SkGraphics.h"
@@ -78,7 +79,8 @@ void printUsage(const char* program) {
                  "Usage: %s [--version] [--check-deps] [--socket PATH]\n"
                  "       %s --render-test [--monitor N] [--seconds S] [--idle-check]\n"
                  "       %s --av-bench FILE [--monitor N] [--seconds S] [--no-audio]\n"
-                 "                                  [--preview] [--allow-video-copy] [--no-hw-decode]\n"
+                 "                                  [--second-audio FILE] [--preview]\n"
+                 "                                  [--allow-video-copy] [--no-hw-decode]\n"
                  "       %s --snapshot PATH [--scene-file FILE] [--width N] [--height N]\n"
                  "       %s --list-monitors\n"
                  "       %s --check-layers\n"
@@ -91,6 +93,8 @@ void printUsage(const char* program) {
                  "  --av-bench FILE      decode FILE to the GPU and pace presents\n"
                  "                       against the audio clock (10 s by default)\n"
                  "  --no-audio           with --av-bench: pace on the wall clock\n"
+                 "  --second-audio FILE  with --av-bench: mix FILE's audio as a second\n"
+                 "                       input into the one PipeWire output (5.3)\n"
                  "  --preview            with --av-bench: run the 1.4 preview stream\n"
                  "                       at 640x360@15 with a built-in consumer\n"
                  "  --vulkan-validation  with the Vulkan modes: run with the Khronos\n"
@@ -323,10 +327,13 @@ int runPipeWireCheck(double seconds) {
 // consumer, and reporting the numbers M5 is judged on). Decode FILE into
 // the pipeline's GPU-backed ring and let OutputSession's scheduler pace
 // presents against the audio sink's own clock (wall clock with --no-audio
-// or when FILE has no decodable audio). Reports the numbers M5 is judged
+// or when FILE has no decodable audio). FILE's audio and an optional
+// standalone --second-audio file run as independent mixer inputs into the
+// one PipeWire output (task 5.3). Reports the numbers M5 is judged
 // on: missed deadlines under 1%, drift under 50 ms.
-int runAvBench(const std::string& path, int monitorIndex, double seconds, bool useAudio,
-               bool preview, bool vulkanValidation, bool hardwareDecode, bool allowVideoCopy) {
+int runAvBench(const std::string& path, const std::string& secondAudio, int monitorIndex,
+               double seconds, bool useAudio, bool preview, bool vulkanValidation,
+               bool hardwareDecode, bool allowVideoCopy) {
     openshow::media::MediaInfo info;
     std::string error;
     if (openshow::media::probeMedia(path, &info, &error) != openshow::media::ProbeStatus::kOk) {
@@ -368,35 +375,66 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
     }
 
     openshow::media::PipeWireSink sink;
+    openshow::media::AudioMixer mixer;
     openshow::media::AudioFileFeeder feeder;
-    bool audio = false;
+    openshow::media::AudioFileFeeder extraFeeder;
+    bool audio = false;  // the sink clock paces video
     if (useAudio) {
-        if (!info.audioStreams.empty() && info.audioStreams.front().decoderAvailable) {
-            if (!sink.start(48000, &error)) {
-                std::fprintf(stderr,
-                             "openshow-worker: av-bench: PipeWire unavailable (%s), "
-                             "pacing on the wall clock\n",
-                             error.c_str());
-            } else {
-                const uint32_t rate =
-                    sink.negotiatedRate() != 0 ? sink.negotiatedRate() : 48000;
-                if (feeder.open(path, rate, &error)) {
-                    audio = feeder.start(
-                        [&sink](const float* frames, size_t count) {
-                            return sink.feed(frames, count);
-                        },
-                        true, &error);
-                }
-                if (!audio) {
-                    std::fprintf(stderr,
-                                 "openshow-worker: av-bench: audio unavailable (%s), "
-                                 "pacing on the wall clock\n",
-                                 error.c_str());
-                }
-            }
-        } else {
+        const bool wantVideo =
+            !info.audioStreams.empty() && info.audioStreams.front().decoderAvailable;
+        const bool wantExtra = !secondAudio.empty();
+        if (!wantVideo && !wantExtra) {
             std::fprintf(stderr, "openshow-worker: av-bench: no decodable audio stream, "
                                  "pacing on the wall clock\n");
+        } else if (!sink.start(48000, &error)) {
+            std::fprintf(stderr,
+                         "openshow-worker: av-bench: PipeWire unavailable (%s), "
+                         "pacing on the wall clock\n",
+                         error.c_str());
+        } else {
+            const uint32_t rate =
+                sink.negotiatedRate() != 0 ? sink.negotiatedRate() : 48000;
+            const int videoInput = wantVideo ? mixer.addInput()
+                                             : openshow::media::AudioMixer::kNoInput;
+            const int extraInput = wantExtra ? mixer.addInput()
+                                             : openshow::media::AudioMixer::kNoInput;
+            if (!mixer.start(
+                    [&sink](const float* frames, size_t count) {
+                        return sink.feed(frames, count);
+                    },
+                    rate, &error)) {
+                std::fprintf(stderr, "openshow-worker: av-bench: audio mixer: %s\n",
+                             error.c_str());
+            } else {
+                audio = true;  // the output is live; a failed input is silence
+                if (wantVideo) {
+                    if (!feeder.open(path, rate, &error) ||
+                        !feeder.start(
+                            // The input ids are captured by value: the
+                            // feeder thread outlives this block, so a
+                            // reference capture would dangle.
+                            [&mixer, videoInput](const float* frames, size_t count) {
+                                return mixer.write(videoInput, frames, count);
+                            },
+                            true, &error)) {
+                        std::fprintf(stderr,
+                                     "openshow-worker: av-bench: video audio unavailable (%s)\n",
+                                     error.c_str());
+                    }
+                }
+                if (wantExtra) {
+                    if (!extraFeeder.open(secondAudio, rate, &error) ||
+                        !extraFeeder.start(
+                            [&mixer, extraInput](const float* frames, size_t count) {
+                                return mixer.write(extraInput, frames, count);
+                            },
+                            true, &error)) {
+                        std::fprintf(stderr,
+                                     "openshow-worker: av-bench: second audio unavailable (%s)\n",
+                                     error.c_str());
+                    }
+                }
+            }
         }
     }
 
@@ -475,10 +513,16 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
 
     // Teardown order (the pipeline owns the producer ladder now: stop
     // flags, then the ring and decode thread, then the GPU waits): audio
-    // next, GPU objects last while the context is still open.
+    // next — feeders, mixer, sink — GPU objects last while the context
+    // is still open.
     pipeline.requestStop();
     feeder.requestStop();
+    extraFeeder.requestStop();
     feeder.join();
+    extraFeeder.join();
+    const auto mixerStats = mixer.stats();
+    mixer.requestStop();
+    mixer.join();
     if (audio) {
         sink.stop();
     }
@@ -512,6 +556,38 @@ int runAvBench(const std::string& path, int monitorIndex, double seconds, bool u
                 static_cast<unsigned long long>(report.gpuWaitsForFreeSlot),
                 static_cast<unsigned long long>(sinkCallbacks),
                 static_cast<unsigned long long>(sinkUnderruns), sinkDriftMs);
+    if (useAudio && mixerStats.inputs != 0) {
+        const auto feederStats = feeder.stats();
+        const auto extraStats = extraFeeder.stats();
+        std::printf("  mixer inputs=%u video written=%llu mixed=%llu starved=%llu | extra "
+                    "written=%llu mixed=%llu starved=%llu | delivered=%llu retries=%llu\n",
+                    mixerStats.inputs,
+                    static_cast<unsigned long long>(mixerStats.input[0].framesWritten),
+                    static_cast<unsigned long long>(mixerStats.input[0].framesMixed),
+                    static_cast<unsigned long long>(mixerStats.input[0].starvedBlocks),
+                    mixerStats.inputs > 1
+                        ? static_cast<unsigned long long>(mixerStats.input[1].framesWritten)
+                        : 0ULL,
+                    mixerStats.inputs > 1
+                        ? static_cast<unsigned long long>(mixerStats.input[1].framesMixed)
+                        : 0ULL,
+                    mixerStats.inputs > 1
+                        ? static_cast<unsigned long long>(mixerStats.input[1].starvedBlocks)
+                        : 0ULL,
+                    static_cast<unsigned long long>(mixerStats.deliveredFrames),
+                    static_cast<unsigned long long>(mixerStats.writeRetries));
+        std::printf("  feeders video fed=%llu retries=%llu errors=%llu loops=%llu | extra "
+                    "fed=%llu retries=%llu errors=%llu loops=%llu eof=%d\n",
+                    static_cast<unsigned long long>(feederStats.framesFed),
+                    static_cast<unsigned long long>(feederStats.writeRetries),
+                    static_cast<unsigned long long>(feederStats.decodeErrors),
+                    static_cast<unsigned long long>(feederStats.loops),
+                    static_cast<unsigned long long>(extraStats.framesFed),
+                    static_cast<unsigned long long>(extraStats.writeRetries),
+                    static_cast<unsigned long long>(extraStats.decodeErrors),
+                    static_cast<unsigned long long>(extraStats.loops),
+                    extraStats.eof ? 1 : 0);
+    }
     std::printf("  ring peak=%llu of %u slots (the bounded queue), session presented %llu frames total\n",
                 static_cast<unsigned long long>(report.ringPeakFilled), report.ringDepth,
                 presented);
@@ -554,6 +630,7 @@ int main(int argc, char** argv) {
     bool checkTransition = false;
     bool pwCheck = false;
     const char* avBenchPath = nullptr;
+    std::string secondAudioPath;  // with --av-bench: a second mixer input (5.3)
     bool idleCheck = false;
     bool noAudio = false;
     bool benchPreview = false;
@@ -587,6 +664,8 @@ int main(int argc, char** argv) {
             pwCheck = true;
         } else if (argument == "--av-bench" && i + 1 < argc) {
             avBenchPath = argv[++i];
+        } else if (argument == "--second-audio" && i + 1 < argc) {
+            secondAudioPath = argv[++i];
         } else if (argument == "--idle-check") {
             idleCheck = true;
         } else if (argument == "--no-audio") {
@@ -704,7 +783,7 @@ int main(int argc, char** argv) {
     if (avBenchPath != nullptr) {
         // Task 1.5e development bench: same session an operator drives, plus
         // the decode -> GPU upload pipeline paced by the audio clock.
-        return runAvBench(avBenchPath, monitorGiven ? monitorIndex : -1,
+        return runAvBench(avBenchPath, secondAudioPath, monitorGiven ? monitorIndex : -1,
                           seconds > 0.0 ? seconds : 10.0, !noAudio, benchPreview,
                           vulkanValidation, hardwareDecode, allowVideoCopy);
     }

@@ -2059,6 +2059,75 @@ of this work.
 - **Next**: task **5.3** — PipeWire output and stereo mixing (independent
   volume and mute for video audio and standalone audio files).
 
+## Task 5.3 log (2026-10-25) — PipeWire output and stereo mixing: DONE
+
+- **Goal**: PLAN 5.3 — "PipeWire output and stereo mixing; acceptance:
+  video and standalone audio have independent volume and mute". The
+  mixing stage became a production component, `openshow::media::AudioMixer`
+  (Qt-free, PipeWire-free, FFmpeg-free), sitting in front of the one
+  `PipeWireSink`; `--av-bench` proves it against the live daemon.
+- **Approach**:
+  - *Bounded inputs, one consumer*: each input is a fixed-capacity SPSC
+    `AudioRing` (default 96000 frames), registered before `start()`
+    (kMaxInputs=8, the table is frozen for the mix thread). A feeder
+    paces on short writes exactly as it did against the sink directly,
+    so nothing grew when the stage was inserted — and no input can grow
+    its queue (the M5 boundedness rule carries through).
+  - *The mix thread*: 10 ms blocks; each input's frames are read
+    (shortfall zero-padded, `starvedBlocks` counted per input — silence
+    flows, the output never stalls), gain is applied interpolated per
+    frame, the sum goes out through the injected `WriteFn` with
+    retry-sleep pacing (the sink's full ring paces the mixer the same
+    way the mixer paces the feeders).
+  - *Independent volume and mute*: control-plane atomics read per block;
+    changes ramp over 50 ms (`kRampSeconds`) so no step can click; a
+    muted input keeps draining, so unmute resumes live audio rather
+    than dumping a backlog.
+  - *Real seams in the test*: `audio_mix_tests` runs two real
+    `AudioFileFeeder`s decoding sine wavs through the mixer into a fake
+    output device (ring + drain thread at nominal rate, zero-padding
+    shortfall — the PipeWire callback's discipline), so the decode →
+    resample → mix → deliver chain is exercised without PipeWire.
+  - *Live proof*: `--av-bench` rewires sink ← mixer ← video feeder
+    (+ `--second-audio FILE` as input 1); a failed input degrades to
+    silence with the output still up; mixer/per-feeder counters report
+    with the run; teardown feeders → mixer → sink.
+- **Decisions**: (1) the input table is fixed at `start()` — the mix
+  thread walks it without locks, and hot-plug can wait for a need;
+  (2) starvation is *per input* and silent-safe (the sink's own
+  underrun counter stays meaningful: it now proves the mixer always
+  fed it even during total input starvation); (3) no `resetInput()` —
+  clearing a producer's ring from the consumer side would race the
+  SPSC contract; seeks will flush from the source side when 5.4 wires
+  them; (4) the fake-device latency bound (100 ms ring, 400 ms settle)
+  is what makes capture-window assertions exact despite the pipeline.
+- **Findings on the way** (test-only unless noted): the fake device's
+  drain needed real 10 ms pacing (busy-draining recorded garbage); the
+  ffmpeg 9.0.2 CLI's `sine` source emits amplitude 0.125 and this
+  swresample attenuates mono→stereo upmix by 1/√2 — the fixtures are
+  now written in C++ (stereo s16, exact amplitudes) so the expected
+  RMS is analytic; and a real bug in the bench wiring, fixed here: the
+  feeder callbacks captured `videoInput`/`extraInput` by reference out
+  of a block the feeder threads outlived — the second input wrote to a
+  garbage id and stayed silent (the by-value capture is now commented).
+- **Checks**: new `audio_mix_tests` (both presets; no env skip — no CLI
+  or daemon dependency): 40 checks — DC mix `out = vA·A + vB·B` across
+  five volume/mute combos with asymmetric channels (tol 1e-4); clickless
+  ramp (max sample jump 0.0004 for live 0→1, settles at 1.0); starved
+  input counted, silence passthrough, late joiner flows with no penalty,
+  zero device underruns; feeder scenario RMS 0.768 → 0.300 (A muted) →
+  0.768 (unmuted), muted feeder keeps feeding. Green twice back-to-back.
+  Gates: desktop **24/24**, headless **15/15**. Live benches:
+  `--av-bench av-10s.mp4 --preview --monitor -1` parity (250 presents,
+  **0 missed**, drift mean +0.8 ms max 2.2 ms, sink underruns 0, mixer
+  input 0 written=575040); with `--second-audio media-fixtures/probe.wav`
+  both inputs mix (extra written=390720, loops=8 of the 1 s wav),
+  underruns 0, 0 missed. The 201 shared starved blocks are the startup
+  sprint prefilling the sink's own ring.
+- **Next**: task **5.4** — playback clocks and synchronization (the
+  session's A/V sync: audio clock drives video, acceptance: A/V timing
+  meets the PLAN targets).
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -2370,21 +2439,26 @@ logged here from what is observable off screen rather than claimed as seen.
    **`M4`** on main's tip. Next milestone: **M5 — video and audio**
    (video decode/presentation, embedded and standalone audio mixed,
    volume/mute per source).
-3. **M5 is under way**: **5.1 and 5.2 are DONE** — the production
-   `PlaybackPipeline` (new Qt-free `playback/` library) owns the decode
-   thread, GPU ring, paced submission and presenter role that the 1.5
-   bench improvised; `--av-bench` is a thin driver over it with parity
-   numbers (0 missed, drift +0.8/+1.5 ms), and `playback_queue_tests`
-   pins the boundedness contract at depth, under a frozen clock, and
-   against a stuck presenter. Task **5.2** made playback controllable:
-   play/pause/seek/loop are pipeline operations — the decode thread
-   applies seeks between frames (flush, ring purge, skip-before-claim),
-   the pacing thread drains stale frames across the flush and re-anchors
-   the clock at resume/seek targets, pause parks the producer on the
-   bounded ring, and `playback_control_tests` pins all five transitions
-   including the backward-seek wrap regression. Gates: desktop
-   **23/23**, headless **14/14**. Next: **5.3** — PipeWire output and
-   stereo mixing (independent volume and mute).
+3. **M5 is under way**: **5.1, 5.2 and 5.3 are DONE**. 5.1 graduated
+   the bench glue into the production `PlaybackPipeline` (Qt-free
+   `playback/` library: decode thread, GPU ring, paced submission,
+   presenter role), with `playback_queue_tests` pinning boundedness.
+   5.2 made playback controllable through the real seams (decode-thread
+   seek flush + skip-before-claim, pacing-side drain and clock
+   re-anchoring, pause parking on the bounded ring, live loop toggle;
+   `playback_control_tests`, five scenarios). 5.3 put the audio behind
+   production `openshow::media::AudioMixer`: bounded SPSC ring per
+   input, per-input volume/mute atomics with a 50 ms per-frame gain
+   ramp (muted inputs keep draining), per-input starvation counting,
+   the sum delivered through an injected `WriteFn` into the one
+   PipeWireSink; `audio_mix_tests` pins the exact mix math, the
+   clickless ramp (max jump 0.0004), starvation safety and live
+   independent mute at the real decode seam (RMS 0.768→0.300→0.768),
+   and `--av-bench --second-audio` proves the live two-input PipeWire
+   path (underruns 0, 0 missed). Gates: desktop **24/24**, headless
+   **15/15**. Next: **5.4** — playback clocks and synchronization (the
+   session's A/V sync against the audio clock; PLAN acceptance: A/V
+   timing meets the targets).
 4. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;
