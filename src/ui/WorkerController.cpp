@@ -73,11 +73,17 @@ WorkerController::~WorkerController() {
 }
 
 void WorkerController::start() {
+    // Tests supervise a scripted stand-in (worker_controller_tests drives
+    // this binary against itself as the "worker"); production never sets it.
+    const QString programOverride = qEnvironmentVariable("OPENSHOW_WORKER_PROGRAM");
 #ifdef OPENSHOW_WORKER_PATH
-    const QString workerPath = QStringLiteral(OPENSHOW_WORKER_PATH);
+    const QString workerPath =
+        programOverride.isEmpty() ? QStringLiteral(OPENSHOW_WORKER_PATH) : programOverride;
 #else
     const QString workerPath =
-        QCoreApplication::applicationDirPath() + QStringLiteral("/openshow-worker");
+        programOverride.isEmpty()
+            ? QCoreApplication::applicationDirPath() + QStringLiteral("/openshow-worker")
+            : programOverride;
 #endif
     setStatus(QStringLiteral("starting worker..."));
     QStringList arguments{QStringLiteral("--socket"), fSocketPath};
@@ -116,6 +122,12 @@ void WorkerController::tryConnect() {
 void WorkerController::onSocketConnected() {
     fConnectRetry.stop();
     fConnected = true;
+    // A fresh connection owns a fresh conversation: no request of the old
+    // one may be answered, and no half-read frame of the old stream may
+    // join the new one (task 6.3a).
+    ++fConnectionGeneration;
+    fDecoder.reset();
+    fPendingRequests.clear();
     setStatus(QStringLiteral("handshaking..."));
     boost::json::object params = proto::helloParams("openshow-ui", proto::kProtocolMajor,
                                                     proto::kProtocolMinor);
@@ -183,12 +195,34 @@ void WorkerController::drainMessages() {
 }
 
 void WorkerController::handleReply(const boost::json::object& message) {
+    // Reply correlation (task 6.3a, review R3): a reply is only what the
+    // request its id names said it would be. Shape-matching replies let a
+    // burst of prepares misattribute payloads and fire stale auto-presents.
+    const auto idEntry = message.find("id");
+    if (idEntry == message.end() ||
+        !(idEntry->value().is_int64() || idEntry->value().is_uint64())) {
+        return;  // a reply with no usable id answers nothing
+    }
+    const std::int64_t id = idEntry->value().to_number<std::int64_t>();
+    const auto pendingEntry = fPendingRequests.find(id);
+    if (pendingEntry == fPendingRequests.end()) {
+        return;  // duplicate, superseded, or from a previous connection
+    }
+    const PendingRequest pending = pendingEntry.value();
+    fPendingRequests.erase(pendingEntry);
+    if (pending.connection != fConnectionGeneration) {
+        return;  // written on a connection that is gone
+    }
+
     const auto error = message.find("error");
     if (error != message.end() && error->value().is_object()) {
+        // An error answers its request's intent: drop that context so a
+        // failed go cannot resurface on some later reply.
         const boost::json::object& reported = error->value().as_object();
         const auto text = reported.find("message");
-        setStatus(QStringLiteral("worker error: %1")
-                      .arg(text != reported.end() && text->value().is_string()
+        setStatus(QStringLiteral("worker error (%1): %2")
+                      .arg(QString::fromStdString(pending.method),
+                           text != reported.end() && text->value().is_string()
                                ? QString::fromStdString(
                                      std::string(text->value().as_string()))
                                : QStringLiteral("unspecified")));
@@ -198,9 +232,14 @@ void WorkerController::handleReply(const boost::json::object& message) {
     if (result == message.end()) {
         return;
     }
-    if (result->value().is_array()) {  // output.displays answers with a bare array
+    const boost::json::value& payloadValue = result->value();
+
+    if (pending.method == "output.displays") {  // answers with a bare array
+        if (!payloadValue.is_array()) {
+            return;
+        }
         QVariantList displays;
-        for (const auto& entry : result->value().as_array()) {
+        for (const auto& entry : payloadValue.as_array()) {
             const boost::json::object& panel = entry.as_object();
             QVariantMap item;
             item.insert(QStringLiteral("index"),
@@ -221,12 +260,16 @@ void WorkerController::handleReply(const boost::json::object& message) {
         emit displaysChanged();
         return;
     }
-    if (!result->value().is_object()) {
+
+    if (!payloadValue.is_object()) {
         return;
     }
-    const boost::json::object& payload = result->value().as_object();
+    const boost::json::object& payload = payloadValue.as_object();
 
-    if (payload.contains("application")) {  // the hello answer
+    if (pending.method == "hello") {  // the handshake answer
+        if (!payload.contains("application")) {
+            return;
+        }
         fHandshakeDone = true;
         const boost::json::object& negotiated = payload.at("protocol").as_object();
         setStatus(QStringLiteral("connected to worker %1 (protocol %2.%3)")
@@ -271,7 +314,10 @@ void WorkerController::handleReply(const boost::json::object& message) {
         return;
     }
 
-    if (payload.contains("bytesPerSlot")) {  // the preview.start answer
+    if (pending.method == "preview.start") {
+        if (!payload.contains("bytesPerSlot")) {
+            return;
+        }
         // Do not map yet: the segment exists once the render thread has
         // acted, and the first preview.ready proves it did.
         closePreviewSegment();
@@ -284,22 +330,23 @@ void WorkerController::handleReply(const boost::json::object& message) {
         return;
     }
 
-    if (payload.contains("revision") && !payload.contains("pending") &&
-        !payload.contains("frames")) {  // scene.prepare's answer
-        // The scene now lives in the worker's store under this revision.
-        // A prepare that began as presentDemoSlide continues as its
-        // present; a bare prepareScene waits for the caller to choose.
+    if (pending.method == "scene.prepare") {
+        if (!payload.contains("revision")) {
+            return;
+        }
+        // The scene now lives in the worker's store under this revision,
+        // and THIS request's payload is what was stored under it — a
+        // second prepare issued before the first was acknowledged cannot
+        // move either mirror entry (task 6.3a).
         const qint64 prepared =
             static_cast<qint64>(payload.at("revision").to_number<std::uint64_t>());
-        // Mirror the payload against the revision it was prepared under
-        // (task 3.4: the clear controls derive from what is on air, and an
-        // acknowledged revision is the only claim on air we have). Serial
-        // operator flow: one pending JSON at a time.
-        if (!fPendingPrepareJson.isEmpty()) {
-            fSceneJson.insert(prepared, fPendingPrepareJson);
-            fPendingPrepareJson.clear();
+        if (!pending.prepareJson.isEmpty()) {
+            fSceneJson.insert(prepared, pending.prepareJson);
+            if (prepared > fMirrorMax) {
+                fMirrorMax = prepared;
+            }
             if (fSceneJson.size() > kSceneMirrorSize) {
-                const qint64 cutoff = prepared - kSceneMirrorSize;
+                const qint64 cutoff = fMirrorMax - kSceneMirrorSize;
                 for (auto entry = fSceneJson.begin(); entry != fSceneJson.end();) {
                     if (entry.key() <= cutoff) {
                         entry = fSceneJson.erase(entry);
@@ -309,15 +356,23 @@ void WorkerController::handleReply(const boost::json::object& message) {
                 }
             }
         }
-        if (fAutoPresentScene) {
-            fAutoPresentScene = false;
+        // Latest-go rule: the audience moves only for the newest go. A
+        // superseded prepare still mirrors its payload (the store has it;
+        // clears and indicators may still reference that revision) but
+        // must not present it, so a slow ack for an older go can never
+        // regress the audience off the newer slide already intended.
+        if (pending.autoPresent && id == fLatestGoId) {
+            fLatestGoId = 0;
             presentScene(prepared);
         }
         emit sceneChanged();
         return;
     }
 
-    if (payload.contains("frames")) {  // output.status
+    if (pending.method == "output.status") {  // the poll answer
+        if (!payload.contains("frames")) {
+            return;
+        }
         fFrames = static_cast<qint64>(payload.at("frames").to_number<std::uint64_t>());
         fRevision = static_cast<qint64>(payload.at("revision").to_number<std::uint64_t>());
         if (payload.contains("device")) {
@@ -372,8 +427,9 @@ void WorkerController::handleReply(const boost::json::object& message) {
         fLayers = layers;
         emit outputStatusChanged();
     }
-    // layer.setEnabled acks and shutdown ok carry no display state of
-    // their own; the next status poll confirms them.
+    // Acks of layer.setEnabled, scene.present, output.select and shutdown
+    // carry no display state of their own; the next status poll confirms
+    // them. Their pending entries were already consumed above.
 }
 
 void WorkerController::pollStatus() {
@@ -403,9 +459,8 @@ void WorkerController::prepareScene(const QString& sceneJson) {
         return;
     }
     // The scene object itself is the params (the worker validates it).
-    fAutoPresentScene = false;
-    notePrepare(parsed.as_object());
-    sendRequest("scene.prepare", parsed.as_object());
+    const std::int64_t id = sendRequest("scene.prepare", parsed.as_object());
+    armPrepare(id, parsed.as_object(), /*autoPresent=*/false);
 }
 
 void WorkerController::presentScene(qint64 revision) {
@@ -436,9 +491,8 @@ void WorkerController::presentSceneInternal(const QString& sceneJson) {
     }
     // Same hand-off as presentDemoSlide: present on the prepare ack, so
     // the audience switch lands as soon as the store names the revision.
-    fAutoPresentScene = true;
-    notePrepare(parsed.as_object());
-    sendRequest("scene.prepare", parsed.as_object());
+    const std::int64_t id = sendRequest("scene.prepare", parsed.as_object());
+    armPrepare(id, parsed.as_object(), /*autoPresent=*/true);
 }
 
 // --- output controls (task 3.4) ------------------------------------------
@@ -502,16 +556,30 @@ void WorkerController::restoreOutput() {
     presentScene(revision);
 }
 
-void WorkerController::notePrepare(const boost::json::object& scene) {
-    fPendingPrepareJson = QString::fromStdString(boost::json::serialize(scene));
+void WorkerController::armPrepare(std::int64_t requestId, const boost::json::object& scene,
+                                  bool autoPresent) {
+    const auto entry = fPendingRequests.find(requestId);
+    if (entry == fPendingRequests.end()) {
+        return;  // sendRequest always records the entry; belt and braces
+    }
+    entry->prepareJson = QString::fromStdString(boost::json::serialize(scene));
+    entry->autoPresent = autoPresent;
+    if (autoPresent) {
+        // This go supersedes any older one still awaiting its ack; only
+        // the newest go's acknowledgement moves the audience.
+        fLatestGoId = requestId;
+    }
 }
 
 void WorkerController::resetSceneTracking() {
     fSceneJson.clear();
-    fPendingPrepareJson.clear();
+    fMirrorMax = 0;
     fSceneContent = SceneContent{};
     fRestoreRevision = 0;
-    fAutoPresentScene = false;
+    fLatestGoId = 0;
+    // In-flight intents die with the connection; a reply can no longer
+    // arrive for them, and none must survive to act on a later one.
+    fPendingRequests.clear();
     emit sceneChanged();
 }
 
@@ -531,10 +599,9 @@ void WorkerController::presentDemoSlide(qint64 index) {
     boost::json::value jsonScene = openshow::scene::toJson(scene);
     // Present on the prepare acknowledgement: the revision is the
     // worker's to hand out, and the store only names it once stored.
-    fAutoPresentScene = true;
     fRestoreRevision = 0;  // a fresh go retires any clear's restore point
-    notePrepare(jsonScene.as_object());
-    sendRequest("scene.prepare", jsonScene.as_object());
+    const std::int64_t id = sendRequest("scene.prepare", jsonScene.as_object());
+    armPrepare(id, jsonScene.as_object(), /*autoPresent=*/true);
 }
 
 qint64 WorkerController::demoSlideCount() const {
@@ -549,10 +616,18 @@ void WorkerController::selectDisplay(qint64 index) {
                 boost::json::object{{"monitor", static_cast<std::int64_t>(index)}});
 }
 
-void WorkerController::sendRequest(const char* method, boost::json::object params) {
+std::int64_t WorkerController::sendRequest(const char* method, boost::json::object params) {
+    // Record before writing: the reply to this id must find its request,
+    // tagged with the connection it belongs to (task 6.3a).
+    const std::int64_t id = fNextId++;
+    PendingRequest pending;
+    pending.method = method;
+    pending.connection = fConnectionGeneration;
+    fPendingRequests.insert(id, std::move(pending));
     std::string wire;
-    proto::appendFrame(proto::makeRequest(fNextId++, method, std::move(params)), &wire);
+    proto::appendFrame(proto::makeRequest(id, method, std::move(params)), &wire);
     fSocket.write(wire.data(), static_cast<qint64>(wire.size()));
+    return id;
 }
 
 void WorkerController::sendNotification(const char* method, boost::json::object params) {

@@ -81,6 +81,17 @@ if(OPENSHOW_BUILD_UI)
   target_link_libraries(library_search_tests PRIVATE openshow::ui-core)
   add_test(NAME library_search_tests COMMAND library_search_tests)
 
+  # Task 6.3a (review R3): WorkerController correlates replies by request id
+  # and connection generation, mirrors each prepare's own payload, presents
+  # only the latest go, and resets every intent when the worker dies. The
+  # binary re-executes itself as a scripted RPC peer that is slow, refuses
+  # and dies on cue — no real worker, no display.
+  add_executable(worker_controller_tests worker_controller_tests.cpp)
+  target_link_libraries(worker_controller_tests PRIVATE
+    openshow::ui-core openshow::protocol)
+  add_test(NAME worker_controller_tests COMMAND worker_controller_tests)
+  set_tests_properties(worker_controller_tests PROPERTIES TIMEOUT 120)
+
   # Task 3.3's acceptance sentence, end to end: DocumentController creates
   # and types a song, and the compiled slides are prepared and presented
   # on a real openshow-worker, status confirming each revision on air.

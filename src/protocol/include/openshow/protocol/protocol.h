@@ -73,6 +73,14 @@ public:
 
     bool failed() const { return fFailed; }
 
+    // Forget buffered bytes and a poisoned state. A connection teardown
+    // must not let the next connection interpret the old stream's tail
+    // (task 6.3a: reply correlation belongs to one connection).
+    void reset() {
+        fBuffer.clear();
+        fFailed = false;
+    }
+
 private:
     std::string fBuffer;
     bool fFailed = false;

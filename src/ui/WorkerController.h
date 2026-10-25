@@ -159,7 +159,19 @@ private slots:
     void pollStatus();
 
 private:
-    void sendRequest(const char* method, boost::json::object params);
+    // Reply correlation (task 6.3a, review R3): every request is recorded
+    // with the connection generation it was written on, and every reply
+    // belongs to the request its id names — never to "whatever result
+    // shape arrived". A prepare carries its own payload and, when it began
+    // as a go, the intent to present the revision the worker hands back.
+    struct PendingRequest {
+        std::string method;
+        QString prepareJson;       // scene.prepare: the payload to mirror
+        bool autoPresent = false;  // present the acked revision (a "go")
+        std::uint64_t connection = 0;
+    };
+
+    std::int64_t sendRequest(const char* method, boost::json::object params);
     void sendNotification(const char* method, boost::json::object params);
     void drainMessages();
     void handleReply(const boost::json::object& message);
@@ -172,7 +184,10 @@ private:
     // operations can stage a derived scene without forgetting what they
     // cleared.
     void presentSceneInternal(const QString& sceneJson);
-    void notePrepare(const boost::json::object& scene);
+    // Attach the per-request prepare context (payload, and the go intent
+    // when this prepare should present its ack).
+    void armPrepare(std::int64_t requestId, const boost::json::object& scene,
+                    bool autoPresent);
     void resetSceneTracking();
 
     QProcess fProcess;
@@ -183,6 +198,11 @@ private:
     int fConnectAttempts = 0;
 
     std::int64_t fNextId = 1;
+    // Bumped on every successful connect. Replies are only honoured for
+    // requests of the current connection; the decoder is reset with it,
+    // so bytes of a dead stream can never answer a new one.
+    std::uint64_t fConnectionGeneration = 0;
+    QHash<std::int64_t, PendingRequest> fPendingRequests;
     bool fHandshakeDone = false;
     bool fConnected = false;
     bool fOutputStopped = false;
@@ -202,7 +222,6 @@ private:
     qint64 fSceneActive = 0;
     qint64 fScenePending = 0;
     qint64 fScenePrepared = 0;
-    bool fAutoPresentScene = false;
     openshow::domain::Documents fDemoDocuments = openshow::scene::demoDocuments();
 
     // Output controls (task 3.4): the JSON each revision was prepared with,
@@ -211,9 +230,14 @@ private:
     // is kept to the same recent window and is only a mirror, never the
     // source of truth for what output shows.
     QHash<qint64, QString> fSceneJson;
-    QString fPendingPrepareJson;  // JSON of the prepare awaiting its revision
+    qint64 fMirrorMax = 0;        // highest revision mirrored (prune bound)
     SceneContent fSceneContent;   // derived from fSceneJson[fSceneActive]
     qint64 fRestoreRevision = 0;  // full revision the current clear sequence cut from
+    // Id of the most recent go-intent still awaiting its presentation.
+    // A prepare ack presents only while its request is still the newest
+    // go (the latest-go rule): an older go acknowledged late must not
+    // regress the audience off a newer one.
+    std::int64_t fLatestGoId = 0;
 
     // Preview consumer state (UI thread only): the read-only mapping of
     // the worker's shm segment and the frame last copied out of it.

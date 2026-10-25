@@ -145,11 +145,33 @@ Updated: 2026-10-25 (Europe/London).
   machine's own `build/` and `build-headless/` caches pick the submodule on
   their next configure; `-DSKIA_ROOT=/home/jim/skia` still selects the old
   tree, which stays as a manual fallback, not as the project default.)
-- Exact next action: **6.3a**, correlate worker replies by request ID and
-  connection generation; preserve each prepare payload and latest-go intent
-  (see the 6.3a row for full acceptance wording: WorkerController burst A/B/C,
-  slow/error reply and disconnect tests, correct final slide/revision/mirror,
-  no stale auto-present). Then continue the focused M6 leaves in order.
+- **6.3a DONE (2026-10-25).** Worker reply correlation (review R3).
+  `WorkerController` no longer identifies replies by result shape: every
+  request is recorded by id (`PendingRequest{method, prepareJson,
+  autoPresent, connection}`) before it is written, and a reply acts only on
+  the request its id names — unknown, duplicate or previous-connection
+  replies are dropped. Each connect bumps the connection generation, resets
+  the shared `proto::Decoder` (new `reset()`) and clears pending intents, so
+  a dead stream's bytes or wishes cannot cross into the next one. Each
+  prepare ack mirrors its own request's payload under the revision that ack
+  named (the single pending-JSON slot is gone), and the **latest-go rule**
+  holds: only the newest go's ack presents, so a late older ack can mirror
+  but never regress the audience; error replies consume their intent. The
+  supervisor moved into `openshow-ui-core` and `start()` honours a test-only
+  `OPENSHOW_WORKER_PROGRAM` override, so the new `worker_controller_tests`
+  drive the real class against this very binary re-executed as a scripted
+  RPC peer (held burst acks, a 400 ms late ack, a rejection, a mid-flight
+  death), with the child reporting exactly which presents arrived. All four
+  scenarios pin the final slide/revision/mirror and the no-stale-auto-present
+  rule; mutation (latest-go → old flag semantics) fails burst and slow
+  scenarios, and building the fixtures flushed out — and fixed — a vacuous
+  delayed-ack queue of their own. Gates desktop **32/32**, headless **20/20**.
+- Exact next action: **6.3b**, serialize/coalesce clear and restore intent
+  against the pending logical presentation; retain restore content until
+  acknowledged (see the 6.3b row for full acceptance wording: back-to-back
+  words/background clears compose, >16 prepares cannot lose restore content,
+  a failed restore keeps retry available and confirmed indicators remain
+  honest). Then continue the focused M6 leaves in order.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -2592,6 +2614,14 @@ of this work.
   library-less submodule); the separately cloned sibling `../skia` becomes a
   legacy fallback selected only through `SKIA_ROOT`. Supersedes the
   build-separately layout documented up to this point.
+- (2026-10-25, task 6.3a) Worker-supervisor tests drive the real class, not
+  a duplicated fake controller: `WorkerController` moved from the
+  `openshow-ui` executable into `openshow-ui-core`, and
+  `WorkerController::start()` honours the test-only
+  `OPENSHOW_WORKER_PROGRAM` override so fixtures spawn the test binary
+  itself as a scripted JSON-RPC peer. Replies correlate by request id plus
+  a connection generation (decoder reset with it); the latest-go rule lets
+  only the newest go's prepare acknowledgement move the audience.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.
