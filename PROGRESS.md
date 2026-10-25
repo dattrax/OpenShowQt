@@ -2219,6 +2219,97 @@ of this work.
 - **Next**: task **5.5** — preload, continuous backgrounds, error
   handling (lyrics preserve playback; failures are visible).
 
+## Task 5.5 log (2026-10-25) — preload, continuous backgrounds, visible errors: DONE
+
+- **Goal**: PLAN 5.5 — acceptance "**lyrics preserve playback; failures
+  are visible**": a playing background video must survive a lyric
+  change, prepared slides must reach the air fast, and a broken media
+  asset must announce itself rather than degrade silently. Worked as
+  5.5a–e (each committed green): scene kind `c486ebc`, session
+  transport `212a0a0`, preload `b633995`, visibility `6a3c8cc`,
+  acceptance test + this fix.
+- **5.5a — kind** (`scene/`): `Background::isVideo`, decided at compile
+  time from the extension (`assetPathIsVideo`, case-insensitive), so the
+  scene model stays filesystem-independent exactly like the image
+  background; wire `background.video` always written, optional on read
+  (legacy scene-1 payloads read as stills), refusals for a non-bool and
+  for video without `image:true`; the kind participates in equality
+  because the transport's continuity identity (assetId, path, kind)
+  depends on it.
+- **5.5b — the transport in `OutputSession`**: a presented scene whose
+  background names a video gets the same `PlaybackPipeline` + `AvPlayer`
+  pair the bench drives (loops always, copying-decoder fallback allowed,
+  embedded-audio clock when decodable else monotonic, colour-fill
+  degrade with a stderr line). The continuity rule is *unchanged means
+  untouched*: `applyBackgroundTransport` compares the wanted background
+  against the identity in service, so a lyric change disturbs nothing —
+  decode position, clock and sink keep rolling while only the words
+  crossfade. A transition involving video **cuts the media track** (the
+  text track still fades — a half-composed background is worse than a
+  cut); `AvPlayer` became re-armable (`stop()` re-arms, `attachPipeline`
+  dedupes, new `detachPipeline`). Draw: `FrameContext` offers the held
+  frame to the background layer, cover-fitted; the 1.5e dev bench keeps
+  its whole-output overlay bit-for-bit (`Options::backgroundMedia` is
+  set only by `--socket`).
+  - **Live deadlock found and fixed**: the transport's teardown `join()`s
+    pipeline threads that may themselves block on `graphicsQueueMutex`,
+    which `frame()` holds — applying a scene change inside `frame()`
+    therefore hangs on the first video→video swap. `applyPendingSceneChange`
+    moved to the run loop directly ahead of `frame()`, outside the queue
+    lock; `close()` tears the transport down before every GPU resource
+    it references.
+- **5.5c — preload at `scene.prepare`** (RPC thread, outside the store
+  lock, socket mode only): stills decode into `SceneImageCache`, now
+  thread-safe (lookup/insert under a mutex, `SkCodec` decode outside
+  it — a prefetch never stalls the render thread's draw lookup; first
+  insert wins; failures stay cached so a bad path is one attempt);
+  videos get the cheap `probeMedia`, so a file that cannot demux is
+  known *while the old scene is still on air*. Live: 4K JPEG prepare
+  costs **43 ms** (the decode), identical re-prepare **0 ms**.
+- **5.5d — visibility**: `output.status` gained `media {playing, path,
+  error, position}`; the error is **sticky** until a successful open
+  replaces it (the 500 ms poll cannot miss a failure landing in
+  between), and every *new* message additionally rides a `media.error`
+  notification (protocol minor **3**, capability `media.error.v1`, six
+  capabilities total), flushed within one poll tick like
+  `preview.ready`; an identical repeat never re-notifies (re-preparing a
+  broken asset does not spam the socket). Session events
+  `mediaPlaying`/`mediaStopped`/`mediaFailed`; colour and still scenes
+  idle the media status (a stale video error is not the story of the
+  scene now on air). Frontend: `mediaPlaying`/`mediaError` properties
+  fed by status *and* notification, cleared on disconnect; the top bar
+  shows the failure in amber ahead of the connection line.
+- **5.5e — `background_media_tests`** (desktop preset, TIMEOUT 240,
+  real `--socket` session, self-generated **silent** ffmpeg fixtures —
+  a ctest never emits audio; skip 77 without the CLI): the acceptance
+  shot is `media.position` (the transport's loop-continuous pts, new in
+  the status object, sampled by the render thread each frame)
+  **climbing through a lyric change** over the same background — a
+  reopened transport would sit near zero; the background layer off
+  hides the picture while the position keeps advancing; a video swap
+  takes over with its own position; missing and corrupt backgrounds
+  each push exactly-matching `media.error` + sticky status and recovery
+  clears both; the big-still prepare is a decode then a cache hit; and
+  15 preloaded slide changes time present→on-air: **p95 18.7 ms
+  (max 18.7 ms) against the 100 ms target.**
+  - **Real scheduler bug caught by the test**: 5.5b's move of the scene
+    apply out of `frame()` broke the 1.5e capture invariant — `frame()`
+    still read `presentedFor = fRevision` *after* the apply, so a
+    command landing during the apply was credited to a frame that never
+    drew it: back-to-back presents (the test presents the instant
+    `active` flips) stalled on air with the change stuck `pending`. The
+    revision is now captured in the run loop's decision critical
+    section, ahead of every apply, so a presented frame can only ever
+    claim commands it included (later commands re-dirty the loop —
+    conservative duplicates, never a swallow).
+- **Checks**: `background_media_tests` green 4× back-to-back (~35 s
+  each); live smoke (`/tmp/opencode/bg_smoke.py`, kept as the manual
+  harness) re-proves all scenarios with `position` visible
+  (`playing=true … position: 1.12`) and an error-free worker log.
+  Gates: desktop **26/26**, headless **16/16**.
+- **Next**: **M6 — reliability and installable alpha** (PLAN 6.x),
+  after tagging the **M5** checkpoint.
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -2530,7 +2621,7 @@ logged here from what is observable off screen rather than claimed as seen.
    **`M4`** on main's tip. Next milestone: **M5 — video and audio**
    (video decode/presentation, embedded and standalone audio mixed,
    volume/mute per source).
-3. **M5 is under way**: **5.1, 5.2, 5.3 and 5.4 are DONE**. 5.1 graduated
+3. **M5 is under way**: **5.1, 5.2, 5.3, 5.4 and 5.5 are DONE**. 5.1 graduated
    the bench glue into the production `PlaybackPipeline` (Qt-free
    `playback/` library: decode thread, GPU ring, paced submission,
    presenter role), with `playback_queue_tests` pinning boundedness.
@@ -2557,10 +2648,35 @@ logged here from what is observable off screen rather than claimed as seen.
    monotonic fallback clock without a daemon; `av_sync_tests` (60
    checks, both presets) plus live reruns met the M5 targets: 60 s run
    missed 1/1501 (0.07% < 1%), drift mean +0.6 ms max 37.0 ms (< 50
-   ms), sink underruns 0, mixer starved 0 (was 201). Gates: desktop
-   **25/25**, headless **16/16**. Next: **5.5** — preload, continuous
-   backgrounds, error handling (lyrics preserve playback; failures are
-   visible).
+   ms), sink underruns 0, mixer starved 0 (was 201). 5.5 put it all on
+   air: `Background::isVideo` (kind from the extension, wire-optional,
+   part of the continuity identity); a real `PlaybackPipeline` +
+   `AvPlayer` transport in `OutputSession` that **never restarts for a
+   lyric change** (identity unchanged → untouched — proven by the loop-
+   continuous `media.position` climbing *through* the change), cuts the
+   media track across transitions, and lives outside `frame()`'s
+   graphics-queue lock (its teardown joins threads that may block on
+   that lock — live deadlock found and fixed); `scene.prepare` preloads
+   (stills decode on the RPC thread into a now-thread-safe
+   `SceneImageCache`, videos probe), so a 4K JPEG costs 43 ms at prepare
+   and 0 ms on re-prepare; failures became visible — `status.media
+   {playing, path, error}` with a sticky error plus the `media.error`
+   notification (protocol minor 3, capability `media.error.v1`, never
+   re-notifying an identical repeat), amber top-bar surface in the UI.
+   `background_media_tests` pins the acceptance live over a real
+   `--socket` session (self-generated silent fixtures; missing/corrupt
+   files push matching notifications, recovery clears; hiding the
+   background layer keeps playback rolling) and measures **p95 18.7 ms**
+   present→air against the 100 ms target. It also caught a real
+   scheduler bug from the scene-apply move: `frame()` captured
+   `presentedFor` *after* the apply, so a command landing during the
+   apply was credited to a frame that never drew it — back-to-back
+   presents stalled on air; the revision is now captured in the run
+   loop's decision critical section (the 1.5e invariant, placement now
+   load-bearing). Gates: desktop **26/26**, headless **16/16**.
+   **M5 is complete** — committed and pushed, annotated tag **`M5`** on
+   main's tip. Next milestone: **M6 — reliability and installable
+   alpha**.
 4. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;

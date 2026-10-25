@@ -129,7 +129,18 @@ add_test(NAME worker_rpc_lifecycle
   COMMAND rpc_ipc_tests $<TARGET_FILE:openshow-worker>)
 set_tests_properties(worker_rpc_lifecycle PROPERTIES LABELS display TIMEOUT 120)
 
-# Task 1.5e acceptance: the event-driven scheduler. --idle-check watches the
+# Task 5.5 acceptance: background video, preload and media visibility
+# over a live --socket session: lyrics preserve playback (the media
+# position climbs through a lyric change over the same background), a
+# missing/corrupt background produces a media.error notification and a
+# sticky status error that recovery clears, and prepared slides reach the
+# air within 100 ms p95. Fixtures are generated with the ffmpeg CLI
+# (skips 77 without it); the worker opens a window, so it is desktop.
+add_executable(background_media_tests background_media_tests.cpp)
+target_link_libraries(background_media_tests PRIVATE openshow::protocol openshow::scene)
+add_test(NAME background_media_tests
+  COMMAND background_media_tests $<TARGET_FILE:openshow-worker>)
+set_tests_properties(background_media_tests PROPERTIES LABELS display TIMEOUT 240)
 # render loop from a second thread and fails (exit 1) if a static scene
 # presents anything, burns more than 5% CPU over the window, or ignores a
 # layer toggle. Needs a display like the rpc scenario.

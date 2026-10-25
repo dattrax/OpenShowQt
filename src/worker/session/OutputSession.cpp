@@ -429,11 +429,13 @@ void OutputSession::mediaPlaying(const openshow::scene::Background& background) 
     fStatus.media.playing = true;
     fStatus.media.path = background.assetPath;
     fStatus.media.error.clear();  // a successful open replaces any old failure
+    fStatus.media.position = -1.0;  // until the transport presents its head
 }
 
 void OutputSession::mediaStopped() {
     std::lock_guard<std::mutex> lock(fMutex);
     fStatus.media.playing = false;
+    fStatus.media.position = -1.0;
     // The last error stays visible (the operator still needs to read it);
     // path stays so the message and the asset that caused it stay paired.
 }
@@ -670,6 +672,7 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
         fStatus.media.playing = false;
         fStatus.media.path.clear();
         fStatus.media.error.clear();
+        fStatus.media.position = -1.0;
         return;
     }
 
@@ -933,17 +936,12 @@ void OutputSession::publishPreviewFrame(double elapsed, SkImage* video) {
     ++fStatus.preview.published;
 }
 
-void OutputSession::frame() {
+void OutputSession::frame(uint64_t presentedFor) {
     std::lock_guard queueLock(graphicsQueueMutex());
-    // The revision this frame represents: a command landing while the
-    // frame is in flight must re-dirty the loop rather than be swallowed
-    // (task 1.5e).
-    uint64_t presentedFor = 0;
-    {
-        std::lock_guard<std::mutex> lock(fMutex);
-        presentedFor = fRevision;
-    }
-
+    // presentedFor comes from the run loop's decision (see the header
+    // note): capturing here instead would let a command that lands
+    // between applyPendingSceneChange and this function be attributed
+    // to a frame that never drew it.
     applyPendingLayerChanges();
     applyPendingDisplayChange();
     applyPreviewState();
@@ -1155,6 +1153,12 @@ void OutputSession::frame() {
         fStatus.frames = fFrames;
         fStatus.width = fSwapchain->width();
         fStatus.height = fSwapchain->height();
+        // Background media position rides the frame's status refresh
+        // (task 5.5): the render thread owns the transport, so this is
+        // the one honest place to sample it.
+        if (fBackground != nullptr) {
+            fStatus.media.position = fBackground->position();
+        }
     }
 }
 
@@ -1212,6 +1216,7 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
 
         bool presentNow = false;
         bool previewDue = false;
+        uint64_t presentedFor = 0;
         auto wakeAt = hardDeadline;
         {
             std::lock_guard<std::mutex> lock(fMutex);
@@ -1219,6 +1224,10 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
                          fDesiredMonitor != fAppliedMonitor ||
                          fDesiredPreview.generation != fAppliedPreviewGeneration ||
                          fNeedsPresent || fWindow->framebufferResized();
+            // The revision this frame represents, captured in the same
+            // critical section as the decision and therefore ahead of
+            // every apply the frame performs (see frame()'s header note).
+            presentedFor = fRevision;
             if (!presentNow && fPendingVideo && fVideoPresenter) {
                 const double clock = videoClockSecondsLocked(now);
                 if (clock >= fPendingVideo->ptsSeconds) {
@@ -1272,7 +1281,7 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             // Composition and transport still switch together, directly
             // ahead of the draw.
             applyPendingSceneChange();
-            frame();
+            frame(presentedFor);
             continue;
         }
         if (previewDue) {

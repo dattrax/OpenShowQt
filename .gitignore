@@ -20,3 +20,6 @@
 *~
 VP_VULKANINFO_*.json
 /media-fixtures/
+# Self-generated test fixtures when a test is run from the repo root
+/background-media-fixtures/
+/playback-fixtures/

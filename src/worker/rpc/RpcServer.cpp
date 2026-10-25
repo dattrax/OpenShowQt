@@ -117,7 +117,8 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                // until a successful open replaces it.
                                {"media", boost::json::object{{"playing", status.media.playing},
                                                              {"path", status.media.path},
-                                                             {"error", status.media.error}}}};
+                                                             {"error", status.media.error},
+                                                             {"position", status.media.position}}}};
 }
 
 boost::json::value displaysResult(const std::vector<OutputSession::DisplayInfo>& displays) {

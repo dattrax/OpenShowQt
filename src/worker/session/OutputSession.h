@@ -126,6 +126,13 @@ public:
         bool playing = false;
         std::string path;
         std::string error;
+        // Loop-continuous media position in seconds, refreshed by the
+        // render thread each frame while a video background plays; -1
+        // otherwise. It is the proof of the continuity rule: a lyric
+        // change over the same background shows position climbing
+        // THROUGH the change — a transport that reopened would restart
+        // near zero.
+        double position = -1.0;
     };
 
     // One recorded background-media failure, carried by the media.error
@@ -322,7 +329,14 @@ public:
 
 private:
     bool createSwapchain();
-    void frame();
+    // Presents exactly one frame. presentedFor is the command revision
+    // captured at the run loop's present decision — under fMutex and
+    // BEFORE this frame applies any pending change — so the presented
+    // frame can never claim a command it did not include: a change
+    // landing after the capture re-dirties the loop instead of being
+    // swallowed (task 1.5e's invariant; the 5.5 scene-apply move made
+    // the capture's placement load-bearing).
+    void frame(uint64_t presentedFor);
     void housekeep();
     void applyPendingLayerChanges();
     void applyPendingDisplayChange();
