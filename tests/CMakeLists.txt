@@ -23,10 +23,10 @@ add_test(NAME worker_is_qt_free
           -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoQt.cmake
 )
 
-# Task 6.2a (review R9): application and test code use public Skia APIs
+# Task 6.2b (review R9): application and test code use public Skia APIs
 # only — no includes of Skia's private/ or src/ trees (modules/<m>/src/
-# included). The one exemption, SceneText.cpp, is listed in the script
-# and retires with task 6.2b.
+# included). The exemption list is empty since the ICU-backed Unicode
+# module retired SceneText.cpp's private includes.
 add_test(NAME skia_public_api_guard
   COMMAND ${CMAKE_COMMAND}
           -DROOT=${CMAKE_SOURCE_DIR}
@@ -131,6 +131,18 @@ set_source_files_properties(scene_render_tests.cpp PROPERTIES
 )
 add_test(NAME scene_render_tests COMMAND scene_render_tests)
 set_tests_properties(scene_render_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+# Task 6.2b (review R9): the public ICU-backed SkUnicode module — grapheme
+# clustering (combining marks, emoji ZWJ/flag sequences), UAX #14 CJK
+# wrapping, UBA bidi regions for mixed Hebrew/Latin, working break
+# iterators — through the production text engine. Skips (77) without fonts.
+add_executable(unicode_text_tests unicode_text_tests.cpp)
+target_link_libraries(unicode_text_tests PRIVATE openshow::worker_render)
+set_source_files_properties(unicode_text_tests.cpp PROPERTIES
+  COMPILE_OPTIONS "-fno-rtti"
+)
+add_test(NAME unicode_text_tests COMMAND unicode_text_tests)
+set_tests_properties(unicode_text_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 
 # Task 1.5 media foundation, linked straight into the Qt-free test binary.
 # Fixtures are generated with the ffmpeg CLI; the test exits 77 (skipped)

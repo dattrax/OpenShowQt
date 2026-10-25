@@ -5,13 +5,14 @@
  * and the SkUnicode backend graduate here from TestScene (task 3.1): the
  * engine is the single font setup the worker has, so a fixture rendered
  * through layoutScene()/renderSceneSnapshot exercises exactly what the
- * audience layers draw.
+ * audience layers draw. The Unicode provider is the public ICU-backed
+ * module since task 6.2b — the homemade hard-coded backend and the
+ * SkUnicodes::ICU::Make() compatibility shim are gone with review R9.
  */
 
 #include "render/SceneText.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <initializer_list>
@@ -35,14 +36,12 @@
 #include "include/encode/SkPngEncoder.h"
 #include "include/ports/SkFontMgr_fontconfig.h"
 #include "include/ports/SkFontScanner_FreeType.h"
-#include "include/private/base/SkTArray.h"
-#include "src/base/SkUTF.h"
 #include "modules/skparagraph/include/FontCollection.h"
 #include "modules/skparagraph/include/ParagraphBuilder.h"
 #include "modules/skparagraph/include/ParagraphStyle.h"
 #include "modules/skparagraph/include/TextStyle.h"
 #include "modules/skunicode/include/SkUnicode.h"
-#include "modules/skunicode/src/SkUnicode_hardcoded.h"
+#include "modules/skunicode/include/SkUnicode_icu.h"
 
 namespace openshow::worker {
 
@@ -55,184 +54,6 @@ constexpr float kDefaultLineSpacing =
     static_cast<float>(openshow::domain::kDefaultLineSpacing);
 
 }  // namespace
-
-// The hard-coded SkUnicode backend implements the character properties but
-// leaves breaking, bidi and upper-casing abstract (full ICU is blocked on an
-// ICU version mismatch; see PROGRESS.md). These implementations cover the
-// rules scenes need: whitespace, newlines as hard breaks, a soft break after
-// whitespace (which is what makes word wrapping work), and a grapheme start
-// per code point. Named (not anonymous): the SkUnicodes::ICU::Make() shim at
-// the bottom of this file hands libskshaper the same provider.
-class HardCodedUnicode final : public SkUnicodeHardCodedCharProperties {
-public:
-    SkString toUpper(const SkString& text) override {
-        SkString upper(text);
-        char* data = upper.data();
-        for (size_t i = 0; i < upper.size(); ++i) {
-            data[i] = static_cast<char>(std::toupper(static_cast<unsigned char>(data[i])));
-        }
-        return upper;
-    }
-
-    SkString toUpper(const SkString& text, const char*) override { return toUpper(text); }
-
-    std::unique_ptr<SkBidiIterator> makeBidiIterator(const uint16_t[], int,
-                                                     SkBidiIterator::Direction) override {
-        return nullptr;
-    }
-
-    std::unique_ptr<SkBidiIterator> makeBidiIterator(const char[], int,
-                                                     SkBidiIterator::Direction) override {
-        return nullptr;
-    }
-
-    std::unique_ptr<SkBreakIterator> makeBreakIterator(const char[], BreakType) override {
-        return nullptr;
-    }
-
-    std::unique_ptr<SkBreakIterator> makeBreakIterator(BreakType) override { return nullptr; }
-
-    bool getBidiRegions(const char[], int utf8Units, TextDirection direction,
-                        std::vector<BidiRegion>* results) override {
-        if (!results) {
-            return false;
-        }
-        // Single-level text (no mixed directions) through task 3.1.
-        results->clear();
-        results->emplace_back(0, static_cast<Position>(utf8Units),
-                              direction == TextDirection::kRTL ? BidiLevel(1) : BidiLevel(0));
-        return true;
-    }
-
-    bool getWords(const char[], int, const char*, std::vector<Position>*) override {
-        return false;
-    }
-
-    bool getUtf8Words(const char[], int, const char*, std::vector<Position>*) override {
-        return false;
-    }
-
-    bool getSentences(const char[], int, const char*, std::vector<Position>*) override {
-        return false;
-    }
-
-    void reorderVisual(const BidiLevel[], int levelCount, int32_t* reorderMap) override {
-        // Single direction (LTR): the identity mapping.
-        for (int i = 0; i < levelCount; ++i) {
-            reorderMap[i] = i;
-        }
-    }
-
-    bool computeCodeUnitFlags(char utf8[], int utf8Units, bool,
-                              skia_private::TArray<CodeUnitFlags, true>* results) override {
-        if (!results) {
-            return false;
-        }
-        results->clear();
-        results->push_back_n(utf8Units + 1, CodeUnitFlags::kNoCodeUnitFlag);
-        const char* current = utf8;
-        const char* end = utf8 + utf8Units;
-        bool previousWasWhitespace = false;
-        bool pendingHardBreak = false;
-        while (current < end) {
-            const int before = static_cast<int>(current - utf8);
-            SkUnichar unichar = SkUTF::NextUTF8(&current, end);
-            if (unichar < 0) {
-                unichar = 0xFFFD;
-            }
-            const int after = static_cast<int>(current - utf8);
-            // A hard break belongs to the position *after* the newline so the
-            // newline stays trailing whitespace of its own line, matching
-            // SkUnicode_icu's UTF-8 path.
-            if (pendingHardBreak) {
-                (*results)[before] = static_cast<CodeUnitFlags>(
-                    (*results)[before] | CodeUnitFlags::kHardLineBreakBefore);
-            }
-            const bool whitespace = isWhitespace(unichar);
-            int flags = CodeUnitFlags::kGraphemeStart;
-            if (isControl(unichar)) {
-                flags |= CodeUnitFlags::kControl;
-            }
-            if (isTabulation(unichar)) {
-                flags |= CodeUnitFlags::kTabulation;
-            }
-            if (whitespace) {
-                flags |= CodeUnitFlags::kPartOfWhiteSpaceBreak;
-                for (int i = before; i < after; ++i) {
-                    (*results)[i] = static_cast<CodeUnitFlags>(
-                        (*results)[i] | CodeUnitFlags::kPartOfWhiteSpaceBreak);
-                }
-            }
-            if (!whitespace && previousWasWhitespace) {
-                flags |= CodeUnitFlags::kSoftLineBreakBefore;
-            }
-            (*results)[before] = static_cast<CodeUnitFlags>((*results)[before] | flags);
-            pendingHardBreak = isHardBreak(unichar);
-            previousWasWhitespace = whitespace;
-        }
-        // ICU reports a hard break after a trailing newline and a final soft
-        // break at the end of the text.
-        CodeUnitFlags tail = CodeUnitFlags::kSoftLineBreakBefore;
-        if (pendingHardBreak) {
-            tail = static_cast<CodeUnitFlags>(tail | CodeUnitFlags::kHardLineBreakBefore);
-        }
-        (*results)[utf8Units] = static_cast<CodeUnitFlags>((*results)[utf8Units] | tail);
-        return true;
-    }
-
-    bool computeCodeUnitFlags(char16_t utf16[], int utf16Units, bool,
-                              skia_private::TArray<CodeUnitFlags, true>* results) override {
-        if (!results) {
-            return false;
-        }
-        results->clear();
-        results->push_back_n(utf16Units + 1, CodeUnitFlags::kNoCodeUnitFlag);
-        const char16_t* current = utf16;
-        const char16_t* end = utf16 + utf16Units;
-        bool previousWasWhitespace = false;
-        bool pendingHardBreak = false;
-        while (current < end) {
-            const int before = static_cast<int>(current - utf16);
-            SkUnichar unichar = SkUTF::NextUTF16(reinterpret_cast<const uint16_t**>(&current),
-                                                 reinterpret_cast<const uint16_t*>(end));
-            if (unichar < 0) {
-                unichar = 0xFFFD;
-            }
-            const int after = static_cast<int>(current - utf16);
-            if (pendingHardBreak) {
-                (*results)[before] = static_cast<CodeUnitFlags>(
-                    (*results)[before] | CodeUnitFlags::kHardLineBreakBefore);
-            }
-            const bool whitespace = isWhitespace(unichar);
-            int flags = CodeUnitFlags::kGraphemeStart;
-            if (isControl(unichar)) {
-                flags |= CodeUnitFlags::kControl;
-            }
-            if (isTabulation(unichar)) {
-                flags |= CodeUnitFlags::kTabulation;
-            }
-            if (whitespace) {
-                flags |= CodeUnitFlags::kPartOfWhiteSpaceBreak;
-                for (int i = before; i < after; ++i) {
-                    (*results)[i] = static_cast<CodeUnitFlags>(
-                        (*results)[i] | CodeUnitFlags::kPartOfWhiteSpaceBreak);
-                }
-            }
-            if (!whitespace && previousWasWhitespace) {
-                flags |= CodeUnitFlags::kSoftLineBreakBefore;
-            }
-            (*results)[before] = static_cast<CodeUnitFlags>((*results)[before] | flags);
-            pendingHardBreak = isHardBreak(unichar);
-            previousWasWhitespace = whitespace;
-        }
-        CodeUnitFlags tail = CodeUnitFlags::kSoftLineBreakBefore;
-        if (pendingHardBreak) {
-            tail = static_cast<CodeUnitFlags>(tail | CodeUnitFlags::kHardLineBreakBefore);
-        }
-        (*results)[utf16Units] = static_cast<CodeUnitFlags>((*results)[utf16Units] | tail);
-        return true;
-    }
-};
 
 namespace {
 
@@ -306,10 +127,17 @@ bool SceneTextEngine::create(std::string* error) {
 
     fFontCollection = sk_make_sp<skia::textlayout::FontCollection>();
     fFontCollection->setDynamicFontManager(fFontMgr);
-    // Full ICU-backed SkUnicode needs an ICU matching the Skia build (it
-    // expects v77 symbols, this Fedora has 78); the hard-coded backend is
-    // enough for the task 1.1 text and the swap is recorded in PROGRESS.md.
-    fUnicode = sk_make_sp<HardCodedUnicode>();
+    // Real Unicode: UAX #14 line breaking, UAX #29 grapheme clustering and
+    // UBA bidi from the public ICU-backed module (task 6.2b). The worker's
+    // Skia is built with skia_use_system_icu=true, so libskunicode_icu and
+    // the system libicuuc agree on the versioned symbols.
+    fUnicode = SkUnicodes::ICU::Make();
+    if (!fUnicode) {
+        if (error) {
+            *error = "SkUnicode ICU backend unavailable";
+        }
+        return false;
+    }
     return true;
 }
 
@@ -669,13 +497,3 @@ bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string&
 }
 
 }  // namespace openshow::worker
-
-// Compatibility definition: libskshaper's default shaping entry point calls
-// SkUnicodes::ICU::Make(), and the prebuilt libskunicode_icu expects ICU v77
-// versioned symbols this Fedora (ICU 78) does not provide (see PROGRESS.md).
-// Supplying the hard-coded backend here keeps the linker happy and hands the
-// shaper the same Unicode provider the paragraph uses. Retire this when the
-// ICU match is resolved.
-namespace SkUnicodes::ICU {
-sk_sp<SkUnicode> Make() { return sk_make_sp<openshow::worker::HardCodedUnicode>(); }
-}  // namespace SkUnicodes::ICU

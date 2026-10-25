@@ -10,12 +10,11 @@ if(NOT ROOT OR NOT SRC_DIRS)
     "CheckNoSkiaPrivate.cmake needs -DROOT=<repo> -DSRC_DIRS=<dirs, relative to ROOT>")
 endif()
 
-# SceneText.cpp still needs SkTArray/SkUTF/the hardcoded SkUnicode backend
-# (plus an ICU symbol shim); task 6.2b moves it to public APIs and this
-# list empties. Nothing may be added here without a PLAN.md entry.
-set(EXEMPT_FILES
-  "src/worker/render/SceneText.cpp"
-)
+# The exemption list emptied with task 6.2b: the last private includes were
+# SceneText.cpp's SkTArray/SkUTF/hardcoded-SkUnicode, retired when the public
+# ICU-backed module took over. Nothing may be added here without a PLAN.md
+# entry.
+set(EXEMPT_FILES)
 
 string(REGEX REPLACE "[ \t\"]" "" srcDirs "${SRC_DIRS}")
 

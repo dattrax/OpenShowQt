@@ -94,12 +94,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(openshow_skia INTERFACE SK_BUILD_FOR_UNIX)
 endif()
 
-# Text layout: SkParagraph with its shaping and Unicode core. Full ICU is
-# deliberately not linked here: libskunicode_icu expects ICU v77 symbols while
-# this Fedora ships 78, so the worker uses the hard-coded SkUnicode backend
-# for now (recorded in PROGRESS.md as an M3 decision).
+# Text layout: SkParagraph with its shaping and the public ICU-backed
+# Unicode module (task 6.2b). This Skia is built with
+# skia_use_system_icu=true, so libskunicode_icu binds the SYSTEM ICU's
+# versioned symbols (ubrk_*, ubidi_*, ...): the ICU found here must be the
+# major version Skia was compiled against — a mismatch shows up as a link
+# error naming those symbols.
+find_package(ICU COMPONENTS uc i18n REQUIRED)
 set(OPENSHOW_SKIA_TEXT_LIBRARIES "")
-foreach(textLibrary libskparagraph.a libskshaper.a libskunicode_core.a)
+foreach(textLibrary libskparagraph.a libskshaper.a libskunicode_core.a libskunicode_icu.a)
   if(EXISTS "${SKIA_BUILD_DIR}/${textLibrary}")
     list(APPEND OPENSHOW_SKIA_TEXT_LIBRARIES "${SKIA_BUILD_DIR}/${textLibrary}")
   endif()
@@ -108,6 +111,8 @@ endforeach()
 target_link_libraries(openshow_skia INTERFACE
   ${OPENSHOW_SKIA_TEXT_LIBRARIES}
   "${OPENSHOW_SKIA_LIBRARY}"
+  ICU::i18n
+  ICU::uc
   Vulkan::Vulkan
   Threads::Threads
 )

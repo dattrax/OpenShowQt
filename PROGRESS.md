@@ -111,13 +111,29 @@ Updated: 2026-10-25 (Europe/London).
   (flags exactly those three lines). GPU tests re-run green under
   `OPENSHOW_VULKAN_VALIDATION=1`. Gates desktop **30/30** (live display tests
   included), headless **19/19**.
-- Exact next action: **6.2b**, public SkUnicode/ICU — build or link a
-  compatible ICU-backed Unicode module, delete the homemade backend and the
-  `SkUnicodes::ICU::Make()` shim in `SceneText.cpp`, and empty the
-  `CheckNoSkiaPrivate.cmake` exemption list so src+tests carry zero private/
-  src includes (see the 6.2b row for full acceptance wording). Then continue
-  the focused M6 leaves in order. Review completion does not mark any finding
-  fixed; no new implementation blocker was found.
+- **6.2b DONE (2026-10-25).** Real Unicode, and R9's private-Skia ledger is
+  closed. Skia rebuilt with `skia_use_system_icu = true` (the `_77` ICU
+  references lived only in `libskunicode_icu`, so ninja recompiled exactly
+  that module; bindings now match the system ICU 78). The worker links
+  `libskunicode_icu.a` + `ICU::uc/i18n`. `SceneText.cpp` lost the homemade
+  `HardCodedUnicode` (~180 lines), the `SkUnicodes::ICU::Make()` shim and
+  its three private includes — the public module is the engine's provider
+  and the guard's exemption list is now **empty**: zero private/src Skia
+  includes across src+tests. New `unicode_text_tests` pins what the upgrade
+  buys: combining-mark clusters, skin-tone/ZWJ/flag emoji as single
+  graphemes, UAX #14 wrapping of unspaced CJK, real UBA bidi regions for
+  mixed Hebrew/Latin (the stub answered "one level-0 region"), working
+  bidi/line/grapheme break iterators; script-font availability skips only
+  the affected layout fixture, visibly. All 30 prior fixtures unaffected.
+  Gates desktop **31/31**, headless **20/20**.
+- Exact next action: **6.2c**, reproducible Skia (user request 2026-10-25):
+  add Skia as a git submodule pinned to
+  `a94df1cdabb03d3ead2486413bc2999b500aa4f8` and teach
+  `cmake/OpenShowSkia.cmake` to build it from the submodule with the proven
+  arguments (Vulkan, no GL, system ICU) when no prebuilt `SKIA_ROOT` is
+  supplied, so a fresh clone is buildable end to end. Then continue the
+  focused M6 leaves in order (6.3a next after that). Review completion does
+  not mark any finding fixed; no new implementation blocker was found.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -2546,6 +2562,12 @@ of this work.
 - (2026-10-22) ICU: hard-coded SkUnicode backend plus the
   `SkUnicodes::ICU::Make()` shim until an ICU-v77 match (or a rebuilt Skia)
   lands in M3; ASCII-only break rules are explicitly a task-1.1 scope limit.
+- (2026-10-25, task 6.2b) Unicode is the public ICU-backed Skia module
+  against the SYSTEM ICU: Skia builds with `skia_use_system_icu = true`
+  (the user's call), so the worker, libskunicode_icu and Fedora's ICU share
+  one version and the homemade hard-coded backend plus the
+  `SkUnicodes::ICU::Make()` shim are deleted. This supersedes the 2026-10-22
+  hard-coded-backend decision.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.
