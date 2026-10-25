@@ -22,9 +22,19 @@
 namespace openshow::protocol {
 
 // Wire format version. Frontend and worker must agree on the major value
-// before any other message is exchanged.
+// before any other message is exchanged. Minor 3 (task 5.5d) adds the
+// media.error notification and the status "media" object; both are
+// additions a minor-2 frontend ignores, so the minor does not gate them —
+// the "media.error.v1" capability names them.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 2;
+inline constexpr std::uint32_t kProtocolMinor = 3;
+
+// Worker-to-frontend notification (task 5.5d): a background media asset
+// failed. {"path":...,"message":...} — sent when the failure happens,
+// while output.status "media.error" carries the same text until a
+// successful open replaces it (the frontend polls; it must not miss a
+// failure that lands between polls).
+inline constexpr const char* kMethodMediaError = "media.error";
 
 // A framed message larger than this is treated as a protocol error: the
 // only legitimate payloads are control messages, never pixels.

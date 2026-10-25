@@ -412,6 +412,45 @@ bool OutputSession::takePreviewReady(PreviewReady* out) {
     return false;
 }
 
+bool OutputSession::takeMediaError(MediaError* out) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    if (!fPendingMediaError) {
+        return false;
+    }
+    if (out) {
+        *out = *fPendingMediaError;
+    }
+    fPendingMediaError.reset();
+    return true;
+}
+
+void OutputSession::mediaPlaying(const openshow::scene::Background& background) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    fStatus.media.playing = true;
+    fStatus.media.path = background.assetPath;
+    fStatus.media.error.clear();  // a successful open replaces any old failure
+}
+
+void OutputSession::mediaStopped() {
+    std::lock_guard<std::mutex> lock(fMutex);
+    fStatus.media.playing = false;
+    // The last error stays visible (the operator still needs to read it);
+    // path stays so the message and the asset that caused it stay paired.
+}
+
+void OutputSession::mediaFailed(const std::string& path, const std::string& message) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    fStatus.media.path = path;
+    // The same failure repeated (a re-prepare of a still-broken asset, or
+    // a probe that keeps failing) updates the text but notifies only when
+    // the message actually changes — the socket must not spam.
+    const bool isNew = fStatus.media.error != message;
+    fStatus.media.error = message;
+    if (isNew) {
+        fPendingMediaError = MediaError{path, message};
+    }
+}
+
 void OutputSession::setVideoPresenter(VideoPresenter* presenter) {
     // Before run(); the render thread reads it without synchronisation
     // because it is only ever written while the loop is not running.
@@ -623,7 +662,15 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
     teardownBackgroundTransport();
     fAppliedBackground = wanted;
     if (!wanted.hasImage || !wanted.isVideo) {
-        return;  // colour fill or still image: the scene draws itself, no media
+        // Colour fill or still image: no video transport, so the media
+        // status goes idle (a stale video error is not the story of the
+        // scene now on air). Still-image decode is the image cache's
+        // business (task 3.2) and degrades to the colour fill there.
+        std::lock_guard<std::mutex> lock(fMutex);
+        fStatus.media.playing = false;
+        fStatus.media.path.clear();
+        fStatus.media.error.clear();
+        return;
     }
 
     std::string error;
@@ -649,6 +696,7 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
     if (!pipeline->openGpu(gpu, options, &error)) {
         std::fprintf(stderr, "openshow-worker: background video %s: %s\n",
                      wanted.assetPath.c_str(), error.c_str());
+        mediaFailed(wanted.assetPath, "background video: " + error);
         return;  // the colour fill stands; the scene stays legible
     }
 
@@ -659,19 +707,23 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
     openshow::media::MediaInfo info;
     AvPlayer::Config config;
     config.loop = true;
+    bool wantsAudio = false;
     if (openshow::media::probeMedia(wanted.assetPath, &info, &error) ==
         openshow::media::ProbeStatus::kOk) {
         if (!info.audioStreams.empty() && info.audioStreams.front().decoderAvailable) {
             config.videoAudioPath = wanted.assetPath;
+            wantsAudio = true;
         }
     } else {
         std::fprintf(stderr, "openshow-worker: background audio probe %s: %s\n",
                      wanted.assetPath.c_str(), error.c_str());
     }
+    bool audioFailed = false;
     if (!fAudio.start(config, &error)) {
         std::fprintf(stderr, "openshow-worker: background audio: %s (video continues, "
                              "paced by the monotonic clock)\n",
                      error.c_str());
+        audioFailed = wantsAudio;  // only a real loss when audio was expected
     }
     fAudio.attachPipeline(pipeline.get());
 
@@ -685,6 +737,7 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
             fAudio.clockFn(), &error)) {
         std::fprintf(stderr, "openshow-worker: background decode %s: %s\n",
                      wanted.assetPath.c_str(), error.c_str());
+        mediaFailed(wanted.assetPath, "background decode: " + error);
         setVideoClock(nullptr);
         fVideoPresenter = nullptr;
         fAudio.detachPipeline(fBackground.get());
@@ -692,10 +745,19 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
         fBackground.reset();
         return;
     }
+    // The video is on air. A real audio-start failure is recorded on top
+    // (playing stays true — the picture rolls on the monotonic clock);
+    // otherwise the success clears any earlier failure for this asset.
+    mediaPlaying(wanted);
+    if (audioFailed) {
+        mediaFailed(wanted.assetPath,
+                    "background video audio failed to start; playing muted");
+    }
     fNeedsPresent = true;  // the head frame arrives soon; redraw when it does
 }
 
 void OutputSession::teardownBackgroundTransport() {
+    mediaStopped();
     fAudio.stop();
     if (!fBackground) {
         fAppliedBackground = openshow::scene::Background{};

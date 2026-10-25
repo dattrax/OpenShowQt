@@ -7,6 +7,7 @@
 
 #include <boost/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -209,7 +210,15 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 5, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 6, "hello lists capabilities");
+        {  // Task 5.5d's media visibility is named by a capability.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasMedia = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == "media.error.v1";
+                });
+            check(hasMedia, "capabilities name media.error.v1");
+        }
     }
 
     // Major mismatch: structured refusal with both versions.

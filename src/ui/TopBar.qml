@@ -99,9 +99,16 @@ Rectangle {
 
         Text {
             anchors.verticalCenter: parent.verticalCenter
-            color: worker.outputLive ? "#27a827" : "#a82727"
+            // A background media failure outranks the connection line
+            // (task 5.5d): amber means the output lives but its picture
+            // or sound is broken. The connection state stays visible as
+            // the dot, and about/version still carries the full status.
+            color: worker.mediaError !== "" ? "#e0a030"
+                 : worker.outputLive ? "#27a827" : "#a82727"
             font.pixelSize: 12
-            text: worker.status
+            text: worker.mediaError !== ""
+                  ? "media: " + worker.mediaError
+                  : worker.status
         }
     }
 }

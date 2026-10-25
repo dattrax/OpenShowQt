@@ -111,7 +111,13 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                                                {"error", preview.error}}},
                                {"scene", boost::json::object{{"active", status.scene.active},
                                                              {"pending", status.scene.pending},
-                                                             {"prepared", status.scene.prepared}}}};
+                                                             {"prepared", status.scene.prepared}}},
+                               // Background media (task 5.5d): the video
+                               // transport's live state; error is sticky
+                               // until a successful open replaces it.
+                               {"media", boost::json::object{{"playing", status.media.playing},
+                                                             {"path", status.media.path},
+                                                             {"error", status.media.error}}}};
 }
 
 boost::json::value displaysResult(const std::vector<OutputSession::DisplayInfo>& displays) {
@@ -583,6 +589,7 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
 
 bool RpcServer::flushNotifications(int connectionFd) {
     OutputSession::PreviewReady ready;
+    OutputSession::MediaError mediaError;
     std::string outbound;
     while (fSession.takePreviewReady(&ready)) {
         proto::appendFrame(
@@ -594,6 +601,15 @@ bool RpcServer::flushNotifications(int connectionFd) {
                                                         {"rowBytes", ready.rowBytes},
                                                         {"revision", ready.revision},
                                                         {"publishedNs", ready.publishedNs}}),
+            &outbound);
+    }
+    // Background media failure (task 5.5d): immediate visibility, the
+    // same text output.status.media.error carries until it is replaced.
+    while (fSession.takeMediaError(&mediaError)) {
+        proto::appendFrame(
+            proto::makeNotification(proto::kMethodMediaError,
+                                    boost::json::object{{"path", mediaError.path},
+                                                        {"message", mediaError.message}}),
             &outbound);
     }
     return outbound.empty() || writeAll(connectionFd, outbound);

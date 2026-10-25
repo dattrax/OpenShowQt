@@ -114,6 +114,27 @@ public:
         uint64_t prepared = 0;  // how many scenes the store holds
     };
 
+    // Background media visibility (task 5.5d). playing says the session
+    // has a live transport for the on-air background; error carries the
+    // last failure for that asset and STAYS set until the same background
+    // opens successfully — the frontend polls, and an operator must be
+    // able to see what broke after the fact, not only in the moment.
+    // Every fresh failure additionally rides the media.error
+    // notification (immediacy), so status and push together close the
+    // gap between polls.
+    struct MediaStatus {
+        bool playing = false;
+        std::string path;
+        std::string error;
+    };
+
+    // One recorded background-media failure, carried by the media.error
+    // notification (task 5.5d).
+    struct MediaError {
+        std::string path;
+        std::string message;
+    };
+
     // Snapshot of output state, safe to take from any thread. layerMask
     // reports what has actually been applied on the render thread, so a
     // caller can wait for status().revision >= the revision its command
@@ -131,6 +152,7 @@ public:
         std::string monitorName;
         PreviewStatus preview;
         SceneStatus scene;
+        MediaStatus media;
     };
 
     // --- preview (task 1.4) ---
@@ -212,6 +234,16 @@ public:
     // one is queued per slot: if the RPC side lags, the newest frame for
     // that slot is all that matters.
     bool takePreviewReady(PreviewReady* out);
+
+    // --- background media (task 5.5d) ---
+
+    // Pops the pending media.error notification (RPC thread, from
+    // RpcServer::flushNotifications). Latest failure wins and the slot is
+    // a single optional: two failures between polls would still leave the
+    // newest text in status.media.error, so a fresh overwrite never hides
+    // what the operator needs. This is the immediacy path; the polled
+    // status.media.error is the durability path.
+    bool takeMediaError(MediaError* out);
 
     // --- scenes (task 2.4b) ---
 
@@ -316,6 +348,14 @@ private:
     void applyBackgroundTransport(const openshow::scene::Background& wanted);
     void teardownBackgroundTransport();
 
+    // Background media visibility events (task 5.5d). Each updates
+    // fStatus.media under fMutex; mediaFailed additionally fills the
+    // pending notification slot the RPC thread sends as media.error.
+    // mediaPlaying is the success path: it clears the sticky error.
+    void mediaPlaying(const openshow::scene::Background& background);
+    void mediaStopped();
+    void mediaFailed(const std::string& path, const std::string& message);
+
     // Seconds against the installed video clock; caller holds fMutex.
     double videoClockSecondsLocked(std::chrono::steady_clock::time_point now) const;
 
@@ -356,6 +396,7 @@ private:
     openshow::scene::Background fAppliedBackground;        // identity in service
     ActiveScene fRenderScene;                              // = the composition's scene
     bool fBackgroundMedia = false;                         // from Options
+    std::optional<MediaError> fPendingMediaError;          // fMutex; media.error push
 
     // Guards fDesiredMask, fRevision and the fields of fStatus that the
     // render thread refreshes (frames, extent, applied mask, revision).

@@ -58,9 +58,10 @@ private:
     // Handles one decoded message; returns false to drop the connection.
     bool handle(const boost::json::value& message, bool handshakeDone,
                 bool* handshakeNow, std::string* outbound);
-    // Sends any queued preview.ready notifications; false when the socket
-    // write side is gone. Called on every poll tick, including timeouts,
-    // so notifications travel within one tick of being queued.
+    // Sends any queued preview.ready and media.error notifications; false
+    // when the socket write side is gone. Called on every poll tick,
+    // including timeouts, so notifications travel within one tick of
+    // being queued.
     bool flushNotifications(int connectionFd);
 
     OutputSession& fSession;

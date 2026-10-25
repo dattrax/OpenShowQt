@@ -53,6 +53,12 @@ class WorkerController : public QObject {
     Q_PROPERTY(qint64 previewFrames READ previewFrames NOTIFY previewChanged)
     Q_PROPERTY(qint64 previewDropped READ previewDropped NOTIFY previewChanged)
     Q_PROPERTY(QString previewError READ previewError NOTIFY previewChanged)
+    // Background media (task 5.5d): the worker's video-background transport
+    // state. mediaError is the last failure for the on-air background and
+    // stays set until a successful open replaces it (the worker carries it
+    // in status and pushes the same text as a media.error notification).
+    Q_PROPERTY(bool mediaPlaying READ mediaPlaying NOTIFY mediaChanged)
+    Q_PROPERTY(QString mediaError READ mediaError NOTIFY mediaChanged)
     // Scene store (task 2.4c): what the worker has applied and is about
     // to apply, and how many prepared scenes it keeps. demoSlideCount is
     // the fixture's size, fixed for the session.
@@ -133,6 +139,8 @@ public:
     qint64 previewFrames() const { return fPreviewFrames; }
     qint64 previewDropped() const { return fPreviewDropped; }
     QString previewError() const { return fPreviewError; }
+    bool mediaPlaying() const { return fMediaPlaying; }
+    QString mediaError() const { return fMediaError; }
 
 signals:
     void stateChanged();
@@ -140,6 +148,7 @@ signals:
     void displaysChanged();
     void previewChanged();
     void sceneChanged();
+    void mediaChanged();
 
 private slots:
     void tryConnect();
@@ -220,6 +229,8 @@ private:
     qint64 fPreviewFrames = 0;
     qint64 fPreviewDropped = 0;
     QString fPreviewError;
+    bool fMediaPlaying = false;
+    QString fMediaError;
 };
 
 }  // namespace openshow::ui

@@ -128,6 +128,9 @@ void WorkerController::onSocketDisconnected() {
     fHandshakeDone = false;
     closePreviewSegment();
     resetSceneTracking();
+    fMediaPlaying = false;
+    fMediaError.clear();  // the media state describes a worker we lost
+    emit mediaChanged();
     emit stateChanged();
     if (!fShutdownRequested) {
         setStatus(QStringLiteral("worker connection lost"));
@@ -139,6 +142,9 @@ void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exit
     fOutputStopped = true;
     closePreviewSegment();
     resetSceneTracking();
+    fMediaPlaying = false;
+    fMediaError.clear();
+    emit mediaChanged();
     emit stateChanged();
     if (fShutdownRequested) {
         setStatus(QStringLiteral("worker stopped (exit %1)").arg(exitCode));
@@ -348,6 +354,16 @@ void WorkerController::handleReply(const boost::json::object& message) {
             }
             emit previewChanged();
         }
+        // Background media (task 5.5d). Optional: a worker predating the
+        // media object keeps whatever the last notification said rather
+        // than falsely clearing it.
+        if (payload.contains("media") && payload.at("media").is_object()) {
+            const boost::json::object& media = payload.at("media").as_object();
+            fMediaPlaying = media.at("playing").as_bool();
+            fMediaError =
+                QString::fromStdString(std::string(media.at("error").as_string()));
+            emit mediaChanged();
+        }
         QVariantMap layers;
         for (const auto& entry : payload.at("layers").as_object()) {
             layers.insert(QString::fromStdString(std::string(entry.key())),
@@ -547,8 +563,25 @@ void WorkerController::sendNotification(const char* method, boost::json::object 
 
 void WorkerController::handleNotification(const boost::json::object& message) {
     const auto method = message.find("method");
-    if (method == message.end() || !method->value().is_string() ||
-        std::string_view(method->value().as_string()) != proto::kMethodPreviewReady) {
+    if (method == message.end() || !method->value().is_string()) {
+        return;
+    }
+    const std::string_view name = method->value().as_string();
+    if (name == proto::kMethodMediaError) {
+        // Background media failure (task 5.5d): show it now rather than
+        // at the next status poll; the poll then re-confirms (the worker's
+        // status carries the same text until a success replaces it).
+        if (message.contains("params") && message.at("params").is_object()) {
+            const boost::json::object& params = message.at("params").as_object();
+            const auto text = params.find("message");
+            if (text != params.end() && text->value().is_string()) {
+                fMediaError = QString::fromStdString(std::string(text->value().as_string()));
+                emit mediaChanged();
+            }
+        }
+        return;
+    }
+    if (name != proto::kMethodPreviewReady) {
         return;  // unknown notification: ignore, the protocol tolerates extensions
     }
     const auto paramsIt = message.find("params");
