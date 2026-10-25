@@ -484,9 +484,12 @@ void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
 }
 
 sk_sp<SkImage> SceneImageCache::imageFor(const std::string& path) {
-    const auto existing = fImages.find(path);
-    if (existing != fImages.end()) {
-        return existing->second;  // cached, or a cached failure (null)
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        const auto existing = fImages.find(path);
+        if (existing != fImages.end()) {
+            return existing->second;  // cached, or a cached failure (null)
+        }
     }
     sk_sp<SkImage> image;
     std::ifstream in(path, std::ios::binary);
@@ -505,6 +508,15 @@ sk_sp<SkImage> SceneImageCache::imageFor(const std::string& path) {
                 image = SkImages::RasterFromBitmap(bitmap);
             }
         }
+    }
+    // Decode done off-lock (task 5.5: an RPC-thread prefetch must never
+    // stall the render thread's own lookups). Whoever inserts first wins;
+    // a losing duplicate is identical bytes, and holding the fresh image
+    // either way keeps the return honest.
+    std::lock_guard<std::mutex> lock(fMutex);
+    const auto existing = fImages.find(path);
+    if (existing != fImages.end()) {
+        return existing->second;
     }
     fImages.emplace(path, image);
     return image;

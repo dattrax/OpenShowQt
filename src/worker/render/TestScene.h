@@ -93,6 +93,11 @@ public:
     void setActiveScene(ActiveScene scene,
                         SceneTransitionKind kind = SceneTransitionKind::kFade);
     const ActiveScene& activeScene() const { return fActiveScene; }
+    // The background image cache (task 5.5): the session prefetches a
+    // prepared scene's background through it from its RPC thread, so the
+    // first frame after a present never pays the codec on the render
+    // thread. The cache is internally synchronised for exactly this.
+    SceneImageCache* imageCache() { return &fImages; }
     // True while a crossfade still owes frames: the event-driven loop must
     // keep presenting until the blends complete, or the audience is stuck
     // on the fade's first frame (which still looks like the old scene).

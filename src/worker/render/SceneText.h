@@ -25,6 +25,7 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -135,10 +136,18 @@ class SceneImageCache {
 public:
     // Decodes the image at path (SkCodec), or returns the cached one.
     // Null on failure; callers fall back to the colour fill — file
-    // existence is the renderer's problem, the compiler only names the path.
+    // existence is the renderer's problem, the compiler only names the
+    // path. A cached failure stays cached (one decode attempt per path).
+    //
+    // Thread-safe (task 5.5): the render thread draws through it while
+    // an RPC thread prefetches at scene.prepare time. The decode runs
+    // OUTSIDE the lock, so a slow file never blocks another reader; two
+    // threads decoding the same path is a harmless duplicate — first
+    // insert wins.
     sk_sp<SkImage> imageFor(const std::string& path);
 
 private:
+    std::mutex fMutex;
     std::map<std::string, sk_sp<SkImage>> fImages;
 };
 

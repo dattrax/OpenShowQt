@@ -224,6 +224,11 @@ public:
     // output revision moves and no frame is provoked; the count visible
     // in status().scene.prepared does.
     bool prepareScene(const openshow::scene::Scene& scene, uint64_t* revisionOut);
+    // Task 5.5 preload, run from prepareScene's RPC thread (never the
+    // render thread): decodes the background still into the image cache
+    // and probes a background video, so the file's cost and its failures
+    // surface while the OLD scene is still on air.
+    void preloadScene(const openshow::scene::Scene& scene);
 
     // Names a prepared revision as the output's scene. The switch lands
     // on the render thread's next frame, like layer toggles, and

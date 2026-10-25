@@ -246,28 +246,62 @@ std::vector<OutputSession::DisplayInfo> OutputSession::displays() const {
 
 bool OutputSession::prepareScene(const openshow::scene::Scene& scene,
                                  uint64_t* revisionOut) {
-    std::lock_guard<std::mutex> lock(fMutex);
-    const uint64_t revision = fNextSceneRevision++;
-    fScenes[revision] = scene;
-    // Bounded store: evict the oldest revision nobody can present
-    // again — a frontend that lost the revision number has to re-prepare
-    // anyway, and the audience's scene is never a victim.
-    while (fScenes.size() > kMaxPreparedScenes) {
-        const auto victim = std::find_if(fScenes.begin(), fScenes.end(),
-                                         [&](const auto& entry) {
-                                             return entry.first != fDesiredScene &&
-                                                    entry.first != fAppliedScene;
-                                         });
-        if (victim == fScenes.end()) {
-            break;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        const uint64_t revision = fNextSceneRevision++;
+        fScenes[revision] = scene;
+        // Bounded store: evict the oldest revision nobody can present
+        // again — a frontend that lost the revision number has to re-prepare
+        // anyway, and the audience's scene is never a victim.
+        while (fScenes.size() > kMaxPreparedScenes) {
+            const auto victim = std::find_if(fScenes.begin(), fScenes.end(),
+                                             [&](const auto& entry) {
+                                                 return entry.first != fDesiredScene &&
+                                                        entry.first != fAppliedScene;
+                                             });
+            if (victim == fScenes.end()) {
+                break;
+            }
+            fScenes.erase(victim);
         }
-        fScenes.erase(victim);
+        fStatus.scene.prepared = fScenes.size();
+        if (revisionOut != nullptr) {
+            *revisionOut = revision;
+        }
     }
-    fStatus.scene.prepared = fScenes.size();
-    if (revisionOut != nullptr) {
-        *revisionOut = revision;
+    // Task 5.5 preload: outside the store lock (a decode must never hold
+    // up status or layer commands) and on this RPC thread (the render
+    // thread must never pay a cold-file cost at present time). Socket
+    // mode only: benches do not prepare, and the dev paths stay exact.
+    if (fBackgroundMedia) {
+        preloadScene(scene);
     }
     return true;
+}
+
+void OutputSession::preloadScene(const openshow::scene::Scene& scene) {
+    const openshow::scene::Background& background = scene.background;
+    if (!background.hasImage || fScene == nullptr) {
+        return;
+    }
+    if (!background.isVideo) {
+        // Stills: decode now. The cache keeps failures too, so a bad
+        // path is one attempt, not a retry on every frame.
+        fScene->imageCache()->imageFor(background.assetPath);
+        return;
+    }
+    // Videos: opening a transport belongs to the present (the audience
+    // decides when it starts), but the cheap probe belongs to now — a
+    // file that cannot even be read or demuxed is known while the old
+    // scene is still on air, and reported (5.5d) instead of discovered
+    // as a silent colour fill one frame after the change.
+    openshow::media::MediaInfo info;
+    std::string error;
+    if (openshow::media::probeMedia(background.assetPath, &info, &error) !=
+        openshow::media::ProbeStatus::kOk) {
+        std::fprintf(stderr, "openshow-worker: background preload %s: %s\n",
+                     background.assetPath.c_str(), error.c_str());
+    }
 }
 
 bool OutputSession::presentScene(uint64_t prepared, uint64_t* revisionOut,
