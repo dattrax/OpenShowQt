@@ -1,8 +1,68 @@
 # OpenShowQt progress and session handoff
 
-Updated: 2026-10-23 (Europe/London).
+Updated: 2026-10-25 (Europe/London).
 
 ## Current checkpoint
+
+- **M5 implementation checkpoint reached; M6 review complete (6.0 DONE).**
+  The user requested a thorough review before productization. The authoritative
+  review is [docs/M6-code-review.md](docs/M6-code-review.md); the new M6 leaf-task
+  ledger is in [PLAN.md](PLAN.md#m6--code-review-remediation-and-architecture).
+  M6 implementation tasks are all TODO. Productization is now **M7**; old
+  6.1/6.2/6.3/6.4 reliability/diagnostics/package/rehearsal tasks became
+  7.1a–c/7.2/7.3/7.4. Old source/log references retain their historical meaning.
+- Review scope: production session/rendering, Skia build/API dependencies,
+  protocol/router/frontend consumer, preview and GPU slot ownership, AV
+  transport/decoder controls, document persistence/history/UI and test seams,
+  compared with the fixed architecture and initial scope in PLAN.md. Reviewed
+  `1f44b7e` plus the existing six-line clock log change in OutputSession.cpp.
+- **19 findings** map to focused fixes with acceptance checks. Main risks:
+  production still constructs TestScene and paints its clock/footer; rapid
+  prepare replies share one pending payload; applied status is published before
+  presentation; preview releases lack stream identity and exact ownership;
+  displayed video slots are released before held redraws are finished; audio
+  transport reuse does not reset the mixer; recovered assets are deleted while
+  documents still reference them; blocking file/transport work and unbounded
+  decoded-image caching violate the scheduling/resource intent. The report
+  also records the remaining Unicode/private Skia, persistence, seek, preview,
+  authoring and production media-control gaps.
+- **RPC audit:** current UI→worker messages contain text/style/geometry, IDs,
+  asset paths and controls. No original/decoded bitmap, video or audio bytes
+  are sent. Worker→UI pixels are composed previews through three shared-memory
+  slots; ready/release RPC messages contain metadata only. Sender limits,
+  per-method budgets, nonblocking writes and ownership enforcement remain TODO.
+- **Architecture direction:** retain the two processes and existing domain,
+  scene, media/playback and output libraries. Extract production compositor,
+  scene/command store, preview producer, background transport, correlated RPC
+  client/consumer/supervisor, document/save coordination and QML pages around
+  explicit ownership boundaries. No rewrite or arbitrary file-size target.
+- Checks run on this review's working tree:
+  - `CCACHE_DISABLE=1 cmake --build --preset headless -j 2`: PASS.
+  - `ctest --preset headless --output-on-failure`: **16/16 PASS**, 25.78 s.
+  - `CCACHE_DISABLE=1 cmake --build --preset desktop -j 2`: PASS.
+  - `ctest --preset desktop -LE display --output-on-failure`: **21/21 PASS**,
+    25.93 s, five display-labelled tests excluded.
+  - Initial build failed only because ccache attempted to write its read-only
+    cache; disabling it resolved that environment issue.
+  - Vulkan coverage used **llvmpipe**; live PipeWire subscenario skipped because
+    daemon access was denied. No physical display tests, audible playback,
+    target-GPU timing or long service soak claimed.
+  - Temporary standalone probes in `/tmp/openshow-m6-review` confirmed:
+    mixer restart after stop/join refuses input/start; future preview release
+    sequence frees an owned slot; appendFrame emits >1 MiB that Decoder rejects;
+    recover→save→clear deletes the live source path and a second save fails.
+    These are review probes, not committed regression fixes.
+- Working changes: PLAN.md milestone replacement, this handoff, and new review
+  document only. The pre-existing OutputSession.cpp clock log is unchanged.
+  User authorized committing and pushing the three documentation files on
+  2026-10-25 before implementation begins. Documentation checkpoint message:
+  `docs: review M5 code and plan M6 remediation before M7 productization`.
+- Exact next action: **6.1a**, production compositor startup/clear black and
+  clock/diagnostics-off defaults, with pixel checks at the real output/preview
+  boundary. Then execute the focused M6 leaves in order. Review completion
+  does not mark any finding fixed; no new implementation blocker was found.
+
+## Historical M1 checkpoint (superseded by the current checkpoint above)
 
 - Milestone: **M1 — Prove frontend-to-renderer integration**, tasks **1.1**
   through **1.4** DONE (all 2026-10-22/23). M0 was closed earlier with
@@ -2505,7 +2565,7 @@ logged here from what is observable off screen rather than claimed as seen.
   same against `openshow-worker` and compare. Record display topology, reported
   scale factor and window bounds alongside every capture.
 
-## Blockers and remaining work
+## Historical blockers and remaining work (see current checkpoint)
 
 - **Compositor caveat for fullscreen output (found demoing M2)**: this
   machine's second display (DP-4) runs rotated at 1.5× fractional
@@ -2532,7 +2592,7 @@ logged here from what is observable off screen rather than claimed as seen.
 - The project's M0 note that vk-bootstrap was unused is superseded: task 1.1
   uses it.
 
-## Exact next action
+## Historical M1–M5 handoff (next action superseded by 6.1a above)
 
 1. **M1 is complete and tagged**: tasks 1.1–1.5 (1.5a–1.5j, including
    the user-inserted 1.5g validation-layer option, the 1.5h/1.5i

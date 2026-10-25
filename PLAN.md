@@ -132,7 +132,7 @@ each step below names the piece of scaffolding that must graduate:
   read scene data (text, images, backgrounds and fit modes, transitions).
   `TestScene` shrinks to a test fixture whose snapshot and
   `verifyLayerComposition` harnesses live in the test tree.
-- **6.1** owns worker/device restart so the session can be destroyed and
+- **7.1** owns worker/device restart so the session can be destroyed and
   rebuilt without touching the device layer.
 
 Enforcement rule for reviews: a task does not pass by threading a command
@@ -206,7 +206,7 @@ Checkpoint: `M0: establish project plan and build foundation`.
   resolve at link time.
 - **Licences to ship:** Skia (BSD-3), GLFW (zlib), vk-bootstrap (MIT),
   Boost.JSON (BSL-1.0), PipeWire (MIT), FFmpeg (LGPL or GPL depending on
-  configure flags), Qt 6 (LGPL/GPL). Collected with the package in task 6.3.
+  configure flags), Qt 6 (LGPL/GPL). Collected with the package in task 7.3.
 - **No shader compiler needed.** Skia's Vulkan backend turns SkSL into SPIR-V
   in process through its own code generator (`SkSL::ToSPIRV`, a member of
   `libskia.a`), which is why `/home/jim/sloppy-ui` renders with no shaders of
@@ -325,16 +325,91 @@ Checkpoint: `M5: integrate synchronized video and audio playback`.
 Use the audio clock when audio is present and a monotonic clock otherwise.
 Test PNG/JPEG, H.264/AAC MP4, MP3 and WAV; report unavailable formats/codecs.
 
-### M6 — Reliability and installable alpha
+### M6 — Code review remediation and architecture
+
+Replanned 2026-10-25 at the user's request. M0–M5 remain historical implementation
+checkpoints; their DONE rows do not waive the integration/scope gaps found in the
+[M6 review](docs/M6-code-review.md). **6.0 is the review, not completion of its
+fixes.** The original M6 productization tasks are now 7.1–7.4. References to old
+6.1/6.2/6.3/6.4 in historical logs or source comments mean these M7 tasks.
+
+Work in the order below, one leaf task at a time. A parent row is complete only
+when all its leaf tasks pass. Every leaf depends on the preceding leaf unless
+its row states otherwise; later extraction tasks also require the corresponding
+behavioural regressions. Aim for half a day to two days per leaf; split any
+larger slice before implementation. Keep fixes and behaviour-preserving
+extractions in separate reviewable changes. This review completes only **6.0**;
+the exact next implementation task is **6.1a**.
+
+The boundary is explicit: RPC carries bounded control/scene metadata and local
+asset references. **No original images, decoded bitmaps, video frames or audio
+buffers travel UI→worker. Only worker-composed previews/thumbnails return to the
+UI, through bounded shared memory, never JSON.** Public Skia core/Ganesh and
+module include APIs are allowed; direct application dependencies on Skia private
+or implementation headers/symbols are not. Skia's own transitive includes are
+outside that direct-include rule. Preserve single-pass audience composition and
+worker-owned text layout; no unrecorded saveLayer/intermediate-target exception.
+
+| ID | Status | Focused work | Acceptance / review finding |
+|---|---|---|---|
+| 6.0 | DONE | Review current source against the fixed plan; audit every RPC route; record evidence and focused remediation | [Review](docs/M6-code-review.md) with source locations, severity, verification limits and the ledger below; no runtime fixes claimed |
+| 6.1a | TODO | Give socket mode a production compositor with an empty black initial scene; disable production aux/clock and diagnostic paint | Startup, clear-all and fresh-worker black pixel checks include the footer; output and preview contain the same scene; demo remains available explicitly. R1 |
+| 6.1b | TODO | Finish TestScene graduation: scene layers/transitions in production sources, demo photo/title and snapshot/assertion harnesses in development/tests | Production session no longer constructs TestScene; existing layer/transition/snapshot gates retain coverage. R1 |
+| 6.2a | TODO | Remove direct private Skia GPU dependencies; own an allocator through the public VulkanMemoryAllocator contract; replace tests' private YUV math helper; restrict includes and pin compatible headers/libraries | No application/test include of Skia private/src trees, private factory call or copied internal declaration; independent colour expectations, public API guard, GPU decode/upload/present tests and validation pass. R9 |
+| 6.2b | TODO | Build/link compatible public SkUnicode/ICU support; delete homemade Unicode implementation and ICU factory shim | Public module entry points only; combining marks, emoji, CJK wrapping and mixed bidi fixtures; no application-defined Skia factory symbol. R9 |
+| 6.3a | TODO | Correlate worker replies by request ID and connection generation; preserve each prepare payload and latest-go intent | Burst A/B/C, slow/error reply and disconnect tests through WorkerController: correct final slide/revision/mirror, no stale auto-present. R3 |
+| 6.3b | TODO | Serialize/coalesce clear and restore intent against the pending logical presentation; retain restore content until acknowledged | Back-to-back words/background clears compose; >16 prepares cannot lose restore content; failed restore keeps retry available and confirmed indicators remain honest. R3 |
+| 6.4 | TODO | Publish applied scene/revision only from the frame snapshot actually submitted/presented; define pending/transition/confirmed states | Inject command-during-apply and acquire/present failure; no early live indicator, pending settles, preview tags name the drawn revision; remeasure present→air against pixels. R4 |
+| 6.5 | TODO | Make preview ready/release ownership stream-specific and sequence-exact; validate mapping geometry | Delayed old-stream, duplicate, odd and future releases cannot free an owned slot; replacement notification race covered; no overwrite during copy. R5 |
+| 6.6a | TODO | Retain a lease for the displayed video image until replacement; validate frame generation; cover every output/preview sample with GPU synchronization | Paused/final frames survive attempted slot reuse and dirty/preview-only redraws; frame identity stable; Vulkan synchronization validation passes. R6 |
+| 6.6b | TODO | Quiesce/detach the submission producer before presenter/transport replacement; synchronize cross-thread ownership | Deterministic submit-vs-swap/stop/disconnect regression; no raw presenter race, dropped-frame leak or teardown hang. R6 |
+| 6.7a | TODO | Make the complete audio transport restartable, including mixer input/ring state and PipeWire readiness/clock/activation state | Audio→audio, audio→silent→audio and failure→retry preserve real samples; repeated start/stop works; errors cannot masquerade as success. R2 |
+| 6.7b | TODO | Fix standalone-only input identity and sinkless transport clock semantics | Standalone-only feeder flows; monotonic fallback position holds on pause, seeks correctly and resumes continuously; audio/video source identities remain independent. R2 |
+| 6.7c | TODO | Propagate preparation/runtime decoder, still-image, feeder and sink failures into acknowledged media state | Missing→repaired image, decode failure after startup, sink activation failure and EOF produce accurate status/events; successful recovery clears matching errors. R18 |
+| 6.7d | TODO | Pair seek targets with applied generations, report failed seeks and unify media-position/deadline mapping across pacing and session | Request arriving during seek is not swallowed; failed audio seek is refused; rapid/backward-after-loop/paused seeks present the right pixels at the right clock deadlines through the session. R19 |
+| 6.8a | TODO | Enforce sender/receiver encoded-size limits and per-method scene/reference budgets; validate JSON-RPC envelopes and integer ranges before narrowing | Oversized authored text is rejected locally without disconnect; measured representative/max scenes fit budget; no media-byte/data-URI payload accepted; malformed ID/notification and overflow tests. R11 |
+| 6.8b | TODO | Make RPC writes nonblocking and bounded; coalesce polls/notifications, add deadlines and synchronize connection ownership | Stalled read/write peer cannot stall rendering, grow queues indefinitely or prevent bounded shutdown; no fConnectionFd data race; independent control replies remain serviceable. R11 |
+| 6.9a | TODO | Move file decode/probe preparation off the single RPC loop into a bounded cancellable executor | Slow prepare does not delay status/clear/releases/shutdown; readiness/error/cancellation are explicit; disconnect/superseded work retires without growth. R10 |
+| 6.9b | TODO | Prepare bounded media/text resources before go; move transport start/pre-roll/retirement waits off the render loop, preserving Ganesh ownership | Slow video open/audio pre-roll/old teardown cannot freeze active output; ready still and video changes meet p95 100 ms measured at the frame boundary; superseded primed transports are bounded. R10 |
+| 6.10 | TODO | Add byte-limited decoded asset caching, dimension/file limits, active-resource pins and invalidation/retry | Many distinct 4K images plateau at the chosen budget; active/transition images survive eviction; repaired same-path files recover; no disk/decode in draw. R12 |
+| 6.11a | TODO | Draw output and previews from one immutable frame snapshot; prevent target drawing from advancing live transitions | Preview-only work cannot alter live scene/time/blends; both targets use the same revision and composition; slow-preview workload drops/defer previews within audience timing budget. R13 |
+| 6.11b | TODO | Correct image crossfade math and remove text fade intermediate layers through public paint APIs | Opaque image→image and identical-image midpoint pixels match the defined blend; text fade fixtures pass; no production saveLayer/per-layer target; low-end timing recorded. R13 |
+| 6.12 | TODO | Rebind durable asset ownership after save/recovery, including undo/history and pending scene references | Recover→save→present→edit→undo/redo→save works after scratch deletion and removal of original imports; no live references into deleted autosave storage. R7 |
+| 6.13a | TODO | Make package asset+manifest commit preserve the previous package on interruption; report flush/close failures and define durability | Fault-injected copy/write/close/rename failures leave the previous service and assets readable; successful commit includes required file/directory durability barriers. R8 |
+| 6.13b | TODO | Validate loaded IDs and package-relative asset containment, including symlinks | Absolute/traversal/escaping paths and unsafe IDs refuse without changing documents or writing outside the package; authorized import still copies external files. R8 |
+| 6.14a | TODO | Surface autosave/clear failures and flush pending text on normal close/signal exit | Disk refusal is visible; close inside the 600 ms debounce preserves final text; stale recovery is not silently resurrected after save/discard. R14 |
+| 6.14b | TODO | Coalesce persistence on a bounded save executor with immutable snapshots and reusable asset copies | Slow large-media save/autosave leaves UI responsive; older writes cannot resurrect discarded recovery or overwrite a newer save; save completion reflects durability. R14 |
+| 6.15a | TODO | Expose existing play/pause/seek/loop/gain/mute through typed session/RPC operations and operator controls | Actual UI→RPC→transport tests cover playback, per-source gain/mute, acknowledged position and loop-off final-frame hold; references only on wire. R15 |
+| 6.15b | TODO | Add standalone-track selection and an independent production audio lifetime | Audio-only and embedded+standalone mix work in socket mode; lyric/video changes do not restart the independent track; removing/muting either source leaves the other correct. R15 |
+| 6.16a | TODO | Add a bounded worker-rendered selected-scene preview and use it beneath QML edit handles | Off-air edits show Skia text and media without presenting; no QML text-layout twin; selection generations prevent stale imagery and active playback stays unchanged. R16 |
+| 6.16b | TODO | Add bounded on-demand worker thumbnails using the preview transport | Thumbnail requests carry scene/target identity, coalesce/cancel, and return only composed preview pixels; no audience mutation or queue/memory growth. R16 |
+| 6.17a | TODO | Close the multiple-text-box authoring/storage/compiler gap using stable item IDs | Legacy single-box files render identically; multiple boxes create/edit/move/resize/order with undo/save/reload and correct worker preview. Split this vertical slice before coding if >2 days. R17 |
+| 6.17b | TODO | Add authored foreground image items and layer order through the existing scene boundary | Multiple image/text items persist and reorder with geometry, undo and worker pixels; no raw images cross RPC. Split schema/render and editor leaves if >2 days. R17 |
+| 6.17c | TODO | Represent and render the agreed background gradient/fit choices | Model/storage/compiler/UI agree on supported fits; cover/contain/blur and gradient fixtures plus legacy defaults; implementation honors the composition budget. Split each fit into a leaf if necessary. R17 |
+| 6.18a | TODO | Extract SceneStore/command-state and PreviewProducer from OutputSession after their correctness fixes | Session coordinates the loop and delegates to single owners with explicit thread rules; regression gates unchanged; no second mutable scene truth. R1/R4/R5/R10/R13 |
+| 6.18b | TODO | Extract background transport lifecycle from OutputSession and move bench/diagnostic drivers out of worker main | Narrow renderer/transport handoff with bounded prepared resources; session no longer owns transport internals; production and bench exercise the same runtime. R6/R10/R15 |
+| 6.19a | TODO | Split frontend supervisor, RpcClient, PreviewConsumer and acknowledged output model behind the QML facade; split worker connection and method/status codecs | Extract one component per change; preserve request/ownership regressions; shared typed operation/codec definitions prevent UI/server drift. R3/R5/R11 |
+| 6.19b | TODO | Split DocumentController session/save/list adapters and Main.qml pages/inspectors/output/shortcut components | One document/history owner; explicit component properties/signals; controller, keyboard and UI capture checks retain behaviour. Avoid moving logic between files without a responsibility boundary |
+| 6.20 | TODO | Close the review against real production boundaries and reconcile M0–M5 completion claims | Every R1–R19 has passing regression evidence or an explicit M7 gate; public-Skia check, bounded RPC traffic audit, desktop/headless gates and a production author→preview→go→clear→restore→media-swap proof; record skips honestly |
+
+Checkpoint: `M6: close code review and graduate production architecture`.
+No milestone completion claim from source inspection or benchmark-only coverage.
+
+### M7 — Productization, reliability and installable alpha
+
+These preserve the original M6 deliverables, expanded with the review's concrete
+failure cases. Start after 6.20; split each parent before implementation as needed.
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| 6.1 | TODO | Worker/device/display failure handling | Documents intact; output can restart safely |
-| 6.2 | TODO | Playback/rendering diagnostics | Timing, dropped frames and queues inspectable |
-| 6.3 | TODO | Package application | Both executables/resources run on clean Fedora |
-| 6.4 | TODO | Service rehearsal and acceptance fixes | Complete acceptance suite passes |
+| 7.1a | TODO | Worker supervision and bounded restart/shutdown; reset decoder, requests, timers, previews and acknowledged state per connection | Kill/disconnect/hang/restart tests preserve editable documents, clear stale UI imagery/state and start uniformly black; explicit presentation required to go live |
+| 7.1b | TODO | Device/surface/swapchain failure classification and recovery; check all Vulkan/Skia results and bound waits | Fault-injected submit/acquire/device loss cannot busy-loop, wait forever or claim success; device/session rebuild has explicit safe output state |
+| 7.1c | TODO | Stable display identity/hotplug handling, disabled output on destination removal and refreshed UI display inventory | Unplug/replug/reorder cannot silently move audience output onto another display; explicit destination selection re-enables it; projector Wayland/X11 checks recorded |
+| 7.2 | TODO | Playback/rendering diagnostics and measurable resource budgets | Frame/decode/upload/readback timing, source clock, signed A/V drift, dropped/held frames, queue/cache bytes, failures and transport restart counters inspectable; diagnostics do not block realtime paths |
+| 7.3 | TODO | Package application with reproducible dependency/build manifest and notices | Both executables/resources/fonts run on clean Fedora with no build-tree path; matching public Skia/ICU artifacts, Qt/FFmpeg and other notices/licences included |
+| 7.4 | TODO | Full service rehearsal, target-machine performance and acceptance fixes | Complete acceptance suite below: one-hour mixed service without growth, 10-minute deadline and 30-minute A/V gates, missing/corrupt media and recovery, physical second-display acceptance on Wayland and X11; remaining fixes get focused tasks |
 
-Checkpoint: `M6: deliver installable presentation alpha`.
+Checkpoint: `M7: deliver installable presentation alpha`.
 
 ## Acceptance and verification
 
