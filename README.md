@@ -42,7 +42,7 @@ minimum versions for every dependency.
 | FFmpeg | 9.0.2; libavcodec/libavformat 63.1.102, libavutil 61.1.102, libswscale 10.1.102, libswresample 7.1.102 |
 | Fontconfig / HarfBuzz | 2.18.3 / 14.5.1 |
 | ICU development headers | 78.3; see the Skia compatibility note below |
-| Skia | `a94df1cdabb03d3ead2486413bc2999b500aa4f8`; built separately |
+| Skia | `a94df1cdabb03d3ead2486413bc2999b500aa4f8`; `third_party/skia` submodule, built by `scripts/build-skia.sh` |
 | vk-bootstrap | `v1.3.225`; fetched by CMake |
 
 Use **CMake 3.25 or newer** for the commands below: `CMakePresets.json` uses
@@ -75,8 +75,9 @@ sudo dnf install \
 
 The `headless` preset does not need the two Qt development packages. It still
 builds the worker with Skia, Vulkan, GLFW, FFmpeg and PipeWire; it is not a
-CPU-only build. ICU headers are included above for rebuilding the pinned Skia
-configuration, not as an additional application link requirement.
+CPU-only build. `libicu-devel` is a genuine link dependency of the worker
+(its Unicode backend is Skia's ICU-backed module, built against the system
+ICU) and is also needed to compile that module when building Skia.
 
 For this AMD machine, runtime graphics, audio and sample-scene fonts are
 provided by:
@@ -99,62 +100,54 @@ The application does not require a separate shader compiler: Skia includes its
 own SkSL-to-SPIR-V compiler. Boost.JSON is already the project's JSON library;
 no additional JSON or networking framework is required.
 
+```sh
+git clone --recursive https://github.com/dattrax/OpenShowQt.git
+```
+
+(`git submodule update --init --recursive` is the equivalent for an existing
+checkout.) Skia arrives as the `third_party/skia` submodule pinned to the
+revision in the table above.
+
 ## Build Skia
 
-OpenShowQt links a separately built Skia tree. The default layout is:
+The first `cmake --preset desktop` (or `headless`) notices that the submodule
+has no libraries yet and builds it automatically through
+`scripts/build-skia.sh`: it syncs Skia's pinned DEPS git repositories
+(`tools/git-sync-deps`), obtains GN (`bin/fetch-gn` unless a `gn` is already
+available), and runs GN/ninja with the validated arguments:
 
-```text
-parent/
-  OpenShowQt/
-  skia/
-    out/Release/
+```gn
+skia_use_vulkan = true
+skia_use_gl = false
+is_official_build = true
+skia_use_libwebp_decode = false
+skia_use_libwebp_encode = false
+skia_use_system_libpng = false
+skia_use_system_freetype2 = false
+skia_use_system_libjpeg_turbo = false
+skia_use_system_zlib = false
+skia_use_system_expat = false
+skia_use_system_icu = true
 ```
 
-If the sibling Skia tree already exists at the pinned revision with the four
-libraries listed below, reuse it. For a new checkout, run these commands from
-the OpenShowQt directory:
+PNG, JPEG, FreeType, zlib and Expat are compiled from Skia's bundled copies;
+WebP is disabled; Unicode data comes from the **system ICU** (task 6.2b), so
+`libicu-devel` must be installed. Building libskia from scratch takes a while
+but happens once; later configures and rebuilds find the libraries and skip
+straight past it. Run the script yourself to watch it directly, check a tree
+without building (`scripts/build-skia.sh --check`), or point it elsewhere:
 
 ```sh
-git clone https://skia.googlesource.com/skia.git ../skia
-git -C ../skia checkout a94df1cdabb03d3ead2486413bc2999b500aa4f8
-(
-  cd ../skia
-  python3 tools/git-sync-deps
-  bin/gn gen out/Release --args='
-    skia_use_vulkan=true
-    skia_use_gl=false
-    is_official_build=true
-    skia_use_libwebp_decode=false
-    skia_use_libwebp_encode=false
-    skia_use_system_libpng=false
-    skia_use_system_freetype2=false
-    skia_use_system_libjpeg_turbo=false
-    skia_use_system_zlib=false
-    skia_use_system_expat=false
-  '
-  ninja -C out/Release skia skparagraph skshaper skunicode_core
-)
+scripts/build-skia.sh                                  # the submodule
+scripts/build-skia.sh /path/to/skia /path/to/skia/out/Release
 ```
 
-These are the flags from the current `out/Release/args.gn`. Dependency
-synchronization also fetches GN and requires network access. PNG, JPEG,
-FreeType, zlib and Expat are built from Skia's bundled dependencies; WebP is
-disabled. See [Skia's build documentation](https://skia.org/docs/user/build/)
-for the general GN build process; use the pinned revision and flags above for
-this project.
-
-The application needs `libskia.a`, `libskparagraph.a`, `libskshaper.a` and
-`libskunicode_core.a` in the output directory. It defines `SK_GANESH`,
-`SK_VULKAN` and `SK_USE_INTERNAL_VULKAN_HEADERS` when consuming these libraries.
-Skia's embedded Vulkan header version can differ from the installed system
-headers reported in the table above.
-
-**Current ICU compatibility limitation:** the existing prebuilt
-`libskunicode_icu.a` expects ICU 77 symbols, while this machine has ICU 78.
-OpenShowQt therefore links SkUnicode core and uses a hard-coded Unicode backend
-with an `SkUnicodes::ICU::Make()` compatibility shim. Full ICU line breaking and
-bidi support remain deferred; installing ICU development headers does not
-remove this limitation. Do not add `libskunicode_icu.a` to the current link.
+The application needs `libskia.a`, `libskparagraph.a`, `libskshaper.a`,
+`libskunicode_core.a` and `libskunicode_icu.a` in the output directory;
+configure fails with instructions if any are missing. It defines `SK_GANESH`,
+`SK_VULKAN` and `SK_USE_INTERNAL_VULKAN_HEADERS` when consuming these
+libraries. Skia's embedded Vulkan header version can differ from the installed
+system headers reported in the table above.
 
 ## Configure, build and run
 
@@ -210,9 +203,11 @@ ctest --preset headless --show-only
 
 ### Use a different Skia location
 
-`SKIA_ROOT` defaults to `../skia`; `SKIA_BUILD_DIR` defaults to
-`${SKIA_ROOT}/out/Release`. Both accept CMake `-D` options or environment
-variables, with explicit CMake values taking precedence. For example:
+`SKIA_ROOT` resolves in order: the `-DSKIA_ROOT` option, the `$SKIA_ROOT`
+environment variable, the `third_party/skia` submodule, and finally the
+legacy `../skia` sibling directory. `SKIA_BUILD_DIR` defaults to
+`${SKIA_ROOT}/out/Release`. Explicit CMake values take precedence. For
+example:
 
 ```sh
 cmake --preset desktop \
@@ -220,8 +215,11 @@ cmake --preset desktop \
   -DSKIA_BUILD_DIR=/absolute/path/to/skia/out/Release
 ```
 
-The same options work with the headless preset. Keep headers and libraries
-from the same Skia revision and configuration.
+The same options work with the headless preset. A tree named this way is used
+exactly as it stands — automatic building only ever applies to the submodule,
+and `-DOPENSHOW_SKIA_AUTO_BUILD=OFF` skips even that (configure then fails
+with instructions instead). Keep headers and libraries from the same Skia
+revision and configuration.
 
 ## Video decode and GPU composition
 

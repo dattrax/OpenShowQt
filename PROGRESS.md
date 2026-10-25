@@ -126,14 +126,32 @@ Updated: 2026-10-25 (Europe/London).
   bidi/line/grapheme break iterators; script-font availability skips only
   the affected layout fixture, visibly. All 30 prior fixtures unaffected.
   Gates desktop **31/31**, headless **20/20**.
-- Exact next action: **6.2c**, reproducible Skia (user request 2026-10-25):
-  add Skia as a git submodule pinned to
-  `a94df1cdabb03d3ead2486413bc2999b500aa4f8` and teach
-  `cmake/OpenShowSkia.cmake` to build it from the submodule with the proven
-  arguments (Vulkan, no GL, system ICU) when no prebuilt `SKIA_ROOT` is
-  supplied, so a fresh clone is buildable end to end. Then continue the
-  focused M6 leaves in order (6.3a next after that). Review completion does
-  not mark any finding fixed; no new implementation blocker was found.
+- **6.2c DONE (2026-10-25).** Reproducible Skia. `third_party/skia` is now
+  a git submodule pinned to `a94df1cdabb03d3ead2486413bc2999b500aa4f8`
+  (`.gitmodules` holds only path + canonical URL; the `--reference` used to
+  clone instantly lives in git alternates, unpushed). `scripts/build-skia.sh`
+  is the single recipe: revision pre-check, `tools/git-sync-deps` **from the
+  checkout root** (its emsdk hook resolves CWD-relative paths — a bare
+  invocation from elsewhere fails), GN via `bin/gn`/`$GN`/system/`fetch-gn`,
+  `gn gen` from the root with the validated args (Vulkan, no GL, bundled
+  png/jpeg/freetype/zlib/expat, `skia_use_system_icu=true`), ninja for all
+  five libraries; `--check` inspects without building. `OpenShowSkia.cmake`
+  resolves `SKIA_ROOT` `-D`/env → submodule → legacy `../skia`, auto-builds a
+  library-less submodule at configure time (`OPENSHOW_SKIA_AUTO_BUILD=OFF`
+  opts out) and now hard-requires `libskunicode_icu.a`. Proven from a bare
+  submodule: real network DEPS sync, `bin/fetch-gn`, 1211-target build,
+  `_78`-bound ICU module, both presets reconfigured onto the submodule and
+  fully recompiled. Gates desktop **31/31**, headless **20/20**. (The dev
+  machine's own `build/` and `build-headless/` caches pick the submodule on
+  their next configure; `-DSKIA_ROOT=/home/jim/skia` still selects the old
+  tree, which stays as a manual fallback, not as the project default.)
+- Exact next action: **6.3a**, correlate worker replies by request ID and
+  connection generation; preserve each prepare payload and latest-go intent
+  (see the 6.3a row for full acceptance wording: WorkerController burst A/B/C,
+  slow/error reply and disconnect tests, correct final slide/revision/mirror,
+  no stale auto-present). Then continue the focused M6 leaves in order.
+  Review completion does not mark any finding fixed; no new implementation
+  blocker was found.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -2568,6 +2586,12 @@ of this work.
   one version and the homemade hard-coded backend plus the
   `SkUnicodes::ICU::Make()` shim are deleted. This supersedes the 2026-10-22
   hard-coded-backend decision.
+- (2026-10-25, task 6.2c) Skia is vendored as the `third_party/skia`
+  submodule pinned to the reviewed revision and built by
+  `scripts/build-skia.sh` (invoked automatically by CMake for a
+  library-less submodule); the separately cloned sibling `../skia` becomes a
+  legacy fallback selected only through `SKIA_ROOT`. Supersedes the
+  build-separately layout documented up to this point.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.
