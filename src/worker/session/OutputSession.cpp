@@ -756,6 +756,12 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
         mediaFailed(wanted.assetPath,
                     "background video audio failed to start; playing muted");
     }
+    // The M5 clock rule, visible at transport start (checkpoint rule:
+    // "use the audio clock when audio is present and a monotonic clock
+    // otherwise"): one line naming which clock now paces the video.
+    std::fprintf(stderr, "openshow-worker: background transport %s (%s clock)\n",
+                 wanted.assetPath.c_str(),
+                 fAudio.audioLive() ? "audio" : "monotonic");
     fNeedsPresent = true;  // the head frame arrives soon; redraw when it does
 }
 
