@@ -178,8 +178,8 @@ bool wantLineSpacing(const boost::json::object& obj, const char* key, double* ou
 }  // namespace
 
 bool operator==(const Background& a, const Background& b) {
-    return a.color == b.color && a.hasImage == b.hasImage && a.assetId == b.assetId &&
-           a.assetPath == b.assetPath;
+    return a.color == b.color && a.hasImage == b.hasImage && a.isVideo == b.isVideo &&
+           a.assetId == b.assetId && a.assetPath == b.assetPath;
 }
 bool operator!=(const Background& a, const Background& b) { return !(a == b); }
 
@@ -198,6 +198,34 @@ bool operator!=(const Scene& a, const Scene& b) { return !(a == b); }
 
 Scene clearedScene() {
     return Scene{};  // background black by declaration, no items
+}
+
+bool assetPathIsVideo(const std::string& path) {
+    // Extension-based, case-insensitive: the scene lib owns no filesystem
+    // access, so the kind travels with the name (see scene.h).
+    const size_t slash = path.find_last_of('/');
+    const std::string name =
+        slash == std::string::npos ? path : path.substr(slash + 1);
+    const size_t dot = name.find_last_of('.');
+    if (dot == std::string::npos || dot + 1 >= name.size()) {
+        return false;
+    }
+    std::string ext = name.substr(dot + 1);
+    for (char& c : ext) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    static constexpr const char* kVideoExtensions[] = {
+        "mp4", "mov", "m4v", "mkv", "webm", "avi",
+        "mpg", "mpeg", "wmv", "flv", "ogv", "ts",
+    };
+    for (const char* candidate : kVideoExtensions) {
+        if (ext == candidate) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
@@ -276,6 +304,11 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         }
         scene.background.color = backgroundColor;
         scene.background.hasImage = true;
+        // Task 5.5: the kind is decided by the name, not the bytes —
+        // a video-extension asset plays frames; anything else stays a
+        // decoded still. Whether the file cooperates is reported by the
+        // renderer (and degrades to the colour fill).
+        scene.background.isVideo = assetPathIsVideo(asset->sourcePath);
         scene.background.assetId = asset->id;
         scene.background.assetPath = asset->sourcePath;
     } else {
@@ -297,6 +330,7 @@ boost::json::value toJson(const Scene& scene) {
 
     boost::json::object background;
     background.emplace("image", scene.background.hasImage);
+    background.emplace("video", scene.background.isVideo);
     background.emplace("assetId", scene.background.assetId);
     background.emplace("assetPath", scene.background.assetPath);
     root.emplace("background", std::move(background));
@@ -360,9 +394,25 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         !wantString(jsonBackground, "assetPath", &scene.background.assetPath, error)) {
         return false;
     }
+    // Task 5.5: the kind flag is optional (scene 1 predates it, so an
+    // absent key means "image"); when present it must be a bool, and
+    // "video" without a media asset is nonsense the validator refuses.
+    const boost::json::value* video = field(jsonBackground, "video");
+    if (video != nullptr) {
+        if (!video->is_bool()) {
+            fail(error, "scene: background 'video' must be a bool");
+            return false;
+        }
+        scene.background.isVideo = video->as_bool();
+    }
+    if (scene.background.isVideo && !scene.background.hasImage) {
+        fail(error, "scene: background 'video' requires 'image'");
+        return false;
+    }
     if (!scene.background.hasImage) {
         scene.background.assetId.clear();
         scene.background.assetPath.clear();
+        scene.background.isVideo = false;
     }
 
     const boost::json::value* items = field(root, "items");

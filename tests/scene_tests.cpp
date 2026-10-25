@@ -44,7 +44,9 @@ struct Fixture {
     Id overridden;  // slide with its own override
     Id unstyled;    // slide with no style anywhere
     Id backed;      // slide with the asset as background
+    Id videoBacked;  // slide with the video asset as background (task 5.5)
     Id asset;
+    Id videoAsset;
 };
 
 Fixture buildFixture() {
@@ -54,6 +56,8 @@ Fixture buildFixture() {
                             kDefaultLineSpacing);
     const Id loud = fx.docs.createStyle("Loud", "#ff0", "#000", "Impact", 96.0, "right", 1.5);
     fx.asset = fx.docs.addAsset("stage loop.jpg", "/services/svc/assets/asset-loop.jpg");
+    fx.videoAsset =
+        fx.docs.addAsset("Stage Loop.MP4", "/services/svc/assets/asset-loop.mp4");
 
     const Id show = fx.docs.createShow("Order");
     fx.docs.setShowDefaultStyle(show, house);
@@ -64,6 +68,9 @@ Fixture buildFixture() {
     fx.docs.setSlideStyle(show, fx.overridden, loud);
     fx.docs.setSlideBackground(show, fx.backed, fx.asset);
     fx.docs.setSlideLines(show, fx.backed, {"Background lyric"});
+    fx.videoBacked = fx.docs.appendSlide(show);
+    fx.docs.setSlideBackground(show, fx.videoBacked, fx.videoAsset);
+    fx.docs.setSlideLines(show, fx.videoBacked, {"Video stays"});
     fx.docs.setSlideLines(show, fx.defaulted, {"Come, all people", "", "Sing"});
 
     // The unstyled slide lives in a show without a default style.
@@ -128,6 +135,20 @@ void exerciseCompile(const Fixture& fx) {
     check(out.background.hasImage && out.background.assetId == fx.asset &&
               out.background.assetPath == "/services/svc/assets/asset-loop.jpg",
           "the background asset resolves to its id and recorded path");
+    check(!out.background.isVideo, "an image-extension asset compiles as a still");
+
+    // Task 5.5: the background's kind is the name's, decided at compile
+    // time; case-insensitive, and the wire can say so.
+    check(scene::compileSlide(fx.docs, fx.show, fx.videoBacked, &out, &error),
+          "a video-backed slide compiles");
+    check(out.background.hasImage && out.background.isVideo &&
+              out.background.assetId == fx.videoAsset &&
+              out.background.assetPath == "/services/svc/assets/asset-loop.mp4",
+          "a video-extension asset compiles as a playing background");
+    check(scene::assetPathIsVideo("a/b/movie.MKV") && scene::assetPathIsVideo("loop.webm") &&
+              !scene::assetPathIsVideo("stage.jpg") && !scene::assetPathIsVideo("note") &&
+              !scene::assetPathIsVideo("trailing.") && !scene::assetPathIsVideo(""),
+          "assetPathIsVideo classifies extensions, case-insensitively");
 
     // Refusals name the problem and leave the target alone.
     scene::Scene keeper;
@@ -262,6 +283,48 @@ void exerciseWireRoundTrip(const Fixture& fx) {
                               &error) &&
                   !readBack.background.hasImage && readBack.background.assetId.empty(),
               "image=false washes the asset fields on read");
+    }
+
+    // Task 5.5: the background kind crosses the wire, stays byte-stable,
+    // and validates strictly.
+    scene::Scene videoScene;
+    check(scene::compileSlide(fx.docs, fx.show, fx.videoBacked, &videoScene, &error) &&
+              videoScene.background.isVideo,
+          "compile the video-backed slide for the wire");
+    const std::string videoText = boost::json::serialize(scene::toJson(videoScene));
+    scene::Scene videoBack;
+    check(scene::fromJson(boost::json::parse(videoText), &videoBack, &error) &&
+              videoBack == videoScene,
+          "a video background survives the JSON round-trip intact");
+    check(boost::json::serialize(scene::toJson(videoBack)) == videoText,
+          "the video background re-serialises byte-equal");
+    {  // Scene 1 payloads that predate the kind read as stills.
+        boost::json::object obj = scene::toJson(videoScene).as_object();
+        obj["background"].as_object().erase("video");
+        scene::Scene legacy;
+        check(scene::fromJson(boost::json::parse(boost::json::serialize(obj)), &legacy,
+                              &error) &&
+                  legacy.background.hasImage && !legacy.background.isVideo,
+              "a payload without the kind key reads as a still");
+    }
+    {  // A non-bool kind refuses.
+        boost::json::object obj = scene::toJson(compiled).as_object();
+        obj["background"].as_object()["video"] = "yes";
+        refuses(boost::json::serialize(obj), "'video' must be a bool",
+                "a non-bool kind refuses");
+    }
+    {  // A kind without a media asset is nonsense.
+        boost::json::object obj = scene::toJson(compiled).as_object();
+        obj["background"].as_object()["image"] = false;
+        obj["background"].as_object()["video"] = true;
+        refuses(boost::json::serialize(obj), "'video' requires 'image'",
+                "a video without a media asset refuses");
+    }
+    {  // Kind participates in equality: same id and path, different kind,
+       // different background (the session's continuity identity needs it).
+        scene::Scene stillCopy = videoScene;
+        stillCopy.background.isVideo = false;
+        check(stillCopy != videoScene, "kind participates in background equality");
     }
 }
 

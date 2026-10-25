@@ -46,6 +46,16 @@ inline constexpr Color kBlack = 0x000000u;
 // domain's styles use (task 2.1).
 inline constexpr double kRendererDefaultFontSize = 0.0;
 
+// Task 5.5's classification: whether a path's extension names a video
+// container (mp4, mov, m4v, mkv, webm, avi, mpg, mpeg, wmv, flv, ogv,
+// ts — case-insensitive). compileSlide uses it to mark the background's
+// kind without touching the filesystem; the UI may use it to label
+// assets. Everything else — images and the unknown — keeps image
+// semantics; a video extension whose file is not a video is a reported
+// decode failure, not a silent still. Animated gifs stay images (SkCodec
+// decodes their first frame, unchanged from 3.2).
+bool assetPathIsVideo(const std::string& path);
+
 // The authored canvas (docs/reference.md §7: every scene is designed
 // against 1920x1080 and scaled by width/1920) and the default text box:
 // the canvas minus the lyric margins, the region M2/M3 laid text inside.
@@ -59,12 +69,22 @@ inline constexpr double kDefaultBoxWidth = 1600.0;
 inline constexpr double kDefaultBoxHeight = 880.0;
 
 // The fullscreen backdrop. The colour fills first; when hasImage is
-// set the image asset is drawn over it (fit rules are 3.x's). The ids
+// set the media asset is drawn over it (fit rules are 3.x's). The ids
 // and path are what compilation resolved: assetId names the model
 // asset, assetPath is where its bytes live.
+//
+// Task 5.5 adds the media kind: isVideo marks the asset as a playing
+// background (decode drives frames and the clock; a background video
+// survives lyric changes while its identity — assetId, path and kind —
+// is unchanged), while isVideo=false keeps the task 3.2 image semantics
+// (a still decoded once). The distinction is extension-based at compile
+// time — the scene stays filesystem-independent exactly like the image
+// background: whether the file exists and decodes stays the renderer's
+// problem (and the renderer's reported error, task 5.5).
 struct Background {
     Color color = kBlack;
     bool hasImage = false;
+    bool isVideo = false;  // only meaningful when hasImage
     domain::Id assetId;
     std::string assetPath;
 };
@@ -122,18 +142,22 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 // --- wire form ---------------------------------------------------------------
 
 // {"scene":1,"showId":...,"slideId":...,"backgroundColor":<int>,
-//  "background":{"image":bool,"assetId":...,"assetPath":...},
+//  "background":{"image":bool,"video":bool,"assetId":...,"assetPath":...},
 //  "items":[{"lines":[...],"color":<int>,"fontFamily":...,"fontSize":<num>,
 //            "x":<num>,"y":<num>,"width":<num>,"height":<num>,
 //            "align":"left"|"center"|"right","lineSpacing":<num>}]}
 // Colours are packed 0xRRGGBB integers. Serialisation order is fixed.
+// "video" (task 5.5) is optional on input and defaults to false — scene
+// 1 payloads written before the kind existed stay valid — but always
+// written out, and true requires image:true.
 boost::json::value toJson(const Scene& scene);
 
 // Strict reader for the above; see the header for the contract. Fails
 // on: wrong scene format number, malformed or wrongly-typed fields,
 // colours outside 0xRRGGBB, non-finite or negative font sizes, non-finite
 // text-box edges, non-positive box width or height, an alignment outside
-// left/center/right, a line spacing outside 0.25..8.
+// left/center/right, a line spacing outside 0.25..8, a "video" flag that
+// is not a bool or set without "image".
 bool fromJson(const boost::json::value& value, Scene* out, std::string* error = nullptr);
 
 }  // namespace openshow::scene
