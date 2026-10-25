@@ -14,9 +14,7 @@
 #include <VkBootstrap.h>
 
 #include "include/gpu/vk/VulkanBackendContext.h"
-#include "include/gpu/vk/VulkanMemoryAllocator.h"
-#include "src/gpu/GpuTypesPriv.h"
-#include "src/gpu/vk/vulkanmemoryallocator/VulkanMemoryAllocatorPriv.h"
+#include "output/VulkanMemoryAdapter.h"
 
 namespace openshow::worker {
 
@@ -311,7 +309,11 @@ bool VulkanContext::createDevice() {
 
     // The three fields below are what Skia reads to build its caps, and Skia
     // refuses to create the context without a memory allocator (this Skia
-    // revision has no internal default). Sloppy-ui does the same dance.
+    // revision has no internal default). Since task 6.2a (review R9) that
+    // allocator is ours: VulkanMemoryAdapter implements Skia's public
+    // VulkanMemoryAllocator contract, so no private Skia header or factory
+    // is involved (previously this reached into
+    // skgpu::VulkanMemoryAllocators::Make, private API).
     //
     // Extensions first: Skia queries them during GrVkGpu init, before the
     // allocator is used, so the enabled device extension list from vk-bootstrap
@@ -341,10 +343,9 @@ bool VulkanContext::createDevice() {
     fDeviceFeatures2.pNext = &fFeatures11;
     fBackendContext->fDeviceFeatures2 = &fDeviceFeatures2;
 
-    fBackendContext->fMemoryAllocator =
-        skgpu::VulkanMemoryAllocators::Make(*fBackendContext, skgpu::ThreadSafe::kNo);
+    fBackendContext->fMemoryAllocator = VulkanMemoryAdapter::Create(*fBackendContext);
     if (!fBackendContext->fMemoryAllocator) {
-        std::fprintf(stderr, "openshow-worker: Skia Vulkan memory allocator failed\n");
+        std::fprintf(stderr, "openshow-worker: GPU memory allocator failed\n");
         return false;
     }
     return true;

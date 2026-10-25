@@ -23,6 +23,27 @@ add_test(NAME worker_is_qt_free
           -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoQt.cmake
 )
 
+# Task 6.2a (review R9): application and test code use public Skia APIs
+# only — no includes of Skia's private/ or src/ trees (modules/<m>/src/
+# included). The one exemption, SceneText.cpp, is listed in the script
+# and retires with task 6.2b.
+add_test(NAME skia_public_api_guard
+  COMMAND ${CMAKE_COMMAND}
+          -DROOT=${CMAKE_SOURCE_DIR}
+          -DSRC_DIRS=src\;tests
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoSkiaPrivate.cmake
+)
+
+# Inverted, with a fixture that does include a private header, so the
+# guard above is proven not to scan nothing.
+add_test(NAME skia_public_api_guard_negative
+  COMMAND ${CMAKE_COMMAND}
+          -DROOT=${CMAKE_CURRENT_SOURCE_DIR}/fixtures
+          -DSRC_DIRS="skia_private"
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoSkiaPrivate.cmake
+)
+set_tests_properties(skia_public_api_guard_negative PROPERTIES WILL_FAIL TRUE)
+
 # The same check, inverted, proves the guard is not vacuous.
 if(OPENSHOW_BUILD_UI)
   add_test(NAME ui_links_qt
@@ -31,6 +52,7 @@ if(OPENSHOW_BUILD_UI)
             -DCHECK=linked
             -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoQt.cmake
   )
+
 
   # Task 3.3: DocumentController, the document session behind the lyric
   # panel (editing, debounced text, navigation, compile hand-off, service

@@ -35,7 +35,7 @@
 #include "include/gpu/ganesh/SkSurfaceGanesh.h"
 #include "include/gpu/ganesh/vk/GrVkDirectContext.h"
 
-#include "src/core/SkYUVMath.h"  // SkColorMatrix_YUV2RGB (expected values)
+#include "YuvBt601.h"  // independently specified expected colours
 
 #include "output/VulkanContext.h"
 #include "render/YuvGpu.h"
@@ -123,7 +123,7 @@ Rgb expected(int variant, int x, int y) {
     const int u = band == 1 ? 128 : band == 2 ? 235 : band == 3 ? 16 : 128;
     const int v = band == 1 ? 235 : 128;
     float m[20];
-    SkColorMatrix_YUV2RGB(kRec601_Limited_SkYUVColorSpace, m);
+    openshow::test::bt601LimitedYuvToRgb(m);
     const float in[4] = {luma / 255.0f, u / 255.0f, v / 255.0f, 1.0f};
     Rgb out;
     out.r = 0;

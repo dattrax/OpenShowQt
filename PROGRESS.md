@@ -82,11 +82,42 @@ Updated: 2026-10-25 (Europe/London).
   harnesses drive the real compositor and all pixel claims — layer regions,
   fade timing, production/dev identity, black start — pass unchanged.
   Gates desktop **28/28**, headless **17/17** (live display tests included).
-- Exact next action: **6.2a**, remove direct private Skia GPU dependencies /
-  own an allocator through the public VulkanMemoryAllocator contract (see the
-  6.2a row for the full acceptance wording). Then continue the focused M6
-  leaves in order. Review completion does not mark any finding fixed; no new
-  implementation blocker was found.
+- **6.2a DONE (2026-10-25).** The worker now owns its GPU memory allocator.
+  `output/VulkanMemoryAdapter.{h,cpp}` implements the public
+  `skgpu::VulkanMemoryAllocator` contract on the system header-only
+  VulkanMemoryAllocator and is the single allocator wired into every Vulkan
+  path (injected once in `VulkanContext::createDevice` — windowed output,
+  headless GPU tests, preview alike; one adapter, one VMA TU). libskia exports
+  its own `vma*` C symbols globally, so the adapter's TU compiles VMA with
+  `VMA_IMPLEMENTATION` + `VMA_CALL_PRE static` + static/dynamic function
+  loading off: the two copies can never bind to each other, and VMA's entry
+  points resolve through the backend context's `fGetProc` with exact scope
+  discipline — physical-device functions via instance GIPA, device functions
+  via GDPA on the real device (this machine's loader returns raw ICD
+  `GetImageMemoryRequirements2KHR`/`vkBindImageMemory2KHR` pointers from
+  instance GIPA that null-jump when called with the loader VkDevice; the
+  segfault in `gpu_yuv`/`gpu_decode` during this task pinned it). Private
+  factory call gone from `VulkanContext.cpp`, `GpuTypesPriv.h` gone from
+  `Swapchain.cpp`. Test colours are now specified independently in
+  `tests/YuvBt601.h` (BT.601 Kr=0.299/Kb=0.114 8-bit narrow-range published
+  coefficients) instead of asking Skia's private `SkYUVMath` for the sampler's
+  own matrix. `cmake/OpenShowSkia.cmake` exports public include dirs only and
+  pins Skia to `a94df1cdab…` (configure error on mismatch;
+  `-DOPENSHOW_SKIA_REVISION=any` overrides). New ctest guard
+  `skia_public_api_guard` (+ negative fixture) forbids private/src includes
+  across src+tests; its sole exemption `SceneText.cpp` (SkTArray/SkUTF/
+  SkUnicode_hardcoded, entangled with the homemade Unicode backend) retires
+  with 6.2b, and the guard was proven non-vacuous by removing the exemption
+  (flags exactly those three lines). GPU tests re-run green under
+  `OPENSHOW_VULKAN_VALIDATION=1`. Gates desktop **30/30** (live display tests
+  included), headless **19/19**.
+- Exact next action: **6.2b**, public SkUnicode/ICU — build or link a
+  compatible ICU-backed Unicode module, delete the homemade backend and the
+  `SkUnicodes::ICU::Make()` shim in `SceneText.cpp`, and empty the
+  `CheckNoSkiaPrivate.cmake` exemption list so src+tests carry zero private/
+  src includes (see the 6.2b row for full acceptance wording). Then continue
+  the focused M6 leaves in order. Review completion does not mark any finding
+  fixed; no new implementation blocker was found.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -2559,6 +2590,16 @@ of this work.
   only on the first `preview.ready`; `PreviewStream` is held by
   `std::shared_ptr` across session and RPC so teardown can never race a
   release.
+- (2026-10-25, task 6.2a) GPU memory allocation is owned by one adapter
+  (`output/VulkanMemoryAdapter`) over the system VulkanMemoryAllocator,
+  written to Skia's public `VulkanMemoryAllocator` contract — the upstream
+  answer to this Skia revision's mandatory `fMemoryAllocator`. The system
+  VMA is shared deliberately (user decision): it is the one private-tree
+  concept worth keeping, and it stays confined to a single TU with
+  `VMA_CALL_PRE static` so libskia's exported VMA copy is a non-issue.
+  Vulkan entry points are scope-resolved (instance GIPA for physical-device
+  functions, GDPA for device functions) because this platform's loader can
+  return raw ICD pointers from instance GIPA that crash on loader handles.
 
 ## Output window log
 

@@ -37,6 +37,7 @@ set_source_files_properties(render/SceneText.cpp PROPERTIES
 # the headless GPU test can link it without the worker's main().
 add_library(openshow-worker-gpu STATIC
   output/VulkanContext.cpp
+  output/VulkanMemoryAdapter.cpp
   render/YuvGpu.cpp
 )
 add_library(openshow::worker_gpu ALIAS openshow-worker-gpu)

@@ -23,7 +23,7 @@
 #include "include/gpu/ganesh/GrDirectContext.h"
 #include "include/gpu/ganesh/SkSurfaceGanesh.h"
 #include "include/gpu/ganesh/vk/GrVkDirectContext.h"
-#include "src/core/SkYUVMath.h"
+#include "YuvBt601.h"  // independently specified expected colours
 
 using namespace openshow::media;
 using openshow::worker::GpuYuvUploader;
@@ -35,7 +35,7 @@ bool check(bool ok, const char* message) {
 }
 std::array<int, 3> rgb(double y, double u, double v) {
     float m[20];
-    SkColorMatrix_YUV2RGB(kRec601_Limited_SkYUVColorSpace, m);
+    openshow::test::bt601LimitedYuvToRgb(m);
     std::array<int, 3> out;
     for (int c = 0; c < 3; ++c)
         out[c] = std::clamp(static_cast<int>(std::lround(255 *

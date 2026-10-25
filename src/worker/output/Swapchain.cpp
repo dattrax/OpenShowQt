@@ -13,7 +13,6 @@
 #include "include/gpu/ganesh/vk/GrVkBackendSurface.h"
 #include "include/gpu/ganesh/vk/GrVkTypes.h"
 #include "include/gpu/vk/VulkanMutableTextureState.h"
-#include "src/gpu/GpuTypesPriv.h"
 
 namespace openshow::worker {
 
