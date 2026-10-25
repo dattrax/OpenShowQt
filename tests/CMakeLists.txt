@@ -154,3 +154,15 @@ add_executable(gpu_decode_tests gpu_decode_tests.cpp)
 target_link_libraries(gpu_decode_tests PRIVATE openshow::worker_gpu openshow::worker_media PkgConfig::FFMPEG)
 add_test(NAME gpu_decode_tests COMMAND gpu_decode_tests)
 set_tests_properties(gpu_decode_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+# Task 5.1: the production bounded decode queue (PlaybackPipeline). CPU-mode
+# scenarios pin the ring high-water and the frozen-clock park with no GPU;
+# GPU scenarios run the same pipeline over a headless device against a stuck
+# presenter. Skips (77) without the ffmpeg CLI or a Vulkan device.
+add_executable(playback_queue_tests playback_queue_tests.cpp)
+target_link_libraries(playback_queue_tests PRIVATE
+  openshow::worker_playback
+  openshow::worker_gpu
+)
+add_test(NAME playback_queue_tests COMMAND playback_queue_tests)
+set_tests_properties(playback_queue_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)

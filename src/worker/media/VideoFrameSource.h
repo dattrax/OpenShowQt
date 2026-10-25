@@ -69,6 +69,7 @@ public:
 
     const VideoStreamInfo& streamInfo() const { return fStreamInfo; }
     FrameRing& ring() { return fRing; }
+    const FrameRing& ring() const { return fRing; }
 
     // Starts the decode thread. With loop set, EOF rewinds to the start and
     // decoding continues; sequence numbers in the ring stay monotonic.

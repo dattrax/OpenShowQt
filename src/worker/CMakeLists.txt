@@ -65,6 +65,20 @@ add_library(openshow::worker_media ALIAS openshow-worker-media)
 target_link_libraries(openshow-worker-media PRIVATE PkgConfig::FFMPEG PkgConfig::PIPEWIRE)
 target_include_directories(openshow-worker-media PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Task 5.1: the production decode→present pipeline (bounded queues, paced
+# submission, the session's presenter role). A library so the queue-bound
+# tests drive the very object --av-bench uses, in GPU and CPU modes, with
+# neither the worker's main() nor a window.
+add_library(openshow-worker-playback STATIC
+  playback/PlaybackPipeline.cpp
+)
+add_library(openshow::worker_playback ALIAS openshow-worker-playback)
+target_link_libraries(openshow-worker-playback PUBLIC
+  openshow::worker_gpu
+  openshow::worker_media
+)
+target_include_directories(openshow-worker-playback PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 # The worker must stay free of Qt. tests/CheckNoQt.cmake enforces this.
 target_link_libraries(openshow-worker PRIVATE
   openshow::domain
@@ -73,6 +87,7 @@ target_link_libraries(openshow-worker PRIVATE
   openshow::skia
   openshow::worker_gpu
   openshow::worker_media
+  openshow::worker_playback
   openshow::worker_render
   PkgConfig::GLFW
   PkgConfig::PIPEWIRE

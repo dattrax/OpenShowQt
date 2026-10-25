@@ -41,6 +41,7 @@
 #include "output/OutputWindow.h"
 #include "output/Swapchain.h"
 #include "output/VulkanContext.h"
+#include "playback/VideoSeam.h"
 #include "render/Layer.h"
 #include "render/TestScene.h"
 
@@ -237,27 +238,12 @@ public:
 
     // The seam a bench (later: the media layer) uses to present GPU slots:
     // the session decides *when* a slot is drawn (against the video clock),
-    // the presenter owns *what* the slot is and its GPU lifetime.
-    class VideoPresenter {
-    public:
-        virtual ~VideoPresenter() = default;
-        // Render thread: the image to sample for this token. Wrapping
-        // belongs here — every Skia call stays on the render thread.
-        // Returning null drops the submission.
-        virtual SkImage* acquireImage(unsigned token) = 0;
-        // Render thread, once the frame has been submitted and any preview
-        // readback completed: doneVk (freshly created here, ownership now
-        // the presenter's) signals when the GPU finished sampling.
-        virtual void onPresented(unsigned token, VkSemaphore doneVk) = 0;
-        // Render thread: the submission was replaced before ever being drawn.
-        virtual void onDropped(unsigned token) = 0;
-    };
-
-    struct VideoSubmission {
-        unsigned token = 0;       // presenter-side slot identity
-        double ptsSeconds = 0.0;  // in video-clock seconds
-        uint64_t sequence = 0;
-    };
+    // the presenter owns *what* the slot is and its GPU lifetime. Task 5.1
+    // moved the types to playback/VideoSeam.h so the production pipeline
+    // implements them without the session's window machinery; the names
+    // stay here for every existing caller.
+    using VideoPresenter = ::openshow::worker::VideoPresenter;
+    using VideoSubmission = ::openshow::worker::VideoSubmission;
 
     // Both set before run(); presenter may be null (no video at all).
     void setVideoPresenter(VideoPresenter* presenter);

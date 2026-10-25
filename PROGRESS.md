@@ -1925,6 +1925,76 @@ of this work.
   keyboard/clipboard/settings are all DONE, committed and pushed.
   Gates at the tag: desktop **21/21**, headless **12/12**.
 
+## Task 5.1 log (2026-10-25) — production bounded decode queue: DONE
+
+- **What graduated** (5.1a): the 1.5e bench's improvised glue is now
+  `openshow::worker::PlaybackPipeline` (`src/worker/playback/`, new
+  Qt-free static lib `openshow::worker_playback` linking worker_gpu +
+  worker_media). It owns `VideoFrameSource`, `GpuYuvUploader` (as the
+  ring's `FrameBacking`), the paced-submission thread (supply lookahead,
+  loop-pts continuity across decoder wraps) and the session's
+  `VideoPresenter` role (per-token pts under the stats mutex, the
+  missed-window threshold, uploader release/drop). GPU mode takes a
+  `Gpu` triple set (from `OutputSession::gpuHandles()` or a headless
+  `VulkanContext`); CPU mode (`openCpu`) runs the plain-memory ring with
+  copying decode so the queue contract is testable with no GPU. Clock
+  and sink are injected callables — with a session the sink is
+  `submitVideo` and the clock is the audio stream time; default clock is
+  wall from `start()`. `requestStop()/join()` bake in the bench's proven
+  ladder: stop flags → ring stop (wakes a parked poll) → decode unwind →
+  uploader shutdown (wakes a commit parked on a held slot).
+- **Seam extraction**: `VideoPresenter`/`VideoSubmission` moved out of
+  `OutputSession` into `playback/VideoSeam.h`; `OutputSession` keeps the
+  names as `using` aliases so every existing caller is untouched. The
+  pipeline header needs no window machinery. `VideoFrameSource` gained a
+  const `ring()` overload for the stats aggregator.
+- **Bench graduation** (5.1b): `runAvBench` keeps probe, audio sink and
+  clock choice, the optional preview consumer and reporting; the private
+  upload thread, `BenchPresenter` and `pickYuvColorSpace` left
+  `main.cpp`. Parity reruns on the pipeline: `av-10s.mp4 --preview`
+  300 presents / **0 missed** / 0 drops / drift mean +0.8 max 2.4 ms /
+  ring peak 3 of 4 / 304 vkCmdCopyImage with zero CPU copies;
+  `decode-hd.mp4 --no-audio --vulkan-validation` 150 presents /
+  **0 missed** / drift mean +1.5 max 17.1 ms.
+- **The new test** (5.1c): `playback_queue_tests` (ctest, both presets;
+  generates its own fixtures, skips 77 without the ffmpeg CLI or a
+  Vulkan device). CPU: healthy 60-frame drain at depth 3
+  (peak ≤ 3, monotone sequences, clean EOF); frozen-clock stall at
+  depth 2 — submissions provably freeze, `peakFilled` stays at 2,
+  the producer does not race through the clip, and releasing the clock
+  delivers all 100 frames in order; prompt stop from parked states.
+  GPU (headless device): healthy direct-decode drain (wrapped-YCbCr
+  image per submission, four slots, one copy per frame, zero CPU
+  copies) and a stuck presenter holding every token. Green with zero
+  Vulkan validation errors, and again under `OPENSHOW_VULKAN_VALIDATION=1`.
+- **What the stuck-presenter scenario taught** (test-side expectation,
+  recorded because it names a real contract): with a single decode
+  producer that re-claims the ring slot the pacing thread released
+  *before* the presenter returned its GPU twin, the producer parks on
+  that token's next commit — so with a stuck frontend the pipeline can
+  park at 1 submission, not `depth`. How many tokens escape before the
+  first reused slot is a race; that submissions stop growing, the ring
+  stays at depth, the wait is not an error, and the shutdown wakes the
+  parked commit — those are the pinned contract. Production is
+  unaffected in the other direction: the session releases every token
+  it drew (or drops it), so commits never wait longer than one draw.
+- **Decisions**: (1) the pipeline references no `OutputSession` — the
+  narrow `Gpu` struct + injected sink/clock keep it drivable headless
+  and testable with a fake consumer; (2) `missed` stays a pipeline stat
+  with the bench's 25 ms window (`setMissedWindowMs`), because M6.2
+  diagnostics will want the same counter; (3) CPU mode is the
+  explicitly-compatible copying path end to end — it exists to prove
+  the queue, not to decode for output; (4) the presenter callbacks
+  share the pipeline's one stats mutex (same lock order as the bench:
+  stats mutex → uploader sync, never the reverse).
+- **Checks**: desktop `ctest --preset desktop` **22/22**; headless
+  `ctest --preset headless` **13/13** (`playback_queue_tests` counted
+  in both; `worker_is_qt_free` green with the pipeline linked in).
+- **Next**: task **5.2** — video controls, seeking and looping over the
+  pipeline (play/pause/seek/loop as pipeline operations with flush
+  semantics; the 5.2 acceptance sentence is playback transitions and
+  seek flushing passing tests).
+
 ## Verification and environment
 
 - 2026-10-23, task 1.4: `ctest --preset desktop` passes **8 of 8** —
@@ -2236,7 +2306,18 @@ logged here from what is observable off screen rather than claimed as seen.
    **`M4`** on main's tip. Next milestone: **M5 — video and audio**
    (video decode/presentation, embedded and standalone audio mixed,
    volume/mute per source).
-3. Useful carry-over: the preview throttle proves the session can run a
+3. **M5 is under way**: **5.1 is DONE** — the production
+   `PlaybackPipeline` (new Qt-free `playback/` library) now owns the
+   decode thread, GPU ring, paced submission and presenter role that
+   the 1.5 bench improvised; `--av-bench` is a thin driver over it with
+   parity numbers (0 missed, drift +0.8/+1.5 ms), and
+   `playback_queue_tests` pins the acceptance sentence — fixtures
+   decode without the queue growing — at depth, under a frozen clock,
+   and against a stuck presenter, on the CPU ring and the headless GPU
+   path. Gates: desktop **22/22**, headless **13/13**. Next: **5.2** —
+   video controls, seeking and looping (play/pause/seek/loop as
+   pipeline operations; flush semantics proven by tests).
+4. Useful carry-over: the preview throttle proves the session can run a
    secondary cadence (15 fps) without disturbing the output loop — a
    video layer's frame-pick cadence hangs off the same seam;
    `PreviewStream`'s claim-only-released / drop-not-block semantics are
@@ -2245,7 +2326,7 @@ logged here from what is observable off screen rather than claimed as seen.
    event types keep working. `--av-bench` is the ready-made harness the
    moment video layers need real decode-to-present plumbing, and
    `--vulkan-validation` keeps any new hand-written Vulkan honest.
-4. One manual check stays open from 1.3: drag-resize the borderless output
+5. One manual check stays open from 1.3: drag-resize the borderless output
    window once and confirm the swapchain recreate (see the acceptance
    caveat in the task 1.3 log).
 
