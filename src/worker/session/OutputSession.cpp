@@ -538,9 +538,10 @@ void OutputSession::submitVideo(VideoSubmission submission) {
         fPendingVideo = submission;
     }
     // A slot replaced before ever being drawn goes back now, with no GPU
-    // semaphore: nothing ever sampled it.
+    // semaphore: nothing ever sampled it. The release carries the
+    // replaced submission's sequence as its proof of ownership (6.6a).
     if (dropped && fVideoPresenter && dropped->token != submission.token) {
-        fVideoPresenter->onDropped(dropped->token);
+        fVideoPresenter->onDropped(dropped->token, dropped->sequence);
     }
     wakeRenderThread();
 }
@@ -827,7 +828,9 @@ void OutputSession::teardownBackgroundTransport() {
     // their GPU lifetime belongs to the pipeline being closed, and with no
     // presenter registered the render thread can neither acquire nor
     // release them (this all runs on the render thread, so no frame is
-    // mid-draw against them).
+    // mid-draw against them). Outstanding leases die with the pipeline:
+    // requestStop wakes a producer parked on one, and close() releases
+    // every slot (task 6.6a).
     fVideoPresenter = nullptr;
     setVideoClock(nullptr);
     fAudio.detachPipeline(fBackground.get());
@@ -1083,24 +1086,41 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
         // presented frame is held, so a layer toggle in the middle of a
         // video never blanks it. The decision runs before the scene draw
         // because task 5.5 may hand the frame to the composition itself.
+        //
+        // The held frame's lease (task 6.6a, review R6): fDrawnVideo's
+        // image is sampled by every redraw until this decision replaces
+        // it, so the presenter keeps its slot out of the producer until
+        // onReplaced names it. The replaced frame's last sampling already
+        // handed back its doneVk (each frame's onPresented runs at the
+        // end of its own iteration, before the next decision), which is
+        // what makes releasing here safe for the producer.
         std::optional<VideoSubmission> toDraw;
+        std::optional<VideoSubmission> replaced;
         {
             std::lock_guard<std::mutex> lock(fMutex);
             if (fPendingVideo && fVideoPresenter &&
                 videoClockSecondsLocked(std::chrono::steady_clock::now()) >=
                     fPendingVideo->ptsSeconds) {
+                replaced = fDrawnVideo;
                 toDraw = fPendingVideo;
                 fDrawnVideo = toDraw;
                 fPendingVideo.reset();
             }
         }
+        if (replaced && fVideoPresenter && replaced->token != toDraw->token) {
+            fVideoPresenter->onReplaced(replaced->token, replaced->sequence);
+        }
         if (!toDraw && fDrawnVideo) {
             toDraw = fDrawnVideo;
         }
         if (toDraw && fVideoPresenter) {
-            videoImage = fVideoPresenter->acquireImage(toDraw->token);
+            videoImage = fVideoPresenter->acquireImage(toDraw->token, toDraw->sequence);
             if (!videoImage) {
-                fVideoPresenter->onDropped(toDraw->token);
+                // The token no longer yields an image for its generation:
+                // stop sampling it and give back exactly the lease this
+                // submission owns (nothing if another generation already
+                // holds the slot).
+                fVideoPresenter->onReplaced(toDraw->token, toDraw->sequence);
                 if (fDrawnVideo && fDrawnVideo->token == toDraw->token) {
                     fDrawnVideo.reset();
                 }
@@ -1242,10 +1262,13 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
         publishPreviewFrame(elapsed, videoImage, snapshot.revision);
     }
 
-    // The video slot is handed back last: publishPreviewFrame's readback
-    // above is CPU-synchronous, so every queued sampling of the slot has
-    // finished by now, and once doneVk signals the uploader may write the
-    // slot again with nothing in flight against it.
+    // The present's sampling obligation is handed back last:
+    // publishPreviewFrame's readback above is CPU-synchronous, so by now
+    // every sampling of the slot this frame queued — output and preview —
+    // is complete, and doneVk's signal puts a GPU fence behind it. This
+    // does NOT free the slot: the frame stays leased while fDrawnVideo
+    // holds it (task 6.6a), and the producer waits for the lease to end
+    // AND for every registered doneVk before writing the slot again.
     if (videoDone != VK_NULL_HANDLE && fVideoPresenter) {
         fVideoPresenter->onPresented(videoToken, videoDone);
     }
@@ -1444,12 +1467,23 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             continue;
         }
         if (previewDue) {
+            // A publish without an audience present still samples whatever
+            // the audience currently shows (task 6.4). Task 6.6a (review
+            // R6) gives this branch the same graphics-queue guard the
+            // presenting frame and housekeeping take: the producer's
+            // commit may not interleave with this branch's acquire, draw
+            // and readback. (Held video needs no doneVk here: the
+            // readback is CPU-synchronous, so the sampling has completed
+            // by the time the branch is done — and the frame's lease
+            // keeps the slot off the producer's table throughout.)
+            std::lock_guard queueLock(graphicsQueueMutex());
             const double elapsed =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - fStartTime)
                     .count();
             SkImage* held = nullptr;
             if (fVideoPresenter && fDrawnVideo) {
-                held = fVideoPresenter->acquireImage(fDrawnVideo->token);
+                held = fVideoPresenter->acquireImage(fDrawnVideo->token,
+                                                     fDrawnVideo->sequence);
             }
             // No present this round, so the honest tag is the revision of
             // the last presented frame — the content a republish redraws

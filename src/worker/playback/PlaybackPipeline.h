@@ -119,9 +119,10 @@ public:
     void join();
 
     // --- the session's video seam (VideoPresenter) ---
-    SkImage* acquireImage(unsigned token) override;
+    SkImage* acquireImage(unsigned token, uint64_t sequence) override;
     void onPresented(unsigned token, VkSemaphore doneVk) override;
-    void onDropped(unsigned token) override;
+    void onReplaced(unsigned token, uint64_t sequence) override;
+    void onDropped(unsigned token, uint64_t sequence) override;
 
     // A present whose drift exceeds this counts as missed — the M5 metric.
     // 25 ms (twice the fastest frame interval) keeps wake-up jitter out of
@@ -164,6 +165,10 @@ public:
         uint64_t presents = 0;
         uint64_t missed = 0;
         uint64_t dropped = 0;  // replaced before ever drawn
+        // Lease proof refusals (task 6.6a, review R6): an acquire or a
+        // release naming a generation other than the one leasing the token.
+        uint64_t staleAcquires = 0;
+        uint64_t staleReleases = 0;
         double driftMeanMs = 0.0;
         double driftMaxMs = 0.0;
         // Decode (VideoFrameSource).
@@ -225,12 +230,24 @@ private:
     // that slot, which reads it first.
     std::vector<double> fPtsByToken;  // fStatsMutex
 
+    // The lease ledger (task 6.6a, review R6): the decoder sequence of
+    // the generation currently leasing each token, stamped by the pacing
+    // thread immediately before its submit and cleared by a generation-
+    // proved onReplaced/onDropped. Zero means no lease. Sequences are
+    // never reset and grow, so equality with a submission's sequence is
+    // the release/acquire proof; the producer cannot stamp a new lease
+    // over an unreleased one because its commit parks in waitForFree
+    // until the lease ends.
+    std::vector<uint64_t> fLeaseSeq;  // fStatsMutex
+
     mutable std::mutex fStatsMutex;
     double fMissedWindowMs = 25.0;  // fStatsMutex
     uint64_t fSubmitted = 0;        // fStatsMutex
     uint64_t fPresents = 0;         // fStatsMutex
     uint64_t fMissed = 0;           // fStatsMutex
     uint64_t fDropped = 0;          // fStatsMutex
+    uint64_t fStaleAcquires = 0;    // fStatsMutex
+    uint64_t fStaleReleases = 0;    // fStatsMutex
     double fDriftSumMs = 0.0;       // fStatsMutex
     double fDriftMaxMs = 0.0;       // fStatsMutex
 };

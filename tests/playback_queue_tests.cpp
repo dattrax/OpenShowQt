@@ -16,8 +16,11 @@
 
 #include "playback/PlaybackPipeline.h"
 #include "output/VulkanContext.h"
+#include "include/core/SkCanvas.h"
 #include "include/core/SkImage.h"
+#include "include/core/SkSurface.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/SkSurfaceGanesh.h"
 #include "include/gpu/ganesh/vk/GrVkDirectContext.h"
 
 namespace {
@@ -54,16 +57,40 @@ struct SinkState {
     uint64_t lastSequence = 0;
     bool sequencesMonotone = true;
     bool allImagesValid = true;
+    // The session-emulator's held frame: each arrival replaces it, and
+    // the replaced lease is given up exactly as OutputSession does (the
+    // 6.6a seam protocol: onPresented obligates, onReplaced releases).
+    bool hasHeld = false;
+    unsigned heldToken = 0;
+    uint64_t heldSequence = 0;
+    unsigned replaces = 0;
 };
 
 // present=true: acquire the submission's image (where the pipeline has a
-// GPU mode) and hand the token straight back, as a frontend that presents
-// every frame would.
+// GPU mode), hand the presentation obligation back, and give up the lease
+// of the frame this one replaces — as a frontend that presents every
+// frame would.
 auto makeSink(PlaybackPipeline& pipeline, SinkState& state, bool present) {
     return [&pipeline, &state, present](const VideoSubmission& submission) {
         SkImage* image = nullptr;
         if (present) {
-            image = pipeline.acquireImage(submission.token);
+            unsigned replacedToken = 0;
+            uint64_t replacedSequence = 0;
+            bool replaced = false;
+            {
+                std::lock_guard<std::mutex> lock(state.mutex);
+                if (state.hasHeld && state.heldToken != submission.token) {
+                    replacedToken = state.heldToken;
+                    replacedSequence = state.heldSequence;
+                    replaced = true;
+                }
+            }
+            if (replaced) {
+                pipeline.onReplaced(replacedToken, replacedSequence);
+                std::lock_guard<std::mutex> lock(state.mutex);
+                ++state.replaces;
+            }
+            image = pipeline.acquireImage(submission.token, submission.sequence);
         }
         {
             std::lock_guard<std::mutex> lock(state.mutex);
@@ -71,14 +98,18 @@ auto makeSink(PlaybackPipeline& pipeline, SinkState& state, bool present) {
             state.sequencesMonotone =
                 state.sequencesMonotone && submission.sequence > state.lastSequence;
             state.lastSequence = submission.sequence;
+            if (present) {
+                state.hasHeld = true;
+                state.heldToken = submission.token;
+                state.heldSequence = submission.sequence;
+            }
             if (present && image == nullptr) {
                 state.allImagesValid = false;
             }
         }
         if (present) {
-            // Nothing sampled the image, so releasing without a completion
-            // semaphore is safe (the gpu tests' readback-then-release
-            // pattern, minus the draw).
+            // Nothing sampled the image, so the obligation is empty; the
+            // lease still stands until the next submission replaces it.
             pipeline.onPresented(submission.token, VK_NULL_HANDLE);
         }
     };
@@ -317,6 +348,209 @@ bool gpuStuckPresenter(const std::string& path, openshow::worker::VulkanContext&
     return ok;
 }
 
+// --- task 6.6a (review R6): the displayed frame's lease ---
+
+// Draw a wrapped slot image into a CPU-readback surface: two readbacks of
+// a held frame must agree byte for byte — same image, same content, no
+// producer rewrite slipping in between.
+std::vector<uint8_t> readBackPixels(GrDirectContext* gr, SkImage* image) {
+    if (image == nullptr) {
+        return {};
+    }
+    const SkISize size = image->dimensions();
+    sk_sp<SkSurface> surface = SkSurfaces::RenderTarget(
+        gr, skgpu::Budgeted::kNo,
+        SkImageInfo::Make(size, kRGBA_8888_SkColorType, kPremul_SkAlphaType));
+    if (!surface) {
+        return {};
+    }
+    surface->getCanvas()->clear(SK_ColorBLACK);
+    surface->getCanvas()->drawImage(image, 0, 0);
+    std::vector<uint8_t> pixels(static_cast<size_t>(size.width()) * size.height() * 4);
+    const SkImageInfo info = SkImageInfo::Make(size, kRGBA_8888_SkColorType,
+                                               kPremul_SkAlphaType);
+    if (!surface->readPixels(info, pixels.data(), size.width() * 4, 0, 0)) {
+        return {};
+    }
+    return pixels;
+}
+
+// The acceptance sentence of task 6.6a, deterministically: a frame the
+// session holds (frozen clock — the parked-decoder analogue of pause and
+// of the final frame) must survive every attempted slot reuse by the
+// producer AND keep sampling identically through dirty and preview-only
+// redraws, until the session gives the lease up. The lease rules make
+// this three observable facts: the producer parks on the held slot
+// (published stops, slot-waits climb), acquire of the held generation is
+// stable, and a release naming the wrong generation frees nothing.
+bool gpuHeldFrameLease(const std::string& path, openshow::worker::VulkanContext& vk,
+                       GrDirectContext* gr) {
+    PlaybackPipeline pipeline;
+    PlaybackPipeline::Options options;
+    options.path = path;
+    PlaybackPipeline::Gpu gpu;
+    gpu.device = vk.device();
+    gpu.physicalDevice = vk.physicalDevice();
+    gpu.graphicsQueueIndex = vk.queueIndex();
+    gpu.uploadQueueIndex = vk.uploadQueueIndex();
+    gpu.uploadQueue = vk.uploadQueue();
+    gpu.context = gr;
+    std::string error;
+    if (!check(pipeline.openGpu(gpu, options, &error),
+               "the held-frame scenario opens (GPU mode)")) {
+        std::fprintf(stderr, "  open: %s\n", error.c_str());
+        return false;
+    }
+
+    // A session-emulating sink: every arrival is drawn (acquire + the
+    // onPresented obligation), and the frame it replaces gives its lease
+    // up — the 6.6a protocol, in the order the session's run loop uses.
+    struct Held {
+        std::mutex mutex;
+        bool hasFirst = false;
+        unsigned firstToken = 0;
+        uint64_t firstSequence = 0;
+        bool hasHeld = false;
+        unsigned heldToken = 0;
+        uint64_t heldSequence = 0;
+        bool allAcquiresValid = true;
+    };
+    Held held;
+    std::atomic<double> fakeClock{0.0};
+    if (!pipeline.start(
+            [&](const VideoSubmission& submission) {
+                unsigned replacedToken = 0;
+                uint64_t replacedSequence = 0;
+                bool replaced = false;
+                {
+                    std::lock_guard<std::mutex> lock(held.mutex);
+                    if (held.hasHeld && held.heldToken != submission.token) {
+                        replacedToken = held.heldToken;
+                        replacedSequence = held.heldSequence;
+                        replaced = true;
+                    }
+                }
+                if (replaced) {
+                    pipeline.onReplaced(replacedToken, replacedSequence);
+                }
+                SkImage* image =
+                    pipeline.acquireImage(submission.token, submission.sequence);
+                std::lock_guard<std::mutex> lock(held.mutex);
+                if (!held.hasFirst) {
+                    held.hasFirst = true;
+                    held.firstToken = submission.token;
+                    held.firstSequence = submission.sequence;
+                }
+                held.hasHeld = true;
+                held.heldToken = submission.token;
+                held.heldSequence = submission.sequence;
+                if (image == nullptr) {
+                    held.allAcquiresValid = false;
+                }
+                pipeline.onPresented(submission.token, VK_NULL_HANDLE);
+            },
+            [&] { return fakeClock.load(); }, &error)) {
+        std::fprintf(stderr, "  start: %s\n", error.c_str());
+        return false;
+    }
+
+    bool ok = true;
+    // The frozen clock lets exactly the first frame through; the producer
+    // publishes its three siblings, then attempts the held slot's reuse
+    // and parks there.
+    const bool parked = waitFor(
+        [&] {
+            const auto stats = pipeline.stats();
+            return stats.ringPublished >= 4 && stats.gpuWaitsForFreeSlot >= 1;
+        },
+        5000);
+    ok = check(parked, "the producer publishes what it can and attempts the held slot")
+           && ok;
+
+    unsigned firstToken = 0;
+    uint64_t firstSequence = 0;
+    {
+        std::lock_guard<std::mutex> lock(held.mutex);
+        firstToken = held.firstToken;
+        firstSequence = held.firstSequence;
+    }
+    const auto stalledA = pipeline.stats();
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    const auto stalledB = pipeline.stats();
+    ok = check(stalledB.submitted == 1 && stalledA.submitted == 1,
+               "the frozen clock holds at one submission") && ok;
+    ok = check(stalledB.ringPublished == 4 && stalledA.ringPublished == 4,
+               "the held frame's slot turns every reuse attempt into a park: "
+               "nothing further publishes") && ok;
+    ok = check(stalledB.gpuWaitsForFreeSlot > stalledA.gpuWaitsForFreeSlot,
+               "the decoder's reuse attempts keep waiting on the lease") && ok;
+
+    // Dirty and preview-style redraws of the held frame: the same
+    // generation acquires the same image and samples the same pixels.
+    SkImage* imageA = pipeline.acquireImage(firstToken, firstSequence);
+    SkImage* imageB = pipeline.acquireImage(firstToken, firstSequence);
+    ok = check(imageA != nullptr && imageA == imageB,
+               "redraws of the held generation acquire one stable image") && ok;
+    const std::vector<uint8_t> pixelsA = readBackPixels(gr, imageA);
+    const std::vector<uint8_t> pixelsB = readBackPixels(gr, imageB);
+    ok = check(!pixelsA.empty() && pixelsA == pixelsB,
+               "the held frame samples identically across redraws — no rewrite slipped in")
+           && ok;
+
+    // A stale generation never samples the slot (R6's unchecked reacquire),
+    // and a release naming a generation that is not the lease frees
+    // nothing: the producer stays parked exactly where it was.
+    ok = check(pipeline.acquireImage(firstToken, firstSequence + 7) == nullptr,
+               "an acquire naming a different generation gets no image") && ok;
+    const auto beforeStale = pipeline.stats();
+    ok = check(beforeStale.staleAcquires >= 1, "the stale acquire was counted") && ok;
+    pipeline.onReplaced(firstToken, firstSequence + 7);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const auto afterStale = pipeline.stats();
+    ok = check(afterStale.staleReleases >= 1, "the unproved release was counted") && ok;
+    ok = check(afterStale.ringPublished == 4 &&
+                   afterStale.gpuWaitsForFreeSlot > beforeStale.gpuWaitsForFreeSlot,
+               "a release without the lease proof freed nothing: still parked") && ok;
+
+    // The valid handoff: releasing the held generation through the
+    // session's own protocol unblocks the producer and every frame of the
+    // clip flows, each with a valid image, to the end.
+    fakeClock.store(1.0e6);
+    const bool drained = waitFor([&] { return pipeline.stats().submitted >= 24; }, 10000);
+    const auto done = pipeline.stats();
+    ok = check(drained && done.submitted == 24 && done.eof,
+               "the proved release lets the whole clip flow after the stall") && ok;
+    {
+        std::lock_guard<std::mutex> lock(held.mutex);
+        ok = check(held.allAcquiresValid,
+                   "every submission through the stall carried its own valid image") && ok;
+    }
+    ok = check(done.decodeErrors == 0 && done.fatalError.empty(),
+               "the held-frame scenario is clean") && ok;
+
+    pipeline.requestStop();
+    pipeline.join();
+
+    // After the run: the final frame still answers its own generation,
+    // and the FIRST frame's generation — its slot long since rewritten —
+    // is now refused. That is the R6 bug's mirror image: the old session
+    // would have sampled a later frame under the old token.
+    unsigned lastToken = 0;
+    uint64_t lastSequence = 0;
+    {
+        std::lock_guard<std::mutex> lock(held.mutex);
+        lastToken = held.heldToken;
+        lastSequence = held.heldSequence;
+    }
+    ok = check(pipeline.acquireImage(lastToken, lastSequence) != nullptr,
+               "the final frame stays sampled while it is held") && ok;
+    ok = check(pipeline.acquireImage(firstToken, firstSequence) == nullptr,
+               "a generation whose slot was rewritten and re-leased can never "
+               "sample again") && ok;
+    pipeline.close();
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -368,6 +602,7 @@ int main() {
     }
     ok = gpuHealthyDrain(gpu, vk, gr.get()) && ok;
     ok = gpuStuckPresenter(gpu, vk, gr.get()) && ok;
+    ok = gpuHeldFrameLease(gpu, vk, gr.get()) && ok;
     gr.reset();
     vk.destroy();
     ok = check(vk.validationErrors() == 0, "no Vulkan validation or synchronization errors") && ok;

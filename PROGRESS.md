@@ -241,11 +241,39 @@ Updated: 2026-10-25 (Europe/London).
   worker's drain path does not expose; the assertion covers it and the
   two release-rule mutations carry the fixture's proven weight.) Gates
   desktop **35/35**, headless **21/21**, 5-run stress green.
-- Exact next action: **6.6a**, retain a lease for the displayed video
-  image until replacement; validate frame generation; cover every
-  output/preview sample with GPU synchronization (review R6: a held
-  video token outlives its ownership). Then continue the focused M6
-  leaves in order.
+- **6.6a DONE (2026-10-26).** The displayed video frame is leased (review
+  R6). The seam contract is now lease-based: pacing stamps the leasing
+  decoder sequence immediately before submit; `acquireImage(token,
+  sequence)` yields an image only while that exact generation leases the
+  token — a stale held submission can never sample the slot's later
+  content; `onPresented` is a per-flush GPU-completion obligation
+  (`GpuYuvUploader::addSamplingDone`), not a release; only a sequence-proved
+  `onReplaced`/`onDropped` ends the lease, and refusals count in
+  `staleAcquires`/`staleReleases` while freeing nothing. The session gives
+  up the replaced frame after the decision lock, relinquishes with its own
+  proof when an acquire comes back null, and holds the graphics-queue lock
+  across the preview-only acquire/draw/readback, so every draw that samples
+  video is covered by the slot's obligations. New `gpuHeldFrameLease`
+  fixture: a frozen clock holds one frame while the producer parks on its
+  slot (published stops at 4, slot-waits climb), the held generation
+  acquires one stable image with byte-identical readbacks across redraws,
+  unproved acquire/release free nothing, and the proved handoff drains the
+  clip. Five mutations (free-at-present restored, acquire check dropped,
+  release never frees, release without proof, RR claim reverted) fail
+  exactly the checks each should. It exposed, and this task fixed, a ring
+  flaw: `FrameRing::claim()` always scanned from slot 0, so the lease
+  protocol degenerated to two slots (wraps 4→2, decode cushion gone) —
+  claim now round-robins from a cursor. Synchronization validation
+  (`VK_LAYER_SETTINGS_PATH` with `khronos_validation.validate_sync`) is
+  hazard-free on the gpu_yuv/gpu_decode/playback_queue suites and on the
+  full `--av-bench --preview` session with `--vulkan-validation` (125
+  presents, 75 preview publishes, drift max 1.8 ms). Gates desktop
+  **35/35**, headless **21/21**.
+- Exact next action: **6.6b**, quiesce/detach the submission producer before
+  presenter/transport replacement and synchronize cross-thread ownership
+  (review R6's second half: `submitVideo` reads the raw `fVideoPresenter`
+  outside `fMutex`; deterministic submit-vs-swap/stop regression). Then
+  continue the focused M6 leaves in order.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -2724,6 +2752,18 @@ of this work.
   a foreign stream. Queued notifications of a retired stream are dropped
   at dequeue, and `create()` resets the per-slot bookkeeping because a
   new segment is a new ownership life.
+- (2026-10-26, task 6.6a) A GPU presentation token is a LEASE, not a
+  per-flush borrow: while the session displays a frame its slot stays off
+  the producer's table, and each sampling flush only adds a done-semaphore
+  obligation the slot's next commit waits on. Every handback PROVES its
+  generation — the exact decoder sequence leasing the token, which is the
+  proof because sequences grow monotonically, are never reset, and a
+  producer cannot re-stamp a slot whose lease has not ended. `FrameRing::
+  claim()` is round-robin by contract: a from-index-0 free scan starves
+  every other slot the moment a consumer holds one frame while the
+  producer cycles, and leases make that degeneration observable. A
+  CPU-synchronous preview readback needs no doneVk because the lease keeps
+  the slot untouched through its draw.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.

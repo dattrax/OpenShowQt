@@ -486,8 +486,12 @@ bool GpuYuvUploader::commitFrame(unsigned index,
 }
 
 bool GpuYuvUploader::commitSlot(Slot& slot, uint64_t sequence, DecodeImage* source) {
-    // Also serialize with redraws of the last presented texture. Such draws
-    // can append a sampling semaphore after the token was already released.
+    // Also serialize with the render thread's draws. Under the lease
+    // protocol (task 6.6a) a consumer only attaches sampling semaphores
+    // while it holds the slot, so by the time waitForFree let this commit
+    // through every sampling of the previous frame has registered its
+    // obligation — but the queue lock still stands between a preview
+    // readback's flush and this submit touching the same images.
     std::lock_guard queueLock(graphicsQueueMutex());
     VkImage linear = source ? source->image : slot.linear;
     bool firstLinear = source ? source->firstTransfer : slot.firstTransfer;
@@ -586,7 +590,16 @@ bool GpuYuvUploader::commitSlot(Slot& slot, uint64_t sequence, DecodeImage* sour
     // has completed, including when graphics and upload use different queues.
     // A dropped frame was never acquired by Skia: consume its still-signalled
     // ready semaphore before signalling it for the replacement frame.
-    std::vector<VkSemaphore> waits = slot.pendingDone;
+    std::vector<VkSemaphore> doneObligations;
+    {
+        // Lease bookkeeping (task 6.6a): take the accumulated obligations
+        // under the sync mutex. Nothing can be appended while this commit
+        // runs (the consumer attaches only while it holds the slot), but
+        // the vector read is not left unguarded on the strength of that.
+        std::lock_guard lock(fSync->mutex);
+        doneObligations.swap(slot.pendingDone);
+    }
+    std::vector<VkSemaphore> waits = doneObligations;
     if (slot.readyPending) waits.push_back(slot.ready);
     std::vector<VkPipelineStageFlags> waitStages(waits.size(),
                                                  VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -607,12 +620,14 @@ bool GpuYuvUploader::commitSlot(Slot& slot, uint64_t sequence, DecodeImage* sour
         std::fprintf(stderr, "openshow-worker: gpu commit: fence wait failed\n");
         return false;
     }
-    // Past the fence the semaphores have all signalled (their work ran
-    // before the copy this fence covers) and nothing waits on them again.
-    for (VkSemaphore semaphore : slot.pendingDone) {
+    // Past the fence the obligations taken at the snapshot have all
+    // signalled (their work ran before the copy this fence covers) and
+    // nothing waits on them again. Anything attached after the snapshot —
+    // impossible under the lease protocol, harmless if it ever happens —
+    // belongs to the next commit and stays in the slot.
+    for (VkSemaphore semaphore : doneObligations) {
         vkDestroySemaphore(fDevice, semaphore, nullptr);
     }
-    slot.pendingDone.clear();
     slot.firstTransfer = false;
     slot.readyPending = true;
     if (source) { source->firstTransfer = false; ++fStats.directCopies; }
@@ -780,6 +795,17 @@ sk_sp<SkImage> GpuYuvUploader::imageForSlot(unsigned slot, std::string* error) {
     }
     ++fStats.wraps;
     return target.wrapped;
+}
+
+void GpuYuvUploader::addSamplingDone(unsigned slot, VkSemaphore doneVk) {
+    if (!fSync || !fSlots || slot >= static_cast<unsigned>(kSlots) ||
+        doneVk == VK_NULL_HANDLE) {
+        return;
+    }
+    // The slot stays inUse: this only records that the GPU must finish
+    // this sampling before the slot's NEXT commit may write it.
+    std::lock_guard lock(fSync->mutex);
+    fSlots[slot].pendingDone.push_back(doneVk);
 }
 
 void GpuYuvUploader::release(unsigned slot, VkSemaphore doneVk) {

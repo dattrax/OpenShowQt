@@ -66,6 +66,7 @@ bool PlaybackPipeline::openGpu(const Gpu& gpu, const Options& options, std::stri
         return false;
     }
     fPtsByToken.assign(fDepth, 0.0);
+    fLeaseSeq.assign(fDepth, 0);  // no generation leases anything yet
     // Direct decode is the plan; the copying compatibility path is the
     // explicitly permitted fallback (task 1.5i). No presentation has
     // started between attempts, so the first can release all decoder
@@ -99,6 +100,7 @@ bool PlaybackPipeline::openCpu(const Options& options, std::string* error) {
     }
     fDepth = options.ringDepth != 0 ? options.ringDepth : 4;
     fPtsByToken.assign(fDepth, 0.0);
+    fLeaseSeq.assign(fDepth, 0);
     if (!fSource.open(options.path, fDepth, error)) {  // copying storage, plain ring
         fMode = Mode::kClosed;
         return false;
@@ -254,6 +256,14 @@ void PlaybackPipeline::runPacing() {
                 if (frame.slot < fPtsByToken.size()) {
                     fPtsByToken[frame.slot] = deadline;  // drift against the clock
                 }
+                // The lease begins exactly here (task 6.6a): stamped with
+                // this frame's sequence immediately before the session is
+                // handed the submission, so the token is protected from
+                // producer reuse for its whole life in the session —
+                // pending, drawn, and every redraw after.
+                if (frame.slot < fLeaseSeq.size()) {
+                    fLeaseSeq[frame.slot] = frame.sequence;
+                }
                 fPositionPts = pts;  // media position, frozen while paused
                 ++fSubmitted;
             }
@@ -317,15 +327,30 @@ void PlaybackPipeline::close() {
         fUploader.destroy();
     }
     fPtsByToken.clear();
+    fLeaseSeq.clear();
     fMode = Mode::kClosed;
 }
 
-SkImage* PlaybackPipeline::acquireImage(unsigned token) {
+SkImage* PlaybackPipeline::acquireImage(unsigned token, uint64_t sequence) {
     if (fMode != Mode::kGpu || token >= fDepth) {
         return nullptr;
     }
+    {
+        // Generation check (task 6.6a, review R6): the image is only the
+        // frame this submission carries while that generation holds the
+        // lease. A stale submission — from before the slot was released
+        // and rewritten, or across a pipeline that no longer owns it —
+        // must never sample the slot's later content.
+        std::lock_guard<std::mutex> lock(fStatsMutex);
+        if (token >= fLeaseSeq.size() || fLeaseSeq[token] != sequence) {
+            ++fStaleAcquires;
+            return nullptr;
+        }
+    }
     // Borrowed: the uploader holds the wrapper's own reference until it is
-    // destroyed, so the raw pointer outlives every draw.
+    // destroyed, so the raw pointer outlives every draw. The lease keeps
+    // the producer from committing over it for as long as it is held, so
+    // the same (token, sequence) acquires the same image every redraw.
     return fUploader.imageForSlot(token, nullptr).get();
 }
 
@@ -347,18 +372,40 @@ void PlaybackPipeline::onPresented(unsigned token, VkSemaphore doneVk) {
         }
     }
     if (fMode == Mode::kGpu) {
-        fUploader.release(token, doneVk);
+        // A present is an OBLIGATION, not a release (task 6.6a): this
+        // draw's doneVk joins the slot's pendingDone, and the slot stays
+        // leased — the session will sample this very image again on the
+        // next dirty redraw, then hand back another doneVk. The lease
+        // ends only at onReplaced/onDropped.
+        fUploader.addSamplingDone(token, doneVk);
     }
 }
 
-void PlaybackPipeline::onDropped(unsigned token) {
+void PlaybackPipeline::onReplaced(unsigned token, uint64_t sequence) {
+    bool ownsLease = false;
+    {
+        std::lock_guard<std::mutex> lock(fStatsMutex);
+        if (token < fLeaseSeq.size() && fLeaseSeq[token] == sequence) {
+            fLeaseSeq[token] = 0;
+            ownsLease = true;
+        } else {
+            ++fStaleReleases;  // the generation named does not lease the token
+        }
+    }
+    if (ownsLease && fMode == Mode::kGpu) {
+        // Every sampling of the replaced frame registered its doneVk at
+        // its own iteration; the next commit waits on all of them before
+        // overwriting, so the frame is safe to hand to the producer now.
+        fUploader.release(token, VK_NULL_HANDLE);
+    }
+}
+
+void PlaybackPipeline::onDropped(unsigned token, uint64_t sequence) {
     {
         std::lock_guard<std::mutex> lock(fStatsMutex);
         ++fDropped;
     }
-    if (fMode == Mode::kGpu) {
-        fUploader.release(token, VK_NULL_HANDLE);  // never sampled
-    }
+    onReplaced(token, sequence);  // same proof; never sampled, so no obligation
 }
 
 void PlaybackPipeline::setMissedWindowMs(double ms) {
@@ -426,6 +473,8 @@ PlaybackPipeline::Stats PlaybackPipeline::stats() const {
     out.presents = fPresents;
     out.missed = fMissed;
     out.dropped = fDropped;
+    out.staleAcquires = fStaleAcquires;
+    out.staleReleases = fStaleReleases;
     out.driftMeanMs = fPresents != 0 ? fDriftSumMs / double(fPresents) : 0.0;
     out.driftMaxMs = fDriftMaxMs;
     return out;

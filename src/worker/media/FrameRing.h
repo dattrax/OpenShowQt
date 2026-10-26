@@ -91,7 +91,9 @@ public:
     // Waits for a slot whose previous frame the consumer released. Fills
     // dimensions and plane pointers; ptsSeconds is the caller's to set
     // before publish(). Returns false if stop() was requested while
-    // waiting (or had been before).
+    // waiting (or had been before). Slot choice is round-robin: with the
+    // cursor's help, a consumer that holds one frame still lets writes
+    // spread across every slot instead of collapsing onto the lowest one.
     bool claim(VideoFrame* out);
 
     // Completes the claim: with a backing attached, commits the slot first

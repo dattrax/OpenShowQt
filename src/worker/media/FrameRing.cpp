@@ -33,6 +33,13 @@ struct FrameRing::Impl {
 
     std::vector<Slot> slots;
     std::deque<uint32_t> ready;  // kReady slot indices, production order
+    // The round-robin cursor for claim(): scanning always resumes after the
+    // last claimed slot, so a consumer that frees one slot late still leaves
+    // the producer's writes spread across every slot. A lowest-index-first
+    // scan degenerates to the first slot in the pattern "consumer holds one
+    // frame while the producer keeps cycling" (task 6.6a) and collapses the
+    // decode cushion to a single slot.
+    uint32_t claimCursor = 0;
     std::mutex mutex;
     std::condition_variable freeCv;
     std::condition_variable readyCv;
@@ -131,12 +138,17 @@ bool FrameRing::claim(VideoFrame* out) {
     if (fImpl->stopped) {
         return false;
     }
-    for (size_t i = 0; i < fImpl->slots.size(); ++i) {
+    // Round-robin from the cursor (see Impl::claimCursor): wrap the scan so
+    // every slot gets its turn even when several are free at once.
+    const size_t count = fImpl->slots.size();
+    for (size_t step = 0; step < count; ++step) {
+        const size_t i = (fImpl->claimCursor + step) % count;
         Impl::Slot& slot = fImpl->slots[i];
         if (slot.state != SlotState::kFree) {
             continue;
         }
         slot.state = SlotState::kClaimed;
+        fImpl->claimCursor = static_cast<uint32_t>((i + 1) % count);
         out->slot = static_cast<uint32_t>(i);
         out->width = fImpl->width;
         out->height = fImpl->height;

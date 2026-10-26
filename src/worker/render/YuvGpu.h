@@ -89,8 +89,17 @@ public:
     // reused after. Must run on the thread that draws.
     sk_sp<SkImage> imageForSlot(unsigned slot, std::string* error);
 
-    // Consumer done holding a slot; doneVk, when not VK_NULL_HANDLE, is a
-    // semaphore the next commit to the slot will wait before copying.
+    // A draw that sampled this slot has been submitted (task 6.6a,
+    // review R6): attaches doneVk as a GPU-completion obligation the next
+    // commit to the slot waits on, but the slot STAYS held — the consumer
+    // is still sampling it on every redraw. Cheap and stateless; the
+    // lease ends only at release().
+    void addSamplingDone(unsigned slot, VkSemaphore doneVk);
+
+    // Consumer done holding a slot for good (the lease ends here): the
+    // producer may claim and overwrite it again. doneVk, when not
+    // VK_NULL_HANDLE, is a semaphore the next commit to the slot will
+    // wait before copying — the obligation of the consumer's final draw.
     void release(unsigned slot, VkSemaphore doneVk = VK_NULL_HANDLE);
     // Everything at once, valid only after whole-device idle.
     void releaseAll();
