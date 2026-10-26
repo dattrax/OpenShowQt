@@ -9,6 +9,8 @@ qt_policy(SET QTP0001 NEW)
 add_library(openshow-ui-core STATIC
   AppSettings.cpp
   AppSettings.h
+  AutosaveScheduler.cpp
+  AutosaveScheduler.h
   DocumentController.cpp
   DocumentController.h
   LibrarySearch.cpp

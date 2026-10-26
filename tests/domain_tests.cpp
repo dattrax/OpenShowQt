@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
+#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -1337,6 +1339,99 @@ void exercisePackageContainment(const fs::path& tempRoot) {
     check(!climbs, "containment: no recorded path is a climb");
 }
 
+// --- task 6.14b (review R14): a tick must not re-copy unchanged media ----------
+
+// R14 measured that every autosave tick re-saved the WHOLE package — a
+// text edit after a video import copied the video again, on the UI
+// thread, every time. Asset copy reuse (storage.h) says a tick may skip
+// a copy only where both sides still identify: the source is the file
+// (canonical path, size, mtime) whose bytes were last installed, AND the
+// destination still exists. The fixtures arm the 6.13a `asset-copy`
+// refusal to make the skip VISIBLE: a text-only tick must succeed with
+// copies refused (the step never ran), and any rule the reuse breaks is
+// caught by the refusal biting where it must.
+void exerciseAssetReuse(const fs::path& tempRoot) {
+    std::string error;
+    fs::create_directories(tempRoot);
+    const fs::path originals = tempRoot / "originals";
+    fs::create_directories(originals);
+    writeFile(originals / "video.mp4", "VIDEO-VERSION-ONE!!");
+
+    Documents docs;
+    const Id show = docs.createShow("Reused", &error);
+    const Id asset = docs.addAsset("video.mp4", (originals / "video.mp4").string(), &error);
+    const fs::path scratch = tempRoot / "autosave";
+    Autosave autosave(scratch);
+    check(autosave.tick(docs, &error), "reuse: the first tick copies the asset");
+    const fs::path packaged = scratch / "assets" / (asset + "-video.mp4");
+    check(readFile(packaged) == "VIDEO-VERSION-ONE!!", "reuse: the packaged asset holds v1");
+
+    // (1) Only the text changed: the copy step must not run at all, so a
+    // storage that refuses asset copies cannot stop this tick.
+    ::setenv("OPENSHOW_STORAGE_FAULT", "asset-copy", 1);
+    check(docs.setShowNotes(show, "second note", &error), "reuse: the text changed");
+    check(autosave.tick(docs, &error),
+          "reuse: a text-only tick succeeds with asset copies REFUSED - the step never ran");
+
+    // (2) The media changed: the copy runs again, and the refusal bites.
+    writeFile(originals / "video.mp4", "VIDEO-VERSION-TWO!");
+    check(docs.setShowNotes(show, "third note", &error), "reuse: text again");
+    check(!autosave.tick(docs, &error) && error.find("asset-copy") != std::string::npos,
+          "reuse: changed media re-enters the copy step where it can be refused");
+    ::unsetenv("OPENSHOW_STORAGE_FAULT");
+    check(autosave.tick(docs, &error), "reuse: the healthy retry installs v2");
+    check(readFile(packaged) == "VIDEO-VERSION-TWO!", "reuse: the packaged asset holds v2");
+
+    // (3) Same SIZE, new mtime: stat identity still sees a different file.
+    // The replacement MUST keep the exact byte length — an earlier draft
+    // was one byte longer, so a reuse rule that ignored mtime still saw
+    // a different size and this check passed vacuously (m02 escaped).
+    // Equal size is what isolates the mtime leg of the stamp.
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    writeFile(originals / "video.mp4", "VIDEO-VERSION-TRE!");  // same length, new mtime
+    check(docs.setShowNotes(show, "fourth note", &error), "reuse: text once more");
+    ::setenv("OPENSHOW_STORAGE_FAULT", "asset-copy", 1);
+    check(!autosave.tick(docs, &error) && error.find("asset-copy") != std::string::npos,
+          "reuse: a same-size replacement is NOT the same bytes - it re-copies");
+    ::unsetenv("OPENSHOW_STORAGE_FAULT");
+    check(autosave.tick(docs, &error) && readFile(packaged) == "VIDEO-VERSION-TRE!",
+          "reuse: and the replacement lands");
+
+    // (4) The destination vanishes behind the ledger's back: identity of
+    // the SOURCE alone must not authorise a skip - the scratch has to
+    // still hold the bytes.
+    fs::remove(packaged);
+    ::setenv("OPENSHOW_STORAGE_FAULT", "asset-copy", 1);
+    check(docs.setShowNotes(show, "fifth note", &error), "reuse: text after the deletion");
+    check(!autosave.tick(docs, &error) && error.find("asset-copy") != std::string::npos,
+          "reuse: a missing destination forces the copy even for an unchanged source");
+    ::unsetenv("OPENSHOW_STORAGE_FAULT");
+    check(autosave.tick(docs, &error) && readFile(packaged) == "VIDEO-VERSION-TRE!",
+          "reuse: the deleted asset is rebuilt whole");
+
+    // (5) clear() forgets the ledger - a rebuilt scratch is written whole,
+    // not assembled from promises about deleted files. (The rebuild runs
+    // on `docs`, whose assets still name the external original; a
+    // recovered document would name files clear() just deleted.)
+    check(autosave.clear(&error), "reuse: clear removes the scratch");
+    ::setenv("OPENSHOW_STORAGE_FAULT", "asset-copy", 1);
+    check(!autosave.tick(docs, &error) && error.find("asset-copy") != std::string::npos,
+          "reuse: after clear the next tick must copy again - the ledger died with the package");
+    ::unsetenv("OPENSHOW_STORAGE_FAULT");
+    check(autosave.tick(docs, &error) && readFile(packaged) == "VIDEO-VERSION-TRE!",
+          "reuse: and the rebuilt scratch is whole");
+
+    // (6) Recovered assets already live INSIDE the scratch tree: the next
+    // text edit ticks with copies refused - nothing outside has to move.
+    Documents recovered;
+    check(autosave.recover(&recovered, &error), "reuse: recovery reads the scratch back");
+    ::setenv("OPENSHOW_STORAGE_FAULT", "asset-copy", 1);
+    check(recovered.setShowNotes(show, "sixth note", &error), "reuse: edit the recovery");
+    check(autosave.tick(recovered, &error),
+          "reuse: a recovered asset that already lives in the package needs no copy");
+    ::unsetenv("OPENSHOW_STORAGE_FAULT");
+}
+
 }  // namespace
 
 int main() {
@@ -1377,6 +1472,12 @@ int main() {
     std::filesystem::remove_all(containRoot);
     exercisePackageContainment(containRoot);
     std::filesystem::remove_all(containRoot);
+
+    const std::filesystem::path reuseRoot = std::filesystem::temp_directory_path() /
+                                            ("openshow-domain-reuse-" + std::to_string(getpid()));
+    std::filesystem::remove_all(reuseRoot);
+    exerciseAssetReuse(reuseRoot);
+    std::filesystem::remove_all(reuseRoot);
 
     const std::filesystem::path autosaveRoot = std::filesystem::temp_directory_path() /
                                               ("openshow-domain-autosave-" + std::to_string(getpid()));

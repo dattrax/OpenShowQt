@@ -963,13 +963,66 @@ Updated: 2026-10-25 (Europe/London).
     silences), m10 the aboutToQuit connect removed, m11 flush gutted:
     **11/11 CAUGHT**, each on exactly its intended check. Gates desktop
     **44/44** (181 s), headless **27/27** (48 s).
-- Exact next action: **6.14b** per the PLAN.md ledger (review R14's
-  second half) — coalesce persistence on a bounded save executor with
-  immutable document snapshots: reuse unchanged asset copies, acknowledge
-  completed durability back on the UI thread, keep the UI responsive
-  through a large-media save/autosave, and make sure an older in-flight
-  autosave can never overwrite a newer save/discard decision. Then 6.15a
-  (review R15).
+- **6.14b — persistence moves off the UI thread on a bounded, coalescing
+  executor; an older write can no longer overwrite a newer decision
+  (R14's second half) — DONE.**
+  - **Domain (`AssetReuse` ledger in `Autosave`)**: a scratch tick may skip
+    re-copying an asset only when BOTH sides still identify — the source is
+    the same file (canonical path + size + mtime) whose bytes were last
+    installed, AND the destination file still exists. Stat identity is the
+    documented edge; any stat failure means re-copy. `recover`/`clear`
+    reset the ledger; `ServiceCodec::save` takes the ledger as a defaulted
+    argument that ONLY `Autosave::tick` passes — `saveService`/
+    `saveServiceAndAdopt` always copy a whole package. Text edit after a
+    video import: zero byte-copies.
+  - **UI (`AutosaveScheduler`)**: one job running (scratch writes
+    serialise), one replaceable pending slot — coalescing keeps the NEWEST
+    immutable `Documents` snapshot copied on the UI thread, so the freeze
+    R14 measured becomes a memcpy. Decision protocol: `save()`/`load()`
+    call `quiesceForDecision()` (raise epoch, drop pending, WAIT out the
+    in-flight write) before touching the scratch, `resumeAutosave()` after
+    — every early-return path resumes; the epoch additionally vetoes stale
+    requests, running jobs and their acknowledgements. Acks
+    (`tickCompleted`) queue to the UI thread and are emitted BEFORE the
+    running-flag clears, so `awaitIdle()` returning implies the ack is
+    already in the UI queue. Dormant by default — inline ticks, the exact
+    pre-6.14b behavior — so no existing fixture changed; `main.cpp` opts
+    in with `startBackgroundPersistence()`. `aboutToQuit` now runs
+    `prepareForQuit` = flushText + drain: the quit promise is durable, not
+    queued.
+  - **Seam**: `OPENSHOW_STORAGE_DELAY_MS` (read per `save()`, capped at
+    3000 ms, sleeps before ANY effect) lets a fixture hold one write in
+    flight while a decision runs fast — the only way to schedule the race
+    R14 named, and m05 proves the fixtures actually witness it (save
+    measured waiting ≥400 ms of the armed 600 ms).
+  - **Fixtures**: domain `exerciseAssetReuse` — text-only tick survives the
+    `asset-copy` refusal (skip visible), changed bytes / same-size-new-mtime
+    replacement / deleted destination each force the re-copy, `clear`
+    forgets the ledger, a recovered asset needs no self-copy. Controller
+    `exerciseBackgroundPersistence` — (a) 30 commits vs a 250 ms disk: UI
+    loop <120 ms, ≤5 writes, ≥20 coalesced, scratch holds "storm line 29";
+    (b) save vs in-flight 600 ms write + queued request: waited ≥400 ms,
+    clear is last word, sleeper never lands; (c) same on the load-discard
+    path; (d) background refusal + healthy acks surface on the status line;
+    (e) `prepareForQuit` drain — next session opens on the last words.
+  - **Mutations** m01–m04 the four reuse-rule legs, m05 the dead seam,
+    m06/m07 the two quiesce removals (R14's resurrection restored), m08 no
+    quit drain, m09 always-submits, m10 keeps-oldest-pending, m12 pause
+    without the wait: **11/11 CAUGHT**. Two battery lessons paid for in
+    escaped mutants: a trailing `//` inside a patched expression swallows
+    the rest of the line (use `/* */`), and fixture (3) was one byte long
+    in its "same size" replacement — an mtime-blind rule still saw a size
+    change and passed vacuously; equal length is now load-bearing in the
+    comment. The pause-drop of pending is behaviorally equivalent to the
+    epoch veto (defense in depth), so it has no separate mutant.
+  - Gates desktop **44/44** (185 s), headless **27/27** (48 s);
+    `document_controller_tests` green ×3 consecutively (threaded fixtures).
+- Exact next action: **6.15a** per the PLAN.md ledger (review R15) —
+  expose existing play/pause/seek/loop/gain/mute through typed session/RPC
+  operations and operator controls: real UI→RPC→transport tests covering
+  playback, per-source gain/mute, acknowledged position and loop-off
+  final-frame hold; references only on the wire. Then 6.15b (standalone-
+  track selection + independent production audio lifetime).
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -3389,6 +3442,26 @@ of this work.
 
 ## Decisions
 
+- (2026-10-26, task 6.14b) Three rules came out of doing R14's second
+  half. **Bound the queue, not just the thread**: one running job plus one
+  replaceable pending slot is enough because the crash net only needs the
+  newest state — unbounded queues turn a slow disk into a memory leak, and
+  "keep newest" (m10) is the property the fixtures actually test. **Order
+  decisions against in-flight work structurally, then veto**: the pause
+  protocol (drop pending, WAIT out the running write, act, resume) makes
+  clear-after-save an ordering guarantee, and the decision epoch is belt
+  and braces over jobs and acks that raced past the checkpoint — one of
+  the two alone would work, and the battery honestly says only the
+  combined removals are observable (the pending-drop alone is mutant-
+  equivalent to the epoch veto). **A test seam is a fixture requirement,
+  not a code detail**: the delay variable was dead code for a whole battery
+  run until a fixture timed the wait it made possible (m05), exactly like
+  the same-size replacement that hid m02 — an unmeasured guarantee is a
+  hope, and both escaped mutants say the same thing about test data as
+  6.14a says about error strings. The default stayed DORMANT (inline)
+  rather than threaded: ten months of fixtures encode synchronous
+  autosave, and opting production in with one call kept every one of them
+  valid as the single-threaded control group.
 - (2026-10-26, task 6.14a) Three rules generalise past this controller.
   **An error path that ends in a local variable is not a design, it is a
   hope**: five call sites believed they reported autosave failures because

@@ -55,6 +55,12 @@ int main(int argc, char* argv[]) {
     // object so QStandardPaths resolves; the lyric panel binds to it.
     openshow::ui::DocumentController documents;
 
+    // Task 6.14b (review R14): scratch persistence runs on the bounded,
+    // coalescing executor — the UI thread only ever pays for a snapshot
+    // copy, an in-flight autosave cannot overwrite a save or discard,
+    // and durability is acknowledged back on this thread.
+    documents.startBackgroundPersistence();
+
     // Task 4.1: the workspace shell's resizable side panels. The snap
     // maths is C++ (fixture-tested); QML maps drags onto it.
     openshow::ui::WorkspacePanels panels;

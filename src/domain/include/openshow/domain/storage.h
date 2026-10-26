@@ -42,7 +42,9 @@
 
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 
 #include "openshow/domain/documents.h"
@@ -95,6 +97,34 @@ bool saveServiceAndAdopt(Documents& documents, const std::filesystem::path& dire
                          std::vector<AssetRebind>* rebinds = nullptr,
                          std::string* error = nullptr);
 
+// Which asset bytes a package already holds (task 6.14b, review R14).
+// Autosave ticks rewrite the whole package, but text edits do not change
+// media — re-copying a gigabyte of video after every keystroke burst is
+// exactly how R14 froze the UI. A save given an AssetReuse ledger may
+// skip an asset copy only when BOTH sides still identify: the source is
+// the same file (canonical path, size and modification time as when it
+// was last copied in) AND the destination file still exists. Stat
+// identity is the contract's edge: content changed in place while size
+// and mtime stayed identical is invisible to it — every path the store
+// itself takes (re-import, replaced file, renamed source, deleted
+// scratch) moves at least one of the three. Entries are keyed by
+// destination file and only ever written after the bytes are installed;
+// a failed save leaves them describing the whole file that is still
+// there, so the next save re-checks and re-copies where needed.
+struct AssetReuse {
+    struct Stamp {
+        std::filesystem::path canonicalSource;
+        std::uintmax_t size = 0;
+        std::filesystem::file_time_type modified{};
+
+        bool operator==(const Stamp& other) const {
+            return canonicalSource == other.canonicalSource && size == other.size &&
+                   modified == other.modified;
+        }
+    };
+    std::map<std::string, Stamp> byDestination;
+};
+
 // Periodic crash insurance (task 2.3): keeps a live service mirrored
 // into a scratch package so an interrupted session can recover. The
 // package format is the one above, so recovery is just loadService and
@@ -105,7 +135,8 @@ bool saveServiceAndAdopt(Documents& documents, const std::filesystem::path& dire
 // when it likes — after each edit, from a timer, wherever. tick()
 // compares the serialised state against what it last wrote and skips
 // the disk entirely when nothing changed, so calling it liberally is
-// cheap.
+// cheap — and where the state did change, unchanged assets ride the
+// AssetReuse ledger instead of being copied again.
 class Autosave {
 public:
     explicit Autosave(std::filesystem::path directory);
@@ -135,6 +166,7 @@ public:
 private:
     std::filesystem::path fDirectory;
     std::string fLastManifest;  // what tick() last wrote ("" = never)
+    AssetReuse fReuse;          // installed asset bytes (task 6.14b)
 };
 
 }  // namespace openshow::domain

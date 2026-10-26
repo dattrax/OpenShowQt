@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 namespace openshow::domain {
@@ -79,6 +81,47 @@ std::string assetFileName(const Asset& asset) {
 bool storageFault(const char* step) {
     const char* fault = std::getenv("OPENSHOW_STORAGE_FAULT");
     return fault != nullptr && std::string_view(step) == fault;
+}
+
+/*
+ * Test seam (task 6.14b, review R14): OPENSHOW_STORAGE_DELAY_MS holds
+ * every save at its start for the given milliseconds (capped at 3000,
+ * garbage means no delay). Slow storage is not an error to inject but a
+ * WINDOW to create: a fixture can hold one autosave write in flight
+ * while the operator saves or discards — the exact race between an old
+ * in-flight write and a newer decision that R14 says must never resurrect
+ * or overwrite. Production runs with the variable unset: no sleep.
+ */
+int storageDelayMs() {
+    const char* value = std::getenv("OPENSHOW_STORAGE_DELAY_MS");
+    if (value == nullptr) {
+        return 0;
+    }
+    const long ms = std::strtol(value, nullptr, 10);
+    if (ms <= 0) {
+        return 0;
+    }
+    return ms > 3000 ? 3000 : static_cast<int>(ms);
+}
+
+// Stat identity of an asset source for the AssetReuse ledger: the
+// canonical path plus size and modification time, the triple storage.h
+// defines as "the same bytes". Any stat failure means NO stamp: the safe
+// answer to not knowing is to copy again.
+bool stampOf(const std::filesystem::path& source, openshow::domain::AssetReuse::Stamp* out) {
+    std::error_code ec;
+    const std::filesystem::path canonicalSource = std::filesystem::canonical(source, ec);
+    if (!ec) {
+        const std::uintmax_t size = std::filesystem::file_size(canonicalSource, ec);
+        if (!ec) {
+            const auto modified = std::filesystem::last_write_time(canonicalSource, ec);
+            if (!ec) {
+                *out = {canonicalSource, size, modified};
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 std::string osError(const std::string& what) {
@@ -388,8 +431,12 @@ class ServiceCodec {
 public:
     static boost::json::value toJson(const Documents& documents);
     static bool fromJson(const boost::json::value& value, Documents* out, std::string* error);
+    // `reuse`, when given, may skip copying an asset whose installed
+    // bytes are still identified (task 6.14b; see storage.h). Callers
+    // that own a package wholesale (saveService, saveServiceAndAdopt)
+    // pass nothing and always copy.
     static bool save(const Documents& documents, const std::filesystem::path& directory,
-                     std::string* error);
+                     std::string* error, AssetReuse* reuse = nullptr);
     static bool load(Documents* documents, const std::filesystem::path& directory,
                      std::string* error);
 };
@@ -750,7 +797,14 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
 // --- package IO ---------------------------------------------------------------
 
 bool ServiceCodec::save(const Documents& documents, const std::filesystem::path& directory,
-                        std::string* error) {
+                        std::string* error, AssetReuse* reuse) {
+    // Slow-storage seam (task 6.14b): the hold happens BEFORE any effect,
+    // so the whole save is one in-flight window a decision must order
+    // against — not a torn half.
+    const int delayMs = storageDelayMs();
+    if (delayMs > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+    }
     std::error_code ec;
     std::filesystem::create_directories(directory, ec);
     if (ec && !std::filesystem::is_directory(directory)) {
@@ -783,8 +837,26 @@ bool ServiceCodec::save(const Documents& documents, const std::filesystem::path&
         if (std::filesystem::equivalent(source, destination, ec) && !ec) {
             continue;  // already inside the package
         }
+        // Asset copy reuse (task 6.14b, review R14): text edits must not
+        // re-copy unchanged media into the scratch package. Skip only
+        // when the destination still exists AND the source still
+        // identifies as the bytes last installed there; anything else —
+        // replaced file, new name, deleted destination — copies fresh.
+        AssetReuse::Stamp stamp;
+        const bool stamped = reuse != nullptr && stampOf(source, &stamp);
+        if (stamped) {
+            const auto previous = reuse->byDestination.find(destination.string());
+            std::error_code haveDest;
+            if (previous != reuse->byDestination.end() && previous->second == stamp &&
+                std::filesystem::is_regular_file(destination, haveDest) && !haveDest) {
+                continue;
+            }
+        }
         if (!stageAndInstallAsset(asset, source, destination, error)) {
             return false;
+        }
+        if (stamped) {
+            reuse->byDestination[destination.string()] = std::move(stamp);
         }
     }
     // The renames above changed the assets directory's CONTENTS; those
@@ -1035,7 +1107,7 @@ bool Autosave::tick(const Documents& documents, std::string* error) {
     if (manifest == fLastManifest) {
         return true;
     }
-    if (!ServiceCodec::save(documents, fDirectory, error)) {
+    if (!ServiceCodec::save(documents, fDirectory, error, &fReuse)) {
         return false;
     }
     fLastManifest = std::move(manifest);
@@ -1051,6 +1123,10 @@ bool Autosave::recover(Documents* documents, std::string* error) {
         return false;
     }
     fLastManifest = boost::json::serialize(ServiceCodec::toJson(*documents));
+    // The recovered package IS the installed state; its assets now point
+    // inside the scratch tree, so the equivalent-source rule covers them
+    // and no stale external stamp may survive.
+    fReuse.byDestination.clear();
     return true;
 }
 
@@ -1062,6 +1138,7 @@ bool Autosave::clear(std::string* error) {
         return false;
     }
     fLastManifest.clear();
+    fReuse.byDestination.clear();  // the destinations are gone with it
     return true;
 }
 

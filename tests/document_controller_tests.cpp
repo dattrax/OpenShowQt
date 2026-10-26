@@ -12,9 +12,12 @@
  */
 
 #include <cstdio>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -998,6 +1001,142 @@ void exerciseAutosaveSurfacing(const std::filesystem::path& root) {
     }
 }
 
+// --- task 6.14b (review R14): persistence on the coalescing executor ----------
+
+// The storage-delay seam (OPENSHOW_STORAGE_DELAY_MS, storage.cpp) holds
+// each save at its start, and the fixtures re-read the freedom 6.13a
+// proved for faults: the variable is read per call, so a fixture can
+// arm the slowness for one write, disarm it, and let a DECISION run
+// fast while the old write is still sleeping. That is how these fixtures
+// schedule the exact races R14 named.
+void exerciseBackgroundPersistence(const std::filesystem::path& root) {
+    // (a) Editing is a snapshot copy: the UI thread never waits for the
+    // slow disk, requests coalesce, and the scratch still ends on the
+    // final state.
+    const std::filesystem::path coalesceBase = root / "coalescing";
+    {
+        DocumentController docs(nullptr, coalesceBase);
+        docs.startBackgroundPersistence();
+        ::setenv("OPENSHOW_STORAGE_DELAY_MS", "250", 1);
+        docs.createSong(QStringLiteral("Storm"));
+        docs.addSlide();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(120);
+        for (int i = 0; i < 30; ++i) {
+            docs.setSlideText(QStringLiteral("storm line %1").arg(i));
+            docs.flushText();  // each commit queues exactly one autosave request
+        }
+        check(std::chrono::steady_clock::now() < deadline,
+              "thirty commits against a 250 ms disk never blocked the UI thread");
+        docs.awaitPersistence();
+        check(docs.autosaveWrites() <= 5 && docs.autosaveWrites() >= 1,
+              "one write in flight plus one queued is the whole executor");
+        check(docs.autosaveCoalesced() >= 20,
+              "the storm of requests merged - the crash net needs only the newest");
+        ::unsetenv("OPENSHOW_STORAGE_DELAY_MS");
+    }
+    {
+        DocumentController reopened(nullptr, coalesceBase);
+        check(reopened.currentSlideText() == QStringLiteral("storm line 29"),
+              "and the settled scratch holds the very last edit");
+    }
+
+    // (b) Save while an autosave write is in flight: the decision waits,
+    // and the older write cannot resurrect the scratch.
+    {
+        const std::filesystem::path base = root / "resurrection";
+        DocumentController docs(nullptr, base);
+        docs.startBackgroundPersistence();
+        ::setenv("OPENSHOW_STORAGE_DELAY_MS", "600", 1);
+        docs.createSong(QStringLiteral("Decide"));  // write IN FLIGHT, sleeping 600
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        docs.addSlide();  // queued behind the sleeper - this save supersedes it too
+        ::unsetenv("OPENSHOW_STORAGE_DELAY_MS");  // the save itself runs fast
+        const auto decisionStart = std::chrono::steady_clock::now();
+        check(docs.save(), "the save succeeds while the old write is mid-flight");
+        const auto waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - decisionStart)
+                                  .count();
+        check(waitedMs >= 400,
+              "slow storage, witnessed: the save really waited out the in-flight 600 ms write");
+        check(!Autosave::exists(base / "autosave"),
+              "save quiesced first: the clear is the last word, not the in-flight write "
+              "nor the queued request the save superseded");
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));  // past the old write's window
+        docs.awaitPersistence();
+        check(!Autosave::exists(base / "autosave"),
+              "the sleeping write never landed - a stale autosave cannot resurrect");
+    }
+
+    // (c) The same protection on the discard path (load).
+    {
+        const std::filesystem::path base = root / "discard";
+        {
+            DocumentController docs(nullptr, base);
+            docs.createSong(QStringLiteral("Kept"));
+            docs.addSlide();
+            check(docs.save(), "a service exists to load back");
+        }
+        DocumentController docs(nullptr, base);
+        docs.startBackgroundPersistence();
+        ::setenv("OPENSHOW_STORAGE_DELAY_MS", "600", 1);
+        docs.addSlide();  // discarded-soon work, write IN FLIGHT
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        ::unsetenv("OPENSHOW_STORAGE_DELAY_MS");
+        check(docs.load(), "load succeeds mid-flight");
+        check(!Autosave::exists(base / "autosave"), "the discard cleared the scratch");
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        docs.awaitPersistence();
+        check(!Autosave::exists(base / "autosave"),
+              "and the in-flight write of the discarded edit never came back");
+        check(docs.slides().size() == 1, "the session shows the loaded file, not the discarded edit");
+    }
+
+    // (d) Background refusals acknowledge ON the UI thread, healthy
+    // recoveries too.
+    {
+        const std::filesystem::path base = root / "acked";
+        DocumentController docs(nullptr, base);
+        docs.startBackgroundPersistence();
+        docs.createSong(QStringLiteral("Acked"));
+        docs.addSlide();
+        docs.awaitPersistence();
+        ::chmod((base / "autosave").c_str(), 0555);
+        docs.addSlide();
+        docs.awaitPersistence();  // the write ran (and failed); the ack landed
+        check(docs.status().contains(QStringLiteral("autosave refused after edit")) &&
+                  docs.status().contains(QStringLiteral("NOT on disk")),
+              "a refusal on the background thread surfaces on the status line all the same");
+        ::chmod((base / "autosave").c_str(), 0755);
+        docs.setSlideText(QStringLiteral("healthy again"));
+        docs.flushText();
+        docs.awaitPersistence();
+        check(docs.status().contains(QStringLiteral("autosave recovered")),
+              "and the background success is acknowledged too");
+    }
+
+    // (e) Quit drains: after prepareForQuit returns, the scratch is
+    // durable — the process may exit at that instant.
+    {
+        const std::filesystem::path base = root / "quit-drain";
+        DocumentController docs(nullptr, base);
+        docs.startBackgroundPersistence();
+        docs.createSong(QStringLiteral("Bye"));
+        docs.addSlide();
+        docs.awaitPersistence();  // quiet before the storm of leaving
+        ::setenv("OPENSHOW_STORAGE_DELAY_MS", "600", 1);
+        docs.setSlideText(QStringLiteral("last words before quit"));
+        docs.flushText();  // the final request is queued/sleeping
+        docs.prepareForQuit();
+        ::unsetenv("OPENSHOW_STORAGE_DELAY_MS");
+        {
+            DocumentController reopened(nullptr, base);
+            check(reopened.currentSlideText() == QStringLiteral("last words before quit"),
+                  "prepareForQuit waited: the durable scratch, not a queued intention, "
+                  "is what the next session finds");
+        }
+    }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -1017,6 +1156,7 @@ int main(int argc, char* argv[]) {
     exerciseStylePanel(tempRoot / "styles");
     exerciseClipboard(tempRoot / "clipboard");
     exerciseAutosaveSurfacing(tempRoot / "surfacing");
+    exerciseBackgroundPersistence(tempRoot / "background");
     std::filesystem::remove_all(tempRoot);
 
     if (gFailed) {

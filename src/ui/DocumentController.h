@@ -29,6 +29,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -36,6 +37,8 @@
 #include "openshow/domain/documents.h"
 #include "openshow/domain/history.h"
 #include "openshow/domain/storage.h"
+
+#include "AutosaveScheduler.h"
 
 namespace openshow::ui {
 
@@ -221,6 +224,26 @@ public:
     // the scratch, before the process is gone.
     void flushText();
 
+    // Task 6.14b (review R14): scratch persistence on the bounded,
+    // coalescing executor instead of on the UI thread. Production main()
+    // calls this once; until then autosave runs inline (the pre-6.14b
+    // behaviour unit tests rely on).
+    Q_INVOKABLE void startBackgroundPersistence();
+
+    // Blocks until background persistence is idle and delivers the
+    // queued acknowledgements (fixture seam; harmless elsewhere).
+    void awaitPersistence();
+
+    // Quit edge: flush the debounce and let the durable scratch finish
+    // writing before the process exits (connected on aboutToQuit).
+    void prepareForQuit();
+
+    // Persistence executor counters (tests and diagnostics): package
+    // writes run, and requests merged into a later one or vetoed by a
+    // decision.
+    qulonglong autosaveWrites() const;
+    qulonglong autosaveCoalesced() const;
+
 signals:
     void documentsChanged();
     void navigationChanged();
@@ -235,6 +258,9 @@ signals:
 
 private slots:
     void commitPendingText();
+    // Durability acknowledgements from the executor, delivered on this
+    // (the UI) thread and reported like inline tick results.
+    void onAutosaveCompleted(const QString& what, const QString& error);
 
 private:
     bool edit(const std::function<bool()>& mutation);  // history-wrapped edit
@@ -245,7 +271,21 @@ private:
     // status line synchronously after edit() returns and last write wins.
     // The flag suppresses a queued refusal the moment the scratch is
     // current again (and says so).
-    void surfaceAutosaveResult(const std::string& tickError, const char* what);
+    void surfaceAutosaveResult(const std::string& tickError, const char* what,
+                               bool deferStatus = true);
+    // The autosave edge of a committed change: inline when the executor
+    // is dormant (tests), coalesced and off-thread once started
+    // (task 6.14b). `what` names the event for the status line.
+    void autosaveNow(const char* what);
+    // The decision protocol around save()/load(): quiesce drops queued
+    // autosaves and waits out any in-flight write, and raises the epoch
+    // so stale jobs and acknowledgements are vetoed; resume reopens the
+    // autosave path for the next edit.
+    void quiesceForDecision();
+    void resumeAutosave();
+    // Scratch removal — only valid between quiesceForDecision() and
+    // resumeAutosave(), where the caller owns the scratch alone.
+    bool clearAutosave(std::string* error);
     QString compileSlideJson(const openshow::domain::Id& slideId) const;
     // The current slide's id, or "" when navigation points nowhere.
     openshow::domain::Id currentSlideId() const;
@@ -276,8 +316,7 @@ private:
     openshow::domain::Documents fDocuments;
     std::unique_ptr<openshow::domain::History> fHistory;
     std::filesystem::path fServiceDirectory;
-    std::unique_ptr<openshow::domain::Autosave> fAutosave;
-
+    std::unique_ptr<AutosaveScheduler> fScheduler;
     openshow::domain::Id fCurrentSongId;
     openshow::domain::Id fCurrentPlaylistId;
     int fCurrentSlide = 0;
@@ -291,6 +330,9 @@ private:
     bool fDirty = false;
     QString fStatus;
     bool fAutosaveStale = false;  // scratch behind the model: task 6.14a
+    // Decision counter (task 6.14b): bumped before every save/discard;
+    // autosave work stamped below it is history and must not run or ack.
+    std::uint64_t fDecisionEpoch = 0;
 };
 
 }  // namespace openshow::ui
