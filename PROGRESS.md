@@ -885,13 +885,46 @@ Updated: 2026-10-25 (Europe/London).
   evidenced outside the test: strace counts **93 fsync calls** on a clean
   domain_tests run. Gates desktop **44/44** (180 s), headless **27/27**
   (48 s).
-- Exact next action: **6.13b** per the PLAN.md ledger — validate loaded IDs
-  and package-relative asset containment including symlinks: absolute,
-  traversal and escaping paths and unsafe IDs must refuse without changing
-  documents or writing outside the package, while authorized import still
-  copies external files (loaded IDs are merely nonempty/unique today, and
-  `assetFileName()` trusts an ID as a filename prefix; loaded asset paths
-  accept absolute paths and `..`). R8's second half.
+- **6.13b — loaded ids are names, and a package cannot name the world
+  (R8's second half) — DONE.** A service package can arrive from an
+  archive, a stick or a shared folder, and the reader trusted its
+  strings: loaded ids were merely nonempty/unique while an asset's id
+  prefixes the filename its bytes are written under, and the recorded
+  asset `file` accepted absolute paths and `..`. Now:
+  - **Ids**: `safeOpaqueId` gates `claimId` — the single chokepoint all
+  six id spaces pass through — to letters, digits, `-` and `_`. The
+  store's own `asset-12` form always passes; `../../evil`, `sneaky name`
+  and `x.png` are refused naming the id. Because references must resolve
+  to claimed ids, one rule covers the whole id space.
+  - **Containment**: an absolute `file` or any `..` segment is refused
+  by name before any filesystem call; then `canonical` has the final
+  word — every symlink inside the package is followed to where it really
+  leads, and the real path must sit inside the canonical package
+  directory compared COMPONENT-wise. The fixture's sibling
+  `file-4-evil` directory (whose name starts with the package's, reached
+  through `assets/sib.jpg`) is exactly what catches the
+  string-prefix-is-not-a-boundary bug (m05). Order stays specific:
+  name refusals, the existing missing-file message, resolution, then
+  containment.
+  - **The friendly side of the rule is pinned too**: an inside symlink
+  loads happily (containment, not link paranoia), a charset-legal
+  renamed id loads with its bytes, an unruly asset NAME still lands as
+  one safe component inside the package, and authorised import still
+  copies external files at save — the operator's choice, not the
+  manifest's. Every refusal leaves the target Documents untouched and
+  touches nothing outside its package.
+  - **Mutations** m01 charset dropped, m01b charset applied to assets
+  only (the show-id vector bites), m02 absolute accepted, m03 climb
+  accepted, m04 name-only containment (symlinks trusted), m05
+  string-prefix containment, m06 containment dropped: **7/7 CAUGHT**
+  with blame on the intended check (on top of 6.13a's 12/12). Gates
+  desktop **44/44** (180 s), headless **27/27** (48 s).
+- Exact next action: **6.14a** per the PLAN.md ledger (review R14) —
+  surface autosave/clear failures and flush pending text on normal
+  close/signal exit: disk refusal must be visible; a close inside the
+  600 ms debounce must preserve the final text; stale recovery must not
+  be silently resurrected after save/discard. Then 6.14b (coalesced
+  persistence on a bounded executor with immutable snapshots).
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -3311,6 +3344,19 @@ of this work.
 
 ## Decisions
 
+- (2026-10-26, task 6.13b) Validation belongs at the chokepoint, and
+  containment belongs at the filesystem, not the string. One gate inside
+  `claimId` protects six kinds of id because every loaded id must pass
+  through it to be claimed — rules written per-call-site are rules someone
+  will forget. And "does this path stay inside?" has exactly one honest
+  answer-source: `canonical`, comparing component by component. A string
+  compare cannot know that `pkg-evil` starts with `pkg`, and a check done
+  before following symlinks can be pointed anywhere; the fixture keeps a
+  sibling directory named `<package>-evil` with a secret file behind a
+  symlink precisely so that bypass is a CAUGHT mutant rather than a
+  comment. The same principle read backwards is the feature: authorised
+  import (the operator naming an external file) stays unrestricted — the
+  rules bind what a FILE may claim, never what a user may choose.
 - (2026-10-26, task 6.13a) The commit protocol generalises three rules past
   this package. **Never write in place a file a reader may trust**: write a
   new name, then rename — rename's atomicity is what turns "the bytes are

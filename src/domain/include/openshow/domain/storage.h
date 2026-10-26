@@ -29,7 +29,15 @@
  * truncated, future-format or reference-dangling file fails with a
  * message naming the problem and leaves the target untouched. Ids are
  * restored verbatim, and the id counter resumes from the file, so
- * later operations never recycle an id the file already used.
+ * later operations never recycle an id the file already used. Loaded
+ * ids are validated as names, never paths (letters, digits, '-' and
+ * '_'; an asset's id is the prefix of the filename its bytes are
+ * written under), and asset files are contained to the package —
+ * absolute paths, climbing paths and paths whose real location (every
+ * symlink followed) sits outside the package directory are refused
+ * naming the asset (task 6.13b, review R8). Authorised import of
+ * external files at save time is unaffected: that is the operator's
+ * choice, not a manifest's.
  */
 
 #pragma once

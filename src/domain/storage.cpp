@@ -237,6 +237,25 @@ unsigned long long ordinalOf(const std::string& id) {
     return std::strtoull(id.c_str() + begin, nullptr, 10);
 }
 
+// A loaded id must be a NAME, not a path (task 6.13b, review R8): the
+// store issues ids of the form "asset-12", loadService restores ids
+// verbatim, and an asset's id is the prefix of the filename its bytes
+// are written under. The charset rule is what makes that safe for
+// packages from anywhere — the store itself can never mint a violation.
+bool safeOpaqueId(const std::string& id) {
+    if (id.empty()) {
+        return false;
+    }
+    for (const char c : id) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '-' || c == '_';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // --- read-side field helpers ------------------------------------------------
 
 const boost::json::value* field(const boost::json::object& obj, const char* key) {
@@ -341,6 +360,21 @@ bool wantArray(const boost::json::object& obj, const char* key,
         return false;
     }
     *out = &value->as_array();
+    return true;
+}
+
+// True when `candidate` sits at `root` or inside it, compared COMPONENT
+// by component (task 6.13b, review R8): a string prefix is not a
+// directory boundary, and "/tmp/pkg-evil" string-starts-with "/tmp/pkg".
+// Inputs must be canonical or at least lexically normal.
+bool insidePackage(const std::filesystem::path& root, const std::filesystem::path& candidate) {
+    auto rootPart = root.begin();
+    auto candidatePart = candidate.begin();
+    for (; rootPart != root.end(); ++rootPart, ++candidatePart) {
+        if (candidatePart == candidate.end() || *candidatePart != *rootPart) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -476,6 +510,11 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     auto claimId = [&](const Id& id, const char* what) -> bool {
         if (id.empty()) {
             fail(error, std::string("service.json: ") + what + " has an empty id");
+            return false;
+        }
+        if (!safeOpaqueId(id)) {
+            fail(error, std::string("service.json: ") + what + " has an unsafe id '" + id +
+                            "' (ids are opaque: letters, digits, '-' and '_')");
             return false;
         }
         if (!claimedIds.insert(id).second) {
@@ -882,13 +921,57 @@ bool ServiceCodec::load(Documents* documents, const std::filesystem::path& direc
         return false;
     }
 
+    // Package-relative containment (task 6.13b, review R8): the recorded
+    // file names bytes INSIDE this package. Absolute paths and paths
+    // that climb out are refused as a matter of name — before any
+    // filesystem is asked about them — and the final word is canonical:
+    // every symlink inside the package is followed to where it actually
+    // leads, and a file that resolves outside (assets/link -> /etc/passwd,
+    // or -> the sibling directory whose name starts with this one) is a
+    // package that is not self-contained, refused without touching the
+    // target. An authorised IMPORT still copies external bytes in at
+    // save; that is the operator's choice, not a manifest's.
+    std::error_code rootEc;
+    const std::filesystem::path root = std::filesystem::canonical(directory, rootEc);
+    if (rootEc) {
+        fail(error, "cannot resolve the package directory '" + directory.string() +
+                        "': " + rootEc.message());
+        return false;
+    }
     for (Asset& asset : loaded.fAssets) {
+        const std::filesystem::path recorded(asset.sourcePath);
+        if (recorded.is_absolute()) {
+            fail(error, "service.json: asset '" + asset.name + "' names an absolute file '" +
+                            asset.sourcePath + "'; asset files are package-relative");
+            return false;
+        }
+        for (const std::filesystem::path& part : recorded) {
+            if (part == "..") {
+                fail(error, "service.json: asset '" + asset.name +
+                                "' names a file that climbs out of the package '" +
+                                asset.sourcePath + "'");
+                return false;
+            }
+        }
         const std::filesystem::path file =
             (directory / asset.sourcePath).lexically_normal();
         std::error_code ec;
         if (!std::filesystem::is_regular_file(file, ec) || ec) {
             fail(error, "service.json: asset '" + asset.name + "' file '" + file.string() +
                             "' is missing from the package");
+            return false;
+        }
+        std::error_code linkEc;
+        const std::filesystem::path resolved = std::filesystem::canonical(file, linkEc);
+        if (linkEc) {
+            fail(error, "service.json: asset '" + asset.name + "' file '" + file.string() +
+                            "' cannot be resolved: " + linkEc.message());
+            return false;
+        }
+        if (!insidePackage(root, resolved)) {
+            fail(error, "service.json: asset '" + asset.name + "' resolves outside the package ('" +
+                            file.string() + "' -> '" + resolved.string() +
+                            "'); a package must be self-contained");
             return false;
         }
         asset.sourcePath = file.string();

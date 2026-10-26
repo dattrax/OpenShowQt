@@ -1155,6 +1155,188 @@ void exerciseCommitAtomicity(const fs::path& tempRoot) {
           "commit: and that scratch recovers - the commit kept its word end to end");
 }
 
+// --- task 6.13b (review R8): a package cannot name the world ----------------
+
+// Loaded ids are NAMES, never paths (an asset's id prefixes the filename
+// its bytes are written under), and an asset's recorded file must live
+// inside the package where it really is - every symlink followed. A
+// service package can arrive from an archive, a USB stick or a shared
+// folder, so containment is about bytes on disk, not about what the
+// manifest's strings look like. Every refusal leaves the target
+// Documents untouched. Authorised import at save stays external-by-
+// design: that is the operator's choice, not a manifest's.
+void exercisePackageContainment(const fs::path& tempRoot) {
+    std::string error;
+    fs::create_directories(tempRoot);
+    const fs::path originals = tempRoot / "originals";
+    fs::create_directories(originals);
+    writeFile(originals / "ok.jpg", "OKBYTES");
+
+    Documents docs;
+    const Id show = docs.createShow("Contained", &error);
+    const Id asset = docs.addAsset("ok.jpg", (originals / "ok.jpg").string(), &error);
+    const fs::path package = tempRoot / "service";
+    check(saveService(docs, package, &error), "containment: the honest package saves");
+    const std::string packaged = "assets/" + asset + "-ok.jpg";
+    check(readFile(package / "service.json").find("\"file\":\"" + packaged + "\"") !=
+              std::string::npos,
+          "containment: the manifest records the package-relative file");
+
+    int variant = 0;
+    const auto copyBytes = [&](const fs::path& dir) {
+        fs::create_directories(dir / "assets");
+        fs::copy_file(package / "assets" / (asset + "-ok.jpg"),
+                      dir / "assets" / (asset + "-ok.jpg"), fs::copy_options::overwrite_existing);
+    };
+    // Same package, but the asset's `file` field now says `value`.
+    const auto fileRefused = [&](const std::string& value, const char* expectIn,
+                                 const std::function<void(const fs::path&)>& setup,
+                                 const char* what) {
+        const fs::path dir = tempRoot / ("file-" + std::to_string(++variant));
+        std::string manifest = readFile(package / "service.json");
+        if (!replaceOnce(manifest, "\"file\":\"" + packaged + "\"",
+                         "\"file\":\"" + value + "\"")) {
+            check(false, "containment: the file-field tamper found its anchor");
+            return;
+        }
+        copyBytes(dir);
+        writeFile(dir / "service.json", manifest);
+        if (setup) {
+            setup(dir);
+        }
+        error.clear();
+        Documents attempt;
+        attempt.createShow("Keeper");
+        check(!loadService(&attempt, dir, &error) &&
+                  error.find(expectIn) != std::string::npos && attempt.showIds().size() == 1 &&
+                  attempt.findShow(attempt.showIds()[0])->name == "Keeper",
+              what);
+    };
+
+    // Refusals by name, before any filesystem is consulted.
+    fileRefused("/etc/hostname", "absolute", nullptr,
+                "an absolute file field is refused even though the file exists");
+    fileRefused("assets/../../escaped.jpg", "climbs out", nullptr,
+                "a file field that climbs out of the package is refused");
+
+    // Refusals by where the name REALLY leads.
+    fileRefused("assets/alias.jpg", "resolves outside",
+                [&](const fs::path& dir) {
+                    fs::create_symlink("../../originals/ok.jpg", dir / "assets/alias.jpg");
+                },
+                "a symlink that leaves the package is an escape its name cannot hide");
+    fs::path siblingEvil;
+    fileRefused("assets/sib.jpg", "resolves outside",
+                [&](const fs::path& dir) {
+                    siblingEvil = dir.parent_path() / (dir.filename().string() + "-evil");
+                    fs::create_directories(siblingEvil);
+                    writeFile(siblingEvil / "secret.txt", "SIBLINGSECRET");
+                    // From dir/assets/, two levels up is tempRoot again.
+                    fs::create_symlink("../../" + dir.filename().string() + "-evil/secret.txt",
+                                       dir / "assets/sib.jpg");
+                },
+                "the sibling directory whose NAME starts with the package's is not inside it");
+    check(siblingEvil.empty() || readFile(siblingEvil / "secret.txt") == "SIBLINGSECRET",
+          "containment: the escape attempts touched nothing outside their packages");
+
+    // A symlink that stays inside the package is contained, and the bytes
+    // still arrive - the rule is containment, not link paranoia.
+    {
+        const fs::path dir = tempRoot / ("file-" + std::to_string(++variant));
+        std::string manifest = readFile(package / "service.json");
+        check(replaceOnce(manifest, "\"file\":\"" + packaged + "\"",
+                          "\"file\":\"assets/alias.jpg\""),
+              "containment: the inside-symlink anchor");
+        copyBytes(dir);
+        writeFile(dir / "service.json", manifest);
+        fs::create_symlink(asset + "-ok.jpg", dir / "assets/alias.jpg");
+        Documents attempt;
+        check(loadService(&attempt, dir, &error) &&
+                  readFile(attempt.findAsset(asset)->sourcePath) == "OKBYTES",
+              "containment: a symlink that stays inside the package loads fine");
+    }
+
+    // Unsafe ids - the tamper that used to survive into assetFileName()
+    // and name a file OUTSIDE the package on the next save.
+    const auto idRefused = [&](const std::string& newId, const char* what) {
+        const fs::path dir = tempRoot / ("id-" + std::to_string(++variant));
+        std::string manifest = readFile(package / "service.json");
+        if (!replaceOnce(manifest, "\"id\":\"" + asset + "\"", "\"id\":\"" + newId + "\"")) {
+            check(false, "containment: the id tamper found its anchor");
+            return;
+        }
+        copyBytes(dir);
+        writeFile(dir / "service.json", manifest);
+        error.clear();
+        Documents attempt;
+        attempt.createShow("Keeper");
+        check(!loadService(&attempt, dir, &error) &&
+                  error.find("unsafe id") != std::string::npos && attempt.showIds().size() == 1,
+              what);
+    };
+    idRefused("../../evil", "an asset id that names a path is refused");
+    idRefused("sneaky name", "an id with a space is refused");
+    idRefused("x.png", "an id with a dot is refused - ids are opaque, not filenames");
+    {
+        const fs::path dir = tempRoot / ("id-show-" + std::to_string(++variant));
+        std::string manifest = readFile(package / "service.json");
+        check(replaceOnce(manifest, "\"id\":\"" + show + "\"", "\"id\":\"..\\\\evil\""),
+              "containment: the show-id anchor");
+        copyBytes(dir);
+        writeFile(dir / "service.json", manifest);
+        error.clear();
+        Documents attempt;
+        attempt.createShow("Keeper");
+        check(!loadService(&attempt, dir, &error) &&
+                  error.find("unsafe id") != std::string::npos && attempt.showIds().size() == 1,
+              "an unsafe SHOW id is refused too - the rule covers every id space");
+    }
+    {
+        // Charset-legal ids still load, references intact. (A numeric
+        // suffix would collide with the id-counter check — this fixture's
+        // manifest has only two ids issued — so the legal id here is one
+        // without a numeric tail, which is also legal.)
+        const fs::path dir = tempRoot / ("id-ok-" + std::to_string(++variant));
+        std::string manifest = readFile(package / "service.json");
+        check(replaceOnce(manifest, "\"id\":\"" + asset + "\"", "\"id\":\"renamed-ok\""),
+              "containment: the rename anchor");
+        copyBytes(dir);
+        writeFile(dir / "service.json", manifest);
+        Documents attempt;
+        check(loadService(&attempt, dir, &error) && attempt.findAsset("renamed-ok") != nullptr &&
+                  readFile(attempt.findAsset("renamed-ok")->sourcePath) == "OKBYTES",
+              "containment: an opaque, charset-legal id loads and keeps its file");
+    }
+
+    // The authorised side of the rule: imports still copy external bytes.
+    const fs::path fresh = tempRoot / "import-still-works";
+    check(saveService(docs, fresh, &error),
+          "containment: saving an asset whose file lives outside still copies it in");
+    Documents back;
+    check(loadService(&back, fresh, &error) &&
+              readFile(back.findAsset(asset)->sourcePath) == "OKBYTES",
+          "containment: and the imported service round-trips");
+
+    // A hostile-looking NAME is already defused at the filename (dots and
+    // all, it stays one component); it must land inside the package.
+    Documents wild;
+    const Id sneaky = wild.addAsset("../Escape.png", (originals / "ok.jpg").string(), &error);
+    const fs::path wildDir = tempRoot / "wild";
+    check(saveService(wild, wildDir, &error), "containment: an unruly asset name saves");
+    Documents wildBack;
+    check(loadService(&wildBack, wildDir, &error) &&
+              readFile(wildBack.findAsset(sneaky)->sourcePath) == "OKBYTES",
+          "containment: the unruly name became a safe file inside the package");
+    bool climbs = false;
+    for (const std::filesystem::path& part :
+         fs::relative(wildBack.findAsset(sneaky)->sourcePath, wildDir)) {
+        if (part == "..") {
+            climbs = true;
+        }
+    }
+    check(!climbs, "containment: no recorded path is a climb");
+}
+
 }  // namespace
 
 int main() {
@@ -1188,6 +1370,13 @@ int main() {
     std::filesystem::remove_all(commitRoot);
     exerciseCommitAtomicity(commitRoot);
     std::filesystem::remove_all(commitRoot);
+
+    const std::filesystem::path containRoot = std::filesystem::temp_directory_path() /
+                                              ("openshow-domain-contain-" +
+                                               std::to_string(getpid()));
+    std::filesystem::remove_all(containRoot);
+    exercisePackageContainment(containRoot);
+    std::filesystem::remove_all(containRoot);
 
     const std::filesystem::path autosaveRoot = std::filesystem::temp_directory_path() /
                                               ("openshow-domain-autosave-" + std::to_string(getpid()));
