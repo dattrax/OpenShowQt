@@ -212,11 +212,40 @@ Updated: 2026-10-25 (Europe/London).
   timing exposed the fixture's assumption (mediaPlaying's contract sets
   position −1.0 until the head frame). Gates desktop **33/33** (8-run
   stress green on the media fixture), headless **20/20**.
-- Exact next action: **6.5**, make preview ready/release ownership
-  stream-specific and sequence-exact; validate mapping geometry (review
-  R5: delayed old-stream, duplicate, odd and future releases cannot free
-  an owned slot; replacement notification race covered; no overwrite
-  during copy). Then continue the focused M6 leaves in order.
+- **6.5 DONE (2026-10-26).** Preview slot ownership proven by stream
+  identity and exact sequence (review R5). `PreviewStream::release` takes
+  only the exact sequence the slot last published — the old watermark let
+  R5's probe (`release(0, 102)` against sequence 2) hand the producer a
+  frame a consumer still held; odd, stale, future, duplicate and
+  out-of-range releases now free nothing, one release per publish ever.
+  The segment name is the stream identity end to end: `preview.ready`
+  carries `"stream"`, `preview.released` without it is refused
+  (capability `preview.stream-id.v1`, protocol minor 4 — a stricter rule,
+  not an additive one), `releasePreviewSlot` matches the live stream's
+  name, `takePreviewReady` drops queued entries of retired streams, and
+  `WorkerController` ignores foreign readys entirely (no copy, no
+  release). `PreviewStream::create` validates geometry (nonzero, ≤4096,
+  uint32 stride) before any mmap and resets the seq bookkeeping so a
+  re-created stream starts a new ownership life. Headless
+  `preview_stream_tests` drives the real object (split into
+  `openshow::worker_preview`); live `preview_ownership_tests` holds all
+  three slots over a real socket session and reads published/dropped as
+  the meter: bogus releases of every class free nothing, the exact
+  triple returns exactly one slot, and after a replacement the delayed
+  old-stream releases — including the (slot, 2) triples the new stream
+  opens with — free none of the new slots, with a socket-ordering mark
+  past which no delivered ready may name the retired stream. Mutations:
+  watermark restored fails the unit test and held-phase checks; name gate
+  removed fails the foreign-stream and delayed-release checks exactly.
+  (The stale-queue drop's own race window needs sub-frame timing the
+  worker's drain path does not expose; the assertion covers it and the
+  two release-rule mutations carry the fixture's proven weight.) Gates
+  desktop **35/35**, headless **21/21**, 5-run stress green.
+- Exact next action: **6.6a**, retain a lease for the displayed video
+  image until replacement; validate frame generation; cover every
+  output/preview sample with GPU synchronization (review R6: a held
+  video token outlives its ownership). Then continue the focused M6
+  leaves in order.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -2686,6 +2715,15 @@ of this work.
   Fault injection is env-gated, render-thread-only, and re-armed per
   scene change so fixtures force the command-during-apply and
   present-failure windows instead of racing them.
+- (2026-10-26, task 6.5) A preview release must PROVE ownership: the
+  exact published sequence (`seq == published && released < seq`, the old
+  watermark was the bug) plus the live stream's segment name, which
+  `preview.ready` carries and `preview.released` echoes. The rule is
+  stricter, not additive, so capability `preview.stream-id.v1` (minor 4)
+  gates it; consumers gate readys by name and never copy or release under
+  a foreign stream. Queued notifications of a retired stream are dropped
+  at dequeue, and `create()` resets the per-slot bookkeeping because a
+  new segment is a new ownership life.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.

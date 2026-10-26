@@ -339,6 +339,13 @@ bool copyOneFrame(int fd, const std::uint8_t* segment, std::size_t bytesPerSlot,
         const std::uint64_t slot = numberValue(ready.at("slot"));
         const std::uint64_t seq = numberValue(ready.at("seq"));
         const std::uint64_t rowBytes = numberValue(ready.at("rowBytes"));
+        // Task 6.5 (review R5): the release must name the stream the
+        // ready came from; a ready without one is not part of this
+        // consumer's world.
+        if (!ready.contains("stream") || !ready.at("stream").is_string()) {
+            continue;
+        }
+        const std::string stream = std::string(ready.at("stream").as_string());
         bool intact = false;
         if (slot < proto::kPreviewSlotCount && rowBytes == width * 4) {
             const std::uint8_t* slotBase =
@@ -357,7 +364,9 @@ bool copyOneFrame(int fd, const std::uint8_t* segment, std::size_t bytesPerSlot,
             }
         }
         sendNotification(fd, proto::kMethodPreviewReleased,
-                         boost::json::object{{"slot", slot}, {"seq", seq}});
+                         boost::json::object{{"slot", slot},
+                                             {"seq", seq},
+                                             {"stream", stream}});
         if (intact) {
             return true;
         }
@@ -411,7 +420,7 @@ void testServedSession() {
         const boost::json::value& result = reply.at("result");
         check(result.as_object().at("protocol").as_object().at("major").is_number(),
               "hello negotiates a protocol version");
-        check(result.as_object().at("capabilities").as_array().size() == 6,
+        check(result.as_object().at("capabilities").as_array().size() == 7,
               "hello lists worker capabilities");
     }
 
@@ -647,10 +656,17 @@ void testPreviewStream() {
           "the segment header matches the start result");
     // That first ready was the "the segment exists" signal and its frame
     // was not copied, so release the slot it came on: an unreleased slot
-    // stays owned forever by design (the smoke script learned this first).
+    // stays owned forever by design (the smoke script learned this
+    // first). Task 6.5 (review R5): the ready names its stream — check
+    // it matches the start result, and echo it back as the release's
+    // proof of ownership.
+    check(ready.contains("stream") && ready.at("stream").is_string() &&
+              std::string(ready.at("stream").as_string()) == name,
+          "the first ready names the stream the start result created");
     sendNotification(fd, proto::kMethodPreviewReleased,
                      boost::json::object{{"slot", numberValue(ready.at("slot"))},
-                                         {"seq", numberValue(ready.at("seq"))}});
+                                         {"seq", numberValue(ready.at("seq"))},
+                                         {"stream", name}});
 
     // Copy two frames that survive the seqlock check; the first one is kept
     // for a content comparison after a layer toggle. Publishing is
@@ -787,6 +803,7 @@ void testPreviewStream() {
     struct Held {
         std::uint64_t slot;
         std::uint64_t seq;
+        std::string stream;
     };
     std::vector<Held> held;
     std::uint64_t seenSlots = 0;
@@ -801,10 +818,12 @@ void testPreviewStream() {
             continue;
         }
         const std::uint64_t slot = numberValue(ready.at("slot"));
-        if (slot >= proto::kPreviewSlotCount) {
+        if (slot >= proto::kPreviewSlotCount || !ready.contains("stream") ||
+            !ready.at("stream").is_string()) {
             continue;
         }
-        held.push_back({slot, numberValue(ready.at("seq"))});
+        held.push_back({slot, numberValue(ready.at("seq")),
+                        std::string(ready.at("stream").as_string())});
         seenSlots |= 1u << slot;
     }
     check(held.size() == proto::kPreviewSlotCount && seenSlots == 0b111,
@@ -839,7 +858,9 @@ void testPreviewStream() {
     // Release: the same slots carry frames again immediately.
     for (const Held& frame : held) {
         sendNotification(fd, proto::kMethodPreviewReleased,
-                         boost::json::object{{"slot", frame.slot}, {"seq", frame.seq}});
+                         boost::json::object{{"slot", frame.slot},
+                                             {"seq", frame.seq},
+                                             {"stream", frame.stream}});
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     std::uint64_t frames2 = 0;

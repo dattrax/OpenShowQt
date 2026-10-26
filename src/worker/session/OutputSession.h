@@ -219,6 +219,7 @@ public:
         uint32_t rowBytes = 0;
         uint32_t revision = 0;
         uint64_t publishedNs = 0;
+        std::string stream;  // segment name this frame belongs to (task 6.5)
     };
 
     OutputSession() = default;
@@ -266,13 +267,18 @@ public:
                       PreviewInfo* info, std::string* error);
     void stopPreview();
 
-    // The consumer finished copying slot@seq; the slot becomes claimable
-    // again. Releases for an unknown slot or stale sequence are ignored.
-    void releasePreviewSlot(uint32_t slot, uint64_t seq);
+    // The consumer finished copying slot@seq of the named stream; the
+    // slot becomes claimable again. Proof of ownership (task 6.5, review
+    // R5): the release must name the stream that is currently live —
+    // releases for a retired or unknown stream, an unknown slot or a
+    // sequence that is not exactly the slot's published one are ignored.
+    void releasePreviewSlot(uint32_t slot, uint64_t seq, const std::string& stream);
 
     // Pops one queued preview.ready notification (RPC thread). At most
     // one is queued per slot: if the RPC side lags, the newest frame for
-    // that slot is all that matters.
+    // that slot is all that matters. Ready notifications left queued for
+    // a retired stream are dropped, never sent: the socket must not
+    // describe slots of a segment the consumer no longer has (task 6.5).
     bool takePreviewReady(PreviewReady* out);
 
     // --- background media (task 5.5d) ---

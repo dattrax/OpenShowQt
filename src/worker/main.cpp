@@ -439,7 +439,7 @@ int runAvBench(const std::string& path, const std::string& secondAudio, int moni
                 openshow::worker::OutputSession::PreviewReady ready;
                 while (!previewStop.load()) {
                     if (session.takePreviewReady(&ready)) {
-                        session.releasePreviewSlot(ready.slot, ready.seq);
+                        session.releasePreviewSlot(ready.slot, ready.seq, ready.stream);
                         previewConsumed.fetch_add(1, std::memory_order_relaxed);
                     } else {
                         std::this_thread::sleep_for(std::chrono::milliseconds(10));

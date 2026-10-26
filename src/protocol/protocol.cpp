@@ -202,7 +202,8 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                                          {"minor", kProtocolMinor}}},
         {"capabilities",
          boost::json::array{"output.status.v1", "output.layers.v1", "preview.shm.v1",
-                            "scene.store.v1", "shutdown.v1", "media.error.v1"}}};
+                            "preview.stream-id.v1", "scene.store.v1", "shutdown.v1",
+                            "media.error.v1"}}};
     return true;
 }
 

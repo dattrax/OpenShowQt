@@ -567,13 +567,18 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
     } else if (name == proto::kMethodPreviewReleased) {
         // A notification from the consumer: it finished copying that slot
         // frame, so the producer may claim it again. Answered only if the
-        // client bothered to identify it.
+        // client bothered to identify it. The stream name is part of the
+        // proof of ownership (task 6.5, review R5): a release that does
+        // not name the live stream frees nothing.
         if (given.is_object()) {
             const boost::json::object& args = given.as_object();
             std::uint64_t slot = 0;
             std::uint64_t seq = 0;
-            if (jsonUint(args, "slot", &slot) && jsonUint(args, "seq", &seq)) {
-                fSession.releasePreviewSlot(static_cast<uint32_t>(slot), seq);
+            const auto stream = args.find("stream");
+            if (jsonUint(args, "slot", &slot) && jsonUint(args, "seq", &seq) &&
+                stream != args.end() && stream->value().is_string()) {
+                fSession.releasePreviewSlot(static_cast<uint32_t>(slot), seq,
+                                            std::string(stream->value().as_string()));
             }
         }
         if (request.contains("id")) {
@@ -606,7 +611,10 @@ bool RpcServer::flushNotifications(int connectionFd) {
                                                         {"height", ready.height},
                                                         {"rowBytes", ready.rowBytes},
                                                         {"revision", ready.revision},
-                                                        {"publishedNs", ready.publishedNs}}),
+                                                        {"publishedNs", ready.publishedNs},
+                                                        // Stream identity: the release
+                                                        // must echo it (task 6.5).
+                                                        {"stream", ready.stream}}),
             &outbound);
     }
     // Background media failure (task 5.5d): immediate visibility, the

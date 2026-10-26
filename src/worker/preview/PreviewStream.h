@@ -60,7 +60,9 @@ public:
     // A write failed mid-claim: close the seqlock with nothing changed.
     void abort(int slot);
 
-    // Consumer finished copying the frame with this sequence (monotone).
+    // Consumer finished copying the frame with this sequence. Only the
+    // exact sequence this slot last published counts (proof of
+    // ownership); odd, stale, future and duplicate releases do nothing.
     void release(std::uint32_t slot, std::uint64_t seq);
 
 private:

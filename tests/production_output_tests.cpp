@@ -146,6 +146,14 @@ void handlePreviewReady(int fd, const boost::json::object& params) {
     };
     const std::uint64_t slot = number("slot");
     const std::uint64_t seq = number("seq");
+    // Consumer-side gate (task 6.5, review R5): a ready naming a stream
+    // other than the one this client started describes a segment it does
+    // not have — copy nothing and release nothing under it.
+    const auto stream = params.find("stream");
+    if (stream == params.end() || !stream->value().is_string() ||
+        std::string_view(stream->value().as_string()) != gPreview.name) {
+        return;
+    }
     const std::uint64_t width = number("width");
     const std::uint64_t height = number("height");
     const std::uint64_t rowBytes = number("rowBytes");
@@ -172,7 +180,8 @@ void handlePreviewReady(int fd, const boost::json::object& params) {
     sendRaw(fd, proto::makeNotification(
                    proto::kMethodPreviewReleased,
                    boost::json::object{{"slot", static_cast<std::int64_t>(slot)},
-                                       {"seq", static_cast<std::int64_t>(seq)}}));
+                                       {"seq", static_cast<std::int64_t>(seq)},
+                                       {"stream", gPreview.name}}));
 }
 
 proto::Decoder gDecoder;

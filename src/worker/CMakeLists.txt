@@ -2,11 +2,25 @@ add_executable(openshow-worker
   main.cpp
   output/OutputWindow.cpp
   output/Swapchain.cpp
-  preview/PreviewStream.cpp
   render/TestScene.cpp
   rpc/RpcServer.cpp
   session/OutputSession.cpp
 )
+
+# The shared-memory preview producer (task 1.4). A library so the slot
+# ownership rules (task 6.5, review R5) can be pinned headless against
+# the real object — the worker links it like its other layers.
+add_library(openshow-worker-preview STATIC
+  preview/PreviewStream.cpp
+)
+add_library(openshow::worker_preview ALIAS openshow-worker-preview)
+target_link_libraries(openshow-worker-preview PUBLIC openshow::protocol)
+target_include_directories(openshow-worker-preview PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# shm_open lives in libc since glibc 2.34 and in librt before that.
+find_library(OPENSHOW_LIBRT rt)
+if(OPENSHOW_LIBRT)
+  target_link_libraries(openshow-worker-preview PUBLIC ${OPENSHOW_LIBRT})
+endif()
 
 # The output layer model, the production compositor (task 6.1b) and scene
 # text (task 3.1). A library so the headless fixture tests can lay out and
@@ -95,6 +109,7 @@ target_link_libraries(openshow-worker PRIVATE
   openshow::worker_gpu
   openshow::worker_media
   openshow::worker_playback
+  openshow::worker_preview
   openshow::worker_render
   PkgConfig::GLFW
   PkgConfig::PIPEWIRE
@@ -106,9 +121,3 @@ target_link_libraries(openshow-worker PRIVATE
 target_include_directories(openshow-worker PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
 )
-
-# shm_open lives in libc since glibc 2.34 and in librt before that.
-find_library(OPENSHOW_LIBRT rt)
-if(OPENSHOW_LIBRT)
-  target_link_libraries(openshow-worker PRIVATE ${OPENSHOW_LIBRT})
-endif()

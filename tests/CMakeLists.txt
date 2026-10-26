@@ -16,6 +16,14 @@ add_executable(protocol_tests
 target_link_libraries(protocol_tests PRIVATE openshow::protocol)
 add_test(NAME protocol_tests COMMAND protocol_tests)
 
+# Task 6.5 (review R5): preview slot ownership is proven, not assumed —
+# only the exact published sequence releases a slot, odd/stale/future/
+# duplicate/out-of-range releases free nothing, and the geometry is
+# validated before any mapping. Headless against the real PreviewStream.
+add_executable(preview_stream_tests preview_stream_tests.cpp)
+target_link_libraries(preview_stream_tests PRIVATE openshow::worker_preview)
+add_test(NAME preview_stream_tests COMMAND preview_stream_tests)
+
 # The worker runs as its own process and must never gain a Qt dependency.
 add_test(NAME worker_is_qt_free
   COMMAND ${CMAKE_COMMAND}
@@ -234,6 +242,16 @@ target_link_libraries(output_status_tests PRIVATE openshow::protocol)
 add_test(NAME output_status_tests
   COMMAND output_status_tests $<TARGET_FILE:openshow-worker>)
 set_tests_properties(output_status_tests PROPERTIES LABELS display TIMEOUT 120)
+
+# Task 6.5 (review R5): live preview ownership over the socket — ready
+# names its stream, releases must echo it, and odd, future, duplicate,
+# foreign-stream and delayed old-stream releases free no owned slot
+# (published/dropped counters are the meter). Needs a display.
+add_executable(preview_ownership_tests preview_ownership_tests.cpp)
+target_link_libraries(preview_ownership_tests PRIVATE openshow::protocol)
+add_test(NAME preview_ownership_tests
+  COMMAND preview_ownership_tests $<TARGET_FILE:openshow-worker>)
+set_tests_properties(preview_ownership_tests PROPERTIES LABELS display TIMEOUT 120)
 
 # Real FFmpeg get_buffer2 allocations into Vulkan linear images, independent
 # reference/presentation lifetimes, all native plane layouts and strict errors.

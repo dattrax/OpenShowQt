@@ -22,6 +22,15 @@
  * a preview consumer, and a slot still owned by the consumer is never
  * overwritten — the two properties PLAN.md demands.
  *
+ * Ownership is PROVEN, not assumed (task 6.5, review R5): the release
+ * notification must name the stream it belongs to (the segment name —
+ * `preview.ready` carries it as "stream", and capability
+ * "preview.stream-id.v1" says so) and carry the exact sequence that
+ * stream most recently published for that slot. Odd (mid-write), stale,
+ * future and duplicate sequences release nothing, and a release naming
+ * any other stream is refused — so a delayed release from a retired
+ * stream can never free a live stream's slot.
+ *
  * The header is deliberately Qt-free and dependency-free so both processes
  * compile the exact same definition.
  */

@@ -721,6 +721,17 @@ void WorkerController::handleNotification(const boost::json::object& message) {
     }
     const boost::json::object& params = paramsIt->value().as_object();
 
+    // Stream identity (task 6.5, review R5): a ready naming anything
+    // other than the stream this client currently owns describes slots
+    // of a segment it does not have — ignore it entirely, copying nothing
+    // and releasing nothing (a delayed release of an old stream must
+    // never free a live stream's slot).
+    const auto streamIt = params.find("stream");
+    if (streamIt == params.end() || !streamIt->value().is_string() ||
+        std::string_view(streamIt->value().as_string()) != fPendingPreviewName) {
+        return;
+    }
+
     // First ready proves the segment exists: this is where a pending
     // (not-yet-mapped) stream gets opened, retrying if we beat the worker.
     if (fMap == nullptr && !fPendingPreviewName.empty()) {
@@ -770,9 +781,11 @@ void WorkerController::handleNotification(const boost::json::object& message) {
 
     // Ownership of the slot ends whether or not this copy worked out; the
     // producer drops rather than waits, but there is no reason to make it.
+    // The echo carries the stream identity the ready came with (task 6.5).
     sendNotification(proto::kMethodPreviewReleased,
                      boost::json::object{{"slot", static_cast<std::int64_t>(slot)},
-                                         {"seq", static_cast<std::int64_t>(seq)}});
+                                         {"seq", static_cast<std::int64_t>(seq)},
+                                         {"stream", fPendingPreviewName}});
     if (fresh) {
         emit previewChanged();
     }

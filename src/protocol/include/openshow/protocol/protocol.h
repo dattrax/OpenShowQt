@@ -23,11 +23,15 @@ namespace openshow::protocol {
 
 // Wire format version. Frontend and worker must agree on the major value
 // before any other message is exchanged. Minor 3 (task 5.5d) adds the
-// media.error notification and the status "media" object; both are
-// additions a minor-2 frontend ignores, so the minor does not gate them —
-// the "media.error.v1" capability names them.
+// media.error notification and the status "media" object; minor 4 (task
+// 6.5) adds the stream identity that preview.ready carries and
+// preview.released must echo. Minor-3 additions a frontend ignores are
+// harmless — the "media.error.v1" capability names them. The minor-4
+// release rule is stricter, not additive: releases without the stream
+// identity are refused, so "preview.stream-id.v1" is the capability a
+// frontend checks before expecting its preview to keep flowing.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 3;
+inline constexpr std::uint32_t kProtocolMinor = 4;
 
 // Worker-to-frontend notification (task 5.5d): a background media asset
 // failed. {"path":...,"message":...} — sent when the failure happens,

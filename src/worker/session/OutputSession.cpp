@@ -432,27 +432,46 @@ void OutputSession::stopPreview() {
     wakeRenderThread();
 }
 
-void OutputSession::releasePreviewSlot(uint32_t slot, uint64_t seq) {
-    std::shared_ptr<PreviewStream> stream;
+void OutputSession::releasePreviewSlot(uint32_t slot, uint64_t seq,
+                                       const std::string& stream) {
+    std::shared_ptr<PreviewStream> target;
     {
         std::lock_guard<std::mutex> lock(fMutex);
-        stream = fPreviewStream;
+        // Stream identity (task 6.5, review R5): a release frees a slot
+        // of the stream it NAMES, and only the live one. A delayed
+        // release from a retired stream — or one naming nothing — finds
+        // no target here, and PreviewStream::release still demands the
+        // exact published sequence.
+        if (fPreviewStream && fPreviewStream->name() == stream) {
+            target = fPreviewStream;
+        }
     }
-    if (stream) {
-        stream->release(slot, seq);
+    if (target) {
+        target->release(slot, seq);
     }
 }
 
 bool OutputSession::takePreviewReady(PreviewReady* out) {
     std::lock_guard<std::mutex> lock(fMutex);
+    // The current stream's name (empty while none is live): notifications
+    // queued by a stream that has since been replaced are dropped here
+    // rather than sent — after a replacement the consumer maps the new
+    // segment, and an old stream's slot/seq would describe nothing it
+    // owns (task 6.5).
+    const std::string live = fPreviewStream ? fPreviewStream->name() : std::string();
     for (auto& pending : fPendingReady) {
-        if (pending) {
-            if (out) {
-                *out = *pending;
-            }
-            pending.reset();
-            return true;
+        if (!pending) {
+            continue;
         }
+        if (pending->stream != live) {
+            pending.reset();
+            continue;
+        }
+        if (out) {
+            *out = *pending;
+        }
+        pending.reset();
+        return true;
     }
     return false;
 }
@@ -973,6 +992,7 @@ void OutputSession::publishPreviewFrame(double elapsed, SkImage* video,
     ready.rowBytes = stream->rowBytes();
     ready.revision = revision;
     ready.publishedNs = publishedNs;
+    ready.stream = stream->name();  // ownership identity (task 6.5)
     std::lock_guard<std::mutex> lock(fMutex);
     fPendingReady[slot] = ready;
     ++fStatus.preview.published;

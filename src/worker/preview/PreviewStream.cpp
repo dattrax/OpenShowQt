@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -34,6 +35,20 @@ PreviewStream::~PreviewStream() {
 bool PreviewStream::create(const std::string& name, uint32_t width, uint32_t height,
                            std::string* error) {
     destroy();
+
+    // Geometry validated before any mmap or slot arithmetic (task 6.5,
+    // review R5): the wire stores a per-slot stride as uint32, so a size
+    // that does not fit — or does not fit the sane-preview bounds the
+    // session enforces — is refused here too rather than wrapping into a
+    // segment shorter than its slots.
+    const std::size_t stride = proto::previewSlotStrideBytes(width, height);
+    if (width == 0 || height == 0 || width > 4096 || height > 4096 ||
+        stride > std::numeric_limits<std::uint32_t>::max() - 64) {
+        if (error) {
+            *error = "preview geometry out of range";
+        }
+        return false;
+    }
 
     const std::size_t bytes = proto::previewSegmentBytes(width, height);
     fName = name;
@@ -69,6 +84,12 @@ bool PreviewStream::create(const std::string& name, uint32_t width, uint32_t hei
     fWidth = width;
     fHeight = height;
     fBytesPerSlot = static_cast<std::uint32_t>(proto::previewSlotStrideBytes(width, height));
+    // A new segment is a new ownership life: the seq bookkeeping must
+    // start empty, or a stream object re-created over an old life would
+    // keep honouring the retired segment's outstanding claims (and its
+    // release proofs).
+    std::memset(fPublished, 0, sizeof(fPublished));
+    std::memset(fReleased, 0, sizeof(fReleased));
 
     std::memset(mapping, 0, bytes);
     auto* segment = static_cast<proto::PreviewSegmentHeader*>(mapping);
@@ -166,7 +187,14 @@ void PreviewStream::release(std::uint32_t slot, std::uint64_t seq) {
     }
     std::lock_guard<std::mutex> lock(fMutex);
     std::uint64_t& released = fReleased[static_cast<std::size_t>(slot)];
-    if (seq > released) {
+    // Proof of ownership (task 6.5, review R5): only the exact sequence
+    // this slot most recently published releases it. The watermark this
+    // used to keep accepted any newer number — release(0, 102) against a
+    // slot at sequence 2 made a still-owned slot claimable and let the
+    // producer overwrite a frame mid-copy. Odd (mid-write), stale,
+    // future and duplicate sequences change nothing; a slot is freed for
+    // reuse exactly once per publish.
+    if (seq == fPublished[static_cast<std::size_t>(slot)] && released < seq) {
         released = seq;
     }
 }
