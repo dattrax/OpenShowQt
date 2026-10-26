@@ -66,6 +66,15 @@
  * adoption must re-prepare the owed scene, feed rewritten payloads to clears
  * and restores, repeat the old name never, and move the audience not at all.
  *
+ * Task 6.15a (review R15) added S13: the media transport on both sides of
+ * the socket. The peer grew a scripted transport (scenario "media") whose
+ * state ONLY the media.play/pause/seek/loop/gain/mute commands move, echoed
+ * back through output.status.media — and a verbatim ledger of every command
+ * frame it received. The fixture asserts the controller's media* properties
+ * move exactly with that echo (never with the click), and the ledger names
+ * the method and params that actually rode the wire, including the refused
+ * standalone gain the client must send rather than second-guess.
+ *
  * Each child writes a small report (prepares, presents, requests for methods it
  * does not model, presented revision list, every request counted by method, and
  * the bytes it ever took from the socket) to OPENSHOW_FAKE_REPORT so the parent
@@ -78,6 +87,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -375,6 +385,27 @@ private:
                                      {"dropped", 0},
                                      {"error", ""}}},
             };
+            // Task 6.15a (review R15): a scripted transport whose state ONLY
+            // the media.* commands move. The controller reads its media
+            // properties from this echo and nowhere else, so a control that
+            // ran on local optimism — a Pause label flipped by the click —
+            // cannot survive here.
+            if (fScenario == "media") {
+                result["media"] = boost::json::object{
+                    {"playing", fMediaPlaying},
+                    {"path", "fake-clip.mp4"},
+                    {"error", ""},
+                    {"audio", "live"},
+                    {"position", fMediaPosition},
+                    {"live", fMediaLive},
+                    {"loop", fMediaLoop},
+                    {"duration", fMediaDuration},
+                    {"sources",
+                     boost::json::array{boost::json::object{{"name", "video"},
+                                                            {"gain", fMediaGain},
+                                                            {"muted", fMediaMuted}}}},
+                };
+            }
             sendResult(id, std::move(result));
             return;
         }
@@ -457,6 +488,83 @@ private:
             sendResult(id, boost::json::object{{"presented", static_cast<std::uint64_t>(fActive)}});
             return;
         }
+        // Task 6.15a (review R15): the scripted transport. Every command is
+        // recorded verbatim — the ledger is how the parent proves WHICH
+        // method-and-params frame the controller put on the wire — and moves
+        // the state output.status echoes, mirroring the real worker's
+        // "acknowledged via status" rule. A gain/mute for a source this
+        // transport does not have is refused naming it, exactly as the real
+        // router does: the controller must survive a refusal by keeping the
+        // last worker-reported state, not by guessing.
+        if (method == proto::kMethodMediaPlay || method == proto::kMethodMediaPause ||
+            method == proto::kMethodMediaSeek || method == proto::kMethodMediaLoop ||
+            method == proto::kMethodMediaGain || method == proto::kMethodMediaMute) {
+            fMediaOps.push_back(boost::json::object{
+                {"method", method},
+                {"params", request.contains("params") ? request.at("params")
+                                                      : boost::json::object{}},
+            });
+            writeReport();  // live, like the deaf-peer counts
+            boost::json::object args;
+            if (request.contains("params") && request.at("params").is_object()) {
+                args = request.at("params").as_object();
+            }
+            if (method == proto::kMethodMediaPlay) {
+                fMediaPlaying = true;
+            } else if (method == proto::kMethodMediaPause) {
+                fMediaPlaying = false;
+            } else if (method == proto::kMethodMediaSeek) {
+                if (!args.contains("position") || !args.at("position").is_number()) {
+                    sendError(id, "fake: media.seek requires a numeric position");
+                    return;
+                }
+                fMediaPosition = args.at("position").to_number<double>();
+                sendResult(id, boost::json::object{{"pending", true},
+                                                   {"target", fMediaPosition}});
+                return;
+            } else if (method == proto::kMethodMediaLoop) {
+                if (!args.contains("loop") || !args.at("loop").is_bool()) {
+                    sendError(id, "fake: media.loop requires a loop boolean");
+                    return;
+                }
+                fMediaLoop = args.at("loop").as_bool();
+                sendResult(id, boost::json::object{{"pending", true}, {"loop", fMediaLoop}});
+                return;
+            } else if (method == proto::kMethodMediaGain || method == proto::kMethodMediaMute) {
+                const bool isGain = method == proto::kMethodMediaGain;
+                const std::string source =
+                    args.contains("source") && args.at("source").is_string()
+                        ? std::string(args.at("source").as_string())
+                        : std::string();
+                if (source != "video") {
+                    sendError(id, "fake: this background has no standalone audio source");
+                    return;
+                }
+                if (isGain) {
+                    if (!args.contains("gain") || !args.at("gain").is_number()) {
+                        sendError(id, "fake: media.gain requires a gain");
+                        return;
+                    }
+                    fMediaGain = args.at("gain").to_number<double>();
+                } else {
+                    if (!args.contains("mute") || !args.at("mute").is_bool()) {
+                        sendError(id, "fake: media.mute requires a mute boolean");
+                        return;
+                    }
+                    fMediaMuted = args.at("mute").as_bool();
+                }
+                boost::json::object ack{{"pending", true}, {"source", source}};
+                if (isGain) {
+                    ack["gain"] = fMediaGain;
+                } else {
+                    ack["muted"] = fMediaMuted;
+                }
+                sendResult(id, std::move(ack));
+                return;
+            }
+            sendResult(id, boost::json::object{{"pending", true}});
+            return;
+        }
         if (method == "shutdown") {
             sendResult(id, boost::json::object{{"ok", true}});
             writeReport();
@@ -500,6 +608,7 @@ private:
             {"bytesReceived", fBytesReceived},
             {"stoppedReading", fStoppedReading},
             {"resumed", fResumed},
+            {"mediaOps", fMediaOps},  // task 6.15a: every transport command, verbatim
         };
         // Written through a temporary file and renamed, so a parent reading this
         // while the peer is mid-run sees either the old report or the new one and
@@ -519,6 +628,17 @@ private:
     std::vector<DelayedReply> fQueue;  // slow-first: acks awaiting their due
     std::vector<int> fPresented;       // revisions the controller went to
     std::vector<std::string> fAssetPaths;  // each prepare's background file (task 6.12)
+    // Task 6.15a (review R15): the scripted transport's state and the
+    // verbatim ledger of the media.* commands that moved it. The peer starts
+    // as a live, playing, looping 6 s clip with one registered audio source.
+    bool fMediaPlaying = true;
+    bool fMediaLive = true;
+    bool fMediaLoop = true;
+    double fMediaPosition = 2.0;
+    double fMediaDuration = 6.0;
+    double fMediaGain = 1.0;
+    bool fMediaMuted = false;
+    boost::json::array fMediaOps;
 
     std::string fSocketPath;
     std::string fScenario;
@@ -1659,6 +1779,148 @@ void scenarioAdoptedPaths() {
 
 }  // namespace
 
+// S13 (the R15 UI half): the media properties bind to WORKER status, never
+// to the click. The scripted peer only moves its transport state through
+// the media.* commands, and the controller's media* properties only move
+// through the status echo — so a control driven by local optimism (a Pause
+// label flipped on press, a slider that stayed where the finger left it
+// after a refused seek) fails here. The report then proves the exact
+// method-and-params frames the controller put on the wire, including the
+// refused standalone gain (the client does NOT second-guess the worker's
+// source table — it sends, and the refusal leaves the properties on the
+// worker's truth).
+void scenarioMediaTransport() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "media", 1);
+    const std::string report = tempPath("media");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "media: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+    // The first status carries the transport: live, playing, looping by
+    // default, at the peer's 6 s duration, with the video source at unity.
+    if (!check(waitUntil([&controller] { return controller.mediaOnAir(); }),
+               "media: status brings the transport on air")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(controller.mediaPlaying(), "media: the playing state comes from status");
+    check(controller.mediaLoop(), "media: loop reads true before any command");
+    check(std::abs(controller.mediaDuration() - 6.0) < 0.001,
+          "media: the duration mirrors the peer's clip");
+    {  // The source list mirrors into a [{id, gain, muted}] list for QML.
+        const QVariantList sources = controller.mediaSources();
+        bool oneUnitySource = sources.size() == 1;
+        if (oneUnitySource) {
+            const QVariantMap video = sources.first().toMap();
+            oneUnitySource = video.value("id").toString() == QLatin1String("video") &&
+                             std::abs(video.value("gain").toDouble() - 1.0) < 0.001 &&
+                             video.value("muted").toBool() == false;
+        }
+        check(oneUnitySource, "media: the video source mirrors at unity, unmuted");
+    }
+
+    controller.mediaPause();
+    check(waitUntil([&controller] { return !controller.mediaPlaying(); }),
+          "media: the hold arrives THROUGH status, not on press");
+    controller.mediaPlay();
+    check(waitUntil([&controller] { return controller.mediaPlaying(); }),
+          "media: the resume likewise");
+
+    controller.mediaSeek(3.5);
+    check(waitUntil([&controller] { return std::abs(controller.mediaPosition() - 3.5) < 0.001; }),
+          "media: the acknowledged position mirrors into the property");
+
+    controller.setMediaLoop(false);
+    check(waitUntil([&controller] { return !controller.mediaLoop(); }),
+          "media: the loop mode mirrors back after the toggle");
+
+    controller.setMediaGain("video", 0.4);
+    const bool gainBack = waitUntil([&controller] {
+        const QVariantList sources = controller.mediaSources();
+        return sources.size() == 1 &&
+               std::abs(sources.first().toMap().value("gain").toDouble() - 0.4) < 0.001;
+    });
+    check(gainBack, "media: the gain echo replaces the slider's value via status");
+    controller.setMediaMute("video", true);
+    const bool muteBack = waitUntil([&controller] {
+        const QVariantList sources = controller.mediaSources();
+        return sources.size() == 1 && sources.first().toMap().value("muted").toBool();
+    });
+    check(muteBack, "media: the mute mirrors back");
+    controller.setMediaMute("video", false);
+    check(waitUntil([&controller] {
+        const QVariantList sources = controller.mediaSources();
+        return sources.size() == 1 && !sources.first().toMap().value("muted").toBool();
+    }),
+          "media: unmute mirrors back too");
+
+    // A refusal from the worker must leave the properties on the worker's
+    // truth: the standalone gain is refused, and nothing about the video
+    // source moves — the client never invents a row for a source that was
+    // never listed.
+    controller.setMediaGain("standalone", 0.5);
+    digestThenRefresh(controller, 300);
+    {
+        const QVariantList sources = controller.mediaSources();
+        bool stillOneVideo = sources.size() == 1 &&
+                             sources.first().toMap().value("id").toString() ==
+                                 QLatin1String("video") &&
+                             std::abs(sources.first().toMap().value("gain").toDouble() - 0.4) <
+                                 0.001;
+        check(stillOneVideo,
+              "media: a refused source change leaves the mirror on the worker's truth");
+    }
+
+    controller.shutdownNow();
+
+    const boost::json::object counts = readReport(report);
+    const boost::json::array& ops = counts.at("mediaOps").as_array();
+    auto findOp = [&ops](const char* method) -> const boost::json::object* {
+        for (const boost::json::value& op : ops) {
+            if (op.as_object().at("method").as_string() == method) {
+                return &op.as_object();
+            }
+        }
+        return nullptr;
+    };
+    auto countOps = [&ops](const char* method) {
+        std::size_t n = 0;
+        for (const boost::json::value& op : ops) {
+            if (op.as_object().at("method").as_string() == method) {
+                ++n;
+            }
+        }
+        return n;
+    };
+    check(countOps(proto::kMethodMediaPause) == 1 && countOps(proto::kMethodMediaPlay) == 1,
+          "media: exactly one play and one pause frame reached the wire");
+    const boost::json::object* seek = findOp(proto::kMethodMediaSeek);
+    check(seek != nullptr && seek->at("params").as_object().at("position").as_double() == 3.5,
+          "media: the seek frame carried its position");
+    const boost::json::object* loop = findOp(proto::kMethodMediaLoop);
+    check(loop != nullptr && loop->at("params").as_object().at("loop").as_bool() == false,
+          "media: the loop frame carried its boolean");
+    const boost::json::object* gain = findOp(proto::kMethodMediaGain);
+    check(gain != nullptr && gain->at("params").as_object().at("source").as_string() == "video" &&
+              std::abs(gain->at("params").as_object().at("gain").as_double() - 0.4) < 0.001,
+          "media: the gain frame carried source and value");
+    check(countOps(proto::kMethodMediaMute) == 2,
+          "media: both mute frames — on and off — reached the wire");
+    check(countOps(proto::kMethodMediaGain) == 2 &&
+              findOp(proto::kMethodMediaGain) != nullptr &&
+              ops[ops.size() - 1].as_object().at("params").as_object().at("source").as_string() ==
+                  "standalone",
+          "media: the refused standalone gain still rode the wire (the worker owns the source table)");
+}
+
 int main(int argc, char* argv[]) {
     const char* scenario = std::getenv("OPENSHOW_FAKE_SCENARIO");
     if (scenario != nullptr) {
@@ -1694,6 +1956,7 @@ int main(int argc, char* argv[]) {
     scenarioWriteStallIsRefusedBoundedAndClosed();
     scenarioStalledThenResumingPeerKeepsItsSession();
     scenarioAdoptedPaths();
+    scenarioMediaTransport();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "worker_controller_tests: %d failure(s)\n", gFailures);

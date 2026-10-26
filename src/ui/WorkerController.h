@@ -65,6 +65,19 @@ class WorkerController : public QObject {
     Q_PROPERTY(bool mediaPlaying READ mediaPlaying NOTIFY mediaChanged)
     Q_PROPERTY(QString mediaError READ mediaError NOTIFY mediaChanged)
     Q_PROPERTY(QString mediaAudio READ mediaAudio NOTIFY mediaChanged)
+    // Media transport (task 6.15a, review R15): the operator's playback
+    // surface. mediaOnAir is the honest enablement — the worker says a
+    // transport is live, not the hopeful click (path would lie: it stays
+    // set with a sticky error). Position and duration are seconds (the
+    // worker reports -1 for unknown), loop is the intent the end of the
+    // clip will honour, and mediaSources lists the registered audio
+    // identities as [{id, gain, muted}] — a source the transport does
+    // not have is absent, never falsely listed at default gain.
+    Q_PROPERTY(bool mediaOnAir READ mediaOnAir NOTIFY mediaChanged)
+    Q_PROPERTY(double mediaPosition READ mediaPosition NOTIFY mediaChanged)
+    Q_PROPERTY(double mediaDuration READ mediaDuration NOTIFY mediaChanged)
+    Q_PROPERTY(bool mediaLoop READ mediaLoop NOTIFY mediaChanged)
+    Q_PROPERTY(QVariantList mediaSources READ mediaSources NOTIFY mediaChanged)
     // Scene store (task 2.4c): what the worker has applied and is about
     // to apply, and how many prepared scenes it keeps. demoSlideCount is
     // the fixture's size, fixed for the session.
@@ -111,6 +124,18 @@ public:
     // acknowledges (task 3.3: the lyric panel presents real slides with
     // one call; the revision, as ever, is the worker's to hand out).
     Q_INVOKABLE void presentSceneJson(const QString& sceneJson);
+
+    // Media transport (task 6.15a, review R15): play/pause/seek/loop/
+    // gain/mute as operator operations over the socket. Each call is a
+    // fire-and-confirm request — the reply says the worker took it, the
+    // media* properties then say what the audience has (the 3.4 rule:
+    // controls bind to worker-reported state, never to the click).
+    Q_INVOKABLE void mediaPlay();
+    Q_INVOKABLE void mediaPause();
+    Q_INVOKABLE void mediaSeek(double seconds);
+    Q_INVOKABLE void setMediaLoop(bool enabled);
+    Q_INVOKABLE void setMediaGain(const QString& source, double gain);
+    Q_INVOKABLE void setMediaMute(const QString& source, bool muted);
 
     // Adoption after a save moves an asset's bytes (task 6.12, review R7).
     // pathMap names each move old-path -> new-path. Every scene payload this
@@ -165,6 +190,11 @@ public:
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
+    bool mediaOnAir() const { return fMediaLive; }
+    double mediaPosition() const { return fMediaPosition; }
+    double mediaDuration() const { return fMediaDuration; }
+    bool mediaLoop() const { return fMediaLoop; }
+    QVariantList mediaSources() const { return fMediaSources; }
 
 signals:
     void stateChanged();
@@ -331,6 +361,15 @@ private:
     // The lane as the worker last reported it (task 6.7c); "none" is also
     // the answer for a worker too old to send the field.
     QString fMediaAudio = QStringLiteral("none");
+    // The transport echo of status (task 6.15a, review R15). Every field
+    // is optional on the wire: a worker older than minor 6 keeps the last
+    // known answer rather than being read as a stopped transport. The
+    // defaults mirror a session that has never seen media at all.
+    bool fMediaLive = false;
+    double fMediaPosition = -1.0;
+    double fMediaDuration = -1.0;
+    bool fMediaLoop = false;
+    QVariantList fMediaSources;
 };
 
 }  // namespace openshow::ui

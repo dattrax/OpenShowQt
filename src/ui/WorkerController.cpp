@@ -525,6 +525,50 @@ void WorkerController::handleReply(const boost::json::object& message) {
             if (audio != media.end() && audio->value().is_string()) {
                 fMediaAudio = QString::fromStdString(std::string(audio->value().as_string()));
             }
+            // Transport state (task 6.15a, review R15), each field optional:
+            // a worker older than minor 6 keeps the last known answer rather
+            // than being read as "stopped" for fields it never sends.
+            const auto live = media.find("live");
+            if (live != media.end() && live->value().is_bool()) {
+                fMediaLive = live->value().as_bool();
+            }
+            const auto position = media.find("position");
+            if (position != media.end() && position->value().is_number()) {
+                fMediaPosition = position->value().to_number<double>();
+            }
+            const auto duration = media.find("duration");
+            if (duration != media.end() && duration->value().is_number()) {
+                fMediaDuration = duration->value().to_number<double>();
+            }
+            const auto loop = media.find("loop");
+            if (loop != media.end() && loop->value().is_bool()) {
+                fMediaLoop = loop->value().as_bool();
+            }
+            const auto sources = media.find("sources");
+            if (sources != media.end() && sources->value().is_array()) {
+                QVariantList listed;
+                for (const boost::json::value& entry : sources->value().as_array()) {
+                    if (!entry.is_object()) {
+                        continue;
+                    }
+                    const boost::json::object& source = entry.as_object();
+                    const auto name = source.find("name");
+                    const auto gain = source.find("gain");
+                    const auto muted = source.find("muted");
+                    if (name == source.end() || !name->value().is_string() ||
+                        gain == source.end() || !gain->value().is_number() ||
+                        muted == source.end() || !muted->value().is_bool()) {
+                        continue;  // a half-described source is not listed
+                    }
+                    QVariantMap row;
+                    row.insert(QStringLiteral("id"),
+                               QString::fromStdString(std::string(name->value().as_string())));
+                    row.insert(QStringLiteral("gain"), gain->value().to_number<double>());
+                    row.insert(QStringLiteral("muted"), muted->value().as_bool());
+                    listed.append(row);
+                }
+                fMediaSources = listed;
+            }
             emit mediaChanged();
         }
         QVariantMap layers;
@@ -866,6 +910,59 @@ void WorkerController::selectDisplay(qint64 index) {
     }
     sendRequest("output.select",
                 boost::json::object{{"monitor", static_cast<std::int64_t>(index)}});
+}
+
+// --- media transport (task 6.15a, review R15) ---
+//
+// Every command follows the layer/toggle shape: send it, and let the
+// status poll confirm it. The client adds no local optimism — a refused
+// seek leaves mediaPosition on the real position and the slider, bound
+// to it, snaps back with the next poll rather than hiding where the
+// media actually is.
+
+void WorkerController::mediaPlay() {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    sendRequest(proto::kMethodMediaPlay, {});
+}
+
+void WorkerController::mediaPause() {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    sendRequest(proto::kMethodMediaPause, {});
+}
+
+void WorkerController::mediaSeek(double seconds) {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    sendRequest(proto::kMethodMediaSeek,
+                boost::json::object{{"position", seconds}});
+}
+
+void WorkerController::setMediaLoop(bool enabled) {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    sendRequest(proto::kMethodMediaLoop, boost::json::object{{"loop", enabled}});
+}
+
+void WorkerController::setMediaGain(const QString& source, double gain) {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    sendRequest(proto::kMethodMediaGain,
+                boost::json::object{{"source", source.toStdString()}, {"gain", gain}});
+}
+
+void WorkerController::setMediaMute(const QString& source, bool muted) {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    sendRequest(proto::kMethodMediaMute,
+                boost::json::object{{"source", source.toStdString()}, {"mute", muted}});
 }
 
 std::int64_t WorkerController::sendRequest(const char* method, boost::json::object params) {

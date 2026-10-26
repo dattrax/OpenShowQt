@@ -867,6 +867,112 @@ Window {
                         return onAir.length > 0 ? "on air: " + onAir.join(" + ") : "output clear"
                     }
                 }
+
+                // Task 6.15a (review R15): the media transport, live over
+                // the socket. Every control mirrors worker status — the
+                // Pause/Play label follows mediaPlaying, the sliders
+                // follow what the worker last reported — so a refused
+                // seek snaps the thumb back to where the media actually
+                // is, and a loop toggle shows the intent the end of the
+                // clip will honour, not the moment it was clicked.
+                Column {
+                    width: parent.width
+                    spacing: 6
+                    visible: worker.mediaOnAir
+
+                    Flow {
+                        width: parent.width
+                        spacing: 8
+
+                        Button {
+                            text: worker.mediaPlaying ? "Pause" : "Play"
+                            onClicked: worker.mediaPlaying ? worker.mediaPause()
+                                                           : worker.mediaPlay()
+                        }
+
+                        CheckBox {
+                            text: "Loop"
+                            checked: worker.mediaLoop
+                            onToggled: worker.setMediaLoop(checked)
+                        }
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: "#8f93a5"
+                            font.pixelSize: 11
+                            text: worker.mediaPosition >= 0
+                                  ? worker.mediaPosition.toFixed(1) + " s"
+                                        + (worker.mediaDuration > 0
+                                           ? " / " + worker.mediaDuration.toFixed(1) + " s"
+                                           : "")
+                                  : "\u2014"
+                        }
+                    }
+
+                    // Scrub only where there is a scale to scrub on: a
+                    // container that will not say its length gets the
+                    // readout above, not a slider with no right end. The
+                    // value is re-applied from status only while the
+                    // thumb is at rest, so a 500 ms poll cannot yank a
+                    // drag out from under the finger; every move rides the
+                    // transport's own newest-wins coalescing.
+                    Slider {
+                        id: seekSlider
+                        width: parent.width
+                        visible: worker.mediaDuration > 0
+                        from: 0
+                        to: Math.max(worker.mediaDuration, 0.0001)
+                        onMoved: if (active) worker.mediaSeek(value)
+                        Connections {
+                            target: worker
+                            function onMediaChanged() {
+                                if (!seekSlider.pressed && !seekSlider.dragging) {
+                                    seekSlider.value = worker.mediaPosition
+                                }
+                            }
+                        }
+                    }
+
+                    Repeater {
+                        model: worker.mediaSources
+
+                        delegate: Row {
+                            id: sourceRow
+                            required property var modelData
+                            spacing: 6
+
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: "#8f93a5"
+                                font.pixelSize: 11
+                                text: modelData.id
+                            }
+
+                            Slider {
+                                id: gainSlider
+                                width: 120
+                                from: 0
+                                to: 1
+                                value: modelData.gain
+                                onMoved: if (active) worker.setMediaGain(modelData.id, value)
+                                Connections {
+                                    target: worker
+                                    function onMediaChanged() {
+                                        if (!gainSlider.pressed && !gainSlider.dragging) {
+                                            gainSlider.value = sourceRow.modelData.gain
+                                        }
+                                    }
+                                }
+                            }
+
+                            CheckBox {
+                                text: "mute"
+                                checked: modelData.muted
+                                onToggled: worker.setMediaMute(modelData.id, checked)
+                            }
+                        }
+                    }
+                }
             }
 
             Text {

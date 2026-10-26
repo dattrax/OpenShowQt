@@ -35,9 +35,13 @@ namespace openshow::protocol {
 // frontend). The minor-4 release rule is stricter, not additive: releases
 // without the stream identity are refused, so "preview.stream-id.v1" is
 // the capability a frontend checks before expecting its preview to keep
-// flowing.
+// flowing. Minor 6 (task 6.15a, review R15) adds the media transport: the
+// media.play/pause/seek/loop/gain/mute commands and the status fields
+// (loop, duration, per-source gain/muted) that confirm them, named by
+// "media.transport.v1" — all additive, so a minor-5 frontend still drives
+// everything it knew.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 5;
+inline constexpr std::uint32_t kProtocolMinor = 6;
 
 // Worker-to-frontend notification (task 5.5d): a background media asset
 // failed. {"path":...,"message":...} — sent when the failure happens,
@@ -45,6 +49,40 @@ inline constexpr std::uint32_t kProtocolMinor = 5;
 // successful open replaces it (the frontend polls; it must not miss a
 // failure that lands between polls).
 inline constexpr const char* kMethodMediaError = "media.error";
+
+// Frontend-to-worker media transport commands (task 6.15a, review R15).
+// These graduate what the AvPlayer already did for the benchmark into
+// session operations the operator drives over the socket. The contract
+// they share:
+//   media.play, media.pause      — no params; hold and resume the
+//                                  transport (a held clip keeps its
+//                                  frame and reports "paused").
+//   media.seek   {"position":s}  — s >= 0, seconds; a refusal the audio
+//                                  gives is the typed kSync media fault,
+//                                  never a silently swallowed request.
+//   media.loop   {"loop":on}     — live; the value at EOF decides
+//                                  rewind or final-frame hold.
+//   media.gain   {"source":n,"gain":g}   — g in [0,1].
+//   media.mute   {"source":n,"mute":m}.
+// Source names are the registered audio identities below; asking for one
+// this transport does not have is a refused request naming it, not a
+// silent no-op. Every command answers {"pending":true} — the ops are
+// applied by the transport's own thread — and output.status.media is the
+// acknowledgement (loop, duration, position, sources[].gain/muted), the
+// same rule scenes and layers already follow: confirmation comes from
+// what the audience actually has.
+inline constexpr const char* kMethodMediaPlay = "media.play";
+inline constexpr const char* kMethodMediaPause = "media.pause";
+inline constexpr const char* kMethodMediaSeek = "media.seek";
+inline constexpr const char* kMethodMediaLoop = "media.loop";
+inline constexpr const char* kMethodMediaGain = "media.gain";
+inline constexpr const char* kMethodMediaMute = "media.mute";
+
+// Audio source identities on the wire (task 6.15a). "video" is the clip's
+// embedded audio; "standalone" is the separate track — named now so the
+// wire does not change when 6.15b gives it a production lifetime.
+inline constexpr const char* kMediaSourceVideo = "video";
+inline constexpr const char* kMediaSourceStandalone = "standalone";
 
 // A framed message larger than this is a protocol error: the only legitimate
 // payloads are control messages, never pixels. The number is BOTH directions'

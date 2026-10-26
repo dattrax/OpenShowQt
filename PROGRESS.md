@@ -1017,12 +1017,91 @@ Updated: 2026-10-25 (Europe/London).
     epoch veto (defense in depth), so it has no separate mutant.
   - Gates desktop **44/44** (185 s), headless **27/27** (48 s);
     `document_controller_tests` green ×3 consecutively (threaded fixtures).
-- Exact next action: **6.15a** per the PLAN.md ledger (review R15) —
-  expose existing play/pause/seek/loop/gain/mute through typed session/RPC
-  operations and operator controls: real UI→RPC→transport tests covering
-  playback, per-source gain/mute, acknowledged position and loop-off
-  final-frame hold; references only on the wire. Then 6.15b (standalone-
-  track selection + independent production audio lifetime).
+- **6.15a — the transport answers the operator over the socket; UI→RPC→
+  transport fixtures prove it (R15) — DONE.**
+  - **Protocol (minor 5→6)**: capability `media.transport.v1`, constants
+    `kMethodMediaPlay/Pause/Seek/Loop/Gain/Mute` and the source identities
+    `"video"`/`"standalone"` — the identities on the wire now means 6.15b's
+    standalone track needs no further wire change. Scene format untouched:
+    a scene still only REFERENCES media; every transport command rides the
+    RPC.
+  - **Worker**: `OutputSession` gained `requestMediaLoop/Gain/Mute` beside
+    the existing seek/pause — pending slots the render thread applies next
+    frame beside the transport (newest-wins, cleared at teardown before
+    `live` drops), plus `mediaTransportLive()`/`mediaSourceLive()` mirrors
+    and a source-registration mask set at bring-up. A gain/mute naming a
+    source this transport never registered is a REFUSAL naming it — the
+    AvPlayer's unregistered-identity passthrough stays below the wire;
+    nothing evaporates over the socket (R19's lesson one layer up). The
+    RPC handlers validate before believing (`jsonDoubleInRange`: every
+    Boost number kind accepted, NaN and out-of-range refused, seek ceiling
+    86400 s = a bound on nonsense, not a promise about durations), refuse
+    commands with no transport per command leg, and ack `{"pending":true}`
+    — status is the acknowledgement (3.4's rule). Status `media` gained
+    `live/loop/duration/sources[{name,gain,muted}]`.
+  - **UI**: five `media*` properties + six invokables + a transport row
+    (hold/resume, loop toggle, scrub bound to the ACKNOWLEDGED position,
+    per-source gain slider + mute). Controls mirror worker status, never
+    the click; sliders reapply status values only while
+    `!pressed && !dragging`; `live` — never `path` — is the enablement
+    signal, because 5.5d leaves path with two teardown flavors (a failed
+    asset keeps it so the sticky error stays paired with its file; a
+    background-less apply clears it) and a stale path would make a dead
+    transport look commandable.
+  - **Fixtures** (`background_media_tests`, live over real `--socket`):
+    pre-bring-up refusals witnessed per gate (play/pause, seek, loop,
+    gain — each command refused NOW with its own message check, not
+    hiding behind a sibling); live/loop-default/duration 6.00 and NO
+    source listed for the silent `-an` clip; pause parks the position
+    exactly (measured 0.04–0.08, stable); forward (5.6) and backward (1.0)
+    seeks acknowledged through status; loop-off ends once — playing false,
+    error empty, position settled 5.96 and holding (the check POLLS for a
+    settled position because decoded frames drain ~2 past the EOF flag:
+    5.88 → 5.96 → stable; a fixed-sleep exact match escaped once and was
+    rewritten as the honest promise), zero "ended while looping" pushes;
+    teardown takes `live` with it, no source survives, commands are
+    refused again; gain 0.4 + mute/unmute acknowledged via the mixer echo;
+    the absent standalone source refused BY NAME on both the gain and the
+    mute leg; a refused seek over RPC = sticky status error + pushed
+    `media.error` naming "refused" while the picture plays on.
+    `worker_controller_tests` S13: a scripted peer whose transport state
+    ONLY the `media.*` commands move, echoed through `output.status.media`
+    — the controller's properties move exactly with that echo (a refused
+    standalone gain leaves the mirror on the worker's truth, the client
+    never invents a row), and a verbatim `mediaOps` ledger pins the exact
+    method-and-params frames that rode the wire, including the refused
+    standalone gain the client sends rather than second-guess the worker's
+    source table.
+  - **Mutations** m01–m03 the three refusal gates dead, m04 seek range
+    opened to negatives, m05 non-numbers coerced to 0, m06 unknown source
+    accepted, m07–m09 the session's live gate and both source gates,
+    m10–m12 the three applied slots dead, m13 the source mask never
+    registered, m14 `live` never seeded, m15 teardown leaves `live` true,
+    m16 the status sources array emptied, m17 the ack ternary promoting
+    bool to double, m18 the controller deaf to status media, m19 the
+    capability unadvertised: **19/19 CAUGHT**, each on its intended check
+    (m17's is the test's own `as_bool()` throw — disclosed). Disclosed
+    as not separately mutable: `jsonDoubleInRange`'s NaN leg (no JSON wire
+    value carries NaN to it — the serializer sends null), and the
+    teardown's mask/pending clears (individually equivalent behind m15's
+    live leg).
+  - Battery lessons: suites must be LISTS OF argv LISTS — a flat argv list
+    ran the test with no worker ("never answered") and the bare worker
+    (usage, rc 2) and misread every mutant as caught on the wrong evidence
+    (run 1 discarded); the `//`-in-patched-expression trap struck again
+    (m04 BUILD-FAILED, `/* */` since); and a dry-run patch script must
+    never `open(path, "w")` as an expression argument before its data
+    lookup — that zeroed `RpcServer.cpp`, restored from HEAD + the three
+    edit groups reapplied verbatim, faithfulness proven by full rebuilds
+    and both live suites green.
+  - Gates desktop **44/44** (192 s), headless **27/27** (48 s); offscreen
+    QML smoke zero errors.
+- Exact next action: **6.15b** per the PLAN.md ledger (review R15) —
+  standalone-track selection and an independent production audio lifetime:
+  audio-only and embedded+standalone mix in socket mode, lyric/video
+  changes must not restart the independent track, and removing or muting
+  either source leaves the other correct. The wire already names
+  `"standalone"` (6.15a), so this is session/lifetime work. Then 6.16.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -3441,6 +3520,34 @@ of this work.
   development tool and nothing in the build references it.
 
 ## Decisions
+
+- (2026-10-26, task 6.15a) Three calls shaped R15's first half.
+  **Enablement is a distinct signal from asset identity**: the controls
+  enable on `media.live` and never on `media.path`, because 5.5d left
+  path with two honest teardown flavors — a failed asset keeps it so the
+  sticky error stays paired with the file it describes, a background-less
+  apply clears it because path names what the audience is looking at —
+  and neither means "commandable". A fixture asserting the wrong flavor
+  caught this: the teardown check had to follow each flavor, not one
+  guessed rule. **Refuse NOW, name the reason, at every layer**: R19's
+  swallowed op was the bug being fixed one layer up, so a command with no
+  transport, or naming a source the transport never registered, is an
+  error the caller hears — the session returns the string, the RPC echoes
+  it, nothing queues for nobody. Corollary the fixtures pin: the client
+  does NOT second-guess the worker's source table; it sends the gain even
+  for a source it suspects is absent, and the refusal leaves the mirror on
+  the worker's truth rather than a locally edited row. **Ack `pending`,
+  confirm via status** (3.4's rule, now also for loop/gain/mute): the
+  command hands an intent to the transport's thread, so the only honest
+  acknowledgement is the next status echo. That choice made both test
+  layers anti-optimism fixtures almost for free — the scripted peer moves
+  its transport only via `media.*` and the controller's properties move
+  only via status, so a control flipped by the click cannot survive, and
+  the peer's verbatim ledger proves WHICH frames rode the wire. One
+  measurement lesson: the loop-off final-frame hold must poll for a
+  SETTLED position — decoded frames keep pacing ~2 presents past the EOF
+  flag (5.88 → 5.96 → stable), so the promise is "two reads agree and
+  keep agreeing", not "the first read after playing:false is final".
 
 - (2026-10-26, task 6.14b) Three rules came out of doing R14's second
   half. **Bound the queue, not just the thread**: one running job plus one

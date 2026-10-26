@@ -542,6 +542,22 @@ void OutputSession::mediaPlaying(const openshow::scene::Background& background) 
     fMediaFault.reset();
     fStatus.media.position = -1.0;  // until the transport presents its head
     fStatus.media.audio = AvPlayer::laneName(mediaLaneLocked());
+    // The transport's mode and mix answer from the first status (task
+    // 6.15a): the frame refresh keeps them current, but the half-second
+    // before the first frame should already read the truth — the mask is
+    // stored before this call so the list starts complete.
+    fStatus.media.live = true;
+    fStatus.media.loop = fAudio.loopEnabled();
+    fStatus.media.sources.clear();
+    const int sourceMask = fMediaSourceMask.load(std::memory_order_relaxed);
+    if ((sourceMask & 1) != 0) {
+        fStatus.media.sources.push_back({"video", fAudio.volume(AvPlayer::kVideoInput),
+                                         fAudio.muted(AvPlayer::kVideoInput)});
+    }
+    if ((sourceMask & 2) != 0) {
+        fStatus.media.sources.push_back({"standalone", fAudio.volume(AvPlayer::kSecondInput),
+                                         fAudio.muted(AvPlayer::kSecondInput)});
+    }
 }
 
 AvPlayer::AudioLane OutputSession::mediaLaneLocked() const {
@@ -560,6 +576,15 @@ void OutputSession::mediaStopped() {
     fStatus.media.playing = false;
     fStatus.media.position = -1.0;
     fStatus.media.audio = "none";  // no transport, so no lane to report
+    // The mode and the mix went out with the transport that held them
+    // (task 6.15a): a successor recomputes loop, duration and sources at
+    // its own bring-up, and until then there is nothing to acknowledge.
+    // live is the point: the path above stays for the sticky error, but
+    // a dead transport must not read as commandable.
+    fStatus.media.live = false;
+    fStatus.media.loop = false;
+    fStatus.media.duration = -1.0;
+    fStatus.media.sources.clear();
     // The on-air asset's known audio loss went out with the transport it
     // describes (task 6.7c): the next identity recomputes it.
     fExpectedAudioLoss.clear();
@@ -614,6 +639,26 @@ void OutputSession::refreshMediaStateLocked() {
     fStatus.media.position = fBackground->position();
     const AvPlayer::AudioLane lane = mediaLaneLocked();
     fStatus.media.audio = AvPlayer::laneName(lane);
+    // Transport mode and mix (task 6.15a, review R15): the loop intent
+    // EOF will honour, the clip's probed length, and the registered
+    // sources' mixer echo. All read on the transport's own thread; a
+    // source this transport never registered is absent rather than
+    // falsely listed.
+    fStatus.media.loop = fAudio.loopEnabled();
+    const double clipSeconds = fBackground->clipSeconds();
+    fStatus.media.duration = clipSeconds > 0.0 ? clipSeconds : -1.0;
+    fStatus.media.sources.clear();
+    const int sourceMask = fMediaSourceMask.load(std::memory_order_relaxed);
+    if ((sourceMask & 1) != 0) {
+        fStatus.media.sources.push_back({"video",
+                                         fAudio.volume(AvPlayer::kVideoInput),
+                                         fAudio.muted(AvPlayer::kVideoInput)});
+    }
+    if ((sourceMask & 2) != 0) {
+        fStatus.media.sources.push_back({"standalone",
+                                         fAudio.volume(AvPlayer::kSecondInput),
+                                         fAudio.muted(AvPlayer::kSecondInput)});
+    }
 
     if (!transport.fatalError.empty()) {
         // A decode that died after a successful open (review R18): no
@@ -719,6 +764,60 @@ void OutputSession::requestMediaPlay() {
     wakeRenderThread();
 }
 
+void OutputSession::requestMediaLoop(bool enabled) {
+    fPendingLoop.store(enabled ? 1 : 0, std::memory_order_release);
+    wakeRenderThread();
+}
+
+bool OutputSession::mediaSourceLive(AudioSource source) const {
+    const int mask = fMediaSourceMask.load(std::memory_order_acquire);
+    return (mask & (source == AudioSource::kVideo ? 1 : 2)) != 0;
+}
+
+bool OutputSession::requestMediaGain(AudioSource source, double gain, std::string* error) {
+    if (!mediaTransportLive()) {
+        if (error != nullptr) {
+            *error = "no background media is playing";
+        }
+        return false;
+    }
+    if (!mediaSourceLive(source)) {
+        if (error != nullptr) {
+            *error = std::string("this background has no ") +
+                     (source == AudioSource::kVideo ? "video" : "standalone") + " audio source";
+        }
+        return false;
+    }
+    fPendingGain.store(gain, std::memory_order_relaxed);
+    fPendingGainSource.store(source == AudioSource::kVideo ? AvPlayer::kVideoInput
+                                                           : AvPlayer::kSecondInput,
+                             std::memory_order_release);
+    wakeRenderThread();
+    return true;
+}
+
+bool OutputSession::requestMediaMute(AudioSource source, bool muted, std::string* error) {
+    if (!mediaTransportLive()) {
+        if (error != nullptr) {
+            *error = "no background media is playing";
+        }
+        return false;
+    }
+    if (!mediaSourceLive(source)) {
+        if (error != nullptr) {
+            *error = std::string("this background has no ") +
+                     (source == AudioSource::kVideo ? "video" : "standalone") + " audio source";
+        }
+        return false;
+    }
+    fPendingMute.store(muted ? 1 : 0, std::memory_order_relaxed);
+    fPendingMuteSource.store(source == AudioSource::kVideo ? AvPlayer::kVideoInput
+                                                           : AvPlayer::kSecondInput,
+                             std::memory_order_release);
+    wakeRenderThread();
+    return true;
+}
+
 std::vector<OutputSession::ScheduledOp> OutputSession::parseScheduledOps(
     const std::string& spec) {
     // "seek@900:0.6,seek@1100:0.2,pause@2400,play@3200" — milliseconds after
@@ -804,6 +903,30 @@ void OutputSession::applyTransportOps() {
             ++fScheduledCursor;
             applied = true;
         }
+    }
+    // The mode and mix slots (task 6.15a, review R15). Applied here, on
+    // the transport's own thread: setLoop walks the attached-pipeline list
+    // (6.6b's rule), and the mixer identity table belongs to the transport
+    // this loop owns. Each slot is independent of the momentary op above —
+    // muting a source must not swallow a pending seek, and a loop toggle
+    // is meaningless as an instant, it is the value EOF will honour.
+    const int loop = fPendingLoop.exchange(-1, std::memory_order_acq_rel);
+    if (loop >= 0 && fBackground != nullptr) {
+        fAudio.setLoop(loop == 1);
+        std::fprintf(stderr, "openshow-worker: transport loop %s\n",
+                     loop == 1 ? "on" : "off");
+        applied = true;
+    }
+    const int gainSource = fPendingGainSource.exchange(-1, std::memory_order_acq_rel);
+    if (gainSource >= 0 && fBackground != nullptr) {
+        fAudio.setVolume(gainSource,
+                         static_cast<float>(fPendingGain.load(std::memory_order_relaxed)));
+        applied = true;
+    }
+    const int muteSource = fPendingMuteSource.exchange(-1, std::memory_order_acq_rel);
+    if (muteSource >= 0 && fBackground != nullptr) {
+        fAudio.setMute(muteSource, fPendingMute.load(std::memory_order_relaxed) == 1);
+        applied = true;
     }
     if (!applied) {
         return;
@@ -1237,6 +1360,14 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
     // reaches AvPlayer as a source, so its own lane would truthfully say
     // "none"), and it belongs to this identity: a new background recomputes
     // it from scratch.
+    // The identity table mirrors what THIS transport handed AvPlayer:
+    // embedded audio registered its mixer slot when the probe found the
+    // stream (the slot exists even if the feeder's own open later failed
+    // — the gain belongs to the slot); standalone begins with 6.15b's
+    // work. Stored BEFORE mediaPlaying so the first status it publishes
+    // already lists the sources (task 6.15a).
+    fMediaSourceMask.store(config.videoAudioPath.empty() ? 0 : 1, std::memory_order_release);
+    fMediaTransportLive.store(true, std::memory_order_release);
     mediaPlaying(wanted);
     if (!audioLoss.empty()) {
         {
@@ -1273,6 +1404,15 @@ void OutputSession::teardownBackgroundTransport() {
     fScheduledOps.clear();
     fScheduledCursor = 0;
     fPendingTransportOp.store(kOpNone, std::memory_order_release);
+    // Same rule for the 6.15a slots — and live goes first: an RPC that
+    // checked the flag a breath ago has its armed intent cleared here,
+    // so a dropped command is a dropped command, never a late one fired
+    // against a successor transport that was never asked.
+    fMediaTransportLive.store(false, std::memory_order_release);
+    fMediaSourceMask.store(0, std::memory_order_release);
+    fPendingLoop.store(-1, std::memory_order_release);
+    fPendingGainSource.store(-1, std::memory_order_release);
+    fPendingMuteSource.store(-1, std::memory_order_release);
     if (!fBackground) {
         fAudio.stop();  // idempotent: a never-started player tears down clean
         fAppliedBackground = openshow::scene::Background{};

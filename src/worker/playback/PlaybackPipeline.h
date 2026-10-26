@@ -149,6 +149,11 @@ public:
     // Whether this transport is supposed to never end (task 6.7c: an EOF
     // that arrives anyway is then a fault rather than a finished clip).
     bool looping() const { return fLoop.load(); }
+    // The probed clip length in seconds; 0 when the container does not
+    // say (task 6.15a: the status duration the operator's slider bounds
+    // itself with). Written at open and never again, so it reads safely
+    // beside a running transport.
+    double clipSeconds() const { return fClipSeconds; }
     // Media position presented so far (loop-continuous pts); -1 before the
     // first submission, frozen while paused.
     double position() const;

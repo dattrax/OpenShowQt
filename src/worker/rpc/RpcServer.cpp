@@ -138,6 +138,41 @@ bool jsonUint64(const boost::json::object& args, const char* key, std::uint64_t*
     return false;
 }
 
+// A ceiling on a seek target, in seconds (task 6.15a): a bound on
+// nonsense, not a promise about durations — no service runs 24 hours of
+// background video, and a target past any real clip ends the same way a
+// target at its length does.
+constexpr double kMaxSeekSeconds = 86400.0;
+
+// Reads a JSON number as a double within [low, high] (task 6.15a): seek
+// targets and gain are fractional, and every number kind Boost.JSON
+// stores — int64, uint64, double — is a legitimate spelling of "1" or
+// "0.5". NaN and both infinities are refused by the range test after a
+// finite-only accept, because comparisons lie about NaN: an out-of-range
+// check written alone would wave it through.
+bool jsonDoubleInRange(const boost::json::object& args, const char* key, double low,
+                       double high, double* out) {
+    const auto entry = args.find(key);
+    if (entry == args.end()) {
+        return false;
+    }
+    double value = 0.0;
+    if (entry->value().is_double()) {
+        value = entry->value().as_double();
+    } else if (entry->value().is_int64()) {
+        value = static_cast<double>(entry->value().as_int64());
+    } else if (entry->value().is_uint64()) {
+        value = static_cast<double>(entry->value().as_uint64());
+    } else {
+        return false;
+    }
+    if (!(value >= low) || !(value <= high)) {  // false for NaN on either leg
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
 boost::json::value layersObject(uint32_t mask) {
     boost::json::object layers;
     for (uint32_t i = 0; i < static_cast<uint32_t>(LayerId::kCount); ++i) {
@@ -145,6 +180,19 @@ boost::json::value layersObject(uint32_t mask) {
         layers[std::string(layerName(id))] = (mask & layerBit(id)) != 0;
     }
     return layers;
+}
+
+// One entry per registered audio source (task 6.15a, review R15). An
+// empty list honestly means "no audio identity is live", which is also
+// the state of a clip with no decodable stream.
+boost::json::array sourcesArray(const OutputSession::MediaStatus& media) {
+    boost::json::array sources;
+    for (const OutputSession::MediaStatus::Source& source : media.sources) {
+        sources.push_back(boost::json::object{{"name", source.name},
+                                              {"gain", source.gain},
+                                              {"muted", source.muted}});
+    }
+    return sources;
 }
 
 boost::json::object statusResult(const OutputSession::Status& status) {
@@ -199,11 +247,23 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                // "audio" (task 6.7c, review R18) is the
                                // typed audible lane: none | silent |
                                // no-output | degraded | paused | live.
+                               // loop/duration/sources (task 6.15a,
+                               // review R15) acknowledge the transport
+                               // commands: the rewind intent EOF will
+                               // honour, the clip's probed length (-1 =
+                               // no transport or unknown), and every
+                               // REGISTERED audio source with its mixer
+                               // echo — what status says is what the
+                               // audience has.
                                {"media", boost::json::object{{"playing", status.media.playing},
                                                              {"path", status.media.path},
                                                              {"error", status.media.error},
                                                              {"audio", status.media.audio},
-                                                             {"position", status.media.position}}}};
+                                                             {"position", status.media.position},
+                                                             {"live", status.media.live},
+                                                             {"loop", status.media.loop},
+                                                             {"duration", status.media.duration},
+                                                             {"sources", sourcesArray(status.media)}}}};
 }
 
 boost::json::value displaysResult(const std::vector<OutputSession::DisplayInfo>& displays) {
@@ -826,6 +886,148 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
         if (envelope.hasId) {
             proto::appendFrame(proto::makeResult(id, boost::json::object{{"ok", true}}),
                                outbound);
+        }
+    } else if (name == proto::kMethodMediaPlay || name == proto::kMethodMediaPause) {
+        // The media transport commands (task 6.15a, review R15): what the
+        // benchmark's AvPlayer could already do, now answerable over the
+        // socket. The shape is the session's existing one — the command
+        // hands an intent to the transport's thread and answers
+        // {"pending":true}; output.status.media is the acknowledgement
+        // (playing flips, a held position holds), exactly how scenes and
+        // layers confirm. Commands with no transport are refused NOW,
+        // naming the reason, rather than dying unheard on a render thread
+        // that was never asked.
+        if (!fSession.mediaTransportLive()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "no background media is playing to " +
+                                                    std::string(name)),
+                               outbound);
+        } else {
+            if (name == proto::kMethodMediaPlay) {
+                fSession.requestMediaPlay();
+            } else {
+                fSession.requestMediaPause();
+            }
+            proto::appendFrame(
+                proto::makeResult(id, boost::json::object{{"pending", true}}), outbound);
+        }
+    } else if (name == proto::kMethodMediaSeek) {
+        // The position is validated before it is believed: NaN fails the
+        // range legs, a string or bool is not a position, and 24 hours of
+        // media is a ceiling no real clip tests (the number is a bound on
+        // nonsense, not a promise about durations).
+        double target = 0.0;
+        if (!given.is_object() ||
+            !jsonDoubleInRange(given.as_object(), "position", 0.0, kMaxSeekSeconds, &target)) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "media.seek requires a numeric position "
+                                                "within [0, 86400] seconds"),
+                               outbound);
+        } else if (!fSession.mediaTransportLive()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "no background media is playing to seek"),
+                               outbound);
+        } else {
+            fSession.requestMediaSeek(target);
+            proto::appendFrame(proto::makeResult(id, boost::json::object{{"pending", true},
+                                                                         {"target", target}}),
+                               outbound);
+        }
+    } else if (name == proto::kMethodMediaLoop) {
+        if (!given.is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "media.loop requires params"),
+                               outbound);
+        } else {
+            const boost::json::object& args = given.as_object();
+            const auto loop = args.find("loop");
+            if (loop == args.end() || !loop->value().is_bool()) {
+                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                    "media.loop requires a loop boolean"),
+                                   outbound);
+            } else if (!fSession.mediaTransportLive()) {
+                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                    "no background media is playing to loop"),
+                                   outbound);
+            } else {
+                const bool enabled = loop->value().as_bool();
+                fSession.requestMediaLoop(enabled);
+                // The EOF decision is the acknowledgement: with loop off
+                // the clip ends once — status goes playing:false with no
+                // fault and the position rests at the end while the
+                // last-drawn frame holds on screen.
+                proto::appendFrame(proto::makeResult(id, boost::json::object{{"pending", true},
+                                                                             {"loop", enabled}}),
+                                   outbound);
+            }
+        }
+    } else if (name == proto::kMethodMediaGain || name == proto::kMethodMediaMute) {
+        const bool isGain = name == proto::kMethodMediaGain;
+        if (!given.is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                std::string(name) + " requires params"),
+                               outbound);
+        } else {
+            const boost::json::object& args = given.as_object();
+            const auto source = args.find("source");
+            const std::string sourceName =
+                source != args.end() && source->value().is_string()
+                    ? std::string(source->value().as_string())
+                    : std::string();
+            openshow::worker::OutputSession::AudioSource identity =
+                openshow::worker::OutputSession::AudioSource::kVideo;
+            if (sourceName == proto::kMediaSourceVideo) {
+                identity = openshow::worker::OutputSession::AudioSource::kVideo;
+            } else if (sourceName == proto::kMediaSourceStandalone) {
+                identity = openshow::worker::OutputSession::AudioSource::kStandalone;
+            }
+            double gain = 0.0;
+            bool muted = false;
+            bool valueOk = false;
+            if (isGain) {
+                valueOk = jsonDoubleInRange(args, "gain", 0.0, 1.0, &gain);
+            } else {
+                const auto mute = args.find("mute");
+                valueOk = mute != args.end() && mute->value().is_bool();
+                if (valueOk) {
+                    muted = mute->value().as_bool();
+                }
+            }
+            std::string refusal;
+            if (sourceName != proto::kMediaSourceVideo &&
+                sourceName != proto::kMediaSourceStandalone) {
+                refusal = "unknown audio source '" + proto::clippedForEcho(sourceName) +
+                          "'; expected 'video' or 'standalone'";
+            } else if (!valueOk) {
+                refusal = isGain ? "media.gain requires a gain within [0, 1]"
+                                 : "media.mute requires a mute boolean";
+            } else {
+                const bool accepted =
+                    isGain ? fSession.requestMediaGain(identity, gain, &refusal)
+                           : fSession.requestMediaMute(identity, muted, &refusal);
+                if (accepted) {
+                    refusal.clear();
+                }
+            }
+            if (!refusal.empty()) {
+                // A source this transport never registered is a refusal
+                // the caller hears — the no-op AvPlayer passthrough for
+                // unregistered identities stays below, but the socket
+                // never lets a command evaporate.
+                proto::appendFrame(proto::makeError(id, proto::kInvalidParams, refusal),
+                                   outbound);
+            } else {
+                boost::json::object ack{{"pending", true}, {"source", sourceName}};
+                // Not one ternary: `isGain ? gain : muted` would quietly
+                // promote bool to double and send 0/1 where the contract
+                // says true/false.
+                if (isGain) {
+                    ack["gain"] = gain;
+                } else {
+                    ack["muted"] = muted;
+                }
+                proto::appendFrame(proto::makeResult(id, ack), outbound);
+            }
         }
     } else if (name == "shutdown") {
         proto::appendFrame(proto::makeResult(id, boost::json::object{{"ok", true}}),

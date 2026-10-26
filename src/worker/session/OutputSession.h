@@ -179,6 +179,27 @@ public:
         // THROUGH the change — a transport that reopened would restart
         // near zero.
         double position = -1.0;
+        // Media transport (task 6.15a, review R15): what the transport is
+        // supposed to do and what it holds, so an operator command is
+        // confirmed by status the way scenes and layers already are.
+        // loop is the live rewind intent (true until EOF decides);
+        // duration is the probe's clip length (-1 when no transport or
+        // the container does not say); sources lists the REGISTERED
+        // audio identities with their mixer echo — a source this
+        // transport never had is absent rather than falsely listed.
+        bool loop = false;
+        double duration = -1.0;
+        // True between a successful transport bring-up and its teardown.
+        // The controls need this rather than the path: "path" stays set
+        // with a sticky error so message and asset stay paired (5.5d's
+        // rule), which would leave a dead transport looking commandable.
+        bool live = false;
+        struct Source {
+            std::string name;  // "video" | "standalone"
+            double gain = 1.0;
+            bool muted = false;
+        };
+        std::vector<Source> sources;
     };
 
     // One recorded background-media failure, carried by the media.error
@@ -390,6 +411,30 @@ public:
     void requestMediaPause();
     void requestMediaPlay();
 
+    // Task 6.15a (review R15) completes the operator's surface on the
+    // same discipline: the intent is handed to the transport's thread,
+    // newest-wins, and output.status.media is the acknowledgement.
+    //   loop  — live; the value AT the end-of-file decides rewind versus
+    //           the final-frame hold (the hold itself is the seam's
+    //           existing last-drawn-frame rule, so this is not a restart).
+    //   gain / mute — per registered source, through the mixer's
+    //           clickless ramp. These answer up front: naming a source
+    //           this transport never registered is a refusal the caller
+    //           hears immediately, not an op that dies unheard on the
+    //           render thread. mediaTransportLive() guards the commands
+    //           that need a transport at all.
+    enum class AudioSource { kVideo, kStandalone };
+    void requestMediaLoop(bool enabled);
+    bool requestMediaGain(AudioSource source, double gain, std::string* error = nullptr);
+    bool requestMediaMute(AudioSource source, bool muted, std::string* error = nullptr);
+    // Any thread: a background video transport is up (between a
+    // successful bring-up and the teardown).
+    bool mediaTransportLive() const { return fMediaTransportLive.load(); }
+    // Whether this transport registered that audio identity (embedded
+    // audio present and decodable), independent of whether the sink is
+    // audible — the gain belongs to the mixer either way.
+    bool mediaSourceLive(AudioSource source) const;
+
     // Device handles a bench needs beside the session (task 1.5e): the YUV
     // upload ring lives outside the session but shares its device, and the
     // seam to build it is this narrow view rather than the objects. The
@@ -573,6 +618,21 @@ private:
     enum TransportOp { kOpNone, kOpSeek, kOpPause, kOpPlay };
     std::atomic<int> fPendingTransportOp{kOpNone};         // any thread
     std::atomic<double> fPendingSeekSeconds{0.0};          // any thread
+    // Mode and per-source control intents beside the momentary ops above
+    // (task 6.15a, review R15): each a newest-wins slot, applied by the
+    // same render-thread pass. Loop matters AT the end of the clip, so
+    // it is a stored mode, not an instant; gain and mute address
+    // independent sources and ride beside a pending seek without
+    // consuming it.
+    std::atomic<int> fPendingLoop{-1};                     // -1 none, 0 off, 1 on; any thread
+    std::atomic<int> fPendingGainSource{-1};               // identity or -1; any thread
+    std::atomic<double> fPendingGain{0.0};                 // meaningful while source >= 0
+    std::atomic<int> fPendingMuteSource{-1};               // identity or -1; any thread
+    std::atomic<int> fPendingMute{0};                      // 0/1 while source >= 0
+    // What the RPC thread may ask for, mirrored by the render thread at
+    // bring-up and teardown (fBackground itself stays render-thread-only).
+    std::atomic<bool> fMediaTransportLive{false};          // any thread
+    std::atomic<int> fMediaSourceMask{0};                  // bit0 video, bit1 standalone
     // Test-only schedule (see OPENSHOW_TEST_TRANSPORT_OPS at the transport's
     // open): a timed script applied by the same render-thread seam, so the
     // scenarios R19 names run through the real transport rather than a

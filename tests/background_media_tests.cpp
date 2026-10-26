@@ -1432,6 +1432,407 @@ void exerciseSeekRefusal(const std::string& audioClip) {
     }
 }
 
+// --- task 6.15a (review R15): the transport over the socket -------------------
+//
+// R15: "Do not count a passing component benchmark as proof of operator
+// functionality." The 6.7d scenarios above drive the transport through a
+// spawn-time schedule — precise, but still not the operator's door. These
+// scenarios drive the SAME session through the media.* RPCs the frontend
+// now sends: validation at the router, acknowledgement in output.status,
+// per-source gain/mute, the loop-off final-frame hold, and a refused seek
+// reported — every one over the real worker, real socket, real transport.
+
+// The status source entry of one identity, or null when the transport
+// does not list it.
+const boost::json::object* findSource(const boost::json::object& media, const char* name) {
+    const auto sources = media.find("sources");
+    if (sources == media.end() || !sources->value().is_array()) {
+        return nullptr;
+    }
+    for (const boost::json::value& entry : sources->value().as_array()) {
+        if (entry.is_object() && entry.as_object().contains("name") &&
+            entry.as_object().at("name").is_string() &&
+            entry.as_object().at("name").as_string() == name) {
+            return &entry.as_object();
+        }
+    }
+    return nullptr;
+}
+
+// Live transport control of a silent 6 s clip: commands with nothing on
+// air refuse, the 6.15a status fields appear, pause holds, resume
+// continues, a seek is ACKNOWLEDGED by the position status reports, and
+// loop off ends the clip once — with the final frame held and no fault
+// (a finished clip is not a broken one).
+void exerciseRpcTransport(const std::string& videoA) {
+    std::string socket;
+    pid_t worker = -1;
+    const int fd = spawnScopedWorker("rpctransport", {}, &socket, &worker);
+    if (fd < 0) {
+        check(false, "the rpc-transport worker could be spawned and handshaken");
+        return;
+    }
+    boost::json::value reply;
+
+    // Before any transport exists, every command is refused naming the
+    // reason — an RPC that evaporates is R19's swallowed op again, one
+    // layer up.
+    check(call(fd, proto::kMethodMediaPause, {}, &reply) && reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("no background media") !=
+                  std::string::npos,
+          "pause with nothing on air is refused by name, not swallowed");
+    check(call(fd, proto::kMethodMediaSeek, boost::json::object{{"position", "now"}}, &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("position") !=
+                  std::string::npos,
+          "a non-numeric seek position is a parameter error");
+    check(call(fd, proto::kMethodMediaSeek, boost::json::object{{"position", -2.0}}, &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("position") !=
+                  std::string::npos,
+          "and so is a negative one — the router does not clamp nonsense into 0");
+    check(call(fd, proto::kMethodMediaLoop, boost::json::object{}, &reply) &&
+              reply.as_object().contains("error"),
+          "media.loop without its boolean is a parameter error");
+    // Valid params, no transport: each command still refuses. Every gate
+    // gets its own witness so a dead refusal cannot hide behind a sibling
+    // command's check.
+    check(call(fd, proto::kMethodMediaSeek, boost::json::object{{"position", 3.0}}, &reply) &&
+              reply.as_object().contains("error"),
+          "a well-formed seek with nothing on air is refused, not parked for later");
+    check(call(fd, proto::kMethodMediaLoop, boost::json::object{{"loop", false}}, &reply) &&
+              reply.as_object().contains("error"),
+          "a well-formed loop toggle with nothing on air is refused");
+    check(call(fd, proto::kMethodMediaGain, boost::json::object{{"source", "video"}, {"gain", 0.5}},
+               &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("no background media") !=
+                  std::string::npos,
+          "gain names its reason when no transport could hold it");
+    {  // The enablement signal itself: path would say nothing here (it is
+        // empty until the first bring-up), live is the honest no.
+        const boost::json::object idle = mediaOf(status(fd));
+        const auto live = idle.find("live");
+        check(live != idle.end() && live->value().is_bool() && !live->value().as_bool(),
+              "before any transport, status says the media is not live");
+    }
+
+    const std::uint64_t scene = preparePresent(fd, lyricScene("RPC transport", "t1", videoA, true));
+    check(scene != 0 && waitActive(fd, scene, nullptr), "the transport-test background goes on air");
+    const bool rolling = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            return media.contains("playing") && media.at("playing").as_bool() &&
+                   numberOf(media, "position") > 0.0;
+        },
+        6000);
+    check(rolling, "frames roll before the commands start");
+
+    // The acknowledgement fields exist and start honest.
+    const boost::json::object up = mediaOf(status(fd));
+    check(up.contains("live") && up.at("live").as_bool(), "status reports the transport live");
+    check(up.contains("loop") && up.at("loop").as_bool(), "backgrounds loop by default");
+    const double duration = numberOf(up, "duration");
+    check(duration > 5.5 && duration < 6.5, "duration reports the 6 s clip");
+    check(findSource(up, "video") == nullptr,
+          "a clip whose container has no audio stream lists no source — absent, not fake-default");
+
+    // Hold. Status confirms, and the position is parked while held.
+    check(call(fd, proto::kMethodMediaPause, {}, &reply) && reply.as_object().contains("result") &&
+              reply.at("result").as_object().at("pending").as_bool(),
+          "the worker acknowledges the hold as pending");
+    const bool held = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            return !media.at("playing").as_bool() && numberOf(media, "position") >= 0.0;
+        },
+        4000);
+    check(held, "status reports the hold: paused is not playing");
+    const double parkedAt = numberOf(mediaOf(status(fd)), "position");
+    sleepMs(500);
+    check(numberOf(mediaOf(status(fd)), "position") == parkedAt,
+          "a held transport keeps exactly its position — the audience sees one frozen frame");
+
+    // Resume continues from the parked position; a restart at zero would
+    // be a re-open wearing a resume's clothes.
+    check(call(fd, proto::kMethodMediaPlay, {}, &reply) && reply.as_object().contains("result"),
+          "the worker acknowledges the resume");
+    const bool resumed = waitMedia(
+        fd,
+        [parkedAt](const boost::json::object& media) {
+            return media.at("playing").as_bool() &&
+                   numberOf(media, "position") > parkedAt + 0.15;
+        },
+        3000);
+    check(resumed, "play resumes from the hold, not from the top");
+    const double movingAt = numberOf(mediaOf(status(fd)), "position");
+    check(movingAt < parkedAt + 2.5, "and nothing teleported past the hold");
+
+    // The acknowledged position: the target rides the reply, and the
+    // position status then reports is the target — this is the
+    // "acknowledged position" of the acceptance, over the real transport.
+    check(call(fd, proto::kMethodMediaSeek, boost::json::object{{"position", 5.6}}, &reply) &&
+              reply.as_object().contains("result") &&
+              std::abs(numberOf(reply.at("result").as_object(), "target") - 5.6) < 0.01,
+          "the seek reply carries the target the worker took");
+    const bool landed = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            const double position = numberOf(media, "position");
+            return position >= 5.4 && position <= 6.05;
+        },
+        3000);
+    check(landed, "status acknowledges the forward seek at the target");
+    check(call(fd, proto::kMethodMediaSeek, boost::json::object{{"position", 1.0}}, &reply) &&
+              reply.as_object().contains("result"),
+          "the backward seek is taken too");
+    const bool landedBack = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            const double position = numberOf(media, "position");
+            return position >= 0.6 && position <= 2.3;
+        },
+        3000);
+    check(landedBack, "and status acknowledges the backward one — the position, not target+clip");
+
+    // Loop off, then the end: once, with no fault, and the final frame
+    // held. (The pixels side is pinned below the session by
+    // playback_control_tests' loopThenOff; this is the session's promise:
+    // playing:false, error:"", position resting at the end.)
+    gMediaErrors.clear();
+    check(call(fd, proto::kMethodMediaLoop, boost::json::object{{"loop", false}}, &reply) &&
+              reply.as_object().contains("result") &&
+              reply.at("result").as_object().at("loop").as_bool() == false,
+          "loop off is acknowledged");
+    const bool looped = waitMedia(
+        fd, [](const boost::json::object& media) {
+            return media.contains("loop") && !media.at("loop").as_bool();
+        },
+        3000);
+    check(looped, "status carries the mode the EOF will honour");
+    check(call(fd, proto::kMethodMediaSeek, boost::json::object{{"position", 5.2}}, &reply) &&
+              reply.as_object().contains("result"),
+          "seek near the end to keep the wait short");
+    const bool ended = waitMedia(
+        fd,
+        [](const boost::json::object& media) { return !media.at("playing").as_bool(); },
+        5000);
+    check(ended, "with loop off the clip ENDS: playing goes false");
+    const boost::json::object atEnd = mediaOf(status(fd));
+    check(textOf(atEnd, "error").empty(),
+          "a finished clip is not a broken one — no fault is implied by the end");
+    check(numberOf(atEnd, "position") > 5.5, "the position rests at the end of the clip");
+    // Frames decoded before the end keep pacing out for a breath after the
+    // EOF flag flips, so the position settles on the LAST frame's pts a
+    // moment after "not playing" first reads. The promise to test is the
+    // hold — two status reads agree and keep agreeing — not the instant.
+    bool stable = false;
+    double settled = -1.0;
+    for (int waited = 0; waited < 2000 && !stable; waited += 120) {
+        sleepMs(120);
+        const boost::json::object first = mediaOf(status(fd));
+        sleepMs(140);
+        const boost::json::object second = mediaOf(status(fd));
+        if (!second.at("playing").as_bool() && numberOf(second, "position") >= 0.0 &&
+            std::abs(numberOf(second, "position") - numberOf(first, "position")) < 0.001) {
+            settled = numberOf(second, "position");
+            stable = true;
+        }
+    }
+    check(stable, "the final frame holds: status keeps reporting one settled end position");
+    check(settled > 5.5, "and the settled position is the end of the clip");
+    check(gMediaErrors.empty(),
+          "and nothing pushed an 'ended while looping' fault — that fault is for loop ON");
+    check(call(fd, "ping", {}, &reply) && reply.as_object().contains("result"),
+          "the worker lives on after the held end, ready for the next command");
+
+    // And back the other way. A background-less scene tears the transport
+    // down; live must follow it into the status while the path stays sticky
+    // (5.5d's pairing rule), and the commands must be refused again. This
+    // is exactly why the controls enable on live and never on the path: a
+    // stale path would leave a dead transport looking commandable.
+    const std::uint64_t cleared = preparePresent(fd, lyricScene("Cleared", "t2", "", true));
+    check(cleared != 0 && waitActive(fd, cleared, nullptr),
+          "the background-less scene goes on air");
+    const bool offAir = waitMedia(
+        fd, [](const boost::json::object& media) {
+            const auto live = media.find("live");
+            return live != media.end() && live->value().is_bool() && !live->value().as_bool();
+        },
+        4000);
+    check(offAir, "teardown takes live with it");
+    const boost::json::object afterTeardown = mediaOf(status(fd));
+    // (The no-asset apply clears path by 5.5d's own rule — path names what
+    // the audience is looking at, and that is now nothing. The mediaStopped
+    // flavor of teardown, a failed asset, keeps the path instead so the
+    // sticky error stays paired with the file it describes; both are why
+    // the controls enable on live and never on the path.)
+    check(textOf(afterTeardown, "path").empty(),
+          "with no asset on air no path is claimed");
+    check(findSource(afterTeardown, "video") == nullptr,
+          "and no audio source survives the transport that registered it");
+    check(call(fd, proto::kMethodMediaPause, {}, &reply) && reply.as_object().contains("error"),
+          "commands against the torn-down transport are refused, never queued for a successor");
+    std::printf("   rpc transport: duration %.2f, parked %.2f, ended at %.2f, settled %.2f, %zu fault push(es)\n",
+                duration, parkedAt, numberOf(atEnd, "position"), settled, gMediaErrors.size());
+    retireScopedWorker(fd, worker, socket, "the rpc-transport worker answers shutdown");
+}
+
+// Per-source gain/mute over the socket, against a clip WITH an audio
+// stream: the source appears, the mix echo acknowledges every change,
+// and the sources the transport does not have (standalone — 6.15b's
+// work) refuse by name.
+void exerciseRpcGain(const std::string& audioClip) {
+    std::string socket;
+    pid_t worker = -1;
+    const int fd = spawnScopedWorker("rpcgain", {}, &socket, &worker);
+    if (fd < 0) {
+        check(false, "the rpc-gain worker could be spawned and handshaken");
+        return;
+    }
+    boost::json::value reply;
+    const std::uint64_t scene = preparePresent(fd, lyricScene("RPC gain", "g1", audioClip, true));
+    check(scene != 0 && waitActive(fd, scene, nullptr), "the audio-bearing background goes on air");
+    const bool listed = waitMedia(
+        fd, [](const boost::json::object& media) { return findSource(media, "video") != nullptr; },
+        6000);
+    check(listed, "a clip with a decodable audio stream registers its 'video' source");
+    if (!listed) {
+        retireScopedWorker(fd, worker, socket, "the rpc-gain worker answers shutdown");
+        return;
+    }
+    const boost::json::object started = mediaOf(status(fd));
+    const boost::json::object* source = findSource(started, "video");
+    check(source != nullptr && std::abs(numberOf(*source, "gain") - 1.0) < 0.01 &&
+              source->at("muted").as_bool() == false,
+          "the fresh source starts at unity, unmuted");
+    check(findSource(started, "standalone") == nullptr,
+          "and no standalone source exists yet — that is 6.15b's track");
+
+    // A source the transport never registered is a REFUSAL, not a
+    // no-op: the AvPlayer's unregistered-identity passthrough stays
+    // below the wire; over the socket nothing evaporates.
+    check(call(fd, proto::kMethodMediaGain,
+               boost::json::object{{"source", "standalone"}, {"gain", 0.5}},
+               &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("standalone") !=
+                  std::string::npos,
+          "gain for the absent standalone source is refused naming it");
+    check(call(fd, proto::kMethodMediaMute,
+               boost::json::object{{"source", "midside"}, {"mute", true}},
+               &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("unknown audio source") !=
+                  std::string::npos,
+          "and an unnamed source is a parameter error");
+    check(call(fd, proto::kMethodMediaMute,
+               boost::json::object{{"source", "standalone"}, {"mute", true}},
+               &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("standalone") !=
+                  std::string::npos,
+          "the mute leg refuses the absent source too — the gate is not gain-only");
+    check(call(fd, proto::kMethodMediaGain, boost::json::object{{"source", "video"}, {"gain", 1.5}},
+               &reply) &&
+              reply.as_object().contains("error"),
+          "a gain outside [0, 1] is a parameter error, not a clamp");
+
+    // Change what the audience hears, and hear it back from status.
+    check(call(fd, proto::kMethodMediaGain,
+               boost::json::object{{"source", "video"}, {"gain", 0.4}},
+               &reply) &&
+              reply.as_object().contains("result") &&
+              reply.at("result").as_object().at("source").as_string() == "video",
+          "the gain request is acknowledged for its source");
+    const bool quieted = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            const boost::json::object* video = findSource(media, "video");
+            return video != nullptr && std::abs(numberOf(*video, "gain") - 0.4) < 0.01;
+        },
+        4000);
+    check(quieted, "the mixer echo in status acknowledges the new gain");
+    check(call(fd, proto::kMethodMediaMute,
+               boost::json::object{{"source", "video"}, {"mute", true}},
+               &reply) &&
+              reply.as_object().contains("result") &&
+              reply.at("result").as_object().at("muted").as_bool() == true,
+          "mute is acknowledged with the state it set");
+    const bool muted = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            const boost::json::object* video = findSource(media, "video");
+            return video != nullptr && video->at("muted").as_bool();
+        },
+        4000);
+    check(muted, "status carries the mute");
+    check(mediaOf(status(fd)).at("playing").as_bool(),
+          "a muted source does not stop the picture — mute is mix, not transport");
+    check(call(fd, proto::kMethodMediaMute,
+               boost::json::object{{"source", "video"}, {"mute", false}},
+               &reply) &&
+              reply.as_object().contains("result"),
+          "unmute is taken");
+    const bool audible = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            const boost::json::object* video = findSource(media, "video");
+            return video != nullptr && !video->at("muted").as_bool();
+        },
+        4000);
+    check(audible, "and status says the source is audible again");
+    retireScopedWorker(fd, worker, socket, "the rpc-gain worker answers shutdown");
+}
+
+// A refused jump through the OPERATOR's door: same fault knob as the 6.7d
+// scheduled refusal, but the request arrives as media.seek over the
+// socket — the ack says "taken", and the refusal comes back as the typed
+// fault and the pushed notification. The clean counterpart is
+// exerciseRpcTransport's acknowledged seek: same RPC, fault off, lands.
+void exerciseRpcSeekRefusal(const std::string& audioClip) {
+    std::string socket;
+    pid_t worker = -1;
+    const int fd =
+        spawnScopedWorker("rpcrefuse", {"OPENSHOW_FAULT_AUDIO_SEEK_FAIL=1"}, &socket, &worker);
+    if (fd < 0) {
+        check(false, "the rpc-refusal worker could be spawned");
+        return;
+    }
+    const std::uint64_t scene = preparePresent(fd, lyricScene("RPC refuse", "r1", audioClip, true));
+    check(scene != 0 && waitActive(fd, scene, nullptr), "the faulted-audio background goes on air");
+    const bool rolling = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            return media.at("playing").as_bool() && numberOf(media, "position") > 0.0;
+        },
+        6000);
+    check(rolling, "the picture plays before the refused jump");
+    gMediaErrors.clear();
+    boost::json::value reply;
+    check(call(fd, proto::kMethodMediaSeek, boost::json::object{{"position", 2.0}}, &reply) &&
+              reply.as_object().contains("result"),
+          "the router takes the seek — the transport is live; whether the media obeys is another answer");
+    const bool reported = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            return textOf(media, "error").find("refused") != std::string::npos;
+        },
+        5000);
+    check(reported, "the refusal the transport hit becomes the standing status error");
+    std::size_t refusals = 0;
+    for (const boost::json::object& notification : gMediaErrors) {
+        if (textOf(notification, "message").find("refused") != std::string::npos) {
+            ++refusals;
+        }
+    }
+    check(refusals >= 1, "and is pushed as media.error naming the refusal, not only pollable");
+    const boost::json::object after = mediaOf(status(fd));
+    check(after.at("playing").as_bool(),
+          "a refused jump does not stop the picture: the audience keeps the video");
+    retireScopedWorker(fd, worker, socket, "the rpc-refusal worker answers shutdown");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1598,6 +1999,21 @@ int main(int argc, char** argv) {
         exerciseSeekRefusal(audioClip);
     } else {
         std::printf("   skipped the seek-refusal scenario (no audio fixture)\n");
+    }
+
+    // --- task 6.15a (review R15): the transport over the operator's wire ---
+    //
+    // The 6.7d scripts proved the session's seek semantics through a
+    // spawn-time schedule; these drive the same session through the
+    // media.* RPCs the frontend sends — validation, acknowledged
+    // position, per-source gain/mute, the loop-off end. Each owns its
+    // worker for the same reason the 6.7d ones do.
+    exerciseRpcTransport(videoA);
+    if (audioOk) {
+        exerciseRpcGain(audioClip);
+        exerciseRpcSeekRefusal(audioClip);
+    } else {
+        std::printf("   skipped the RPC gain/refusal scenarios (no audio fixture)\n");
     }
 
     ::unlink(corrupt.c_str());
