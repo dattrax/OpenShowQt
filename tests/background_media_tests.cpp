@@ -382,6 +382,50 @@ void exerciseBackgroundMedia(int fd, const std::string& videoA,
     }
     check(swapped > 0.0, "the swapped background plays its own media position");
 
+    // --- task 6.6b (review R6): a swap burst racing live submits ---
+    // Teardown now quiesces the producer (requestStop + join) BEFORE the
+    // seam's presenter, clock and pending slot are edited, so a swap is
+    // safe at any point of the old transport's submit cadence. The burst
+    // makes "any point" the norm: eight A/B alternations fired with no
+    // settling waits between them. The transport must still settle on the
+    // final identity — playing, its own path, position advancing — with no
+    // media error and a responsive worker throughout (a torn-down submitter
+    // calling into a dead presenter does not survive this under ASAN, and
+    // a seam left stale never settles).
+    gMediaErrors.clear();
+    std::uint64_t burstFinal = 0;
+    std::string burstClip;
+    for (int round = 0; round < 8; ++round) {
+        burstClip = (round % 2) ? videoA : videoB;
+        burstFinal = preparePresent(fd, lyricScene("Burst", "burst" + std::to_string(round),
+                                                   burstClip, true));
+        // Short enough never to settle, long enough that the previous
+        // round's transport really opened and is submitting when this
+        // round's swap tears it down — a young producer mid-cadence is
+        // exactly the window R6 names.
+        sleepMs(120);
+    }
+    check(burstFinal != 0 && waitActive(fd, burstFinal, nullptr),
+          "the transport settles after the swap burst");
+    double burstPosition = -1.0;
+    const auto burstDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+    while (std::chrono::steady_clock::now() < burstDeadline &&
+           (burstPosition <= 0.0 || textOf(mediaOf(status(fd)), "path") != burstClip)) {
+        const boost::json::object media = mediaOf(status(fd));
+        burstPosition =
+            textOf(media, "path") == burstClip ? numberOf(media, "position") : -1.0;
+        sleepMs(50);
+    }
+    const boost::json::object burstMedia = mediaOf(status(fd));
+    check(burstPosition > 0.0 && textOf(burstMedia, "path") == burstClip &&
+              burstMedia.at("playing").as_bool(),
+          "after the burst the transport plays the final identity cleanly");
+    check(gMediaErrors.empty(), "the swap burst raises no media errors");
+    const double burstAdvance = numberOf(burstMedia, "position");
+    sleepMs(400);
+    check(numberOf(mediaOf(status(fd)), "position") > burstAdvance,
+          "the settled transport keeps advancing its position");
+
     // --- a missing file fails visibly ---
     gMediaErrors.clear();
     const std::uint64_t sceneBroken =

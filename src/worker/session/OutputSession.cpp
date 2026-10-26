@@ -793,9 +793,14 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
         std::fprintf(stderr, "openshow-worker: background decode %s: %s\n",
                      wanted.assetPath.c_str(), error.c_str());
         mediaFailed(wanted.assetPath, "background decode: " + error);
+        // No quiesce boundary is needed here (6.6b): a false start() means
+        // no pacing or decode thread was ever spawned, so nothing can read
+        // the presenter or the clock after this point. The audio player
+        // started for this transport goes down with it (idempotent).
         setVideoClock(nullptr);
         fVideoPresenter = nullptr;
         fAudio.detachPipeline(fBackground.get());
+        fAudio.stop();
         fBackground->close();
         fBackground.reset();
         return;
@@ -819,18 +824,26 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
 
 void OutputSession::teardownBackgroundTransport() {
     mediaStopped();
-    fAudio.stop();
     if (!fBackground) {
+        fAudio.stop();  // idempotent: a never-started player tears down clean
         fAppliedBackground = openshow::scene::Background{};
         return;
     }
-    // Presenter and clock down first, then the seam forgets the slots:
-    // their GPU lifetime belongs to the pipeline being closed, and with no
-    // presenter registered the render thread can neither acquire nor
-    // release them (this all runs on the render thread, so no frame is
-    // mid-draw against them). Outstanding leases die with the pipeline:
-    // requestStop wakes a producer parked on one, and close() releases
-    // every slot (task 6.6a).
+    // Quiesce the producer FIRST (task 6.6b, review R6). submitVideo()
+    // reads the presenter pointer outside fMutex, so the only moment it is
+    // safe to change anything the sink touches — the presenter, the clock,
+    // the pending seam — is behind the stop/join generation boundary:
+    // requestStop wakes every wait the pacing thread can park in (clock
+    // sleep, ring poll, uploader commit) and join closes the window for
+    // good. After it the render thread owns the seam exclusively until the
+    // next start(), which creates the new pacing thread after its presenter
+    // is already published (thread creation orders the two).
+    fBackground->requestStop();
+    fBackground->join();
+    // Presenter and clock down next, then the seam forgets the slots:
+    // their GPU lifetime belongs to the pipeline being closed. Outstanding
+    // leases die with the pipeline — the joined producer parked on one was
+    // woken by requestStop, and close() releases every slot (task 6.6a).
     fVideoPresenter = nullptr;
     setVideoClock(nullptr);
     fAudio.detachPipeline(fBackground.get());
@@ -839,10 +852,12 @@ void OutputSession::teardownBackgroundTransport() {
         fPendingVideo.reset();
         fDrawnVideo.reset();
     }
-    fBackground->requestStop();
-    fBackground->join();
     fBackground->close();
     fBackground.reset();
+    // The audio player outlived no clock reader: its clock function was
+    // only ever handed to the (now joined) pipeline, so stopping it here
+    // cannot race a pacing thread either.
+    fAudio.stop();
     fAppliedBackground = openshow::scene::Background{};
 }
 

@@ -455,7 +455,13 @@ private:
     bool fNeedsPresent = false;           // render thread (swapchain recreated)
 
     // Video seam state (task 1.5e).
-    VideoPresenter* fVideoPresenter = nullptr;             // set before run()
+    // fVideoPresenter (task 6.6b, review R6): the render thread writes it
+    // only when no pacing thread can read it — before run(), after a
+    // teardown's requestStop+join, or around a start() whose failure means
+    // no thread was ever spawned. submitVideo() (the producer's thread)
+    // reads it unsynchronised, and thread creation/join are what order
+    // those accesses; nothing else may change it while a transport runs.
+    VideoPresenter* fVideoPresenter = nullptr;
     std::function<double()> fVideoClock;                   // fMutex
     std::optional<VideoSubmission> fPendingVideo;          // fMutex
     std::optional<VideoSubmission> fDrawnVideo;            // render thread

@@ -269,11 +269,32 @@ Updated: 2026-10-25 (Europe/London).
   full `--av-bench --preview` session with `--vulkan-validation` (125
   presents, 75 preview publishes, drift max 1.8 ms). Gates desktop
   **35/35**, headless **21/21**.
-- Exact next action: **6.6b**, quiesce/detach the submission producer before
-  presenter/transport replacement and synchronize cross-thread ownership
-  (review R6's second half: `submitVideo` reads the raw `fVideoPresenter`
-  outside `fMutex`; deterministic submit-vs-swap/stop regression). Then
-  continue the focused M6 leaves in order.
+- **6.6b DONE (2026-10-26).** The swap's generation boundary (review R6,
+  second half). `teardownBackgroundTransport()` now runs
+  `requestStop() + join()` **before** it touches the seam — presenter,
+  clock, audio detach, pending/drawn — so `submitVideo()`'s unsynchronised
+  presenter read on the pacing thread can never overlap a mutation; thread
+  creation orders the next transport's publish and join orders the
+  teardown, and `OutputSession.h` documents who may write `fVideoPresenter`
+  and when. The start-failure path (verified: no thread is ever spawned
+  before every `start()`/`startDecode()` failure point) additionally stops
+  the audio player it had started — a failed transport start had been
+  leaving PipeWire running until the next teardown. Deterministic
+  regression: `submitQuiesceBoundary` in `playback_queue_tests` — six
+  generations through a 25 ms slow sink (stop lands mid-submit as the
+  norm), asserting join returns bounded, **no sink call is in progress the
+  instant join returns** (sampled at join, not at close, so close's own
+  teardown cannot mask an early return), nothing is delivered after
+  join/close, joined generations stay frozen while a newer pipeline
+  submits, and close()-alone (disconnect) drains identically; the
+  mutation that detaches instead of joining segfaults the fixture every
+  run. Session side, `background_media_tests` gained a swap-burst phase:
+  eight A/B swaps at 120 ms spacing — each teardown races a young,
+  submitting producer — after which the transport must settle on the final
+  identity, playing and advancing, with zero media errors (3-run stress
+  green). Gates desktop **35/35**, headless **21/21**.
+- Exact next action: **6.7** per the PLAN.md ledger — continue the focused
+  M6 leaves in order.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -2764,6 +2785,15 @@ of this work.
   producer cycles, and leases make that degeneration observable. A
   CPU-synchronous preview readback needs no doneVk because the lease keeps
   the slot untouched through its draw.
+- (2026-10-26, task 6.6b) The transport's generation boundary is
+  stop/join, not a null-store: the session may write the seam's presenter,
+  clock and pending only after the pipeline's producer is joined, because
+  the producer reads the presenter pointer unsynchronised — no null store
+  synchronises a race, only the join does. A failed start() needs no such
+  boundary because every failure returns before any thread spawns. A
+  "no callback after join" regression must sample the instant join
+  returns; sampling after close() lets close's own teardown mask a
+  detached or early-returning join.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.

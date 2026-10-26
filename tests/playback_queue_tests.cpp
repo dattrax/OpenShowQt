@@ -10,9 +10,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "playback/PlaybackPipeline.h"
 #include "output/VulkanContext.h"
@@ -226,6 +228,111 @@ bool cpuFrozenClockStall(const std::string& path) {
                             std::chrono::steady_clock::now() - stopStart)
                             .count();
     ok = check(stopMs < 1000, "stop from a parked state is prompt") && ok;
+    return ok;
+}
+
+// --- task 6.6b (review R6): the swap's generation boundary ---
+
+// The session's teardown edits its seam presenter, clock and pending slot
+// only AFTER requestStop() + join(), because submitVideo() reads the
+// presenter raw on the producer's thread. That reordering is safe on one
+// property, pinned here deterministically: once join() returns, the submit
+// sink is neither mid-call nor ever reachable again. The sink sleeps inside
+// the call so a stop lands mid-submit as the norm rather than a race win,
+// and every restart of a fresh generation is the background-swap pattern:
+// a NEW pipeline and sink start while the joined generation's counters must
+// stay frozen forever. The last round exercises the disconnect shape:
+// close() alone (which stops and joins inside) must drain just the same.
+bool submitQuiesceBoundary(const std::string& path) {
+    struct SinkLog {
+        std::atomic<unsigned> inCall{0};  // sink entered, not yet returned
+        std::atomic<uint64_t> seen{0};    // submits fully delivered
+        uint64_t frozenAt = 0;            // seen when the generation joined
+    };
+    std::vector<std::shared_ptr<SinkLog>> logs;
+    bool joinedFast = true, neverInCall = true, nothingAfterJoin = true;
+    bool generationsFlowed = true, joinedStaysFrozen = true;
+    std::string error;
+    for (int generation = 0; generation < 6; ++generation) {
+        auto log = std::make_shared<SinkLog>();
+        logs.push_back(log);
+        PlaybackPipeline pipeline;
+        PlaybackPipeline::Options options;
+        options.path = path;
+        options.ringDepth = 2;
+        if (!pipeline.openCpu(options, &error)) {
+            std::fprintf(stderr, "  open (generation %d): %s\n", generation, error.c_str());
+            return false;
+        }
+        // A slow sink: 25 ms of work per submit against the 30 fps fixture
+        // means pacing is inside submit() most of the time the stop arrives.
+        if (!pipeline.start(
+                [log](const VideoSubmission&) {
+                    log->inCall.fetch_add(1);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                    log->seen.fetch_add(1);
+                    log->inCall.fetch_sub(1);
+                },
+                nullptr, &error)) {
+            std::fprintf(stderr, "  start (generation %d): %s\n", generation, error.c_str());
+            return false;
+        }
+        generationsFlowed =
+            waitFor([&] { return log->seen.load() >= 3; }, 5000) && generationsFlowed;
+        // The disconnect variant: generation 5 unwinds through close()
+        // alone — no explicit requestStop/join before it.
+        const auto joinStart = std::chrono::steady_clock::now();
+        if (generation == 5) {
+            pipeline.close();  // stops and joins inside
+        } else {
+            pipeline.requestStop();
+            pipeline.join();
+            // The boundary property itself: THE INSTANT join returns, no
+            // sink call may still be in progress. (Sampling after close()
+            // instead would let close's own teardown mask a detached or
+            // early-returning join.)
+            neverInCall = log->inCall.load() == 0 && neverInCall;
+            pipeline.close();
+        }
+        const auto joinMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - joinStart)
+                                .count();
+        joinedFast = joinMs < 2000 && joinedFast;
+        log->frozenAt = log->seen.load();
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        nothingAfterJoin = log->seen.load() == log->frozenAt && nothingAfterJoin;
+        neverInCall = log->inCall.load() == 0 && neverInCall;
+    }
+    // One more flowing generation on top of five joined ones: no counter of
+    // a joined generation may move while a newer pipeline submits.
+    {
+        PlaybackPipeline pipeline;
+        PlaybackPipeline::Options options;
+        options.path = path;
+        if (!pipeline.openCpu(options, &error)) {
+            std::fprintf(stderr, "  open (final generation): %s\n", error.c_str());
+            return false;
+        }
+        if (!pipeline.start([](const VideoSubmission&) {}, nullptr, &error)) {
+            std::fprintf(stderr, "  start (final generation): %s\n", error.c_str());
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        for (size_t i = 0; i + 1 < logs.size(); ++i) {
+            joinedStaysFrozen = logs[i]->seen.load() == logs[i]->frozenAt &&
+                                logs[i]->inCall.load() == 0 && joinedStaysFrozen;
+        }
+        pipeline.requestStop();
+        pipeline.join();
+        pipeline.close();
+    }
+    bool ok = true;
+    ok = check(generationsFlowed, "every generation submits with the sink running") && ok;
+    ok = check(joinedFast, "join waits out the in-flight submit — and only that") && ok;
+    ok = check(neverInCall, "no sink call is in progress when join/close returns") && ok;
+    ok = check(nothingAfterJoin, "no submission is ever delivered after join/close") && ok;
+    ok = check(joinedStaysFrozen,
+               "a newer transport's submits never touch a joined generation") && ok;
     return ok;
 }
 
@@ -587,6 +694,7 @@ int main() {
     bool ok = true;
     ok = cpuHealthyDrain(small) && ok;
     ok = cpuFrozenClockStall(hd) && ok;
+    ok = submitQuiesceBoundary(small) && ok;
 
     // GPU scenarios share one headless device, like gpu_decode_tests.
     openshow::worker::VulkanContext vk;
