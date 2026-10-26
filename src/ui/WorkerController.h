@@ -196,6 +196,11 @@ private:
     // cleared. Returns the request id of the prepare, or 0 when the JSON
     // was unreadable or the session not live.
     std::int64_t presentSceneInternal(const QString& sceneJson);
+    // Runs the worker's own reader over a scene BEFORE anything is written to
+    // the socket (task 6.8a, review R11): returns true when the payload may go
+    // on the wire, and otherwise sets the status line to the reason the
+    // operator has to fix.
+    bool sceneIsSendable(const boost::json::value& candidate, const char* verb);
     // The scene a clear derives from: the pending logical presentation
     // (latest go) when one exists, else the last confirmed on-air payload
     // (task 6.3b: clears issued before an earlier clear's confirmation

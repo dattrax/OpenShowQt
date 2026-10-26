@@ -491,10 +491,83 @@ Updated: 2026-10-25 (Europe/London).
   a seek blocks up to 500 ms there (6.9b moves that wait off the loop); one
   sticky fault string, so a sync fault and an audio fault share the message.
   Gates desktop **35/35**, headless **21/21**.
-- Exact next action: **6.8a** per the PLAN.md ledger — enforce sender/receiver
-  encoded-size limits and per-method scene/reference budgets and validate
-  JSON-RPC envelopes and integer ranges before narrowing (R11). Then continue
-  the focused M6 leaves in order.
+- **6.8a DONE (2026-10-26).** Sizes, shapes and ranges are bounded on both
+  sides of the wire (review R11). `kMaxMessageBytes` (1 MiB, payload only) is
+  enforced by the SENDER — `appendFrame` returns bool now and leaves the
+  caller's buffer untouched on refusal — as well as by the receiver, which
+  refuses from the length prefix without buffering; the review's probe was the
+  old code writing the length of a 1,048,650-byte payload and the worker
+  answering by hanging up, so `WorkerController::sendRequest` builds the frame
+  BEFORE the request exists: a refusal writes no byte, consumes no id, records
+  no pending entry that could never be answered, and tells the operator which
+  rule the content broke. `kMaxParseDepth = 8` (Boost's own default is 32)
+  caps nesting — depth failure poisons the stream like garbage, because
+  nesting is what a hostile payload still has once it fits the bytes — and
+  `kMaxMethodNameBytes = 64` with every echoed string through `clippedForEcho`
+  (160-byte budget, cut on a UTF-8 boundary: the refusal that says "too big"
+  must not itself be too big, invalid, or a copy of the payload). New
+  `parseRequestEnvelope`/`RequestEnvelope`/`isNotificationMethod` own the
+  envelope: a stream without the version stamp still ends the connection, an
+  id that cannot be answered honestly (string, bool, null, fractional, past
+  `INT64_MAX`) is refused **under id 0 with the session kept** — narrowing it
+  would hand the reply to some other request, which is 6.3a's correlation —
+  and a no-id message is neither answered NOR executed unless it is
+  `preview.released`, because a command nobody can acknowledge is 6.3a's lost
+  update. The scene's budgets live with the scene: 8 layers, 256 lines, 1024
+  characters a line, 16 KiB a layer's text, 64 KiB a slide's, 512-char ids,
+  a 4096-char path, a 256-char font, NUL rejected in every string, a CLOSED
+  key set at scene/background/item naming the clipped key (a field this build
+  does not read is a field that silently never appears on air), and
+  `assetPathIsLocal` refusing any URI scheme, a NUL and any other control byte
+  while local paths with spaces, Unicode and `dir/sub:board.png` pass — run on
+  the RAW value before the length rule, so a 200 KB `data:` URI is refused as
+  a media-byte payload and not as "too long". Measured, printed and pinned:
+  a representative slide is **324 bytes**, one pushed to every budget
+  **408,364 bytes inside a `scene.prepare` — 38.9 % of the frame budget, depth
+  5 of 8**, so nothing an operator can author is refused by the transport. The
+  worker range-checks every integer where it arrives (`jsonIntInRange`/
+  `jsonUint32`/`jsonUint64` replaced helpers that silently wrapped — most
+  concretely `output.select` answering `static_cast<int>(4294967296)` as
+  monitor **0**, a real destination the audience would have moved to), and
+  `preview.start` refuses a present-but-invalid geometry instead of defaulting
+  it. Locally, `sceneIsSendable` runs the WORKER's reader over a scene before
+  a byte is written, and `presentSceneJson` clears the restore snapshot only
+  once the new content is really on its way. **Fixtures:** `protocol_tests`
+  (at-limit frame exactly 1 MiB decodes; one byte more is refused by the
+  sender, buffer untouched and peer unpoisoned; depth 8 parses, 9 poisons
+  saying "deep"; the echo walk; the envelope matrix), `scene_tests` (every
+  budget on both sides, NUL in a line/id/path, unknown keys at all three
+  levels with a 9000-byte key answered in under 400 bytes, asset references,
+  the measurement), new `worker_rpc_limits` (desktop `display`: five text
+  budgets refused over a live socket each followed by a `ping` that answers,
+  `data:`/`http:`/`DATA:` refused where a spaced local path is accepted,
+  monitor and preview arguments refused with the audience provably unmoved,
+  unanswerable ids answered under 0, a bare response refused under its own id,
+  a 2000-byte method refused in a reply under 300 bytes, a no-id
+  `scene.present` neither answered nor executed, `preview.released` silent,
+  and an over-budget frame or over-deep payload ending only the stream with
+  the worker exiting **0**), and `worker_controller_tests` S8 (refused locally
+  with the rule named, nothing stored, the next go still reaching air, a
+  refused present keeping the restore a clear was holding, and the scripted
+  peer's new `unknown` counter proving the over-budget frame never arrived
+  while an ordinary call did — and because a validating client refuses a
+  sketch of a scene, those fixtures now hand the controller real compiled
+  scenes). **Mutations** m1 sender budget, m2 parse depth, m3 receiver
+  ceiling, m8 UTF-8 walk, m9 wide id, m10 empty method, m11 method cap, m12
+  line budget, m13 unknown keys, m14 NUL, m15 asset rule, m16 whole-slide
+  budget, m17 monitor narrowing, m18 no-id commands executed, m19+m22 both UI
+  scene-gate call sites, m20 UI frame guard, m21 restore-cleared-first: 19/19
+  CAUGHT. Accepted limits: the budget is a compile-time constant rather than
+  negotiated in hello; a dropped notification is logged but not counted in
+  status; the notification rule is the worker's, so a third-party frontend
+  that answers notifications is out of reach. Gates desktop **36/36**,
+  headless **21/21**.
+- Exact next action: **6.8b** per the PLAN.md ledger — make RPC writes
+  nonblocking and bounded, coalesce polls/notifications, add deadlines and
+  synchronise connection ownership (R11: a stalled peer must not stall
+  rendering, grow queues without bound or prevent bounded shutdown, and
+  `fConnectionFd` has no owner across threads). Then continue the focused M6
+  leaves in order.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -3074,6 +3147,37 @@ of this work.
   scrub, and the offer is the seam's way out of a slot-holding hold); status
   must reflect an operator op on the pass that applied it, never on the next
   heartbeat.
+- (2026-10-26, task 6.8a) A control message is a request to change what the
+  audience sees, never a container for content: the byte budget belongs to the
+  transport and is honoured by BOTH ends (a sender that builds a frame the
+  peer's decoder refuses is the author of someone else's disconnect), nesting
+  gets its own ceiling because depth is what a payload still has once it fits
+  the bytes, and every echoed string is clipped on a UTF-8 boundary because a
+  refusal that quotes the problem must not repeat it. How big authored CONTENT
+  may be is an application rule, so the budgets live in `openshow::scene` next
+  to the type they bound and the client runs the worker's own reader before
+  writing: the two sides cannot disagree, and "rejected locally" means the
+  operator's paste never costs them the worker. Refuse-and-keep by default,
+  refuse-and-drop only where the stream itself is no longer interpretable —
+  an argument with a problem is a typing mistake, a frame without framing is
+  not. An identifier that cannot be answered honestly is answered under 0
+  rather than narrowed: replies correlate by id, so a wrapped value applies
+  the WRONG command's acknowledgement, which is worse than no answer. A command
+  with no id is not executed: an update nobody can acknowledge is exactly the
+  lost-update shape task 6.3a closed, and "silently did it anyway" is the one
+  outcome the operator cannot diagnose. Range checks happen where the number
+  arrives, never after the cast — `static_cast<int>(4294967296)` is 0, a real
+  monitor index. A scene's key set is CLOSED: this payload is the audience's
+  content, so a field this build does not read is a field that silently never
+  appears on air, and compatibility belongs to the format number, not to
+  ignoring keys. Media references name local files only, because a `data:` URI
+  is a media-byte payload in a control message and a URL is a fetch the worker
+  has no contract for. The client clears no state for a send it did not
+  perform: the restore snapshot a clear was holding survives a refused
+  present. Finally, a budget is only a number until it is MEASURED against
+  the supported model — the largest scene the budgets allow and the deepest
+  message the protocol sends are printed by the fixtures and pinned against
+  the transport's limits, so the two can never drift apart silently.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.

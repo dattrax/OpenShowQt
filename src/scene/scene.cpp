@@ -5,7 +5,9 @@
 #include "openshow/scene/scene.h"
 
 #include <cmath>
+#include <initializer_list>
 #include <string>
+#include <string_view>
 
 namespace openshow::scene {
 
@@ -17,6 +19,26 @@ void fail(std::string* error, const std::string& message) {
     if (error != nullptr) {
         *error = message;
     }
+}
+
+// Cuts a quoted key or value out of an error message (task 6.8a, review R11):
+// "this key is enormous" must not be reported by a reply that is itself
+// enormous, because the error travels the same wire as the payload. The cut
+// steps back off a continuation byte so a UTF-8 character is never sliced in
+// half. The scene library links nothing but the domain and Boost.JSON, so
+// this stays local rather than pulling in the protocol layer for it.
+std::string clipForError(std::string_view text, std::size_t maxBytes = 64) {
+    if (text.size() <= maxBytes) {
+        return std::string(text);
+    }
+    if (maxBytes < 3) {
+        return std::string();  // not even an ellipsis fits: quote nothing at all
+    }
+    std::size_t cut = maxBytes > 3 ? maxBytes - 3 : 0;
+    while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0u) == 0x80u) {
+        --cut;
+    }
+    return std::string(text.substr(0, cut)) + "...";
 }
 
 // The one hex-colour parser, matching the domain's accepted syntax
@@ -60,14 +82,54 @@ const boost::json::value* field(const boost::json::object& obj, const char* key)
     return found == obj.end() ? nullptr : &found->value();
 }
 
+// Every string the wire carries is bounded and NUL-free (task 6.8a, R11).
+// The length is what keeps a slide inside the frame budget; the NUL rule is
+// smaller and nastier — the path travels into open(), a std::string that
+// stops at the first NUL does not name the file the operator chose, and Skia
+// is handed a (pointer, size) pair it will happily draw the tail of.
 bool wantString(const boost::json::object& obj, const char* key, std::string* out,
-                std::string* error) {
+                std::size_t maxChars, std::string* error) {
     const boost::json::value* value = field(obj, key);
     if (value == nullptr || !value->is_string()) {
         fail(error, std::string("scene: '") + key + "' must be a string");
         return false;
     }
-    *out = std::string(value->as_string());
+    std::string text(value->as_string());
+    if (text.find('\0') != std::string::npos) {
+        fail(error, std::string("scene: '") + key + "' contains a NUL byte");
+        return false;
+    }
+    if (text.size() > maxChars) {
+        fail(error, std::string("scene: '") + key + "' is " + std::to_string(text.size()) +
+                        " characters, over the limit of " + std::to_string(maxChars));
+        return false;
+    }
+    *out = std::move(text);
+    return true;
+}
+
+// The keys a scene object may carry. An unknown key is refused rather than
+// ignored: this payload is the audience's content, and a field this build
+// does not read is a field that silently never appears on air (see scene.h).
+// The error names the key, clipped — the reply must not be as large as the
+// key it is complaining about.
+bool noUnknownKeys(const boost::json::object& obj,
+                   const std::initializer_list<const char*>& known, const char* where,
+                   std::string* error) {
+    for (const auto& entry : obj) {
+        bool matched = false;
+        for (const char* candidate : known) {
+            if (entry.key() == candidate) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            fail(error, std::string("scene: ") + where + " has no field '" +
+                            clipForError(entry.key()) + "'");
+            return false;
+        }
+    }
     return true;
 }
 
@@ -151,7 +213,10 @@ bool wantBoxSize(const boost::json::object& obj, const char* key, double* out,
 // domain stores, and nothing else.
 bool wantAlign(const boost::json::object& obj, const char* key, std::string* out,
                std::string* error) {
-    if (!wantString(obj, key, out, error)) {
+    // Sixteen is generous for three words the next check narrows to a set;
+    // the budget exists so an over-long value is reported as oversized rather
+    // than as a wrong alignment.
+    if (!wantString(obj, key, out, 16, error)) {
         return false;
     }
     if (*out != "left" && *out != "center" && *out != "right") {
@@ -226,6 +291,50 @@ bool assetPathIsVideo(const std::string& path) {
         }
     }
     return false;
+}
+
+bool assetPathIsLocal(const std::string& path, std::string* why) {
+    if (why != nullptr) {
+        why->clear();  // set only when the answer is "no", always when it is
+    }
+    auto reject = [&](std::string reason) {
+        if (why != nullptr) {
+            *why = std::move(reason);
+        }
+        return false;
+    };
+    if (path.empty()) {
+        return true;  // "no media asset" is legal; fromJson decides when it is not
+    }
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        const unsigned char byte = static_cast<unsigned char>(path[i]);
+        if (byte == 0u) {
+            return reject("the asset path contains a NUL byte");
+        }
+        if (byte < 0x20u || byte == 0x7Fu) {
+            return reject("the asset path contains a control character");
+        }
+    }
+    // A scheme prefix means this is not a filesystem path at all. "data:"
+    // would smuggle media BYTES into a control message (the thing the whole
+    // transport exists to avoid); any other scheme asks the worker to fetch
+    // over a network it has no contract for. Schemes are case-insensitive,
+    // and a colon may not appear before the first slash, so
+    // "weird:name/file.png" stays the ordinary relative path it is.
+    const std::size_t colon = path.find(':');
+    if (colon != std::string::npos) {
+        const std::size_t slash = path.find('/');
+        if (slash == std::string::npos || colon < slash) {
+            std::string scheme;
+            for (std::size_t i = 0; i < colon; ++i) {
+                const char c = path[i];
+                scheme += (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+            }
+            return reject("the asset path is a '" + clipForError(scheme) +
+                          "' reference; the worker opens local files only");
+        }
+    }
+    return true;
 }
 
 bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
@@ -377,9 +486,14 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     }
 
     Scene scene;
-    if (!wantString(root, "showId", &scene.showId, error) ||
-        !wantString(root, "slideId", &scene.slideId, error) ||
+    if (!wantString(root, "showId", &scene.showId, kMaxIdChars, error) ||
+        !wantString(root, "slideId", &scene.slideId, kMaxIdChars, error) ||
         !wantColor(root, "backgroundColor", &scene.background.color, error)) {
+        return false;
+    }
+    if (!noUnknownKeys(root, {"scene", "showId", "slideId", "backgroundColor", "background",
+                              "items"},
+                       "the scene", error)) {
         return false;
     }
 
@@ -389,9 +503,37 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         return false;
     }
     const boost::json::object& jsonBackground = background->as_object();
+    if (!noUnknownKeys(jsonBackground, {"image", "video", "assetId", "assetPath"},
+                       "'background'", error)) {
+        return false;
+    }
     if (!wantBool(jsonBackground, "image", &scene.background.hasImage, error) ||
-        !wantString(jsonBackground, "assetId", &scene.background.assetId, error) ||
-        !wantString(jsonBackground, "assetPath", &scene.background.assetPath, error)) {
+        !wantString(jsonBackground, "assetId", &scene.background.assetId, kMaxIdChars,
+                    error)) {
+        return false;
+    }
+    // A media reference is checked WHOLE, before the hasImage clear below, and
+    // BEFORE the length rule that wantString would apply to it: a 200 KB data:
+    // URI is a media-byte payload smuggled into a control message, and calling
+    // that "too long" hides what was actually wrong with it. So the raw value
+    // goes through assetPathIsLocal first (refusing any scheme, a NUL and other
+    // control bytes whatever its size) and only then through the length budget,
+    // which now bounds what is left — a genuinely local path. Both are still
+    // refused; what the order decides is which reason the operator is given.
+    const boost::json::value* rawPath = field(jsonBackground, "assetPath");
+    if (rawPath != nullptr && rawPath->is_string()) {
+        std::string why;
+        if (!assetPathIsLocal(std::string(rawPath->as_string()), &why)) {
+            fail(error, "scene: " + why);
+            return false;
+        }
+    }
+    if (!wantString(jsonBackground, "assetPath", &scene.background.assetPath, kMaxPathChars,
+                    error)) {
+        return false;
+    }
+    if (scene.background.hasImage && scene.background.assetPath.empty()) {
+        fail(error, "scene: background 'image' requires an 'assetPath'");
         return false;
     }
     // Task 5.5: the kind flag is optional (scene 1 predates it, so an
@@ -420,27 +562,74 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         fail(error, "scene: 'items' must be an array");
         return false;
     }
+    if (items->as_array().size() > kMaxSceneItems) {
+        fail(error, "scene: " + std::to_string(items->as_array().size()) +
+                        " text items is over the limit of " +
+                        std::to_string(kMaxSceneItems));
+        return false;
+    }
+    std::size_t sceneTextChars = 0;
     for (const boost::json::value& element : items->as_array()) {
         if (!element.is_object()) {
             fail(error, "scene: 'items' holds a non-object");
             return false;
         }
         const boost::json::object& jsonItem = element.as_object();
+        if (!noUnknownKeys(jsonItem,
+                           {"lines", "color", "fontFamily", "fontSize", "x", "y", "width",
+                            "height", "align", "lineSpacing"},
+                           "a text item", error)) {
+            return false;
+        }
         TextItem item;
         const boost::json::value* lines = field(jsonItem, "lines");
         if (lines == nullptr || !lines->is_array()) {
             fail(error, "scene: an item's 'lines' must be an array");
             return false;
         }
+        if (lines->as_array().size() > kMaxItemLines) {
+            fail(error, "scene: an item's " + std::to_string(lines->as_array().size()) +
+                            " lines are over the limit of " +
+                            std::to_string(kMaxItemLines));
+            return false;
+        }
+        std::size_t itemTextChars = 0;
         for (const boost::json::value& line : lines->as_array()) {
             if (!line.is_string()) {
                 fail(error, "scene: an item's 'lines' holds a non-string");
                 return false;
             }
-            item.lines.push_back(std::string(line.as_string()));
+            std::string text(line.as_string());
+            if (text.find('\0') != std::string::npos) {
+                fail(error, "scene: an item's line contains a NUL byte");
+                return false;
+            }
+            if (text.size() > kMaxLineChars) {
+                fail(error, "scene: a line of " + std::to_string(text.size()) +
+                                " characters is over the limit of " +
+                                std::to_string(kMaxLineChars));
+                return false;
+            }
+            itemTextChars += text.size();
+            if (itemTextChars > kMaxItemTextChars) {
+                fail(error, "scene: one item's text exceeds " +
+                                std::to_string(kMaxItemTextChars) + " characters");
+                return false;
+            }
+            item.lines.push_back(std::move(text));
+        }
+        sceneTextChars += itemTextChars;
+        // The binding budget of the set: however the text is spread across
+        // layers and lines, one scene cannot carry more authored words than
+        // this, which is what makes the serialised worst case a known number.
+        if (sceneTextChars > kMaxSceneTextChars) {
+            fail(error, "scene: the slide's text exceeds " +
+                            std::to_string(kMaxSceneTextChars) + " characters");
+            return false;
         }
         if (!wantColor(jsonItem, "color", &item.color, error) ||
-            !wantString(jsonItem, "fontFamily", &item.fontFamily, error) ||
+            !wantString(jsonItem, "fontFamily", &item.fontFamily, kMaxFontFamilyChars,
+                        error) ||
             !wantFontSize(jsonItem, "fontSize", &item.fontSize, error) ||
             !wantBoxEdge(jsonItem, "x", &item.x, error) ||
             !wantBoxEdge(jsonItem, "y", &item.y, error) ||

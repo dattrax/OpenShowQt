@@ -9,6 +9,14 @@
  * store revision) until confirmed on air, and a refused restore stays
  * retryable with honest indicators.
  *
+ * Task 6.8a (review R11) added S8: input this build knows the worker will
+ * refuse is refused in the client — oversized authored text, a data: URI as an
+ * asset reference, a frame too big to build — with the reason in the status
+ * line, no byte on the socket, and the session still serving the next go. The
+ * scripted peer's report is what proves the "no byte" half. Because the client
+ * now validates scenes before sending, every payload these fixtures hand the
+ * controller is a real compiled scene rather than a sketch of one.
+ *
  * These properties need a worker that is slow, refuses, and dies on cue, so
  * the fixtures supervise a scripted stand-in: this very binary re-executes
  * itself (via OPENSHOW_WORKER_PROGRAM) as a minimal RPC peer that speaks the
@@ -27,10 +35,10 @@
  * real worker's bounded store) behind the newest handed out is refused, so
  * a restore that still depended on the store being asked cannot hide that.
  *
- * Each child writes a small report (prepares, presents, presented revision
- * list) to OPENSHOW_FAKE_REPORT so the parent can prove WHICH presents the
- * controller actually sent, not just the final revision. No display, no
- * GPU, no real worker.
+ * Each child writes a small report (prepares, presents, requests for methods it
+ * does not model, presented revision list) to OPENSHOW_FAKE_REPORT so the parent
+ * can prove WHICH requests the controller actually sent, not just the final
+ * revision. No display, no GPU, no real worker.
  */
 
 #include <boost/json.hpp>
@@ -56,12 +64,14 @@
 #include <QString>
 
 #include "openshow/protocol/protocol.h"
+#include "openshow/scene/scene.h"
 
 #include "WorkerController.h"
 
 namespace {
 
 namespace proto = openshow::protocol;
+namespace scene = openshow::scene;
 using openshow::ui::WorkerController;
 
 // The scripted peer's store window: presents of revisions older than this
@@ -325,6 +335,11 @@ private:
             writeReport();
             _exit(0);
         }
+        // Anything else the controller sent that this peer does not model
+        // (layer.setEnabled is the one the fixtures count): counting it is what
+        // lets a fixture prove a refused message never arrived, rather than
+        // proving only that a status line appeared.
+        ++fUnknown;
         sendError(id, "fake method not found");
     }
 
@@ -340,6 +355,7 @@ private:
             {"scenario", fScenario},
             {"prepares", fPrepares},
             {"presents", fPresents},
+            {"unknown", fUnknown},
             {"presented", std::move(presented)},
         };
         if (std::FILE* file = std::fopen(fReportPath.c_str(), "wb")) {
@@ -364,25 +380,61 @@ private:
     int fPrepared = 0;
     int fLastRevision = 0;
     int fFullPrepares = 0;  // prepares carrying the "RETAINME" marker
+    int fUnknown = 0;       // requests for methods this peer does not model
     int fActive = 0;
 };
 
 // --- scenes for the fixtures -------------------------------------------------
 
-// Minimal scene objects: the fake worker never validates payloads, the
-// controller mirrors them verbatim, and sceneContent() derives the content
-// flags the assertions read.
+// The payloads these fixtures hand the controller have to be scenes this build's
+// READER accepts: WorkerController now runs openshow::scene::fromJson over a
+// scene before a single byte goes to the worker (task 6.8a, review R11), so a
+// payload that merely looked like a scene would be refused locally and never
+// reach the scripted peer at all — every scenario below would then be watching
+// nothing. They are built through the compiled-scene type rather than by hand so
+// the keys the format insists on cannot drift out of date here; the fake worker
+// still never validates, the controller still mirrors payloads verbatim, and
+// sceneContent() still derives the content flags the assertions read.
+scene::Scene authoredScene(const std::vector<std::string>& lines, unsigned color) {
+    scene::Scene scene;
+    scene.showId = "fixture-show";
+    scene.slideId = "fixture-slide";
+    scene.background.color = color;
+    if (!lines.empty()) {
+        scene::TextItem item;
+        item.lines = lines;
+        scene.items.push_back(std::move(item));
+    }
+    return scene;
+}
+
 std::string sceneWordsAndBackground(const char* text, unsigned color) {
-    return std::string(R"({"items":[{"lines":[")") + text + R"("]}],"backgroundColor":)" +
-           std::to_string(color) + "}";
+    return boost::json::serialize(
+        scene::toJson(authoredScene({std::string(text)}, color)));
 }
 
 std::string sceneWordsOnly(const char* text) {
-    return std::string(R"({"items":[{"lines":[")") + text + R"("]}],"backgroundColor":0})";
+    return sceneWordsAndBackground(text, 0u);
 }
 
 std::string sceneBackgroundOnly(unsigned color) {
-    return std::string(R"({"items":[],"backgroundColor":)") + std::to_string(color) + "}";
+    return boost::json::serialize(scene::toJson(authoredScene({}, color)));
+}
+
+// Content this build's reader refuses, for the fixtures that prove the refusal
+// happens BEFORE the socket: one line over the line budget, and a background
+// naming a media-byte payload instead of a file.
+std::string oversizeLinesScene() {
+    scene::Scene scene =
+        authoredScene({std::string(scene::kMaxLineChars + 1, 'v')}, 0x220000u);
+    return boost::json::serialize(scene::toJson(scene));
+}
+
+std::string smuggledMediaPayload() {
+    scene::Scene scene = authoredScene({"text"}, 0u);
+    scene.background.hasImage = true;
+    scene.background.assetPath = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg";
+    return boost::json::serialize(scene::toJson(scene));
 }
 
 // --- the scenarios ------------------------------------------------------------
@@ -805,6 +857,128 @@ void scenarioFailedRestoreRetry() {
           "retry: the refused restore presented nothing; the retry did");
 }
 
+// S8 (task 6.8a, review R11): input this build knows the worker will refuse is
+// refused HERE, in the client, and the operator is told why. The scripted peer is
+// deliberately a plain, accepting one: everything these assertions measure is
+// what did NOT arrive, which only an unrefusing peer can show.
+void scenarioRefusedLocally() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
+    const std::string report = tempPath("local-refusal");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "local: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    // The operator's paste: text over the line budget. It is refused before the
+    // socket, so the peer must see no prepare, and the status line must name the
+    // scene as the thing that was not sent — "worker error" arriving five
+    // seconds later, or a dropped connection, are both the bug this replaces.
+    controller.presentSceneJson(QString::fromStdString(oversizeLinesScene()));
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("was not sent"));
+               }),
+               "local: oversized text is reported as not sent, in the operator's words")) {
+        std::fprintf(stderr, "  status was: %s\n",
+                     controller.statusText().toLocal8Bit().constData());
+    }
+    check(controller.scenePrepared() == 0 && controller.sceneActive() == 0,
+          "local: a scene that was not sent stored nothing and moved nothing");
+
+    // A media-byte payload in an asset reference is refused for its own reason,
+    // and again without a byte on the wire.
+    controller.prepareScene(QString::fromStdString(smuggledMediaPayload()));
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(
+                       QStringLiteral("the scene was not sent"));
+               }) &&
+                   controller.statusText().contains(QStringLiteral("local files only")),
+               "local: a data: asset reference is refused by the rule it broke")) {
+        std::fprintf(stderr, "  status was: %s\n",
+                     controller.statusText().toLocal8Bit().constData());
+    }
+
+    // And the session is intact: the very next go is a normal one, acknowledged,
+    // presented, and on air. A guard that refused by hanging up, or that consumed
+    // the request id it never used, would show up here as a go that hangs.
+    controller.presentSceneJson(QString::fromStdString(sceneWordsOnly("AFTER")));
+    const bool onAir = waitUntil([&controller] {
+        return controller.sceneActive() == 1 && controller.wordsOnAir() &&
+               controller.scenePending() == 0;
+    });
+    check(onAir, "local: the go after a refusal still reaches the worker and the audience");
+
+    // A refused NEW scene must not cost the operator the restore snapshot a
+    // clear was keeping: the refusal changes nothing at all, so the content that
+    // could put the audience back is still there. (The order matters: a client
+    // that cleared the snapshot before trying to send loses the restore on a
+    // refusal, which the audience would feel as "restore does nothing".)
+    controller.clearSlide();
+    const bool cleared = waitUntil([&controller] {
+        return controller.sceneActive() == 2 && !controller.wordsOnAir();
+    });
+    if (!check(cleared, "local: the words clear is on air")) {
+        controller.shutdownNow();
+        return;
+    }
+    controller.presentSceneJson(QString::fromStdString(oversizeLinesScene()));
+    digestThenRefresh(controller, 200);
+    check(controller.sceneActive() == 2 && !controller.wordsOnAir(),
+          "local: a refused present leaves the audience where the clear put it");
+    check(controller.canRestore(),
+          "local: a refused present keeps the restore the clear was holding");
+    controller.restoreOutput();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 3 && controller.wordsOnAir();
+          }),
+          "local: and that restore still puts the retained content on air");
+
+    // The transport's own budget, from the sender's side: a request whose frame
+    // cannot be built is refused with a status line rather than written in
+    // pieces. The peer counts requests for methods it does not model, so this
+    // also proves not one byte of the giant frame left the process.
+    controller.setLayerEnabled(QString(3u << 20, QChar('l')), true);
+    // Named by method: the status line already carries the scene refusals, and a
+    // check that only looked for "was not sent" would pass on those.
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("layer.setEnabled")) &&
+                          controller.statusText().contains(QStringLiteral("was not sent"));
+               }),
+               "local: a request over the frame budget is refused, not written")) {
+        std::fprintf(stderr, "  status was: %s\n",
+                     controller.statusText().toLocal8Bit().constData());
+    }
+
+    // The counter has to be proved live as well as silent: this ordinary call
+    // DOES reach the peer, so a report of "one" below means the giant one did
+    // not, rather than the peer counting nothing at all.
+    controller.setLayerEnabled(QStringLiteral("clock"), true);
+    digestThenRefresh(controller, 300);
+    controller.shutdownNow();
+
+    const boost::json::object counts = readReport(report);
+    // The accepted go, the clear's derived scene, and the restore of the retained
+    // content: three prepares and three presents. The two refused scenes and the
+    // unbuildable frame contributed no request of any kind — which is the whole
+    // acceptance, since scenePrepared() was already 0 after the first refusals.
+    const boost::json::array& presented = counts.at("presented").as_array();
+    check(counts.at("prepares").to_number<std::int64_t>() == 3 &&
+              counts.at("presents").to_number<std::int64_t>() == 3 && presented.size() == 3 &&
+              presented[0].to_number<std::int64_t>() == 1 &&
+              presented[1].to_number<std::int64_t>() == 2 &&
+              presented[2].to_number<std::int64_t>() == 3,
+          "local: three prepares and three presents, the refusals contributing neither");
+    check(counts.at("unknown").to_number<std::int64_t>() == 1,
+          "local: the over-budget frame never reached the worker (the ordinary one did)");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -837,6 +1011,7 @@ int main(int argc, char* argv[]) {
     scenarioBackToBackClears();
     scenarioRestoreSurvivesStoreWindow();
     scenarioFailedRestoreRetry();
+    scenarioRefusedLocally();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "worker_controller_tests: %d failure(s)\n", gFailures);

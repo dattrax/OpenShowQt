@@ -46,9 +46,34 @@ inline constexpr std::uint32_t kProtocolMinor = 5;
 // failure that lands between polls).
 inline constexpr const char* kMethodMediaError = "media.error";
 
-// A framed message larger than this is treated as a protocol error: the
-// only legitimate payloads are control messages, never pixels.
+// A framed message larger than this is a protocol error: the only legitimate
+// payloads are control messages, never pixels. The number is BOTH directions'
+// budget, and it is the payload (the frame adds the 4-byte prefix): senders
+// refuse to build a frame the peer's decoder would reject (appendFrame) and the
+// receiver refuses to accept one (Decoder::next). It is measured against the
+// supported model rather than picked for comfort — the largest scene every
+// application budget allows fits a scene.prepare at 39% of it, which
+// scene_tests prints and pins.
 inline constexpr std::uint32_t kMaxMessageBytes = 1u << 20;  // 1 MiB
+
+// How deeply a frame may nest (task 6.8a, review R11). Boost.JSON allows 32
+// levels by default, so one 1 MiB frame of braces spends the receive buffer on
+// structure no handler will ever read. The deepest legitimate message in this
+// protocol is a scene.prepare, which counts five levels — the message object,
+// params, items, one item, lines — measured by protocol_tests and scene_tests
+// against a compiled scene; every reply nests more shallowly still. Eight
+// leaves a scene field room to grow a level without a wire change.
+inline constexpr std::size_t kMaxParseDepth = 8;
+
+// Method names are short fixed identifiers from a closed list; a megabyte-long
+// "method" is an attack or a bug, and the reply that reports it must not be
+// another megabyte.
+inline constexpr std::size_t kMaxMethodNameBytes = 64;
+
+// Any text an error reply echoes back from client input (a rejected key, layer
+// or asset name). Without a limit, the error carrying "this key is too long"
+// is itself the oversized message R11 is about.
+inline constexpr std::size_t kMaxEchoedTextBytes = 160;
 
 // JSON-RPC 2.0 error codes. The -320xx values are ours.
 enum ErrorCode : int {
@@ -66,12 +91,28 @@ enum ErrorCode : int {
 std::string offerPayload();
 
 // Appends one framed message (length prefix + serialised JSON) to *out.
-void appendFrame(const boost::json::value& message, std::string* out);
+//
+// Returns false WITHOUT touching *out when the serialised payload will not fit
+// kMaxMessageBytes (task 6.8a, review R11). This is a send limit, not only a
+// receive one: an unchecked sender used to write the length as
+// `static_cast<uint32_t>(payload.size())` and hand over a frame the peer's
+// decoder rejected, so an operator pasting very large text did not get a
+// validation error — the worker hung up (the review measured 1,048,650 bytes
+// on the wire against a decoder that refuses 1,048,646). A false return is the
+// caller's cue to refuse the operation LOCALLY and say why; the connection
+// stays up and useful.
+bool appendFrame(const boost::json::value& message, std::string* out);
+
+// `text`, cut to at most `maxBytes` and ending at a UTF-8 boundary, for error
+// messages that quote client input. A clip that stopped mid-codepoint would
+// hand the peer invalid UTF-8 in the very reply that explains the problem;
+// an elided clip ends in "...".
+std::string clippedForEcho(std::string_view text, std::size_t maxBytes = kMaxEchoedTextBytes);
 
 // Incremental stream decoder. Feed() bytes as they arrive from the socket;
 // next() pops one complete parsed message per call. A framing violation
-// (oversize length, malformed JSON) is fatal for the connection: feed/next
-// then report failure, failed() stays true.
+// (oversize length, malformed JSON, nesting past kMaxParseDepth) is fatal for
+// the connection: feed/next then report failure, failed() stays true.
 class Decoder {
 public:
     void feed(std::string_view bytes);
@@ -112,6 +153,52 @@ boost::json::object makeNotification(std::string_view method,
 // True when the value is an object carrying "jsonrpc":"2.0" and a method
 // or an id; the full shape is validated by whoever serves it.
 bool looksLikeJsonRpc(const boost::json::value& value);
+
+// --- a request's shape, validated before any handler runs (task 6.8a, R11) ---
+
+// What routing needs, checked once: the version stamp, a usable method name,
+// an id the reply can honestly carry, and the params pointer.
+struct RequestEnvelope {
+    std::int64_t id = 0;   // meaningful only when hasId is set
+    bool hasId = false;    // false: a NOTIFICATION — nothing may ever answer it
+    std::string_view method;
+    const boost::json::value* params = nullptr;  // null when the key is absent
+};
+
+// Validates the envelope and fills *out. Returns true when the message may be
+// routed; `out->hasId` then says whether an answer is permitted at all.
+// `out->method` and `out->params` BORROW from `message`, so *out is only valid
+// while `message` is (route on the value you parsed, do not keep the view).
+//
+// On false the caller answers with *code and *message (and keeps the
+// connection unless *dropsConnection says the frame is not JSON-RPC 2.0 at
+// all — a stream that has lost its version stamp is not worth serving).
+// *out is still filled well enough to answer: `id` carries the id to reply
+// under, which is 0 whenever the message's own id could not be trusted, and
+// `hasId` is true in that case because the client did ask for an answer.
+//
+// The rules R11 asked for:
+//   * "id", when present, must be a JSON integer inside the signed 64-bit
+//     range this protocol's ids live in. Anything else — a string, a bool, a
+//     double, a uint64 past INT64_MAX — is refused rather than silently
+//     narrowed to 0, which would quietly collide with another request's reply
+//     (task 6.3a correlates by id).
+//   * a message without "id" is a notification, so a server reply is not
+//     merely useless, it is forbidden; routing decides whether the METHOD is
+//     one of the notification methods (preview.released) and ignores it if
+//     not, because a command that can never be acknowledged is exactly the
+//     lost-update shape 6.3a closed.
+//   * "method" must be a string of 1..kMaxMethodNameBytes.
+//   * "jsonrpc" must be exactly "2.0".
+bool parseRequestEnvelope(const boost::json::value& message, RequestEnvelope* out,
+                          ErrorCode* code, std::string* text,
+                          bool* dropsConnection = nullptr);
+
+// True for the methods this protocol documents as fire-and-forget: the sender
+// never wants an answer, so no answer is ever sent for them (not even an
+// error). `preview.released` per frame is the case; it may still carry an id
+// if the client wants a receipt, which makes it a request.
+bool isNotificationMethod(std::string_view method);
 
 // --- handshake ---------------------------------------------------------------
 

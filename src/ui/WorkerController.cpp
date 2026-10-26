@@ -476,6 +476,25 @@ void WorkerController::setLayerEnabled(const QString& name, bool enabled) {
                                     {"enabled", enabled}});
 }
 
+// The authored scene is checked HERE, before it is sent (task 6.8a, review
+// R11): the budgets that bound a slide — items, lines, characters, what an
+// asset reference may name — live in openshow::scene, and this is the reader
+// the worker runs too, so the two sides cannot disagree about what fits.
+// Checking it here is what "rejected locally" means for the operator who pasted
+// a novel into a lyric field: no payload crosses the socket, the worker never
+// hangs up on them, and the status line names the rule the slide broke.
+bool WorkerController::sceneIsSendable(const boost::json::value& candidate,
+                                       const char* verb) {
+    openshow::scene::Scene parsed;
+    std::string error;
+    if (openshow::scene::fromJson(candidate, &parsed, &error)) {
+        return true;
+    }
+    setStatus(QStringLiteral("%1: the scene was not sent - %2")
+                  .arg(QString::fromLatin1(verb), QString::fromStdString(error)));
+    return false;
+}
+
 void WorkerController::prepareScene(const QString& sceneJson) {
     if (!fConnected || !fHandshakeDone) {
         return;
@@ -487,7 +506,10 @@ void WorkerController::prepareScene(const QString& sceneJson) {
         setStatus(QStringLiteral("scene.prepare: the scene JSON is not readable"));
         return;
     }
-    // The scene object itself is the params (the worker validates it).
+    if (!sceneIsSendable(parsed, "scene.prepare")) {
+        return;
+    }
+    // The scene object itself is the params (the worker validates it too).
     const std::int64_t id = sendRequest("scene.prepare", parsed.as_object());
     armPrepare(id, parsed.as_object(), /*autoPresent=*/false);
 }
@@ -504,12 +526,18 @@ void WorkerController::presentScene(qint64 revision) {
 }
 
 void WorkerController::presentSceneJson(const QString& sceneJson) {
-    // New content is a fresh go: whatever a clear sequence kept for
-    // restore is history now (the operator moved on).
+    // New content is a fresh go: whatever a clear sequence kept for restore is
+    // history now (the operator moved on). That only becomes true once the new
+    // content is actually on its way (task 6.8a): a scene this client refuses
+    // to send leaves the audience exactly where it was, and the snapshot that
+    // could put it back is still worth having.
+    const std::int64_t id = presentSceneInternal(sceneJson);
+    if (id == 0) {
+        return;
+    }
     fRestoreJson.clear();
     fRestoreArmedGo = 0;
     fRestoreDoneRevision = 0;
-    presentSceneInternal(sceneJson);
 }
 
 std::int64_t WorkerController::presentSceneInternal(const QString& sceneJson) {
@@ -521,6 +549,9 @@ std::int64_t WorkerController::presentSceneInternal(const QString& sceneJson) {
         boost::json::parse(sceneJson.toStdString(), parseError);
     if (parseError || !parsed.is_object()) {
         setStatus(QStringLiteral("scene.present: the scene JSON is not readable"));
+        return 0;
+    }
+    if (!sceneIsSendable(parsed, "scene.present")) {
         return 0;
     }
     // Same hand-off as presentDemoSlide: present on the prepare ack, so
@@ -682,22 +713,45 @@ void WorkerController::selectDisplay(qint64 index) {
 }
 
 std::int64_t WorkerController::sendRequest(const char* method, boost::json::object params) {
+    // The frame is built BEFORE the request exists (task 6.8a, review R11).
+    // kMaxMessageBytes is the budget of BOTH directions, and the review's probe
+    // measured what an unchecked sender costs: it wrote the length of a
+    // 1,048,650-byte payload, the worker's decoder refused the frame and hung
+    // up, and the operator's paste of large text took the whole output down
+    // with it. Refusing here instead writes no byte, consumes no id (so no
+    // pending entry exists that could never be answered) and leaves the
+    // connection up; the status line is the operator's answer.
+    const std::int64_t id = fNextId;
+    std::string wire;
+    if (!proto::appendFrame(proto::makeRequest(id, method, std::move(params)), &wire)) {
+        setStatus(QStringLiteral("%1 was not sent: it is over the %2 KiB this transport "
+                                 "allows, so the worker would refuse it")
+                      .arg(QString::fromLatin1(method))
+                      .arg(static_cast<qulonglong>(proto::kMaxMessageBytes / 1024u)));
+        return 0;
+    }
+    ++fNextId;
     // Record before writing: the reply to this id must find its request,
     // tagged with the connection it belongs to (task 6.3a).
-    const std::int64_t id = fNextId++;
     PendingRequest pending;
     pending.method = method;
     pending.connection = fConnectionGeneration;
     fPendingRequests.insert(id, std::move(pending));
-    std::string wire;
-    proto::appendFrame(proto::makeRequest(id, method, std::move(params)), &wire);
     fSocket.write(wire.data(), static_cast<qint64>(wire.size()));
     return id;
 }
 
 void WorkerController::sendNotification(const char* method, boost::json::object params) {
     std::string wire;
-    proto::appendFrame(proto::makeNotification(method, std::move(params)), &wire);
+    if (!proto::appendFrame(proto::makeNotification(method, std::move(params)), &wire)) {
+        // A notification has no reply to carry a reason, and a partially built
+        // frame would poison the stream for the messages behind it: drop it and
+        // keep the connection. Every notification this client sends names a
+        // slot and a sequence, so arriving here means a bug rather than input.
+        setStatus(QStringLiteral("%1 could not be sent: it does not fit this transport")
+                      .arg(QString::fromLatin1(method)));
+        return;
+    }
     fSocket.write(wire.data(), static_cast<qint64>(wire.size()));
 }
 

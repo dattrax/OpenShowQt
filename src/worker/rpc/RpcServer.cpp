@@ -8,8 +8,10 @@
 #include "rpc/RpcServer.h"
 
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -49,24 +51,51 @@ bool writeAll(int fd, const std::string& data) {
     return true;
 }
 
-std::int64_t jsonId(const boost::json::object& message) {
-    const auto id = message.find("id");
-    if (id == message.end()) {
-        return 0;
+// An integer argument in a stated range, checked BEFORE any narrowing
+// (task 6.8a, review R11). Casting first and validating after is how
+// 4294967296 becomes 0: a caller that meant "no such monitor" gets monitor
+// zero, which is a real destination, and the audience's output moves on an
+// argument nobody sent. Absent, non-integer, or out of range all answer
+// false, and the handler says which.
+bool jsonIntInRange(const boost::json::object& args, const char* key, std::int64_t low,
+                    std::int64_t high, std::int64_t* out) {
+    const auto entry = args.find(key);
+    if (entry == args.end()) {
+        return false;
     }
-    if (id->value().is_int64()) {
-        return id->value().as_int64();
+    std::int64_t value = 0;
+    if (entry->value().is_int64()) {
+        value = entry->value().as_int64();
+    } else if (entry->value().is_uint64() &&
+               entry->value().as_uint64() <=
+                   static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+        value = static_cast<std::int64_t>(entry->value().as_uint64());
+    } else {
+        return false;
     }
-    if (id->value().is_uint64()) {
-        return static_cast<std::int64_t>(id->value().as_uint64());
+    if (value < low || value > high) {
+        return false;
     }
-    return 0;
+    *out = value;
+    return true;
 }
 
-// Reads a non-negative JSON integer. Boost.JSON stores small numbers as
-// int64 and only reaches for uint64 past the signed range, so checking
-// is_uint64() alone silently rejects every slot index a client sends.
-bool jsonUint(const boost::json::object& args, const char* key, std::uint64_t* out) {
+// A 32-bit argument — the same rule as above, spelled for the values the
+// session's own range checks are written in.
+bool jsonUint32(const boost::json::object& args, const char* key, std::uint32_t* out) {
+    std::int64_t value = 0;
+    if (!jsonIntInRange(args, key, 0, std::numeric_limits<std::uint32_t>::max(), &value)) {
+        return false;
+    }
+    *out = static_cast<std::uint32_t>(value);
+    return true;
+}
+
+// Reads a non-negative JSON integer at full width. Boost.JSON stores small
+// numbers as int64 and only reaches for uint64 past the signed range, so
+// checking is_uint64() alone silently rejects every slot index a client
+// sends. Nothing narrows the result, so no range is imposed here.
+bool jsonUint64(const boost::json::object& args, const char* key, std::uint64_t* out) {
     const auto entry = args.find(key);
     if (entry == args.end()) {
         return false;
@@ -329,40 +358,55 @@ void RpcServer::serve(int connectionFd) {
 
 bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
                        bool* handshakeNow, std::string* outbound) {
-    if (!proto::looksLikeJsonRpc(message)) {
-        proto::appendFrame(
-            proto::makeError(0, proto::kInvalidRequest, "expected a JSON-RPC 2.0 message"),
-            outbound);
-        return false;
+    // One gate for the envelope (task 6.8a, review R11): version stamp, a
+    // usable method name, and an id the reply can honestly carry. Every
+    // handler below therefore gets a method it can index on and an id it does
+    // not have to second-guess.
+    proto::RequestEnvelope envelope;
+    proto::ErrorCode code = proto::kInternalError;
+    std::string text;
+    bool dropConnection = false;
+    if (!proto::parseRequestEnvelope(message, &envelope, &code, &text, &dropConnection)) {
+        proto::appendFrame(proto::makeError(envelope.id, code, text), outbound);
+        // A stream that lost the version stamp is not worth serving; the caller
+        // logs it and hangs up. Everything else was answered above and stays
+        // connected: the operator's paste of large text must not cost them the
+        // worker (review R11).
+        return !dropConnection;
     }
-    const boost::json::object& request = message.as_object();
-    const auto method = request.find("method");
-    if (method == request.end() || !method->value().is_string()) {
-        proto::appendFrame(
-            proto::makeError(jsonId(request), proto::kInvalidRequest,
-                             "only requests are accepted, not bare responses"),
-            outbound);
+
+    // A notification — no id — may not be answered, not even with an error.
+    // preview.released is the one method this protocol documents as sending
+    // one; anything else arrives ignored, loudly in the log and quietly on
+    // the wire, because executing a command that can never be acknowledged is
+    // the lost-update shape task 6.3a closed: the operator would see no
+    // revision, no confirmation, and an output that had in fact moved.
+    const bool notification = !envelope.hasId;
+    if (notification && !proto::isNotificationMethod(envelope.method)) {
+        std::fprintf(stderr,
+                     "openshow-worker: ignored '%s' sent without an id: only %s may be a "
+                     "notification, and nothing answers it either way\n",
+                     std::string(envelope.method).c_str(), proto::kMethodPreviewReleased);
         return true;
     }
 
-    const std::string_view name = method->value().as_string();
-    const auto params = request.find("params");
+    const std::string_view name = envelope.method;
     const boost::json::value nullParams = nullptr;
     const boost::json::value& given =
-        params == request.end() ? nullParams : params->value();
-    const std::int64_t id = jsonId(request);
+        envelope.params == nullptr ? nullParams : *envelope.params;
+    const std::int64_t id = envelope.id;
 
     if (name == "hello") {
         boost::json::object result;
-        proto::ErrorCode code = proto::kInternalError;
-        std::string text;
+        proto::ErrorCode helloCode = proto::kInternalError;
+        std::string helloText;
         boost::json::value data;
-        if (proto::handleHello(given, fOptions.workerVersion, &result, &code, &text,
+        if (proto::handleHello(given, fOptions.workerVersion, &result, &helloCode, &helloText,
                                &data)) {
             *handshakeNow = true;
             proto::appendFrame(proto::makeResult(id, result), outbound);
         } else {
-            proto::appendFrame(proto::makeError(id, code, text, data), outbound);
+            proto::appendFrame(proto::makeError(id, helloCode, helloText, data), outbound);
         }
         return true;
     }
@@ -391,17 +435,24 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
                                outbound);
             return true;
         }
-        const auto monitor = given.as_object().find("monitor");
-        std::int64_t index = -2;  // sentinel: absent or non-numeric is invalid
-        if (monitor != given.as_object().end()) {
-            if (monitor->value().is_int64()) {
-                index = monitor->value().as_int64();
-            } else if (monitor->value().is_uint64()) {
-                index = static_cast<std::int64_t>(monitor->value().as_uint64());
-            }
+        // The range is checked here, at the wire, and NOT by the cast below:
+        // `static_cast<int>(4294967296)` is 0, which is a real destination, so
+        // an argument nobody sent would move the audience's output (review
+        // R11). -1 is windowed; the top of the range is what an `int` index
+        // can name at all, and the session still decides whether a panel
+        // exists.
+        std::int64_t index = 0;
+        if (!jsonIntInRange(given.as_object(), "monitor", -1,
+                            std::numeric_limits<int>::max(), &index)) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "output.select requires \"monitor\": -1 (windowed) "
+                                 "or an index from output.displays"),
+                outbound);
+            return true;
         }
         std::uint64_t revision = 0;
-        if (index < -1 || !fSession.selectMonitor(static_cast<int>(index), &revision)) {
+        if (!fSession.selectMonitor(static_cast<int>(index), &revision)) {
             proto::appendFrame(
                 proto::makeError(id, proto::kInvalidParams,
                                  "output.select requires \"monitor\": -1 (windowed) "
@@ -438,7 +489,8 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
                                       enabled->value().as_bool(), &revision)) {
             proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
                                                 "unknown layer '" +
-                                                    std::string(layer->value().as_string()) +
+                                                    proto::clippedForEcho(
+                                                        layer->value().as_string()) +
                                                     "'"),
                                outbound);
             return true;
@@ -487,7 +539,7 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
             return true;
         }
         std::uint64_t prepared = 0;
-        if (!jsonUint(given.as_object(), "revision", &prepared)) {
+        if (!jsonUint64(given.as_object(), "revision", &prepared)) {
             proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
                                                 "scene.present requires a \"revision\""),
                                outbound);
@@ -531,20 +583,34 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
                                                      {"pending", true}}),
                            outbound);
     } else if (name == "preview.start") {
+        // Each argument is optional, but a PRESENT argument must be a real
+        // value: silently defaulting a "width" of "wide" (or letting 2^32+640
+        // truncate back to 640) makes the client's request succeed with
+        // geometry nobody asked for. The session then decides the sane band.
         uint32_t width = 640;
         uint32_t height = 360;
         uint32_t fps = 15;
         if (given.is_object()) {
             const boost::json::object& args = given.as_object();
-            std::uint64_t value = 0;
-            if (jsonUint(args, "width", &value)) {
-                width = static_cast<uint32_t>(value);
-            }
-            if (jsonUint(args, "height", &value)) {
-                height = static_cast<uint32_t>(value);
-            }
-            if (jsonUint(args, "fps", &value)) {
-                fps = static_cast<uint32_t>(value);
+            const struct {
+                const char* key;
+                uint32_t* slot;
+            } numbers[] = {{"width", &width}, {"height", &height}, {"fps", &fps}};
+            for (const auto& argument : numbers) {
+                if (args.find(argument.key) == args.end()) {
+                    continue;  // absent: the default above stands
+                }
+                uint32_t value = 0;
+                if (!jsonUint32(args, argument.key, &value)) {
+                    proto::appendFrame(
+                        proto::makeError(id, proto::kInvalidParams,
+                                         std::string("preview.start \"") + argument.key +
+                                             "\" wants a whole number between 0 and " +
+                                             std::to_string(4294967295u)),
+                        outbound);
+                    return true;
+                }
+                *argument.slot = value;
             }
         }
         OutputSession::PreviewInfo info;
@@ -576,16 +642,23 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
         // not name the live stream frees nothing.
         if (given.is_object()) {
             const boost::json::object& args = given.as_object();
-            std::uint64_t slot = 0;
             std::uint64_t seq = 0;
+            std::uint32_t slot = 0;
             const auto stream = args.find("stream");
-            if (jsonUint(args, "slot", &slot) && jsonUint(args, "seq", &seq) &&
-                stream != args.end() && stream->value().is_string()) {
-                fSession.releasePreviewSlot(static_cast<uint32_t>(slot), seq,
+            // The slot is a 32-bit index and the sequence is not, so each is
+            // read in its own width — a slot of 2^32+1 must not arrive as
+            // slot 1 and release a frame the consumer never copied. The name
+            // is bounded for the same reason R5 made it part of the proof:
+            // it is compared, not stored, and an over-long one is not a
+            // segment name by any construction the producer uses.
+            const bool named = stream != args.end() && stream->value().is_string() &&
+                               stream->value().as_string().size() <= 256;
+            if (jsonUint32(args, "slot", &slot) && jsonUint64(args, "seq", &seq) && named) {
+                fSession.releasePreviewSlot(slot, seq,
                                             std::string(stream->value().as_string()));
             }
         }
-        if (request.contains("id")) {
+        if (envelope.hasId) {
             proto::appendFrame(proto::makeResult(id, boost::json::object{{"ok", true}}),
                                outbound);
         }

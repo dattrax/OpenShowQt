@@ -56,6 +56,39 @@ inline constexpr double kRendererDefaultFontSize = 0.0;
 // decodes their first frame, unchanged from 3.2).
 bool assetPathIsVideo(const std::string& path);
 
+// True when `path` is a plain local filesystem reference the renderer can
+// open (task 6.8a, review R11). Refused, each with its own reason in *why:
+// a URI of any scheme ("data:image/png;base64,...", "http://host/x.png"),
+// which would turn a control message into a media-byte payload or a network
+// fetch the worker has no business making; an embedded NUL, which truncates
+// every C-string API between here and Skia; and any other control byte, which
+// no filesystem the project targets uses and which survives copy-paste from
+// a browser address bar. *why is cleared on the way in, so a caller can tell
+// "accepted" from a reason left over from an earlier call. An EMPTY path is
+// accepted here — "no image" is legal — the validator refuses it only when the
+// background claims an image. Legitimate absolute and relative local paths,
+// with spaces, a colon after the first slash, or Unicode, pass.
+bool assetPathIsLocal(const std::string& path, std::string* why = nullptr);
+
+// --- application budgets (task 6.8a, review R11) ---------------------------
+//
+// How big a SCENE may be: the number an operator can grow just by typing,
+// where kMaxMessageBytes only bounds the message wrapped around it. Measured
+// rather than guessed, and scene_tests prints it — a representative slide
+// serialises at 324 bytes, and one pushed to EVERY budget below (64 KiB of
+// text made of the characters JSON escapes at their longest, ids, font and
+// path at their limits) reaches 408 KiB inside a scene.prepare: 39% of the
+// frame budget, at depth 5 of kMaxParseDepth. Nothing an operator can author
+// is refused by the wire.
+inline constexpr std::size_t kMaxSceneItems = 8;    // text layers on one slide
+inline constexpr std::size_t kMaxItemLines = 256;   // lines in one text layer
+inline constexpr std::size_t kMaxLineChars = 1024;  // characters in one line
+inline constexpr std::size_t kMaxItemTextChars = 16 * 1024;  // one layer's lines
+inline constexpr std::size_t kMaxSceneTextChars = 64 * 1024;  // every layer's text
+inline constexpr std::size_t kMaxIdChars = 512;   // showId, slideId, assetId
+inline constexpr std::size_t kMaxPathChars = 4096;  // Linux PATH_MAX
+inline constexpr std::size_t kMaxFontFamilyChars = 256;
+
 // The authored canvas (docs/reference.md §7: every scene is designed
 // against 1920x1080 and scaled by width/1920) and the default text box:
 // the canvas minus the lyric margins, the region M2/M3 laid text inside.
@@ -157,7 +190,18 @@ boost::json::value toJson(const Scene& scene);
 // colours outside 0xRRGGBB, non-finite or negative font sizes, non-finite
 // text-box edges, non-positive box width or height, an alignment outside
 // left/center/right, a line spacing outside 0.25..8, a "video" flag that
-// is not a bool or set without "image".
+// is not a bool or set without "image" — and, since task 6.8a (review R11),
+// anything over an application budget above (items, lines, characters, ids,
+// path), a key the format does not define (named in the error), an asset
+// reference that is not a local path, an empty asset path behind image:true,
+// and a NUL in any string.
+//
+// The key set is CLOSED on purpose. Minor-version tolerance is a frontend
+// rule — an unknown field in a STATUS object costs a viewer nothing — but a
+// scene is content the audience must see, so accepting a key this build
+// ignores would mean the operator set something that silently never appears
+// on air. A format change bumps "scene", which refuses the payload loudly
+// instead. The UI's own payloads come from toJson(), so it never trips this.
 bool fromJson(const boost::json::value& value, Scene* out, std::string* error = nullptr);
 
 }  // namespace openshow::scene

@@ -2,10 +2,13 @@
  * Checks the compiled scene type (task 2.4a): the compiler's style
  * resolution and background handling, the immutability of an already
  * compiled scene against later edits, and the strictness of the wire
- * codec that scene.prepare will rely on. Non-zero exit so ctest
- * reports failures.
+ * codec that scene.prepare will rely on. Task 6.8a (review R11) added
+ * the application budgets (tested on both sides of each boundary), the
+ * closed key set, what an asset reference may name, and the measurement
+ * proving the largest supported scene fits the transport.
  */
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -14,6 +17,7 @@
 
 #include "openshow/domain/documents.h"
 #include "openshow/domain/storage.h"
+#include "openshow/protocol/protocol.h"
 #include "openshow/scene/demo.h"
 #include "openshow/scene/scene.h"
 
@@ -33,6 +37,7 @@ using openshow::domain::Documents;
 using openshow::domain::Id;
 using openshow::domain::kDefaultLineSpacing;
 namespace scene = openshow::scene;
+namespace proto = openshow::protocol;
 
 // A small service exercising every resolution branch: one slide under a
 // show default, one under a per-slide override, one with no style at
@@ -388,6 +393,376 @@ void exerciseDemoFixture() {
           "the demo title scene crosses the wire intact");
 }
 
+// --- task 6.8a (review R11): budgets, a closed key set, media references ---
+
+// The scene's error text, or empty when the payload reads.
+std::string readRefused(const boost::json::value& candidate) {
+    scene::Scene target;
+    std::string error;
+    return scene::fromJson(candidate, &target, &error) ? std::string() : error;
+}
+
+bool accepted(const boost::json::value& candidate, const char* what) {
+    const std::string error = readRefused(candidate);
+    if (!error.empty()) {
+        std::fprintf(stderr, "  refused: %s\n", error.c_str());
+    }
+    return check(error.empty(), what);
+}
+
+// A scene carrying exactly these lines, one item per entry, built on a compiled
+// slide so every field the budgets do NOT talk about is already legal. The
+// strings are inserted as views so an embedded NUL survives into the value:
+// the point of one of these checks is what a reader does with one.
+boost::json::object sceneWithLines(const scene::Scene& shape,
+                                   const std::vector<std::vector<std::string>>& perItem) {
+    boost::json::object root = scene::toJson(shape).as_object();
+    const boost::json::object templateItem =
+        root.at("items").as_array().at(0).as_object();
+    boost::json::array items;
+    for (const auto& lines : perItem) {
+        boost::json::object item = templateItem;
+        boost::json::array jsonLines;
+        for (const std::string& line : lines) {
+            jsonLines.push_back(boost::json::value(
+                boost::json::string_view(line.data(), line.size())));
+        }
+        item["lines"] = std::move(jsonLines);
+        items.push_back(std::move(item));
+    }
+    root["items"] = std::move(items);
+    return root;
+}
+
+// The scene's shape on the wire: one more container level than the message that
+// wraps it. Counted here rather than trusted from a comment, because the
+// transport's parse-depth ceiling has to sit above it.
+std::size_t depthOf(const boost::json::value& value) {
+    std::size_t deepest = 0;
+    if (value.is_object()) {
+        for (const auto& entry : value.as_object()) {
+            deepest = std::max(deepest, depthOf(entry.value()));
+        }
+        return 1 + deepest;
+    }
+    if (value.is_array()) {
+        for (const auto& element : value.as_array()) {
+            deepest = std::max(deepest, depthOf(element));
+        }
+        return 1 + deepest;
+    }
+    return 0;
+}
+
+void exerciseBudgets(const Fixture& fx) {
+    std::string error;
+    scene::Scene shape;
+    if (!check(scene::compileSlide(fx.docs, fx.show, fx.backed, &shape, &error),
+               "compile the slide the budget fixtures are built on")) {
+        return;
+    }
+    const auto linesOf = [](std::size_t count, std::size_t chars) {
+        return std::vector<std::string>(count, std::string(chars, 'a'));
+    };
+
+    // Every budget is a boundary, so each is tested on BOTH sides: a scene at
+    // the limit is supported content and must read (otherwise the number is a
+    // smaller budget than the one stated), and one past it is refused naming
+    // the number it broke.
+    accepted(scene::toJson(shape), "an ordinary scene reads");
+
+    check(readRefused(boost::json::value(sceneWithLines(
+              shape, std::vector<std::vector<std::string>>(scene::kMaxSceneItems,
+                                                           linesOf(1, 4)))))
+              .empty(),
+          "a scene at the item budget reads");
+    check(readRefused(boost::json::value(sceneWithLines(
+              shape, std::vector<std::vector<std::string>>(scene::kMaxSceneItems + 1,
+                                                           linesOf(1, 4)))))
+              .find("text items is over the limit") != std::string::npos,
+          "one item past the budget refuses naming the limit");
+
+    {  // Lines in one layer.
+        std::vector<std::vector<std::string>> atBudget(
+            1, linesOf(scene::kMaxItemLines, 4));
+        accepted(boost::json::value(sceneWithLines(shape, atBudget)),
+                 "a layer at the line budget reads");
+        atBudget[0].push_back("one too far");
+        check(readRefused(boost::json::value(sceneWithLines(shape, atBudget)))
+                  .find("lines are over the limit") != std::string::npos,
+              "one line past the budget refuses naming the limit");
+    }
+    {  // Characters in one line: the lyric a slide actually shows.
+        std::vector<std::vector<std::string>> atBudget(1, linesOf(1, scene::kMaxLineChars));
+        accepted(boost::json::value(sceneWithLines(shape, atBudget)),
+                 "a line at the character budget reads");
+        atBudget[0][0] += 'z';
+        check(readRefused(boost::json::value(sceneWithLines(shape, atBudget)))
+                  .find("characters is over the limit") != std::string::npos,
+              "one character past the line budget refuses naming the limit");
+    }
+    {  // All the text of one layer, then of the whole scene.
+        const std::size_t linesPerItem = scene::kMaxItemTextChars / scene::kMaxLineChars;
+        std::vector<std::vector<std::string>> oneItemOnly(
+            1, linesOf(linesPerItem, scene::kMaxLineChars));
+        accepted(boost::json::value(sceneWithLines(shape, oneItemOnly)),
+                 "a layer at its own text budget reads");
+        oneItemOnly[0].push_back(std::string(1, 'z'));
+        check(readRefused(boost::json::value(sceneWithLines(shape, oneItemOnly)))
+                  .find("item's text exceeds") != std::string::npos,
+              "one character past a layer's text budget refuses naming the limit");
+
+        const std::size_t itemsForSceneTotal =
+            scene::kMaxSceneTextChars / scene::kMaxItemTextChars;
+        std::vector<std::vector<std::string>> wholeScene(
+            itemsForSceneTotal, linesOf(linesPerItem, scene::kMaxLineChars));
+        accepted(boost::json::value(sceneWithLines(shape, wholeScene)),
+                 "a scene at the whole-slide text budget reads");
+        wholeScene.push_back(linesOf(1, 1));
+        check(readRefused(boost::json::value(sceneWithLines(shape, wholeScene)))
+                  .find("slide's text exceeds") != std::string::npos,
+              "one character past the scene's text budget refuses naming the limit");
+    }
+    {  // Ids, font family, path: the strings that are not authored content.
+        auto withString = [&](bool inBackground, const char* key, std::size_t chars) {
+            boost::json::object root = scene::toJson(shape).as_object();
+            boost::json::object& holder =
+                inBackground ? root["background"].as_object() : root;
+            holder[key] = std::string(chars, 'q');
+            return boost::json::value(root);
+        };
+        accepted(withString(false, "showId", scene::kMaxIdChars),
+                 "a show id at its budget reads");
+        check(readRefused(withString(false, "showId", scene::kMaxIdChars + 1))
+                  .find("over the limit of") != std::string::npos,
+              "a show id one character over refuses naming the limit");
+        accepted(withString(true, "assetPath", scene::kMaxPathChars),
+                 "a path at its budget reads");
+        check(readRefused(withString(true, "assetPath", scene::kMaxPathChars + 1))
+                  .find("over the limit of") != std::string::npos,
+              "a path one character over refuses naming the limit");
+
+        boost::json::object fontsRoot = scene::toJson(shape).as_object();
+        fontsRoot["items"].as_array()[0].as_object()["fontFamily"] =
+            std::string(scene::kMaxFontFamilyChars, 'f');
+        accepted(boost::json::value(fontsRoot), "a font family at its budget reads");
+        fontsRoot["items"].as_array()[0].as_object()["fontFamily"] =
+            std::string(scene::kMaxFontFamilyChars + 1, 'f');
+        check(readRefused(boost::json::value(fontsRoot)).find("over the limit of") !=
+                  std::string::npos,
+              "a font family one character over refuses naming the limit");
+    }
+    {  // A NUL inside a string: std::string would carry it, every C API past
+       // here would stop short of it, and the file drawn is not the file named.
+        check(readRefused(boost::json::value(sceneWithLines(
+                  shape, std::vector<std::vector<std::string>>(1, linesOf(1, 4)))))
+                  .empty(),
+              "the fixture used for NUL checks reads before the NUL");
+        const std::string withNul = std::string("verse") + '\0' + "one";
+        check(readRefused(boost::json::value(sceneWithLines(
+                  shape, std::vector<std::vector<std::string>>(1, {withNul}))))
+                  .find("NUL") != std::string::npos,
+              "a NUL inside a line refuses");
+        boost::json::object root = scene::toJson(shape).as_object();
+        root["slideId"] = boost::json::value(boost::json::string_view(withNul.data(),
+                                                                     withNul.size()));
+        check(readRefused(boost::json::value(root)).find("NUL") != std::string::npos,
+              "a NUL inside an id refuses");
+        root = scene::toJson(shape).as_object();
+        const std::string twoPaths = std::string("/tmp/good.png") + '\0' + "evil.png";
+        root["background"].as_object()["assetPath"] =
+            boost::json::value(boost::json::string_view(twoPaths.data(), twoPaths.size()));
+        check(readRefused(boost::json::value(root)).find("NUL") != std::string::npos,
+              "a NUL inside a path refuses, and does not open the truncated file");
+    }
+    {  // Unknown keys. A scene is the audience's content: a field this build
+       // does not read is a field that silently never appears on air, so it is
+       // refused at every level that has a defined shape.
+        boost::json::object root = scene::toJson(shape).as_object();
+        root["backgroundColour"] = 0x000000;
+        check(readRefused(boost::json::value(root)).find("has no field") != std::string::npos,
+              "a near-miss key at the top level refuses");
+        root = scene::toJson(shape).as_object();
+        root["background"].as_object()["asset"] = "/tmp/x.png";
+        check(readRefused(boost::json::value(root)).find("'background' has no field") !=
+                  std::string::npos,
+              "an unknown key inside the background refuses naming where");
+        root = scene::toJson(shape).as_object();
+        root["items"].as_array()[0].as_object()["lineSpacingx"] = 1.0;
+        check(readRefused(boost::json::value(root)).find("text item has no field") !=
+                  std::string::npos,
+              "an unknown key inside an item refuses naming where");
+        root = scene::toJson(shape).as_object();
+        root["items"].as_array()[0].as_object()[std::string(9000, 'u')] = 1.0;
+        const std::string hugeKey = readRefused(boost::json::value(root));
+        check(!hugeKey.empty() && hugeKey.size() < 400,
+              "a 9000-byte unknown key is reported by a sentence, not a copy");
+        check(hugeKey.find("...") != std::string::npos, "and the quoted key says it was cut");
+        // The keys this format does define all stay accepted.
+        accepted(boost::json::value(scene::toJson(shape)),
+                 "the key set a compiled scene carries is the closed set");
+    }
+}
+
+void exerciseAssetReferences(const Fixture& fx) {
+    std::string error;
+    scene::Scene shape;
+    if (!scene::compileSlide(fx.docs, fx.show, fx.backed, &shape, &error)) {
+        check(false, "compile the slide the reference fixtures are built on");
+        return;
+    }
+
+    // What a media reference may be: a local file the renderer can open.
+    for (const char* path : {"/home/user/shows/stage loop.jpg",
+                             "assets/π-χ.jpg",
+                             "./backdrop.png",
+                             "/tmp/a b.png",
+                             "dir/sub:board.png"}) {
+        std::string why = "a reason from somewhere else";
+        check(scene::assetPathIsLocal(path, &why), "a local path is a supported reference");
+        check(why.empty(), "and a supported path leaves no reason behind");
+    }
+    {  // The out-param is written on every path, so a caller cannot mistake a
+       // stale reason for the answer about this path.
+        std::string why = "a reason from somewhere else";
+        check(scene::assetPathIsLocal("/shows/backdrop.png", &why) && why.empty(),
+              "an accepted path clears the reason it was handed");
+    }
+    check(scene::assetPathIsLocal("", nullptr), "an empty path is not an invalid reference");
+
+    struct Refusal {
+        const char* path;
+        const char* expectIn;
+    };
+    for (const Refusal refusal : {Refusal{"data:image/png;base64,iVBORw0KGgo=", "data"},
+                                  Refusal{"DATA:image/png;base64,iVBORw0KGgo=", "data"},
+                                  Refusal{"http://host/backdrop.png", "http"},
+                                  Refusal{"HTTPS://host/backdrop.png", "https"},
+                                  Refusal{"file:///tmp/backdrop.png", "file"},
+                                  Refusal{"weird:name/inside-a-directory.png", "weird"}}) {
+        std::string why;
+        const bool refused = !scene::assetPathIsLocal(refusal.path, &why);
+        if (!refused) {
+            std::fprintf(stderr, "  accepted as local: %s\n", refusal.path);
+        }
+        check(refused, "a media reference that is not a local file is refused");
+        check(!why.empty(), "and the refusal says why");
+        if (refusal.expectIn[0] != '\0') {
+            check(why.find(refusal.expectIn) != std::string::npos,
+                  "and names the scheme it refused");
+        }
+    }
+    {  // Control bytes never survive into an open(): they truncate the C API
+       // every path goes through, and a NUL is two filenames in one.
+        const std::string nul = std::string("/tmp/a.png") + '\0' + "b.png";
+        std::string why;
+        check(!scene::assetPathIsLocal(nul, &why) && why.find("NUL") != std::string::npos,
+              "a NUL in a path is refused as a NUL");
+        check(!scene::assetPathIsLocal("/tmp/a\nb.png", &why) &&
+                  why.find("control") != std::string::npos,
+              "and so is any other control byte");
+    }
+    {  // A data: URI is a media-byte PAYLOAD in a control message: refused
+       // whole, whatever the image flag claims, and before the wash that
+       // discards asset fields for a background that claims no image.
+        boost::json::object root = scene::toJson(shape).as_object();
+        root["background"].as_object()["assetPath"] = "data:image/png;base64,iVBOR";
+        root["background"].as_object()["image"] = false;
+        const std::string refused = readRefused(boost::json::value(root));
+        check(refused.find("local files only") != std::string::npos,
+              "a data: background refuses even with image:false");
+        root["background"].as_object()["assetPath"] = "https://host/x.png";
+        check(readRefused(boost::json::value(root)).find("local files only") !=
+                  std::string::npos,
+              "and so does one that would be fetched over the network");
+        // The legitimate case the review insisted must keep working.
+        root["background"].as_object()["assetPath"] = "/services/svc/assets/loop.jpg";
+        root["background"].as_object()["image"] = true;
+        accepted(boost::json::value(root), "a local asset path on air still reads");
+    }
+    {  // Claiming an image with nowhere to read it from is a mistake the
+       // operator has to hear about, not a black rectangle.
+        boost::json::object root = scene::toJson(shape).as_object();
+        root["background"].as_object()["assetPath"] = "";
+        root["background"].as_object()["image"] = true;
+        check(readRefused(boost::json::value(root)).find("requires an 'assetPath'") !=
+                  std::string::npos,
+              "image:true with an empty path refuses");
+    }
+}
+
+void exerciseMeasuredSizes(const Fixture& fx) {
+    std::string error;
+    scene::Scene compiled;
+    if (!check(scene::compileSlide(fx.docs, fx.show, fx.defaulted, &compiled, &error),
+               "compile the representative slide for measurement")) {
+        return;
+    }
+    const std::size_t representative = boost::json::serialize(scene::toJson(compiled)).size();
+
+    // The largest scene this build SUPPORTS, at every budget at once, with the
+    // text made of the characters JSON escapes at their longest (a control byte
+    // becomes six bytes) and every id, font and path at its limit. This is the
+    // number the 1 MiB frame has to hold, measured rather than assumed: if a
+    // future budget grows the model past the transport, this is where it fails.
+    scene::Scene worst = compiled;
+    const std::size_t linesPerItem = scene::kMaxItemTextChars / scene::kMaxLineChars;
+    worst.showId = std::string(scene::kMaxIdChars, 's');
+    worst.slideId = std::string(scene::kMaxIdChars, 'd');
+    worst.background.assetId = std::string(scene::kMaxIdChars, 'a');
+    worst.background.assetPath = "/worst/" + std::string(scene::kMaxPathChars - 7, 'p');
+    worst.items.clear();
+    for (std::size_t item = 0; item < scene::kMaxSceneItems; ++item) {
+        scene::TextItem text;
+        text.fontFamily = std::string(scene::kMaxFontFamilyChars, 'f');
+        for (std::size_t line = 0; line < scene::kMaxItemLines; ++line) {
+            // A layer's own text budget caps how many of its lines can be
+            // full, and the whole-scene budget caps how many layers can carry
+            // text at all; the remaining lines stay empty, which is what a real
+            // slide looks like too.
+            const bool insideSceneBudget =
+                item * scene::kMaxItemTextChars + (line + 1) * scene::kMaxLineChars <=
+                scene::kMaxSceneTextChars;
+            const bool full = line < linesPerItem && insideSceneBudget;
+            text.lines.push_back(full ? std::string(scene::kMaxLineChars, '\x01')
+                                      : std::string());
+        }
+        text.color = 0x000000;
+        text.fontSize = 64.0;
+        text.x = 0.0;
+        text.y = 0.0;
+        text.width = scene::kCanvasWidth;
+        text.height = scene::kCanvasHeight;
+        text.align = "center";
+        text.lineSpacing = 1.2;
+        worst.items.push_back(std::move(text));
+    }
+    const boost::json::value worstJson = scene::toJson(worst);
+    const std::size_t worstBytes = boost::json::serialize(worstJson).size();
+    const std::size_t depth = depthOf(boost::json::value(
+        boost::json::object{{"params", worstJson}}));
+
+    // Every supported scene has to fit the frame the transport refuses to
+    // build, with room to spare: the message adds the envelope around it.
+    const std::size_t asMessage =
+        boost::json::serialize(boost::json::value(proto::makeRequest(
+            1, "scene.prepare", boost::json::object{{"scene", worstJson}})))
+            .size();
+    check(asMessage < proto::kMaxMessageBytes,
+          "the largest supported scene fits the frame budget with room to spare");
+    check(depth <= proto::kMaxParseDepth,
+          "the largest supported scene nests inside the parse-depth ceiling");
+    check(readRefused(boost::json::value(worstJson)).empty(),
+          "and the largest supported scene is content the reader accepts");
+
+    std::printf("   measured: representative scene %zu bytes, largest supported scene %zu "
+                "bytes (%zu inside a scene.prepare), frame budget %u — %.1f%% of it, "
+                "depth %zu of %zu\n",
+                representative, worstBytes, asMessage, proto::kMaxMessageBytes,
+                100.0 * static_cast<double>(asMessage) / proto::kMaxMessageBytes, depth,
+                proto::kMaxParseDepth);
+}
+
 }  // namespace
 
 void exerciseBoxConstants() {
@@ -413,6 +788,9 @@ int main() {
     exerciseCompile(fx);
     exerciseImmutability(fx);
     exerciseWireRoundTrip(fx);
+    exerciseBudgets(fx);
+    exerciseAssetReferences(fx);
+    exerciseMeasuredSizes(fx);
     exerciseClearedScene();
     exerciseDemoFixture();
     exerciseBoxConstants();

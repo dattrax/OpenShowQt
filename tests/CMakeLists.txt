@@ -7,7 +7,9 @@ add_test(NAME domain_tests COMMAND domain_tests)
 add_executable(scene_tests
   scene_tests.cpp
 )
-target_link_libraries(scene_tests PRIVATE openshow::scene)
+# The scene library itself stays free of the protocol layer; the fixture links
+# it so the application budgets can be measured against the real frame limit.
+target_link_libraries(scene_tests PRIVATE openshow::scene openshow::protocol)
 add_test(NAME scene_tests COMMAND scene_tests)
 
 add_executable(protocol_tests
@@ -98,7 +100,7 @@ if(OPENSHOW_BUILD_UI)
   target_link_libraries(worker_controller_tests PRIVATE
     openshow::ui-core openshow::protocol)
   add_test(NAME worker_controller_tests COMMAND worker_controller_tests)
-  set_tests_properties(worker_controller_tests PROPERTIES TIMEOUT 120)
+  set_tests_properties(worker_controller_tests PROPERTIES TIMEOUT 180)
 
   # Task 3.3's acceptance sentence, end to end: DocumentController creates
   # and types a song, and the compiled slides are prepared and presented
@@ -189,6 +191,18 @@ target_link_libraries(rpc_ipc_tests PRIVATE openshow::protocol openshow::scene)
 add_test(NAME worker_rpc_lifecycle
   COMMAND rpc_ipc_tests $<TARGET_FILE:openshow-worker>)
 set_tests_properties(worker_rpc_lifecycle PROPERTIES LABELS display TIMEOUT 120)
+
+# Task 6.8a (review R11) over a live worker: oversized authored text and
+# data:/http: asset references refuse without disconnecting, integer arguments
+# are range checked before narrowing (2^32 must not become monitor 0), an
+# unanswerable id is answered under 0, and a command with no id is ignored
+# rather than executed. A frame over the byte budget or past the parse ceiling
+# ends the stream and the worker still exits 0, so those cases own a worker.
+add_executable(rpc_limits_tests rpc_limits_tests.cpp)
+target_link_libraries(rpc_limits_tests PRIVATE openshow::protocol openshow::scene)
+add_test(NAME worker_rpc_limits
+  COMMAND rpc_limits_tests $<TARGET_FILE:openshow-worker>)
+set_tests_properties(worker_rpc_limits PROPERTIES LABELS display TIMEOUT 180)
 
 # Task 5.5 acceptance: background video, preload and media visibility
 # over a live --socket session: lyrics preserve playback (the media
