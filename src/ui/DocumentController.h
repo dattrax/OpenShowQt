@@ -214,8 +214,11 @@ public:
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
 
-    // Commits any queued text immediately. Exposed for tests and called
-    // internally before navigation, undo, save and load.
+    // Commits any queued text immediately. Called internally before
+    // navigation, undo, save and load — and on aboutToQuit, connected in
+    // the constructor (task 6.14a, review R14): the debounced keystrokes
+    // of a closing session must reach the model, and through the tick,
+    // the scratch, before the process is gone.
     void flushText();
 
 signals:
@@ -236,6 +239,13 @@ private slots:
 private:
     bool edit(const std::function<bool()>& mutation);  // history-wrapped edit
     void setStatus(const QString& text);
+    // Task 6.14a (review R14): report the outcome of an autosave tick. A
+    // refusal means the crash net has a hole NOW and must not be discarded
+    // — but it lands DEFERRED, because every edit caller sets its own
+    // status line synchronously after edit() returns and last write wins.
+    // The flag suppresses a queued refusal the moment the scratch is
+    // current again (and says so).
+    void surfaceAutosaveResult(const std::string& tickError, const char* what);
     QString compileSlideJson(const openshow::domain::Id& slideId) const;
     // The current slide's id, or "" when navigation points nowhere.
     openshow::domain::Id currentSlideId() const;
@@ -280,6 +290,7 @@ private:
 
     bool fDirty = false;
     QString fStatus;
+    bool fAutosaveStale = false;  // scratch behind the model: task 6.14a
 };
 
 }  // namespace openshow::ui

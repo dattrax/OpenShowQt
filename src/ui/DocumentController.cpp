@@ -89,6 +89,14 @@ DocumentController::DocumentController(QObject* parent, std::filesystem::path ba
     fTextCommit.setSingleShot(true);
     fTextCommit.setInterval(600);
     connect(&fTextCommit, &QTimer::timeout, this, &DocumentController::commitPendingText);
+
+    // Task 6.14a (review R14): the debounce above holds the session's last
+    // keystrokes. Normal window close ends the loop, and the SIGTERM/SIGINT
+    // poll calls app.quit() — both pass through aboutToQuit — so the
+    // controller keeps the flush promise itself instead of relying on
+    // whoever wired main(): commit the pending text, and the dirty tick it
+    // triggers leaves the final words in the scratch for the next start.
+    connect(qApp, &QCoreApplication::aboutToQuit, this, &DocumentController::flushText);
 }
 
 QVariantList DocumentController::songs() const {
@@ -159,6 +167,7 @@ bool DocumentController::edit(const std::function<bool()>& mutation) {
     fDirty = true;
     std::string tickError;
     fAutosave->tick(fDocuments, &tickError);
+    surfaceAutosaveResult(tickError, "edit");
     emit documentsChanged();
     emit stateChanged();
     return true;
@@ -167,6 +176,32 @@ bool DocumentController::edit(const std::function<bool()>& mutation) {
 void DocumentController::setStatus(const QString& text) {
     fStatus = text;
     emit stateChanged();
+}
+
+void DocumentController::surfaceAutosaveResult(const std::string& tickError, const char* what) {
+    if (!tickError.empty()) {
+        fAutosaveStale = true;
+        const QString message =
+            QStringLiteral("autosave refused after %1: %2 - unsaved work is NOT on disk")
+                .arg(QString::fromLatin1(what), QString::fromStdString(tickError));
+        // Deferred, so the refusal is the LAST word: edit callers set
+        // their own status synchronously after edit() returns. The flag
+        // check is the race guard — if the scratch caught up before this
+        // timer ran, the stale warning must not land.
+        QTimer::singleShot(0, this, [this, message] {
+            if (fAutosaveStale) {
+                setStatus(message);
+            }
+        });
+        return;
+    }
+    if (fAutosaveStale) {
+        // A successful tick means the scratch on disk matches the model
+        // again: either this call wrote it, or the fingerprint proves the
+        // model never drifted past the last good write.
+        fAutosaveStale = false;
+        setStatus(QStringLiteral("autosave recovered - the scratch on disk is current again"));
+    }
 }
 
 bool DocumentController::createSong(const QString& name) {
@@ -955,11 +990,21 @@ bool DocumentController::save() {
     // re-tick after clear: clear() resets the fingerprint, so a tick would
     // immediately write a package claiming unsaved work that does not
     // exist. The next real edit re-creates the autosave.
-    std::string clearError;
-    fAutosave->clear(&clearError);
     fDirty = false;
-    setStatus(QStringLiteral("saved %1")
-                  .arg(QString::fromStdWString(fServiceDirectory.wstring())));
+    std::string clearError;
+    if (!fAutosave->clear(&clearError)) {
+        // The save COMMITTED; what failed is deleting the scratch the
+        // save made stale. A later startup would recover what it holds as
+        // if it were unsaved work — R14's silent resurrection — so the
+        // survivor must be named, not swallowed.
+        setStatus(QStringLiteral("saved %1, but the stale autosave could NOT be removed (%2); "
+                                 "a later start may recover work this save already replaced")
+                      .arg(QString::fromStdWString(fServiceDirectory.wstring()),
+                           QString::fromStdString(clearError)));
+    } else {
+        setStatus(QStringLiteral("saved %1")
+                      .arg(QString::fromStdWString(fServiceDirectory.wstring())));
+    }
     if (!rebinds.empty()) {
         // Downstream caches of compiled scenes (the worker controller's
         // payload mirror) must stop naming the paths these files came from.
@@ -992,9 +1037,18 @@ bool DocumentController::load() {
     // Discarding local changes must also discard their autosave trail —
     // otherwise the next startup would recover the edits just thrown away.
     std::string clearError;
-    fAutosave->clear(&clearError);
-    setStatus(QStringLiteral("loaded %1")
-                  .arg(QString::fromStdWString(fServiceDirectory.wstring())));
+    if (!fAutosave->clear(&clearError)) {
+        // Same contract as save() (task 6.14a, R14): the load itself
+        // succeeded; the undeleted scratch is a resurrection risk and is
+        // reported, never silently kept.
+        setStatus(QStringLiteral("loaded %1, but the stale autosave could NOT be removed (%2); "
+                                 "a later start may recover work this load just discarded")
+                      .arg(QString::fromStdWString(fServiceDirectory.wstring()),
+                           QString::fromStdString(clearError)));
+    } else {
+        setStatus(QStringLiteral("loaded %1")
+                      .arg(QString::fromStdWString(fServiceDirectory.wstring())));
+    }
     emit documentsChanged();
     emit navigationChanged();
     emit slideTextChanged();
@@ -1029,6 +1083,7 @@ void DocumentController::undo() {
     fDirty = true;
     std::string tickError;
     fAutosave->tick(fDocuments, &tickError);
+    surfaceAutosaveResult(tickError, "undo");
     emit documentsChanged();
     emit navigationChanged();
     emit slideTextChanged();
@@ -1060,6 +1115,7 @@ void DocumentController::redo() {
     fDirty = true;
     std::string tickError;
     fAutosave->tick(fDocuments, &tickError);
+    surfaceAutosaveResult(tickError, "redo");
     emit documentsChanged();
     emit navigationChanged();
     emit slideTextChanged();

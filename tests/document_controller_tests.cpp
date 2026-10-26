@@ -22,6 +22,9 @@
 
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QTimer>
+
+#include <sys/stat.h>
 
 #include "openshow/domain/storage.h"
 #include "openshow/scene/scene.h"
@@ -849,6 +852,152 @@ void exerciseClipboard(const std::filesystem::path& root) {
           "with an empty clipboard paste says so");
 }
 
+// --- task 6.14a (review R14): autosave health is visible, quitting flushes -------
+
+// R14 measured three silent failures: the autosave tick's error was
+// discarded, so a full disk emptied the crash net invisibly; the clear()
+// after save/load was discarded, so stale scratch could resurrect itself
+// on the next start with no word said; and the 600 ms debounced text was
+// never flushed at exit, so the last keystrokes of a session died with
+// the window. Every one of these fixtures asserts the VISIBLE outcome —
+// statuses after processEvents (the refusal rides a zero timer so it can
+// outlast the caller's own status line), and recovered text after a
+// real aboutToQuit (QCoreApplication::exec exited by quit(), the same
+// edge a window close or the SIGTERM poll drives in production).
+void exerciseAutosaveSurfacing(const std::filesystem::path& root) {
+    // (a) Quit inside the debounce keeps the final text...
+    const std::filesystem::path quitBase = root / "quit";
+    {
+        DocumentController docs(nullptr, quitBase);
+        docs.createSong(QStringLiteral("Final Word"));
+        docs.addSlide();
+        docs.setSlideText(QStringLiteral("committed before the storm"));
+        docs.flushText();
+        docs.setSlideText(QStringLiteral("LAST LINE typed, never flushed by hand"));
+        check(docs.currentSlideText() == QStringLiteral("committed before the storm"),
+              "the pending line is genuinely pending when the app starts to quit");
+        QTimer::singleShot(0, [] { QCoreApplication::quit(); });
+        QCoreApplication::exec();  // aboutToQuit -> flushText, as in production
+        check(docs.currentSlideText() == QStringLiteral("LAST LINE typed, never flushed by hand"),
+              "aboutToQuit committed the debounced text");
+    }
+    {
+        DocumentController reopened(nullptr, quitBase);
+        check(reopened.currentSlideText() ==
+                  QStringLiteral("LAST LINE typed, never flushed by hand"),
+              "the quit flush reached the scratch - the next session opens on the final words");
+    }
+    {
+        // ...and the control shows the flush is what preserved it: without
+        // a quit, an unflushed keystroke is simply gone next session.
+        const std::filesystem::path controlBase = root / "quit-control";
+        {
+            DocumentController docs(nullptr, controlBase);
+            docs.createSong(QStringLiteral("Doomed"));
+            docs.addSlide();
+            docs.setSlideText(QStringLiteral("kept by the last commit"));
+            docs.flushText();
+            docs.setSlideText(QStringLiteral("LOST with the window"));
+        }
+        DocumentController reopened(nullptr, controlBase);
+        check(reopened.currentSlideText() == QStringLiteral("kept by the last commit"),
+              "without the quit flush the pending keystroke is lost - the hook earns its keep");
+    }
+
+    // (b) A refusing disk is visible on the status line, per event kind.
+    {
+        const std::filesystem::path base = root / "broken-disk";
+        DocumentController docs(nullptr, base);
+        docs.createSong(QStringLiteral("Watched"));
+        docs.addSlide();
+        const std::filesystem::path scratch = base / "autosave";
+        check(Autosave::exists(scratch), "the first edit is protected on disk");
+        ::chmod(scratch.c_str(), 0555);  // the disk refuses writes from here on
+        check(docs.addSlide() && docs.addSlide(),
+              "editing keeps working while the scratch is refusing");
+        QCoreApplication::processEvents();
+        check(docs.status().contains(QStringLiteral("autosave refused after edit")) &&
+                  docs.status().contains(QStringLiteral("NOT on disk")),
+              "a refused tick after an edit is visible, and says work is not on disk");
+        docs.undo();  // back to a state the scratch never held: the retry refuses too
+        QCoreApplication::processEvents();
+        check(docs.status().contains(QStringLiteral("autosave refused after undo")),
+              "the refused undo tick reports undo as its own event");
+        docs.redo();
+        QCoreApplication::processEvents();
+        check(docs.status().contains(QStringLiteral("autosave refused after redo")),
+              "the refused redo tick reports redo as its own event");
+        // The deferral is load-bearing: importMediaFile writes its own
+        // success line synchronously after the refused tick, and the
+        // refusal must still end up the last word - the operator must not
+        // be left reading "added" with a scratch that is refusing.
+        const std::filesystem::path hymnImage = base / "hymn.jpg";
+        {
+            std::ofstream out(hymnImage);
+            out << "NOT-A-JPEG";
+        }
+        check(docs.importMediaFile(QString::fromStdWString(hymnImage.wstring())),
+              "importing still edits the model while the scratch refuses");
+        check(docs.status().contains(QStringLiteral("added")),
+              "the import's success line lands first, synchronously");
+        QCoreApplication::processEvents();
+        check(docs.status().contains(QStringLiteral("autosave refused")),
+              "the deferred refusal overwrites the success line - the last word is the hole in the net");
+        ::chmod(scratch.c_str(), 0755);
+        docs.setSlideText(QStringLiteral("healed"));
+        docs.flushText();  // this tick writes again
+        QCoreApplication::processEvents();
+        check(docs.status().contains(QStringLiteral("autosave recovered")),
+              "and the status says when the scratch is current again");
+    }
+
+    // (b2) The race guard: a refusal queued in the same turn, by the time
+    // its zero-timer runs a scratch that has since caught up must not
+    // stamp a healthy session with the stale warning.
+    {
+        const std::filesystem::path base = root / "race-guard";
+        DocumentController docs(nullptr, base);
+        docs.createSong(QStringLiteral("Raced"));
+        docs.addSlide();
+        const std::filesystem::path scratch = base / "autosave";
+        ::chmod(scratch.c_str(), 0555);
+        docs.addSlide();  // tick refused, warning queued
+        ::chmod(scratch.c_str(), 0755);
+        docs.setSlideText(QStringLiteral("caught up"));
+        docs.flushText();  // scratch current again - before any event loop ran
+        QCoreApplication::processEvents();
+        check(!docs.status().contains(QStringLiteral("autosave refused")) &&
+                  docs.status().contains(QStringLiteral("autosave recovered")),
+              "the queued refusal is suppressed once the scratch has caught up");
+    }
+
+    // (c) save/load that cannot delete the stale scratch say so — the
+    // survivor is a resurrection risk, not a detail.
+    {
+        const std::filesystem::path base = root / "stale-clear";
+        DocumentController docs(nullptr, base);
+        docs.createSong(QStringLiteral("Committed"));
+        docs.addSlide();
+        check(docs.save() && !Autosave::exists(base / "autosave"),
+              "a healthy save saves and clears the scratch");
+        docs.addSlide();  // dirty again; the scratch is re-created
+        const std::filesystem::path scratch = base / "autosave";
+        check(Autosave::exists(scratch), "the new edit is protected again");
+        ::chmod(scratch.c_str(), 0555);  // nothing inside it can be deleted
+        check(docs.save() && !docs.dirty(),
+              "the save itself still succeeds - only the delete failed");
+        check(docs.status().contains(QStringLiteral("saved")) &&
+                  docs.status().contains(QStringLiteral("stale autosave")) &&
+                  Autosave::exists(scratch),
+              "save NAMES the survivor it could not remove, instead of claiming a clean state");
+        check(docs.load(), "load succeeds");
+        check(docs.status().contains(QStringLiteral("loaded")) &&
+                  docs.status().contains(QStringLiteral("stale autosave")),
+              "load names it too - discarded work must not resurface silently");
+        ::chmod(scratch.c_str(), 0755);
+    }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -867,6 +1016,7 @@ int main(int argc, char* argv[]) {
     exercisePlaylistAndLibrary(tempRoot / "playlist");
     exerciseStylePanel(tempRoot / "styles");
     exerciseClipboard(tempRoot / "clipboard");
+    exerciseAutosaveSurfacing(tempRoot / "surfacing");
     std::filesystem::remove_all(tempRoot);
 
     if (gFailed) {

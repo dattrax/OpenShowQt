@@ -919,12 +919,57 @@ Updated: 2026-10-25 (Europe/London).
   string-prefix containment, m06 containment dropped: **7/7 CAUGHT**
   with blame on the intended check (on top of 6.13a's 12/12). Gates
   desktop **44/44** (180 s), headless **27/27** (48 s).
-- Exact next action: **6.14a** per the PLAN.md ledger (review R14) —
-  surface autosave/clear failures and flush pending text on normal
-  close/signal exit: disk refusal must be visible; a close inside the
-  600 ms debounce must preserve the final text; stale recovery must not
-  be silently resurrected after save/discard. Then 6.14b (coalesced
-  persistence on a bounded executor with immutable snapshots).
+- **6.14a — the crash net reports its own holes, and quitting commits
+  the last keystrokes (R14's first half) — DONE.** Five sites in
+  `DocumentController` were discarding persistence errors; all five speak
+  now:
+  - **Refused autosave ticks** (edit/undo/redo) go through
+    `surfaceAutosaveResult`: the status reads "autosave refused after
+    edit|undo|redo: <disk error> - unsaved work is NOT on disk". It is
+    DEFERRED on a zero timer because edit callers write their own status
+    synchronously after `edit()` returns and last-write-wins — the
+    fixture proves the deferral is load-bearing through `importMediaFile`
+    ("added to the media library" lands first; the refusal overwrites it
+    as the last word). A `fAutosaveStale` flag guards the race — a
+    refusal queued in the same turn must not stamp a session whose
+    scratch has already caught up — and the catch-up itself says
+    "autosave recovered - the scratch on disk is current again".
+  - **save()/load() whose `clear()` fails** still succeed (the service
+    commit worked), but name the survivor: "the stale autosave could NOT
+    be removed... a later start may recover work this save already
+    replaced". R14's silent resurrection is now a visible warning.
+  - **The quit flush lives in the controller's own constructor**
+    (`connect(qApp, &QCoreApplication::aboutToQuit, this,
+    &DocumentController::flushText)`): a window close and the
+    SIGTERM/SIGINT poll both end the loop through `aboutToQuit`, so
+    close-inside-the-debounce commits the pending text and the dirty
+    tick leaves the final words in the scratch for the next start. The
+    earlier design (wire it in `main.cpp` + `Main.qml onClosing`) was
+    replaced during implementation: the invariant belongs with the state
+    it protects — it cannot be forgotten by whoever wires `main()`, needs
+    no QML change, and becomes testable by firing the real `aboutToQuit`.
+  - **Fixtures** (`exerciseAutosaveSurfacing`): quit inside the 600 ms
+    debounce via a real `QCoreApplication::exec()` exited by `quit()` —
+    the next session recovers the final keystroke, with a no-quit
+    control proving the text IS otherwise lost; `chmod 0555` on the
+    scratch → refused edit, undo and redo each named on the status line
+    after `processEvents` (undo/redo retry because `tick` does not poison
+    its fingerprint on failure), plus the last-word import case, the
+    healthy-again line and the race-guard sequence; `chmod 0555` → save
+    and load both name the undeletable stale autosave.
+  - **Mutations** m01–m03 each tick site deaf again, m04 refusal branch
+    dead, m05 synchronous status, m06 race guard dropped, m07
+    healthy-again silent, m08/m09 the save/load clear swallows (R14's own
+    silences), m10 the aboutToQuit connect removed, m11 flush gutted:
+    **11/11 CAUGHT**, each on exactly its intended check. Gates desktop
+    **44/44** (181 s), headless **27/27** (48 s).
+- Exact next action: **6.14b** per the PLAN.md ledger (review R14's
+  second half) — coalesce persistence on a bounded save executor with
+  immutable document snapshots: reuse unchanged asset copies, acknowledge
+  completed durability back on the UI thread, keep the UI responsive
+  through a large-media save/autosave, and make sure an older in-flight
+  autosave can never overwrite a newer save/discard decision. Then 6.15a
+  (review R15).
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -3344,6 +3389,22 @@ of this work.
 
 ## Decisions
 
+- (2026-10-26, task 6.14a) Three rules generalise past this controller.
+  **An error path that ends in a local variable is not a design, it is a
+  hope**: five call sites believed they reported autosave failures because
+  they collected the strings — R14's real finding is that a report nobody
+  reads is indistinguishable from none, which is why every mutant here is
+  one of those discards restored. **When two writers share a status line,
+  order the writes deliberately**: the refusal defers to the next event-loop
+  turn precisely so it outlasts the caller's success line — "last word"
+  is a contract, and the import fixture makes it testable. **Shutdown
+  hooks belong to the object that owns the state**: connecting
+  `aboutToQuit` inside the controller made the flush invariant
+  unforgettable and testable by the real signal rather than a hand-wired
+  call in `main()` — the earlier main/QML design was dropped mid-task for
+  exactly that reason. The race guard (a queued warning must check, when
+  it fires, that it is still the truth) is the general form: deferred
+  effects carry a veto, not just a payload.
 - (2026-10-26, task 6.13b) Validation belongs at the chokepoint, and
   containment belongs at the filesystem, not the string. One gate inside
   `claimId` protects six kinds of id because every loaded id must pass
