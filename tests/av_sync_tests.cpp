@@ -14,9 +14,12 @@
 //     no-thread wait discipline (returns false, never hangs) and the
 //     loop-default mirror.
 //  3. AvPlayer without a daemon (enableSink=false): the orchestrator runs
-//     the same chain on the monotonic fallback clock; the seek fan-out
-//     reaches the feeder, the loop toggle and the volume passthrough
-//     land on the mixer.
+//     the same chain on the fallback clock, which obeys the transport
+//     (task 6.7b: holds on pause, continues on play, lands on seek
+//     targets); the seek fan-out reaches the feeder, the loop toggle and
+//     the volume passthrough land on the mixer, and a standalone-only
+//     transport (only the second source wanted) registers, feeds,
+//     controls and reports by stable source identity (review R2).
 //  4. AvPlayer with the live PipeWire sink: the server consumes (callbacks
 //     and clock advance), pause() freezes the clock at the position and
 //     deactivates the stream, play() continues it seamlessly (the queue
@@ -393,8 +396,28 @@ bool avPlayerFallback(const std::string& wav) {
     player.seekTo(4.0);  // no sink: the fan-out still reaches the feeder
     ok = check(player.feederStats(false).seeks == 1, "the transport seek reaches the feeder") &&
          ok;
-    ok = check(std::fabs(player.clockSeconds() - 4.0) > 0.5,
-               "without audio the monotonic clock is untouched by a seek") && ok;
+    // Task 6.7b (review R2) inverted this: the fallback position obeys
+    // the transport, so the seek lands on the target (plus the few ms of
+    // apply wait), not on untouched elapsed time.
+    ok = check(player.clockSeconds() >= 4.0 && player.clockSeconds() < 4.3,
+               "the sinkless fallback clock lands on the seek target") && ok;
+
+    // Hold and continue (6.7b): pause freezes the position, play
+    // continues from it, and a seek while parked reports the target.
+    player.pause();
+    const double held = player.clockSeconds();
+    sleepMs(200);
+    ok = check(std::fabs(player.clockSeconds() - held) < 1e-9,
+               "the sinkless clock holds across pause") && ok;
+    player.play();
+    sleepMs(150);
+    ok = check(player.clockSeconds() > held + 0.10,
+               "the sinkless clock continues from its hold") && ok;
+    player.pause();
+    player.seekTo(1.0);
+    ok = check(player.clockSeconds() >= 1.0 && player.clockSeconds() < 1.2,
+               "a seek while parked reports the held target") && ok;
+    player.play();
 
     // The sink-less chain free-runs (the mixer output discards), so with
     // the rewind off the feeder finishes the file and reports eof — the
@@ -407,6 +430,80 @@ bool avPlayerFallback(const std::string& wav) {
     player.stop();
     player.stop();  // idempotent
     ok = check(!player.audioLive(), "stop leaves the player silent and down") && ok;
+    return ok;
+}
+
+// --- 3b. The standalone-only transport (task 6.7b, review R2) ---
+//
+// R2's second probe: with only the standalone track wanted, its input
+// was registered at index 0 while the code demanded the standalone
+// identity to sit at index 1 — the identity check failed, no feeder
+// started, and start() still returned true with silent audio. Identity
+// now names the source, whatever index registration handed it.
+bool avPlayerStandaloneOnly(const std::string& wav) {
+    bool ok = true;
+    AvPlayer player;
+    AvPlayer::Config config;
+    config.secondAudioPath = wav;  // standalone alone: no video audio
+    config.loop = true;
+    config.enableSink = false;
+    std::string error;
+    ok = check(player.start(config, &error), "standalone-only: the transport starts") && ok;
+    ok = check(player.mixerStats().inputs == 1, "standalone-only: one mixer input registers") && ok;
+    // The bug itself: the feeder runs and reports under its identity.
+    ok = check(waitFor([&] { return player.feederStats(true).framesFed > 0; }, 5000),
+               "standalone-only: the feeder flows and reports by identity") && ok;
+    ok = check(waitFor([&] { return player.mixerStats().deliveredFrames > 0; }, 5000),
+               "standalone-only: its audio reaches the mixer output") && ok;
+    // Control plane addressed by identity.
+    player.setVolume(AvPlayer::kSecondInput, 0.25f);
+    player.setMute(AvPlayer::kVideoInput, true);  // unregistered identity: a no-op
+    ok = check(player.volume(AvPlayer::kSecondInput) == 0.25f,
+               "standalone-only: volume reaches the standalone input") && ok;
+    ok = check(!player.muted(AvPlayer::kSecondInput),
+               "standalone-only: muting an unregistered identity leaves the real input alone") && ok;
+    player.setMute(AvPlayer::kSecondInput, true);
+    ok = check(player.muted(AvPlayer::kSecondInput),
+               "standalone-only: mute reaches the standalone input") && ok;
+    player.seekTo(2.0);
+    ok = check(player.feederStats(true).seeks == 1,
+               "standalone-only: the transport seek reaches the standalone feeder") && ok;
+    ok = check(player.feederStats(false).framesFed == 0,
+               "standalone-only: the absent video source reports empty") && ok;
+    player.stop();
+    // The 6.7a restart cycle at this shape: fresh counters, feeder
+    // flows again — identity mapping re-arms with the mixer.
+    ok = check(player.start(config, &error), "standalone-only: the restart starts") && ok;
+    ok = check(player.feederStats(true).seeks == 0,
+               "standalone-only: the new transport's counters are fresh") && ok;
+    ok = check(waitFor([&] { return player.feederStats(true).framesFed > 0; }, 5000),
+               "standalone-only: the feeder flows again after the restart") && ok;
+    player.stop();
+    return ok;
+}
+
+// --- 3c. The fallback clock answers from construction (task 6.7b) ---
+//
+// av-bench --no-audio captures clockFn() without ever calling start().
+// The position must then be the bounded time since construction — the
+// un-anchored reading was time since the steady_clock epoch, and the
+// bench paced presents by the machine's uptime.
+bool fallbackClockBeforeStart() {
+    bool ok = true;
+    AvPlayer player;
+    const double at0 = player.clockSeconds();
+    sleepMs(120);
+    const double later = player.clockSeconds();
+    ok = check(at0 >= 0.0 && at0 < 1.0,
+               "an un-started player's clock counts from construction, not from epoch") && ok;
+    ok = check(later >= at0 + 0.10 && later < at0 + 0.6,
+               "the un-started fallback clock ticks with wall time") && ok;
+    AvPlayer::Config config;
+    config.enableSink = false;
+    std::string error;
+    ok = check(player.start(config, &error), "the silent transport starts on top of it") && ok;
+    ok = check(player.clockSeconds() < 0.3, "start() re-anchors the fallback clock to 0") && ok;
+    player.stop();
     return ok;
 }
 
@@ -711,6 +808,8 @@ int main() {
     ok = clockTransport() && ok;
     ok = feederSeekToTarget(wav) && ok;
     ok = avPlayerFallback(wav) && ok;
+    ok = avPlayerStandaloneOnly(wav) && ok;
+    ok = fallbackClockBeforeStart() && ok;
     ok = avPlayerLive(wav) && ok;
     ok = avPlayerRestart(wav) && ok;
     ok = avPlayerRestartLive(wav) && ok;

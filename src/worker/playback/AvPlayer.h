@@ -42,6 +42,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -60,6 +61,12 @@ class PlaybackPipeline;
 
 class AvPlayer {
 public:
+    // Source IDENTITIES (task 6.7b, review R2): stable names for the two
+    // sources, not mixer table positions. The player maps identity ->
+    // mixer index when it registers inputs, so a standalone-only
+    // transport (only kSecondInput wanted, the mixer hands it index 0)
+    // addresses its feeder, flushes and volumes by the same names as a
+    // transport that has both.
     static constexpr int kVideoInput = 0;
     static constexpr int kSecondInput = 1;
 
@@ -124,10 +131,13 @@ public:
     std::function<double()> clockFn() const;
 
     // Mixer passthroughs (per-input volume/mute is the 5.3 contract).
-    void setVolume(int input, float volume);
-    void setMute(int input, bool muted);
-    float volume(int input) const;
-    bool muted(int input) const;
+    // The index names a SOURCE identity (kVideoInput/kSecondInput); an
+    // identity the transport never registered is a no-op (setters) or
+    // the mixer's invalid-slot answer (getters).
+    void setVolume(int identity, float volume);
+    void setMute(int identity, bool muted);
+    float volume(int identity) const;
+    bool muted(int identity) const;
     // The live loop state (mirrored to feeders and pipelines by setLoop).
     bool loopEnabled() const { return fLoop.load(); }
 
@@ -135,26 +145,47 @@ public:
     media::PipeWireSink::Stats sinkStats() const;
     media::AudioMixer::Stats mixerStats() const;
     media::AudioFileFeeder::Stats feederStats(bool second) const;
-    // The sink's media position (0 when no sink) — the heard position.
+    // The heard media position: the sink's audio clock when audio is
+    // live, else the fallback position the transport controls — start
+    // anchors it at 0, pause holds it, play continues, seek moves it
+    // (task 6.7b; raw elapsed time ignored all three).
     double clockSeconds() const;
 
 private:
     struct FeederSlot {
         std::unique_ptr<media::AudioFileFeeder> feeder;
+        // The MIXER INDEX this feeder writes (looked up from the source
+        // identity in fInputOf; not necessarily 0/1).
         int input = media::AudioMixer::kNoInput;
     };
 
     media::PipeWireSink fSink;
     media::AudioMixer fMixer;
-    std::vector<FeederSlot> fFeeders;  // [0] = video audio, [1] = second
+    std::vector<FeederSlot> fFeeders;  // only feeders that opened
     std::vector<PlaybackPipeline*> fPipelines;
+
+    // Source identity (kVideoInput/kSecondInput) -> mixer index assigned
+    // at registration, kNoInput while unregistered (task 6.7b). Written
+    // by start()/stop(); control reads from any thread.
+    std::array<std::atomic<int>, 2> fInputOf{
+        {media::AudioMixer::kNoInput, media::AudioMixer::kNoInput}};
 
     std::atomic<bool> fAudioLive{false};
     std::atomic<bool> fSinkActive{false};
     std::atomic<bool> fPaused{false};
     std::atomic<bool> fStarted{false};
     std::atomic<bool> fLoop{false};
-    std::chrono::steady_clock::time_point fMonotonicStart;
+
+    // The fallback (sinkless) clock: a transport-controlled media
+    // position — base + (now - anchor) while playing, base while held
+    // (paused). start() anchors 0/now, pause() latches the hold, play()
+    // re-anchors, seekTo() moves the base (and the hold if parked).
+    // Transport-thread writes, readers anywhere (AudioClock's rule).
+    std::atomic<int64_t> fFallbackBaseNs{0};
+    std::atomic<int64_t> fFallbackAnchorNs{0};
+    std::atomic<bool> fFallbackHeld{false};
+
+    int mixerIndexFor(int identity) const;
 };
 
 }  // namespace openshow::worker

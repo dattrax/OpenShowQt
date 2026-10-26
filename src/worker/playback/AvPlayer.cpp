@@ -15,9 +15,22 @@ namespace {
 // without it just re-exposes the head-starvation the pre-roll exists to
 // prevent, and the stats show it.
 constexpr int kPreRollMs = 2000;
+
+int64_t steadyNowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 }  // namespace
 
-AvPlayer::AvPlayer() = default;
+AvPlayer::AvPlayer() {
+    // The fallback clock answers from the moment the player exists (task
+    // 6.7b): av-bench --no-audio captures clockFn() without ever calling
+    // start(), and an un-anchored position read as time since the
+    // steady_clock epoch — the scheduler drifted by the machine's uptime.
+    // start() re-anchors to 0 for a real transport.
+    fFallbackAnchorNs.store(steadyNowNs(), std::memory_order_release);
+}
 
 AvPlayer::~AvPlayer() {
     stop();
@@ -32,7 +45,11 @@ bool AvPlayer::start(const Config& config, std::string* error) {
     }
     fStarted.store(true);
     fLoop.store(config.loop);
-    fMonotonicStart = std::chrono::steady_clock::now();
+    // The fallback clock starts at 0 from this instant (task 6.7b); it
+    // only answers while audio is not live.
+    fFallbackBaseNs.store(0, std::memory_order_relaxed);
+    fFallbackAnchorNs.store(steadyNowNs(), std::memory_order_release);
+    fFallbackHeld.store(false, std::memory_order_relaxed);
 
     const bool wantVideo = !config.videoAudioPath.empty();
     const bool wantSecond = !config.secondAudioPath.empty();
@@ -57,29 +74,40 @@ bool AvPlayer::start(const Config& config, std::string* error) {
     // first mixed block has real content from every feeder (a mixer that
     // starts against empty inputs emits starvation-padded head blocks —
     // the measured 2 s startup offset of task 5.3's shape).
+    // Identity-first registration (task 6.7b, review R2): each wanted
+    // source takes the mixer index it is handed, remembered by identity.
+    // The old code demanded index 1 from a mixer that had never seen
+    // input 0 — a standalone-only transport failed that identity check,
+    // registered nothing it could use and silently started no feeder.
     bool inputsOk = true;
-    if (wantVideo) {
-        inputsOk = fMixer.addInput() == kVideoInput;
+    for (int identity = 0; identity < 2; ++identity) {
+        const bool wanted = (identity == kVideoInput && wantVideo) ||
+                            (identity == kSecondInput && wantSecond);
+        if (!wanted) {
+            continue;
+        }
+        const int index = fMixer.addInput();
+        if (index == media::AudioMixer::kNoInput) {
+            inputsOk = false;
+            break;
+        }
+        fInputOf[identity].store(index, std::memory_order_relaxed);
     }
-    if (wantSecond && inputsOk) {
-        inputsOk = fMixer.addInput() == kSecondInput;
-    }
-    const int inputCount = inputsOk ? static_cast<int>(fMixer.inputCount()) : 0;
     const char* const labels[] = {"video", "second"};
     const std::string paths[] = {config.videoAudioPath, config.secondAudioPath};
     media::AudioMixer* mixer = &fMixer;
-    for (int i = 0; i < 2 && i < inputCount; ++i) {
-        if (paths[i].empty()) {
+    for (int identity = 0; inputsOk && identity < 2; ++identity) {
+        if (paths[identity].empty()) {
             continue;
         }
         auto feeder = std::make_unique<media::AudioFileFeeder>();
         std::string feederError;
-        if (!feeder->open(paths[i], rate, &feederError)) {
+        if (!feeder->open(paths[identity], rate, &feederError)) {
             std::fprintf(stderr, "openshow-worker: AvPlayer: %s audio unavailable (%s)\n",
-                         labels[i], feederError.c_str());
+                         labels[identity], feederError.c_str());
             continue;
         }
-        const int input = i;
+        const int input = fInputOf[identity].load(std::memory_order_relaxed);
         // The race-free flush seam: the decode thread is quiet at the
         // callback, so this input's queue drops exactly at the jump.
         feeder->setSeekedCallback([this, mixer, input](double) {
@@ -96,7 +124,7 @@ bool AvPlayer::start(const Config& config, std::string* error) {
                 },
                 config.loop, &feederError)) {
             std::fprintf(stderr, "openshow-worker: AvPlayer: %s audio feeder: %s\n",
-                         labels[i], feederError.c_str());
+                         labels[identity], feederError.c_str());
             continue;
         }
         fFeeders.push_back({std::move(feeder), input});
@@ -159,6 +187,10 @@ bool AvPlayer::start(const Config& config, std::string* error) {
             // background) faces no "already running" residue.
             fSink.stop();
             fMixer.reset();
+            fInputOf[kVideoInput].store(media::AudioMixer::kNoInput,
+                                        std::memory_order_relaxed);
+            fInputOf[kSecondInput].store(media::AudioMixer::kNoInput,
+                                         std::memory_order_relaxed);
             fAudioLive.store(false);
             fSinkActive.store(false);
             fStarted.store(false);
@@ -193,6 +225,10 @@ void AvPlayer::stop() {
     fSink.stop();
     fSinkActive.store(false);
     fAudioLive.store(false);
+    // The identity map follows the (reset) mixer table: nothing may
+    // address a next transport's inputs through this run's indices.
+    fInputOf[kVideoInput].store(media::AudioMixer::kNoInput, std::memory_order_relaxed);
+    fInputOf[kSecondInput].store(media::AudioMixer::kNoInput, std::memory_order_relaxed);
     // Re-armable: the session's background transport stops and restarts
     // the player as backgrounds change (every component's stop is
     // idempotent, so a never-started player tears down cleanly too).
@@ -231,6 +267,12 @@ void AvPlayer::play() {
     if (fAudioLive.load()) {
         fSink.resume();
         fSinkActive.store(fSink.active());  // reflect the server's verdict
+    } else if (fFallbackHeld.load(std::memory_order_relaxed)) {
+        // Sinkless: the fallback position continues from its hold —
+        // re-anchor first, then release, so no reader sees the base with
+        // the pause-era anchor (task 6.7b).
+        fFallbackAnchorNs.store(steadyNowNs(), std::memory_order_relaxed);
+        fFallbackHeld.store(false, std::memory_order_release);
     }
     for (PlaybackPipeline* pipeline : fPipelines) {
         pipeline->play();
@@ -246,6 +288,14 @@ void AvPlayer::pause() {
     if (fAudioLive.load()) {
         fSink.pause();
         fSinkActive.store(fSink.active());
+    } else if (!fFallbackHeld.load(std::memory_order_relaxed)) {
+        // Sinkless: latch the current fallback position as the hold
+        // (task 6.7b): base becomes the held position, then readers take
+        // the hold branch.
+        const int64_t base = fFallbackBaseNs.load(std::memory_order_relaxed);
+        const int64_t anchor = fFallbackAnchorNs.load(std::memory_order_relaxed);
+        fFallbackBaseNs.store(base + (steadyNowNs() - anchor), std::memory_order_relaxed);
+        fFallbackHeld.store(true, std::memory_order_release);
     }
     for (PlaybackPipeline* pipeline : fPipelines) {
         pipeline->pause();
@@ -280,6 +330,16 @@ void AvPlayer::seekTo(double targetSeconds) {
             fSink.rebaseClock(targetSeconds);
         }
     }
+    if (!fAudioLive.load() && (fFeeders.empty() || applied)) {
+        // The sinkless fallback position obeys the seek too (task 6.7b):
+        // playing, it continues from the target; parked, the hold now
+        // reports the target. A failed feeder seek (timeout) leaves the
+        // position where it was — the clock never claims a jump the
+        // audio did not make.
+        const int64_t targetNs = static_cast<int64_t>(targetSeconds * 1e9);
+        fFallbackBaseNs.store(targetNs, std::memory_order_relaxed);
+        fFallbackAnchorNs.store(steadyNowNs(), std::memory_order_relaxed);
+    }
 }
 
 void AvPlayer::setLoop(bool enabled) {
@@ -294,31 +354,47 @@ void AvPlayer::setLoop(bool enabled) {
 
 std::function<double()> AvPlayer::clockFn() const {
     const media::PipeWireSink* sink = &fSink;
-    const std::chrono::steady_clock::time_point monotonicStart = fMonotonicStart;
     const std::atomic<bool>* live = &fAudioLive;
-    return [sink, monotonicStart, live] {
+    const std::atomic<int64_t>* baseNs = &fFallbackBaseNs;
+    const std::atomic<int64_t>* anchorNs = &fFallbackAnchorNs;
+    const std::atomic<bool>* held = &fFallbackHeld;
+    return [sink, live, baseNs, anchorNs, held] {
         if (live->load(std::memory_order_acquire)) {
             return sink->clock().clockSeconds();
         }
-        return std::chrono::duration<double>(std::chrono::steady_clock::now() - monotonicStart)
-            .count();
+        // Sinkless fallback (task 6.7b): the transport-controlled
+        // position — frozen at the hold while paused, base + elapsed
+        // otherwise. start() anchors it at 0; pause/play/seek keep it
+        // honest, unlike the raw elapsed time R2 flagged.
+        if (held->load(std::memory_order_acquire)) {
+            return static_cast<double>(baseNs->load(std::memory_order_relaxed)) / 1e9;
+        }
+        const int64_t since = steadyNowNs() - anchorNs->load(std::memory_order_acquire);
+        return static_cast<double>(baseNs->load(std::memory_order_relaxed) + since) / 1e9;
     };
 }
 
-void AvPlayer::setVolume(int input, float volume) {
-    fMixer.setVolume(input, volume);
+int AvPlayer::mixerIndexFor(int identity) const {
+    if (identity == kVideoInput || identity == kSecondInput) {
+        return fInputOf[identity].load(std::memory_order_relaxed);
+    }
+    return identity;  // not an identity: the mixer's bounds check no-ops it
 }
 
-void AvPlayer::setMute(int input, bool muted) {
-    fMixer.setMute(input, muted);
+void AvPlayer::setVolume(int identity, float volume) {
+    fMixer.setVolume(mixerIndexFor(identity), volume);
 }
 
-float AvPlayer::volume(int input) const {
-    return fMixer.volume(input);
+void AvPlayer::setMute(int identity, bool muted) {
+    fMixer.setMute(mixerIndexFor(identity), muted);
 }
 
-bool AvPlayer::muted(int input) const {
-    return fMixer.muted(input);
+float AvPlayer::volume(int identity) const {
+    return fMixer.volume(mixerIndexFor(identity));
+}
+
+bool AvPlayer::muted(int identity) const {
+    return fMixer.muted(mixerIndexFor(identity));
 }
 
 media::PipeWireSink::Stats AvPlayer::sinkStats() const {
@@ -330,10 +406,12 @@ media::AudioMixer::Stats AvPlayer::mixerStats() const {
 }
 
 media::AudioFileFeeder::Stats AvPlayer::feederStats(bool second) const {
-    // Look up by input id, not vector position: a feeder that failed to
-    // open never took its slot, and the survivor must still report under
-    // its own name.
-    const int wanted = second ? kSecondInput : kVideoInput;
+    // Look up by the mixer index registered for the source IDENTITY (a
+    // feeder that failed to open never took its slot, and the survivor
+    // must still report under its own name; identity keeps that true no
+    // matter which other source exists — task 6.7b).
+    const int wanted =
+        fInputOf[second ? kSecondInput : kVideoInput].load(std::memory_order_relaxed);
     for (const FeederSlot& slot : fFeeders) {
         if (slot.input == wanted) {
             return slot.feeder->stats();

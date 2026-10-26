@@ -320,11 +320,33 @@ Updated: 2026-10-25 (Europe/London).
   (stop without reset, no sink re-arm, no failure-path self-clean, reset
   without flag re-arm, reset without clearing) each fail exactly their
   intended checks. Gates desktop **35/35**, headless **21/21**.
-- Exact next action: **6.7b** per the PLAN.md ledger — standalone-only
-  input identity (`AvPlayer` expects `kSecondInput`=1 even when input 0
-  was never registered; standalone-only registers 0, fails `inputsOk`,
-  starts no feeder) and sinkless fallback-clock semantics (elapsed wall
-  time ignores pause/seek). Then continue the focused M6 leaves in order.
+- **6.7b DONE (2026-10-26).** Stable source identity and a transport-
+  obeying fallback clock (review R2, second half). `kVideoInput`/
+  `kSecondInput` are now identities mapped through `fInputOf` to the
+  mixer index registration handed each source: the standalone-only
+  transport (only the second track wanted, landing at index 0) feeds,
+  flushes, volumes, seeks and reports by name — the old rigid demand for
+  index 1 silently started no feeder. The map re-arms with the mixer in
+  `stop()` and the failure self-clean. The sinkless fallback clock
+  (atomic base/anchor/hold) obeys the transport: `start()` anchors 0,
+  `pause()` holds, `play()` continues (re-anchor before releasing the
+  hold), `seekTo()` lands the target playing OR parked, and a failed
+  feeder seek moves nothing. Fixing this surfaced a pre-existing defect:
+  `--av-bench --no-audio` captures `clockFn()` without `start()`, and
+  the un-anchored fallback read time since the steady_clock epoch — the
+  bench paced by machine uptime (all 181 presents missed, drift +67 719
+  s; identical on the 6.7a binary). The anchor now initializes in the
+  constructor; the rerun: 101 presents, **0 missed**, drift mean +1.0 ms
+  max 13.6 ms. Fixtures: `avPlayerStandaloneOnly` (identity end to end,
+  plus restart), `avPlayerFallback`'s hold/continue/land/parked-seek
+  checks (inverting 5.4's pinned untouched-by-seek — that was R2's
+  complaint), `fallbackClockBeforeStart`. Mutations M-F/G/H/I each fail
+  exactly their intended checks. Gates desktop **35/35**, headless
+  **21/21**.
+- Exact next action: **6.7c** per the PLAN.md ledger — propagate
+  preparation/runtime decoder, still-image, feeder and sink failures
+  into acknowledged media state. Then continue the focused M6 leaves in
+  order.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -2839,6 +2861,19 @@ of this work.
   rate is legitimately 0 the moment start() returns — every generation;
   fall back to the preferred rate and let server stream-time re-latch the
   clock, and check negotiation after the first callbacks.
+- (2026-10-26, task 6.7b) A source identity must be a NAME, not a table
+  position: index-equality checks (`addInput() == kSecondInput`) fail
+  whenever the other source is absent, and the failure mode is silence
+  returned as success. Map identity -> assigned index at registration,
+  re-arm the map with the table it indexes, and look up per-source stats
+  through the same map. A fallback media clock needs the same contract
+  as the audio clock it replaces — hold on pause, continue on play, land
+  on seek, and no position move the audio did not make — and a clock
+  function a caller may capture BEFORE start() must answer from
+  construction: an un-anchored steady_clock reading silently becomes
+  machine uptime and paces the whole scheduler by it (bench drift in
+  tens of thousands of seconds; the fix's proof is a bounded reading
+  plus one honest bench rerun).
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.
