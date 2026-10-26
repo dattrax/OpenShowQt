@@ -206,6 +206,29 @@ void OutputSession::close() {
     // (task 5.5). fAudio.stop() is idempotent: a never-started player
     // tears down as cleanly as a running one.
     teardownBackgroundTransport();
+    // The standalone track is deliberately NOT part of the background
+    // transport's lifetime (task 6.15b) — which is exactly why close()
+    // must end it by name. Live first, teardown's rule: a command that
+    // races this refuses, never lands on a stopping player; the sticky
+    // error keeps its path.
+    fStandaloneLive.store(false, std::memory_order_release);
+    fMediaSourceMask.store(fMediaSourceMask.load(std::memory_order_relaxed) & ~2,
+                           std::memory_order_release);
+    fStandalonePlayer.stop();  // idempotent
+    {
+        std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
+        fStandaloneSwap.reset();  // nobody left to apply it
+    }
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        fStatus.media.standalone.live = false;
+        fStatus.media.standalone.playing = false;
+        fStatus.media.standalone.position = -1.0;
+        fStatus.media.standalone.duration = -1.0;
+        fStatus.media.standalone.audio = "none";
+        fStatus.media.standalone.loops = 0;
+        rebuildMediaSourcesLocked();  // drops the track's row with its mask bit
+    }
     if (fSwapchain) {
         fSwapchain->destroy();
         fSwapchain.reset();
@@ -548,16 +571,7 @@ void OutputSession::mediaPlaying(const openshow::scene::Background& background) 
     // stored before this call so the list starts complete.
     fStatus.media.live = true;
     fStatus.media.loop = fAudio.loopEnabled();
-    fStatus.media.sources.clear();
-    const int sourceMask = fMediaSourceMask.load(std::memory_order_relaxed);
-    if ((sourceMask & 1) != 0) {
-        fStatus.media.sources.push_back({"video", fAudio.volume(AvPlayer::kVideoInput),
-                                         fAudio.muted(AvPlayer::kVideoInput)});
-    }
-    if ((sourceMask & 2) != 0) {
-        fStatus.media.sources.push_back({"standalone", fAudio.volume(AvPlayer::kSecondInput),
-                                         fAudio.muted(AvPlayer::kSecondInput)});
-    }
+    rebuildMediaSourcesLocked();
 }
 
 AvPlayer::AudioLane OutputSession::mediaLaneLocked() const {
@@ -584,7 +598,10 @@ void OutputSession::mediaStopped() {
     fStatus.media.live = false;
     fStatus.media.loop = false;
     fStatus.media.duration = -1.0;
-    fStatus.media.sources.clear();
+    // Sources are cross-transport now (task 6.15b): the background's row
+    // went with its mask bit, but a standalone row survives — the track
+    // outlives the transport it happened to be heard beside.
+    rebuildMediaSourcesLocked();
     // The on-air asset's known audio loss went out with the transport it
     // describes (task 6.7c): the next identity recomputes it.
     fExpectedAudioLoss.clear();
@@ -631,7 +648,21 @@ void OutputSession::mediaFaultClearedLocked(MediaFault fault, const std::string&
 }
 
 void OutputSession::refreshMediaStateLocked() {
+    // The standalone track refreshes on the same heartbeat and the same
+    // frame path (task 6.15b) — and BEFORE the background's early return,
+    // because the track is exactly the case where the background is gone:
+    // an audio-only session has no frames, and the half-second housekeep
+    // is what keeps its position and lane honest.
+    refreshStandaloneMediaLocked();
     if (fBackground == nullptr) {
+        // The mix echo spans lifetimes (task 6.15b). Below, the sources
+        // list is rebuilt as part of the background's own refresh; with no
+        // background there are no frames to carry it, and a gain the
+        // operator set on the track would be applied to the mixer and
+        // never RE-PUBLISHED — the row would sit at whatever the swap
+        // wrote. Cheap enough to rebuild every pass regardless: it reads
+        // atomics from mixers that already exist.
+        rebuildMediaSourcesLocked();
         return;
     }
     const PlaybackPipeline::Stats transport = fBackground->stats();
@@ -647,18 +678,7 @@ void OutputSession::refreshMediaStateLocked() {
     fStatus.media.loop = fAudio.loopEnabled();
     const double clipSeconds = fBackground->clipSeconds();
     fStatus.media.duration = clipSeconds > 0.0 ? clipSeconds : -1.0;
-    fStatus.media.sources.clear();
-    const int sourceMask = fMediaSourceMask.load(std::memory_order_relaxed);
-    if ((sourceMask & 1) != 0) {
-        fStatus.media.sources.push_back({"video",
-                                         fAudio.volume(AvPlayer::kVideoInput),
-                                         fAudio.muted(AvPlayer::kVideoInput)});
-    }
-    if ((sourceMask & 2) != 0) {
-        fStatus.media.sources.push_back({"standalone",
-                                         fAudio.volume(AvPlayer::kSecondInput),
-                                         fAudio.muted(AvPlayer::kSecondInput)});
-    }
+    rebuildMediaSourcesLocked();
 
     if (!transport.fatalError.empty()) {
         // A decode that died after a successful open (review R18): no
@@ -775,16 +795,18 @@ bool OutputSession::mediaSourceLive(AudioSource source) const {
 }
 
 bool OutputSession::requestMediaGain(AudioSource source, double gain, std::string* error) {
-    if (!mediaTransportLive()) {
+    if (source == AudioSource::kVideo ? !mediaTransportLive() : !standaloneLive()) {
         if (error != nullptr) {
-            *error = "no background media is playing";
+            *error = source == AudioSource::kVideo ? "no background media is playing"
+                                                   : "no standalone track is playing";
         }
         return false;
     }
-    if (!mediaSourceLive(source)) {
+    // See requestMediaMute: for the track, live IS registration; the
+    // video leg still needs its own gate for the live-but-silent clip.
+    if (source == AudioSource::kVideo && !mediaSourceLive(source)) {
         if (error != nullptr) {
-            *error = std::string("this background has no ") +
-                     (source == AudioSource::kVideo ? "video" : "standalone") + " audio source";
+            *error = "this background has no video audio source";
         }
         return false;
     }
@@ -797,16 +819,21 @@ bool OutputSession::requestMediaGain(AudioSource source, double gain, std::strin
 }
 
 bool OutputSession::requestMediaMute(AudioSource source, bool muted, std::string* error) {
-    if (!mediaTransportLive()) {
+    if (source == AudioSource::kVideo ? !mediaTransportLive() : !standaloneLive()) {
         if (error != nullptr) {
-            *error = "no background media is playing";
+            *error = source == AudioSource::kVideo ? "no background media is playing"
+                                                   : "no standalone track is playing";
         }
         return false;
     }
-    if (!mediaSourceLive(source)) {
+    // The standalone gate above already IS the registration: bit1 of the
+    // mask is stored by the swap that started the player and cleared by
+    // the one that stopped it, so a live track has its mixer slot — there
+    // is no second kind of "absent" to refuse. The video leg keeps its
+    // own gate because a playing silent clip is live without one.
+    if (source == AudioSource::kVideo && !mediaSourceLive(source)) {
         if (error != nullptr) {
-            *error = std::string("this background has no ") +
-                     (source == AudioSource::kVideo ? "video" : "standalone") + " audio source";
+            *error = "this background has no video audio source";
         }
         return false;
     }
@@ -816,6 +843,215 @@ bool OutputSession::requestMediaMute(AudioSource source, bool muted, std::string
                              std::memory_order_release);
     wakeRenderThread();
     return true;
+}
+
+// --- standalone production track (task 6.15b, review R15) ---
+
+bool OutputSession::requestStandaloneAudio(const std::string& path, std::string* error) {
+    // A removal always accepts, even with a broken track on file: taking
+    // the track down is the operator's last resort, and the sticky error
+    // stays paired with the path it describes (5.5d's rule, read inside
+    // this block).
+    if (path.empty()) {
+        {
+            std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
+            fStandaloneSwap = path;
+        }
+        wakeRenderThread();
+        return true;
+    }
+    // The same probe scene.prepare runs, on the caller's thread and under
+    // no lock: a file that is not decodable audio at that path is a
+    // REFUSED request that changes nothing — the old track, if any, keeps
+    // playing, and the operator hears the reason now rather than after an
+    // accepted bring-up. (A file that vanishes between here and the swap
+    // is the bring-up's bad news, named through the block's own error.)
+    openshow::media::MediaInfo info;
+    std::string probeError;
+    switch (openshow::media::probeMedia(path, &info, &probeError)) {
+        case openshow::media::ProbeStatus::kOk:
+            break;
+        case openshow::media::ProbeStatus::kOpenFailed:
+            if (error != nullptr) {
+                *error = probeError.empty() ? "standalone track: '" + path + "' cannot be opened"
+                                            : probeError;
+            }
+            return false;
+        case openshow::media::ProbeStatus::kNoUsableStreams:
+            if (error != nullptr) {
+                *error = "standalone track: '" + path + "' carries no usable stream";
+            }
+            return false;
+    }
+    if (info.audioStreams.empty()) {
+        if (error != nullptr) {
+            *error = "standalone track: '" + path + "' carries no audio stream";
+        }
+        return false;
+    }
+    if (!info.audioStreams.front().decoderAvailable) {
+        if (error != nullptr) {
+            *error = "standalone track: '" + path + "' has audio no decoder can handle (" +
+                     info.audioStreams.front().codec + ")";
+        }
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
+        fStandaloneSwap = path;
+    }
+    wakeRenderThread();
+    return true;
+}
+
+void OutputSession::standaloneFailedLocked(const std::string& message) {
+    // The track's own sticky error, deduplicated on the message exactly
+    // like the background's: the lane reconcile runs every half second,
+    // and the socket must not spam.
+    const bool isNew = fStatus.media.standalone.error != message;
+    fStatus.media.standalone.error = message;
+    if (isNew) {
+        fPendingMediaError = MediaError{fStatus.media.standalone.path, message};
+    }
+}
+
+void OutputSession::rebuildMediaSourcesLocked() {
+    fStatus.media.sources.clear();
+    const int sourceMask = fMediaSourceMask.load(std::memory_order_relaxed);
+    if ((sourceMask & 1) != 0) {
+        fStatus.media.sources.push_back({"video", fAudio.volume(AvPlayer::kVideoInput),
+                                         fAudio.muted(AvPlayer::kVideoInput)});
+    }
+    if ((sourceMask & 2) != 0) {
+        // The echo comes from the TRACK's player: identity kSecondInput,
+        // which AvPlayer's own table resolves — the standalone-only
+        // transport hands that identity whichever mixer index it got (6.7b).
+        fStatus.media.sources.push_back({"standalone",
+                                         fStandalonePlayer.volume(AvPlayer::kSecondInput),
+                                         fStandalonePlayer.muted(AvPlayer::kSecondInput)});
+    }
+}
+
+void OutputSession::swapStandalonePendingLocked() {
+    std::optional<std::string> swap;
+    {
+        std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
+        swap.swap(fStandaloneSwap);
+    }
+    if (!swap) {
+        return;
+    }
+    // A queued intent for THIS identity addresses the mixer of the track
+    // that is going away: dropped, never delayed onto a successor that
+    // was never asked (teardown's rule, per identity).
+    if (fPendingGainSource.load(std::memory_order_relaxed) == AvPlayer::kSecondInput) {
+        fPendingGainSource.store(-1, std::memory_order_release);
+    }
+    if (fPendingMuteSource.load(std::memory_order_relaxed) == AvPlayer::kSecondInput) {
+        fPendingMuteSource.store(-1, std::memory_order_release);
+    }
+    fStandalonePlayer.stop();  // idempotent: a never-started player tears down clean
+    fStandaloneLive.store(false, std::memory_order_release);
+    fMediaSourceMask.store(fMediaSourceMask.load(std::memory_order_relaxed) & ~2,
+                           std::memory_order_release);
+    rebuildMediaSourcesLocked();
+    fStandalonePath = *swap;
+    if (swap->empty()) {
+        // A removal: the block goes idle — except the error, which stays
+        // sticky beside the path it describes (the operator still needs
+        // to read what broke).
+        fStatus.media.standalone.live = false;
+        fStatus.media.standalone.playing = false;
+        fStatus.media.standalone.position = -1.0;
+        fStatus.media.standalone.duration = -1.0;
+        fStatus.media.standalone.audio = "none";
+        fStatus.media.standalone.loops = 0;
+        std::fprintf(stderr, "openshow-worker: standalone track removed\n");
+        return;
+    }
+    AvPlayer::Config config;
+    config.secondAudioPath = *swap;
+    // The production bed loops, the background transport's own default
+    // (FreeShow's rule): the removal is the stop, and a walk-in track
+    // that falls silent at its EOF mid-service is its own surprise.
+    config.loop = true;
+    std::string startError;
+    if (!fStandalonePlayer.start(config, &startError)) {
+        fStatus.media.standalone.live = false;
+        fStatus.media.standalone.path = *swap;
+        standaloneFailedLocked("standalone track: " +
+                               (startError.empty() ? "the audio transport refused it"
+                                                   : startError));
+        std::fprintf(stderr, "openshow-worker: standalone track %s: %s\n", swap->c_str(),
+                     startError.c_str());
+        return;
+    }
+    fStandaloneLive.store(true, std::memory_order_release);
+    fMediaSourceMask.store(fMediaSourceMask.load(std::memory_order_relaxed) | 2,
+                           std::memory_order_release);
+    // A successful bring-up replaces any earlier failure (mediaPlaying's
+    // rule), and the block's path names what the block's error describes.
+    fStatus.media.standalone.error.clear();
+    fStatus.media.standalone.live = true;
+    fStatus.media.standalone.path = *swap;
+    fStatus.media.standalone.playing = false;  // the refresh promotes it, lane first
+    fStatus.media.standalone.position = -1.0;
+    // The lane seeded from the player that just came up: `live` and the
+    // lane are one statement about the same transport, so the swap that
+    // sets the first owes the second an honest value — leaving the last
+    // block's "none" in place would let status say "live" beside "none"
+    // until the next refresh (a real window: the selection's own wait
+    // returns on live, and reads the lane right there).
+    fStatus.media.standalone.audio = AvPlayer::laneName(fStandalonePlayer.audioLaneState());
+    // A fresh transport has not wrapped; the count is THIS file's story.
+    fStatus.media.standalone.loops = 0;
+    double duration = -1.0;
+    openshow::media::MediaInfo info;
+    std::string probeError;
+    if (openshow::media::probeMedia(*swap, &info, &probeError) ==
+            openshow::media::ProbeStatus::kOk &&
+        info.durationSeconds > 0.0) {
+        duration = info.durationSeconds;
+    }
+    fStatus.media.standalone.duration = duration;
+    rebuildMediaSourcesLocked();
+    std::fprintf(stderr, "openshow-worker: standalone track %s (%s clock)\n",
+                 swap->c_str(), fStandalonePlayer.audioLive() ? "audio" : "monotonic");
+}
+
+void OutputSession::refreshStandaloneMediaLocked() {
+    MediaStatus::Standalone& standalone = fStatus.media.standalone;
+    if (!fStandaloneLive.load(std::memory_order_relaxed)) {
+        return;  // while no player is up, the swap owns the block's fields
+    }
+    const AvPlayer::AudioLane lane = fStandalonePlayer.audioLaneState();
+    standalone.audio = AvPlayer::laneName(lane);
+    standalone.position = fStandalonePlayer.clockSeconds();
+    // The track's own feeder answers the one question the lane cannot: with
+    // the loop on, a starved feed is SILENCE the sink paces as usual. The
+    // rewind counter is the difference between "still walking" and "ran
+    // out", and the fixture watches it rather than trusting the lane.
+    standalone.loops = fStandalonePlayer.feederStats(true).loops;
+    // "Playing" means the transport is advancing: held freezes it, and a
+    // transport that opened NO source has nothing to advance (its position
+    // is a clock, not music). A no-output machine still runs — the same
+    // monotonic-clock transport the video uses when the server is absent —
+    // so it plays while its lane names why nothing is heard.
+    standalone.playing = !fStandalonePlayer.paused() && lane != AvPlayer::AudioLane::kDegraded;
+    // The lane fault is the track's own story (R18's rule, per block): a
+    // fault lane is NAMED, a healthy one is the recovery that clears it.
+    // An error set while the player was down (a bring-up that failed) is
+    // never reached here — live is false, and only a successful swap
+    // clears it, so this reconcile cannot erase a story it does not
+    // describe.
+    if (lane == AvPlayer::AudioLane::kNoOutput) {
+        standaloneFailedLocked("standalone audio has no output (no audio server connection)");
+    } else if (lane == AvPlayer::AudioLane::kDegraded) {
+        standaloneFailedLocked("standalone audio is not audible (no source could be opened, or "
+                               "the audio server refused the stream)");
+    } else {
+        standalone.error.clear();
+    }
 }
 
 std::vector<OutputSession::ScheduledOp> OutputSession::parseScheduledOps(
@@ -910,6 +1146,14 @@ void OutputSession::applyTransportOps() {
     // this loop owns. Each slot is independent of the momentary op above —
     // muting a source must not swallow a pending seek, and a loop toggle
     // is meaningless as an instant, it is the value EOF will honour.
+    // The standalone selection first (task 6.15b): a pass that both swaps
+    // the track and carries a gain for it must land the gain on the NEW
+    // player's mixer, not the one being stopped. The status fields it
+    // touches are the same ones the refresh below samples.
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        swapStandalonePendingLocked();
+    }
     const int loop = fPendingLoop.exchange(-1, std::memory_order_acq_rel);
     if (loop >= 0 && fBackground != nullptr) {
         fAudio.setLoop(loop == 1);
@@ -917,16 +1161,31 @@ void OutputSession::applyTransportOps() {
                      loop == 1 ? "on" : "off");
         applied = true;
     }
+    // The gain and mute slots carry a SOURCE IDENTITY, which in production
+    // selects the player one-to-one: the background transport never
+    // registers a second mixer input, and the track's player has no video
+    // identity — kSecondInput is the track, kVideoInput is the background,
+    // and each player's own table resolves the index. The per-player guard
+    // keeps an intent that raced a teardown from reaching a successor
+    // (the exchange drops it: a dropped command, never a late one).
     const int gainSource = fPendingGainSource.exchange(-1, std::memory_order_acq_rel);
-    if (gainSource >= 0 && fBackground != nullptr) {
-        fAudio.setVolume(gainSource,
-                         static_cast<float>(fPendingGain.load(std::memory_order_relaxed)));
-        applied = true;
+    if (gainSource >= 0) {
+        const bool forTrack = gainSource == AvPlayer::kSecondInput;
+        AvPlayer& player = forTrack ? fStandalonePlayer : fAudio;
+        if (forTrack ? fStandaloneLive.load(std::memory_order_relaxed) : fBackground != nullptr) {
+            player.setVolume(gainSource,
+                             static_cast<float>(fPendingGain.load(std::memory_order_relaxed)));
+            applied = true;
+        }
     }
     const int muteSource = fPendingMuteSource.exchange(-1, std::memory_order_acq_rel);
-    if (muteSource >= 0 && fBackground != nullptr) {
-        fAudio.setMute(muteSource, fPendingMute.load(std::memory_order_relaxed) == 1);
-        applied = true;
+    if (muteSource >= 0) {
+        const bool forTrack = muteSource == AvPlayer::kSecondInput;
+        AvPlayer& player = forTrack ? fStandalonePlayer : fAudio;
+        if (forTrack ? fStandaloneLive.load(std::memory_order_relaxed) : fBackground != nullptr) {
+            player.setMute(muteSource, fPendingMute.load(std::memory_order_relaxed) == 1);
+            applied = true;
+        }
     }
     if (!applied) {
         return;
@@ -1363,10 +1622,14 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
     // The identity table mirrors what THIS transport handed AvPlayer:
     // embedded audio registered its mixer slot when the probe found the
     // stream (the slot exists even if the feeder's own open later failed
-    // — the gain belongs to the slot); standalone begins with 6.15b's
-    // work. Stored BEFORE mediaPlaying so the first status it publishes
-    // already lists the sources (task 6.15a).
-    fMediaSourceMask.store(config.videoAudioPath.empty() ? 0 : 1, std::memory_order_release);
+    // — the gain belongs to the slot). Bit1 belongs to the standalone
+    // track's lifetime (task 6.15b) and is preserved: the background is
+    // not this track's owner and never rebuilds its registration. Stored
+    // BEFORE mediaPlaying so the first status it publishes already lists
+    // the sources (task 6.15a).
+    fMediaSourceMask.store((fMediaSourceMask.load(std::memory_order_relaxed) & ~1) |
+                              (config.videoAudioPath.empty() ? 0 : 1),
+                          std::memory_order_release);
     fMediaTransportLive.store(true, std::memory_order_release);
     mediaPlaying(wanted);
     if (!audioLoss.empty()) {
@@ -1407,12 +1670,20 @@ void OutputSession::teardownBackgroundTransport() {
     // Same rule for the 6.15a slots — and live goes first: an RPC that
     // checked the flag a breath ago has its armed intent cleared here,
     // so a dropped command is a dropped command, never a late one fired
-    // against a successor transport that was never asked.
+    // against a successor transport that was never asked. The standalone
+    // track's bits and slots are NOT touched (task 6.15b): the track
+    // outlives this transport, and its pending gain belongs to its own
+    // player.
     fMediaTransportLive.store(false, std::memory_order_release);
-    fMediaSourceMask.store(0, std::memory_order_release);
+    fMediaSourceMask.store(fMediaSourceMask.load(std::memory_order_relaxed) & ~1,
+                           std::memory_order_release);
     fPendingLoop.store(-1, std::memory_order_release);
-    fPendingGainSource.store(-1, std::memory_order_release);
-    fPendingMuteSource.store(-1, std::memory_order_release);
+    if (fPendingGainSource.load(std::memory_order_relaxed) == AvPlayer::kVideoInput) {
+        fPendingGainSource.store(-1, std::memory_order_release);
+    }
+    if (fPendingMuteSource.load(std::memory_order_relaxed) == AvPlayer::kVideoInput) {
+        fPendingMuteSource.store(-1, std::memory_order_release);
+    }
     if (!fBackground) {
         fAudio.stop();  // idempotent: a never-started player tears down clean
         fAppliedBackground = openshow::scene::Background{};

@@ -1833,6 +1833,504 @@ void exerciseRpcSeekRefusal(const std::string& audioClip) {
     retireScopedWorker(fd, worker, socket, "the rpc-refusal worker answers shutdown");
 }
 
+// The standalone block of a status media object ({} when the worker predates
+// it — every read below tolerates that exactly like WorkerController does).
+boost::json::object standaloneOf(const boost::json::object& media) {
+    const auto track = media.find("standalone");
+    return track != media.end() && track->value().is_object()
+               ? track->value().as_object()
+               : boost::json::object{};
+}
+
+// --- task 6.15b (review R15): the standalone production track ---
+//
+// The independent audio transport over the operator's wire: selection with
+// a synchronous probe (a bad path is refused and touches nothing), a
+// lifetime no scene change can interrupt, per-source mix that spans both
+// transports, and the track's own status block carrying its own story.
+// Every acceptance in the ledger row is witnessed here on a real
+// --socket session: audio-only, embedded+standalone mix, lyric change,
+// background REPLACE (transport torn down and rebuilt around a playing
+// track), background removal, mute/removal of each source leaving the
+// other correct, and the loop the transport holds.
+void exerciseStandaloneTrack(const std::string& bed6, const std::string& tone2,
+                             const std::string& videoA, const std::string& audioClip) {
+    std::string socket;
+    pid_t worker = -1;
+    const int fd = spawnScopedWorker("standalone", {}, &socket, &worker);
+    if (fd < 0) {
+        check(false, "the standalone worker could be spawned and handshaken");
+        return;
+    }
+    boost::json::value reply;
+
+    // Colour fill: no background transport at all. This whole scenario
+    // begins with the track being the ONLY audio the audience could have.
+    const std::uint64_t blank = preparePresent(fd, lyricScene("Alone", "b1", "", false));
+    check(blank != 0 && waitActive(fd, blank, nullptr), "the background-less scene goes on air");
+
+    // Wire validation first: a path is a string, and the missing file is
+    // refused NOW, naming the file — with nothing on air to disturb.
+    check(call(fd, proto::kMethodMediaStandalone, boost::json::object{}, &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("path") !=
+                  std::string::npos,
+          "media.standalone without a path is a parameter error");
+    check(call(fd, proto::kMethodMediaStandalone, boost::json::object{{"path", 42}}, &reply) &&
+              reply.as_object().contains("error"),
+          "and a non-string path is too");
+    const std::string missing = "/tmp/openshow-no-such-track-" + std::to_string(getpid()) + ".m4a";
+    check(call(fd, proto::kMethodMediaStandalone,
+               boost::json::object{{"path", missing}}, &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find(missing) !=
+                  std::string::npos &&
+              // 6.15a's rule for refusals: each leg names its OWN reason, so
+              // a dead leg cannot hide behind a sibling that also refuses.
+              // Naming the file is not enough — this must read as the open
+              // failure, not as a stream complaint.
+              textOf(reply.at("error").as_object(), "message").find("no audio stream") ==
+                  std::string::npos,
+          "a path with nothing readable behind it is refused naming it, as an open failure");
+    {  // The probe's second leg, witnessed on its own: videoA opens fine and
+       // carries video only (it is the -an clip), so "no audio" is the truth
+       // here, and the refusal names that file too.
+        check(call(fd, proto::kMethodMediaStandalone,
+                   boost::json::object{{"path", videoA}}, &reply) &&
+                  reply.as_object().contains("error") &&
+                  textOf(reply.at("error").as_object(), "message").find("no audio stream") !=
+                      std::string::npos &&
+                  textOf(reply.at("error").as_object(), "message").find(videoA) !=
+                      std::string::npos,
+              "a file that opens but carries no audio is refused naming that reason");
+    }
+    {  // and the probe refusal changed nothing: the block is still idle.
+        const boost::json::object track = standaloneOf(mediaOf(status(fd)));
+        const auto live = track.find("live");
+        check(live != track.end() && live->value().is_bool() && !live->value().as_bool(),
+              "a refused selection leaves the block idle");
+    }
+    check(call(fd, proto::kMethodMediaGain,
+               boost::json::object{{"source", "standalone"}, {"gain", 0.5}}, &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("standalone") !=
+                  std::string::npos,
+          "gain for a track that was never selected is refused by name");
+
+    // --- audio-only: the track IS the session's audio ---
+    check(call(fd, proto::kMethodMediaStandalone,
+               boost::json::object{{"path", bed6}}, &reply) &&
+              reply.at("result").as_object().at("pending").as_bool(),
+          "the readable track is accepted, pending");
+    const bool up = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            const boost::json::object track = standaloneOf(media);
+            const auto live = track.find("live");
+            return live != track.end() && live->value().is_bool() && live->value().as_bool();
+        },
+        5000);
+    check(up, "status brings the track live");
+    {
+        const boost::json::object media = mediaOf(status(fd));
+        const boost::json::object track = standaloneOf(media);
+        check(track.at("path").as_string() == bed6, "the block names the selected file");
+        check(numberOf(track, "duration") > 5.5 && numberOf(track, "duration") < 6.5,
+              "and the probe's duration");
+        check(!media.at("live").as_bool(),
+              "the background block stays idle — the track never impersonates one");
+        const boost::json::object* row = findSource(media, "standalone");
+        const boost::json::object* videoRow = findSource(media, "video");
+        check(row != nullptr && videoRow == nullptr && media.at("sources").as_array().size() == 1,
+              "the sources list holds the track and nothing else");
+        check(row != nullptr && std::abs(row->at("gain").as_double() - 1.0) < 0.001 &&
+                  !row->at("muted").as_bool(),
+              "at unity, unmuted");
+    }
+    // The transport advances on its own, and the BACKGROUND's commands
+    // still refuse: no background transport exists, and a track playing
+    // does not make media.play meaningful.
+    // The reads have to be SAMPLED before they can be compared: the block
+    // seeds position at -1 ("the transport has not reported yet"), so an
+    // unsampled -1 -> 0 step reads as motion — mutation m13 proved exactly
+    // that. Wait for a real reading, then bound the step so it is a clock
+    // advancing, not merely a value that changed.
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  return numberOf(standaloneOf(media), "position") >= 0.0;
+              },
+              4000),
+          "the block reports a sampled position");
+    const double first = numberOf(standaloneOf(mediaOf(status(fd))), "position");
+    sleepMs(500);
+    {
+        const double later = numberOf(standaloneOf(mediaOf(status(fd))), "position");
+        check(later > first + 0.2 && later < first + 2.0,
+              "the track advances: its clock runs, at a clock's rate");
+        check(call(fd, proto::kMethodMediaPlay, {}, &reply) &&
+                  reply.as_object().contains("error") &&
+                  textOf(reply.at("error").as_object(), "message").find("no background media") !=
+                      std::string::npos,
+              "background transport commands still refuse with only a track on");
+        const double still = numberOf(standaloneOf(mediaOf(status(fd))), "position");
+        check(still >= later, "the refusal disturbed the track not at all");
+    }
+    // Per-source mix on a session with no background transport at all:
+    // "embedded+standalone" half comes next; this half proves the mixer
+    // answers for the track alone.
+    check(call(fd, proto::kMethodMediaGain,
+               boost::json::object{{"source", "standalone"}, {"gain", 0.4}}, &reply) &&
+              reply.as_object().contains("result"),
+          "the track's gain is accepted without any background transport");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  const boost::json::object* row = findSource(media, "standalone");
+                  return row != nullptr && std::abs(row->at("gain").as_double() - 0.4) < 0.001;
+              },
+              3000),
+          "and the mixer echo acknowledges it");
+    check(call(fd, proto::kMethodMediaMute,
+               boost::json::object{{"source", "standalone"}, {"mute", true}}, &reply) &&
+              reply.as_object().contains("result"),
+          "muting the track is accepted");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  const boost::json::object* row = findSource(media, "standalone");
+                  return row != nullptr && row->at("muted").as_bool();
+              },
+              3000),
+          "and echoed");
+    check(call(fd, proto::kMethodMediaMute,
+               boost::json::object{{"source", "standalone"}, {"mute", false}}, &reply) &&
+              reply.as_object().contains("result"),
+          "unmuting too");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  const boost::json::object* row = findSource(media, "standalone");
+                  return row != nullptr && !row->at("muted").as_bool();
+              },
+              3000),
+          "and that echo");
+
+    // --- embedded + standalone: the mix, and survival of the swap ---
+    const std::uint64_t withVideo =
+        preparePresent(fd, lyricScene("Mix", "b2", audioClip, true, "shared-bg"));
+    check(withVideo != 0 && waitActive(fd, withVideo, nullptr),
+          "the embedded-audio background goes on air beside the track");
+    {
+        const boost::json::object media = mediaOf(status(fd));
+        const boost::json::object* row = findSource(media, "standalone");
+        const boost::json::object* videoRow = findSource(media, "video");
+        check(media.at("live").as_bool(), "the background transport is live too");
+        check(row != nullptr && videoRow != nullptr && media.at("sources").as_array().size() == 2,
+              "both sources are listed at once");
+        check(row != nullptr && std::abs(row->at("gain").as_double() - 0.4) < 0.001,
+              "the track keeps the gain the operator set before the background existed");
+    }
+    // Muting one leaves the other exactly right — R15's acceptance, on
+    // the worker's own echo.
+    check(call(fd, proto::kMethodMediaMute,
+               boost::json::object{{"source", "video"}, {"mute", true}}, &reply) &&
+              reply.as_object().contains("result"),
+          "the embedded source mutes");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  const boost::json::object* videoRow = findSource(media, "video");
+                  return videoRow != nullptr && videoRow->at("muted").as_bool();
+              },
+              3000),
+          "and the echo shows it");
+    {
+        const boost::json::object media = mediaOf(status(fd));
+        const boost::json::object* row = findSource(media, "standalone");
+        check(row != nullptr && !row->at("muted").as_bool(),
+              "the track is untouched by the video mute");
+    }
+    check(call(fd, proto::kMethodMediaMute,
+               boost::json::object{{"source", "video"}, {"mute", false}}, &reply) &&
+              reply.as_object().contains("result"),
+          "unmute the embedded source");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  const boost::json::object* videoRow = findSource(media, "video");
+                  return videoRow != nullptr && !videoRow->at("muted").as_bool();
+              },
+              3000),
+          "and both are clean again");
+    // A distinguishing gain on the EMBEDDED source (0.6, against the
+    // track's 0.4), so the checks below that remove the track can tell
+    // "the other source is exactly right" from "the other source is
+    // whatever the defaults were".
+    check(call(fd, proto::kMethodMediaGain,
+               boost::json::object{{"source", "video"}, {"gain", 0.6}}, &reply) &&
+              reply.as_object().contains("result"),
+          "the embedded source gets its own gain");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  const boost::json::object* videoRow = findSource(media, "video");
+                  return videoRow != nullptr && std::abs(videoRow->at("gain").as_double() - 0.6) < 0.001;
+              },
+              3000),
+          "and its row answers for itself, the track's still at 0.4");
+
+    // A lyric change over the SAME background identity: the transport
+    // stays put (6.15a's rule) and the track must not notice either.
+    const double beforeLyrics = numberOf(standaloneOf(mediaOf(status(fd))), "position");
+    const std::uint64_t lyrics =
+        preparePresent(fd, lyricScene("Again", "b2", audioClip, true, "shared-bg"));
+    check(lyrics != 0 && waitActive(fd, lyrics, nullptr), "the lyric change goes on air");
+    {
+        const double after = numberOf(standaloneOf(mediaOf(status(fd))), "position");
+        check(after + 0.05 >= beforeLyrics, "and the track did not restart");
+    }
+
+    // --- REMOVING the track while the embedded background plays on ---
+    //
+    // R15's acceptance read the other way round — and this is the only
+    // moment the per-identity gate is observable: a background transport IS
+    // live here, so a command naming the absent track must be refused BY
+    // NAME rather than land on the background's mixer. The background's own
+    // row keeps its distinguishing 0.6 and stays addressable throughout.
+    check(call(fd, proto::kMethodMediaStandalone, boost::json::object{{"path", ""}}, &reply) &&
+              reply.as_object().contains("result"),
+          "the track is removed while the background plays on");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  return !standaloneOf(media).at("live").as_bool() &&
+                         findSource(media, "standalone") == nullptr;
+              },
+              4000),
+          "its live flag and its row leave together");
+    {
+        const boost::json::object media = mediaOf(status(fd));
+        const boost::json::object* videoRow = findSource(media, "video");
+        check(media.at("live").as_bool() && media.at("sources").as_array().size() == 1 &&
+                  videoRow != nullptr &&
+                  std::abs(videoRow->at("gain").as_double() - 0.6) < 0.001 &&
+                  !videoRow->at("muted").as_bool(),
+              "the embedded source is exactly as the operator left it, alone");
+        check(!standaloneOf(media).at("playing").as_bool() &&
+                  numberOf(standaloneOf(media), "position") < 0.0,
+              "and the block reports itself idle, position and all");
+    }
+    // THE gate: a live background transport makes no standalone source.
+    check(call(fd, proto::kMethodMediaGain,
+               boost::json::object{{"source", "standalone"}, {"gain", 0.9}}, &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("standalone") !=
+                  std::string::npos,
+          "a track gain with a background live but no track is refused naming the track");
+    check(call(fd, proto::kMethodMediaMute,
+               boost::json::object{{"source", "standalone"}, {"mute", true}}, &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("standalone") !=
+                  std::string::npos,
+          "and so is its mute — the two legs gate separately");
+    {  // Neither refusal disturbed the background's mix. (The status object
+       // is bound to a local first: findSource points INTO it.)
+        const boost::json::object media = mediaOf(status(fd));
+        const boost::json::object* videoRow = findSource(media, "video");
+        check(videoRow != nullptr && std::abs(videoRow->at("gain").as_double() - 0.6) < 0.001 &&
+                  !videoRow->at("muted").as_bool(),
+              "the refused track commands moved the embedded source not at all");
+    }
+    // Re-select: a fresh transport, so its mix starts at UNITY while the
+    // background keeps its 0.6 — and both rows return, the mask
+    // re-registered beside a live background.
+    check(call(fd, proto::kMethodMediaStandalone, boost::json::object{{"path", bed6}}, &reply) &&
+              reply.as_object().contains("result"),
+          "a second selection brings a fresh track up beside the background");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  const boost::json::object* row = findSource(media, "standalone");
+                  const boost::json::object* videoRow = findSource(media, "video");
+                  return row != nullptr && videoRow != nullptr &&
+                         std::abs(row->at("gain").as_double() - 1.0) < 0.001 &&
+                         std::abs(videoRow->at("gain").as_double() - 0.6) < 0.001;
+              },
+              5000),
+          "the new track starts at unity while the background keeps its value");
+    // Back to the value the remaining phases read.
+    check(call(fd, proto::kMethodMediaGain,
+               boost::json::object{{"source", "standalone"}, {"gain", 0.4}}, &reply) &&
+              reply.as_object().contains("result"),
+          "the track's gain is set again");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  const boost::json::object* row = findSource(media, "standalone");
+                  return row != nullptr && std::abs(row->at("gain").as_double() - 0.4) < 0.001;
+              },
+              3000),
+          "and echoed on the new mixer");
+
+    // The hard one: REPLACE the background video with another identity.
+    // The background transport is torn down and rebuilt — the track rides
+    // straight through it, and because the replacement is SILENT its own
+    // row disappears while the track's stays, gain and all.
+    const double beforeSwap = numberOf(standaloneOf(mediaOf(status(fd))), "position");
+    const std::uint64_t swapped =
+        preparePresent(fd, lyricScene("Swap", "b3", videoA, true, "video-a"));
+    check(swapped != 0 && waitActive(fd, swapped, nullptr),
+          "the silent background goes on air (transport rebuilt around the track)");
+    {
+        const boost::json::object media = mediaOf(status(fd));
+        const boost::json::object* row = findSource(media, "standalone");
+        check(findSource(media, "video") == nullptr,
+              "the silent replacement registers no video source");
+        check(row != nullptr && std::abs(row->at("gain").as_double() - 0.4) < 0.001,
+              "the track's row — gain and all — survived the teardown and rebuild");
+        const double after = numberOf(standaloneOf(media), "position");
+        check(after + 0.05 >= beforeSwap, "and the track did not restart for the swap either");
+    }
+
+    // Background away entirely: the track is alone again, still playing,
+    // still the only row. Then removal, and the commands refuse again.
+    const std::uint64_t cleared = preparePresent(fd, lyricScene("Cleared", "b4", "", false));
+    check(cleared != 0 && waitActive(fd, cleared, nullptr), "the background goes away");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  return !media.at("live").as_bool() &&
+                         standaloneOf(media).at("live").as_bool();
+              },
+              4000),
+          "the background block idles while the track stays live");
+    {
+        const boost::json::object media = mediaOf(status(fd));
+        check(media.at("sources").as_array().size() == 1 &&
+                  findSource(media, "standalone") != nullptr,
+              "mediaStopped keeps the track's row with the track");
+    }
+    check(call(fd, proto::kMethodMediaStandalone, boost::json::object{{"path", ""}}, &reply) &&
+              reply.as_object().contains("result"),
+          "the empty path removes the track");
+    const bool gone = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            const boost::json::object track = standaloneOf(media);
+            return !track.at("live").as_bool() && media.at("sources").as_array().empty();
+        },
+        4000);
+    check(gone, "removal takes the live flag and the row with it");
+    check(call(fd, proto::kMethodMediaGain,
+               boost::json::object{{"source", "standalone"}, {"gain", 0.5}}, &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("standalone") !=
+                  std::string::npos,
+          "and the track's commands refuse by name again — never queued for a successor");
+
+    // --- the loop the transport holds: EOF rewinds, the bed keeps going ---
+    //
+    // The clock this transport paces itself by is the HEARD sink clock, and
+    // it runs past the file's end whether or not the feeder re-reads it — a
+    // starved mixer pads silence and the server consumes that at exactly
+    // the same rate. So the wrap is NOT a drop in "position" (the first
+    // version of this leg asserted that, and was wrong about the
+    // observable); it is the feeder's rewind counter, which the status
+    // block carries for precisely this reason: N wraps means the audience
+    // is hearing pass N+1, not the silence that replaces a run-out source.
+    check(call(fd, proto::kMethodMediaStandalone,
+               boost::json::object{{"path", tone2}}, &reply) &&
+              reply.as_object().contains("result"),
+          "the two-second track is selected");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  return standaloneOf(media).at("live").as_bool();
+              },
+              5000),
+          "and live");
+    // The lane needs a moment to settle: the swap seeds it, and the sink's
+    // first server callback is what promotes it to "live". Only a lane the
+    // server is actually draining can starve, so only there does the wrap
+    // count mean anything — a machine with no audio server never consumes
+    // the mixer, and its feeder parks in write retries instead of reaching
+    // EOF. That control group belongs to the other scenarios.
+    const bool audible = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            return textOf(standaloneOf(media), "audio") == "live";
+        },
+        4000);
+    if (audible) {
+        const bool wrapped = waitMedia(
+            fd,
+            [](const boost::json::object& media) {
+                return numberOf(standaloneOf(media), "loops") >= 1.0;
+            },
+            6000);
+        check(wrapped, "the production bed loops: the source rewound at its end");
+        {  // And a wrap is not an ending: the block stays a healthy transport.
+            const boost::json::object track = standaloneOf(mediaOf(status(fd)));
+            check(track.at("live").as_bool() && track.at("playing").as_bool() &&
+                      textOf(track, "error").empty(),
+                  "and the bed is still live, playing and error-free past the rewind");
+        }
+    } else {
+        std::printf("   skipped the loop leg (audio lane: %s)\n",
+                    textOf(standaloneOf(mediaOf(status(fd))), "audio").c_str());
+    }
+    retireScopedWorker(fd, worker, socket, "the standalone worker answers shutdown");
+
+    // --- the bring-up's bad news belongs to the track's own block ---
+    //
+    // The selection PROBE passes (the file is fine); the mixer fault knob
+    // is what fails, inside the swap. The refusal the RPC got was
+    // "pending" — so the failure must land in media.standalone.error
+    // naming the file, with the notification pushed, and live stays a
+    // false the controls can trust.
+    std::string failSocket;
+    pid_t failWorker = -1;
+    const int fd2 = spawnScopedWorker("standalonefail", {"OPENSHOW_FAULT_AUDIO_MIXER_FAIL=1"},
+                                      &failSocket, &failWorker);
+    if (fd2 < 0) {
+        check(false, "the standalone-fault worker could be spawned");
+        return;
+    }
+    gMediaErrors.clear();
+    check(call(fd2, proto::kMethodMediaStandalone, boost::json::object{{"path", bed6}}, &reply) &&
+              reply.as_object().contains("result"),
+          "the faulted worker takes the selection (the probe passed; the bring-up is what fails)");
+    const bool named = waitMedia(
+        fd2,
+        [](const boost::json::object& media) {
+            return textOf(standaloneOf(media), "error").find("standalone track") !=
+                   std::string::npos;
+        },
+        5000);
+    check(named, "the failed bring-up is the block's own sticky error, naming the track");
+    check(!standaloneOf(mediaOf(status(fd2))).at("live").as_bool(),
+          "and live stays false — a dead bring-up is not commandable");
+    {  // bound first: findSource points into the status object
+        const boost::json::object media = mediaOf(status(fd2));
+        check(findSource(media, "standalone") == nullptr,
+              "no row for a source that never came up");
+    }
+    {
+        bool pushed = false;
+        for (const boost::json::object& notification : gMediaErrors) {
+            if (textOf(notification, "message").find("standalone track") != std::string::npos &&
+                textOf(notification, "path") == bed6) {
+                pushed = true;
+            }
+        }
+        check(pushed, "and the failure is pushed as media.error naming the track's path");
+    }
+    check(call(fd2, "ping", {}, &reply) && reply.as_object().contains("result"),
+          "the faulted worker lives on, ready for the next selection");
+    retireScopedWorker(fd2, failWorker, failSocket, "the standalone-fault worker answers shutdown");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1948,13 +2446,28 @@ int main(int argc, char** argv) {
     // transport must have a decoder to open — that is what the lane is
     // about — while a ctest run still keeps the room quiet.
     const std::string audioClip = dir + "/with-audio.mp4";
+    // Task 6.15b: audio-only fixtures for the standalone track — silent on
+    // purpose like the rest (6 s bed for the lifetime phases, 2 s tone for
+    // the loop-wrap witness).
+    const std::string bed6 = dir + "/bed-6s.m4a";
+    const std::string tone2 = dir + "/tone-2s.m4a";
     const bool audioOk =
         generate("ffmpeg -hide_banner -loglevel error -nostdin -y "
                  "-f lavfi -i testsrc2=size=320x240:rate=25:duration=4 "
                  "-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 "
                  "-t 4 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac " +
                  audioClip) &&
-        fileExists(audioClip);
+        fileExists(audioClip) &&
+        generate("ffmpeg -hide_banner -loglevel error -nostdin -y "
+                 "-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 "
+                 "-t 6 -c:a aac " +
+                 bed6) &&
+        fileExists(bed6) &&
+        generate("ffmpeg -hide_banner -loglevel error -nostdin -y "
+                 "-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 "
+                 "-t 2 -c:a aac " +
+                 tone2) &&
+        fileExists(tone2);
     exerciseMidPlayFailure(fd, videoA);
     if (stillOk && fileExists(stillFixture)) {
         // A path the image cache has never seen: unlinking the repaired
@@ -2012,8 +2525,15 @@ int main(int argc, char** argv) {
     if (audioOk) {
         exerciseRpcGain(audioClip);
         exerciseRpcSeekRefusal(audioClip);
+        // --- task 6.15b (review R15): the standalone production track ---
+        //
+        // Its own worker pair (the fault leg needs the mixer knob), on the
+        // audio fixtures above: selection, survival, the cross-transport
+        // mix, the loop, and the bring-up's bad news in the track's own
+        // block.
+        exerciseStandaloneTrack(bed6, tone2, videoA, audioClip);
     } else {
-        std::printf("   skipped the RPC gain/refusal scenarios (no audio fixture)\n");
+        std::printf("   skipped the RPC gain/refusal and standalone scenarios (no audio fixture)\n");
     }
 
     ::unlink(corrupt.c_str());

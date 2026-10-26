@@ -1096,14 +1096,109 @@ Updated: 2026-10-25 (Europe/London).
     and both live suites green.
   - Gates desktop **44/44** (192 s), headless **27/27** (48 s); offscreen
     QML smoke zero errors.
-- Exact next action: **6.15b** per the PLAN.md ledger (review R15) —
-  standalone-track selection and an independent production audio lifetime:
-  audio-only and embedded+standalone mix in socket mode, lyric/video
-  changes must not restart the independent track, and removing or muting
-  either source leaves the other correct. The wire already names
-  `"standalone"` (6.15a), so this is session/lifetime work. Then 6.16.
-  Review completion does not mark any finding fixed; no new implementation
-  blocker was found.
+- **6.15b — a production audio track with a lifetime of its own (R15) — DONE.**
+  - **Protocol (minor 6→7)**: capability `media.standalone.v1` and the
+    `media.standalone {"path"}` command (`""` is the removal), answered by
+    the track's OWN status block `media.standalone {live, path, playing,
+    position, duration, error, audio, loops}`. Two transports, two reports:
+    the background's fields keep describing the on-air video transport and
+    these keep describing the track, so 5.5d's "a sticky error names the
+    file it describes" holds inside each block without either one
+    contaminating the other.
+  - **Where the track lives is the design decision.** It is a second
+    `AvPlayer` (`fStandalonePlayer`), NOT a second mixer input on the
+    background's: the background transport is torn down and rebuilt at every
+    background-identity change, so a track riding it would restart at exactly
+    the moment the acceptance forbids. PipeWire mixes the two sink streams
+    server-side, disclosed as the honest shape — the session has no business
+    folding two lifetimes into one graph just because one component could.
+    Selection PROBES synchronously on the RPC thread (same probe
+    `scene.prepare` runs, file I/O under no lock), so "nothing readable at
+    that path" is a refused request the operator hears now with the old track
+    still playing; an accepted path rides a pending swap applied first in
+    `applyTransportOps`. Loop is always on — the removal is the stop.
+  - **`loops` exists because the clock cannot say it.** The position an
+    audio-only track paces by is the HEARD sink clock, which runs past the
+    file's end whether or not the feeder re-reads it (a starved mixer pads
+    silence and the server consumes that at the same rate), so a bed that ran
+    out and a bed that rewound looked identical. The block now publishes the
+    feeder's wrap count: N wraps means the audience is hearing pass N+1, not
+    silence. Writing this fixture is what found the misunderstanding.
+  - **Gating is per identity** (R19's discipline continued): `kVideo` gates
+    on the background's live flag plus its registration bit (a playing silent
+    clip is live without one), `kStandalone` on `standaloneLive()` — for the
+    track, live IS registration, because the swap that starts the player
+    stores bit1 and the one that stops it clears it, so there is no second
+    kind of absent to refuse. Background bring-up and teardown now
+    read-modify-write only their own mask bit and drop pending intents per
+    identity, so the background can neither unregister the track nor queue a
+    command for it; `close()` ends the track by name for the same reason it
+    is excluded from the background's lifetime.
+  - **Fixtures** (`background_media_tests`, 68 check sites, two worker
+    sessions): audio-only comes up live with duration 6.00 as the ONLY row
+    and advances at a clock's rate while background commands still refuse
+    beside it; refusals witnessed per probe leg (an open failure must not read
+    as a stream complaint, and the `-an` clip witnesses the stream leg naming
+    its own file); mix — the embedded background goes on air beside the
+    playing track, both rows listed, the track keeping the gain the operator
+    set before the background existed, muting either source leaving the other
+    exactly right on the worker's echo; a lyric change over the same identity
+    and a full background REPLACE (transport torn down and rebuilt around a
+    playing track) neither restart it nor lose its row or gain; **removing the
+    track while the background plays on** — the only moment the per-identity
+    gate is observable: live and the row leave, the embedded row keeps its
+    distinguishing 0.6 and stays addressable, and a track gain AND a track
+    mute are refused naming the track, neither refusal moving the other
+    source; re-select starts at unity beside the background's 0.6; background
+    removal leaves the track alone, live and still the only row; `""` takes
+    live and the row with it and commands refuse rather than queue for a
+    successor; the loop — wraps reach 1 with the block still live, playing and
+    error-free; a mixer-fault bring-up (the probe passed, so the ack was
+    "pending") lands as the block's own sticky error naming the track, `live`
+    false, no row, and a pushed `media.error` naming the track's path, worker
+    alive. `worker_controller_tests` S13 scripts the same track (accept, a
+    "missing" path refused, `""` removal, sources built from what is actually
+    up, a fresh track at unity while the background keeps its value): the
+    controller's `standalone*` properties move only with that echo, and the
+    verbatim ledger pins the selection, the refused path and the removal as
+    frames.
+  - **A bug the fixtures caught in flight**: `refreshMediaStateLocked` sampled
+    the track and then returned early with no background — before the sources
+    rebuild — so in an audio-only session a gain reached the MIXER and the
+    status row sat at whatever the swap had written. The echo now rebuilds on
+    that path too (it reads atomics from mixers that already exist), which is
+    exactly what the first live run's two failures said.
+  - **Mutations** m01–m21: both track gates (gain and mute separately), the
+    probe believing an unreadable path, both background paths clobbering the
+    track's mask bit, the unpublished mix echo, gain and mute routed to the
+    background's mixer, live surviving removal, wraps never sampled, the bed
+    not looping, `playing` inverted, position never sampled, the pushed fault
+    naming no path, the failed bring-up saying nothing, `close()` leaking the
+    player, the status block dropped, the selection acked but never handed to
+    the session, a deaf controller, the wrong method on the wire, the
+    capability unadvertised: **20/21 CAUGHT**. m16 is disclosed
+    mutant-equivalent (`~AvPlayer()` calls `stop()` — that call is intent, not
+    mechanism). Two survivors became STRONGER CHECKS instead of comments:
+    m03 survived because the next probe leg refused the same file for a
+    different reason and my check only looked for the path; m13 (position
+    pinned to 0.0) survived because the block seeds `position` at -1, so the
+    check compared a sentinel jump as motion — now the fixture waits for a
+    SAMPLED position and bounds the step. Disclosed unmutables: the "no
+    decoder" probe leg (no fixture codec provokes it), the swap's
+    per-identity pending drop and its ordering ahead of the ops (needs a gain
+    accepted for a live track AND a re-selection in one render pass, which the
+    live gate makes unschedulable), the lane seeded at the swap (the refresh
+    writes the same value), and the minor/method-name constants (both sides
+    move together).
+  - Gates desktop **44/44** (196 s), headless **27/27** (48 s); offscreen
+    QML smoke zero errors.
+- Exact next action: **6.16a** per the PLAN.md ledger (review R16) — a
+  bounded worker-rendered selected-scene preview used beneath the QML edit
+  handles: off-air edits must show Skia text and media without presenting,
+  with no QML text-layout twin, selection generations rejecting stale
+  imagery, and active playback unchanged. R15 is now closed on both halves
+  (6.15a transport, 6.15b independent track); review completion does not mark
+  any finding fixed, and no new implementation blocker was found.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -3520,6 +3615,46 @@ of this work.
   development tool and nothing in the build references it.
 
 ## Decisions
+
+- (2026-10-26, task 6.15b) Three rules came out of giving the standalone
+  track its lifetime. **A lifetime chooses its own component**: the obvious
+  cheap shape was a second mixer input on the background's `AvPlayer`, and it
+  is wrong — the background transport is destroyed and rebuilt on every
+  background-identity change, so a track living inside it would restart at
+  precisely the moment R15 forbids. When a requirement is phrased as "must
+  not restart", the object that holds the state must be one whose teardown you
+  cannot trigger by accident; sharing a sink stream is a detail the server
+  handles, not a reason to share a lifetime. Two consequences the fixtures
+  needed: a registration table shared by two lifetimes is read-modify-write
+  per bit (the background's bring-up and teardown now touch only bit0, and a
+  test that never has one live without the other cannot see a clobber), and
+  the per-identity gate is only testable in the moment one transport is live
+  while the other is not — so the fixture removes the TRACK while the
+  background plays on, which is also the half of the acceptance that reads
+  "removing either source leaves the other correct". **Assert the reason, not
+  just the refusal**: mutation m03 (the probe accepting an unopenable path)
+  survived its first run because the very next guard rejected the same file
+  for a different reason and the check only looked for the path in the
+  message. Where several guards refuse one input, each leg gets its own
+  witness naming its own reason — the same rule 6.15a derived for command
+  gates, now with a concrete near-miss. **Know which clock a check is
+  asserting on**: my first loop witness polled `position` for a wrap, and the
+  suite said "skipped", because the position an audio-only transport reports
+  is the HEARD sink clock, which runs on past the file's end whether the
+  feeder rewound or not — a starved mixer pads silence and the server
+  consumes that at the same rate. That is an observability hole, not a test
+  gap: "the bed ran out" and "the bed rewound" were indistinguishable to the
+  operator, so the fix was to publish the feeder's wrap count in the status
+  block, not to test around it. The same episode left two smaller rules —
+  a sentinel value makes a comparison meaningless (the block seeds `position`
+  at -1, so a pinned 0.0 "advanced" by 1.0 and m13 survived until the check
+  required a SAMPLED reading and a bounded step), and `live` plus the audio
+  lane are one statement about one transport, so the swap that sets the first
+  owes the second an honest value rather than leaving the last block's
+  "none". Finally, disclosed rather than argued: m16, removing `close()`'s
+  explicit track stop, is mutant-equivalent because `~AvPlayer()` calls
+  `stop()` — the call documents intent and is not the mechanism, and the
+  battery says so plainly.
 
 - (2026-10-26, task 6.15a) Three calls shaped R15's first half.
   **Enablement is a distinct signal from asset identity**: the controls

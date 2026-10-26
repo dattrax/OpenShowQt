@@ -73,7 +73,10 @@
  * frame it received. The fixture asserts the controller's media* properties
  * move exactly with that echo (never with the click), and the ledger names
  * the method and params that actually rode the wire, including the refused
- * standalone gain the client must send rather than second-guess.
+ * standalone gain the client must send rather than second-guess. Task 6.15b
+ * grew that peer further: the media.standalone selection (accept, probe
+ * refusal, "" removal) and a status block of the track's own, so the mix
+ * rows span two transports and each lifetime reports for itself.
  *
  * Each child writes a small report (prepares, presents, requests for methods it
  * does not model, presented revision list, every request counted by method, and
@@ -323,7 +326,7 @@ private:
         send(wire);
     }
 
-    void sendError(std::int64_t id, const char* text) {
+    void sendError(std::int64_t id, const std::string& text) {
         std::string wire;
         proto::appendFrame(proto::makeError(id, proto::ErrorCode::kInvalidParams, text), &wire);
         send(wire);
@@ -391,6 +394,18 @@ private:
             // ran on local optimism — a Pause label flipped by the click —
             // cannot survive here.
             if (fScenario == "media") {
+                // Task 6.15b: the sources array spans lifetimes, so it is
+                // built from what is actually up — the track's row appears
+                // with the track and carries ITS OWN mixer echo, and the
+                // track reports in its own block.
+                boost::json::array sources{boost::json::object{{"name", "video"},
+                                                               {"gain", fMediaGain},
+                                                               {"muted", fMediaMuted}}};
+                if (fStandaloneLive) {
+                    sources.push_back(boost::json::object{{"name", "standalone"},
+                                                          {"gain", fStandaloneGain},
+                                                          {"muted", fStandaloneMuted}});
+                }
                 result["media"] = boost::json::object{
                     {"playing", fMediaPlaying},
                     {"path", "fake-clip.mp4"},
@@ -400,10 +415,15 @@ private:
                     {"live", fMediaLive},
                     {"loop", fMediaLoop},
                     {"duration", fMediaDuration},
-                    {"sources",
-                     boost::json::array{boost::json::object{{"name", "video"},
-                                                            {"gain", fMediaGain},
-                                                            {"muted", fMediaMuted}}}},
+                    {"sources", std::move(sources)},
+                    {"standalone", boost::json::object{{"live", fStandaloneLive},
+                                                       {"path", fStandalonePath},
+                                                       {"playing", fStandalonePlaying},
+                                                       {"position", fStandalonePosition},
+                                                       {"duration", 6.0},
+                                                       {"error", fStandaloneError},
+                                                       {"audio", "live"},
+                                                       {"loops", fStandaloneLoops}}},
                 };
             }
             sendResult(id, std::move(result));
@@ -498,7 +518,8 @@ private:
         // last worker-reported state, not by guessing.
         if (method == proto::kMethodMediaPlay || method == proto::kMethodMediaPause ||
             method == proto::kMethodMediaSeek || method == proto::kMethodMediaLoop ||
-            method == proto::kMethodMediaGain || method == proto::kMethodMediaMute) {
+            method == proto::kMethodMediaGain || method == proto::kMethodMediaMute ||
+            method == proto::kMethodMediaStandalone) {
             fMediaOps.push_back(boost::json::object{
                 {"method", method},
                 {"params", request.contains("params") ? request.at("params")
@@ -530,34 +551,91 @@ private:
                 fMediaLoop = args.at("loop").as_bool();
                 sendResult(id, boost::json::object{{"pending", true}, {"loop", fMediaLoop}});
                 return;
+            } else if (method == proto::kMethodMediaStandalone) {
+                // Task 6.15b (review R15): the scripted track, mirroring the
+                // real session's rules. A missing file is refused naming it
+                // and changes NOTHING (the old track keeps its state); "" is
+                // the removal, which drops live/playing and the row but keeps
+                // the path the sticky error describes; a new path is a fresh
+                // transport, so its mix starts at unity and its wrap count
+                // starts at zero. The controller must show all of that from
+                // this echo alone.
+                if (!args.contains("path") || !args.at("path").is_string()) {
+                    sendError(id, "fake: media.standalone requires a path string");
+                    return;
+                }
+                const std::string wanted(args.at("path").as_string());
+                if (wanted.find("missing") != std::string::npos) {
+                    sendError(id, "fake: standalone track: '" + wanted + "' cannot be opened");
+                    return;
+                }
+                if (wanted.empty()) {
+                    fStandaloneLive = false;
+                    fStandalonePlaying = false;
+                    fStandalonePosition = -1.0;
+                    fStandaloneLoops = 0;
+                    fStandaloneGain = 1.0;
+                    fStandaloneMuted = false;  // path and error stay paired
+                } else {
+                    fStandaloneLive = true;
+                    fStandalonePath = wanted;
+                    fStandalonePlaying = true;
+                    fStandalonePosition = 1.5;
+                    fStandaloneError.clear();
+                    fStandaloneLoops = 0;
+                    fStandaloneGain = 1.0;
+                    fStandaloneMuted = false;
+                }
+                sendResult(id, boost::json::object{{"pending", true}, {"path", wanted}});
+                return;
             } else if (method == proto::kMethodMediaGain || method == proto::kMethodMediaMute) {
                 const bool isGain = method == proto::kMethodMediaGain;
                 const std::string source =
                     args.contains("source") && args.at("source").is_string()
                         ? std::string(args.at("source").as_string())
                         : std::string();
-                if (source != "video") {
-                    sendError(id, "fake: this background has no standalone audio source");
+                // Task 6.15b: "standalone" is a source once the track is up,
+                // and each command moves ONLY the row it names — the track's
+                // echo never edits the video row and the video's never the
+                // track's. With no track, the command is refused by name,
+                // exactly as the real router does.
+                if (source == "standalone" && !fStandaloneLive) {
+                    sendError(id, "fake: no standalone track is playing");
                     return;
                 }
+                if (source != "video" && source != "standalone") {
+                    sendError(id, "fake: unknown audio source");
+                    return;
+                }
+                const bool forTrack = source == "standalone";
                 if (isGain) {
                     if (!args.contains("gain") || !args.at("gain").is_number()) {
                         sendError(id, "fake: media.gain requires a gain");
                         return;
                     }
-                    fMediaGain = args.at("gain").to_number<double>();
+                    const double gain = args.at("gain").to_number<double>();
+                    if (forTrack) {
+                        fStandaloneGain = gain;
+                    } else {
+                        fMediaGain = gain;
+                    }
                 } else {
                     if (!args.contains("mute") || !args.at("mute").is_bool()) {
                         sendError(id, "fake: media.mute requires a mute boolean");
                         return;
                     }
-                    fMediaMuted = args.at("mute").as_bool();
+                    const bool muted = args.at("mute").as_bool();
+                    if (forTrack) {
+                        fStandaloneMuted = muted;
+                    } else {
+                        fMediaMuted = muted;
+                    }
                 }
                 boost::json::object ack{{"pending", true}, {"source", source}};
                 if (isGain) {
-                    ack["gain"] = fMediaGain;
+                    ack["gain"] = forTrack ? fStandaloneGain : fMediaGain;
                 } else {
-                    ack["muted"] = fMediaMuted;
+                    ack["muted"] = forTrack ? fStandaloneMuted : fMediaMuted;
                 }
                 sendResult(id, std::move(ack));
                 return;
@@ -638,6 +716,17 @@ private:
     double fMediaDuration = 6.0;
     double fMediaGain = 1.0;
     bool fMediaMuted = false;
+    // The scripted standalone track (task 6.15b). It starts absent: the
+    // scenario selects it, refuses a bad path, mixes it, removes it — and
+    // every one of those must reach the controller through this echo.
+    bool fStandaloneLive = false;
+    std::string fStandalonePath;
+    bool fStandalonePlaying = false;
+    double fStandalonePosition = -1.0;
+    std::string fStandaloneError;
+    double fStandaloneGain = 1.0;
+    bool fStandaloneMuted = false;
+    std::uint64_t fStandaloneLoops = 0;
     boost::json::array fMediaOps;
 
     std::string fSocketPath;
@@ -1788,7 +1877,10 @@ void scenarioAdoptedPaths() {
 // method-and-params frames the controller put on the wire, including the
 // refused standalone gain (the client does NOT second-guess the worker's
 // source table — it sends, and the refusal leaves the properties on the
-// worker's truth).
+// worker's truth). Task 6.15b extends the same peer with the independent
+// track: a mix that spans two transports, a probe refusal that changes
+// nothing, and a removal that takes the track's row while the embedded
+// source keeps its own gain.
 void scenarioMediaTransport() {
     ::setenv("OPENSHOW_FAKE_SCENARIO", "media", 1);
     const std::string report = tempPath("media");
@@ -1879,6 +1971,76 @@ void scenarioMediaTransport() {
               "media: a refused source change leaves the mirror on the worker's truth");
     }
 
+    // --- task 6.15b (review R15): the independent track, same wire ---
+    //
+    // The scripted peer only ever moves this state through the frames below,
+    // so every property has to arrive through status: the mix rows spanning
+    // both transports, a refused selection that changes nothing (the real
+    // session probes before it accepts), and a removal that takes the row
+    // with it while the video source keeps its own values.
+    controller.selectStandaloneTrack("fake-bed.m4a");
+    check(waitUntil([&controller] { return controller.standaloneOnAir(); }),
+          "media: the selection arrives as its own live block");
+    check(controller.standalonePath() == QLatin1String("fake-bed.m4a"),
+          "media: the block names the file the worker took");
+    check(controller.standalonePosition() > 0.0,
+          "media: and the track's position is its own, not the background's");
+    {
+        const QVariantList sources = controller.mediaSources();
+        bool both = sources.size() == 2;
+        if (both) {
+            const QVariantMap video = sources[0].toMap();
+            const QVariantMap track = sources[1].toMap();
+            both = video.value("id").toString() == QLatin1String("video") &&
+                   std::abs(video.value("gain").toDouble() - 0.4) < 0.001 &&
+                   track.value("id").toString() == QLatin1String("standalone") &&
+                   std::abs(track.value("gain").toDouble() - 1.0) < 0.001 &&
+                   !track.value("muted").toBool();
+        }
+        check(both, "media: both sources are listed, each with its own mix");
+    }
+
+    // A path the worker refuses must leave the mirror exactly where it was:
+    // the track on air was never touched, and the client does not paint a
+    // hopeful path of its own.
+    controller.selectStandaloneTrack("/tmp/missing-bed.m4a");
+    digestThenRefresh(controller, 300);
+    check(controller.standaloneOnAir() &&
+              controller.standalonePath() == QLatin1String("fake-bed.m4a"),
+          "media: a refused selection keeps the track and its path on the worker's truth");
+
+    controller.setMediaGain("standalone", 0.25);
+    check(waitUntil([&controller] {
+              const QVariantList sources = controller.mediaSources();
+              return sources.size() == 2 &&
+                     std::abs(sources[1].toMap().value("gain").toDouble() - 0.25) < 0.001;
+          }),
+          "media: the track's gain echo arrives without moving the video row");
+    controller.setMediaMute("standalone", true);
+    check(waitUntil([&controller] {
+              const QVariantList sources = controller.mediaSources();
+              return sources.size() == 2 && sources[1].toMap().value("muted").toBool() &&
+                     !sources[0].toMap().value("muted").toBool() &&
+                     std::abs(sources[0].toMap().value("gain").toDouble() - 0.4) < 0.001;
+          }),
+          "media: muting the track leaves the embedded source exactly as it was");
+
+    controller.selectStandaloneTrack("");
+    check(waitUntil([&controller] {
+              return !controller.standaloneOnAir() && controller.mediaSources().size() == 1;
+          }),
+          "media: the removal takes the live flag and the row with it");
+    {  // The video source survived the whole track lifetime untouched.
+        const QVariantMap video = controller.mediaSources().first().toMap();
+        check(video.value("id").toString() == QLatin1String("video") &&
+                  std::abs(video.value("gain").toDouble() - 0.4) < 0.001,
+              "media: and the background's own mix is exactly where it was left");
+    }
+    controller.setMediaGain("standalone", 0.75);
+    digestThenRefresh(controller, 300);
+    check(controller.mediaSources().size() == 1 && !controller.standaloneOnAir(),
+          "media: a gain for the removed track is refused, not queued onto anything");
+
     controller.shutdownNow();
 
     const boost::json::object counts = readReport(report);
@@ -1912,13 +2074,39 @@ void scenarioMediaTransport() {
     check(gain != nullptr && gain->at("params").as_object().at("source").as_string() == "video" &&
               std::abs(gain->at("params").as_object().at("gain").as_double() - 0.4) < 0.001,
           "media: the gain frame carried source and value");
-    check(countOps(proto::kMethodMediaMute) == 2,
-          "media: both mute frames — on and off — reached the wire");
-    check(countOps(proto::kMethodMediaGain) == 2 &&
-              findOp(proto::kMethodMediaGain) != nullptr &&
-              ops[ops.size() - 1].as_object().at("params").as_object().at("source").as_string() ==
-                  "standalone",
-          "media: the refused standalone gain still rode the wire (the worker owns the source table)");
+    check(countOps(proto::kMethodMediaMute) == 3,
+          "media: every mute frame — video on, video off, track on — reached the wire");
+    {  // The 6.15a lesson, restated now that the source is real: the gain the
+       // client could not verify was still SENT (0.5, refused by the worker),
+       // and the totals count refusals as frames rather than dropping them.
+        bool refusedGainRode = false;
+        for (const boost::json::value& op : ops) {
+            const boost::json::object& frame = op.as_object();
+            if (frame.at("method").as_string() == proto::kMethodMediaGain) {
+                const boost::json::object& params = frame.at("params").as_object();
+                if (params.at("source").as_string() == "standalone" &&
+                    std::abs(params.at("gain").as_double() - 0.5) < 0.001) {
+                    refusedGainRode = true;
+                }
+            }
+        }
+        check(countOps(proto::kMethodMediaGain) == 4 && refusedGainRode,
+              "media: all four gain frames rode the wire, the refused probe included");
+    }
+    {  // Task 6.15b: the selection frames, in order, with the paths the
+       // operator typed — including the refused one and the "" removal.
+        boost::json::array selected;
+        for (const boost::json::value& op : ops) {
+            const boost::json::object& frame = op.as_object();
+            if (frame.at("method").as_string() == proto::kMethodMediaStandalone) {
+                selected.push_back(frame.at("params").as_object().at("path"));
+            }
+        }
+        check(selected.size() == 3 && selected[0].as_string() == "fake-bed.m4a" &&
+                  selected[1].as_string() == "/tmp/missing-bed.m4a" &&
+                  selected[2].as_string().empty(),
+              "media: the selection, the refused path and the removal all rode the wire verbatim");
+    }
 }
 
 int main(int argc, char* argv[]) {

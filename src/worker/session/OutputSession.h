@@ -200,6 +200,32 @@ public:
             bool muted = false;
         };
         std::vector<Source> sources;
+        // The INDEPENDENT production track (task 6.15b, review R15). Its
+        // own block rather than fields folded into the background's,
+        // because it has its own lifetime: the background's fields above
+        // keep describing the on-air video transport (and stay idle when
+        // there is none), and this describes the track the operator
+        // selected with media.standalone — which keeps playing through
+        // every scene change. live is the commandability mirror again
+        // (player up); error is sticky and names this block's own path,
+        // so the 5.5d pairing rule holds inside the block without the
+        // two transports ever crossing each other's reports.
+        struct Standalone {
+            bool live = false;
+            std::string path;
+            bool playing = false;
+            double position = -1.0;
+            double duration = -1.0;
+            std::string error;
+            std::string audio = "none";  // the lane names, as above
+            // How many times the source has rewound at its end. Not
+            // decoration: this transport loops by design, and the sink
+            // clock keeps pacing whether or not the feeder is still
+            // feeding — a bed that stopped at its EOF would keep reporting
+            // "live" while the audience heard silence. The wrap count is
+            // what distinguishes a bed that rewound from one that ran out.
+            std::uint64_t loops = 0;
+        } standalone;
     };
 
     // One recorded background-media failure, carried by the media.error
@@ -435,6 +461,22 @@ public:
     // audible — the gain belongs to the mixer either way.
     bool mediaSourceLive(AudioSource source) const;
 
+    // --- standalone production track (task 6.15b, review R15) ---
+    //
+    // The independent audio track's selection seam. Callable from the RPC
+    // thread like the gain/mute requests: the path is PROBED here (the
+    // same probe scene.prepare runs, file I/O under no lock), so "nothing
+    // readable at that path" is a refused request that changes nothing —
+    // the old track, if any, keeps playing untouched. Accepted paths ride
+    // to the render thread's swap (newest selection wins, like every
+    // pending slot here) and output.status.media.standalone answers.
+    // "" is a removal, not a probe candidate: it always accepts, and the
+    // swap takes the track down.
+    bool requestStandaloneAudio(const std::string& path, std::string* error);
+    // Any thread: the standalone transport is up (between a swap that
+    // started it and one that stopped it, or teardown).
+    bool standaloneLive() const { return fStandaloneLive.load(); }
+
     // Device handles a bench needs beside the session (task 1.5e): the YUV
     // upload ring lives outside the session but shares its device, and the
     // seam to build it is this narrow view rather than the objects. The
@@ -567,6 +609,26 @@ private:
     // handle never becomes a source, so AvPlayer's lane says "none").
     AvPlayer::AudioLane mediaLaneLocked() const;
 
+    // Standalone track machinery (task 6.15b). swapStandalonePendingLocked
+    // applies the newest probed selection — stop the old player, start the
+    // new one ("" is the removal), and move live/mask/status with it;
+    // called by applyTransportOps before the ops, so a selection and a
+    // gain in the same pass land in order. refreshStandaloneMediaLocked
+    // samples the player into status.media.standalone (position, lane,
+    // the lane-fault sticky) and rebuilds the cross-transport sources
+    // list. standaloneFailedLocked names the track's own path in the
+    // sticky error and the pushed notification — deduplicated on the
+    // message, exactly the background's rule. Caller holds fMutex.
+    void swapStandalonePendingLocked();
+    void refreshStandaloneMediaLocked();
+    void standaloneFailedLocked(const std::string& message);
+    // Rebuilds status.media.sources from BOTH transports' registrations:
+    // "video" when the background transport registered its embedded lane,
+    // "standalone" when the standalone player is up. The mixer's answer
+    // spans lifetimes — tearing the background down keeps the track's
+    // row (and its echoed gain/mute), which is what the operator sees.
+    void rebuildMediaSourcesLocked();
+
     // Seconds against the installed video clock; caller holds fMutex.
     double videoClockSecondsLocked(std::chrono::steady_clock::time_point now) const;
 
@@ -663,6 +725,22 @@ private:
     AvPlayer fAudio;
     std::unique_ptr<PlaybackPipeline> fBackground;
     openshow::scene::Background fAppliedBackground;        // identity in service
+    // Standalone production audio (task 6.15b, review R15). A SEPARATE
+    // AvPlayer, not the background's second mixer input: the background
+    // transport is torn down and rebuilt every time the scene's background
+    // identity changes, and a track riding it would restart at exactly the
+    // moment R15 says it must not. The player lives between a swap that
+    // started it and the next swap (or teardown); its sink is its own
+    // stream and PipeWire mixes the two audience-side, which is the honest
+    // shape — the session has no business folding two lifetimes into one
+    // graph just because one component could. The pending swap is the
+    // newest selection the RPC thread probed; the render thread applies it
+    // on the transport's own thread, where the background swap also runs.
+    AvPlayer fStandalonePlayer;
+    std::mutex fStandaloneSwapMutex;                       // guards fStandaloneSwap
+    std::optional<std::string> fStandaloneSwap;            // path to apply ("" = remove)
+    std::atomic<bool> fStandaloneLive{false};              // any thread (the swap writes)
+    std::string fStandalonePath;                           // render thread; "" = none
     ActiveScene fRenderScene;                              // = the composition's scene
     bool fBackgroundMedia = false;                         // from Options
     std::optional<MediaError> fPendingMediaError;          // fMutex; media.error push

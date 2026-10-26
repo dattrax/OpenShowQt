@@ -569,6 +569,31 @@ void WorkerController::handleReply(const boost::json::object& message) {
                 }
                 fMediaSources = listed;
             }
+            // The standalone track's own block (task 6.15b, review R15),
+            // optional field by field like the rest: the track reports
+            // itself, never a hopeful selection.
+            const auto standalone = media.find("standalone");
+            if (standalone != media.end() && standalone->value().is_object()) {
+                const boost::json::object& track = standalone->value().as_object();
+                const auto live = track.find("live");
+                if (live != track.end() && live->value().is_bool()) {
+                    fStandaloneLive = live->value().as_bool();
+                }
+                const auto path = track.find("path");
+                if (path != track.end() && path->value().is_string()) {
+                    fStandalonePath =
+                        QString::fromStdString(std::string(path->value().as_string()));
+                }
+                const auto position = track.find("position");
+                if (position != track.end() && position->value().is_number()) {
+                    fStandalonePosition = position->value().to_number<double>();
+                }
+                const auto error = track.find("error");
+                if (error != track.end() && error->value().is_string()) {
+                    fStandaloneError =
+                        QString::fromStdString(std::string(error->value().as_string()));
+                }
+            }
             emit mediaChanged();
         }
         QVariantMap layers;
@@ -963,6 +988,14 @@ void WorkerController::setMediaMute(const QString& source, bool muted) {
     }
     sendRequest(proto::kMethodMediaMute,
                 boost::json::object{{"source", source.toStdString()}, {"mute", muted}});
+}
+
+void WorkerController::selectStandaloneTrack(const QString& path) {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    sendRequest(proto::kMethodMediaStandalone,
+                boost::json::object{{"path", path.toStdString()}});
 }
 
 std::int64_t WorkerController::sendRequest(const char* method, boost::json::object params) {

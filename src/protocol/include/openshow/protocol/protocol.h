@@ -39,9 +39,15 @@ namespace openshow::protocol {
 // media.play/pause/seek/loop/gain/mute commands and the status fields
 // (loop, duration, per-source gain/muted) that confirm them, named by
 // "media.transport.v1" — all additive, so a minor-5 frontend still drives
-// everything it knew.
+// everything it knew. Minor 7 (task 6.15b, review R15) adds the standalone
+// production track: the media.standalone selection command and the status
+// "standalone" object (live, path, playing, position, duration, error,
+// audio) that confirms it, named by "media.standalone.v1" — the track has
+// its OWN lifetime (scene changes neither restart nor stop it) and its own
+// status block, so the minor-6 background-transport fields keep meaning
+// exactly what they did.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 6;
+inline constexpr std::uint32_t kProtocolMinor = 7;
 
 // Worker-to-frontend notification (task 5.5d): a background media asset
 // failed. {"path":...,"message":...} — sent when the failure happens,
@@ -77,6 +83,31 @@ inline constexpr const char* kMethodMediaSeek = "media.seek";
 inline constexpr const char* kMethodMediaLoop = "media.loop";
 inline constexpr const char* kMethodMediaGain = "media.gain";
 inline constexpr const char* kMethodMediaMute = "media.mute";
+
+// media.standalone {"path":p} (task 6.15b, review R15): select the
+// INDEPENDENT production audio track — a file of its own with a lifetime
+// of its own. Scene changes neither restart nor stop it: it survives
+// lyric updates, background-video replacement, and the background going
+// away entirely. "" removes the track. The path is probed synchronously
+// (nothing readable at that path is a refused request, and the old track
+// keeps playing untouched); once accepted the swap runs on the
+// transport's thread and output.status.media.standalone is the
+// acknowledgement, the 3.4 rule again. Gain and mute for this source ride
+// the minor-6 media.gain/media.mute commands with source "standalone";
+// the loop mode the transport holds is always on (a production bed that
+// falls silent at EOF is its own surprise — removal is the stop).
+//
+// output.status.media.standalone answers with {live, path, playing,
+// position, duration, error, audio, loops}. "live" is the commandability
+// mirror (the transport is up); "position" is the HEARD clock the transport
+// paces itself by, so on a looping bed it runs on past "duration" instead
+// of indexing the file — "loops" is how many times the source rewound,
+// which is the only field that separates a bed that wrapped from one that
+// ran out and left the sink pacing silence. "error" is sticky and always
+// names this block's own path (the 5.5d pairing rule, read inside the
+// block: the background's fields never describe this track and these never
+// describe it).
+inline constexpr const char* kMethodMediaStandalone = "media.standalone";
 
 // Audio source identities on the wire (task 6.15a). "video" is the clip's
 // embedded audio; "standalone" is the separate track — named now so the

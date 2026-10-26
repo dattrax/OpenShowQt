@@ -875,14 +875,19 @@ Window {
                 // seek snaps the thumb back to where the media actually
                 // is, and a loop toggle shows the intent the end of the
                 // clip will honour, not the moment it was clicked.
+                // Task 6.15b: the transport row belongs to the background
+                // video; the mixer rows below list whatever sources are
+                // registered across BOTH transports, so the column shows
+                // whenever either one is on air.
                 Column {
                     width: parent.width
                     spacing: 6
-                    visible: worker.mediaOnAir
+                    visible: worker.mediaOnAir || worker.standaloneOnAir
 
                     Flow {
                         width: parent.width
                         spacing: 8
+                        visible: worker.mediaOnAir
 
                         Button {
                             text: worker.mediaPlaying ? "Pause" : "Play"
@@ -971,6 +976,57 @@ Window {
                                 onToggled: worker.setMediaMute(modelData.id, checked)
                             }
                         }
+                    }
+                }
+
+                // Task 6.15b (review R15): the standalone production track.
+                // It keeps its OWN transport, so lyric changes, background-
+                // video replacements and even the background going away
+                // never restart it — which is also why its controls sit
+                // outside the transport column above: they address a
+                // different lifetime. The status line below is the worker's
+                // report, not a hopeful selection; a refused path surfaces
+                // on worker.status like any other refused command.
+                Row {
+                    width: parent.width
+                    spacing: 6
+
+                    PanelField {
+                        id: standaloneField
+                        width: 200
+                        placeholderText: "standalone track path"
+                    }
+
+                    PanelButton {
+                        text: "Set track"
+                        enabled: standaloneField.text.trim().length > 0
+                                 && worker.outputLive
+                        onClicked: worker.selectStandaloneTrack(standaloneField.text.trim())
+                    }
+
+                    PanelButton {
+                        text: "Remove track"
+                        enabled: worker.standaloneOnAir
+                        onClicked: worker.selectStandaloneTrack("")
+                    }
+                }
+
+                Text {
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 11
+                    color: worker.standaloneError.length > 0 ? "#d9a441" : "#8f93a5"
+                    text: {
+                        if (worker.standaloneError.length > 0) {
+                            return worker.standaloneError
+                        }
+                        if (!worker.standaloneOnAir) {
+                            return "no standalone track"
+                        }
+                        return "standalone \u00b7 " + worker.standalonePath
+                               + (worker.standalonePosition >= 0
+                                  ? " \u00b7 " + worker.standalonePosition.toFixed(1) + " s"
+                                  : "")
                     }
                 }
             }

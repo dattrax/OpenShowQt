@@ -195,6 +195,21 @@ boost::json::array sourcesArray(const OutputSession::MediaStatus& media) {
     return sources;
 }
 
+boost::json::object standaloneStatus(const OutputSession::MediaStatus::Standalone& standalone) {
+    // The track's own block (task 6.15b): its lifetime is not the
+    // background's, so its report is not the background's either. The
+    // 3.4 rule as usual — media.standalone answers what the selection
+    // became.
+    return boost::json::object{{"live", standalone.live},
+                               {"path", standalone.path},
+                               {"playing", standalone.playing},
+                               {"position", standalone.position},
+                               {"duration", standalone.duration},
+                               {"error", standalone.error},
+                               {"audio", standalone.audio},
+                               {"loops", standalone.loops}};
+}
+
 boost::json::object statusResult(const OutputSession::Status& status) {
     const OutputSession::PreviewStatus& preview = status.preview;
     return boost::json::object{{"device", status.deviceName},
@@ -263,7 +278,9 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                                              {"live", status.media.live},
                                                              {"loop", status.media.loop},
                                                              {"duration", status.media.duration},
-                                                             {"sources", sourcesArray(status.media)}}}};
+                                                             {"sources", sourcesArray(status.media)},
+                                                             {"standalone",
+                                                              standaloneStatus(status.media.standalone)}}}};
 }
 
 boost::json::value displaysResult(const std::vector<OutputSession::DisplayInfo>& displays) {
@@ -1027,6 +1044,42 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
                     ack["muted"] = muted;
                 }
                 proto::appendFrame(proto::makeResult(id, ack), outbound);
+            }
+        }
+    } else if (name == proto::kMethodMediaStandalone) {
+        // The independent production track (task 6.15b, review R15). The
+        // path is a string, "" is the removal; the session PROBEs before
+        // accepting, so "nothing readable at that path" is answered here
+        // and now — the old track keeps playing and the caller hears why.
+        // An accepted path swaps on the transport's thread, and status's
+        // standalone block is the acknowledgement: live, path, playing,
+        // position, the lane, and the track's own sticky error.
+        if (!given.is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "media.standalone requires params"),
+                               outbound);
+        } else {
+            const boost::json::object& args = given.as_object();
+            const auto path = args.find("path");
+            if (path == args.end() || !path->value().is_string()) {
+                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                    "media.standalone requires a path string "
+                                                    "(\"\" removes the track)"),
+                                   outbound);
+            } else {
+                const std::string wanted(path->value().as_string());
+                std::string refusal;
+                if (!fSession.requestStandaloneAudio(wanted, &refusal)) {
+                    proto::appendFrame(
+                        proto::makeError(id, proto::kInvalidParams,
+                                         refusal.empty() ? "standalone track refused" : refusal),
+                        outbound);
+                } else {
+                    proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                                 {"pending", true},
+                                                                 {"path", wanted}}),
+                                       outbound);
+                }
             }
         }
     } else if (name == "shutdown") {

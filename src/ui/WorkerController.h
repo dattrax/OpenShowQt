@@ -78,6 +78,16 @@ class WorkerController : public QObject {
     Q_PROPERTY(double mediaDuration READ mediaDuration NOTIFY mediaChanged)
     Q_PROPERTY(bool mediaLoop READ mediaLoop NOTIFY mediaChanged)
     Q_PROPERTY(QVariantList mediaSources READ mediaSources NOTIFY mediaChanged)
+    // Standalone production track (task 6.15b, review R15): the independent
+    // transport, selected by path and confirmed by the status block of the
+    // same name. standaloneOnAir is its commandability mirror
+    // (media.standalone.live); path, position and error are the track's
+    // own story — the media* properties above never describe it, and
+    // scene changes move none of this except through the track itself.
+    Q_PROPERTY(bool standaloneOnAir READ standaloneOnAir NOTIFY mediaChanged)
+    Q_PROPERTY(QString standalonePath READ standalonePath NOTIFY mediaChanged)
+    Q_PROPERTY(double standalonePosition READ standalonePosition NOTIFY mediaChanged)
+    Q_PROPERTY(QString standaloneError READ standaloneError NOTIFY mediaChanged)
     // Scene store (task 2.4c): what the worker has applied and is about
     // to apply, and how many prepared scenes it keeps. demoSlideCount is
     // the fixture's size, fixed for the session.
@@ -137,6 +147,15 @@ public:
     Q_INVOKABLE void setMediaGain(const QString& source, double gain);
     Q_INVOKABLE void setMediaMute(const QString& source, bool muted);
 
+    // Standalone production track (task 6.15b, review R15): select the
+    // independent audio file ("" removes it). The worker probes before
+    // acknowledging, so a bad path is a refused request whose reason
+    // reaches the status line like any other worker error, and the
+    // properties stay on the last worker truth — the track on air (if
+    // any) was never touched. When the track is up, its own story is the
+    // standalone* properties, mirrored from status and nothing else.
+    Q_INVOKABLE void selectStandaloneTrack(const QString& path);
+
     // Adoption after a save moves an asset's bytes (task 6.12, review R7).
     // pathMap names each move old-path -> new-path. Every scene payload this
     // controller still holds — the revision mirror, the retained restore
@@ -195,6 +214,10 @@ public:
     double mediaDuration() const { return fMediaDuration; }
     bool mediaLoop() const { return fMediaLoop; }
     QVariantList mediaSources() const { return fMediaSources; }
+    bool standaloneOnAir() const { return fStandaloneLive; }
+    QString standalonePath() const { return fStandalonePath; }
+    double standalonePosition() const { return fStandalonePosition; }
+    QString standaloneError() const { return fStandaloneError; }
 
 signals:
     void stateChanged();
@@ -370,6 +393,14 @@ private:
     double fMediaDuration = -1.0;
     bool fMediaLoop = false;
     QVariantList fMediaSources;
+    // The standalone track's status echo (task 6.15b, review R15): the
+    // same optional-field rule as the transport's — a worker that does not
+    // send the block keeps the last known answer; the defaults mirror a
+    // session that never selected a track.
+    bool fStandaloneLive = false;
+    QString fStandalonePath;
+    double fStandalonePosition = -1.0;
+    QString fStandaloneError;
 };
 
 }  // namespace openshow::ui
