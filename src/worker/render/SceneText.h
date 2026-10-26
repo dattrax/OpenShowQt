@@ -24,10 +24,12 @@
 
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "include/core/SkFontMgr.h"
@@ -129,36 +131,127 @@ private:
     sk_sp<SkUnicode> fUnicode;
 };
 
-// Decodes and holds scene background images. Every path seen is kept:
-// backgrounds persist across lyric changes (the M3 continuity rule wants
-// an unchanged background not to re-decode) and a fade needs the outgoing
-// and incoming pictures at once.
+// Decodes and holds scene background images, within a byte budget.
+//
+// Task 6.10 (review R12) gave this cache its shape. Before it, every path
+// ever seen was retained forever — a 3840×2160 RGBA image is ~31.6 MiB of
+// CPU pixels that neither the 16-scene store nor the 64 MiB Ganesh cache
+// bounded, and a cached null meant a repaired file never came back on the
+// worker's own terms. Four rules now hold:
+//
+//   BUDGET. Entries are accounted by decoded bytes and the cache never
+//   exceeds kDecodedImageBudget: a sequence of a hundred distinct 4K
+//   backgrounds plateaus instead of growing.
+//
+//   PINS. What the session can still put on air — every prepared scene's
+//   still, held by reference count — is never evicted. The budget bounds
+//   the transient, not the operator's content: a scene that has been
+//   prepared is guaranteed to present its picture, not a colour fill,
+//   however hard the churn around it. (A pinned image whose file went away
+//   later is also guaranteed: the cached success, not a re-read, is what
+//   presents — see the repair rule.)
+//
+//   LIMITS. The encoded file and the declared dimensions are checked
+//   BEFORE pixels are allocated: a 2 GB file is refused by its stat and a
+//   20000×20000 header by its numbers, not by an allocation that fails.
+//
+//   LOADS OUTSIDE DRAW. imageFor() is a pure lookup — the render thread
+//   asks, and either gets the picture or the colour fill, never a disk
+//   read. Decoding belongs to loadFor()/refreshFor(), which the session
+//   calls from prepare on the RPC thread. A failure is a zero-byte
+//   placeholder that the draw path never retries at frame rate, while a
+//   prepare always retries: the file the operator put back comes back, and
+//   eviction (R18's retry made explicit) simply forgets the placeholder so
+//   the next prepare tries again.
 class SceneImageCache {
 public:
-    // Decodes the image at path (SkCodec), or returns the cached one.
-    // Null on failure; callers fall back to the colour fill — file
-    // existence is the renderer's problem, the compiler only names the
-    // path. A cached failure stays cached (one decode attempt per path).
-    //
-    // Thread-safe (task 5.5): the render thread draws through it while
-    // an RPC thread prefetches at scene.prepare time. The decode runs
-    // OUTSIDE the lock, so a slow file never blocks another reader; two
-    // threads decoding the same path is a harmless duplicate — first
-    // insert wins.
+    // Ceiling on decoded pixel bytes held (pins included: pins are trusted
+    // to be content, the budget is what bounds everything else). Six
+    // distinct 4K backgrounds at ~33 MiB each; a worship service cycles
+    // more backgrounds than that between songs and the memory must not.
+    static constexpr std::size_t kDecodedImageBudget = 192u * 1024u * 1024u;
+    // Largest encoded file considered an image at all (a TIFF can be huge;
+    // a stage backdrop should not be), and the decoded extent limits —
+    // beyond these the file is not an asset but an incident.
+    static constexpr std::uint64_t kMaxEncodedFileBytes = 64u * 1024u * 1024u;
+    static constexpr std::int32_t kMaxImageDimension = 8192;
+    static constexpr std::uint64_t kMaxDecodedPixels = 40u * 1000u * 1000u;
+
+    struct Stats {
+        std::size_t decodedBytes = 0;   // pixel bytes of the cached images
+        std::size_t entries = 0;        // cached paths, failures included
+        std::size_t pins = 0;           // live pin references
+        std::size_t evictions = 0;      // images forgotten to stay in budget
+    };
+
+    // Lookup only — callable from the draw path. Returns the cached image,
+    // or null when the path is uncached or its cached load failed. It never
+    // touches the disk, which is what keeps a cold file from being paid
+    // for at 60 Hz.
     sk_sp<SkImage> imageFor(const std::string& path);
 
-    // Task 6.7c (review R18): the operator-facing entry point. It decodes
-    // AGAIN even for a path whose failure is cached, and says why a decode
-    // failed. A cached null is right for the per-frame draw path (one
-    // attempt per path, never a retry at 60 Hz) but wrong for an explicit
-    // prepare, which is an operator action: the missing file that has been
-    // put back must come back on air, and its error must clear. A success
-    // replaces a cached failure, so the draw path picks the picture up.
+    // True when a lookup would find a picture (no LRU touch, no counting):
+    // the session's broken-still report asks this on the apply path.
+    bool has(const std::string& path);
+
+    // The loading entry points. Both decode off-lock (a slow file must
+    // never block the draw path's lookups) and account the result.
+    // loadFor() is the prefetch: a cached answer of any kind wins, so a
+    // per-prepare pass over the store never re-decodes. refreshFor() is
+    // the operator-facing one (task 6.7c, review R18): a cached failure is
+    // re-decoded — the missing file that has been put back must come back
+    // on air and clear its error — while a cached success is kept.
+    sk_sp<SkImage> loadFor(const std::string& path);
     sk_sp<SkImage> refreshFor(const std::string& path, std::string* error);
 
+    // Reference-counted protection against eviction. pin() attaches to the
+    // path (a not-yet-cached path pins too: the count precedes the load
+    // when the session prepares before it prefetches); a path is evictable
+    // only when its count reaches zero. Pinned bytes always load, even
+    // past the budget — that excess is the content, and it is visible in
+    // stats() rather than hidden by refusing the operator's scene.
+    void pin(const std::string& path);
+    void unpin(const std::string& path);
+
+    // Re-derive the pins from the set, atomically: after the call the
+    // pinned paths are EXACTLY the distinct paths named, each with one
+    // reference; every other path's pins drop to zero. This is what keeps
+    // a session's pin ledger honest without shadow bookkeeping — the
+    // caller states WHOEVER can still be put on air and forgets nothing,
+    // and no sequence of repeated syncs can drift the count.
+    void syncPinSet(const std::vector<std::string>& paths);
+
+    // Forget a path entirely (its bytes AND its failure placeholder): the
+    // explicit invalidation an asset repair or a dropped reference uses.
+    // Eviction is invalidation chosen by the budget; this is invalidation
+    // chosen by the caller.
+    void invalidate(const std::string& path);
+
+    Stats stats() const;
+
 private:
-    std::mutex fMutex;
-    std::map<std::string, sk_sp<SkImage>> fImages;
+    struct Entry {
+        sk_sp<SkImage> image;      // null = a remembered failure (0 bytes)
+        unsigned pins = 0;
+        std::uint64_t seen = 0;    // LRU clock: lowest evicts first
+        std::size_t bytes = 0;     // pixel bytes, 0 for a failure
+    };
+
+    // Budget enforcement, on-lock: forget unpinned entries, least-recently
+    // seen first, until the bytes fit or nothing can go. Never evicts the
+    // entry just inserted at `protect`.
+    void evictLocked(std::string_view protect);
+    // Drop every pin (syncPinSet's release half). Deliberately does not
+    // evict: the budget resettles only once syncPinSet has re-pinned the
+    // survivors, so a sync can never free an image the caller still holds.
+    void releaseAllPinsLocked();
+
+    mutable std::mutex fMutex;
+    std::map<std::string, Entry> fEntries;
+    std::size_t fBytes = 0;
+    std::uint64_t fClock = 0;
+    std::size_t fPins = 0;
+    std::size_t fEvictions = 0;
 };
 
 // Draws a scene's background: the colour fill, and the cover-fitted

@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <filesystem>
 #include <initializer_list>
 #include <memory>
 #include <string>
@@ -316,6 +317,13 @@ namespace {
 // The one decode both entry points share (task 6.7c): file -> SkCodec ->
 // premul bitmap. `error`, when asked for, names the reason a null means
 // "no picture" — file unreadable, not an image, or a codec that gave up.
+//
+// Task 6.10 (review R12) added the two gates that stand BEFORE any
+// allocation: the file's own size (from its stat, so a 2 GB file is
+// refused without being read) and the dimensions the header declares
+// (from the codec's encoded info, so a 20000x20000 PNG is refused on its
+// numbers rather than by an allocation that may or may not fail and, when
+// it succeeds, leaves the machine 1.6 GB poorer).
 sk_sp<SkImage> decodeImageFile(const std::string& path, std::string* error) {
     auto fail = [&](std::string message) -> sk_sp<SkImage> {
         if (error) {
@@ -323,6 +331,17 @@ sk_sp<SkImage> decodeImageFile(const std::string& path, std::string* error) {
         }
         return nullptr;
     };
+    std::error_code ec;
+    const auto fileSize = std::filesystem::file_size(path, ec);
+    if (ec) {
+        return fail("cannot open '" + path + "' for reading");
+    }
+    if (fileSize > SceneImageCache::kMaxEncodedFileBytes) {
+        return fail("'" + path + "' is " + std::to_string(fileSize / (1024u * 1024u)) +
+                    " MiB, over the " +
+                    std::to_string(SceneImageCache::kMaxEncodedFileBytes / (1024u * 1024u)) +
+                    " MiB asset file limit");
+    }
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         return fail("cannot open '" + path + "' for reading");
@@ -336,6 +355,22 @@ sk_sp<SkImage> decodeImageFile(const std::string& path, std::string* error) {
     auto codec = SkCodec::MakeFromData(std::move(data));
     if (!codec) {
         return fail("'" + path + "' is not a readable image");
+    }
+    const SkISize encoded = codec->getInfo().dimensions();
+    if (encoded.width() > SceneImageCache::kMaxImageDimension ||
+        encoded.height() > SceneImageCache::kMaxImageDimension) {
+        return fail("image is " + std::to_string(encoded.width()) + "x" +
+                    std::to_string(encoded.height()) + ", over the " +
+                    std::to_string(SceneImageCache::kMaxImageDimension) +
+                    " pixel dimension limit");
+    }
+    const std::uint64_t pixels =
+        static_cast<std::uint64_t>(encoded.width()) * static_cast<std::uint64_t>(encoded.height());
+    if (pixels > SceneImageCache::kMaxDecodedPixels) {
+        return fail("image is " + std::to_string(encoded.width()) + "x" +
+                    std::to_string(encoded.height()) + ", over the " +
+                    std::to_string(SceneImageCache::kMaxDecodedPixels / 1000000u) +
+                    " megapixel limit");
     }
     const SkImageInfo info = codec->getInfo().makeColorType(kN32_SkColorType)
                                  .makeAlphaType(kPremul_SkAlphaType);
@@ -354,56 +389,215 @@ sk_sp<SkImage> decodeImageFile(const std::string& path, std::string* error) {
     return SkImages::RasterFromBitmap(bitmap);
 }
 
+// Decoded pixel bytes an entry accounts for: the N32 raster a load
+// allocates. A remembered failure accounts for nothing.
+std::size_t imageBytes(const sk_sp<SkImage>& image) {
+    if (image == nullptr) {
+        return 0;
+    }
+    const SkImageInfo info = image->imageInfo();
+    const std::size_t rowBytes =
+        static_cast<std::size_t>(info.width()) * static_cast<std::size_t>(info.bytesPerPixel());
+    return rowBytes * static_cast<std::size_t>(info.height());
+}
+
 }  // namespace
 
 sk_sp<SkImage> SceneImageCache::imageFor(const std::string& path) {
-    {
-        std::lock_guard<std::mutex> lock(fMutex);
-        const auto existing = fImages.find(path);
-        if (existing != fImages.end()) {
-            return existing->second;  // cached, or a cached failure (null)
-        }
-    }
-    // Decode done off-lock (task 5.5: an RPC-thread prefetch must never
-    // stall the render thread's own lookups). Whoever inserts first wins;
-    // a losing duplicate is identical bytes, and holding the fresh image
-    // either way keeps the return honest.
-    const sk_sp<SkImage> image = decodeImageFile(path, nullptr);
+    // Pure lookup — the draw path's entry point (task 6.10, review R12).
+    // A miss answers null and the colour fill stands; nothing here opens a
+    // file, so the worst a cold or evicted asset can cost the frame loop
+    // is a mutex and a map probe.
     std::lock_guard<std::mutex> lock(fMutex);
-    const auto existing = fImages.find(path);
-    if (existing != fImages.end()) {
-        return existing->second;
+    const auto existing = fEntries.find(path);
+    if (existing == fEntries.end()) {
+        return nullptr;
     }
-    fImages.emplace(path, image);
-    return image;
+    existing->second.seen = ++fClock;
+    return existing->second.image;
+}
+
+bool SceneImageCache::has(const std::string& path) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    const auto existing = fEntries.find(path);
+    return existing != fEntries.end() && existing->second.image != nullptr;
+}
+
+sk_sp<SkImage> SceneImageCache::loadFor(const std::string& path) {
+    // The prefetch is refreshFor without the error report: neither ever
+    // re-decodes a SUCCESS, and both treat anything else — a remembered
+    // failure, or the empty entry a pin created before its load — as not
+    // yet answered. loadFor once returned the empty placeholder as if it
+    // were one, which made a pin-before-load (exactly what prepare does)
+    // poison its own prefetch; that is why the two share this one body.
+    return refreshFor(path, nullptr);
 }
 
 sk_sp<SkImage> SceneImageCache::refreshFor(const std::string& path, std::string* error) {
-    // Always decode (off-lock, like the prefetch), then let a success
-    // overwrite a cached failure. A cached SUCCESS is returned without
+    // Always decode a FAILURE or an empty (pin-only) entry, then let a
+    // success overwrite it. A cached SUCCESS is returned without
     // re-decoding: the bytes are the same file, and re-decoding a 4K still
     // on every prepare would defeat the preload this path exists to do.
     {
         std::lock_guard<std::mutex> lock(fMutex);
-        const auto existing = fImages.find(path);
-        if (existing != fImages.end() && existing->second != nullptr) {
+        const auto existing = fEntries.find(path);
+        if (existing != fEntries.end() && existing->second.image != nullptr) {
             if (error) {
                 error->clear();
             }
-            return existing->second;
+            return existing->second.image;
         }
     }
     sk_sp<SkImage> image = decodeImageFile(path, error);
     std::lock_guard<std::mutex> lock(fMutex);
-    const auto existing = fImages.find(path);
-    if (existing == fImages.end()) {
-        fImages.emplace(path, image);
-        return image;
+    const auto existing = fEntries.find(path);
+    if (existing == fEntries.end()) {
+        Entry entry;
+        entry.image = image;
+        entry.bytes = imageBytes(image);
+        entry.seen = ++fClock;
+        fBytes += entry.bytes;
+        const auto inserted = fEntries.emplace(path, std::move(entry)).first;
+        const sk_sp<SkImage> kept = inserted->second.image;
+        evictLocked(path);
+        return kept;
     }
-    if (image != nullptr && existing->second == nullptr) {
-        existing->second = image;  // repaired: the draw path picks it up now
+    if (image != nullptr && existing->second.image == nullptr) {
+        existing->second.image = image;  // repaired: the draw path picks it up now
+        existing->second.bytes = imageBytes(image);
+        fBytes += existing->second.bytes;  // the failure placeholder weighed nothing
+        const sk_sp<SkImage> kept = existing->second.image;
+        evictLocked(path);
+        return kept;
     }
-    return existing->second;
+    return existing->second.image;
+}
+
+void SceneImageCache::pin(const std::string& path) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    ++fEntries[path].pins;  // a pin may precede the load: prepare then prefetch
+    ++fPins;
+}
+
+void SceneImageCache::unpin(const std::string& path) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    const auto existing = fEntries.find(path);
+    if (existing != fEntries.end()) {
+        if (existing->second.pins > 0) {
+            --existing->second.pins;
+        }
+        if (existing->second.image == nullptr && existing->second.pins == 0) {
+            fEntries.erase(existing);  // an unpinned failure is pure weight
+        }
+    }
+    if (fPins > 0) {
+        --fPins;
+    }
+}
+
+void SceneImageCache::syncPinSet(const std::vector<std::string>& paths) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    releaseAllPinsLocked();
+    // One reference per DISTINCT named path: a shared background carried
+    // by three scenes is one asset to evict, and syncing the same set
+    // twice (prepare, then present, then a commit) must not drift the
+    // count upward. The release above already dropped everything the set
+    // does not name, so what remains is exactly one each.
+    std::vector<std::string> distinct = paths;
+    std::sort(distinct.begin(), distinct.end());
+    distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
+    for (const std::string& path : distinct) {
+        ++fEntries[path].pins;
+        ++fPins;
+    }
+    // Only now resettle the budget: with the keep set pinned again, so a
+    // sync NEVER evicts an image belonging to a scene the session still
+    // holds (running this inside the release, while every pin was zero,
+    // meant a seventh 4K prepare could quietly strip the six prepared
+    // scenes down to placeholders mid-show).
+    evictLocked("");
+}
+
+void SceneImageCache::invalidate(const std::string& path) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    const auto existing = fEntries.find(path);
+    if (existing == fEntries.end()) {
+        return;
+    }
+    fBytes -= existing->second.bytes;
+    fPins -= existing->second.pins;
+    fEntries.erase(existing);
+}
+
+SceneImageCache::Stats SceneImageCache::stats() const {
+    std::lock_guard<std::mutex> lock(fMutex);
+    Stats out;
+    out.decodedBytes = fBytes;
+    out.entries = fEntries.size();
+    out.pins = fPins;
+    out.evictions = fEvictions;
+    return out;
+}
+
+void SceneImageCache::evictLocked(std::string_view protect) {
+    // Forget unpinned entries, least-recently-seen first, until the decoded
+    // bytes fit the budget or nothing can go. A pinned entry is content the
+    // operator can put on air at any moment — it is kept, and the excess it
+    // causes is reported in stats() rather than paid for with a colour fill
+    // mid-show. An entry still drawn elsewhere survives in its caller's
+    // sk_sp regardless: eviction frees the CACHE's reference, not the
+    // frame's.
+    while (fBytes > kDecodedImageBudget) {
+        auto victim = fEntries.end();
+        for (auto candidate = fEntries.begin(); candidate != fEntries.end(); ++candidate) {
+            if (candidate->second.pins != 0 || candidate->first == protect ||
+                candidate->second.bytes == 0) {
+                continue;
+            }
+            if (victim == fEntries.end() || candidate->second.seen < victim->second.seen) {
+                victim = candidate;
+            }
+        }
+        if (victim == fEntries.end()) {
+            return;  // everything left is pinned, protected, or free
+        }
+        fBytes -= victim->second.bytes;
+        fEntries.erase(victim);
+        ++fEvictions;
+    }
+}
+
+void SceneImageCache::releaseAllPinsLocked() {
+    // Release EVERY pin — no eviction here (the caller re-pins its set and
+    // evicts afterwards, so a sync cannot strip what the session still
+    // holds). The paths this drops are the ones a churned show should be
+    // forgetting; syncPinSet re-takes the survivors immediately, and
+    // keeping in-set pins instead of clearing them would make each entry's
+    // count depend on how many prepares had run since the last clear —
+    // which is the drift the re-derivation exists to prevent.
+    std::vector<std::string> release;
+    for (const auto& [path, entry] : fEntries) {
+        if (entry.pins != 0) {
+            release.push_back(path);
+        }
+    }
+    for (const std::string& path : release) {
+        const auto existing = fEntries.find(path);
+        if (existing == fEntries.end()) {
+            continue;
+        }
+        // ALL of them: the set is re-derived, not tallied. An entry that
+        // somehow carried two references from two syncs (the caller's
+        // re-derivation racing its own repeat call) must end this sync at
+        // zero, or "who is pinned" would depend on how many prepares
+        // happened since the last one — which is the drift this primitive
+        // exists to prevent.
+        fPins -= existing->second.pins;
+        existing->second.pins = 0;
+        if (existing->second.image == nullptr) {
+            fEntries.erase(existing);  // an unpinned failure is pure weight
+        }
+    }
 }
 
 void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
@@ -523,6 +717,16 @@ bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string&
     // The two layers, dispatched like the LayerStack would (a disabled one
     // draws nothing at all), each honouring its own crossfade track.
     SceneImageCache images;
+    // Task 6.10 (review R12): imageFor() never hits the disk, so this
+    // snapshot entry point — the dev CLI's --snapshot and the render
+    // fixtures — loads its backgrounds up front, outside the draw, exactly
+    // as the live session's prepare does for the frame loop.
+    for (const openshow::scene::Scene* one : {&scene, options.fadeFrom}) {
+        if (one != nullptr && one->background.hasImage && !one->background.isVideo &&
+            !one->background.assetPath.empty()) {
+            images.loadFor(one->background.assetPath);
+        }
+    }
     if (options.background) {
         const bool fading = options.fadeFrom != nullptr && options.mediaBlend < 1.0f;
         if (fading) {

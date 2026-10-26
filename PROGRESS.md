@@ -612,12 +612,82 @@ Updated: 2026-10-25 (Europe/London).
   the constant the mutant was raising, and mutants aimed at a fixture where
   the rule is unobservable; all fixed, with the reasons recorded in the files.
   Gates desktop **38/38** (157 s), headless **22/22** (40 s).
-- Exact next action: **6.10** per the PLAN.md ledger — add byte-limited decoded
-  asset caching, dimension/file limits, active-resource pins and
-  invalidation/retry (R12: many distinct 4K images must plateau at the chosen
-  budget, active/transition images must survive eviction, repaired same-path
-  files must recover, and no disk/decode work may happen in draw). Then
-  continue the focused M6 leaves in order (6.11a/b, 6.12, 6.13a/b).
+- **6.10 — byte-limited decoded-asset cache (R12) — DONE.** Nothing in the
+  worker grows without a bound any more, and nothing the operator prepared
+  can be forgotten. **Budget:** `SceneImageCache` accounts every entry by
+  decoded bytes against `kDecodedImageBudget` = **192 MiB**, evicting
+  unpinned entries least-recently-seen first and counting what it drops;
+  `output.status.scene.images.{decodedBytes,entries,pins,evictions}` puts
+  the whole picture on the wire (a new sub-object, so `hello` needed no
+  capability change). **Limits before any allocation:** the file's `stat`
+  against 64 MiB — a 2 GB file is refused without being read — then the
+  codec's *declared* dimensions against 8192 a side and 40 MP; a
+  20000×20000 header is refused on its numbers instead of by an allocation
+  that might succeed and leave the machine 1.6 GB poorer. **Pins:** the
+  session re-derives the whole set — {every scene in the 16-entry store} ∪
+  desired ∪ applied ∪ the render thread's on-air copy, one reference per
+  DISTINCT path — at prepare, at every present that changes desired, and at
+  the frame commit; `syncPinSet` is release-all-then-pin-the-set, so no
+  sequence of repeated prepares can drift a count, and a path the set stops
+  naming is exactly a reference that ended. **The ordering law:** the budget
+  resettles only *after* the survivors are re-pinned. Evicting between the
+  release and the re-pin (the first version) stripped six prepared 4K scenes
+  down to zero-byte placeholders on the seventh prepare — a colour fill the
+  audience would have seen on a worker that had answered every command
+  successfully. m11 is that mutant, and the unit scenario that catches it
+  holds 90 pins = 202.5 MiB **above** the budget and re-derives the same
+  set: nothing may leave, and the unpinned surplus is what pays. **Loads
+  outside draw:** `imageFor()` is a pure lookup (miss ⇒ colour fill, never
+  a file open — proven both ways in the fixture: a missing file's arrival
+  changes nothing for a lookup, and a *cached* picture survives its file
+  being deleted); decoding belongs to `loadFor`/`refreshFor` on the RPC
+  thread at prepare, and `renderSceneSnapshot` preloads its own backgrounds
+  so the dev CLI and the render fixtures keep working. A failure is a
+  **zero-byte placeholder** the draw path never retries at frame rate while
+  `refreshFor` always retries — the file the operator puts back comes back,
+  and eviction forgetting the placeholder is another way the same promise
+  holds. Pinned bytes may exceed the budget, because that excess is content
+  that must never be paid for with a colour fill mid-show; it is reported.
+  **One more visible degradation:** a still whose picture was there at
+  prepare and is not at apply now *reports* (`applyBackgroundTransport`
+  names it once per identity change, deferring to the preload's richer
+  codec message when that is what failed). Before this change the audience
+  would have got a silent colour fill and a clean status.
+  **Measured:** live worker, 40 distinct 4K stills through `scene.prepare` —
+  **1266 MiB asked → 506 MiB decoded, 16 entries, 16 pins, 26 evictions**,
+  bounded by the store's 16 revisions rather than by the 1.24 GiB asked; the
+  OLDEST still-held scene, one of the ten that recency alone could not have
+  saved, then presents with no `media.error` and a clean `status.media.error`;
+  and a same-path repair recovers after its failure placeholder has been
+  through 12 more churns. Unit: first-load accounting (256×256 = 256 KiB, one
+  4K still = **33,177,600 bytes**, the review's own number), 100 × 2.25 MiB
+  flooding to 225 MiB and plateauing at 192 MiB with `evictions > 0`, pinned
+  images surviving 200 distinct churns while the unpinned peer from the same
+  era falls, the 90-pin over-budget sync above, a 9000×9000 header refused
+  naming the dimension limit (with the refused file measured tiny), a
+  7000×6000 42 MP still refused naming the megapixel ceiling (a case that
+  exists because the dimension gate cannot see it), and a sparse 64 MiB+1 KiB
+  file refused by its stat. **Mutations** m01 raised budget constant, m02
+  eviction off, m03 eviction ignores pins, m04 `imageFor` decodes, m05
+  dimension gate off, m06 file gate off, m07 megapixel gate off, m08 failure
+  never retried, m09 sync never releases, m10 sync never pins, m11 evict
+  mid-release, m12 session never pins, m13 broken-still report disabled, m14
+  store left unpinned: **14/14 CAUGHT** (m01–m11 unit, m11 also live,
+  m12–m14 live). Two escapes on the first pass were the FIXTURE's, both
+  recorded in the files: the m11 geometry sat under the budget where an
+  evict-mid-release has nothing to take, and m14 escaped because a
+  "no media.error" check only proves something when the code can produce
+  one — which is how the silent post-prepare cache loss was found. Stills are
+  JPEG-generated with ffmpeg (`exit 77` when absent): this libskia decodes
+  JPEG but has no PNG codec and no WPG encoder header. Gates desktop
+  **39/39**, headless **23/23**.
+- Exact next action: **6.11a** per the PLAN.md ledger — draw output and
+  previews from one immutable frame snapshot and prevent target drawing from
+  advancing live transitions (R13: preview-only work must not alter the
+  live scene, time or blends; both targets must use the same revision and
+  composition; a slow preview must drop or defer its work within the
+  audience's timing budget). Then continue the focused M6 leaves in order
+  (6.11b, 6.12, 6.13a/b).
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -3282,6 +3352,44 @@ of this work.
   Vulkan entry points are scope-resolved (instance GIPA for physical-device
   functions, GDPA for device functions) because this platform's loader can
   return raw ICD pointers from instance GIPA that crash on loader handles.
+- (2026-10-26, task 6.10) A cache for show content has two different
+  bounds and they must not be confused: the BUDGET bounds the transient
+  (backgrounds a service pushed past and will never show again), and the
+  PIN SET is content the operator can put on air at any moment, which is
+  kept and whose excess over the budget is REPORTED rather than paid for
+  with a colour fill mid-show. The primitive that keeps that honest is
+  re-derivation, not reference counting: syncPinSet releases every pin and
+  then takes one per DISTINCT named path, so any number of repeated
+  prepares lands on the same truth, and a path the caller stops naming is
+  exactly a reference that ended (no shadow bookkeeping to drift). Three
+  ordering laws came out of it: gates run BEFORE pixels are allocated (the
+  file's stat, then the codec's declared dimensions — a refusal that has to
+  allocate first is not a gate); the lookup the draw path uses never touches
+  the disk (a miss answers the colour fill, and both directions are
+  testable: an arriving file changes nothing for a lookup, a deleted file
+  changes nothing for a hit); and the budget resettles only after the
+  re-pin — evicting between the release and the re-pin strips the oldest
+  prepared scenes to placeholders, because "oldest" and "prepared" are the
+  same entries in a real show. A failure is a zero-byte placeholder: the
+  draw path may not retry at frame rate, but an operator action always
+  retries, and eviction forgetting the placeholder is another path to the
+  same recovery.
+- (2026-10-26, task 6.10) A degradation the audience sees must reach the
+  wire. A still that failed to decode was reported at prepare (6.7c), but a
+  picture that was there at prepare and gone at apply produced a colour fill
+  with a clean status — and that asymmetry was only discovered because a
+  mutation (leave the store out of the pin set) survived a "no media.error
+  was pushed" check. Rule: when a fixture asserts the ABSENCE of a report,
+  prove the code is capable of producing it, otherwise the check is a
+  tautology. Two more fixture laws this task paid for: the arithmetic of a
+  fixture is part of its claim (512x512 N32 is 1 MiB, not 2 — the first
+  flood of 100 sat UNDER the 192 MiB budget and every eviction check passed
+  vacuously), and the geometry must sit where the rule bites (a
+  pins-under-budget scenario cannot see evict-mid-release; the scenario that
+  catches it holds 90 pins above the budget and re-derives the same set).
+  One owner per ledger too: mixing hand pins with set syncs in one fixture
+  tested neither, and its counters were unexplainable until the fixture
+  used syncPinSet alone, exactly as production does.
 - (2026-10-26, task 6.8b) An RPC server's outbound queue is shaped by two
   rules and the transport's own number: its byte budget IS the frame budget
   (a queue that buffers what the wire would never carry is a lie), and its

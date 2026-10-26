@@ -172,7 +172,21 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                                              {"pending", status.scene.pending},
                                                              {"transitioning",
                                                               status.scene.transitioning},
-                                                             {"prepared", status.scene.prepared}}},
+                                                             {"prepared", status.scene.prepared},
+                                                             // The decoded-still cache (task 6.10,
+                                                             // review R12): what the worker holds
+                                                             // in CPU picture memory, what of it
+                                                             // is pinned content, and whether the
+                                                             // budget has begun evicting.
+                                                             {"images",
+                                                              boost::json::object{
+                                                                  {"decodedBytes",
+                                                                   status.scene.images.decodedBytes},
+                                                                  {"entries",
+                                                                   status.scene.images.entries},
+                                                                  {"pins", status.scene.images.pins},
+                                                                  {"evictions",
+                                                                   status.scene.images.evictions}}}}},
                                // Background media (task 5.5d): the video
                                // transport's live state; error is sticky
                                // until a successful open replaces it.

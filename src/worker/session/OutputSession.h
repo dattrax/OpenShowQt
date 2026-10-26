@@ -132,6 +132,18 @@ public:
         uint64_t pending = 0;       // accepted present not yet presented (0 = none)
         bool transitioning = false; // that presented frame was mid-crossfade
         uint64_t prepared = 0;      // how many scenes the store holds
+        // The decoded-still cache (task 6.10, review R12), mirrored in at
+        // every pin sync and frame commit: an operator sizing a show must
+        // be able to ask how much CPU picture memory the worker holds,
+        // what of it is pinned content, and whether the budget has begun
+        // evicting. entries counts cached paths including remembered
+        // failures; decodedBytes is pixel bytes only.
+        struct Images {
+            uint64_t decodedBytes = 0;
+            uint64_t entries = 0;
+            uint64_t pins = 0;
+            uint64_t evictions = 0;
+        } images;
     };
 
     // Background media visibility (task 5.5d). playing says the session
@@ -445,6 +457,18 @@ private:
     // anything else tears the transport down before opening the replacement
     // through the same PlaybackPipeline + AvPlayer pair the bench drives.
     void applyBackgroundTransport(const openshow::scene::Background& wanted);
+    // Task 6.10 (review R12): the pins that make the image cache's byte
+    // budget safe. Every still background the session could still put on
+    // air — any scene in the bounded store, plus the desired/applied
+    // revisions and the render thread's on-air copy — pins its path, so
+    // eviction only ever forgets scenes the store itself has let go. Re-
+    // derives the whole pin set (at most 17 paths) and mirrors the cache
+    // stats into status; called on the RPC thread at prepare/present and
+    // on the render thread at the frame commit, all under fMutex, none of
+    // it touching the disk.
+    void syncScenePins();
+    // Copies the cache's counters into fStatus.scene.images (on-lock).
+    void mirrorImageStatsLocked();
     void teardownBackgroundTransport();
 
     // Background media visibility events (task 5.5d). Each updates

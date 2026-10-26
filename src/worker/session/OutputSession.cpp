@@ -307,6 +307,13 @@ bool OutputSession::prepareScene(const openshow::scene::Scene& scene,
         if (revisionOut != nullptr) {
             *revisionOut = revision;
         }
+        // Task 6.10 (review R12): the store's contents are the pin set.
+        // Before the preload below puts this scene's still in the cache —
+        // and before any churn of other scenes can evict anything — the
+        // whole held set is re-pinned, so a prepared scene's picture is
+        // guaranteed at present time no matter what the budget does to
+        // the scenes the store has let go.
+        syncScenePins();
     }
     // Task 5.5 preload: outside the store lock (a decode must never hold
     // up status or layer commands) and on this RPC thread (the render
@@ -378,6 +385,8 @@ bool OutputSession::presentScene(uint64_t prepared, uint64_t* revisionOut,
             fDesiredScene = prepared;
             fDesiredTransition = kind;  // travels with the change to the render thread
             ++fRevision;
+            syncScenePins();  // task 6.10: the outgoing scene stays pinned while
+                              // the fade draws it; the commit releases it
         }
         if (revisionOut != nullptr) {
             *revisionOut = fRevision;
@@ -980,6 +989,70 @@ void OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
     // is what tells callers the scene is on air.
 }
 
+void OutputSession::syncScenePins() {
+    // fMutex held. The cache lives in the renderer and its pin operations
+    // are map arithmetic under the cache's own lock — no disk, no waiting —
+    // so this is safe from both the RPC thread and the frame loop.
+    if (fScene == nullptr) {
+        return;
+    }
+    if (!fBackgroundMedia) {
+        // No media mode (benches, --render-test): nothing prepares, so the
+        // session owns no pins and must release none — a bench draws
+        // through the same cache without ever declaring a held set.
+        mirrorImageStatsLocked();
+        return;
+    }
+    // The union of everything that can still be put on air, re-derived in
+    // full every time: the bounded store, the queued present, the applied
+    // scene, and the render thread's on-air copy (a fade still draws the
+    // scene it came from until the commit says the transition settled).
+    // One reference per DISTINCT path — a shared background held by two
+    // scenes is one asset, and the count that keeps it out of eviction is
+    // one too. Deriving beats bookkeeping: an eviction in the store, a
+    // present and a commit all land on the same truth without any of them
+    // having to remember what the last one did.
+    std::vector<std::string> held;
+    const auto collect = [&held](const openshow::scene::Scene& scene) {
+        const openshow::scene::Background& background = scene.background;
+        if (background.hasImage && !background.isVideo && !background.assetPath.empty()) {
+            held.push_back(background.assetPath);
+        }
+    };
+    for (const auto& entry : fScenes) {
+        collect(entry.second);
+    }
+    const auto pinned = [&](uint64_t revision) {
+        const auto found = fScenes.find(revision);
+        if (found != fScenes.end()) {
+            collect(found->second);
+        } else if (fRenderScene) {
+            collect(*fRenderScene);  // store-evicted but still on air
+        }
+    };
+    pinned(fDesiredScene);
+    pinned(fAppliedScene);
+    if (fRenderScene) {
+        collect(*fRenderScene);
+    }
+    std::sort(held.begin(), held.end());
+    held.erase(std::unique(held.begin(), held.end()), held.end());
+    fScene->imageCache()->syncPinSet(held);
+    mirrorImageStatsLocked();
+}
+
+void OutputSession::mirrorImageStatsLocked() {
+    if (fScene == nullptr) {
+        fStatus.scene.images = {};
+        return;
+    }
+    const SceneImageCache::Stats stats = fScene->imageCache()->stats();
+    fStatus.scene.images.decodedBytes = stats.decodedBytes;
+    fStatus.scene.images.entries = stats.entries;
+    fStatus.scene.images.pins = stats.pins;
+    fStatus.scene.images.evictions = stats.evictions;
+}
+
 void OutputSession::applyBackgroundTransport(const openshow::scene::Background& wanted) {
     // The identity rule (M3 continuity): same asset id, same path, same
     // kind — the transport stays exactly as it is. A lyric change over the
@@ -1004,13 +1077,15 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
         // is looking at is always NAMED, and the error is set only when
         // that asset is what cannot be shown.
         //
-        // The cache is consulted BEFORE fMutex (the 5.5 rule: a decode must
-        // never hold up status or layer commands). Normally the prepare's
-        // preload already answered for this path; whoever gets there first
-        // pays the decode, off the lock either way.
+        // The cache is consulted BEFORE fMutex, so even the pure lookup of
+        // 6.10 keeps this probe out of the lock that status and layer
+        // commands wait on. Task 6.10 made it a lookup with no disk access:
+        // the pin taken at prepare guarantees the preload's answer is
+        // still resident, so a miss here genuinely means "no picture for
+        // this asset", which is exactly what the report below says.
         const bool brokenStill =
             wanted.hasImage && !wanted.isVideo &&
-            (fScene == nullptr || fScene->imageCache()->imageFor(wanted.assetPath) == nullptr);
+            (fScene == nullptr || !fScene->imageCache()->has(wanted.assetPath));
         std::lock_guard<std::mutex> lock(fMutex);
         fStatus.media.playing = false;
         fStatus.media.position = -1.0;
@@ -1021,7 +1096,26 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
         // above means a re-present of the SAME still cannot rewrite this,
         // which is why the rule has to hold in both directions.)
         fStatus.media.path = wanted.hasImage ? wanted.assetPath : std::string();
-        if (!brokenStill) {
+        if (brokenStill) {
+            // R18's rule read from the cache's side: the picture the
+            // audience should be seeing is not here, and the colour fill
+            // they get instead is a degradation, so it is NAMED. The
+            // prepare's own preload already reports a file it could not
+            // decode (with the better message — the codec's reason); this
+            // half covers the picture that was there and is not any more,
+            // which with the 6.10 pins should be a cache bug rather than
+            // a show event, and must never pass as success. The apply
+            // path runs on an identity change, not per frame, so this
+            // cannot turn into notification noise.
+            const bool alreadyReported = fMediaFault && fMediaFault->first == MediaFault::kImage &&
+                                         fMediaFault->second == wanted.assetPath;
+            if (!alreadyReported) {
+                mediaFailedLocked(MediaFault::kImage, wanted.assetPath,
+                                  "background image: '" + wanted.assetPath +
+                                      "' is not in the decoded cache; the slide is drawing "
+                                      "its colour fill");
+            }
+        } else {
             fStatus.media.error.clear();
             fMediaFault.reset();
         }
@@ -1671,6 +1765,11 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
             fStatus.scene.transitioning = fScene && fScene->transitionRunning();
             fStatus.scene.pending = fDesiredScene == fAppliedScene ? 0 : fDesiredScene;
             fStatus.revision = snapshot.revision;
+            // Task 6.10: once the fade has settled, the scene it faded
+            // FROM is no longer drawn and its still stops being sacred
+            // (unless the store still holds it, which the sync re-derives
+            // from the truth rather than from bookkeeping).
+            syncScenePins();
         }
     }
 }

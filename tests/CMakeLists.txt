@@ -26,6 +26,20 @@ add_executable(outbound_queue_tests outbound_queue_tests.cpp)
 target_link_libraries(outbound_queue_tests PRIVATE openshow::worker_rpc_headers)
 add_test(NAME outbound_queue_tests COMMAND outbound_queue_tests)
 
+# Task 6.10 (review R12): the decoded scene-asset cache — byte budget and
+# plateau, pins that survive churn, encoded-size/dimension gates that
+# refuse before allocating, failures that retry, and the rule that a
+# lookup never touches the disk. CPU-only (SkCodec), so both presets run
+# it; the PNGs are generated here rather than by ffmpeg so the fixture
+# never skips on a missing tool.
+add_executable(scene_image_cache_tests scene_image_cache_tests.cpp)
+target_link_libraries(scene_image_cache_tests PRIVATE openshow::worker_render)
+set_source_files_properties(scene_image_cache_tests.cpp PROPERTIES
+  COMPILE_OPTIONS "-fno-rtti"
+)
+add_test(NAME scene_image_cache_tests COMMAND scene_image_cache_tests)
+set_tests_properties(scene_image_cache_tests PROPERTIES TIMEOUT 300)
+
 # Task 6.5 (review R5): preview slot ownership is proven, not assumed —
 # only the exact published sequence releases a slot, odd/stale/future/
 # duplicate/out-of-range releases free nothing, and the geometry is

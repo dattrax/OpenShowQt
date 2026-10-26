@@ -43,6 +43,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -206,6 +207,18 @@ boost::json::object mediaOf(const boost::json::object& result) {
         return {};
     }
     return result.at("media").as_object();
+}
+
+// The decoded-still cache object of one status snapshot (task 6.10).
+boost::json::object imagesOf(const boost::json::object& result) {
+    if (!result.contains("scene") || !result.at("scene").is_object()) {
+        return {};
+    }
+    const boost::json::object& scene = result.at("scene").as_object();
+    if (!scene.contains("images") || !scene.at("images").is_object()) {
+        return {};
+    }
+    return scene.at("images").as_object();
 }
 
 double numberOf(const boost::json::object& object, const char* key) {
@@ -655,6 +668,158 @@ void exerciseImageRepair(int fd, const std::string& missingStill,
 }
 
 // A clip whose file is destroyed while it plays.
+// --- task 6.10 (review R12): the decoded-still cache through the wire ---
+//
+// scene_image_cache_tests pins the cache's accounting rules directly; this
+// scenario proves the same properties through the LIVE worker: the counters
+// ride output.status, a churn of DISTINCT 4K stills plateaus instead of
+// growing, the store's oldest prepared picture survives that churn (the
+// pin, not the LRU), and a same-path repair recovers even after the
+// failure placeholder has been through the churn too.
+//
+// The arithmetic is written in absolute units (task 6.8b's law, and the
+// review's own number): a 4K still decodes to 3840x2160x4 = 33,177,600
+// bytes, the budget is 192 MiB = 201,326,592, and the scene store holds 16
+// revisions. So 40 distinct 4K paths ASK 1.24 GiB of a cache that can hold
+// at most 16 of them — and only ~6 of those 16 could survive the budget by
+// recency alone, which is what makes the pin check below non-vacuous.
+void exerciseImageCacheBudgets(int fd, const std::string& dir) {
+    constexpr std::uint64_t kStillBytes = 3840ULL * 2160ULL * 4ULL;  // 31.6 MiB decoded
+    constexpr int kRounds = 40;
+    constexpr int kStore = 16;  // OutputSession::kMaxPreparedScenes
+
+    // One 4K JPEG, copied to every churn path: the cache is keyed by PATH,
+    // the scenario's subject is distinct paths, and 40 encodes would only
+    // spend the fixture's time.
+    const std::string still = dir + "/cache-4k.jpg";
+    if (!generate("ffmpeg -v error -y -f lavfi -i testsrc=size=3840x2160:rate=1 "
+                  "-frames:v 1 -q:v 8 '" +
+                  still + "' >/dev/null 2>&1") ||
+        !fileExists(still)) {
+        std::printf("   skipped the cache-churn scenario (no 4K still)\n");
+        return;
+    }
+
+    {  // The counters exist on the wire at all (the review's diagnostics half).
+        const boost::json::object reported = imagesOf(status(fd));
+        check(reported.contains("decodedBytes") && reported.contains("entries") &&
+                  reported.contains("pins") && reported.contains("evictions"),
+              "output.status.scene.images reports decodedBytes, entries, pins and evictions");
+    }
+
+    const auto churnTo = [&dir, &still, fd](int index) -> std::uint64_t {
+        const std::string path = dir + "/churn-" + std::to_string(index) + ".jpg";
+        std::error_code ec;
+        std::filesystem::copy_file(
+            still, path, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::fprintf(stderr, "FAIL: could not stage churn still %s\n", path.c_str());
+            ++gFailures;
+            return 0;
+        }
+        return preparePresent(fd, lyricScene("Churn " + std::to_string(index),
+                                             "cache" + std::to_string(index), path, false));
+    };
+
+    std::vector<std::uint64_t> revisions;
+    for (int i = 0; i < kRounds; ++i) {
+        const std::uint64_t revision = churnTo(i);
+        if (revision == 0) {
+            return;  // preparePresent counted the failure
+        }
+        revisions.push_back(revision);
+    }
+
+    const boost::json::object after = imagesOf(status(fd));
+    const double held = numberOf(after, "decodedBytes");
+    const double asked = static_cast<double>(kRounds) * static_cast<double>(kStillBytes);
+    std::printf("   cache: %d distinct 4K stills (%.0f MiB asked) -> %.0f MiB decoded, "
+                "%.0f entries, %.0f pins, %.0f evictions\n",
+                kRounds, asked / 1048576.0, held / 1048576.0, numberOf(after, "entries"),
+                numberOf(after, "pins"), numberOf(after, "evictions"));
+    check(held > 0.0 && held < asked / 2.0,
+          "40 distinct 4K stills (1.24 GiB of decoded pixels asked) do NOT all stay "
+          "resident — the growth the review measured is bounded");
+    check(held <= static_cast<double>(kStore + 1) * static_cast<double>(kStillBytes),
+          "what is held is bounded by the scene store's revisions plus the one path "
+          "mid-load: the excess over the budget is pinned CONTENT, reported here rather "
+          "than paid for with a colour fill");
+    check(numberOf(after, "entries") <= kStore + 2,
+          "the churned-away paths leave the map, they do not linger as weight");
+    check(numberOf(after, "evictions") >= kRounds - kStore - 1,
+          "the store's castoffs really were evicted, and the counter says so");
+    check(numberOf(after, "pins") >= kStore - 1 && numberOf(after, "pins") <= kStore + 1,
+          "the pins are the store's held scenes: sixteen distinct stills prepared, sixteen "
+          "references — a session that pinned only the current picture (or nothing) reads "
+          "single digits here");
+
+    // The store keeps the NEWEST 16 revisions; the 192 MiB budget fits only
+    // six 4K stills. So every held scene older than the newest ~6 survived
+    // because the store PINS it. Present the OLDEST held one: if the pins
+    // failed, its picture would be gone and the apply path would report a
+    // media.error for a file that exists and decodes — the R18 report makes
+    // a colour fill visible, which is exactly what makes this a check.
+    const std::uint64_t oldestHeld = revisions[kRounds - kStore];
+    gMediaErrors.clear();
+    boost::json::value presentReply;
+    const bool presented =
+        call(fd, "scene.present",
+             boost::json::object{{"revision", oldestHeld},
+                                 {"transition", std::string("cut")}},
+             &presentReply) &&
+        presentReply.as_object().contains("result") && waitActive(fd, oldestHeld, nullptr);
+    check(presented, "the oldest still-held scene presents after the churn");
+    sleepMs(300);  // let a broken-still report ride one flush tick
+    check(gMediaErrors.empty(),
+          "the held scene's still came from the cache, not a colour fill: a media.error "
+          "here would mean eviction took a prepared scene's picture despite its pin");
+    check(textOf(mediaOf(status(fd)), "error").empty(),
+          "and the media status is clean for the surviving picture");
+
+    // --- the same-path repair, with the failure placeholder churned out ---
+    // (exerciseImageRepair proves the immediate retry; this proves the
+    // cache forgot the failure and the operator's fix still lands.)
+    const std::string repair = dir + "/repair.jpg";
+    ::unlink(repair.c_str());
+    gMediaErrors.clear();
+    const std::uint64_t broken =
+        preparePresent(fd, lyricScene("Broken then fixed", "repair-a", repair, false));
+    check(broken != 0 && waitActive(fd, broken, nullptr),
+          "the scene whose still is missing still goes on air");
+    sleepMs(300);
+    check(!gMediaErrors.empty(),
+          "the missing still reports media.error (the R18 surface, through this cache)");
+    for (int i = kRounds; i < kRounds + 12; ++i) {
+        if (churnTo(i) == 0) {
+            return;
+        }
+    }
+    std::error_code repairEc;
+    std::filesystem::copy_file(still, repair, std::filesystem::copy_options::overwrite_existing,
+                               repairEc);
+    if (repairEc) {
+        check(false, "the fixture could not restore the repaired still");
+    } else {
+        gMediaErrors.clear();
+        const std::uint64_t fixed =
+            preparePresent(fd, lyricScene("Broken then fixed", "repair-b", repair, false));
+        check(fixed != 0 && waitActive(fd, fixed, nullptr), "the repaired scene presents");
+        sleepMs(300);
+        check(gMediaErrors.empty(),
+              "a repaired file at the same path recovers after its failure placeholder "
+              "went through the churn: the failure was a retryable placeholder, not a "
+              "permanent verdict for that path");
+        check(textOf(mediaOf(status(fd)), "error").empty(),
+              "the media status is clean once the picture is back");
+    }
+
+    for (int i = 0; i < kRounds + 12; ++i) {
+        ::unlink((dir + "/churn-" + std::to_string(i) + ".jpg").c_str());
+    }
+    ::unlink(repair.c_str());
+    ::unlink(still.c_str());
+}
+
 void exerciseMidPlayFailure(int fd, const std::string& healthyClip) {
     // A private copy: this scenario destroys its file, and the fixture
     // clips are needed whole by every other scenario.
@@ -1374,6 +1539,9 @@ int main(int argc, char** argv) {
     } else {
         std::printf("   skipped the still-repair scenario (no still fixture)\n");
     }
+
+    // --- task 6.10 (review R12): the decoded-still cache, live ---
+    exerciseImageCacheBudgets(fd, dir);
 
     // An audio-bearing clip: a silent STREAM on purpose (anullsrc). The
     // transport must have a decoder to open — that is what the lane is
