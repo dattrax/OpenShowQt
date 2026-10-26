@@ -293,8 +293,38 @@ Updated: 2026-10-25 (Europe/London).
   submitting producer — after which the transport must settle on the final
   identity, playing and advancing, with zero media errors (3-run stress
   green). Gates desktop **35/35**, headless **21/21**.
-- Exact next action: **6.7** per the PLAN.md ledger — continue the focused
-  M6 leaves in order.
+- **6.7a DONE (2026-10-26).** The audio transport restarts whole (review
+  R2, first half). `AudioMixer::reset()` returns a joined mixer to its
+  pre-start state — inputs and their rings, per-input and run counters,
+  and the `fStarted` gate `addInput()`/`start()` check — and is a no-op
+  while the thread is joinable; `AvPlayer::stop()` resets the mixer
+  instead of re-flagging only its own. `PipeWireSink::Impl::start()` runs
+  idempotent `stop()` first and re-arms every readiness/activation/clock/
+  stats field, killing the class where run 2 inherits run 1's STREAMING
+  wait, skips its first-activation anchor behind a stale activeFlag, or
+  reports yesterday's counters. The mixer-failure path in `start()`
+  self-cleans (sink down, **mixer reset** — an orphan registered input
+  would shift the retry's `addInput()` off its expected index and
+  silently degrade it — flags re-armed), reachable from tests through the
+  new `OPENSHOW_FAULT_AUDIO_MIXER_FAIL` knob. Also pinned: the sink's
+  Format param arrives after the PAUSED readiness event for every
+  generation — a fresh sink's rate is 0 the instant `start()` returns;
+  the preferred-rate fallback and server-time re-latch cover it, and the
+  fixture checks rate after the first callbacks. Fixtures:
+  `restartLifecycle` (mixer level, 11 checks — generation 2's captured
+  head is byte-exactly its OWN pre-written samples), `avPlayerRestart`
+  (double-start, audio→audio, audio→silent→audio, visible silence then
+  working retry, injected rejection→retry), `avPlayerRestartLive` and
+  direct `sinkRestartLive` (generation 2's counters zero and stream
+  inactive right after start — R2's exact residue). Mutations M-A..M-E
+  (stop without reset, no sink re-arm, no failure-path self-clean, reset
+  without flag re-arm, reset without clearing) each fail exactly their
+  intended checks. Gates desktop **35/35**, headless **21/21**.
+- Exact next action: **6.7b** per the PLAN.md ledger — standalone-only
+  input identity (`AvPlayer` expects `kSecondInput`=1 even when input 0
+  was never registered; standalone-only registers 0, fails `inputsOk`,
+  starts no feeder) and sinkless fallback-clock semantics (elapsed wall
+  time ignores pause/seek). Then continue the focused M6 leaves in order.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -2794,6 +2824,21 @@ of this work.
   "no callback after join" regression must sample the instant join
   returns; sampling after close() lets close's own teardown mask a
   detached or early-returning join.
+- (2026-10-26, task 6.7a) Stopping a threaded transport and restarting it
+  is a STATE lifecycle, not a flag: join() reaps the thread, reset()
+  re-arms the state — the mixer's started gate, input table, queues and
+  counters, the sink's wait/readiness/activation/clock/stats fields. A
+  failed start() must self-clean the same way, because the inputs it
+  registered before failing shift the retry's expected indices. The
+  discriminator for stale transport state is the read the INSTANT the new
+  run begins: a fresh sink connected INACTIVE has zero callbacks and is
+  not active, so any nonzero/active reading is the previous run's residue
+  (and a "restarted" fixture whose waits read counters the previous stop
+  zeroed can only pass on the new generation's work). PipeWire's Format
+  param arrives AFTER the PAUSED readiness event, so a sink's negotiated
+  rate is legitimately 0 the moment start() returns — every generation;
+  fall back to the preferred rate and let server stream-time re-latch the
+  clock, and check negotiation after the first callbacks.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.

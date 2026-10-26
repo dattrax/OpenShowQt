@@ -501,6 +501,199 @@ bool avPlayerLive(const std::string& wav) {
     return ok;
 }
 
+// --- 5. The restartable transport (task 6.7a, review R2) ---
+
+// R2's probe shape at the orchestrator level: after one audio-bearing
+// start/stop, the next transport could not register its mixer input and
+// lost audio silently while start() still returned true. The full
+// sequence here, sinkless so it never depends on a daemon: audio, a
+// double-start rejected with a stated reason, audio→audio,
+// audio→silent→audio, a missing input that degrades to visible silence
+// (documented, mixer never runs) and then a working retry. Every "the
+// mixer delivers" wait reads counters that the stop before it reset to
+// zero, so a pass can only mean THIS generation delivered.
+bool avPlayerRestart(const std::string& wav) {
+    bool ok = true;
+    AvPlayer player;
+    AvPlayer::Config config;
+    config.videoAudioPath = wav;
+    config.loop = true;
+    config.enableSink = false;
+    std::string error;
+
+    ok = check(player.start(config, &error), "restart: generation 1 starts") && ok;
+    ok = check(waitFor([&] { return player.mixerStats().deliveredFrames > 0; }, 5000),
+               "restart: generation 1 mixes real frames") && ok;
+    std::string doubleError;
+    ok = check(!player.start(config, &doubleError) && !doubleError.empty(),
+               "restart: a start over a running player fails with a stated reason") && ok;
+    player.stop();
+
+    // audio→audio: the R2 probe. Register again, deliver again.
+    ok = check(player.start(config, &error), "restart: generation 2 starts after the stop") && ok;
+    ok = check(player.mixerStats().inputs == 1 &&
+                   player.mixerStats().input[0].framesWritten > 0,
+               "restart: generation 2 registered its input again") && ok;
+    ok = check(waitFor([&] { return player.mixerStats().deliveredFrames > 0; }, 5000),
+               "restart: generation 2's feeder delivers through the fresh mixer") && ok;
+    player.stop();
+
+    // audio→silent→audio: the silent generation registers nothing and
+    // never starts the mixer; the audio transport must still come back.
+    AvPlayer::Config silent;
+    silent.enableSink = false;
+    ok = check(player.start(silent, &error), "restart: the silent transport starts") && ok;
+    ok = check(player.mixerStats().inputs == 0 && player.mixerStats().deliveredFrames == 0,
+               "restart: the silent generation registers and mixes nothing") && ok;
+    player.stop();
+    ok = check(player.start(config, &error), "restart: audio returns after the silence") && ok;
+    ok = check(waitFor([&] { return player.mixerStats().deliveredFrames > 0; }, 5000),
+               "restart: the post-silent transport mixes again") && ok;
+    player.stop();
+
+    // Failure→retry: a wanted-but-unopenable input degrades to silence
+    // (the documented rule) — visibly: the mixer never runs — and the
+    // very next good start works.
+    AvPlayer::Config broken = config;
+    broken.videoAudioPath = "av-sync-fixtures/definitely-not-here.wav";
+    ok = check(player.start(broken, &error),
+               "restart: a missing input degrades to silence, not a crash") && ok;
+    // Degradation shape (documented in start()): the input slot registers,
+    // the feeder that would fill it does not, so the mixer never runs —
+    // zero blocks, zero delivered, no live-audio claim. A later status field
+    // for audio failure is task 6.7c; what 6.7a pins is that silence is
+    // never disguised as mixing.
+    ok = check(player.mixerStats().blocks == 0 && player.mixerStats().deliveredFrames == 0 &&
+                   !player.audioLive(),
+               "restart: the silent failure shows in stats, not disguised as mix") && ok;
+    player.stop();
+    ok = check(player.start(config, &error), "restart: the retry after the failure starts") && ok;
+    ok = check(waitFor([&] { return player.mixerStats().deliveredFrames > 0; }, 5000),
+               "restart: the retry mixes real frames") && ok;
+    player.stop();
+
+    // Failure→retry with the mixer start itself rejected (the env fault
+    // knob — no external config can reach this line): the failure must be
+    // reported, mix nothing, and leave the transport fully re-armable.
+    // Without the failure path's self-clean the retry is rejected by the
+    // leftover started flag, or degrades silently behind the orphan input
+    // the failed attempt registered.
+    setenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL", "1", 1);
+    std::string injectedError;
+    ok = check(!player.start(config, &injectedError) && !injectedError.empty(),
+               "restart: a rejected mixer start fails with a stated reason") && ok;
+    ok = check(player.mixerStats().deliveredFrames == 0 && !player.audioLive(),
+               "restart: the rejected start mixed nothing") && ok;
+    unsetenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL");
+    ok = check(player.start(config, &error),
+               "restart: the retry after the rejected mixer start works") && ok;
+    ok = check(waitFor([&] { return player.mixerStats().input[0].framesWritten > 0 &&
+                                       player.mixerStats().deliveredFrames > 0; },
+                       5000),
+               "restart: the post-rejection retry registers and mixes real frames") && ok;
+    player.stop();
+    return ok;
+}
+
+// The same restart against the live daemon: the sink object inside the
+// player must renegotiate, stream and pull callbacks for the SECOND
+// transport too — the readiness/activation state R2 saw survive stop().
+// Honest skip when no daemon is up.
+bool avPlayerRestartLive(const std::string& wav) {
+    PipeWireSink probe;
+    std::string probeError;
+    if (!probe.start(kRate, &probeError)) {
+        std::printf("   skipped the restart-live scenario (no PipeWire daemon: %s)\n",
+                    probeError.c_str());
+        return true;
+    }
+    probe.stop();
+
+    bool ok = true;
+    AvPlayer player;
+    AvPlayer::Config config;
+    config.videoAudioPath = wav;
+    config.loop = true;
+    std::string error;
+    ok = check(player.start(config, &error), "restart-live: generation 1 starts") && ok;
+    sleepMs(500);
+    ok = check(player.sinkStats().callbacks >= 2 && player.clockSeconds() > 0.2,
+               "restart-live: generation 1 audibly ran") && ok;
+    player.stop();
+
+    ok = check(player.start(config, &error), "restart-live: generation 2 starts") && ok;
+    ok = check(player.audioLive(), "restart-live: generation 2 reports live audio") && ok;
+    ok = check(player.sinkActive(),
+               "restart-live: generation 2's stream activated (stale state would skip it)") && ok;
+    const bool pulled = waitFor([&] { return player.sinkStats().callbacks >= 2; }, 4000);
+    ok = check(pulled, "restart-live: the server pulls callbacks for generation 2") && ok;
+    const double posA = player.clockSeconds();
+    sleepMs(400);
+    ok = check(player.clockSeconds() > posA + 0.15 && player.clockSeconds() < 5.0,
+               "restart-live: generation 2's clock is anchored to its own run") && ok;
+    player.stop();
+    return ok;
+}
+
+// The same restart at the sink object itself (R2's second half: sink
+// readiness/activation state survives stop()). One PipeWireSink instance
+// runs twice, exactly like AvPlayer's fSink; the discriminating read is
+// right after the second start() returns: a real fresh sink connected
+// INACTIVE, so ITS OWN counters are zero and IT is not active — anything
+// else is the previous run's waitResult/activeFlag/delivery residue.
+bool sinkRestartLive() {
+    PipeWireSink probe;
+    std::string probeError;
+    if (!probe.start(kRate, &probeError)) {
+        std::printf("   skipped the sink-restart scenario (no PipeWire daemon: %s)\n",
+                    probeError.c_str());
+        return true;
+    }
+    probe.stop();
+
+    bool ok = true;
+    PipeWireSink sink;
+    std::string error;
+    ok = check(sink.start(kRate, &error), "sink-restart: generation 1 starts") && ok;
+    sink.resume();
+    std::vector<float> chunk(kRate / 4 * 2, 0.0f);
+    const bool pulled = waitFor(
+        [&] {
+            sink.feed(chunk.data(), chunk.size() / 2);
+            return sink.stats().callbacks >= 2 && sink.stats().deliveredFrames > 0;
+        },
+        4000);
+    ok = check(pulled, "sink-restart: generation 1 pulls and delivers") && ok;
+    sink.stop();
+
+    ok = check(sink.start(kRate, &error), "sink-restart: generation 2 starts on the same object") &&
+         ok;
+    const auto fresh = sink.stats();
+    ok = check(fresh.callbacks == 0 && fresh.deliveredFrames == 0 && fresh.flushes == 0,
+               "sink-restart: generation 2's counters describe its own run") && ok;
+    ok = check(!fresh.active,
+               "sink-restart: generation 2 starts inactive (stale activation would say live)") && ok;
+    sink.resume();
+    const bool pulledAgain = waitFor(
+        [&] {
+            sink.feed(chunk.data(), chunk.size() / 2);
+            return sink.stats().callbacks >= 2 && sink.stats().deliveredFrames > 0;
+        },
+        4000);
+    ok = check(pulledAgain, "sink-restart: generation 2 pulls and delivers") && ok;
+    // The Format param lands just after the PAUSED readiness event (both
+    // generations see this; a fresh sink's rate is 0 the instant start()
+    // returns), so the honest moment for the check is after the first
+    // callbacks. AvPlayer's rate choice (negotiated, else preferred) and
+    // the clock's server-time re-latch cover the gap the same way for
+    // every generation.
+    ok = check(sink.negotiatedRate() != 0, "sink-restart: generation 2 negotiated its rate") && ok;
+    ok = check(sink.stats().clockSeconds < 2.0,
+               "sink-restart: generation 2's clock measures its own run") && ok;
+    sink.stop();
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -519,5 +712,8 @@ int main() {
     ok = feederSeekToTarget(wav) && ok;
     ok = avPlayerFallback(wav) && ok;
     ok = avPlayerLive(wav) && ok;
+    ok = avPlayerRestart(wav) && ok;
+    ok = avPlayerRestartLive(wav) && ok;
+    ok = sinkRestartLive() && ok;
     return ok ? 0 : 1;
 }

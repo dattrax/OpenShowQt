@@ -403,6 +403,121 @@ double rms(const std::vector<float>& samples, int channel) {
     return counted == 0 ? -1.0 : std::sqrt(sum / static_cast<double>(counted));
 }
 
+// --- task 6.7a (review R2): the transport restart lifecycle ---
+//
+// R2's runtime probe: after one start/join cycle, addInput() returned
+// kNoInput and the next start() failed "AudioMixer is already running" —
+// join() reaped the thread but left the started flag, the input table and
+// every queue behind. reset() returns a joined mixer to its pre-start
+// state, and this pins the whole shape: the re-arm (addInput registers 0
+// again, start accepts), the freshness (the new run's captured audio is
+// its OWN pre-written samples — no leftover queue at the ring head, no
+// inherited stats), and that repeated start/stop/reset cycles keep
+// working.
+bool restartLifecycle() {
+    bool ok = true;
+    AudioMixer mixer;
+    std::string error;
+
+    // Generation 1: DC 0.30/0.10 through the fake device.
+    FakeDevice deviceA;
+    if (!check(deviceA.start(kRate), "restart: generation 1's device drains")) {
+        return false;
+    }
+    const int first = mixer.addInput();
+    DcSource source;
+    source.start(mixer, first, 0.30f, 0.10f, kRate);
+    ok = check(mixer.start([&deviceA](const float* frames, size_t count) {
+                   return deviceA.ring.write(frames, count);
+               },
+               kRate, &error),
+               "restart: generation 1 starts") && ok;
+    sleepMs(250);
+    source.stopNow();
+    mixer.requestStop();
+    mixer.join();
+    deviceA.stopNow();
+    ok = check(mixer.stats().deliveredFrames > 0,
+               "restart: generation 1 delivered frames") && ok;
+    ok = check(mixer.addInput() == AudioMixer::kNoInput,
+               "restart: inputs stay closed until the explicit reset") && ok;
+
+    mixer.reset();
+    const auto cleared = mixer.stats();
+    ok = check(cleared.deliveredFrames == 0 && cleared.blocks == 0 &&
+                   mixer.inputCount() == 0,
+               "restart: reset zeroes the counters and the input table") && ok;
+
+    // The probe itself: a stopped-then-reset mixer registers input 0 and
+    // starts again. Generation 2's content is written into the fresh ring
+    // BEFORE the mix thread runs, so what the device captures first is
+    // exactly the ring head: if any queue had survived the restart, the
+    // old content would sit at the head and these comparisons would show
+    // generation 1's 0.30 instead of generation 2's -0.25.
+    const int second = mixer.addInput();
+    ok = check(second == 0, "restart: input 0 registers again after reset") && ok;
+    constexpr size_t kHeadFrames = 100;
+    std::vector<float> pattern(kHeadFrames * 2);
+    for (size_t f = 0; f < kHeadFrames; ++f) {
+        pattern[f * 2] = -0.25f;
+        pattern[f * 2 + 1] = 0.05f;
+    }
+    ok = check(mixer.write(second, pattern.data(), kHeadFrames) == kHeadFrames,
+               "restart: the fresh ring accepts generation 2's head") && ok;
+    FakeDevice deviceB;
+    if (!deviceB.start(kRate)) {
+        return false;
+    }
+    ok = check(mixer.start([&deviceB](const float* frames, size_t count) {
+                   return deviceB.ring.write(frames, count);
+               },
+               kRate, &error),
+               "restart: generation 2 starts") && ok;
+    const bool captured =
+        waitFor([&] { return deviceB.frames() > kHeadFrames + kRate / 50; }, 4000);
+    ok = check(captured, "restart: generation 2 reaches the device") && ok;
+    mixer.requestStop();
+    mixer.join();
+    deviceB.stopNow();
+    // Find the first non-silent captured frame: the device zero-pads
+    // until the mixer's first block lands, so that frame is the ring head.
+    const std::vector<float> all = deviceB.window(0, deviceB.frames());
+    size_t head = 0;
+    while (head * 2 + 1 < all.size() && std::fabs(all[head * 2]) < 0.01f) {
+        ++head;
+    }
+    bool matchesOwn = head * 2 + 1 < all.size();
+    for (size_t f = 0; matchesOwn && f < kHeadFrames; ++f) {
+        matchesOwn = std::fabs(all[(head + f) * 2] - (-0.25f)) < 1e-6 &&
+                     std::fabs(all[(head + f) * 2 + 1] - 0.05f) < 1e-6;
+    }
+    ok = check(matchesOwn,
+               "restart: the new run mixes its OWN samples — no leftover queue") && ok;
+
+    // Repeated cycles keep working (the session swaps backgrounds more
+    // than twice).
+    bool cyclesOk = true;
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        mixer.reset();
+        const int slot = mixer.addInput();
+        cyclesOk = cyclesOk && slot == 0;
+        FakeDevice device;
+        device.start(kRate);
+        cyclesOk = cyclesOk && mixer.start(
+                                   [&device](const float* frames, size_t count) {
+                                       return device.ring.write(frames, count);
+                                   },
+                                   kRate, &error);
+        sleepMs(60);
+        mixer.requestStop();
+        mixer.join();
+        device.stopNow();
+        cyclesOk = cyclesOk && mixer.stats().deliveredFrames > 0;
+    }
+    ok = check(cyclesOk, "restart: repeated start/stop/reset cycles keep working") && ok;
+    return ok;
+}
+
 bool feedersThroughMixer(const std::string& wavA, const std::string& wavB) {
     bool ok = true;
     FakeDevice device;
@@ -499,6 +614,7 @@ int main() {
     ok = dcMix() && ok;
     ok = clicklessRamp() && ok;
     ok = starvedInput() && ok;
+    ok = restartLifecycle() && ok;
     ok = feedersThroughMixer(wavA, wavB) && ok;
     return ok ? 0 : 1;
 }

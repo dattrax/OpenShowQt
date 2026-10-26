@@ -117,6 +117,33 @@ bool PipeWireSink::Impl::start(uint32_t preferredRate, std::string* error,
     static std::once_flag pwOnce;
     std::call_once(pwOnce, [] { pw_init(nullptr, nullptr); });
 
+    // A start against a sink that has run before (task 6.7a, review R2):
+    // stop() is idempotent and reclaims whatever the last run left, and
+    // every readiness/activation/clock/stats flag is re-armed here — a
+    // fresh run must not mistake the previous run's STREAMING wait result
+    // for its own, skip its first-activation clock anchor because of a
+    // stale activeFlag, or report yesterday's delivery counters.
+    stop();
+    {
+        std::lock_guard stateLock(stateMutex);
+        waitResult = Wait::kNothing;
+        failure.clear();
+    }
+    tornDown = false;
+    negotiatedRate.store(0, std::memory_order_relaxed);
+    activeFlag.store(false, std::memory_order_release);
+    pausedFlag.store(false, std::memory_order_release);
+    flushRequested.store(false, std::memory_order_release);
+    flushes.store(0, std::memory_order_relaxed);
+    callbacks.store(0, std::memory_order_relaxed);
+    underrunEvents.store(0, std::memory_order_relaxed);
+    underrunFrames.store(0, std::memory_order_relaxed);
+    lastProcessNs.store(-1, std::memory_order_relaxed);
+    for (auto& bucket : intervals) {
+        bucket.store(0, std::memory_order_relaxed);
+    }
+    clock.setRate(0);  // anchor() below re-latches with the negotiated rate
+
     if (!ring.create(capacityFrames)) {
         if (error) {
             *error = "could not allocate the audio ring";

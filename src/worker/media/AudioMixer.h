@@ -87,6 +87,14 @@ public:
     void requestStop();  // idempotent, safe before start
     void join();
 
+    // Back to the pre-start state (task 6.7a, review R2): re-arms start(),
+    // drops every input slot with its ring, and zeroes the counters — a
+    // stopped-then-reset mixer accepts addInput() and start() exactly like
+    // a fresh one, with no leftover queue from the previous transport.
+    // Valid only once the mix thread has been joined; a no-op while the
+    // thread could still run, because run() walks the table lock-free.
+    void reset();
+
     struct InputStats {
         uint64_t framesWritten = 0;  // accepted from the source
         uint64_t framesMixed = 0;    // consumed and summed

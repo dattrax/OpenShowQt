@@ -109,6 +109,26 @@ void AudioMixer::join() {
     }
 }
 
+void AudioMixer::reset() {
+    if (fThread.joinable()) {
+        return;  // the mix thread still owns the table: never touch it
+    }
+    fInputs.clear();  // rings and per-input counters die with the slots
+    fInputCount = 0;
+    fOut = nullptr;
+    fRate = 0;
+    fStop.store(false);
+    {
+        std::lock_guard<std::mutex> lock(fStatsMutex);
+        fBlocks = 0;
+        fDelivered = 0;
+        fWriteRetries = 0;
+    }
+    // Last: the gate addInput() and start() check, so nothing between the
+    // clear and the re-arm can observe a half-reset mixer as started.
+    fStarted.store(false);
+}
+
 void AudioMixer::run() {
     // One 10 ms block per iteration at the negotiated rate; the scratch
     // buffers and the per-input ramp state live only here — the mix

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 #include "playback/PlaybackPipeline.h"
@@ -125,11 +126,22 @@ bool AvPlayer::start(const Config& config, std::string* error) {
     // media ~0 because the pre-roll guaranteed it.
     if (!fFeeders.empty()) {
         std::string mixerError;
-        if (!fMixer.start(
+        // Test seam (task 6.7a): the env-gated fault knob makes the mixer
+        // start itself fail — the shape no external configuration can
+        // reach — so fixtures pin the failure path's self-clean without
+        // a daemon. Same discipline as the 6.4 output fault knobs.
+        const bool faultMixer = std::getenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL") != nullptr;
+        const bool mixerUp =
+            !faultMixer &&
+            fMixer.start(
                 [this, sinkUp](const float* frames, size_t count) {
                     return sinkUp ? fSink.feed(frames, count) : count;
                 },
-                rate, &mixerError)) {
+                rate, &mixerError);
+        if (faultMixer) {
+            mixerError = "injected mixer failure (OPENSHOW_FAULT_AUDIO_MIXER_FAIL)";
+        }
+        if (!mixerUp) {
             if (error) {
                 *error = mixerError;
             }
@@ -138,6 +150,18 @@ bool AvPlayer::start(const Config& config, std::string* error) {
                 slot.feeder->join();
             }
             fFeeders.clear();
+            // Self-clean (task 6.7a): a failed start must leave the whole
+            // transport re-armable, not just the player's own flag — the
+            // sink goes down, the mixer returns to its pre-start table
+            // (the inputs this attempt registered would otherwise shift
+            // the retry's addInput() off its expected index and silently
+            // degrade it), and fStarted re-arms, so a retry (or the next
+            // background) faces no "already running" residue.
+            fSink.stop();
+            fMixer.reset();
+            fAudioLive.store(false);
+            fSinkActive.store(false);
+            fStarted.store(false);
             return false;
         }
         fAudioLive.store(sinkUp);
@@ -159,6 +183,13 @@ void AvPlayer::stop() {
     fFeeders.clear();
     fMixer.requestStop();
     fMixer.join();
+    // Reset, not just re-flag (task 6.7a, review R2): the runtime probe
+    // showed the next transport's addInput() failing with "AudioMixer is
+    // already running" — join() reaps the thread but leaves fStarted, the
+    // input table and the queues behind. The whole mixer returns to its
+    // pre-start state so the next start registers fresh inputs over fresh
+    // rings, and its stats describe its own run.
+    fMixer.reset();
     fSink.stop();
     fSinkActive.store(false);
     fAudioLive.store(false);
