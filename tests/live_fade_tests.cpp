@@ -24,6 +24,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -55,6 +56,11 @@ bool check(bool condition, const char* what) {
         ++gFailures;
     }
     return condition;
+}
+
+// For claims that carry measured numbers.
+bool check(bool condition, const std::string& what) {
+    return check(condition, what.c_str());
 }
 
 std::string gWorkerBinary = "./openshow-worker";
@@ -100,6 +106,37 @@ struct Preview {
     std::uint32_t height = 0;
     int delivered = 0;
 } gPreview;
+
+// Mean of one delivered frame's RGB channels.
+struct Sample {
+    double red = 0.0;
+    double green = 0.0;
+    double blue = 0.0;
+};
+
+// Task 6.11b (review R13) needs the RAMP, not the newest frame: a fade is
+// wrong in the middle and right at both ends, so the mid stages have to be
+// caught while they fly past. Set around the present that starts a fade, and
+// every frame delivered in that window is kept.
+bool gRecording = false;
+std::vector<Sample> gSamples;
+
+Sample meanOf(const std::vector<std::uint8_t>& rgba) {
+    Sample sample;
+    const std::size_t pixels = rgba.size() / 4;
+    if (pixels == 0) {
+        return sample;
+    }
+    for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
+        sample.red += rgba[pixel * 4];
+        sample.green += rgba[pixel * 4 + 1];
+        sample.blue += rgba[pixel * 4 + 2];
+    }
+    sample.red /= static_cast<double>(pixels);
+    sample.green /= static_cast<double>(pixels);
+    sample.blue /= static_cast<double>(pixels);
+    return sample;
+}
 
 void sendRaw(int fd, const boost::json::value& message) {
     std::string wire;
@@ -167,6 +204,9 @@ void handlePreviewReady(int fd, const boost::json::object& params) {
                 gPreview.width = static_cast<std::uint32_t>(width);
                 gPreview.height = static_cast<std::uint32_t>(height);
                 ++gPreview.delivered;
+                if (gRecording) {
+                    gSamples.push_back(meanOf(gPreview.latest));
+                }
             }
         }
     }
@@ -275,16 +315,8 @@ void pump(int fd, int milliseconds) {
 
 // Mean red and green channels of the newest preview frame.
 std::pair<double, double> meanRedGreen() {
-    double red = 0.0;
-    double green = 0.0;
-    const std::size_t pixels =
-        gPreview.latest.size() / 4;
-    for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
-        red += gPreview.latest[pixel * 4];
-        green += gPreview.latest[pixel * 4 + 1];
-    }
-    return {red / static_cast<double>(pixels ? pixels : 1),
-            green / static_cast<double>(pixels ? pixels : 1)};
+    const Sample sample = meanOf(gPreview.latest);
+    return {sample.red, sample.green};
 }
 
 // A solid-colour scene with one word — the two scenes differ only in hue
@@ -339,6 +371,164 @@ std::uint64_t presentAndWait(int fd, std::int64_t& nextId, const boost::json::ob
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     return 0;
+}
+
+/* --- task 6.11b (review R13): a picture in the fade, on the GPU ----------- */
+
+// R13 lived in the middle of a live fade over a picture: the shipped
+// background transition attenuated the incoming scene's colour FILL and its
+// picture separately, so the fill showed through an opaque still while the
+// dissolve ran. Both endpoints of that fade are correct and a solid-colour
+// scene has no picture to leak through, which is precisely why the existing
+// scenarios missed it. This one watches the frames the GPU delivered.
+bool shell(const std::string& command) {
+    return std::system(command.c_str()) == 0;
+}
+
+// Solid stills are ffmpeg's job: this binary speaks the wire only — it does not
+// link the render stack — and the worker is already proven to decode what the
+// CLI writes (background_media_tests builds its fixtures the same way).
+bool writeSolidPng(const std::string& path, const char* rgbHex) {
+    return shell("ffmpeg -v error -y -f lavfi -i color=c=" + std::string(rgbHex) +
+                 ":s=64x64:r=1 -frames:v 1 '" + path + "' >/dev/null 2>&1") &&
+           ::access(path.c_str(), R_OK) == 0;
+}
+
+// A background that is a PICTURE over a colour fill, with no words: the mean of
+// a delivered frame is then the background and nothing else.
+boost::json::object stillScene(const char* slideId, const std::string& path,
+                               std::uint32_t fillColor) {
+    return boost::json::object{
+        {"scene", 1},
+        {"showId", "live-fade"},
+        {"slideId", slideId},
+        {"backgroundColor", fillColor},
+        {"background", boost::json::object{{"image", true},
+                                           {"assetId", std::string("still-") + slideId},
+                                           {"assetPath", path}}},
+        {"items", boost::json::array{}},
+    };
+}
+
+// The same background with no picture at all: what the colour fill alone looks
+// like as delivered, which is the size of the leak the replaced composite
+// produced. Measured, not assumed.
+boost::json::object fillScene(std::uint32_t fillColor) {
+    return boost::json::object{
+        {"scene", 1},
+        {"showId", "live-fade"},
+        {"slideId", "PIC-FILL"},
+        {"backgroundColor", fillColor},
+        {"background", boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
+        {"items", boost::json::array{}},
+    };
+}
+
+// Where a delivered frame sits along `from` -> `to`, read off the two channels
+// the stills disagree about.
+double along(const Sample& from, const Sample& to, const Sample& frame) {
+    const auto channel = [](double start, double end, double now) {
+        const double span = end - start;
+        return std::fabs(span) < 8.0 ? 0.5 : (now - start) / span;
+    };
+    return 0.5 * (channel(from.red, to.red, frame.red) + channel(from.blue, to.blue, frame.blue));
+}
+
+void exercisePictureFade(int fd, std::int64_t& nextId) {
+    if (!shell("ffmpeg -version >/dev/null 2>&1")) {
+        std::printf("   skipped the picture-fade scenario (no ffmpeg)\n");
+        return;
+    }
+    const std::string tag = std::to_string(getpid());
+    const std::string redStill = "/tmp/openshow-fade-red-" + tag + ".png";
+    const std::string blueStill = "/tmp/openshow-fade-blue-" + tag + ".png";
+    if (!check(writeSolidPng(redStill, "0xE03030"), "the red still was written") ||
+        !check(writeSolidPng(blueStill, "0x3030E0"), "the blue still was written")) {
+        return;
+    }
+    // The two stills carry the same 48 of green; the fill carries 200. Green is
+    // therefore the channel that can only come from the picture — a delivered
+    // frame with more of it than the endpoints have has the incoming scene's
+    // fill in it. And because the two endpoints agree, the correct mid-fade
+    // answer is the steady green at EVERY stage, whatever blend curve or
+    // compositing space the GPU uses. That is what makes this check safe to
+    // make against live output.
+    const std::uint32_t loudFill = 0x28C828u;
+    if (presentAndWait(fd, nextId, stillScene("PIC-A", redStill, loudFill)) == 0) {
+        check(false, "the red-still scene is presented");
+        return;
+    }
+    pump(fd, 1300);  // the media fade runs 800 ms; this is the settled endpoint
+    const Sample from = meanOf(gPreview.latest);
+    check(from.red > 150.0 && from.green < 100.0 && from.blue < 100.0,
+          "the settled frame is the red still, not the fill under it (r=" +
+              std::to_string(static_cast<int>(from.red)) + " g=" +
+              std::to_string(static_cast<int>(from.green)) + " b=" +
+              std::to_string(static_cast<int>(from.blue)) + ")");
+
+    gSamples.clear();
+    gRecording = true;
+    const std::uint64_t blue =
+        presentAndWait(fd, nextId, stillScene("PIC-B", blueStill, loudFill));
+    check(blue != 0, "the blue-still scene is presented");
+    pump(fd, 1300);
+    gRecording = false;
+    const Sample to = meanOf(gPreview.latest);
+    check(to.blue > 150.0 && to.red < 100.0,
+          "the fade lands on the blue still (r=" + std::to_string(static_cast<int>(to.red)) +
+              " b=" + std::to_string(static_cast<int>(to.blue)) + ")");
+    check(std::fabs(from.green - to.green) <= 12.0,
+          "both endpoints carry the same green, so the mid-fade answer is known in advance (" +
+              std::to_string(static_cast<int>(from.green)) + " vs " +
+              std::to_string(static_cast<int>(to.green)) + ")");
+
+    // What the fill itself looks like as delivered, measured rather than
+    // assumed: the size of the leak the old composite produced is the distance
+    // between this and the picture, scaled by stage*(1 - stage).
+    if (presentAndWait(fd, nextId, fillScene(loudFill)) == 0) {
+        check(false, "the bare-fill scene is presented");
+    }
+    pump(fd, 700);
+    const Sample fill = meanOf(gPreview.latest);
+    check(fill.green > 150.0,
+          "the fill really is loud in the channel the pictures are quiet in (g=" +
+              std::to_string(static_cast<int>(fill.green)) + ")");
+
+    int midFrames = 0;
+    double worstLift = 0.0;
+    double worstDefectWouldBe = 0.0;
+    std::string worst = "none";
+    for (const Sample& frame : gSamples) {
+        const double stage = along(from, to, frame);
+        if (stage < 0.1 || stage > 0.9) {
+            continue;  // not the fade's middle; the two composites agree there
+        }
+        ++midFrames;
+        const double expectedGreen = from.green + (to.green - from.green) * stage;
+        const double lift = frame.green - expectedGreen;
+        if (std::fabs(lift) > std::fabs(worstLift)) {
+            worstLift = lift;
+            worstDefectWouldBe = stage * (1.0 - stage) * (fill.green - from.green);
+            worst = "stage " + std::to_string(stage) + ", g=" +
+                    std::to_string(static_cast<int>(frame.green)) + " want " +
+                    std::to_string(static_cast<int>(expectedGreen));
+        }
+    }
+    std::printf("measured: %zu frames across the live picture fade, %d mid-way; worst green "
+                "lift %.1f (%s), where the two-draw fade would have measured +%.1f\n",
+                gSamples.size(), midFrames, worstLift, worst.c_str(), worstDefectWouldBe);
+    check(midFrames >= 1,
+          "the preview stream carried this fade through its middle (two endpoints alone would "
+          "make the leak check vacuous)");
+    check(std::fabs(worstLift) <= 12.0,
+          "no delivered frame of the live fade shows the incoming scene's fill through an "
+          "opaque picture (worst lift " + std::to_string(worstLift) + ", " + worst + ")");
+    check(worstDefectWouldBe > 12.0,
+          "and the tolerance is tighter than the defect: the composite this replaced would "
+          "have measured +" + std::to_string(worstDefectWouldBe) + " there");
+
+    ::unlink(redStill.c_str());
+    ::unlink(blueStill.c_str());
 }
 
 }  // namespace
@@ -404,6 +594,10 @@ int main(int argc, char* argv[]) {
     check(greenGreenMean > 150.0 && greenMean < 100.0,
           "the settled output is the new (green) scene — the fade actually lands");
     check(gPreview.delivered >= 3, "the preview stream carried the change through");
+
+    // Task 6.11b (review R13): the same fade with a PICTURE in it, measured
+    // against the frames the GPU delivered mid-transition.
+    exercisePictureFade(fd, nextId);
 
     call(fd, nextId++, "shutdown", {}, &reply);
     int status = 0;

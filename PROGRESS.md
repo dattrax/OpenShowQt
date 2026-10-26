@@ -745,14 +745,61 @@ Updated: 2026-10-25 (Europe/London).
   — the rule is one-directional: lag allowed, lead refused), and a `// MUTANT`
   comment swallows the rest of an `if` line. Gates desktop **41/41** (165 s),
   headless **24/24** (42 s).
-- Exact next action: **6.11b** per the PLAN.md ledger — correct the image
-  crossfade math (`drawSceneBackground` applies alpha separately to the fill
-  and to the incoming image, so an opaque still at blend 0.5 composites to
-  0.25 incoming rather than 0.5) and remove the text fade's `saveLayer`
-  intermediate target through a public paragraph paint path, with
-  image→image and identical-image midpoint pixel fixtures and the low-end
-  timing recorded (R13's second half). Then continue the focused M6 leaves in
-  order (6.12, 6.13a/b).
+- **6.11b — both fades without a render target (R13's second half) — DONE.**
+  A fade wants a GROUP alpha — the blend applies to what the layers composited,
+  not to each draw inside them — and the reflex answer is `saveLayer`, which is
+  a second render target for every frame of every transition. Neither fade needs
+  one: evaluate the group where the pixels are.
+  - **Background** (`drawSceneBackground`): one `drawRect` at the media blend
+  whose shader is `SkShaders::Blend(kSrcOver, Color(fill), Image(image, …))` —
+  `picture over fill` per pixel, so the fill is counted once and the audience's
+  picture is attenuated once. What that replaced leaks `t(1-t)(fill − picture)`
+  of the incoming fill through the outgoing picture: measured **46/255** for
+  opaque stills at blend 0.5, **22/255** with a translucent picture, and
+  **46/255 for a scene fading to itself**, i.e. a lyric change over one still
+  visibly dipped. Now **0/255** over the whole canvas on every case (opaque
+  0.5 and 0.25, self-fade, translucent-over-fill, cover-cropped banded
+  geometry) against an expectation written without reference to the code under
+  test: each steady frame IS the group at full strength, so a fade stage owes
+  the per-pixel lerp of the two steady frames.
+  - **Words**: `GroupAlphaPainter`, a `skia::textlayout::ParagraphPainter`
+  adapter through the public `Paragraph::paint(painter, x, y)`, scales the fade
+  alpha on every draw the paragraph makes. Against the group layer it replaces:
+  **1/255** worst single line, **5/255** three-line stanza (bound 12 — a layer
+  attenuates overlapping antialiased coverage in full, paint-time alpha by the
+  first scaled by the fade), ink bounds identical within 2 px, mid stage
+  strictly dimmer. The fixture builds the FORBIDDEN layer itself as the
+  reference: a test may use what production is barred from, which is how the
+  replacement is proven equivalent rather than plausible.
+  - **Live** (`live_fade_tests`): solid stills over a fill loud in the one
+  channel both stills share, so green is a direct leak readout and the endpoints
+  agree — the mid-fade answer is known in advance whatever curve the GPU uses.
+  **12 frames across the fade, 9 mid-way, worst green lift −0.5** (46 against
+  46) where the old composite measured **+30.8**. Still PNGs come from ffmpeg;
+  absent, the scenario says so and skips.
+  - **The rule** is now enforced by `render_layer_guard`
+  (`tests/CheckNoRenderLayer.cmake`): no `saveLayer` anywhere in `src/` (empty
+  exemption list) and no render target inside `src/worker/render` except the
+  off-air snapshot entry point and the dev harness. It strips inline comments
+  before matching, because m12/m13 showed a call could otherwise stand behind
+  one; two negative fixtures, each tripping exactly one scan.
+  - **Low-end timing** (CPU raster 1920×1080, µs/frame): words **889 steady /
+  905 painted alpha / 1801 group layer** — the layer costs twice a settled frame
+  for the whole transition; background **34,735 steady / 36,737 one shader /
+  43,076 two draws** — correct is also cheaper. **Mutations** m01 the shipped
+  two-draw fade (caught by pixels AND live output), m02 alpha twice, m03 fill
+  dropped (the translucent fixture's job alone), m04 unit-square mapping, m05
+  fill over picture, m06 blend ignored, m07 group at full strength, m08 painter
+  ignores alpha, m09 painter alpha squared, m10 a `saveLayer` back in the words
+  fade — pixel-equivalent, caught by the guard ALONE, which is what the guard is
+  for — m11 a layer with its own target, m12/m13 the same hidden behind a
+  comment: **13/13 CAUGHT**. Gates desktop **44/44** (175 s), headless **27/27**
+  (48 s).
+- Exact next action: **6.12** per the PLAN.md ledger — rebind durable asset
+  ownership after save/recovery, including undo/history and pending scene
+  references: recover → save → present → edit → undo/redo → save must work after
+  the scratch directory is deleted and the original imports removed, with no
+  live reference into deleted autosave storage (R7). Then 6.13a/b.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -3172,6 +3219,39 @@ of this work.
 
 ## Decisions
 
+- (2026-10-26, task 6.11b) A group alpha without a group target: put the
+  composite where the pixels are. Every fade wants transparency applied to a
+  BLOCK as composited, and `saveLayer` buys that with a render target per frame.
+  Both fades here have a target-free form because their block is one thing the
+  canvas already knows how to evaluate: the background's block is `picture over
+  fill`, which is a shader (`SkShaders::Blend(kSrcOver, Color, Image)`), and the
+  words' block is a paragraph, which will hand every draw it makes to a
+  `ParagraphPainter` the caller supplies. The general rule worth keeping: before
+  allocating a target for a group effect, ask whether the group has a single
+  drawable — most do, and the shader or painter answer is also cheaper (the
+  layer cost 2× a settled words frame on the CPU backend; the shader group cost
+  less than the wrong two draws). Two lessons from doing it. **A shader's local
+  matrix is in the image's own pixel space**, the same `RectToRect(src_pixels,
+  dst)` the canvas builds inside `drawImageRect`; a unit-square matrix samples
+  the top-left pixel everywhere, and no flat-colour fixture can tell — the
+  banded, non-canvas-shaped fixture is what caught it, so an image fixture needs
+  geometry that changes, not just colour. **And attenuation composed twice is
+  not attenuation once**: the bug being replaced multiplied the fill and the
+  picture by the blend separately, which differs from the group by
+  `t(1-t)(fill − picture)` — zero at both ends of every fade, worst in the
+  middle, and invisible to a scene with no picture. Fixtures for a fade must
+  therefore be measured mid-transition and against a loud second source.
+- (2026-10-26, task 6.11b) When the rule is about the code, guard the code. A
+  group layer put back into the words fade is PIXEL-EQUIVALENT (the parity
+  fixture passes either way), so no measurement can keep `saveLayer` out of the
+  composition pass — only a source scan can. `render_layer_guard` therefore
+  exists with an empty exemption list for `saveLayer`, and its negative fixtures
+  are what stop it scanning nothing. It also had to be shown that a comment is
+  not a hiding place: m10–m13 are one violation visible, one violation hidden
+  behind `/* … */` on the same line, and the scan had to catch both (it strips
+  inline comments and only skips a line left with nothing but comment text). The
+  general rule: a mutation battery is also a test of the GUARD, not just of the
+  fixtures, and a guard that only catches the obvious spelling is not a rule.
 - (2026-10-26, task 6.11a) A composition two targets read must be a VALUE, not
   a query. `SceneRenderer::draw(canvas, …, timeSeconds, …)` looked pure and was
   not: it advanced the shared crossfade, so the second target of a frame saw

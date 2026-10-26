@@ -119,7 +119,9 @@ public:
     // Draws a laid-out scene's text (which the caller's canvas transform
     // must map from authored units): each paragraph centred in its item's
     // box. The optional paint's alpha dissolves the whole block for the
-    // fade transition.
+    // fade transition — carried by a ParagraphPainter so the alpha rides
+    // each glyph draw and the composition pass keeps no intermediate
+    // render target (task 6.11b, review R13).
     void drawLayout(SkCanvas* canvas, const SceneLayout& layout,
                     const SkPaint* paint = nullptr) const;
 
@@ -257,9 +259,11 @@ private:
 // Draws a scene's background: the colour fill, and the cover-fitted
 // media on top when hasImage. Cover scales to fill the authored canvas
 // (the lyric default), centring and cropping the overflow; the paint's
-// alpha applies to the whole background for a fade. Image load failure
-// leaves the colour fill standing alone. The caller's canvas already
-// carries the output-rule transform.
+// alpha applies to the whole background for a fade — the background is
+// ONE group (picture over fill) and the alpha is that group's, so a fade
+// is the lerp the blend says it is (task 6.11b, review R13). Image load
+// failure leaves the colour fill standing alone. The caller's canvas
+// already carries the output-rule transform.
 //
 // Task 5.5: a video background draws the frame the session's scheduler
 // offered via `video` (cover-fit like the image); no frame yet — or a

@@ -90,6 +90,39 @@ add_test(NAME skia_public_api_guard_negative
 )
 set_tests_properties(skia_public_api_guard_negative PROPERTIES WILL_FAIL TRUE)
 
+# Task 6.11b (review R13): the composition pass creates no intermediate
+# render target — no group-alpha saveLayer anywhere in production, and no
+# per-layer surface inside the layer stack. The rule is in Layer.h; this is
+# the reason it stays there. (The two named exemptions are the off-air
+# snapshot entry point and the dev harness — see the script.)
+add_test(NAME render_layer_guard
+  COMMAND ${CMAKE_COMMAND}
+          -DROOT=${CMAKE_SOURCE_DIR}
+          -DSRC_DIRS=src
+          -DLAYER_DIRS=src/worker/render
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoRenderLayer.cmake
+)
+
+# Each scan inverted over a fixture that does the forbidden thing, so neither
+# half of the guard is vacuous — and each fixture trips exactly one scan, so
+# the two failures say different things.
+add_test(NAME render_layer_guard_negative
+  COMMAND ${CMAKE_COMMAND}
+          -DROOT=${CMAKE_CURRENT_SOURCE_DIR}/fixtures
+          -DSRC_DIRS=no_render_layer
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoRenderLayer.cmake
+)
+set_tests_properties(render_layer_guard_negative PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME render_target_guard_negative
+  COMMAND ${CMAKE_COMMAND}
+          -DROOT=${CMAKE_CURRENT_SOURCE_DIR}/fixtures
+          -DSRC_DIRS=no_render_target
+          -DLAYER_DIRS=no_render_target
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoRenderLayer.cmake
+)
+set_tests_properties(render_target_guard_negative PROPERTIES WILL_FAIL TRUE)
+
 # The same check, inverted, proves the guard is not vacuous.
 if(OPENSHOW_BUILD_UI)
   add_test(NAME ui_links_qt

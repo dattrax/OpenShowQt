@@ -23,22 +23,29 @@
 
 #include "include/codec/SkCodec.h"
 #include "include/core/SkBitmap.h"
+#include "include/core/SkBlurTypes.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
 #include "include/core/SkData.h"
 #include "include/core/SkFontStyle.h"
 #include "include/core/SkFontMgr.h"
 #include "include/core/SkImage.h"
+#include "include/core/SkMaskFilter.h"
+#include "include/core/SkMatrix.h"
 #include "include/core/SkPaint.h"
+#include "include/core/SkPath.h"
 #include "include/core/SkPixmap.h"
 #include "include/core/SkRect.h"
 #include "include/core/SkSamplingOptions.h"
+#include "include/core/SkShader.h"
 #include "include/core/SkSurface.h"
+#include "include/core/SkTextBlob.h"
 #include "include/encode/SkPngEncoder.h"
 #include "include/ports/SkFontMgr_fontconfig.h"
 #include "include/ports/SkFontScanner_FreeType.h"
 #include "modules/skparagraph/include/FontCollection.h"
 #include "modules/skparagraph/include/ParagraphBuilder.h"
+#include "modules/skparagraph/include/ParagraphPainter.h"
 #include "modules/skparagraph/include/ParagraphStyle.h"
 #include "modules/skparagraph/include/TextStyle.h"
 #include "modules/skunicode/include/SkUnicode.h"
@@ -270,45 +277,127 @@ SceneTextEngine::SceneLayout SceneTextEngine::layoutScene(
     return out;
 }
 
-void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
-                                 const SkPaint* paint) const {
-    // The fade's group alpha wraps every occupied box — Skia's
-    // "transparency straight into the paint" for a fork whose
-    // Paragraph::paint takes no paint. Steady frames never take the layer.
-    const bool group = paint != nullptr && paint->getAlpha() < 255;
-    if (group) {
-        SkRect bounds = SkRect::MakeEmpty();
-        bool any = false;
-        for (const auto& item : layout.items) {
-            if (!item.paragraph || !item.hasText) {
-                continue;
-            }
-            const SkRect box = SkRect::MakeLTRB(item.boxX, item.boxY,
-                                                item.boxX + item.boxWidth,
-                                                item.boxY + item.boxHeight);
-            if (any) {
-                bounds.join(box);
-            } else {
-                bounds = box;
-                any = true;
-            }
-        }
-        if (!any) {
+namespace {
+
+// The fade's dissolve, applied DURING text drawing (task 6.11b, review R13).
+//
+// This fork's `Paragraph::paint(SkCanvas*, x, y)` takes no paint, so the
+// obvious way to dissolve a block of words was a `saveLayer()` over the boxes
+// and the alpha on the layer. That is an intermediate render target in the
+// middle of the composition pass — the rule this renderer has held since M1
+// ("one pass, no render-to-texture") — and a full-canvas allocation every
+// frame of every fade. `Paragraph::paint(ParagraphPainter*, x, y)` is the
+// public way in: the paragraph hands every draw it makes to a painter of the
+// caller's choosing, so the alpha rides each draw instead of a target behind
+// it. Everything here is the canvas call the stock painter would have made,
+// with the alpha folded into the paint first.
+//
+// What that changes, measurably: where two glyphs' antialiased coverage
+// overlaps (adjacent lines, tight leading), a group layer attenuates the
+// second coverage by the first in full while paint-time alpha attenuates it
+// by the first *scaled by the fade*, so a mid-fade frame can read a few
+// units brighter on edge pixels — measured at worst 10/255 with three
+// overlapping lines, and within rounding (1/255) wherever coverage does not
+// overlap. Ink placement, weight and colour are untouched.
+class GroupAlphaPainter final : public skia::textlayout::ParagraphPainter {
+public:
+    GroupAlphaPainter(SkCanvas* canvas, uint8_t alpha) : fCanvas(canvas), fAlpha(alpha) {}
+
+    void drawTextBlob(const sk_sp<SkTextBlob>& blob, SkScalar x, SkScalar y,
+                      const SkPaintOrID& paint) override {
+        if (!holdsSkPaint(paint)) {
             return;
         }
-        bounds.outset(8.0f, 8.0f);
-        canvas->saveLayer(bounds, paint);
+        fCanvas->drawTextBlob(blob, x, y, faded(std::get<SkPaint>(paint)));
     }
+
+    void drawTextShadow(const sk_sp<SkTextBlob>& blob, SkScalar x, SkScalar y, SkColor color,
+                        SkScalar blurSigma) override {
+        SkPaint paint;
+        paint.setColor(scaled(color));
+        if (blurSigma != 0.0f) {
+            paint.setMaskFilter(SkMaskFilter::MakeBlur(kNormal_SkBlurStyle, blurSigma, false));
+        }
+        fCanvas->drawTextBlob(blob, x, y, paint);
+    }
+
+    void drawRect(const SkRect& rect, const SkPaintOrID& paint) override {
+        if (!holdsSkPaint(paint)) {
+            return;
+        }
+        fCanvas->drawRect(rect, faded(std::get<SkPaint>(paint)));
+    }
+
+    void drawFilledRect(const SkRect& rect, const DecorationStyle& style) override {
+        SkPaint paint = faded(style.skPaint());
+        paint.setStroke(false);
+        fCanvas->drawRect(rect, paint);
+    }
+
+    void drawPath(const SkPath& path, const DecorationStyle& style) override {
+        fCanvas->drawPath(path, faded(style.skPaint()));
+    }
+
+    void drawLine(SkScalar x0, SkScalar y0, SkScalar x1, SkScalar y1,
+                  const DecorationStyle& style) override {
+        fCanvas->drawLine(x0, y0, x1, y1, faded(style.skPaint()));
+    }
+
+    void clipRect(const SkRect& rect) override { fCanvas->clipRect(rect); }
+    void translate(SkScalar dx, SkScalar dy) override { fCanvas->translate(dx, dy); }
+    void save() override { fCanvas->save(); }
+    void restore() override { fCanvas->restore(); }
+
+private:
+    // Registered paints are the Flutter-side flow (a PaintID the painter owns).
+    // We never register one — every style this engine builds carries its own
+    // SkPaint — so a variant that is not an SkPaint has no colour to draw with.
+    static bool holdsSkPaint(const SkPaintOrID& paint) {
+        return std::holds_alternative<SkPaint>(paint);
+    }
+
+    // alpha' = round(alpha * fade / 255): the same scale for every channel of
+    // an alpha value, with the +127 so a full-strength draw stays full.
+    static uint8_t scaled(int alpha, uint8_t fade) {
+        return static_cast<uint8_t>((alpha * fade + 127) / 255);
+    }
+
+    SkColor scaled(SkColor color) const {
+        return SkColorSetARGB(scaled(SkColorGetA(color), fAlpha), SkColorGetR(color),
+                              SkColorGetG(color), SkColorGetB(color));
+    }
+
+    SkPaint faded(SkPaint paint) const {
+        paint.setAlpha(scaled(static_cast<int>(paint.getAlpha()), fAlpha));
+        return paint;
+    }
+
+    SkCanvas* fCanvas;
+    uint8_t fAlpha;
+};
+
+}  // namespace
+
+void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
+                                 const SkPaint* paint) const {
+    // Centred: the paragraph aligns its lines inside boxWidth, and the block
+    // sits at the box's vertical middle.
+    const auto centerY = [](const LaidOutItem& item) {
+        return item.boxY + std::max(0.0f, (item.boxHeight - item.height) * 0.5f);
+    };
+    if (paint == nullptr || paint->getAlpha() >= 255) {
+        for (const auto& item : layout.items) {
+            if (item.paragraph && item.hasText) {
+                item.paragraph->paint(canvas, item.boxX, centerY(item));
+            }
+        }
+        return;
+    }
+    GroupAlphaPainter painter(canvas, paint->getAlpha());
     for (const auto& item : layout.items) {
         if (item.paragraph && item.hasText) {
-            // Centred: the paragraph aligns its lines inside boxWidth, and
-            // the block sits at the box's vertical middle.
-            const float y = item.boxY + std::max(0.0f, (item.boxHeight - item.height) * 0.5f);
-            item.paragraph->paint(canvas, item.boxX, y);
+            item.paragraph->paint(&painter, item.boxX, centerY(item));
         }
-    }
-    if (group) {
-        canvas->restore();
     }
 }
 
@@ -600,59 +689,107 @@ void SceneImageCache::releaseAllPinsLocked() {
     }
 }
 
+namespace {
+
+// The scene's background picture, or null when there is no picture: nothing
+// flagged, a video with no frame offered yet (task 5.5), or a still the cache
+// does not hold (task 6.10: the draw path never decodes). Null means the
+// colour fill stands alone — the same degradation as a missing file, and the
+// session reports it.
+sk_sp<SkImage> backgroundPicture(const openshow::scene::Scene& scene, SceneImageCache* images,
+                                 const SkImage* video) {
+    if (!scene.background.hasImage) {
+        return nullptr;
+    }
+    if (scene.background.isVideo) {
+        return sk_ref_sp(const_cast<SkImage*>(video));
+    }
+    if (images == nullptr) {
+        return nullptr;
+    }
+    return images->imageFor(scene.background.assetPath);
+}
+
+// Cover fit: scale to fill the authored canvas, centre, crop overflow.
+SkRect coverFitDest(const SkImage& image) {
+    const float scale = std::max(kSceneCanvasWidth / static_cast<float>(image.width()),
+                                 kSceneCanvasHeight / static_cast<float>(image.height()));
+    const float w = static_cast<float>(image.width()) * scale;
+    const float h = static_cast<float>(image.height()) * scale;
+    return SkRect::MakeLTRB((kSceneCanvasWidth - w) * 0.5f, (kSceneCanvasHeight - h) * 0.5f,
+                            (kSceneCanvasWidth + w) * 0.5f, (kSceneCanvasHeight + h) * 0.5f);
+}
+
+}  // namespace
+
 void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
                          SceneImageCache* images, const SkPaint* paint,
                          const SkImage* video) {
     const uint32_t color = scene.background.color;
-    SkPaint fill;
-    fill.setColor(SkColorSetARGB(0xFF, (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF));
-    if (paint != nullptr) {
-        fill.setAlpha(paint->getAlpha());
-    }
-    canvas->drawRect(SkRect::MakeWH(kSceneCanvasWidth, kSceneCanvasHeight), fill);
-    if (!scene.background.hasImage) {
-        return;
-    }
-    // Task 5.5: the media kind decides where the picture comes from —
-    // the offered video frame, or the cached decode of the image. Either
-    // absent leaves the colour fill standing alone (a video with no
-    // frame yet, or one that failed to open, is the same degradation as
-    // a missing image; the session reports the failure).
-    sk_sp<SkImage> image;
-    if (scene.background.isVideo) {
-        if (video == nullptr) {
-            return;
-        }
-        image = sk_ref_sp(const_cast<SkImage*>(video));
-    } else {
-        if (images == nullptr) {
-            return;
-        }
-        image = images->imageFor(scene.background.assetPath);
-        if (!image) {
-            return;  // missing or undecodable: the colour fill stands alone
-        }
-    }
-    // Cover fit: scale to fill the authored canvas, centre, crop overflow
-    // (clip so a portrait window's letterbox bars stay black).
-    const float scale = std::max(kSceneCanvasWidth / static_cast<float>(image->width()),
-                                 kSceneCanvasHeight / static_cast<float>(image->height()));
-    const float w = static_cast<float>(image->width()) * scale;
-    const float h = static_cast<float>(image->height()) * scale;
-    const SkRect dest = SkRect::MakeLTRB((kSceneCanvasWidth - w) * 0.5f,
-                                         (kSceneCanvasHeight - h) * 0.5f,
-                                         (kSceneCanvasWidth + w) * 0.5f,
-                                         (kSceneCanvasHeight + h) * 0.5f);
+    const SkColor fill =
+        SkColorSetARGB(0xFF, (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF);
+    const sk_sp<SkImage> image = backgroundPicture(scene, images, video);
+    const bool fading = paint != nullptr && paint->getAlpha() < 255;
+    const SkRect canvasRect = SkRect::MakeWH(kSceneCanvasWidth, kSceneCanvasHeight);
+
     canvas->save();
-    canvas->clipRect(SkRect::MakeWH(kSceneCanvasWidth, kSceneCanvasHeight));
-    SkPaint imagePaint;
-    if (paint != nullptr) {
-        imagePaint.setAlpha(paint->getAlpha());
+    // Clip so a portrait window's letterbox bars stay black (the cover-fit
+    // dest can overflow the authored canvas on one axis).
+    canvas->clipRect(canvasRect);
+    if (image == nullptr) {
+        // Colour only: the fill IS the background, so the blend rides it directly.
+        SkPaint fillPaint;
+        fillPaint.setColor(fill);
+        if (fading) {
+            fillPaint.setAlpha(paint->getAlpha());
+        }
+        canvas->drawRect(canvasRect, fillPaint);
+    } else if (fading) {
+        // The background is ONE group — the picture over the colour fill — and
+        // the media blend is that group's alpha (task 6.11b, review R13).
+        //
+        // The obvious two-draw version (fill at alpha, then picture at alpha)
+        // is not that: the fill is counted again under the picture and the
+        // audience's own picture is attenuated twice, so an opaque still at
+        // blend 0.5 composites to 0.25 audience + 0.25 incoming FILL + 0.5
+        // incoming picture, and a scene fading to ITSELF — a lyric change over
+        // one still — visibly dips toward its fill mid fade. Measured on the
+        // shipped code: 46/255 away from the defined blend for an opaque
+        // picture over a saturated fill, 22/255 for a picture with per-pixel
+        // alpha, and the same picture on both sides lands 46/255 off the
+        // frame the audience was already shown.
+        //
+        // The textbook fix is a layer, which this composition pass does not
+        // have. This is the same composite with the layer folded into the
+        // shader: `picture over fill` evaluated per pixel, then drawn once at
+        // the group alpha. Measured against a by-the-book isolated layer:
+        // exact for an opaque picture (0/255 over the whole canvas), within
+        // rounding for a picture with per-pixel alpha (1/255), and one draw
+        // call instead of two.
+        const SkRect dest = coverFitDest(*image);
+        // The image shader's local matrix maps the IMAGE'S OWN PIXELS into the
+        // canvas' space (the same RectToRect the canvas itself builds for
+        // drawImageRect), not the unit square. Getting this wrong is invisible
+        // to a flat-colour fixture and unmistakable on a banded one: a unit
+        // square matrix samples the picture's top-left pixel everywhere, so
+        // the incoming scene arrives as one smeared colour.
+        const SkMatrix local =
+            SkMatrix::RectToRectOrIdentity(SkRect::MakeIWH(image->width(), image->height()), dest);
+        SkPaint group;
+        group.setShader(SkShaders::Blend(
+            SkBlendMode::kSrcOver, SkShaders::Color(fill),
+            SkShaders::Image(image, SkTileMode::kClamp, SkTileMode::kClamp,
+                             SkSamplingOptions(SkFilterMode::kLinear), &local)));
+        group.setAlpha(paint->getAlpha());
+        canvas->drawRect(canvasRect, group);
+    } else {
+        SkPaint fillPaint;
+        fillPaint.setColor(fill);
+        canvas->drawRect(canvasRect, fillPaint);
+        canvas->drawImageRect(image, SkRect::MakeIWH(image->width(), image->height()),
+                              coverFitDest(*image), SkSamplingOptions(SkFilterMode::kLinear),
+                              nullptr, SkCanvas::kFast_SrcRectConstraint);
     }
-    canvas->drawImageRect(image, SkRect::MakeIWH(image->width(), image->height()), dest,
-                          SkSamplingOptions(SkFilterMode::kLinear),
-                          paint != nullptr ? &imagePaint : nullptr,
-                          SkCanvas::kFast_SrcRectConstraint);
     canvas->restore();
 }
 

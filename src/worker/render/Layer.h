@@ -12,10 +12,16 @@
  * is functionally skipped: its draw() is never called, recording no Skia
  * work at all. Layers are toggled from the frontend over RPC (task 1.2+)
  * and take effect on the next frame without recreating GPU resources.
- * The one exception (task 3.2) is the fade transition's words dissolve,
- * which wraps the block in a group-alpha saveLayer — Skia's own way of
- * putting the transparency in the paint; the layer is word-bounds sized and
- * lives only while a fade is in flight.
+ *
+ * No frame creates an intermediate target, including a fade (task 6.11b,
+ * review R13). A fade needs a GROUP alpha — the blend applies to the layers
+ * as composited, not to each draw inside them — and the way to get one
+ * without a render target is to evaluate the group where the pixels are:
+ * the background dissolves through one draw whose shader is
+ * `picture over fill`, and the words through a ParagraphPainter that scales
+ * the alpha on every glyph draw. Both are documented at their call sites.
+ * `saveLayer` does not appear in production code, and the source scan
+ * `render_layer_guard` fails the build if it comes back.
  */
 
 #pragma once
