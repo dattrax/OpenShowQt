@@ -23,8 +23,12 @@
  * position). After the jump the feeder is quiet, so it calls the seeked
  * callback (setSeekedCallback, default none) from the decode thread;
  * owners use it to flush the input's mixer ring then — flushing while
- * the feeder still emits would drop post-seek content instead.
- * waitSeekApplied() lets transport callers order work after the jump.
+ * the feeder still emits would drop post-seek content instead. Because the
+ * callback belongs to a jump that HAPPENED, a refused seek fires nothing and
+ * flushes nothing: the decoder, the resampler and the mixer queue all still
+ * describe the position the audience is hearing. waitSeekApplied() lets
+ * transport callers order work after the jump and reports the difference
+ * between applied and refused (task 6.7d, review R19).
  * setLoopEnabled() toggles EOF rewind live.
  *
  * Why no clock pacing is needed: the sink's clock is the SERVER's
@@ -44,6 +48,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+
+#include "media/SeekQueue.h"
 
 namespace openshow::media {
 
@@ -76,10 +82,21 @@ public:
     // Asynchronous: the decode thread applies the seek between packets.
     // Consecutive requests coalesce (the latest target wins).
     void requestSeek(double targetSeconds);
-    // Blocks until the newest request has been applied (or timeoutMs
-    // passes); returns whether it was applied.
+    // Blocks until the newest request reaches a terminal state (or timeoutMs
+    // passes); true only when it was APPLIED. A jump the container refused
+    // settles immediately as a refusal, so a failed seek is answered in
+    // milliseconds rather than as a timeout — and never as "applied"
+    // (task 6.7d, review R19).
     bool waitSeekApplied(int timeoutMs);
     double lastSeekSeconds() const { return fLastSeekSeconds.load(std::memory_order_relaxed); }
+    // Why the last seek did not apply (empty when it did, or when nothing
+    // failed since). Reported through the transport so the operator can read
+    // what the audience is missing (task 6.7d).
+    std::string lastSeekError() const;
+    // Test seam (the worker sets it from OPENSHOW_FAULT_AUDIO_SEEK_FAIL):
+    // every container seek is refused, the shape no well-formed fixture file
+    // can be made to produce on command.
+    void setFaultSeekFailure(bool fault) { fFaultSeekFailure.store(fault); }
     // Runs on the decode thread right after a seek is applied, while the
     // feeder is quiet — the race-free moment to flush downstream stages.
     void setSeekedCallback(std::function<void(double)> callback) {
@@ -94,7 +111,8 @@ public:
         uint64_t writeRetries = 0;    // full-ring retries (pacing, not errors)
         uint64_t decodeErrors = 0;
         uint64_t loops = 0;
-        uint64_t seeks = 0;           // seeks applied by the decode thread
+        uint64_t seeks = 0;           // seeks APPLIED by the decode thread
+        uint64_t seekFailures = 0;    // requests the container refused (R19)
         uint64_t seekDiscards = 0;    // pre-target frames silenced at a seek
         bool eof = false;             // thread ended at EOF (loop was off)
     };
@@ -121,12 +139,15 @@ private:
     std::atomic<bool> fStopRequested{false};
     std::atomic<bool> fThreadWanted{false};
 
-    // Seek transport: one writer (the transport caller), the decode
-    // thread consumes; generations pair request with application.
-    std::atomic<double> fSeekTargetSeconds{0.0};
-    std::atomic<uint64_t> fSeekPendingGeneration{0};
-    std::atomic<uint64_t> fSeekAppliedGeneration{0};
+    // Seek transport: one writer (the transport caller), the decode thread
+    // consumes; SeekQueue pairs each request with the target that must be
+    // applied for it and keeps "applied" apart from "settled" (task 6.7d).
+    SeekQueue fSeek;
     std::atomic<double> fLastSeekSeconds{0.0};
+    // Written by the decode thread on a refused jump, read by the transport
+    // caller (fStatsMutex guards it along with the counters).
+    std::string fSeekError;
+    std::atomic<bool> fFaultSeekFailure{false};
     std::function<void(double)> fSeekedCallback;
     // Skip-before-emit window: frames ending at or before this media
     // position are resampled into silence after a seek (never dropped —

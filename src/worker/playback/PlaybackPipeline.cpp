@@ -80,6 +80,11 @@ bool PlaybackPipeline::openGpu(const Gpu& gpu, const Options& options, std::stri
                              fSource.frameWidth(), fSource.frameHeight(), fSource.ringFormat(),
                              pickYuvColorSpace(fSource.streamInfo()), error) &&
             fSource.createRing(fDepth, &fUploader, error)) {
+            // The ring's backing carries the source's stale-frame abort (see
+            // VideoFrameSource::createRing): with a seek outstanding the pacer
+            // offers nothing, so the frame on air is never replaced and a
+            // producer parked on its slot would wait behind the very seek it
+            // is on its way to perform (task 6.7d, review R19).
             fMode = Mode::kGpu;
             return true;
         }
@@ -174,8 +179,50 @@ void PlaybackPipeline::runPacing() {
     const double frameRate = fSource.streamInfo().frameRate;
     const double lookahead =
         frameRate > 0.0 ? std::min(0.05, std::max(0.004, 0.4 / frameRate)) : 0.015;
+    // A seek leaves this thread owing the audience a picture, and until it
+    // delivers one nothing downstream frees a presentation slot: the frame on
+    // air is released only by the NEXT submission, which is this thread's job.
+    // So the flag that tells a parked producer to drop its frame rather than
+    // wait for that release (FrameBacking::setProducerAbort) is raised across
+    // that whole window. It is measured against what was last OFFERED, not
+    // against what the media already did: a seek can be requested, performed
+    // and settled between two passes of this loop, and a transport that
+    // noticed none of it still owes the audience the target frame (task 6.7d,
+    // review R19).
+    uint64_t offeredGen = seekGen;
+    // Everything a landed seek costs this thread. Both places that notice one
+    // — the head of the loop, and a hold broken mid-frame — have to do all of
+    // it: resetting the wrap base here is the whole difference between the
+    // audience seeing the target and seeing the target PLUS a clip.
+    auto reconcileSeek = [&](uint64_t generation) {
+        seekGen = generation;
+        lastPts = -1.0;  // the position jumped; the loop heuristic restarts
+        // A seek is an ABSOLUTE media position, so the wrap continuity this
+        // transport built up does not carry across it (task 6.7d, review
+        // R19): seeking back to 2 s of a 6 s clip that already looped once
+        // used to report pts 8.0 and pace the frame that way — the audience's
+        // picture then sat in the session's pending slot waiting on a clock
+        // that would need six more seconds to catch up. From the target, pts
+        // runs on its own again.
+        loopBase = 0.0;
+        anchorNext = true;
+    };
     while (!fStop.load()) {
-        if (fPaused.load()) {
+        const uint64_t seekWanted = fSource.seekRequested();
+        const uint64_t seekNow = fSource.seekGeneration();
+        if (seekNow != seekGen) {  // a seek landed since the last pass
+            reconcileSeek(seekNow);
+        }
+        // What the audience is owed: a request the media has not performed,
+        // or one it has performed without this thread offering the result.
+        const bool seekOwed = seekWanted != seekNow || seekNow != offeredGen;
+        fSource.setSeekAbandoned(seekOwed);
+        // Held with a seek owed: the operator moved the position, so the parked
+        // transport shows where the media is now rather than the frame it froze
+        // on. The offer is also what frees the presentation slot a producer may
+        // be waiting on, so the hold always has a way out (task 6.7d, R19).
+        const bool scrub = fPaused.load() && seekOwed;
+        if (fPaused.load() && !seekOwed) {
             // Frozen: stop polling, so the ring fills and the producer
             // parks on it — the queue's own bound is the pause parking
             // spot, and the media position holds exactly where it was.
@@ -197,20 +244,16 @@ void PlaybackPipeline::runPacing() {
             continue;
         }
         if (fStop.load()) {
-            fSource.ring().release(frame.slot);
+            returnFrame(frame, /*submitted=*/false);
             break;
         }
-        const uint64_t seekWanted = fSource.seekRequested();
-        const uint64_t seekNow = fSource.seekGeneration();
-        if (seekNow != seekGen) {  // a seek landed, maybe during the poll
-            seekGen = seekNow;
-            lastPts = -1.0;  // the position jumped; the loop heuristic restarts
-            anchorNext = true;
-            fSource.ring().release(frame.slot);
-            continue;
-        }
-        if (seekWanted != seekNow) {  // one is queued, not yet applied
-            fSource.ring().release(frame.slot);
+        // A seek may have been queued, or landed, while this frame was being
+        // polled — either way the frame in hand is history, and the next pass
+        // reconciles at the head of the loop (which is also where a landed
+        // seek's re-anchor happens, so no frame is needed to notice one).
+        if (fSource.seekGeneration() != seekGen ||
+            fSource.seekRequested() != fSource.seekGeneration()) {
+            returnFrame(frame, /*submitted=*/false);
             continue;
         }
         if (lastPts >= 0.0 && frame.ptsSeconds + 0.5 < lastPts && fClipSeconds > 0.0) {
@@ -229,26 +272,40 @@ void PlaybackPipeline::runPacing() {
         // one frame in flight, the rest parked in the bounded ring — is
         // what keeps the queue from growing when the clock stalls.
         bool abandoned = false;
-        while (!fStop.load()) {
-            if (fPaused.load() || fSource.seekRequested() != fSource.seekGeneration()) {
-                abandoned = true;  // a control op arrived; this frame is history
+        // A held transport presents the seek's frame as soon as it arrives
+        // (scrub): the clock it would hold against is frozen, and changing what
+        // the parked picture shows is the point of the seek.
+        if (!scrub) {
+            while (!fStop.load()) {
+                // A hold, a queued seek, or a seek that landed since this
+                // thread last reconciled: all three make the frame in hand
+                // history, because its deadline belongs to a position the
+                // audience no longer occupies (task 6.7d, review R19). Without
+                // the landed check a frame polled just before a seek was held
+                // against the OLD position's deadline — and a seek that moves
+                // the clock (the sinkless fallback rebases to the target) then
+                // left it waiting seconds for a deadline nobody owns.
+                if (fPaused.load() || fSource.seekRequested() != fSource.seekGeneration() ||
+                    fSource.seekGeneration() != seekGen) {
+                    abandoned = true;  // a control op arrived; this frame is history
+                    break;
+                }
+                std::chrono::steady_clock::time_point now;
+                double clockSeconds;
+                {
+                    std::lock_guard<std::mutex> lock(fStatsMutex);
+                    now = std::chrono::steady_clock::now();
+                    clockSeconds = clockSecondsLocked(now);
+                }
+                if (clockSeconds >= deadline - lookahead) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            if (fStop.load()) {
+                returnFrame(frame, /*submitted=*/false);
                 break;
             }
-            std::chrono::steady_clock::time_point now;
-            double clockSeconds;
-            {
-                std::lock_guard<std::mutex> lock(fStatsMutex);
-                now = std::chrono::steady_clock::now();
-                clockSeconds = clockSecondsLocked(now);
-            }
-            if (clockSeconds >= deadline - lookahead) {
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        }
-        if (fStop.load()) {
-            fSource.ring().release(frame.slot);
-            break;
         }
         if (!abandoned) {
             {
@@ -269,17 +326,23 @@ void PlaybackPipeline::runPacing() {
             }
             VideoSubmission submission;
             submission.token = frame.slot;
-            submission.ptsSeconds = pts;
+            submission.ptsSeconds = pts;        // the media position (R19)
+            submission.deadlineSeconds = deadline;  // the clock's own domain
             submission.sequence = frame.sequence;
             fSubmit(submission);
+            // The audience has the frame this seek asked for: the session now
+            // releases the one it replaced, so a producer may wait for a slot
+            // the ordinary way again (6.7d).
+            offeredGen = fSource.seekGeneration();
+            fSource.setSeekAbandoned(false);
         } else {
             // Re-check like a fresh poll would: a seek that landed while
-            // holding must still flush and re-anchor.
+            // holding must still flush and re-anchor — and it must forget the
+            // wrap base too, which is exactly what this branch used to skip by
+            // crediting the generation without reconciling it.
             const uint64_t seekAfter = fSource.seekGeneration();
             if (seekAfter != seekGen) {
-                seekGen = seekAfter;
-                lastPts = -1.0;
-                anchorNext = true;
+                reconcileSeek(seekAfter);
             }
         }
         // Return the ring slot immediately: the presentation token lives
@@ -287,8 +350,32 @@ void PlaybackPipeline::runPacing() {
         // the slot's LINEAR twin while its OPTIMAL image waits for its
         // draw, because the next commit gates on that draw's completion
         // semaphore before touching OPTIMAL again.
-        fSource.ring().release(frame.slot);
+        returnFrame(frame, !abandoned);
     }
+}
+
+void PlaybackPipeline::returnFrame(const media::VideoFrame& frame, bool submitted) {
+    if (!submitted && fMode == Mode::kGpu) {
+        // A frame the pacer drops — a seek queued or landed, a control op
+        // that arrived while it held the frame — is never handed to the
+        // session, so no onReplaced()/onDropped() will ever run for it, and
+        // those are the only other releases of the uploader's slot. Every
+        // drop therefore used to leave one presentation slot held for the
+        // life of the transport: ring depth equals the uploader's slot
+        // count, so the fourth drop parks the decode thread inside its own
+        // publish() — in the loop whose next pass is the one that applies
+        // the pending seek. A seek on a GPU background stopped the transport
+        // dead (last frame held, clock running) rather than leaking memory
+        // (task 6.7d, review R19; the session-level seek scenario is what
+        // showed it, because no earlier GPU fixture ever sought).
+        //
+        // Releasing is safe exactly because the frame was never offered: it
+        // carries no sampling obligation, and the lease table still names the
+        // last generation the session was given, so a stale submission cannot
+        // acquire this slot either way.
+        fUploader.release(frame.slot, VK_NULL_HANDLE);
+    }
+    fSource.ring().release(frame.slot);
 }
 
 void PlaybackPipeline::requestStop() {

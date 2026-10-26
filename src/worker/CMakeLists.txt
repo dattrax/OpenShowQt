@@ -79,6 +79,7 @@ add_library(openshow-worker-media STATIC
   media/FrameRing.cpp
   media/MediaProbe.cpp
   media/PipeWireSink.cpp
+  media/SeekQueue.cpp
   media/VideoFrameSource.cpp
 )
 add_library(openshow::worker_media ALIAS openshow-worker-media)

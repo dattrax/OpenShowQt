@@ -334,6 +334,85 @@ bool formatChange(VulkanContext& vk, GrDirectContext* gr) {
     source.close();
     return ok;
 }
+// The GPU seek whose presentation slots are all held (task 6.7d, review R19).
+// This is the shape that stopped a transport dead, and nothing else reaches
+// it: the consumer holds the frames it polled — the session's drawn and
+// pending slots — and offers nothing new while a seek is queued, so the slot
+// on air is never released. The decode thread's next commit() parks on
+// exactly that slot, inside the loop whose next pass would have performed the
+// seek. Only two things end it: the producer noticing the frame it holds is
+// history, and the seek flush returning the slots of the frames it purges.
+bool seekWithSlotsHeld(VulkanContext& vk, GrDirectContext* gr) {
+    constexpr double kTarget = 1.0;  // h264.mp4 runs 2 s at 12 fps
+    GpuYuvUploader gpu;
+    VideoFrameSource source;
+    source.setDirectDecodeEnabled(true);
+    source.setHardwareDecodeEnabled(false);
+    std::string error;
+    if (!source.open("direct-fixtures/h264.mp4", &error) ||
+        !create(gpu, vk, gr, source.frameWidth(), source.frameHeight(), source.ringFormat(), error) ||
+        !source.createRing(GpuYuvUploader::kSlots, &gpu, &error) ||
+        !source.startDecode(false, &error)) {
+        std::fprintf(stderr, "gpu seek setup: %s\n", error.c_str());
+        source.close();
+        return false;
+    }
+    // Consume two frames as the session does: the ring slot comes back with
+    // the offer, the presentation slot lives until the next one replaces it.
+    std::vector<unsigned> held;
+    uint64_t lastSequence = 0;
+    const auto ramp = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (held.size() < 2 && std::chrono::steady_clock::now() < ramp) {
+        VideoFrame frame;
+        if (!source.ring().poll(&frame, std::chrono::milliseconds(50))) {
+            continue;
+        }
+        held.push_back(frame.slot);
+        lastSequence = frame.sequence;
+        source.ring().release(frame.slot);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));  // let it park
+    const uint64_t parked = source.stats().framesProduced;
+    bool ok = check(held.size() == 2 && parked == GpuYuvUploader::kSlots,
+                    "held leases park the producer once every presentation slot is taken");
+    source.requestSeek(kTarget);
+    // The seek must settle with every slot still held. Before 6.7d the decode
+    // thread never got here — it was waiting for a release that only the
+    // offer the seek itself prevents could have made — and the transport kept
+    // its last picture with the clock running.
+    const auto settled = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (source.seekGeneration() != source.seekRequested() &&
+           std::chrono::steady_clock::now() < settled) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ok &= check(source.seekGeneration() == source.seekRequested(),
+                "a seek settles while the producer is parked on a held slot");
+    ok &= check(source.stats().fatalError.empty(),
+                "a stale-frame abort is not reported as a GPU failure");
+    ok &= check(source.stats().seekDiscards > 0,
+                "the frame the seek made history is dropped rather than presented");
+    // And the target reaches the ring without this consumer releasing the two
+    // slots it holds: the flush returned the slots of the frames it purged,
+    // which used to leak one per seek and then park the producer again.
+    VideoFrame arrived;
+    const auto flushed = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    bool gotTarget = false;
+    while (std::chrono::steady_clock::now() < flushed) {
+        if (!source.ring().poll(&arrived, std::chrono::milliseconds(50))) {
+            continue;
+        }
+        gotTarget = arrived.sequence > lastSequence &&
+                    arrived.ptsSeconds >= kTarget - 0.2 && arrived.ptsSeconds < kTarget + 0.7;
+        source.ring().release(arrived.slot);
+        break;
+    }
+    ok &= check(gotTarget, "the seek's frames are committed on the slots the flush freed");
+    source.requestStop();
+    source.join();
+    ok &= check(source.stats().fatalError.empty(), "the scenario ends with no decode error");
+    source.close();
+    return ok;
+}
 }
 int main(int argc, char** argv) {
     if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) return 77;
@@ -366,6 +445,7 @@ int main(int argc, char** argv) {
     bool ok = allocationTests(vk, gr.get());
     ok &= initialFailure();
     ok &= blockedStop(vk, gr.get());
+    ok &= seekWithSlotsHeld(vk, gr.get());
     ok &= formatChange(vk, gr.get());
     ok &= decode(vk, gr.get(), "direct-fixtures/h264.mp4", false);
     ok &= decode(vk, gr.get(), "direct-fixtures/hevc.mp4", true);

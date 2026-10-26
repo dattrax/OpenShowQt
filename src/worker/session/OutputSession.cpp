@@ -614,6 +614,11 @@ void OutputSession::refreshMediaStateLocked() {
         // The clip simply finished: accurate status, no fault — and this
         // asset's earlier video fault no longer describes anything.
         mediaFaultClearedLocked(MediaFault::kVideo, path);
+    } else if (fAudio.paused()) {
+        // Held, not playing (task 6.7d): the audience sees a still frame at
+        // the position the hold latched, and the lane beside it says
+        // "paused". Nothing is broken, so no fault is implied.
+        fStatus.media.playing = false;
     } else if (transport.submitted > 0) {
         // Frames are flowing: the point at which status may claim playback.
         fStatus.media.playing = true;
@@ -669,6 +674,156 @@ void OutputSession::submitVideo(VideoSubmission submission) {
         fVideoPresenter->onDropped(dropped->token, dropped->sequence);
     }
     wakeRenderThread();
+}
+
+// --- background transport control (task 6.7d, review R19) ---
+
+void OutputSession::requestMediaSeek(double seconds) {
+    fPendingSeekSeconds.store(seconds > 0.0 ? seconds : 0.0, std::memory_order_relaxed);
+    fPendingTransportOp.store(kOpSeek, std::memory_order_release);
+    wakeRenderThread();
+}
+
+void OutputSession::requestMediaPause() {
+    fPendingTransportOp.store(kOpPause, std::memory_order_release);
+    wakeRenderThread();
+}
+
+void OutputSession::requestMediaPlay() {
+    fPendingTransportOp.store(kOpPlay, std::memory_order_release);
+    wakeRenderThread();
+}
+
+std::vector<OutputSession::ScheduledOp> OutputSession::parseScheduledOps(
+    const std::string& spec) {
+    // "seek@900:0.6,seek@1100:0.2,pause@2400,play@3200" — milliseconds after
+    // the transport opened. Anything malformed is reported and skipped: a
+    // fixture that quietly mis-parsed would assert on an op that never ran.
+    std::vector<ScheduledOp> ops;
+    size_t start = 0;
+    while (start < spec.size()) {
+        const size_t comma = spec.find(',', start);
+        const std::string entry =
+            spec.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        start = comma == std::string::npos ? spec.size() : comma + 1;
+        if (entry.empty()) {
+            continue;
+        }
+        const size_t at = entry.find('@');
+        const size_t colon = entry.find(':', at == std::string::npos ? 0 : at);
+        ScheduledOp op;
+        const std::string kind = at == std::string::npos ? entry : entry.substr(0, at);
+        if (kind == "seek") {
+            op.kind = kOpSeek;
+        } else if (kind == "pause") {
+            op.kind = kOpPause;
+        } else if (kind == "play") {
+            op.kind = kOpPlay;
+        } else {
+            std::fprintf(stderr, "openshow-worker: test transport op '%s' is unknown\n",
+                         entry.c_str());
+            continue;
+        }
+        if (at == std::string::npos) {
+            std::fprintf(stderr, "openshow-worker: test transport op '%s' has no time\n",
+                         entry.c_str());
+            continue;
+        }
+        try {
+            op.atMs = std::stoi(entry.substr(at + 1, colon == std::string::npos
+                                                          ? std::string::npos
+                                                          : colon - at - 1));
+            if (op.kind == kOpSeek) {
+                if (colon == std::string::npos) {
+                    std::fprintf(stderr,
+                                 "openshow-worker: test seek '%s' has no target\n", entry.c_str());
+                    continue;
+                }
+                op.seconds = std::stod(entry.substr(colon + 1));
+            }
+        } catch (const std::exception&) {
+            std::fprintf(stderr, "openshow-worker: test transport op '%s' does not parse\n",
+                         entry.c_str());
+            continue;
+        }
+        ops.push_back(op);
+    }
+    return ops;
+}
+
+void OutputSession::applyTransportOps() {
+    // The transport's thread: AvPlayer's fan-out walks the attached-pipeline
+    // list, which only the thread swapping transports may touch (6.6b's
+    // rule). A seek also blocks until the audio answers — normally a few
+    // milliseconds, bounded at 500 — because the clock must not be re-anchored
+    // on a jump the media did not make; 6.9b moves that wait off this loop.
+    const int op = fPendingTransportOp.exchange(kOpNone, std::memory_order_acq_rel);
+    bool applied = false;
+    if (op != kOpNone) {
+        applyTransportOp(op, fPendingSeekSeconds.load(std::memory_order_relaxed));
+        applied = true;
+    } else {
+        // The test schedule rides the same seam, so the scenarios drive the
+        // transport exactly as 6.15a's RPC will. Ops fire in schedule order;
+        // everything whose time has passed goes out on this pass (the last
+        // seek wins, exactly as a burst of operator clicks would), and the
+        // cursor only advances past what was applied.
+        const double elapsedMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                      fScheduledStart)
+                .count();
+        while (fScheduledCursor < fScheduledOps.size() &&
+               elapsedMs >= fScheduledOps[fScheduledCursor].atMs) {
+            applyTransportOp(fScheduledOps[fScheduledCursor].kind,
+                             fScheduledOps[fScheduledCursor].seconds);
+            ++fScheduledCursor;
+            applied = true;
+        }
+    }
+    if (!applied) {
+        return;
+    }
+    // An op the operator issued is an op status must report on this pass. A
+    // held transport presents nothing after the hold — and the per-frame
+    // refresh is what normally carries "playing" — so without this the fact
+    // would sit stale until the half-second heartbeat noticed it (task 6.7d,
+    // review R19: a pause that still reads "playing" is the swallowed op
+    // wearing a different hat).
+    std::lock_guard<std::mutex> lock(fMutex);
+    refreshMediaStateLocked();
+}
+
+void OutputSession::applyTransportOp(int op, double seconds) {
+    if (fBackground == nullptr) {
+        std::fprintf(stderr, "openshow-worker: transport op ignored, no background is open\n");
+        return;
+    }
+    if (op == kOpPause) {
+        fAudio.pause();
+        std::fprintf(stderr, "openshow-worker: transport held at %.3f s\n",
+                     fBackground->position());
+        return;
+    }
+    if (op == kOpPlay) {
+        fAudio.play();
+        std::fprintf(stderr, "openshow-worker: transport resumed\n");
+        return;
+    }
+    std::string error;
+    if (fAudio.seekTo(seconds, &error)) {
+        std::fprintf(stderr, "openshow-worker: transport seek landed at %.3f s\n", seconds);
+        // A seek that landed is the recovery for a previous refusal on this
+        // asset (typed exactly as such): the parts agree again.
+        mediaFaultCleared(MediaFault::kSync, fAppliedBackground.assetPath);
+        return;
+    }
+    // The audio refused the jump. The picture moved (the video seek applies
+    // on its own thread), so the audience now hears one position and sees
+    // another — that is what the operator has to be told, and the reported
+    // position stays whatever the transport actually presents.
+    mediaFailed(MediaFault::kSync, fAppliedBackground.assetPath,
+                "background seek to " + std::to_string(seconds) +
+                    " s was refused: " + (error.empty() ? "no reason given" : error));
 }
 
 OutputSession::GpuHandles OutputSession::gpuHandles() const {
@@ -986,11 +1141,28 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
     std::fprintf(stderr, "openshow-worker: background transport %s (%s clock)\n",
                  wanted.assetPath.c_str(),
                  fAudio.audioLive() ? "audio" : "monotonic");
+    // Test-only transport script (task 6.7d, review R19), armed per transport
+    // and applied by the render loop through the same seam 6.15a's RPC will
+    // use. Production leaves the variable unset and this stays empty.
+    fScheduledCursor = 0;
+    fScheduledStart = std::chrono::steady_clock::now();
+    const char* const opSpec = std::getenv("OPENSHOW_TEST_TRANSPORT_OPS");
+    fScheduledOps = opSpec != nullptr ? parseScheduledOps(opSpec) : std::vector<ScheduledOp>{};
+    if (!fScheduledOps.empty()) {
+        std::fprintf(stderr, "openshow-worker: %zu test transport ops armed for %s\n",
+                     fScheduledOps.size(), wanted.assetPath.c_str());
+    }
     fNeedsPresent = true;  // the head frame arrives soon; redraw when it does
 }
 
 void OutputSession::teardownBackgroundTransport() {
     mediaStopped();
+    // The transport this script was armed for is going away (task 6.7d): a
+    // pending intent and any later scheduled ops must not fire against a
+    // successor that was never asked for them.
+    fScheduledOps.clear();
+    fScheduledCursor = 0;
+    fPendingTransportOp.store(kOpNone, std::memory_order_release);
     if (!fBackground) {
         fAudio.stop();  // idempotent: a never-started player tears down clean
         fAppliedBackground = openshow::scene::Background{};
@@ -1281,8 +1453,8 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
         {
             std::lock_guard<std::mutex> lock(fMutex);
             if (fPendingVideo && fVideoPresenter &&
-                videoClockSecondsLocked(std::chrono::steady_clock::now()) >=
-                    fPendingVideo->ptsSeconds) {
+                videoSubmissionDue(*fPendingVideo,
+                                   videoClockSecondsLocked(std::chrono::steady_clock::now()))) {
                 replaced = fDrawnVideo;
                 toDraw = fPendingVideo;
                 fDrawnVideo = toDraw;
@@ -1566,6 +1738,10 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
     while (running() && !(abort && *abort)) {
         glfwPollEvents();
         const auto now = std::chrono::steady_clock::now();
+        // Transport control first (task 6.7d): a seek or a hold the audience
+        // asked for changes what this pass must decide, and the apply belongs
+        // on this thread (see applyTransportOps for the discipline).
+        applyTransportOps();
 
         bool presentNow = false;
         bool previewDue = false;
@@ -1581,15 +1757,20 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             // critical section as the decision and therefore ahead of
             // every apply the frame performs (see frame()'s header note).
             if (!presentNow && fPendingVideo && fVideoPresenter) {
+                // The seam's own gate (task 6.7d, review R19): a frame is
+                // due against its DEADLINE in the clock's domain, never
+                // against its media pts — those two disagree by a pause,
+                // a seek offset or a loop wrap, and comparing the wrong one
+                // either presents early or holds the picture for seconds.
                 const double clock = videoClockSecondsLocked(now);
-                if (clock >= fPendingVideo->ptsSeconds) {
+                if (videoSubmissionDue(*fPendingVideo, clock)) {
                     presentNow = true;  // frame() re-checks and consumes it
                 } else {
                     wakeAt = std::min(
                         wakeAt,
                         now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                                   std::chrono::duration<double>(
-                                      fPendingVideo->ptsSeconds - clock)));
+                                      fPendingVideo->deadlineSeconds - clock)));
                 }
             }
             // The capture (task 6.4): taken in the same critical section as

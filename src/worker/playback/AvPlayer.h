@@ -139,7 +139,16 @@ public:
     // --- transport (single transport thread) ---
     void play();   // resume sink (no flush — the queue IS the continuation)
     void pause();  // freeze sink+clock; bounded rings park the feeders
-    void seekTo(double targetSeconds);
+    // Jumps every source and (only when the audio actually moved) the clock.
+    // Returns whether the whole fan-out landed: false means at least one
+    // source refused its jump, in which case NOTHING was re-anchored — no
+    // sink flush, no clock rebase, no fallback position move — so the heard
+    // position stays the truth while the caller reports what it could not
+    // honour (task 6.7d, review R19). `error`, when given, carries the first
+    // refusal reason. Video followers apply asynchronously and a video seek
+    // that cannot be performed is fatal for that transport (it surfaces as
+    // the pipeline's own error), so this answer is about the audio.
+    bool seekTo(double targetSeconds, std::string* error = nullptr);
     void setLoop(bool enabled);
     bool paused() const { return fPaused.load(); }
     bool audioLive() const { return fAudioLive.load(); }

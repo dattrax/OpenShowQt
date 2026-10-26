@@ -93,9 +93,8 @@ void AudioFileFeeder::close() {
         fFormatContext = nullptr;
     }
     fAudioStreamIndex = -1;
-    fSeekPendingGeneration = 0;
-    fSeekAppliedGeneration = 0;
-    fSeekTargetSeconds = 0.0;
+    fSeek.reset();
+    fSeekError.clear();
     fLastSeekSeconds = 0.0;
     fSkipUntilSeconds = 0.0;
     fSeekedCallback = nullptr;
@@ -123,23 +122,18 @@ void AudioFileFeeder::requestStop() {
 }
 
 void AudioFileFeeder::requestSeek(double targetSeconds) {
-    fSeekTargetSeconds.store(targetSeconds, std::memory_order_relaxed);
-    fSeekPendingGeneration.fetch_add(1, std::memory_order_release);
+    fSeek.request(targetSeconds);
 }
 
 bool AudioFileFeeder::waitSeekApplied(int timeoutMs) {
-    // The applied generation is bumped after the seeked callback, so a
-    // satisfied wait means downstream flushes have already happened.
-    const uint64_t target = fSeekPendingGeneration.load(std::memory_order_acquire);
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    while (fSeekAppliedGeneration.load(std::memory_order_acquire) < target) {
-        if (fStopRequested.load() || std::chrono::steady_clock::now() >= deadline) {
-            return false;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    return true;
+    // Waits for the newest request to reach a TERMINAL state and reports
+    // which one (task 6.7d, review R19): a jump the container refused settles
+    // as refused, so the caller learns the truth in milliseconds instead of
+    // the whole timeout — and instead of the old "applied", which the
+    // transport acted on by flushing queues and re-anchoring the clock on a
+    // position the media never reached. The stop flag ends the wait as a
+    // failure too: with the decode thread gone nothing can settle a request.
+    return fSeek.waitAppliedLatest(timeoutMs, &fStopRequested);
 }
 
 bool AudioFileFeeder::applyPendingSeek(double targetSeconds) {
@@ -150,27 +144,54 @@ bool AudioFileFeeder::applyPendingSeek(double targetSeconds) {
         targetSeconds * static_cast<double>(stream->time_base.den) /
         static_cast<double>(stream->time_base.num));
     // The 5.2 video pattern: BACKWARD lands on or before the target, so
-    // decode time never starts ahead of it.
-    const bool seeked = av_seek_frame(format, fAudioStreamIndex, pts, AVSEEK_FLAG_BACKWARD) >= 0;
+    // decode time never starts ahead of it. The injected failure (set by the
+    // worker from OPENSHOW_FAULT_AUDIO_SEEK_FAIL, task 6.7d) stands in for a
+    // container that refuses the jump, which no well-formed fixture file can
+    // produce on command.
+    const bool seeked = !fFaultSeekFailure.load() &&
+                        av_seek_frame(format, fAudioStreamIndex, pts, AVSEEK_FLAG_BACKWARD) >= 0;
+    if (!seeked) {
+        // Nothing moved, so NOTHING is flushed: the decoder, the resampler
+        // and the downstream queues still describe the position the audience
+        // is hearing, and dropping any of them would punch a hole of exactly
+        // the jump that did not happen. No skip window, no seeked callback,
+        // no last-seek stamp — what the transport reports as its position
+        // stays true. Task 6.7d (review R19) is this branch's existence: the
+        // caller must be able to see the refusal.
+        std::lock_guard<std::mutex> lock(fStatsMutex);
+        ++fStats.seekFailures;
+        fSeekError = fFaultSeekFailure.load()
+                         ? "injected audio seek failure (OPENSHOW_FAULT_AUDIO_SEEK_FAIL)"
+                         : "the container refused the seek";
+        // A skip window left over from an EARLIER jump would silence from
+        // that old target onward, which is content the audience should hear:
+        // no jump happened, so nothing is short of any target.
+        fSkipUntilSeconds.store(0.0, std::memory_order_relaxed);
+        return false;
+    }
     avcodec_flush_buffers(codec);
     // The resampler's delay window belongs to the old position; rebuild it.
     swr_close(static_cast<SwrContext*>(fSwrContext));
     swr_init(static_cast<SwrContext*>(fSwrContext));
-    // Only after the container actually moved does the skip window open;
-    // a failed container seek leaves the stream where it was.
-    if (seeked) {
-        fSkipUntilSeconds.store(targetSeconds, std::memory_order_relaxed);
-    }
+    // Only after the container actually moved does the skip window open.
+    fSkipUntilSeconds.store(targetSeconds, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lock(fStatsMutex);
         ++fStats.seeks;
+        fSeekError.clear();
     }
     fLastSeekSeconds.store(targetSeconds, std::memory_order_relaxed);
-    // Race-free flush seam: the decode thread is quiet at this instant.
+    // Race-free flush seam: the decode thread is quiet at this instant. Only
+    // a jump that happened may flush what comes downstream.
     if (fSeekedCallback) {
         fSeekedCallback(targetSeconds);
     }
-    return seeked;
+    return true;
+}
+
+std::string AudioFileFeeder::lastSeekError() const {
+    std::lock_guard<std::mutex> lock(fStatsMutex);
+    return fSeekError;
 }
 
 void AudioFileFeeder::join() {
@@ -236,15 +257,24 @@ void AudioFileFeeder::run() {
             : 0.0;
 
     // Newest-request-wins seek application (the transport thread may have
-    // moved on while the decode thread was mid-frame).
+    // moved on while the decode thread was mid-frame), paired with the
+    // generation it belongs to (task 6.7d, review R19): only the generation
+    // whose target this call actually applied is credited, a request that
+    // arrived in the meantime stays pending for the next pass, and a refused
+    // jump settles as REFUSED — its waiter stops waiting and learns the
+    // truth, and the "a seek is queued" rule below releases either way,
+    // because silence must never be the price of a jump that failed.
     auto seekIfPending = [&]() -> double {
-        const uint64_t pending = fSeekPendingGeneration.load(std::memory_order_acquire);
-        if (pending <= fSeekAppliedGeneration.load(std::memory_order_acquire)) {
+        uint64_t generation = 0;
+        double target = 0.0;
+        if (!fSeek.pending(&generation, &target)) {
             return -1.0;
         }
-        const double target = fSeekTargetSeconds.load(std::memory_order_relaxed);
-        applyPendingSeek(target);
-        fSeekAppliedGeneration.store(pending, std::memory_order_release);
+        if (!applyPendingSeek(target)) {
+            fSeek.refuse(generation);
+            return -1.0;
+        }
+        fSeek.apply(generation);
         return target;
     };
 
@@ -276,8 +306,9 @@ void AudioFileFeeder::run() {
     // takes to drain it — seconds. Discarding a half-written batch here
     // is exactly right, because the seek's flush drops the queue anyway.
     auto seekPending = [&]() {
-        return fSeekPendingGeneration.load(std::memory_order_acquire) >
-               fSeekAppliedGeneration.load(std::memory_order_acquire);
+        // "Some request has not settled yet" — applied or refused, either
+        // terminal state releases the emit retry (see seekIfPending).
+        return fSeek.settledGeneration() < fSeek.requested();
     };
     auto emit = [&](const uint8_t* data, size_t frames) {
         size_t offset = 0;

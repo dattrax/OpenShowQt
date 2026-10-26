@@ -238,14 +238,29 @@ void FrameRing::release(uint32_t slot) {
 
 unsigned FrameRing::discardReady() {
     unsigned dropped = 0;
+    std::vector<uint32_t> purged;
     {
         std::lock_guard lock(fImpl->mutex);
+        purged.reserve(fImpl->ready.size());
         for (const uint32_t index : fImpl->ready) {
             fImpl->slots[index].state = SlotState::kFree;
+            purged.push_back(index);
             ++dropped;
         }
         fImpl->ready.clear();
         fImpl->stats.discarded += dropped;
+    }
+    // A purged frame was already committed to the backing and will never
+    // reach a consumer, so nothing else hands its slot back (task 6.7d).
+    // Without this the GPU-side slot stays held for the life of the
+    // transport — and since the ring is exactly as deep as the backing is
+    // wide, the frames a seek flushes would in four steps park the producer
+    // inside publish(). Released before the wake below, which may hand a
+    // producer one of these very slots.
+    if (fImpl->backing) {
+        for (const uint32_t index : purged) {
+            fImpl->backing->discardCommitted(index);
+        }
     }
     if (dropped != 0) {
         fImpl->freeCv.notify_all();  // a parked producer can fill again

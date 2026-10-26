@@ -369,11 +369,19 @@ bool GpuYuvUploader::slotPlanes(unsigned slot, uint8_t* data[4], int linesize[4]
 
 bool GpuYuvUploader::waitForFree(Slot& slot) {
     std::unique_lock lock(fSync->mutex);
-    while (!fSync->shutdown && slot.inUse) {
+    while (!fSync->shutdown && slot.inUse && !producerAbandoned()) {
         ++fStats.waitsForFreeSlot;
         fSync->available.wait_for(lock, std::chrono::milliseconds(1));
     }
-    return !fSync->shutdown;
+    // Both escapes from the wait mean "this frame will not be presented":
+    // teardown, and the pipeline's stale-frame abort (task 6.7d) — a commit
+    // that parked on the frame on air would otherwise wait for a replacement
+    // the pacer will not offer until the seek that this unwinding lets the
+    // decoder reach. A slot that was free all along commits normally even with
+    // the flag raised: refusing those would drop every frame the transport has,
+    // the seek's target included, and the producer would read its clip to the
+    // end publishing nothing.
+    return !fSync->shutdown && !slot.inUse;
 }
 
 bool GpuYuvUploader::commit(unsigned slot) {
@@ -821,6 +829,13 @@ void GpuYuvUploader::release(unsigned slot, VkSemaphore doneVk) {
         target.inUse = false;
     }
     fSync->available.notify_all();
+}
+
+void GpuYuvUploader::discardCommitted(unsigned slot) {
+    // The frame this slot holds will never be presented (a seek flush purged
+    // it from the ring), so nothing is waiting on its pixels and no sampling
+    // obligation can exist: hand the slot straight back to the producer.
+    release(slot, VK_NULL_HANDLE);
 }
 
 void GpuYuvUploader::releaseAll() {

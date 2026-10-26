@@ -110,6 +110,14 @@ bool AvPlayer::start(const Config& config, std::string* error) {
             continue;
         }
         auto feeder = std::make_unique<media::AudioFileFeeder>();
+        // Test seam (task 6.7d): make every container seek this feeder
+        // performs be refused, so the refusal path — which no well-formed
+        // fixture file produces on command — is reachable from the scenarios.
+        // Read per feeder rather than once per process, so a fixture can arm
+        // it, watch a jump get refused, disarm it, and see the next
+        // transport's seek land.
+        feeder->setFaultSeekFailure(
+            std::getenv("OPENSHOW_FAULT_AUDIO_SEEK_FAIL") != nullptr);
         std::string feederError;
         if (!feeder->open(paths[identity], rate, &feederError)) {
             std::fprintf(stderr, "openshow-worker: AvPlayer: %s audio unavailable (%s)\n",
@@ -323,11 +331,12 @@ void AvPlayer::pause() {
     }
 }
 
-void AvPlayer::seekTo(double targetSeconds) {
+bool AvPlayer::seekTo(double targetSeconds, std::string* error) {
     // Fan out first (all seeks are asynchronous), then move the clock
     // once the audio actually jumped — video's deadline must never lead
     // the heard position to the target. Each feeder's seeked callback
-    // dropped its input's queue at the instant it went quiet.
+    // dropped its input's queue at the instant it went quiet (and a feeder
+    // that refused its jump fired nothing, so its queue is intact).
     for (FeederSlot& slot : fFeeders) {
         slot.feeder->requestSeek(targetSeconds);
     }
@@ -336,7 +345,14 @@ void AvPlayer::seekTo(double targetSeconds) {
     }
     bool applied = true;
     for (FeederSlot& slot : fFeeders) {
-        applied = slot.feeder->waitSeekApplied(500) && applied;
+        if (!slot.feeder->waitSeekApplied(500)) {
+            applied = false;
+            if (error && error->empty()) {
+                const std::string reason = slot.feeder->lastSeekError();
+                *error = reason.empty() ? "the audio source did not answer the seek in time"
+                                        : reason;
+            }
+        }
     }
     if (!fFeeders.empty() && applied) {
         // The sink queue goes last: everything the ring still holds is
@@ -361,6 +377,7 @@ void AvPlayer::seekTo(double targetSeconds) {
         fFallbackBaseNs.store(targetNs, std::memory_order_relaxed);
         fFallbackAnchorNs.store(steadyNowNs(), std::memory_order_relaxed);
     }
+    return applied;
 }
 
 void AvPlayer::setLoop(bool enabled) {

@@ -400,10 +400,101 @@ Updated: 2026-10-25 (Europe/London).
   mp4 from its packet cache (755 frames, 107 loops). Gates desktop
   **35/35**, headless **21/21** (background_media 3-run, av_sync 2-run
   stress green).
-- Exact next action: **6.7d** per the PLAN.md ledger — pair seek targets
-  with applied generations, report failed seeks, and unify media-position/
-  deadline mapping across pacing and session. Then continue the focused M6
-  leaves in order.
+- **6.7d DONE (2026-10-26).** Seek pairing, failed-seek reporting and the two
+  time domains (review R19). A seek is a request a DECODE thread performs
+  later, so the protocol is a pair: `media/SeekQueue` hands the applier
+  `(generation, target)` from `pending()` and only `apply(gen)`/`refuse(gen)`
+  for that exact generation settles it. Both sources used to read the newest
+  target and then credit the newest COUNT, which settles a request that
+  arrived mid-apply without ever moving the container to its target: the
+  pacer reads `requested != applied` as "flush in progress", so it stopped
+  draining and presented the superseded position while the caller was told
+  the jump landed. Audio answers through `waitApplied(gen, 500 ms, abort)`,
+  which distinguishes APPLIED from REFUSED — the distinction R19 asked for:
+  a refused jump flushes nothing (nothing in the queue is stale), counts
+  `Stats.seekFailures`, leaves the applied watermark where it was, keeps the
+  heard position where it was, and surfaces as `MediaFault::kSync` naming the
+  refused target; a video seek the container cannot perform stays FATAL (it
+  refuses its generation on the way out so nothing can wait on it). The two
+  time domains are typed rather than remembered: `VideoSubmission` carries
+  `ptsSeconds` (media position) and `deadlineSeconds` (present time in the
+  transport clock) and the session presents through one inline gate,
+  `videoSubmissionDue(sub, clock)` — comparing the clock against pts is the
+  bug R19 names, and it disagrees by a whole clip length after a wrap.
+  Transport control reached the session (`requestMediaSeek/Pause/Play`, all
+  applied on the render thread by `applyTransportOps()`, scripted in tests by
+  `OPENSHOW_TEST_TRANSPORT_OPS`); exposing them over RPC is 6.15a's row, so
+  6.7d lands no protocol change. **Pinned semantic:** a seek issued while
+  held SCRUBS — the parked transport presents the target, the position moves,
+  `playing` stays false, then it holds again. The clock a held transport
+  paces against is frozen (so a new frame's only honest deadline is "now"),
+  showing what you seek to is the entire point of a parked scrub bar, and the
+  offer is the seam's own way out of the hold: it is what releases a
+  presentation slot a producer may be waiting on, so a parked transport can
+  always digest a seek instead of stopping.
+  **Three production defects, all found by fixtures rather than reading:**
+  (1) a GPU-mode DEADLOCK — with every presentation slot leased (the session
+  holds two, ring depth == uploader `kSlots` == 4), the decode thread's next
+  `commit()` parked on a slot that only the NEXT OFFER would free, and a seek
+  is precisely what stops the pacer offering: it waited behind the very seek
+  it was on its way to perform and the audience kept the last picture with
+  the clock running. Fixed in three parts — `returnFrame(frame, submitted)`
+  releases the uploader slot for a frame the pacer drops (nothing downstream
+  can ever do it: `onReplaced`/`onDropped` never see a frame that was never
+  submitted), `FrameRing::discardReady()` calls `discardCommitted(slot)` for
+  each frame a seek flush purges, and `VideoFrameSource::createRing` wires the
+  source's own stale-frame flag into ANY backing (`setProducerAbort`), so a
+  consumer cannot forget it — the abort is raised by `requestSeek` and cleared
+  only by the pacer AT AN OFFER, measured against `offeredGen`, because a seek
+  can be requested, applied and settled between two pacer passes. `waitForFree`
+  must return a genuinely free slot on abort (`!shutdown && !slot.inUse`):
+  refusing an already-free slot instead makes the producer read to EOF
+  publishing nothing, the loop is refused and the transport dies.
+  (2) a seek landing while the pacer HELD a frame credited the generation
+  without resetting the wrap base, so the audience saw `target + clip` —
+  R19's exact symptom behind a race no driver run hit; both reconcile sites
+  (loop head, and a hold broken mid-frame) now share one `reconcileSeek`.
+  (3) a transport op left `status.media.playing` stale until the 500 ms
+  heartbeat, so a paused background still read "playing" — the swallowed op
+  wearing a different hat; `applyTransportOps()` refreshes media state on the
+  same pass.
+  **Fixtures:** `media_tests::exerciseSeekQueue` (deterministic protocol:
+  pairing, coalescing, a stamp never handed out credits nothing, refusal
+  settles without moving the applied watermark) and `exerciseMidApplySeek`,
+  which parks the decode thread between performing a jump and crediting it via
+  a new production seam (`holdSeekApplyForTesting`/`parkedInSeekApply`/
+  `releaseSeekApply`, same precedent as `OPENSHOW_FAULT_*`) — the pairing rule
+  tested ON PURPOSE rather than raced, with the older request forward and the
+  newest backward so a swallowed newest runs to end-of-stream and cannot pass
+  by luck; `playback_control_tests::twoTimeDomains` (deadline ≠ pts after a
+  hold, and no frame waits a clip on a pts-versus-clock comparison),
+  `seekAfterWrap` (backward seek after a wrap presents the target),
+  `seekWhilePaused` (the scrub, plus "scrubbing is a picture, not a resume"),
+  and `seekStormKeepsTheNewest` (40 overlapping pairs, jittered 0–1.5 ms
+  apart, every round must reach its NEWEST target); `gpu_decode_tests::
+  seekWithSlotsHeld` pins the deadlock: held leases park the producer, the
+  seek still settles, a stale-frame abort is not reported as a GPU failure,
+  the frame the seek made history is dropped not presented, and the target's
+  frames commit on the slots the flush freed; `background_media_tests::
+  exerciseSeekThroughSession` drives forward / backward-after-wrap / a 30 ms
+  burst / a held scrub / a resume through a live `--socket` session and asserts
+  pixels-and-position follow the media (never target+clip) with no
+  `media.error`, and `exerciseSeekRefusal` pins `OPENSHOW_FAULT_AUDIO_SEEK_FAIL`
+  → one refusal notification, the sticky report naming the refusal, the video
+  still running, the lane honest, and the sync fault surviving the reconcile
+  and the heartbeat. **Mutations** m8 (gate on pts), m9 (hold keeps `loopBase`),
+  m10 (audio credits a refusal as applied), m11 (session credits a refusal),
+  m12 (swallow the credit), m13 (a drop keeps its GPU slot), m14 (a purge keeps
+  its GPU slot), m15 (abort left unwired), m16 (abort refuses free slots) are
+  each CAUGHT; m12 survived the timing-based storm twice and is now caught by
+  the seam fixture. Accepted limits: transport ops run on the render thread and
+  a seek blocks up to 500 ms there (6.9b moves that wait off the loop); one
+  sticky fault string, so a sync fault and an audio fault share the message.
+  Gates desktop **35/35**, headless **21/21**.
+- Exact next action: **6.8a** per the PLAN.md ledger — enforce sender/receiver
+  encoded-size limits and per-method scene/reference budgets and validate
+  JSON-RPC envelopes and integer ranges before narrowing (R11). Then continue
+  the focused M6 leaves in order.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -2951,6 +3042,38 @@ of this work.
   AVIO/packet cache makes partial truncation legitimately loopable, so a
   producer-level fixture cannot isolate a no-progress guard — pin such
   guards where the observable behaviour lives, and say so.
+- (2026-10-26, task 6.7d) A deferred request is a PAIR, never two reads:
+  whoever performs it takes `(generation, target)` together and credits only
+  that generation, because reading the newest target and then acknowledging
+  the newest count settles a request that arrived mid-apply unperformed — and
+  the reader of "nothing pending" is a drain loop, which then presents the
+  superseded position. A failed request needs TWO terminal states, not one:
+  APPLIED and REFUSED. Refusal is the honest answer for a jump one part of
+  the transport could not make — flush nothing (no queued sample is stale),
+  do not move the applied watermark or the heard position, count it, and
+  report the target that was refused; treating it like success destroys the
+  only evidence the audience has that playback did not jump. Related, in the
+  same transport: media position and present time are DIFFERENT domains and
+  must be carried as two fields with one comparison site, because they
+  disagree by exactly the amount a pause, a seek or a loop wrap introduced —
+  and a wrap makes pts larger than the clock by a whole clip. A producer
+  parked waiting for a resource that only the consumer's next step frees,
+  where that step is what the producer's own pending request prevents, is a
+  deadlock no timeout hides: fix the release paths (every frame that will
+  never be handed onward returns its slot NOW, including the ones a flush
+  purges), and let a stale frame abandon its wait — raising "abandoned" when
+  a request is issued and clearing it only where the audience is actually
+  served, since a request can be issued, performed and settled between two
+  passes of the clearing thread. Pinning: a window microseconds wide is not
+  testable by racing it — add a production seam that parks the thread inside
+  the window (precedent: the `OPENSHOW_FAULT_*` knobs) and shape the scenario
+  so a swallowed request cannot drift into its target by luck (older request
+  forward, newest backward). Scrub semantic chosen deliberately: a seek
+  issued while held PRESENTS its target and parks again (a frozen clock makes
+  "now" the only honest deadline, showing the target is the point of a parked
+  scrub, and the offer is the seam's way out of a slot-holding hold); status
+  must reflect an operator op on the pass that applied it, never on the next
+  heartbeat.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.

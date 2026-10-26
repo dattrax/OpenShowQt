@@ -352,6 +352,24 @@ public:
     // render thread.
     void submitVideo(VideoSubmission submission);
 
+    // --- background transport control (task 6.7d, review R19) ---
+    //
+    // The seam 6.15a will drive from RPC. It exists now because R19's seek
+    // semantics are session semantics: the position the operator asked for,
+    // the pixels the audience gets and the deadline they arrive on are one
+    // story, and a seek the media refused has to be reported rather than
+    // silently kept.
+    //
+    // Any thread: the intent is handed to the render loop, which applies it.
+    // That is the transport's own discipline — AvPlayer's fan-out walks the
+    // attached-pipeline list, and only the thread that swaps transports may
+    // touch it. A refusal (the audio could not jump) is not answerable at
+    // this call; it surfaces as the typed media fault, and the position the
+    // transport keeps reporting is the one the audience actually has.
+    void requestMediaSeek(double seconds);
+    void requestMediaPause();
+    void requestMediaPlay();
+
     // Device handles a bench needs beside the session (task 1.5e): the YUV
     // upload ring lives outside the session but shares its device, and the
     // seam to build it is this narrow view rather than the objects. The
@@ -441,7 +459,13 @@ private:
     // that is still missing. The *Locked variants are for callers that
     // already hold fMutex (the frame's status refresh reconciles the
     // transport's own report there, every frame).
-    enum class MediaFault { kImage, kVideo, kAudio };
+    //
+    // kSync (task 6.7d, review R19) is a transport whose parts disagree:
+    // an operator seek the audio refused leaves the picture at the target
+    // and the sound where it was. The lane cannot say this — the audio is
+    // healthy, just elsewhere — so the lane reconcile must not clear it
+    // either, which is why it is its own class.
+    enum class MediaFault { kImage, kVideo, kAudio, kSync };
 
     void mediaPlaying(const openshow::scene::Background& background);
     void mediaStopped();
@@ -496,6 +520,33 @@ private:
     std::function<double()> fVideoClock;                   // fMutex
     std::optional<VideoSubmission> fPendingVideo;          // fMutex
     std::optional<VideoSubmission> fDrawnVideo;            // render thread
+    // Transport control handed to the render loop (task 6.7d). Newest-wins:
+    // one intent at a time, applied by the loop's next pass, so a burst of
+    // operator requests cannot queue behind each other and move the audience
+    // somewhere nobody asked for.
+    enum TransportOp { kOpNone, kOpSeek, kOpPause, kOpPlay };
+    std::atomic<int> fPendingTransportOp{kOpNone};         // any thread
+    std::atomic<double> fPendingSeekSeconds{0.0};          // any thread
+    // Test-only schedule (see OPENSHOW_TEST_TRANSPORT_OPS at the transport's
+    // open): a timed script applied by the same render-thread seam, so the
+    // scenarios R19 names run through the real transport rather than a
+    // stand-in. Empty in production, where the variable is unset.
+    struct ScheduledOp {
+        int atMs = 0;
+        int kind = kOpNone;
+        double seconds = 0.0;
+    };
+    std::vector<ScheduledOp> fScheduledOps;                // render thread
+    size_t fScheduledCursor = 0;                           // render thread
+    std::chrono::steady_clock::time_point fScheduledStart{};
+    // Applies the pending intent and any due scheduled op. Render thread.
+    void applyTransportOps();
+    // One op on the transport (render thread): pause, play, or a seek whose
+    // refusal becomes the typed sync fault.
+    void applyTransportOp(int op, double seconds);
+    // Parses the test schedule (see fScheduledOps). Private to the class so
+    // it can name the type; reports and skips malformed entries.
+    static std::vector<ScheduledOp> parseScheduledOps(const std::string& spec);
     std::chrono::steady_clock::time_point fRunStart;       // render thread
 
     // Background media transport (task 5.5, render thread; declared after

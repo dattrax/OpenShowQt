@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -37,6 +38,13 @@ public:
     // false aborts the publish.
     virtual bool commit(unsigned slot) = 0;
 
+    // A committed frame is being destroyed without ever reaching a consumer
+    // (a seek flush purges the ring). Whatever the commit reserved for the
+    // slot must come back: the presenter's release is the only other one,
+    // and it can never arrive for a frame that was never offered. Runs on
+    // the producer thread, with no ring lock held (task 6.7d).
+    virtual void discardCommitted(unsigned slot) { (void)slot; }
+
     // Direct decoding: allocation may run on a codec worker thread. It must
     // fail rather than wait for decoder-held reference frames to be released.
     virtual std::shared_ptr<FrameStorage> allocateDecodeFrame(const FrameAllocation&,
@@ -46,6 +54,30 @@ public:
     }
     virtual bool commitFrame(unsigned, const std::shared_ptr<FrameStorage>&) { return false; }
     virtual void requestShutdown() {}
+
+    // A producer parked in commit() wakes and unwinds while this flag reads
+    // true (task 6.7d). The pipeline needs it because a held slot is the
+    // NORMAL state with a seek outstanding: the pacer offers nothing new
+    // while one is queued, so the frame on air is never replaced and the
+    // release the parked commit waits for can never come. Without the abort
+    // the decode thread is stuck behind the very frame it must flush, and the
+    // transport holds its last picture with the clock running on. Owners wire
+    // this once, before the first frame; nullptr (the default) means a parked
+    // commit waits for the slot, which is right for a consumer that will come
+    // back to it (a pause).
+    void setProducerAbort(const std::atomic<bool>* abort) { fProducerAbort = abort; }
+
+protected:
+    // True when the frame a parked producer holds is history: the commit
+    // refuses, publish aborts the claim, and the producer goes looking for
+    // the work that made the frame stale.
+    bool producerAbandoned() const {
+        return fProducerAbort != nullptr &&
+               fProducerAbort->load(std::memory_order_acquire);
+    }
+
+private:
+    const std::atomic<bool>* fProducerAbort = nullptr;
 };
 
 // Valid from claim() (producer) or poll() (consumer) until publish()/

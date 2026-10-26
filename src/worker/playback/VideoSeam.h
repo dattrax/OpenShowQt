@@ -16,13 +16,33 @@
 
 namespace openshow::worker {
 
-// A decoded frame offered to the session: presenter-side slot identity,
-// the pts in video-clock seconds, and the decoder's monotone sequence.
+// A decoded frame offered to the session: presenter-side slot identity, the
+// decoder's monotone sequence, and the frame's TWO times (task 6.7d, review
+// R19) — they are not the same quantity and were treated as one:
+//
+//   * ptsSeconds is the MEDIA position: loop-continuous pts, the number a
+//     lyric service reads and status reports. It restarts when the operator
+//     seeks, and it climbs past the clip length when the clip loops.
+//   * deadlineSeconds is the PRESENT TIME in the transport clock's own
+//     domain: when the pacer decided this frame is due. It is what a clock
+//     reading is compared against, and after a pause, a seek or a loop wrap
+//     the two domains differ — by a whole clip length in the case R19 found
+//     (a backward seek after a wrap), where comparing pts against the clock
+//     held the audience's picture for seconds while the transport played on.
 struct VideoSubmission {
-    unsigned token = 0;       // presenter-side slot identity
-    double ptsSeconds = 0.0;  // in video-clock seconds
+    unsigned token = 0;             // presenter-side slot identity
+    double ptsSeconds = 0.0;        // media position, in media seconds
+    double deadlineSeconds = 0.0;   // present time, in transport-clock seconds
     uint64_t sequence = 0;
 };
+
+// The session's present gate for one submission, in one place so pacing and
+// the session cannot drift into using different deadlines again (task 6.7d):
+// a frame is due when the transport clock reaches the deadline the pacer
+// computed for it. Never its media pts.
+inline bool videoSubmissionDue(const VideoSubmission& submission, double clockSeconds) {
+    return clockSeconds >= submission.deadlineSeconds;
+}
 
 // The token's GPU lifetime is a LEASE (task 6.6a, review R6): a
 // submission leases its slot from the moment it is submitted until the

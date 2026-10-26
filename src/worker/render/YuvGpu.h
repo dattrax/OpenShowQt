@@ -101,6 +101,10 @@ public:
     // VK_NULL_HANDLE, is a semaphore the next commit to the slot will
     // wait before copying — the obligation of the consumer's final draw.
     void release(unsigned slot, VkSemaphore doneVk = VK_NULL_HANDLE);
+    // A committed frame the ring purged before any consumer took it (the
+    // seek flush): the slot is held by a frame that will never be presented,
+    // so it comes back with no obligation attached (task 6.7d).
+    void discardCommitted(unsigned slot) override;
     // Everything at once, valid only after whole-device idle.
     void releaseAll();
 

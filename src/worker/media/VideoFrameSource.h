@@ -21,6 +21,7 @@
 
 #include "media/FrameRing.h"
 #include "media/MediaProbe.h"
+#include "media/SeekQueue.h"
 
 namespace openshow::media {
 
@@ -92,9 +93,45 @@ public:
     void requestSeek(double seconds);
     // Requests received vs. seeks applied. Both count up; a consumer sees
     // applied != its tracked value right after a flush, and
-    // requested != applied while one is queued but not yet applied.
-    uint64_t seekRequested() const { return fSeekRequested.load(); }
-    uint64_t seekGeneration() const { return fSeekGeneration.load(); }
+    // requested != applied while one is queued but not yet applied. A seek
+    // the decode thread cannot perform is fatal for this source (the error
+    // is recorded and the thread ends), so applied always catches up with a
+    // request that was attempted — see media/SeekQueue.h for the pairing
+    // rule that keeps a request arriving mid-apply from being swallowed
+    // (task 6.7d, review R19).
+    uint64_t seekRequested() const { return fSeek.requested(); }
+    uint64_t seekGeneration() const { return fSeek.appliedGeneration(); }
+
+    // True while the consumer of this source is not going to free a
+    // presentation slot for it: a seek is in flight and the audience has not
+    // yet been given the frame the seek asked for. A GPU backing watches it
+    // (FrameBacking::setProducerAbort) so a producer parked inside commit()
+    // unwinds instead of waiting for the release of a frame that is history.
+    //
+    // requestSeek() raises it. Only the consumer clears it — see
+    // setSeekAbandoned — because the decode thread settling a seek is not the
+    // end of the window: the pacing thread still has to drain, re-anchor and
+    // offer the target frame, and until it does, nothing downstream releases
+    // anything.
+    bool seekOutstanding() const { return fSeekOutstanding.load(std::memory_order_acquire); }
+    // Consumer-side maintenance (PlaybackPipeline's pacing thread): the offer
+    // that gives the audience the seek's frame is what ends the window, so
+    // only that thread may clear it. A source used without a pipeline never
+    // clears it, which is harmless — a parked commit is the only thing that
+    // reads it, and the flag is wired to a backing by createRing().
+    void setSeekAbandoned(bool abandoned) {
+        fSeekOutstanding.store(abandoned, std::memory_order_release);
+    }
+
+    // Test seam (task 6.7d, review R19): park the decode thread INSIDE the
+    // seek-apply window — the pair has been taken and the container has moved,
+    // but that generation has not been credited — until the scenario releases
+    // it. Whether a request that arrives exactly here stays pending or is
+    // swallowed is the pairing rule, and a few hundred microseconds of real
+    // work is not a window a fixture can hit by racing it.
+    void holdSeekApplyForTesting(bool hold) { fHoldSeekApply.store(hold); }
+    bool parkedInSeekApply() const { return fSeekApplyParked.load(); }
+    void releaseSeekApply() { fSeekApplyRelease.store(true); }
 
     // Loop live-toggle: the value at the next EOF decides whether the
     // thread rewinds to the start or finishes the clip.
@@ -154,14 +191,24 @@ private:
     std::thread fThread;
     std::atomic<bool> fLoop{false};
     std::atomic<bool> fThreadWanted{false};
-    // Seek request queue: requestSeek() stamps the target under the mutex
-    // and then counts the request up; the decode thread reads the count,
-    // then the target under the same mutex, so a counted request always
-    // carries its seconds. Consecutive requests coalesce to the last.
-    std::mutex fSeekMutex;
-    double fPendingSeekSeconds = 0.0;
-    std::atomic<uint64_t> fSeekRequested{0};
-    std::atomic<uint64_t> fSeekGeneration{0};
+    // Seek request queue (task 6.7d): the target and the generation it
+    // belongs to are one pair, owned by SeekQueue, so the decode thread can
+    // credit exactly the jump it performed. Consecutive requests before any
+    // pass coalesce to the last target.
+    SeekQueue fSeek;
+    // Mirror of "the consumer still owes the audience a frame": raised by
+    // requestSeek(), cleared by the pacing thread when it offers one (see
+    // seekOutstanding()). A GPU backing polls it from a parked commit (see
+    // FrameBacking::setProducerAbort); the queue stays the authority on the
+    // target, this flag only says "a parked producer is holding history".
+    // close() resets it along with everything else seek-related.
+    std::atomic<bool> fSeekOutstanding{false};
+    // Park the decode thread between performing a seek and crediting it, and
+    // the two signals the test seam exchanges to do that (see
+    // holdSeekApplyForTesting). Unused unless a scenario arms them.
+    std::atomic<bool> fHoldSeekApply{false};
+    std::atomic<bool> fSeekApplyParked{false};
+    std::atomic<bool> fSeekApplyRelease{false};
     mutable std::mutex fStatsMutex;
     Stats fStats;
 };

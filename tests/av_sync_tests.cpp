@@ -593,6 +593,90 @@ bool audioLaneOfflineStates(const std::string& wav) {
     return ok;
 }
 
+// --- 3e. A refused audio seek stays a REFUSAL (task 6.7d, review R19) ---
+//
+// R19's audio half: `applyPendingSeek()`'s result was thrown away and the
+// request was credited as applied whatever the container said, so
+// waitSeekApplied() answered "applied" for a jump that never happened and the
+// transport went on to flush its queues and re-anchor its clock on a position
+// the media never reached. No well-formed fixture file refuses a seek on
+// command, so the transport's own fault knob stands in for one.
+bool seekRefusalIsARefusal(const std::string& wav) {
+    bool ok = true;
+    AvPlayer player;
+    AvPlayer::Config config;
+    config.videoAudioPath = wav;
+    config.loop = true;
+    config.enableSink = false;  // daemon-less on purpose: this is about the source
+    std::string error;
+
+    setenv("OPENSHOW_FAULT_AUDIO_SEEK_FAIL", "1", 1);
+    ok = check(player.start(config, &error),
+               "the transport starts with the seek fault armed") && ok;
+    sleepMs(250);
+    const double clockBefore = player.clockSeconds();
+    const uint64_t fedBefore = player.feederStats(false).framesFed;
+
+    // Three jumps in a row, each refused. The refusal is the whole point of
+    // the timing: an ignored boolean made the wait run its full 500 ms and
+    // then report success.
+    int refusalMs = 0;
+    for (int i = 0; i < 3; ++i) {
+        error.clear();
+        const auto began = std::chrono::steady_clock::now();
+        const bool applied = player.seekTo(4.0 + i, &error);
+        refusalMs = static_cast<int>(
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
+                .count());
+        ok = check(!applied, "a fan-out the audio refused reports failure") && ok;
+        ok = check(refusalMs < 250,
+                   "the refusal is answered in milliseconds, not as a 500 ms timeout") && ok;
+        ok = check(!error.empty() &&
+                       error.find("OPENSHOW_FAULT_AUDIO_SEEK_FAIL") != std::string::npos,
+                   "the failure names the refusal the media gave") && ok;
+    }
+    const auto stats = player.feederStats(false);
+    ok = check(stats.seeks == 0, "a jump that did not happen is not counted as applied") && ok;
+    ok = check(stats.seekFailures == 3, "every refusal is counted") && ok;
+    // Nothing was re-anchored. The clock paces the audience's picture, so a
+    // jump it did not make must not appear in it: still under 1.5 s, and
+    // still climbing from where it actually was.
+    ok = check(player.clockSeconds() < 1.5,
+               "the clock is NOT re-anchored on the target the media refused") && ok;
+    ok = check(player.clockSeconds() > clockBefore, "and the clock keeps running from there")
+           && ok;
+    // Nothing was silenced either: the queue, the decoder and the resampler
+    // still describe the position the audience is hearing.
+    sleepMs(200);
+    ok = check(player.feederStats(false).framesFed > fedBefore,
+               "the feeder keeps feeding after a refusal (nothing was flushed)") && ok;
+    ok = check(player.feederStats(false).seekDiscards == 0,
+               "no content is silenced for a jump that did not happen") && ok;
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kSilent,
+               "a refused seek is not a broken lane: still the configured silence") && ok;
+    player.stop();
+
+    // Disarm and see the same transport shape land its seek — the knob is
+    // read where feeders are made, and a refusal must not poison the queue
+    // for anything that comes after it.
+    unsetenv("OPENSHOW_FAULT_AUDIO_SEEK_FAIL");
+    AvPlayer next;
+    ok = check(next.start(config, &error), "the next transport starts with the knob disarmed")
+           && ok;
+    sleepMs(150);
+    error.clear();
+    ok = check(next.seekTo(2.0, &error), "the next transport's seek lands") && ok;
+    ok = check(error.empty(), "a seek that lands gives no reason") && ok;
+    ok = check(next.feederStats(false).seeks == 1 &&
+                   next.feederStats(false).seekFailures == 0,
+               "only the applied jump is counted on the clean transport") && ok;
+    ok = check(next.clockSeconds() >= 2.0 && next.clockSeconds() < 2.4,
+               "the clock re-anchors when the media actually moved") && ok;
+    next.stop();
+    std::printf("   refusal answered in %d ms\n", refusalMs);
+    return ok;
+}
+
 // --- 4. AvPlayer with the live PipeWire sink ---
 
 bool avPlayerLive(const std::string& wav) {
@@ -981,6 +1065,7 @@ int main() {
     ok = avPlayerStandaloneOnly(wav) && ok;
     ok = fallbackClockBeforeStart() && ok;
     ok = audioLaneOfflineStates(wav) && ok;
+    ok = seekRefusalIsARefusal(wav) && ok;
     ok = avPlayerLive(wav) && ok;
     ok = avPlayerRestart(wav) && ok;
     ok = avPlayerRestartLive(wav) && ok;

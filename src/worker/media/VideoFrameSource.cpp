@@ -1,9 +1,11 @@
 #include "media/VideoFrameSource.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <thread>
 #include <vector>
 
 #include "media/FFmpeg.h"
@@ -97,6 +99,17 @@ bool VideoFrameSource::createRing(unsigned ringDepth, FrameBacking* backing,
         return false;
     }
     fBacking = backing;
+    // A producer parked in commit() has to unwind when the frame it holds
+    // becomes history (task 6.7d, review R19). With a seek outstanding the
+    // consumer offers nothing new, so the frame on air is never replaced and
+    // its slot never returns: a commit waiting for that slot waits behind the
+    // very seek the producer is on its way to perform, and the transport
+    // holds its last picture with the clock running on. Wiring the source's
+    // own flag here — rather than asking every consumer to remember — is what
+    // makes "stale" mean the same thing to both sides of any backing.
+    if (backing) {
+        backing->setProducerAbort(&fSeekOutstanding);
+    }
     if (fDirectDecode && !backing) {
         if (error) *error = "direct decoding requires a GPU frame backing";
         return false;
@@ -290,20 +303,17 @@ void VideoFrameSource::close() {
     fDecodeAllocations.clear();
     fThreadWanted = false;
     fLoop = false;
-    fSeekRequested = 0;
-    fSeekGeneration = 0;
-    std::lock_guard seekLock(fSeekMutex);
-    fPendingSeekSeconds = 0.0;
+    fSeek.reset();
+    fSeekOutstanding = false;
 }
 
 void VideoFrameSource::requestSeek(double seconds) {
-    {
-        std::lock_guard lock(fSeekMutex);
-        fPendingSeekSeconds = seconds > 0.0 ? seconds : 0.0;
-    }
-    // Release-ordered count: the decode thread acquires it before reading
-    // the target back under the mutex.
-    fSeekRequested.fetch_add(1);
+    fSeek.request(seconds);
+    // Order matters only for a producer already parked in a GPU commit: the
+    // request must exist before the flag says "unwind", so it can never wake
+    // on a flag with nothing to apply. Its wait loop re-checks every
+    // millisecond, so the few instructions between the two are free.
+    fSeekOutstanding.store(true, std::memory_order_release);
     // A producer parked on a full ring keeps the seek queued until the
     // consumer moves again (documented); nothing here may touch the ring,
     // which a concurrent claim() owns.
@@ -582,6 +592,19 @@ void VideoFrameSource::run() {
             }
             seekSkipping = false;
         }
+        // A queued seek outranks the frame in hand (task 6.7d, review R19) —
+        // the same rule as the skip above, one step earlier: a frame that is
+        // history must not park on a slot first. It matters because publish()
+        // blocks while a presentation slot is still held downstream, and a
+        // held slot is the NORMAL state with a seek queued: the pacer stops
+        // offering frames while one is outstanding, so the session never
+        // replaces — and so never releases — the frame it is showing. A
+        // producer that published anyway waited on a release that could only
+        // come after the very seek it was on its way to apply, and the
+        // transport stopped dead: last picture held, clock running on.
+        if (fSeek.pending(nullptr, nullptr)) {
+            return true;  // the loop head below applies the seek and flushes
+        }
         // Direct mode attaches the existing decoder allocation to a token;
         // compatibility writes the token's separate staging buffers.
         VideoFrame out;
@@ -692,13 +715,24 @@ void VideoFrameSource::run() {
         out.ptsSeconds = ptsSeconds;
         fSyntheticPtsSeconds = out.ptsSeconds + fSyntheticStepSeconds;
         if (!fRing.publish(out)) {
-            // The backing's commit refused the slot. Teardown releases a
-            // parked commit through requestShutdown() — that abort is the
-            // producer unwinding, not a decode error; only a GPU-side
-            // failure while the ring still runs counts.
-            if (!fRing.stopped()) {
-                failDecode("Vulkan frame copy failed");
+            // Three ways a commit can refuse the slot, and only the last one
+            // is a decode error:
+            //   - teardown: requestShutdown() releases a parked commit so the
+            //     producer can unwind — that abort is the shutdown;
+            //   - a seek made this frame history while it waited
+            //     (FrameBacking::setProducerAbort): the claim is already
+            //     aborted, so drop the frame and let the loop head below
+            //     perform the seek that made it stale;
+            //   - the GPU failing with the ring still running: fatal, because
+            //     nothing this transport shows after it can be trusted.
+            if (fRing.stopped()) {
+                return false;
             }
+            if (seekOutstanding()) {
+                bump([](Stats& s) { ++s.seekDiscards; });
+                return true;
+            }
+            failDecode("Vulkan frame copy failed");
             return false;
         }
         bump([&](Stats& s) { ++s.framesProduced; if (fDirectDecode) ++s.directFrames; });
@@ -742,21 +776,26 @@ void VideoFrameSource::run() {
         // Apply a queued seek between frames (task 5.2): the demuxer jumps
         // to the keyframe at or before the target, the decoder flushes,
         // and everything already published is purged so no pre-seek frame
-        // survives. The generation count only rises after the purge, and
-        // skip-until-target starts here — the pacing thread treats
-        // requested != applied as "flush in progress" and presents nothing
-        // from the old position in between.
-        const uint64_t seekWanted = fSeekRequested.load();
-        if (seekWanted != fSeekGeneration.load()) {
-            double target = 0.0;
-            {
-                std::lock_guard lock(fSeekMutex);
-                target = fPendingSeekSeconds;
-            }
+        // survives. The queue hands over a PAIRED (generation, target) and
+        // only that generation is credited afterwards (task 6.7d, review
+        // R19): a request that arrived while this one was being performed
+        // stays pending, so the pacing thread keeps draining rather than
+        // presenting the superseded position on the strength of a credit that
+        // never applied its target. skip-until-target starts here, and
+        // requested != applied is that "flush in progress" window.
+        uint64_t seekGeneration = 0;
+        double target = 0.0;
+        if (fSeek.pending(&seekGeneration, &target)) {
             const int64_t seekTs = fTimeBaseSeconds > 0.0
                                        ? static_cast<int64_t>(target / fTimeBaseSeconds)
                                        : 0;
             if (av_seek_frame(format, fVideoStreamIndex, seekTs, AVSEEK_FLAG_BACKWARD) < 0) {
+                // A video seek this source cannot perform stays fatal rather
+                // than refused-and-continuing: no later frame can be trusted
+                // to sit at the position status reports, so the transport
+                // ends and the session reports it. The request is settled on
+                // the way out so nothing can wait on it forever.
+                fSeek.refuse(seekGeneration);
                 failDecode("video seek failed");
                 break;
             }
@@ -766,8 +805,25 @@ void VideoFrameSource::run() {
             seekSkipTo = target;
             fRing.discardReady();
             bump([](Stats& s) { ++s.seeks; });
-            // Requests that queued while applying coalesce into this one.
-            fSeekGeneration.store(fSeekRequested.load());
+            // Test seam (holdSeekApplyForTesting): sit between performing the
+            // jump and crediting it, which is the window the pairing rule
+            // governs — the only moment at which a newer request can be
+            // swallowed, and so the only one worth testing on purpose.
+            if (fHoldSeekApply.load()) {
+                fSeekApplyParked.store(true);
+                while (!fSeekApplyRelease.load() && fThreadWanted.load()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                fSeekApplyParked.store(false);
+                fSeekApplyRelease.store(false);
+            }
+            // Exactly the pair taken above: requests it superseded settle
+            // with it, newer ones stay queued for the next pass.
+            fSeek.apply(seekGeneration);
+            // The abort flag is NOT cleared here: the pacing thread still owes
+            // the audience the target frame, and until it offers one nothing
+            // downstream frees a presentation slot. seekOutstanding() says who
+            // clears it (PlaybackPipeline's pacing thread, at the offer).
             continue;
         }
         AVPacket* packet = av_packet_alloc();

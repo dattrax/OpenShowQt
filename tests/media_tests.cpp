@@ -1,6 +1,7 @@
 /*
  * Task 1.5 media foundation: MediaProbe (1.5a), FrameRing + decode thread
- * (1.5b), AudioRing + AudioClock (1.5c), all against generated fixtures.
+ * (1.5b), AudioRing + AudioClock (1.5c), all against generated fixtures, and
+ * the shared seek protocol (6.7d) that the two sources' decode threads apply.
  * The live PipeWire run for 1.5c is `openshow-worker --pw-check`, run
  * manually so automated tests stay silent.
  *
@@ -11,12 +12,14 @@
 
 #include <sys/stat.h>
 
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -25,6 +28,7 @@
 #include "media/AudioRing.h"
 #include "media/FrameRing.h"
 #include "media/MediaProbe.h"
+#include "media/SeekQueue.h"
 #include "media/VideoFrameSource.h"
 
 namespace {
@@ -370,6 +374,250 @@ bool exerciseAudio() {
     return ok;
 }
 
+// 6.7d (review R19): the seek protocol both media sources share. Every case
+// here is deterministic — the "decode thread" is this test's own call order —
+// because the class exists to make the lost-seek race impossible rather than
+// unlikely. The scenario the review names is the second block: a request that
+// arrives while an earlier one is being applied must stay pending WITH ITS
+// OWN TARGET, and a jump the container refuses must be answered as a refusal.
+// The pairing rule, tested ON PURPOSE (task 6.7d, review R19). A request that
+// arrives while the decode thread is performing an earlier one has to stay
+// pending and be performed. Crediting the newest COUNT instead — what both
+// media sources used to do — settles it unperformed: the queue is satisfied,
+// the consumer stops draining, and the audience keeps the superseded position
+// while the caller is told a jump landed that the media never made. The window
+// is a few hundred microseconds wide, so the scenario parks the thread inside
+// it (VideoFrameSource::holdSeekApplyForTesting) rather than trying to hit it
+// by racing.
+//
+// The first request goes FORWARD (3.0 s of a 4 s clip) and the newest BACKWARD
+// (0.5 s): a swallowed newest leaves the transport running to the end of the
+// clip, so it can never drift into the target and pass by luck.
+bool exerciseMidApplySeek(const std::string& hdPath) {
+    bool ok = true;
+    VideoFrameSource source;
+    std::string error;
+    ok = check(source.open(hdPath, 4, &error), "the mid-apply scenario opens") && ok;
+    if (!ok) {
+        return ok;
+    }
+    ok = check(source.startDecode(false, &error), "the mid-apply decode starts") && ok;
+
+    VideoFrame frame;
+    bool running = false;
+    const auto warm = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!running && std::chrono::steady_clock::now() < warm) {
+        if (!source.ring().poll(&frame, std::chrono::milliseconds(50))) {
+            continue;
+        }
+        running = frame.ptsSeconds >= 0.1;
+        source.ring().release(frame.slot);
+    }
+    ok = check(running, "frames are flowing before the seek pair") && ok;
+
+    source.holdSeekApplyForTesting(true);
+    source.requestSeek(3.0);
+    const auto parked = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!source.parkedInSeekApply() && std::chrono::steady_clock::now() < parked) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ok = check(source.parkedInSeekApply(),
+               "the decode thread is parked between performing a jump and crediting it") && ok;
+
+    source.requestSeek(0.5);
+    const uint64_t newest = source.seekRequested();
+    ok = check(newest >= 2, "the request that arrives mid-apply is counted") && ok;
+    ok = check(source.seekGeneration() == 0,
+               "and nothing is credited while the thread still sits in the window") && ok;
+
+    source.holdSeekApplyForTesting(false);  // the next pass must not park
+    source.releaseSeekApply();
+    // Both jumps have to be PERFORMED. The counter is what separates them: the
+    // queue alone cannot, because the bug satisfies it too.
+    bool atTarget = false;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+    while (std::chrono::steady_clock::now() < until) {
+        if (source.ring().poll(&frame, std::chrono::milliseconds(20))) {
+            if (frame.ptsSeconds <= 0.7) {
+                atTarget = true;
+            }
+            source.ring().release(frame.slot);
+        }
+        if (atTarget && source.stats().seeks >= 2 && source.seekGeneration() == newest) {
+            break;
+        }
+    }
+    ok = check(source.stats().seeks >= 2,
+               "the mid-apply request is PERFORMED, not credited unperformed") && ok;
+    ok = check(source.seekGeneration() == newest,
+               "the applied watermark reaches the newest generation") && ok;
+    ok = check(atTarget, "and the frames that follow present the NEWEST target (0.5 s)") && ok;
+    source.requestStop();
+    source.join();
+    ok = check(source.stats().fatalError.empty(), "the mid-apply pair leaves no error") && ok;
+    std::printf("ok: mid-apply pair: seeks=%llu applied=%llu requested=%llu\n",
+                static_cast<unsigned long long>(source.stats().seeks),
+                static_cast<unsigned long long>(source.seekGeneration()),
+                static_cast<unsigned long long>(source.seekRequested()));
+    return ok;
+}
+
+bool exerciseSeekQueue() {
+    using openshow::media::SeekQueue;
+    bool ok = true;
+
+    SeekQueue seek;
+    ok = check(seek.requested() == 0 && seek.appliedGeneration() == 0 &&
+                   seek.settledGeneration() == 0,
+               "a fresh queue has no requests and no history") && ok;
+    ok = check(!seek.pending(nullptr, nullptr), "a fresh queue has nothing pending") && ok;
+    ok = check(seek.waitAppliedLatest(0), "waiting with nothing requested is satisfied") && ok;
+    // Never-handed-out stamps credit nothing: a source that credited one
+    // would report a jump it did not perform.
+    seek.apply(3);
+    seek.refuse(3);
+    ok = check(seek.appliedGeneration() == 0 && seek.settledGeneration() == 0,
+               "a stamp the queue never handed out settles nothing") && ok;
+
+    const uint64_t first = seek.request(4.5);
+    ok = check(first == 1, "the first request is stamped 1 (0 means 'nothing')") && ok;
+    uint64_t generation = 0;
+    double target = -1.0;
+    ok = check(seek.pending(&generation, &target) && generation == first && target == 4.5,
+               "pending hands over the PAIRED generation and target") && ok;
+    ok = check(seek.request(-3.0) == 2 && seek.pending(&generation, &target) &&
+                   generation == 2 && target == 0.0,
+               "a negative target clamps to the start and re-stamps") && ok;
+
+    // --- the review's case: a request arrives mid-apply ---
+    // Take request 2 as the one being performed, then have the operator ask
+    // for somewhere else while it is in flight.
+    ok = check(seek.pending(&generation, &target) && generation == 2,
+               "the in-flight request is taken") && ok;
+    const uint64_t newer = seek.request(9.25);
+    ok = check(newer == 3 && seek.requested() == 3, "the mid-apply request is counted") && ok;
+    seek.apply(generation);  // the jump this thread actually performed
+    ok = check(seek.appliedGeneration() == 2, "only the applied pair's generation is credited")
+           && ok;
+    ok = check(seek.pending(&generation, &target) && generation == 3 && target == 9.25,
+               "the newer request stays pending with ITS OWN target") && ok;
+    ok = check(!seek.waitApplied(newer, 0),
+               "a still-pending request is not answered as applied") && ok;
+    // ... and it lands on the next pass.
+    seek.apply(generation);
+    ok = check(seek.appliedGeneration() == 3 && seek.settledGeneration() == 3 &&
+                   !seek.pending(nullptr, nullptr),
+               "the second pass applies it and clears the queue") && ok;
+    ok = check(seek.waitApplied(3, 0) && seek.waitAppliedLatest(0),
+               "applied requests answer immediately") && ok;
+
+    // --- a refused jump: settled, NOT applied, and answered at once ---
+    const uint64_t doomed = seek.request(12.0);
+    ok = check(seek.pending(&generation, &target) && generation == doomed && target == 12.0,
+               "the doomed request is taken for applying") && ok;
+    const auto began = std::chrono::steady_clock::now();
+    seek.refuse(doomed);
+    const bool answered = seek.waitApplied(doomed, 500);
+    const double answerMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+    ok = check(!answered, "a refused jump is reported as NOT applied") && ok;
+    ok = check(answerMs < 100.0, "the refusal is answered in milliseconds, not as a timeout")
+           && ok;
+    ok = check(seek.settledGeneration() == doomed && seek.appliedGeneration() == 3,
+               "a refusal settles without moving the applied watermark") && ok;
+    ok = check(!seek.pending(nullptr, nullptr),
+               "a refusal releases the source's 'a seek is queued' rule") && ok;
+
+    // A refusal is not a broken queue: the next request still applies, and
+    // superseded requests settle with the newest one as documented.
+    seek.request(0.5);
+    const uint64_t newest = seek.request(1.5);
+    ok = check(seek.pending(&generation, &target) && generation == newest && target == 1.5,
+               "requests before any pass coalesce to the newest pair") && ok;
+    seek.apply(newest);
+    ok = check(seek.appliedGeneration() == newest && seek.settledGeneration() == newest,
+               "applying the newest settles the one it superseded") && ok;
+
+    // The applier is gone (5.4b: waitSeekApplied must not hang a dying
+    // worker): the abort flag ends the wait as a failure without a timeout.
+    const uint64_t orphan = seek.request(2.5);
+    std::atomic<bool> stopping{false};
+    std::atomic<bool> answeredFlag{false};
+    std::thread waiter([&] {
+        const bool applied = seek.waitApplied(orphan, -1, &stopping);
+        answeredFlag.store(applied);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    ok = check(!seek.waitApplied(orphan, 0), "the orphaned request is still pending") && ok;
+    stopping.store(true);
+    waiter.join();
+    ok = check(!answeredFlag.load(), "an aborted wait reports failure, not 'applied'") && ok;
+
+    // Transport restart: history and pending work both gone.
+    seek.reset();
+    ok = check(seek.requested() == 0 && seek.appliedGeneration() == 0 &&
+                   seek.settledGeneration() == 0 && !seek.pending(nullptr, nullptr) &&
+                   seek.waitAppliedLatest(0),
+               "reset returns the queue to a fresh one") && ok;
+
+    // Threaded: several requesters against one applier that sleeps between
+    // pairs. Coalescing means some generations settle with a newer pair, but
+    // nothing may be lost and nothing may be applied twice: every generation
+    // the applier takes is newer than the last, and the burst drains with
+    // every request settled and applied.
+    SeekQueue live;
+    constexpr int kRequesters = 3;
+    constexpr int kPerRequester = 40;
+    std::mutex takenMutex;
+    std::vector<uint64_t> taken;
+    bool monotone = true;
+    std::atomic<bool> requestersDone{false};
+    std::thread applier([&] {
+        uint64_t previous = 0;
+        for (;;) {
+            uint64_t stamp = 0;
+            double seconds = 0.0;
+            if (live.pending(&stamp, &seconds)) {
+                std::this_thread::sleep_for(std::chrono::microseconds(100));  // mid-apply
+                {
+                    std::lock_guard<std::mutex> lock(takenMutex);
+                    taken.push_back(stamp);
+                    monotone = monotone && stamp > previous;
+                    previous = stamp;
+                }
+                live.apply(stamp);
+            } else if (requestersDone.load()) {
+                return;
+            }
+        }
+    });
+    std::vector<std::thread> requesters;
+    for (int t = 0; t < kRequesters; ++t) {
+        requesters.emplace_back([&, t] {
+            for (int i = 0; i < kPerRequester; ++i) {
+                live.request(static_cast<double>(t) + 0.5 * i);
+                std::this_thread::sleep_for(std::chrono::microseconds(200));
+            }
+        });
+    }
+    for (auto& thread : requesters) {
+        thread.join();
+    }
+    requestersDone.store(true);
+    applier.join();
+    ok = check(taken.size() >= 2, "requests and applies really did interleave") && ok;
+    ok = check(monotone, "a settled generation is never handed out again") && ok;
+    ok = check(live.requested() == kRequesters * kPerRequester &&
+                   live.appliedGeneration() == kRequesters * kPerRequester &&
+                   live.settledGeneration() == kRequesters * kPerRequester &&
+                   !live.pending(nullptr, nullptr) && live.waitAppliedLatest(0),
+               "the burst drains with every request settled and applied") && ok;
+    std::printf("ok: seek protocol — %zu applies interleaved with %d requests, refusal "
+                "answered in %.1f ms\n",
+                taken.size(), kRequesters * kPerRequester, answerMs);
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -472,6 +720,10 @@ int main() {
 
     // ---- 1.5c: AudioRing + AudioClock (live PipeWire is --pw-check) ----
     ok = exerciseAudio() && ok;
+
+    // ---- 6.7d: the seek protocol R19 asked for ----
+    ok = exerciseMidApplySeek(hd) && ok;
+    ok = exerciseSeekQueue() && ok;
 
     if (!ok) {
         return 1;

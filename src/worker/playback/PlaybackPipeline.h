@@ -208,6 +208,9 @@ private:
     void runPacing();
     // Seconds against the injected clock; callers hold fStatsMutex.
     double clockSecondsLocked(std::chrono::steady_clock::time_point now) const;
+    // Returns a polled frame to the ring, and — for a frame the audience is
+    // never offered — to the uploader as well. See runPacing's drop sites.
+    void returnFrame(const media::VideoFrame& frame, bool submitted);
     bool openCommon(const Options& options, std::string* error);
 
     Mode fMode = Mode::kClosed;

@@ -1,5 +1,7 @@
 /*
- * Task 5.5 acceptance: preload, continuous backgrounds, visible errors.
+ * Task 5.5 acceptance: preload, continuous backgrounds, visible errors — plus
+ * the typed media report (6.7c) and the seek semantics (6.7d), which are the
+ * same session seen from the socket.
  *
  * A real openshow-worker --socket session (the task's transport is only
  * alive in socket mode) proves the acceptance sentences:
@@ -19,6 +21,11 @@
  *  - Preload (5.5c): a big still decodes during scene.prepare (the RPC
  *    thread pays it; the re-prepare is a cache hit), and presenting a
  *    preloaded slide reaches the air within 100 ms at p95.
+ *
+ *  - "A seek means what the audience gets" (6.7d, review R19): a scheduled
+ *    burst, a backward seek after the clip looped, and a seek issued while the
+ *    transport is held each present the media position at the right clock
+ *    deadline — and a jump the audio refuses is reported, not quietly kept.
  *
  * Needs a display (the worker opens its output window) and the media
  * fixtures; the big-JPEG preload scenario additionally needs the ffmpeg
@@ -856,6 +863,410 @@ void exerciseAudioStartFailure(const std::string& audioClip, const std::string& 
     ::unlink(socket.c_str());
 }
 
+// --- task 6.7d (review R19): seeks through the whole session ----------------
+//
+// R19 asks for the hard seek cases "through the actual session rather than
+// only a collecting SubmitFn": a burst whose newest request must not be
+// swallowed, a backward seek after the clip has looped, and a seek issued
+// while the transport is held — plus a jump the media REFUSES, which has to be
+// reported instead of quietly kept. Transport control has no RPC yet (that is
+// 6.15a's row), so the scenarios arm a schedule on the worker
+// (OPENSHOW_TEST_TRANSPORT_OPS) which the render loop applies through the same
+// seam requestMediaSeek/requestMediaPause/requestMediaPlay will use, and read
+// back what the audience would see: output.status.media plus the pushed
+// media.error notifications.
+
+// A worker that owns its environment — the fault knobs and the transport
+// schedule are read at spawn — handshaken and ready to take scenes.
+int spawnScopedWorker(const char* tag, const std::vector<std::string>& extraEnv,
+                      std::string* socketOut, pid_t* pidOut) {
+    const std::string socket = socketPath(tag);
+    ::unlink(socket.c_str());
+    const pid_t worker = spawnWorker(socket, extraEnv);
+    if (worker < 0) {
+        return -1;
+    }
+    const int fd = connectRetry(socket);
+    if (fd < 0) {
+        kill(worker, SIGTERM);
+        return -1;
+    }
+    boost::json::value reply;
+    if (!call(fd, "hello",
+              proto::helloParams("openshow-background-media", proto::kProtocolMajor,
+                                 proto::kProtocolMinor),
+              &reply) ||
+        !reply.as_object().contains("result")) {
+        close(fd);
+        kill(worker, SIGTERM);
+        return -1;
+    }
+    *socketOut = socket;
+    *pidOut = worker;
+    return fd;
+}
+
+void retireScopedWorker(int fd, pid_t worker, const std::string& socket, const char* what) {
+    boost::json::value shutdownReply;
+    check(call(fd, "shutdown", {}, &shutdownReply), what);
+    close(fd);
+    int waitStatus = 0;
+    waitpid(worker, &waitStatus, 0);
+    check(WIFEXITED(waitStatus) && WEXITSTATUS(waitStatus) == 0,
+          "and the same worker exits cleanly");
+    ::unlink(socket.c_str());
+}
+
+// One status.media sample on the scenario's own clock.
+struct MediaSample {
+    double tMs = 0.0;
+    double position = -1.0;
+    bool playing = false;
+    std::string error;
+};
+
+std::vector<MediaSample> sampleMedia(int fd, int durationMs, int stepMs = 100) {
+    std::vector<MediaSample> samples;
+    const auto began = std::chrono::steady_clock::now();
+    for (int waited = 0; waited < durationMs; waited += stepMs) {
+        const boost::json::object media = mediaOf(status(fd));
+        MediaSample sample;
+        sample.tMs = std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - began)
+                         .count();
+        sample.position = numberOf(media, "position");
+        sample.playing = media.contains("playing") && media.at("playing").as_bool();
+        sample.error = textOf(media, "error");
+        samples.push_back(sample);
+        sleepMs(stepMs);
+    }
+    return samples;
+}
+
+// The schedule below, in milliseconds after the transport opened. Keeping the
+// numbers here means the assertions and the worker's script cannot drift.
+constexpr double kForwardMs = 1200.0;
+constexpr double kForwardTarget = 5.6;
+constexpr double kBackwardMs = 3000.0;
+constexpr double kBackwardTarget = 1.0;
+constexpr double kBackwardClipLength = 6.0;  // the clip: target+clip is the bug
+constexpr double kBurstMs = 4600.0;          // two requests 30 ms apart
+constexpr double kBurstFirst = 3.0;
+constexpr double kBurstLast = 0.5;
+// The hold is wide enough to sample on purpose: 100 ms sampling needs several
+// samples before the parked seek (whose scrub then moves the position) and
+// after the resume, and a 100 ms window would assert on luck.
+constexpr double kPauseMs = 6000.0;
+constexpr double kParkedSeekMs = 7100.0;
+constexpr double kParkedTarget = 4.0;
+constexpr double kPlayMs = 8000.0;
+
+// The R19 acceptance through the session: every request is honoured, the
+// pixels and the reported position follow the media position (never
+// target+clip), and a held transport scrubs to its seek rather than losing it.
+void exerciseSeekThroughSession(const std::string& clip) {
+    const int failuresBefore = gFailures;
+    std::string socket;
+    pid_t worker = -1;
+    const std::string spec =
+        "seek@" + std::to_string(static_cast<int>(kForwardMs)) + ":" + std::to_string(kForwardTarget)
+        + ",seek@" + std::to_string(static_cast<int>(kBackwardMs)) + ":"
+        + std::to_string(kBackwardTarget) + ",seek@" + std::to_string(static_cast<int>(kBurstMs))
+        + ":" + std::to_string(kBurstFirst) + ",seek@" + std::to_string(static_cast<int>(kBurstMs + 30))
+        + ":" + std::to_string(kBurstLast) + ",pause@" + std::to_string(static_cast<int>(kPauseMs))
+        + ",seek@" + std::to_string(static_cast<int>(kParkedSeekMs)) + ":"
+        + std::to_string(kParkedTarget) + ",play@" + std::to_string(static_cast<int>(kPlayMs));
+    const int fd = spawnScopedWorker("seekops", {"OPENSHOW_TEST_TRANSPORT_OPS=" + spec}, &socket,
+                                     &worker);
+    if (fd < 0) {
+        check(false, "the seek-schedule worker could be spawned and handed its script");
+        return;
+    }
+    gMediaErrors.clear();
+    const std::uint64_t scene = preparePresent(fd, lyricScene("Seek ops", "d1", clip, true));
+    check(scene != 0 && waitActive(fd, scene, nullptr), "the seek-scenario background goes on air");
+    // Sampling starts here, and the transport opened at the present, so the
+    // samples share the script's timeline to within a frame.
+    const std::vector<MediaSample> samples = sampleMedia(fd, 9000);
+
+    // The schedule is self-anchoring: the forward jump to kForwardTarget is
+    // unmistakable in the series, and it names the script's origin.
+    size_t anchor = 0;
+    bool anchored = false;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        if (samples[i].position > kForwardTarget - 0.4) {
+            anchor = i;
+            anchored = true;
+            break;
+        }
+    }
+    check(anchored,
+          "the scheduled forward seek presents near its target (nothing swallowed at the seam)");
+    if (!anchored) {
+        retireScopedWorker(fd, worker, socket, "the seek-schedule worker answers shutdown");
+        return;
+    }
+    const double originMs = samples[anchor].tMs;  // == kForwardMs, as observed
+    auto rel = [originMs](const MediaSample& sample) { return sample.tMs - originMs + kForwardMs; };
+
+    // 1. The clip must actually loop before the backward seek means anything:
+    //    the loop-continuous position climbs past the clip length.
+    bool wrapped = false;
+    size_t wrapAt = samples.size();
+    for (size_t i = anchor + 1; i < samples.size(); ++i) {
+        if (samples[i].position > kBackwardClipLength + 0.2) {
+            wrapped = true;
+            wrapAt = i;
+            break;
+        }
+    }
+    check(wrapped, "the transport looped, so the wrap continuity is in play before the seek back");
+
+    // 2. The backward seek after the wrap: the position returns to the target,
+    //    never to target + clip (R19's freeze: the picture held for a clip
+    //    because the wrap base survived the seek).
+    double minAfterBackward = 1e9;
+    double maxAfterBackward = -1e9;
+    size_t sawTarget = 0;
+    for (size_t i = wrapAt; i < samples.size(); ++i) {
+        const double at = rel(samples[i]);
+        if (at < kBackwardMs + 400.0 || at > kBurstMs - 150.0) {
+            continue;
+        }
+        minAfterBackward = std::min(minAfterBackward, samples[i].position);
+        maxAfterBackward = std::max(maxAfterBackward, samples[i].position);
+        if (samples[i].position >= kBackwardTarget - 0.15 &&
+            samples[i].position <= kBackwardTarget + 1.2) {
+            ++sawTarget;
+        }
+    }
+    check(sawTarget > 0, "the backward seek after the wrap presents the TARGET");
+    check(minAfterBackward < kBackwardTarget + 1.0 && maxAfterBackward < kBackwardClipLength,
+          "and never the target plus a clip");
+
+    // 3. The burst: two requests 30 ms apart. The newest is the audience's
+    //    request; sitting on the first one (or on the pre-burst position) is
+    //    the swallow R19 names.
+    double minBurst = 1e9;
+    double maxBurst = -1e9;
+    size_t burstSamples = 0;
+    for (const auto& sample : samples) {
+        const double at = rel(sample);
+        if (at < kBurstMs + 250.0 || at > kPauseMs - 300.0) {
+            continue;
+        }
+        ++burstSamples;
+        minBurst = std::min(minBurst, sample.position);
+        maxBurst = std::max(maxBurst, sample.position);
+    }
+    check(burstSamples >= 3, "the burst window was sampled");
+    check(maxBurst < kBurstFirst - 0.8,
+          "the burst lands on its NEWEST target, not on the superseded one");
+    check(minBurst < kBurstLast + 0.7, "and the newest target is really where the media is");
+
+    // 4. The hold: playing goes false, the position stops, and the fault
+    //    report stays empty — a parked transport is not a broken one. The
+    //    window ends where the parked seek is issued; after it the position
+    //    moves on purpose (assertion 5), so including it here would contradict
+    //    the hold check below.
+    bool parkedSawPlaying = false;
+    double parkedMin = 1e9;
+    double parkedMax = -1e9;
+    size_t parkedSamples = 0;
+    for (const auto& sample : samples) {
+        const double at = rel(sample);
+        if (at < kPauseMs + 200.0 || at > kParkedSeekMs - 200.0) {
+            continue;
+        }
+        ++parkedSamples;
+        parkedSawPlaying = parkedSawPlaying || sample.playing;
+        parkedMin = std::min(parkedMin, sample.position);
+        parkedMax = std::max(parkedMax, sample.position);
+        if (!sample.error.empty()) {
+            check(false, "a held transport reports no fault");
+            break;
+        }
+    }
+    check(parkedSamples >= 3, "the held window was sampled");
+    check(!parkedSawPlaying, "a held background is not reported as playing");
+    check(parkedMax - parkedMin < 0.05, "and its position is held while parked");
+
+    // 5. The seek issued while parked SCRUBS: a held transport shows where the
+    //    media is now, so the position moves to the target while playing stays
+    //    false (the clock is frozen; the picture is not). It is also the
+    //    resume's position — swallowed, playback would continue from the
+    //    parked value (about 6.9 s here — a wrapped hold) instead of the target.
+    bool parkedSeekScrubbed = false;
+    double scrubMin = 1e9;
+    double scrubMax = -1e9;
+    size_t scrubSamples = 0;
+    for (const auto& sample : samples) {
+        const double at = rel(sample);
+        if (at < kParkedSeekMs + 400.0 || at > kPlayMs - 200.0) {
+            continue;
+        }
+        ++scrubSamples;
+        scrubMin = std::min(scrubMin, sample.position);
+        scrubMax = std::max(scrubMax, sample.position);
+        if (sample.position >= kParkedTarget - 0.15 && !sample.playing) {
+            parkedSeekScrubbed = true;
+        }
+    }
+    check(scrubSamples >= 3, "the window between the parked seek and the resume was sampled");
+    check(parkedSeekScrubbed,
+          "a seek issued while held presents its target: the held picture scrubs");
+    check(scrubMax - scrubMin < 0.5,
+          "and scrubbing does not unfreeze the transport: it parks at the target");
+
+    // 6. The resume: play continues FROM the scrubbed target.
+    const MediaSample* firstAfterPlay = nullptr;
+    double maxAfterPlay = -1e9;
+    bool resumedPlaying = false;
+    for (const auto& sample : samples) {
+        if (rel(sample) < kPlayMs + 300.0) {
+            continue;
+        }
+        if (firstAfterPlay == nullptr) {
+            firstAfterPlay = &sample;
+        }
+        resumedPlaying = resumedPlaying || sample.playing;
+        maxAfterPlay = std::max(maxAfterPlay, sample.position);
+    }
+    check(firstAfterPlay != nullptr && firstAfterPlay->position >= kParkedTarget - 0.1,
+          "the seek issued while parked IS the position playback resumes from");
+    check(resumedPlaying, "and the transport plays again after the held window");
+    check(maxAfterPlay < kBackwardClipLength,
+          "the resumed position stays in the clip (no target+clip on resume)");
+
+    // Throughout: R19's seeks are refused only by the media, and this clip is
+    // whole, so nothing may have been reported.
+    for (const auto& sample : samples) {
+        if (!sample.error.empty()) {
+            check(false, "no scheduled seek on a readable clip reports a fault");
+            break;
+        }
+    }
+    check(gMediaErrors.empty(), "and the whole seek script pushes no media.error");
+    std::printf("   seek samples=%zu: min after backward %.2f, burst %.2f..%.2f, parked %.2f..%.2f, "
+                "scrubbed %.2f..%.2f, resumed from %.2f\n",
+                samples.size(), minAfterBackward, minBurst, maxBurst, parkedMin, parkedMax, scrubMin,
+                scrubMax, firstAfterPlay != nullptr ? firstAfterPlay->position : -1.0);
+    if (gFailures > failuresBefore) {  // the whole series is the diagnosis, only when one failed
+        std::printf("   seek series:");
+        for (const auto& sample : samples) {
+            std::printf(" %s%.1f", sample.playing ? "" : "P", sample.position);
+        }
+        std::printf("\n");
+    }
+    retireScopedWorker(fd, worker, socket, "the seek-schedule worker answers shutdown");
+}
+
+// A jump the audio REFUSES. Two workers run the same script: with the fault
+// knob armed the session must tell the operator, and with it disarmed the same
+// script must be silent — so the report is about the refusal, not about the
+// code path that notices it.
+void exerciseSeekRefusal(const std::string& audioClip) {
+    constexpr double kRefusedMs = 2500.0;
+    constexpr double kRefusedTarget = 0.5;
+    const std::string spec =
+        "seek@" + std::to_string(static_cast<int>(kRefusedMs)) + ":" + std::to_string(kRefusedTarget);
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool faulted = pass == 0;
+        const int failuresBefore = gFailures;
+        std::vector<std::string> env = {"OPENSHOW_TEST_TRANSPORT_OPS=" + spec};
+        if (faulted) {
+            env.push_back("OPENSHOW_FAULT_AUDIO_SEEK_FAIL=1");
+        }
+        std::string socket;
+        pid_t worker = -1;
+        const int fd = spawnScopedWorker(faulted ? "seekrefuse" : "seekok", env, &socket, &worker);
+        if (fd < 0) {
+            check(false, "the seek-refusal worker could be spawned");
+            return;
+        }
+        const std::uint64_t scene = preparePresent(fd, lyricScene("Seek refuse", "d2", audioClip, true));
+        check(scene != 0 && waitActive(fd, scene, nullptr),
+              faulted ? "the faulted-audio-seek background goes on air"
+                      : "the clean-audio-seek background goes on air");
+        const bool rolling = waitMedia(
+            fd,
+            [](const boost::json::object& media) {
+                return media.contains("playing") && media.at("playing").as_bool() &&
+                       numberOf(media, "position") > 0.0;
+            },
+            6000);
+        check(rolling, faulted ? "the picture plays before the refused jump"
+                               : "the picture plays before the clean jump");
+        if (!rolling) {
+            retireScopedWorker(fd, worker, socket, "the seek-refusal worker answers shutdown");
+            continue;
+        }
+        // The lane decides what a sticky error MEANS on this machine: a
+        // healthy lane leaves the sync fault as the only report on file, while
+        // a machine without an audio server has its own (typed) complaint to
+        // make first. The refusal assertions differ accordingly.
+        const std::string laneBefore = textOf(mediaOf(status(fd)), "audio");
+        const bool laneFault = laneBefore == "degraded" || laneBefore == "no-output";
+        gMediaErrors.clear();
+        const std::vector<MediaSample> samples = sampleMedia(fd, 6000);
+        if (gFailures > failuresBefore) {  // a whole series is a diagnosis, not a report
+            std::printf("   %s seek series:", faulted ? "faulted" : "clean");
+            for (const auto& sample : samples) {
+                std::printf(" %.1f", sample.position);
+            }
+            std::printf("\n");
+        }
+
+        size_t refusals = 0;
+        for (const auto& notification : gMediaErrors) {
+            if (textOf(notification, "message").find("refused") != std::string::npos) {
+                ++refusals;
+            }
+        }
+        bool landedOnTarget = false;
+        bool everPlaying = false;
+        std::string lastError;
+        for (const auto& sample : samples) {
+            everPlaying = everPlaying || sample.playing;
+            if (!sample.error.empty()) {
+                lastError = sample.error;
+            }
+            if (sample.tMs > kRefusedMs + 500.0 && sample.position >= kRefusedTarget - 0.15 &&
+                sample.position <= kRefusedTarget + 1.5) {
+                landedOnTarget = true;
+            }
+        }
+        if (faulted) {
+            check(refusals >= 1,
+                  "a jump the audio refused pushes media.error naming the refusal");
+            check(lastError.find("refused") != std::string::npos || laneFault,
+                  "and the sticky report names the refusal (an unhealthy lane owns the text)");
+            check(everPlaying,
+                  "a refused jump does not stop the picture: the audience still has the video");
+            check(landedOnTarget,
+                  "the picture does move to the target — which is why the sync is the fault");
+            // The healthy-lane reconcile runs every frame and every heartbeat.
+            // A sync fault is NOT its to clear: the audio is healthy, just
+            // elsewhere, so the report must outlive both refreshes.
+            const size_t after = gMediaErrors.size();
+            sleepMs(1500);
+            const boost::json::object standing = mediaOf(status(fd));
+            check(textOf(standing, "error").find("refused") != std::string::npos || laneFault,
+                  "the standing sync fault survives the lane reconcile and the heartbeat");
+            check(after == gMediaErrors.size(),
+                  "and it is reported once, not once per reconcile");
+        } else {
+            check(refusals == 0, "the same script with a working seek pushes no refusal");
+            check(lastError.empty(), "and status.media.error stays empty");
+            check(landedOnTarget, "the clean transport's seek lands on the target through the session");
+        }
+        std::printf("   %s seek script: lane %s, %zu refusal notification(s), error '%s'\n",
+                    faulted ? "faulted" : "clean", laneBefore.c_str(), refusals,
+                    lastError.empty() ? "none" : lastError.c_str());
+        retireScopedWorker(fd, worker, socket, "the seek-refusal worker answers shutdown");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1008,6 +1419,17 @@ int main(int argc, char** argv) {
     // over the compositor, and this one needs a sink attempt of its own.
     if (audioOk) {
         exerciseAudioStartFailure(audioClip, videoA);
+    }
+
+    // --- task 6.7d (review R19): seeks through the whole session ---
+    //
+    // Each of these owns its worker (the transport schedule and the seek-fault
+    // knob are read at spawn), so they run once the shared worker is gone.
+    exerciseSeekThroughSession(videoA);
+    if (audioOk) {
+        exerciseSeekRefusal(audioClip);
+    } else {
+        std::printf("   skipped the seek-refusal scenario (no audio fixture)\n");
     }
 
     ::unlink(corrupt.c_str());
