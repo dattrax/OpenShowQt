@@ -39,6 +39,39 @@ constexpr int kStatusPollMs = 500;
 // controls (task 3.4). Bounded; the worker prunes its own store too.
 constexpr int kSceneMirrorSize = 32;
 
+// How many requests may be waiting on the worker at once (task 6.8b, review
+// R11). A reply is owed for each of them, so this is a bound on the queue the
+// UI builds on the worker's behalf — and before it there was none: the status
+// poll fired every 500 ms into QLocalSocket whatever the worker was doing, so
+// a worker that stopped answering was followed by an ever-longer list of
+// requests that could never be answered. Sixty-four is far beyond anything the
+// UI issues at once (a go is a prepare plus at most a present), and past it the
+// honest answer is "the worker has not replied to what you already sent", not
+// "here is one more".
+constexpr int kMaxInFlightRequests = 64;
+
+// How much unwritten request traffic the socket may hold. Generous by design,
+// because it only binds when the WORKER has stopped draining: 4 MiB is ten of
+// the largest scenes this build's own budgets allow (the every-budget slide
+// measured in task 6.8a is 408 KiB inside its frame) or thousands of ordinary
+// commands. Beyond it a request is refused with the reason rather than added to
+// a backlog nobody is reading, and if the backlog is still there a deadline
+// later the connection is closed — a worker that has taken no byte in that long
+// is not coming back, and the operator needs to know rather than keep clicking.
+constexpr qint64 kMaxQueuedWriteBytes = 4 * 1024 * 1024;
+// How long the worker may take NO byte at all before the connection is ended,
+// and how often that clock is read while the watch is armed. The window runs
+// from the last byte this side managed to hand over, exactly as the worker's own
+// write deadline does, because the two things that look like a verdict are not:
+// the queue's depth says nothing (a queue that is refusing requests is by
+// construction already at its bound), and bytesToWrite() moves by ~100 KiB on
+// accounting alone with a peer that has read nothing — both measured on this
+// task's fixtures. Whether bytes are actually leaving is the only question that
+// separates a worker that is slow from one that is gone, and slow must never
+// cost a worker its session.
+constexpr int kWriteStallMs = 2000;
+constexpr int kWriteStallTickMs = 250;  // only ticks while a refusal has armed it
+
 }  // namespace
 
 WorkerController::WorkerController(QObject* parent) : QObject(parent) {
@@ -55,6 +88,23 @@ WorkerController::WorkerController(QObject* parent) : QObject(parent) {
     // worker dies, or patience runs out.
     fConnectRetry.setInterval(kConnectRetryMs);
     connect(&fConnectRetry, &QTimer::timeout, this, &WorkerController::tryConnect);
+    // Armed by a refusal to queue more (watchWriteBacklog) and then read on a
+    // short tick: what ends the connection is the worker taking no byte for
+    // kWriteStallMs, not how deep the queue happens to be (task 6.8b, review R11).
+    fWriteStallDeadline.setSingleShot(false);
+    fWriteStallDeadline.setInterval(kWriteStallTickMs);
+    connect(&fWriteStallDeadline, &QTimer::timeout, this,
+            &WorkerController::onWriteStallExpired);
+    // The one fact that clock needs: when the worker last took a byte. Qt emits
+    // this as it hands its write buffer to the kernel, which on a stream socket
+    // only proceeds as far as the peer's window allows — so when it stops firing,
+    // the peer has stopped reading. The 0-length emission at the end of a flush is
+    // not progress and does not count.
+    connect(&fSocket, &QLocalSocket::bytesWritten, this, [this](qint64 bytes) {
+        if (bytes > 0) {
+            fLastByteOutAt = std::chrono::steady_clock::now();
+        }
+    });
     connect(&fProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
             setStatus(QStringLiteral("worker failed to start"));
@@ -128,6 +178,11 @@ void WorkerController::onSocketConnected() {
     ++fConnectionGeneration;
     fDecoder.reset();
     fPendingRequests.clear();
+    fStatusRequestId = 0;
+    fWriteStallDeadline.stop();  // a new connection has a new backlog to mean it with
+    fWriteStalled = false;
+    fWriteStalledBytes = 0;
+    fLastByteOutAt = std::chrono::steady_clock::now();
     setStatus(QStringLiteral("handshaking..."));
     boost::json::object params = proto::helloParams("openshow-ui", proto::kProtocolMajor,
                                                     proto::kProtocolMinor);
@@ -138,6 +193,8 @@ void WorkerController::onSocketConnected() {
 void WorkerController::onSocketDisconnected() {
     fConnected = false;
     fHandshakeDone = false;
+    fStatusRequestId = 0;
+    fWriteStallDeadline.stop();
     closePreviewSegment();
     resetSceneTracking();
     fMediaPlaying = false;
@@ -146,13 +203,19 @@ void WorkerController::onSocketDisconnected() {
     emit mediaChanged();
     emit stateChanged();
     if (!fShutdownRequested) {
-        setStatus(QStringLiteral("worker connection lost"));
+        // A connection this side closed because the worker had stopped reading
+        // says so: "connection lost" would leave the operator looking for a
+        // crash in a worker that is still running (task 6.8b, review R11).
+        setStatus(fWriteStalled ? writeStallMessage()
+                                : QStringLiteral("worker connection lost"));
     }
 }
 
 void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus) {
     fConnected = false;
     fOutputStopped = true;
+    fStatusRequestId = 0;
+    fWriteStallDeadline.stop();
     closePreviewSegment();
     resetSceneTracking();
     fMediaPlaying = false;
@@ -164,9 +227,22 @@ void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exit
         setStatus(QStringLiteral("worker stopped (exit %1)").arg(exitCode));
     } else if (exitStatus == QProcess::CrashExit) {
         setStatus(QStringLiteral("worker crashed"));
+    } else if (fWriteStalled) {
+        // Keep the reason this side hung up: "worker exited (0)" would read as
+        // if nothing had gone wrong, when what went wrong was that the worker
+        // stopped reading and the operator is the one who ended it.
+        setStatus(writeStallMessage().append(
+            QStringLiteral(" (worker exited %1)").arg(exitCode)));
     } else {
         setStatus(QStringLiteral("worker exited (%1)").arg(exitCode));
     }
+}
+
+QString WorkerController::writeStallMessage() const {
+    return QStringLiteral("the worker has not read a byte for %1 s with %2 KiB of requests "
+                          "queued: the connection is closed")
+        .arg(kWriteStallMs / 1000)
+        .arg(static_cast<qulonglong>(fWriteStalledBytes / 1024));
 }
 
 void WorkerController::onSocketReady() {
@@ -212,6 +288,9 @@ void WorkerController::handleReply(const boost::json::object& message) {
     }
     const PendingRequest pending = pendingEntry.value();
     fPendingRequests.erase(pendingEntry);
+    if (id == fStatusRequestId) {
+        fStatusRequestId = 0;  // the poll is answered: the next tick may ask again
+    }
     if (pending.connection != fConnectionGeneration) {
         return;  // written on a connection that is gone
     }
@@ -462,9 +541,18 @@ void WorkerController::handleReply(const boost::json::object& message) {
 }
 
 void WorkerController::pollStatus() {
-    if (fConnected && fHandshakeDone) {
-        sendRequest("output.status", {});
+    if (!fConnected || !fHandshakeDone) {
+        return;
     }
+    // One status request on the wire at a time (task 6.8b, review R11). The
+    // poll asks "what does the output look like", and a second identical
+    // question behind an unanswered first one cannot be answered any better —
+    // it only lengthens the queue in front of the commands that need the
+    // socket. The next tick asks again, and by then the answer is fresher.
+    if (fStatusRequestId != 0) {
+        return;
+    }
+    fStatusRequestId = sendRequest("output.status", {});
 }
 
 void WorkerController::setLayerEnabled(const QString& name, bool enabled) {
@@ -730,6 +818,25 @@ std::int64_t WorkerController::sendRequest(const char* method, boost::json::obje
                       .arg(static_cast<qulonglong>(proto::kMaxMessageBytes / 1024u)));
         return 0;
     }
+    // The two bounds of task 6.8b, checked before the id is consumed for the
+    // same reason as above: a request that is not going to be answered must not
+    // exist. Both refuse in the client with the reason, and neither touches the
+    // connection — the worker gets the chance to come back on its own.
+    if (fSocket.bytesToWrite() + static_cast<qint64>(wire.size()) > kMaxQueuedWriteBytes) {
+        setStatus(QStringLiteral("%1 was not sent: %2 KiB of requests are already waiting "
+                                 "for the worker, which is not reading them")
+                      .arg(QString::fromLatin1(method))
+                      .arg(static_cast<qulonglong>(fSocket.bytesToWrite() / 1024)));
+        watchWriteBacklog();
+        return 0;
+    }
+    if (fPendingRequests.size() >= static_cast<size_t>(kMaxInFlightRequests)) {
+        setStatus(QStringLiteral("%1 was not sent: %2 requests are already waiting for the "
+                                 "worker to reply")
+                      .arg(QString::fromLatin1(method))
+                      .arg(kMaxInFlightRequests));
+        return 0;
+    }
     ++fNextId;
     // Record before writing: the reply to this id must find its request,
     // tagged with the connection it belongs to (task 6.3a).
@@ -741,6 +848,48 @@ std::int64_t WorkerController::sendRequest(const char* method, boost::json::obje
     return id;
 }
 
+void WorkerController::watchWriteBacklog() {
+    // Called by the two paths that had to refuse a message for want of backlog
+    // room. The refusal IS the signal: by the time a request is accepted the
+    // queue is under the budget by construction, so testing the depth here armed
+    // nothing at exactly the depth that was refusing — an earlier version did,
+    // and its deadline never fired.
+    if (!fWriteStallDeadline.isActive()) {
+        fWriteStallDeadline.start();
+    }
+}
+
+void WorkerController::onWriteStallExpired() {
+    if (!fConnected || fShutdownRequested) {
+        fWriteStallDeadline.stop();
+        return;
+    }
+    const qint64 queued = fSocket.bytesToWrite();
+    if (queued == 0) {
+        fWriteStallDeadline.stop();  // the worker caught up: nothing is owed
+        return;
+    }
+    const auto idleMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - fLastByteOutAt)
+                            .count();
+    if (idleMs < kWriteStallMs) {
+        // Bytes are moving, so this worker is behind rather than gone, and a
+        // worker that is merely slow must never lose its session. This is the
+        // same measurement the worker's own write deadline makes from its side.
+        return;
+    }
+    // Not one byte has reached the worker in the whole window while this side
+    // still owes what it has queued. Keeping the connection would only mean more
+    // of the same, so: close, and let the disconnect path say WHY, with the depth
+    // captured here because abort() discards the buffer the number came from
+    // (task 6.3a's reset of the intents that can no longer be confirmed follows on
+    // disconnected()).
+    fWriteStallDeadline.stop();
+    fWriteStalled = true;
+    fWriteStalledBytes = queued;
+    fSocket.abort();  // the backlog cannot be delivered, and must not be replayed
+}
+
 void WorkerController::sendNotification(const char* method, boost::json::object params) {
     std::string wire;
     if (!proto::appendFrame(proto::makeNotification(method, std::move(params)), &wire)) {
@@ -750,6 +899,18 @@ void WorkerController::sendNotification(const char* method, boost::json::object 
         // slot and a sequence, so arriving here means a bug rather than input.
         setStatus(QStringLiteral("%1 could not be sent: it does not fit this transport")
                       .arg(QString::fromLatin1(method)));
+        return;
+    }
+    // Same backlog bound as a request: a notification is droppable by contract
+    // (the preview consumer works off the newest frame it is given, and the
+    // worker re-reports state), so it is the first thing to lose when the worker
+    // has stopped reading.
+    if (fSocket.bytesToWrite() + static_cast<qint64>(wire.size()) > kMaxQueuedWriteBytes) {
+        setStatus(QStringLiteral("%1 was dropped: the worker is not reading, and %2 KiB of "
+                                 "traffic is already queued for it")
+                      .arg(QString::fromLatin1(method))
+                      .arg(static_cast<qulonglong>(fSocket.bytesToWrite() / 1024)));
+        watchWriteBacklog();
         return;
     }
     fSocket.write(wire.data(), static_cast<qint64>(wire.size()));

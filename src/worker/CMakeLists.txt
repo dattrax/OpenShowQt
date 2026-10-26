@@ -22,6 +22,16 @@ if(OPENSHOW_LIBRT)
   target_link_libraries(openshow-worker-preview PUBLIC ${OPENSHOW_LIBRT})
 endif()
 
+# The outbound queue (task 6.8b, review R11) is header-only, and its rules —
+# which frames may be replaced, which may be dropped, when the queue says no —
+# are worth pinning headless against the real object rather than only through a
+# live socket. This carries the worker's include root and the protocol limit its
+# byte budget is taken from.
+add_library(openshow-worker-rpc-headers INTERFACE)
+target_include_directories(openshow-worker-rpc-headers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(openshow-worker-rpc-headers INTERFACE openshow::protocol)
+add_library(openshow::worker_rpc_headers ALIAS openshow-worker-rpc-headers)
+
 # The output layer model, the production compositor (task 6.1b) and scene
 # text (task 3.1). A library so the headless fixture tests can lay out and
 # render scenes without the worker's main(), window or Vulkan. The

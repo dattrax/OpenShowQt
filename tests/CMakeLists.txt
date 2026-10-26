@@ -18,6 +18,14 @@ add_executable(protocol_tests
 target_link_libraries(protocol_tests PRIVATE openshow::protocol)
 add_test(NAME protocol_tests COMMAND protocol_tests)
 
+# Task 6.8b (review R11): the rules of the queue the worker holds for a frontend
+# that has stopped reading — replies are never dropped, notifications coalesce by
+# key, the budget refuses rather than grows, and a frame part-way down the wire
+# is never rewritten. Header-only object, so this runs in both presets.
+add_executable(outbound_queue_tests outbound_queue_tests.cpp)
+target_link_libraries(outbound_queue_tests PRIVATE openshow::worker_rpc_headers)
+add_test(NAME outbound_queue_tests COMMAND outbound_queue_tests)
+
 # Task 6.5 (review R5): preview slot ownership is proven, not assumed —
 # only the exact published sequence releases a slot, odd/stale/future/
 # duplicate/out-of-range releases free nothing, and the geometry is
@@ -203,6 +211,22 @@ target_link_libraries(rpc_limits_tests PRIVATE openshow::protocol openshow::scen
 add_test(NAME worker_rpc_limits
   COMMAND rpc_limits_tests $<TARGET_FILE:openshow-worker>)
 set_tests_properties(worker_rpc_limits PROPERTIES LABELS display TIMEOUT 180)
+
+# Task 6.8b (review R11) over a live worker: what the transport does with a
+# frontend that stops paying attention. A peer that reads nothing is dropped by
+# the write deadline alone — with no further traffic to wake it — and the worker
+# exits with it; a peer that asks for four times the queue budget receives no
+# more than the budget and is ended by the bound rather than the clock; a peer
+# that hiccups has every command answered and sees its preview notifications
+# coalesced to one per slot; and a peer that reads a trickle for longer than the
+# deadline is never dropped, because the deadline measures progress. Every
+# scenario ends its worker, so each owns one.
+add_executable(rpc_transport_tests rpc_transport_tests.cpp)
+target_link_libraries(rpc_transport_tests PRIVATE openshow::protocol
+  openshow::worker_rpc_headers)
+add_test(NAME worker_rpc_transport
+  COMMAND rpc_transport_tests $<TARGET_FILE:openshow-worker>)
+set_tests_properties(worker_rpc_transport PROPERTIES LABELS display TIMEOUT 300)
 
 # Task 5.5 acceptance: background video, preload and media visibility
 # over a live --socket session: lyrics preserve playback (the media

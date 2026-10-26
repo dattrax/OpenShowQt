@@ -17,6 +17,19 @@
  * now validates scenes before sending, every payload these fixtures hand the
  * controller is a real compiled scene rather than a sketch of one.
  *
+ * Task 6.8b (the other half of R11) added S9, S10 and S11: what the client does
+ * with a worker that stops being a useful peer. The peer has three modes for
+ * that — "never-answer", which takes every request and answers nothing,
+ * "stop-reading", which stops calling recv forever, and "stall-then-read",
+ * which stops and then starts again — because the properties at stake are
+ * different: a client may keep a bounded number of requests outstanding, and a
+ * bounded number of BYTES unwritten, and past either it must refuse with the
+ * rule named rather than grow; but a peer that comes BACK must not have been
+ * thrown away for the crime of having been slow. The report counts requests by
+ * method, the bytes it ever took, and whether it resumed, which is what proves a
+ * refused request never reached the wire, that the backlog stopped at its bound,
+ * and that a recovering worker kept its session.
+ *
  * These properties need a worker that is slow, refuses, and dies on cue, so
  * the fixtures supervise a scripted stand-in: this very binary re-executes
  * itself (via OPENSHOW_WORKER_PROGRAM) as a minimal RPC peer that speaks the
@@ -30,19 +43,33 @@
  *   fail-second-full answer the SECOND prepare carrying "RETAINME" with an
  *                    error (a restore that fails must stay retryable)
  *   clean            answer everything immediately
+ *   never-answer     answer the handshake, then take every request in silence
+ *                    (a wedged worker: in-flight requests can only pile up if
+ *                    the client lets them, and the status poll asks again only
+ *                    once the previous answer has landed)
+ *   stop-reading     answer the handshake, then never read another byte
+ *                    (the client's own write backlog is then the only thing
+ *                    left to bound, and its deadline the only thing left to
+ *                    close the connection)
+ *   stall-then-read  the same deafness for kDeafForMs and then reading again
+ *                    (the counter-scenario: the deadline measures whether the
+ *                    backlog is moving, so a worker that resumes keeps its
+ *                    session and its pending conversation)
  *
  * scene.present of a revision more than kStoreWindow (16, mirroring the
  * real worker's bounded store) behind the newest handed out is refused, so
  * a restore that still depended on the store being asked cannot hide that.
  *
  * Each child writes a small report (prepares, presents, requests for methods it
- * does not model, presented revision list) to OPENSHOW_FAKE_REPORT so the parent
+ * does not model, presented revision list, every request counted by method, and
+ * the bytes it ever took from the socket) to OPENSHOW_FAKE_REPORT so the parent
  * can prove WHICH requests the controller actually sent, not just the final
  * revision. No display, no GPU, no real worker.
  */
 
 #include <boost/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -51,6 +78,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <map>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -131,7 +160,13 @@ class FakeWorker {
 public:
     FakeWorker(std::string socketPath, std::string scenario, std::string reportPath)
         : fSocketPath(std::move(socketPath)), fScenario(std::move(scenario)),
-          fReportPath(std::move(reportPath)) {}
+          fReportPath(std::move(reportPath)) {
+        // The task 6.8b fixtures watch this file WHILE the peer is running: once
+        // a peer has stopped reading, the report is the only witness either side
+        // has, and a drain that is not written down did not happen.
+        fLiveReport = fScenario == "never-answer" || fScenario == "stop-reading" ||
+                      fScenario == "stall-then-read";
+    }
 
     int run() {
         ::unlink(fSocketPath.c_str());  // a previous child's stale listener
@@ -180,12 +215,15 @@ private:
             if (ready < 0) {
                 return;
             }
-            if (ready > 0) {
+            bool readBytes = false;
+            if (ready > 0 && !fStoppedReading) {
                 char buffer[4096];
                 const ssize_t count = ::recv(fClient, buffer, sizeof(buffer), 0);
                 if (count <= 0) {
                     return;  // the controller hung up
                 }
+                readBytes = true;
+                fBytesReceived += static_cast<std::int64_t>(count);
                 fDecoder.feed(std::string_view(buffer, static_cast<std::size_t>(count)));
                 boost::json::value message;
                 std::string error;
@@ -195,6 +233,45 @@ private:
                     }
                 }
             }
+            // Task 6.8b: the peer that stops reading. It has answered the
+            // handshake, so from here the controller is on its own with a peer
+            // that will not take a byte — exactly the state the write deadline
+            // exists for. The report keeps being rewritten because this peer
+            // cannot NOTICE the controller giving up on it: noticing would
+            // require reading, which is the thing it is refusing to do.
+            // "stall-then-read" is the same deafness with an expiry, for the
+            // fixture that proves a worker which resumes keeps its session.
+            if (!fDeafnessStarted && fHandshaked &&
+                (fScenario == "stop-reading" || fScenario == "stall-then-read")) {
+                fDeafnessStarted = true;
+                fStoppedReading = true;
+                if (fScenario == "stall-then-read") {
+                    fResumeAt = std::chrono::steady_clock::now() +
+                                std::chrono::milliseconds(kDeafForMs);
+                }
+                writeReport();
+            }
+            if (fStoppedReading) {
+                if (fResumeAt && std::chrono::steady_clock::now() >= *fResumeAt) {
+                    fStoppedReading = false;
+                    fResumed = true;
+                    fPacedReads = true;
+                    fResumeAt.reset();
+                    writeReport();
+                } else {
+                    if (++fIdleTicks % 5 == 0) {
+                        writeReport();
+                    }
+                    // Without this the poll would return instantly forever: data
+                    // is always waiting, and reading it is precisely what this
+                    // peer is not doing.
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    continue;
+                }
+            }
+            if (fScenario == "never-answer" && ++fIdleTicks % 5 == 0) {
+                writeReport();  // live counts, for the fixture that reads them mid-run
+            }
             const auto flushBefore = std::chrono::steady_clock::now();
             for (auto entry = fQueue.begin(); entry != fQueue.end();) {
                 if (entry->when <= flushBefore) {
@@ -203,6 +280,19 @@ private:
                 } else {
                     ++entry;
                 }
+            }
+            // A resumed peer is a SLOW peer: it takes the backlog in slices with
+            // a pause between them, so what the controller owes comes down over
+            // seconds rather than in one go. The pace is the whole point of
+            // this mode — at the moment the client's write deadline expires it
+            // then holds a backlog that is neither gone nor frozen, which is the
+            // case a "close unless the queue happens to be empty" rule would
+            // wrongly punish and a "close anyway" rule punishes outright.
+            if (fPacedReads && readBytes) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(kDrainPaceMs));
+            }
+            if (fLiveReport && ++fReportTicks % 10 == 0) {
+                writeReport();  // the drain is only observable through this file
             }
         }
     }
@@ -228,7 +318,13 @@ private:
                                     ? request.at("id").as_int64()
                                     : 0;
         const std::string method(request.at("method").as_string());
+        // Per-method accounting, because the task 6.8b scenarios are about which
+        // requests a bounded client sent and which it refused to send: "how many
+        // of THIS one arrived" is the only question that distinguishes a client
+        // that stopped at its in-flight bound from one that stopped polling.
+        ++fMethodCounts[method];
         if (method == "hello") {
+            fHandshaked = true;
             boost::json::object result{
                 {"application", "openshow-worker"},
                 {"version", "fake-for-6.3a"},
@@ -236,6 +332,14 @@ private:
                 {"capabilities", boost::json::array{}},
             };
             sendResult(id, std::move(result));
+            return;
+        }
+        // Task 6.8b: the worker that takes your command and never answers. This
+        // is not rudeness for its own sake — it is what a wedged worker looks
+        // like from the client, and it is the only way to watch in-flight
+        // requests pile up (or not) and to see whether the status poll keeps
+        // asking a question that has already been asked.
+        if (fScenario == "never-answer") {
             return;
         }
         if (method == "output.displays") {
@@ -351,17 +455,35 @@ private:
         for (const int revision : fPresented) {
             presented.push_back(revision);
         }
+        boost::json::object methods;
+        std::int64_t total = 0;
+        for (const auto& counted : fMethodCounts) {
+            methods[counted.first] = counted.second;
+            total += counted.second;
+        }
         boost::json::object report{
             {"scenario", fScenario},
             {"prepares", fPrepares},
             {"presents", fPresents},
             {"unknown", fUnknown},
             {"presented", std::move(presented)},
+            {"methods", std::move(methods)},
+            {"requests", total},
+            {"bytesReceived", fBytesReceived},
+            {"stoppedReading", fStoppedReading},
+            {"resumed", fResumed},
         };
-        if (std::FILE* file = std::fopen(fReportPath.c_str(), "wb")) {
+        // Written through a temporary file and renamed, so a parent reading this
+        // while the peer is mid-run sees either the old report or the new one and
+        // never a torn one: a partial read costs the fixture a retry second in
+        // which its own event loop is not turning, which is exactly the pause that
+        // makes a stalled-peer scenario measure the fixture instead of the code.
+        const std::string staging = fReportPath + ".tmp";
+        if (std::FILE* file = std::fopen(staging.c_str(), "wb")) {
             const std::string text = boost::json::serialize(boost::json::value(report));
             std::fwrite(text.data(), 1, text.size(), file);
             std::fclose(file);
+            std::rename(staging.c_str(), fReportPath.c_str());
         }
     }
 
@@ -382,7 +504,84 @@ private:
     int fFullPrepares = 0;  // prepares carrying the "RETAINME" marker
     int fUnknown = 0;       // requests for methods this peer does not model
     int fActive = 0;
+    // Task 6.8b: what a peer that stops being useful has to remember.
+    std::map<std::string, int> fMethodCounts;  // every request, by method
+    bool fHandshaked = false;
+    bool fDeafnessStarted = false;  // the peer has taken the handshake and gone quiet
+    bool fStoppedReading = false;  // stop-reading: recv is off from here
+    bool fResumed = false;         // stall-then-read: and recv is on again
+    bool fPacedReads = false;      // stall-then-read: reading, but slowly
+    bool fLiveReport = false;      // the 6.8b scenarios read the file mid-run
+    std::optional<std::chrono::steady_clock::time_point> fResumeAt;
+    std::int64_t fBytesReceived = 0;
+    int fIdleTicks = 0;   // keeps the report current while this peer is stalled
+    int fReportTicks = 0;  // and while it is busy draining
+    // How long "stall-then-read" goes deaf, and how slowly it reads afterwards.
+    // Together these two set what the client's write deadline sees when it
+    // expires: the deafness has to be long enough for the client to fill its
+    // backlog budget and arm the window, and the resume has to come early enough
+    // — and drain at about a megabyte per second — for several megabytes to have
+    // LEFT that backlog by the 2 s verdict while some of it is still owed.
+    static constexpr int kDeafForMs = 900;
+    static constexpr int kDrainPaceMs = 2;  // ~4 KiB per slice: ~2 MiB/s
 };
+
+// A number from the peer's report, or -1. readReport yields an empty object
+// while the child has not written its first one, so a fixture that watches the
+// file mid-run has to read it the way it reads a partially filled ledger.
+std::int64_t reportNumber(const boost::json::object& report, const char* key) {
+    const auto entry = report.find(key);
+    if (entry == report.end() || !entry->value().is_number()) {
+        return -1;
+    }
+    return entry->value().to_number<std::int64_t>();
+}
+
+// The count the scripted peer recorded for one method. Absent from the report
+// means it received none, which for these scenarios is the assertion, so a
+// missing key is 0 and only a malformed report is -1.
+std::int64_t methodCount(const boost::json::object& report, const char* method) {
+    const auto methods = report.find("methods");
+    if (methods == report.end() || !methods->value().is_object()) {
+        return -1;
+    }
+    const auto entry = methods->value().as_object().find(method);
+    return entry == methods->value().as_object().end()
+               ? 0
+               : entry->value().to_number<std::int64_t>();
+}
+
+// The backlog depth a status line reports, in KiB: the number immediately
+// before the unit. -1 for a line that says nothing about queued bytes. This is
+// how the stalled-peer fixture reads the client's own measurement of what it is
+// holding, which is the only measurement that exists once the peer has stopped
+// reading — and abort() discards the buffer the number came from.
+qint64 queuedKiBIn(const QString& text) {
+    const int at = text.indexOf(QStringLiteral(" KiB"));
+    if (at < 0) {
+        return -1;
+    }
+    int begin = at;
+    while (begin > 0 && text[begin - 1].isDigit()) {
+        --begin;
+    }
+    if (begin == at) {
+        return -1;
+    }
+    return text.mid(begin, at - begin).toLongLong();
+}
+
+// Runs the event loop for a wall-clock window with no condition to wait for.
+// The stalled-peer scenarios have no reply to watch for; what they measure is
+// what did NOT arrive while the loop kept turning.
+void pumpEventsFor(int windowMs) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(windowMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        QCoreApplication::processEvents();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
 
 // --- scenes for the fixtures -------------------------------------------------
 
@@ -979,6 +1178,295 @@ void scenarioRefusedLocally() {
           "local: the over-budget frame never reached the worker (the ordinary one did)");
 }
 
+// S9 (task 6.8b, review R11): a worker that takes every command and answers
+// nothing. Once the worker is the thing that has stopped, the client is the only
+// party left with a bound on how deep the hole gets, and two rules decide it: a
+// bounded number of requests may be outstanding, and the status refresh may not
+// ask a second question while the first is still unanswered. Both are read from
+// the peer's own counts, because the honest answer to "did the client stop?" is
+// "count what arrived".
+void scenarioUnansweredRequestsStayBounded() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "never-answer", 1);
+    const std::string report = tempPath("never-answer");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "unanswered: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    // Five of the refresh poll's 500 ms ticks, every one of them arriving on a
+    // status request that will never be answered. Before task 6.8b each tick
+    // added a request of its own; now the tick that finds one outstanding asks
+    // nothing, because the answer to "what does the output look like" is already
+    // on its way and a second copy only lengthens the queue in front of the
+    // commands the operator actually typed.
+    pumpEventsFor(2600);
+    boost::json::object counts = readReport(report);
+    check(methodCount(counts, "output.status") == 1,
+          "unanswered: the refresh poll asked once and waited — five poll ticks passed "
+          "against an unanswered request, and only one status request arrived");
+
+    // Now the operator keeps working. Commands are accepted while the worker
+    // owes answers, and then the client says no — naming the rule and the count,
+    // because "the worker is slow" is not something the operator can act on.
+    for (int i = 0; i < 200; ++i) {
+        controller.setLayerEnabled(QStringLiteral("clock"), i % 2 == 0);
+    }
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(
+                       QStringLiteral("requests are already waiting for the worker to reply"));
+               }),
+               "unanswered: past the in-flight bound a command is refused in the client")) {
+        std::fprintf(stderr, "  status was: %s\n",
+                     controller.statusText().toLocal8Bit().constData());
+    }
+    if (!check(controller.statusText().contains(QStringLiteral("64 requests")),
+               "unanswered: the refusal says how many are outstanding, which is the "
+               "difference between a wedged worker and a mistyped command")) {
+        std::fprintf(stderr, "  status was: %s\n",
+                     controller.statusText().toLocal8Bit().constData());
+    }
+
+    // The bound is on what the worker receives, not on what the client claims:
+    // every request it accepted is counted by the peer, every refused one is
+    // absent — no byte, and no pending entry waiting for an answer that cannot
+    // come. The answered handshake is subtracted because it is not in flight.
+    pumpEventsFor(300);
+    counts = readReport(report);
+    const std::int64_t outstanding =
+        counts.at("requests").as_int64() - methodCount(counts, "hello");
+    check(outstanding == 64,
+          "unanswered: exactly the bound worth of requests reached the peer, from 200 "
+          "attempts and counting");
+    check(methodCount(counts, "output.status") == 1,
+          "unanswered: and the refresh poll still has not piled a second question behind "
+          "the first, 200 commands later");
+
+    // Refusing is not hanging up: the worker is alive and may yet answer, and the
+    // operator's session — the scene mirror, the restore, the intent — is worth
+    // keeping. A client that "fixed" this by disconnecting would take the rig
+    // down for a worker that was only behind.
+    check(controller.isConnected(),
+          "unanswered: a refused command does not end the session");
+
+    // And supervision still ends the process on its own schedule: the shutdown
+    // request itself is refused by the same bound, so what remains is the
+    // grace-then-terminate path, which is bounded without needing the worker.
+    const auto shutdownStarted = std::chrono::steady_clock::now();
+    controller.shutdownNow();
+    const long shutdownMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - shutdownStarted)
+                                .count();
+    check(shutdownMs <= 5000, "unanswered: shutdown stays bounded with a worker that answers "
+                              "nothing (grace, then terminate)");
+
+    counts = readReport(report);
+    check(counts.at("requests").as_int64() - methodCount(counts, "hello") == 64,
+          "unanswered: the bound held through shutdown too — the refused shutdown added "
+          "nothing to the peer");
+}
+
+// S10 (task 6.8b, review R11): a worker that stops reading altogether. Here the
+// client's own socket buffer is the thing that grows, so the rules are its
+// backlog budget and the deadline that gives up on a peer which has taken no
+// byte. The budget has to answer with a refusal that names it; the depth has to
+// stop at the bound rather than run to whatever the operator's queue holds; the
+// deadline has to close the connection in bounded time; and the reason has to
+// reach the status line, because "worker connection lost" would send the
+// operator looking for a crash in a worker that is still sitting there.
+void scenarioWriteStallIsRefusedBoundedAndClosed() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "stop-reading", 1);
+    const std::string report = tempPath("stop-reading");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "stalled: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+    pumpEventsFor(250);  // let the peer take the handshake, then go deaf
+
+    // Commands with something behind them: 100 KiB of layer name each, so the
+    // backlog crosses its budget in tens of requests rather than tens of
+    // thousands. (The name is not a real layer on purpose: what is under test is
+    // the transport's backlog, and 100 KiB is comfortably inside the frame
+    // budget, so it is the backlog rule that answers and not 6.8a's.)
+    const QString bigName(100u * 1024u, QChar('l'));
+    qint64 deepestKiB = -1;
+    bool namedTheRule = false;
+    for (int i = 0; i < 90; ++i) {
+        controller.setLayerEnabled(bigName, i % 2 == 0);
+        const QString text = controller.statusText();
+        if (text.contains(QStringLiteral("which is not reading them"))) {
+            namedTheRule = true;
+        }
+        deepestKiB = std::max(deepestKiB, queuedKiBIn(text));
+    }
+    check(namedTheRule,
+          "stalled: a request over the backlog budget is refused, and the status line says "
+          "the worker is the half that is not reading");
+    check(deepestKiB >= 3900,
+          "stalled: the backlog really reached its budget, so the ceiling below is not "
+          "passing on a flood too small to have needed one");
+    check(deepestKiB <= 4200,
+          "stalled: and it stopped at the budget — 90 commands of 100 KiB became a queue of "
+          "the bound and nothing more");
+
+    // A backlog refusal is a refusal, not a hangup: the worker may yet start
+    // reading again, and dropping the session then would punish the operator for
+    // the worker's own stall.
+    check(controller.isConnected(),
+          "stalled: crossing the backlog budget does not by itself close the connection");
+
+    // The deadline is what closes it, on a peer that took no byte for the whole
+    // window — and it says so, because the alternative is an operator hunting
+    // for a crash that never happened.
+    const auto armed = std::chrono::steady_clock::now();
+    const bool closed = waitUntil([&controller] { return !controller.isConnected(); }, 4000);
+    const long closedAfter = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - armed)
+                                 .count();
+    check(closed, "stalled: a peer that takes no byte for the whole deadline is given up on, "
+                  "and the connection ends without the operator asking");
+    check(closedAfter >= 1000,
+          "stalled: the deadline is a window, not a hair trigger — a worker that resumes "
+          "reading keeps its session");
+    check(closedAfter <= 3600, "stalled: and it is prompt, so a stalled worker cannot hold "
+                               "the UI's traffic open indefinitely");
+    if (!check(controller.statusText().contains(QStringLiteral("has not read a byte")),
+               "stalled: the operator is told why the connection went")) {
+        std::fprintf(stderr, "  status was: %s\n",
+                     controller.statusText().toLocal8Bit().constData());
+    }
+    check(queuedKiBIn(controller.statusText()) >= 3900,
+          "stalled: the message carries how deep the queue was, because abort() discarded it "
+          "and the log is the operator's only evidence");
+
+    controller.shutdownNow();
+    const boost::json::object counts = readReport(report);
+    check(counts.at("stoppedReading").is_bool() && counts.at("stoppedReading").as_bool(),
+          "stalled: the peer really did stop reading, so the checks above describe a stalled "
+          "worker and not a merely busy one");
+    check(methodCount(counts, "layer.setEnabled") == 0,
+          "stalled: none of the flooded commands were even read by the peer, so the bound "
+          "that mattered was the client's");
+}
+
+// S11 (task 6.8b, review R11): the peer that comes back. S10 is the scenario in
+// which the write deadline has to close the connection; this is the one in which
+// it must NOT, and the difference between the two is the only thing a deadline is
+// allowed to measure — progress. The peer goes deaf long enough for the client to
+// fill its backlog budget and arm the window, then reads again, slowly, so that
+// at the moment of the verdict several megabytes have LEFT the queue while some of
+// it is still owed. A deadline that closes regardless drops a worker that was on
+// its way back; one that insists the queue be empty by then drops a worker that
+// was merely behind. Neither is the rule R11 asked for, and only this scenario
+// can tell them apart.
+void scenarioStalledThenResumingPeerKeepsItsSession() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "stall-then-read", 1);
+    const std::string report = tempPath("stall-then-read");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "resumed: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+    pumpEventsFor(200);  // let the peer take the handshake, then go deaf
+
+    // The same flood as S10 and the same first outcome: the backlog reaches its
+    // budget, requests are refused, and a refusal is what arms the window.
+    // Without that there is no verdict to wait for, so this is the premise of
+    // the scenario rather than one of its conclusions.
+    const QString bigName(100u * 1024u, QChar('l'));
+    qint64 deepestKiB = -1;
+    bool armed = false;
+    for (int i = 0; i < 90; ++i) {
+        controller.setLayerEnabled(bigName, i % 2 == 0);
+        const QString text = controller.statusText();
+        if (text.contains(QStringLiteral("which is not reading them"))) {
+            armed = true;
+        }
+        deepestKiB = std::max(deepestKiB, queuedKiBIn(text));
+    }
+    check(armed,
+          "resumed: the backlog hit the budget, so the deadline below has a real decision to "
+          "make about a real stalled worker");
+    check(deepestKiB >= 3900,
+          "resumed: and the queue really was full when the peer's attention came back");
+
+    // Hold the loop open past the two-second verdict, with nothing to wait for
+    // but the peer's own pace.
+    pumpEventsFor(2600);
+    check(controller.isConnected(),
+          "resumed: a peer that starts reading again inside the window keeps its session — the "
+          "deadline measures whether the backlog is moving, not how deep it found it");
+    if (!check(!controller.statusText().contains(QStringLiteral("has not read a byte")),
+               "resumed: and no one tells the operator the worker was given up on")) {
+        std::fprintf(stderr, "  status was: %s\n",
+                     controller.statusText().toLocal8Bit().constData());
+    }
+
+    // Surviving is not the same as being written off: what the client accepted is
+    // still owed, and a recovered socket pays the debt in full at the peer's own
+    // pace rather than having had it thrown away with the stall.
+    std::int64_t arrived = 0;
+    std::int64_t takenBytes = -1;
+    int quietRounds = 0;
+    for (int round = 0; round < 150 && quietRounds < 5; ++round) {
+        const boost::json::object counts = readReport(report);
+        const std::int64_t taken = reportNumber(counts, "bytesReceived");
+        quietRounds = taken == takenBytes ? quietRounds + 1 : 0;
+        takenBytes = taken;
+        arrived = methodCount(counts, "layer.setEnabled");
+        pumpEventsFor(100);
+    }
+    check(takenBytes >= 3 * 1024 * 1024,
+          "resumed: the backlog was delivered over the recovered connection, not discarded the "
+          "moment the peer became readable again");
+    check(arrived >= 30,
+          "resumed: every command the client had accepted eventually reached the worker "
+          "(the ones it refused are S10's subject, and never went out at all)");
+    check(controller.isConnected(),
+          "resumed: and the session outlived the drain it was carrying");
+
+    // And it is a working session, not merely an un-closed one: a later command
+    // travels, both ways, on the connection that was nearly given up on.
+    const std::int64_t beforeCommand = arrived;
+    controller.setLayerEnabled(QStringLiteral("clock"), true);
+    check(waitUntil(
+              [&report, beforeCommand] {
+                  return methodCount(readReport(report), "layer.setEnabled") > beforeCommand;
+              },
+              3000),
+          "resumed: a command after the storm still arrives, so the conversation survived and "
+          "not just the socket");
+
+    controller.shutdownNow();
+    const boost::json::object counts = readReport(report);
+    const auto resumed = counts.find("resumed");
+    check(resumed != counts.end() && resumed->value().is_bool() && resumed->value().as_bool(),
+          "resumed: the peer really did stop and start again, so the checks above describe a "
+          "recovering worker rather than one that was never stressed");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -1012,6 +1500,9 @@ int main(int argc, char* argv[]) {
     scenarioRestoreSurvivesStoreWindow();
     scenarioFailedRestoreRetry();
     scenarioRefusedLocally();
+    scenarioUnansweredRequestsStayBounded();
+    scenarioWriteStallIsRefusedBoundedAndClosed();
+    scenarioStalledThenResumingPeerKeepsItsSession();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "worker_controller_tests: %d failure(s)\n", gFailures);

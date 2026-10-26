@@ -562,12 +562,62 @@ Updated: 2026-10-25 (Europe/London).
   status; the notification rule is the worker's, so a third-party frontend
   that answers notifications is out of reach. Gates desktop **36/36**,
   headless **21/21**.
-- Exact next action: **6.8b** per the PLAN.md ledger — make RPC writes
-  nonblocking and bounded, coalesce polls/notifications, add deadlines and
-  synchronise connection ownership (R11: a stalled peer must not stall
-  rendering, grow queues without bound or prevent bounded shutdown, and
-  `fConnectionFd` has no owner across threads). Then continue the focused M6
-  leaves in order.
+- **6.8b — RPC transport made stall-proof (R11) — DONE.** Nothing waits on the
+  frontend at either end any more. **Worker:** the accepted socket is
+  `O_NONBLOCK` and everything owed to it goes through a new header-only
+  `OutboundQueue` (`src/worker/rpc/OutboundQueue.h`) whose byte budget **is**
+  the transport's frame budget (`kMaxQueuedBytes == protocol::kMaxMessageBytes`
+  = 1 MiB) with a 1024-frame backstop; a REPLY (empty key) is never dropped —
+  room is made by evicting queued NOTIFICATIONS only, never one with
+  `offset != 0` whose bytes are already in the peer's stream — and a reply that
+  still will not fit sets `replyRefused`, which the caller answers by naming
+  the budget in the log and closing. `serve()` polls on a 50 ms tick and
+  drains on **every** tick, not only on `POLLOUT`: a trickle reader against a
+  small receive buffer keeps `POLLOUT` off for whole seconds while reading
+  all the same, and the gated loop stopped writing entirely — T5 caught that
+  defect live. The write deadline (2 s) is measured from the **last byte the
+  peer took**, so a frontend owing more than the sockets hold is dropped only
+  when it stops, not when it is slow; notifications are collected into the
+  queue every tick without the session lock ever being held near the socket.
+  **`fConnectionFd` ownership** is fixed structurally: the serving thread
+  alone closes the descriptor, under `fConnectionMutex`, clearing the member
+  before the `close()`; `stop()` only `shutdown()`s it under the same mutex.
+  **UI:** `kMaxInFlightRequests = 64` (a 65th is refused with the pending ids
+  named), a 4 MiB unwritten-request bound whose refusal **arms** a 250 ms
+  backlog watch judging idle time since `QLocalSocket::bytesWritten(>0)` and
+  closing only with bytes still queued after 2 s, and one `output.status` on
+  the wire at a time. **Measured:** T1 a peer reading nothing is dropped
+  **2019 ms** after its last byte (898×525 B owed, no budget complaint); T2
+  four frame-budgets asked, **1432 of 7999** accepted, **87,907 B** received,
+  stream ended **7 ms** with the log naming the budget; T3 a deaf-but-connected
+  peer served **200 commands, 0 unanswered** while 28 preview frames owed
+  arrived as 4; T4 24×4 requests over 3.5 s of trickle, 0 unanswered; T5
+  **400 replies (~205 KiB) owed, 60 KiB taken over 3012 ms of trickle past the
+  deadline, 0 unanswered, still connected**; S9/S10/S11 pin the UI bounds, the
+  in-window close ("has not read a byte") and that a peer resuming inside the
+  window keeps its session. **Race evidence:** a ThreadSanitizer build (the
+  missing `libtsan` rpm unpacked locally, gcc's linker script shadowed with
+  `-B`) churning connect/request/SIGTERM generations shows **0** race
+  signatures naming `RpcServer` on the shipped tree and **20/40** generations
+  reporting exactly `RpcServer::stop()` vs `RpcServer::run()` under m16 — the
+  race R11 named, appearing precisely when the mutex is removed. The ~2450
+  glib/pipewire allocator races per run are pre-existing third-party noise,
+  identical in both sweeps, reported as the delta rather than suppressed.
+  **Mutations** m1 blocking send, m2 no deadline, m3 deadline ignoring
+  progress, m15 drain gated on `POLLOUT`, m4/m5 absolute bounds, m6/m6b/m7/m8
+  queue rules, m9–m14 UI rules: **16/16 CAUGHT** (m4b dropped: the frame cap
+  binds before a raised byte budget at 525-byte replies, so T2 cannot see it;
+  the unit fixture pins the byte bound in written-out units). Fixture lessons
+  that run: three survivors were the FIXTURE's fault — bounds measured against
+  the constant the mutant was raising, and mutants aimed at a fixture where
+  the rule is unobservable; all fixed, with the reasons recorded in the files.
+  Gates desktop **38/38** (157 s), headless **22/22** (40 s).
+- Exact next action: **6.10** per the PLAN.md ledger — add byte-limited decoded
+  asset caching, dimension/file limits, active-resource pins and
+  invalidation/retry (R12: many distinct 4K images must plateau at the chosen
+  budget, active/transition images must survive eviction, repaired same-path
+  files must recover, and no disk/decode work may happen in draw). Then
+  continue the focused M6 leaves in order (6.11a/b, 6.12, 6.13a/b).
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -3232,6 +3282,42 @@ of this work.
   Vulkan entry points are scope-resolved (instance GIPA for physical-device
   functions, GDPA for device functions) because this platform's loader can
   return raw ICD pointers from instance GIPA that crash on loader handles.
+- (2026-10-26, task 6.8b) An RPC server's outbound queue is shaped by two
+  rules and the transport's own number: its byte budget IS the frame budget
+  (a queue that buffers what the wire would never carry is a lie), and its
+  entry cap (1024) exists because the coalescing scan is linear in it. A
+  REPLY is sacred — losing one leaves a client unable to determine a
+  command's outcome, worse than a closed connection — so room is made only
+  from notifications, and never from one already part-way down the wire,
+  whose sent bytes are in the peer's stream and must stay aligned; a refused
+  reply is honest grounds to name the budget and close. The write deadline
+  measures PROGRESS (last byte the peer took), not elapsed debt, because
+  "slow" and "gone" are different peers and only one of them deserves
+  hanging up. The queue is drained on every poll tick, not on POLLOUT:
+  POLLOUT promises room, and a small-buffered trickle reader keeps it off
+  for seconds while reading all the same — gating on it recreated the very
+  stall the queue exists to remove (T5 caught it). fConnectionFd gets a
+  single owner by construction — the serving thread closes, stop() may only
+  shutdown() under fConnectionMutex — and TSan is the proof, not the
+  fixtures: races are invisible to tests that pass on the right
+  interleaving. On this host TSan needs the libtsan rpm unpacked locally
+  and gcc's linker script shadowed with -B; its reports must be read as a
+  DIFF against the ~2450 pre-existing glib/pipewire allocator races, not as
+  a zero. Fixture law this task paid for three times over: never measure a
+  bound against the constant under test (raise it in a mutant and the
+  fixture raises with it), pin a rule in the place it is observable
+  (notification replacement cannot be seen through a live worker whose
+  render thread gates each slot), and a trickle loop needs its sleep and
+  its maxBytes-capped recv or it is silently a different scenario.
+- (2026-10-26, task 6.8b) The UI's side of the same finding: a request
+  bound (kMaxInFlightRequests = 64) refuses to build the queue the worker
+  would never answer, and the write-stall watch is ARMED BY A REFUSAL rather
+  than running always — its verdict is idle time since QLocalSocket's
+  bytesWritten reported a byte, because bytesToWrite() drifts ~100 KiB
+  against a peer that is reading, while bytesWritten is the kernel saying
+  the peer took one. A connection is closed only when bytes are still
+  queued after the window; a peer that resumes inside it keeps its session
+  and its backlog.
 
 ## Output window log
 

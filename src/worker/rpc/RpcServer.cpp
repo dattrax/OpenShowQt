@@ -5,16 +5,22 @@
  * routing, the hello gate and the session calls — nothing else.
  */
 
+#include "rpc/OutboundQueue.h"
 #include "rpc/RpcServer.h"
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -35,18 +41,39 @@ namespace proto = openshow::protocol;
 
 constexpr int kPollTimeoutMs = 50;
 
-bool writeAll(int fd, const std::string& data) {
-    std::size_t offset = 0;
-    while (offset < data.size()) {
-        const ssize_t written = send(fd, data.data() + offset, data.size() - offset,
-                                     MSG_NOSIGNAL);
-        if (written < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return false;
+// How long the queue may go without ONE byte reaching the socket before the
+// frontend counts as gone. Any peer that reads at all makes progress and resets
+// it, so this never fires on a busy but living connection; it exists because
+// without it a peer that froze with a full socket buffer was served forever —
+// commands queued, disconnect undetected, shutdown waiting on a thread that
+// had no reason to notice.
+constexpr auto kWriteDeadline = std::chrono::milliseconds(2000);
+
+// Puts as much of the queue on the socket as the socket will take right now and
+// reports whether the socket is still usable. Nothing here waits: the
+// connection is O_NONBLOCK, so a frontend that has stopped reading costs one
+// EWOULDBLOCK and the bytes stay in the bounded queue for the next POLLOUT.
+// This replaces the blocking send() that review R11 pointed at — that call
+// parked the server thread inside the kernel for as long as the peer stayed
+// unread, which stopped command handling, stopped disconnect detection, and
+// meant the render thread's work piled up behind a frontend nobody was serving.
+bool drainToSocket(int fd, OutboundQueue* queue,
+                   std::chrono::steady_clock::time_point* lastProgress) {
+    while (!queue->empty()) {
+        const ssize_t written =
+            ::send(fd, queue->headData(), queue->headRemaining(), MSG_NOSIGNAL);
+        if (written > 0) {
+            queue->didWrite(static_cast<std::size_t>(written));
+            *lastProgress = std::chrono::steady_clock::now();
+            continue;
         }
-        offset += static_cast<std::size_t>(written);
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return true;  // full: the queue holds it, poll will report POLLOUT
+        }
+        return false;  // EPIPE or ECONNRESET: the frontend is gone
     }
     return true;
 }
@@ -243,8 +270,17 @@ bool RpcServer::start(std::string* error) {
 
 void RpcServer::stop() {
     fRunning = false;
-    if (fConnectionFd >= 0) {
-        ::shutdown(fConnectionFd, SHUT_RDWR);
+    {
+        // Waking the serving thread is all this may do with the descriptor: it
+        // is owned by that thread, which closes it. Holding the mutex is what
+        // makes the shutdown() safe rather than a guess about a number — see
+        // fConnectionMutex. poll() returns immediately on a shut-down socket
+        // and a nonblocking write never blocks, so this is prompt whatever the
+        // frontend is doing (the 50 ms tick is the worst case).
+        std::lock_guard<std::mutex> lock(fConnectionMutex);
+        if (fConnectionFd >= 0) {
+            ::shutdown(fConnectionFd, SHUT_RDWR);
+        }
     }
     if (fListenFd >= 0) {
         ::shutdown(fListenFd, SHUT_RDWR);
@@ -252,10 +288,10 @@ void RpcServer::stop() {
     if (fThread.joinable()) {
         fThread.join();
     }
-    if (fConnectionFd >= 0) {
-        close(fConnectionFd);
-        fConnectionFd = -1;
-    }
+    // The thread is gone: it either closed the connection itself, under the
+    // mutex and before clearing the member, or never accepted one. There is
+    // nothing of ours left to close, and closing what the member still held
+    // here was precisely the unsynchronised access review R11 named.
     if (fListenFd >= 0) {
         close(fListenFd);
         fListenFd = -1;
@@ -286,12 +322,32 @@ void RpcServer::run() {
             }
             break;
         }
-        fConnectionFd = connection;
+        // Nonblocking from the first instant: every write to this socket is
+        // one the server thread must be able to walk away from (review R11).
+        const int flags = ::fcntl(connection, F_GETFL, 0);
+        if (flags >= 0) {
+            ::fcntl(connection, F_SETFL, flags | O_NONBLOCK);
+        }
+        {
+            std::lock_guard<std::mutex> lock(fConnectionMutex);
+            if (!fRunning) {
+                // stop() got here first: nothing is served, and the descriptor
+                // is closed here because it never became the member.
+                close(connection);
+                break;
+            }
+            fConnectionFd = connection;
+        }
         std::fprintf(stderr, "openshow-worker: frontend connected on %s\n",
                      fOptions.socketPath.c_str());
         serve(connection);
+        {
+            // Cleared before the close, under the mutex, so stop() can never be
+            // handed a number that has already gone back to the kernel.
+            std::lock_guard<std::mutex> lock(fConnectionMutex);
+            fConnectionFd = -1;
+        }
         close(connection);
-        fConnectionFd = -1;
         // The worker lives only while connected to its frontend: whoever
         // disconnected, the answer is to exit.
         std::fprintf(stderr, "openshow-worker: frontend disconnected, stopping\n");
@@ -304,31 +360,89 @@ void RpcServer::serve(int connectionFd) {
     proto::Decoder decoder;
     bool handshakeDone = false;
     char buffer[8192];
+    OutboundQueue outbound;
+    auto lastProgress = std::chrono::steady_clock::now();
 
     while (fRunning) {
-        pollfd pending{connectionFd, POLLIN, 0};
-        const int ready = ::poll(&pending, 1, kPollTimeoutMs);
+        pollfd pending{connectionFd, POLLIN | POLLRDHUP, 0};
+        if (!outbound.empty()) {
+            pending.events |= POLLOUT;
+        }
+        // The tick stays short whatever the queue is doing: it bounds how long
+        // stop() and a notification can wait, and it is what makes the write
+        // deadline below observable rather than a promise. With bytes owed the
+        // poll also wakes for the deadline itself, so a stalled frontend is
+        // noticed on time rather than at the next thing that happens to arrive.
+        int timeoutMs = kPollTimeoutMs;
+        if (!outbound.empty()) {
+            const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - lastProgress);
+            timeoutMs = static_cast<int>(
+                std::max<int64_t>(0, std::min<int64_t>(kPollTimeoutMs,
+                                                       (kWriteDeadline - since).count())));
+        }
+        const int ready = ::poll(&pending, 1, timeoutMs);
         if (ready < 0) {
             if (errno == EINTR) {
                 continue;
             }
             return;
         }
+        // Try the queue on EVERY tick, not only when poll reports POLLOUT. That
+        // is not a workaround for a kernel quirk: POLLOUT is the promise that the
+        // peer's queue has room, and on a stream socket whose receive buffer is
+        // small compared with what is owed it stays off for whole seconds while
+        // the peer is reading all the same — a frontend reading 1 KiB every 50 ms
+        // to clear a 200 KiB debt. Gating the drain on it produced exactly the
+        // stall this loop exists to avoid: nothing written, progress not made,
+        // the deadline fired, and a live frontend was dropped for reading slowly.
+        // A nonblocking send costs one syscall to answer EAGAIN, so the loop can
+        // simply ask the socket every tick and let the deadline judge the answer.
+        if (!outbound.empty() && !drainToSocket(connectionFd, &outbound, &lastProgress)) {
+            return;  // write side of the socket is gone
+        }
         // Every tick, timeout included: the render thread queues preview
         // notifications and this thread is the only one holding the socket.
-        if (!flushNotifications(connectionFd)) {
-            return;
+        // Collecting is not writing — no session lock is held anywhere near the
+        // socket, which is the other half of what R11 asked for.
+        std::vector<QueuedFrame> notifications;
+        collectNotifications(&notifications);
+        for (QueuedFrame& note : notifications) {
+            outbound.push(note.key, std::move(note.bytes));
+        }
+        if (!outbound.empty()) {
+            // The deadline is measured against PROGRESS, not against the queue
+            // being full: a frontend that drains a byte every 10 ms is slow and
+            // stays connected, one that reads nothing is dropped in bounded
+            // time with the reason and the depth of the backlog in the log.
+            const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - lastProgress);
+            if (since > kWriteDeadline) {
+                std::fprintf(stderr,
+                             "openshow-worker: frontend has not taken a byte of the %zu KiB "
+                             "owed to it for %lld ms: it is gone whether or not its socket "
+                             "says so\n",
+                             outbound.bytes() / 1024,
+                             static_cast<long long>(since.count()));
+                return;
+            }
         }
         if (ready == 0) {
             continue;
         }
+        if ((pending.revents & (POLLIN | POLLRDHUP | POLLHUP | POLLERR | POLLNVAL)) == 0) {
+            continue;  // nothing but POLLOUT, and that has been handled above
+        }
         const ssize_t count = ::recv(connectionFd, buffer, sizeof(buffer), 0);
         if (count == 0) {
-            return;  // orderly disconnect
+            return;  // orderly disconnect — also the answer to POLLRDHUP/POLLHUP
         }
         if (count < 0) {
             if (errno == EINTR) {
                 continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;  // woken for something else, or drained by the same read
             }
             return;  // reset or shutdown() from stop()
         }
@@ -336,23 +450,54 @@ void RpcServer::serve(int connectionFd) {
         decoder.feed(std::string_view(buffer, static_cast<std::size_t>(count)));
         boost::json::value message;
         std::string decodeError;
-        while (decoder.next(&message, &decodeError)) {
-            std::string outbound;
-            if (!handle(message, handshakeDone, &handshakeDone, &outbound)) {
+        for (;;) {
+            if (!decoder.next(&message, &decodeError)) {
+                break;
+            }
+            std::string reply;
+            const bool served = handle(message, handshakeDone, &handshakeDone, &reply);
+            if (!reply.empty() && !outbound.push(std::string(), std::move(reply))) {
+                // A reply this server will not buffer means the frontend has
+                // stopped reading hard enough that the queue is at its budget.
+                // The command it answers is not going to be answered, and the
+                // only honest thing left is to say so in the log and hang up —
+                // not to grow, and not to sit on it.
+                std::fprintf(stderr,
+                             "openshow-worker: the queue for the frontend is at its %zu KiB "
+                             "budget and a reply would not fit: dropping it\n",
+                             kMaxQueuedBytes / 1024);
+                return;
+            }
+            if (!served) {
+                // The stream is no longer interpretable, but the refusal that
+                // explains it is worth one last attempt: write what is queued
+                // and then hang up.
+                drainToSocket(connectionFd, &outbound, &lastProgress);
                 std::fprintf(stderr,
                              "openshow-worker: dropping connection after a message "
                              "that was not JSON-RPC 2.0\n");
                 return;
             }
-            if (!outbound.empty() && !writeAll(connectionFd, outbound)) {
-                return;  // write side of the socket is gone
-            }
+        }
+        // Best-effort drain as soon as the commands of this read are handled,
+        // rather than waiting for the next tick's POLLOUT: a `shutdown` reply
+        // has to reach the frontend before the process is gone, and a reading
+        // peer should see its answer with this read, not one poll later.
+        if (!drainToSocket(connectionFd, &outbound, &lastProgress)) {
+            return;  // the frontend took what it was owed and then went away
         }
         if (decoder.failed()) {
             std::fprintf(stderr, "openshow-worker: framing error: %s\n",
                          decodeError.c_str());
             return;
         }
+    }
+    if (!outbound.empty()) {
+        std::fprintf(stderr,
+                     "openshow-worker: stopping with %zu frame(s), %zu KiB still owed to the "
+                     "frontend (%zu notification(s) coalesced, %zu dropped)\n",
+                     outbound.frames(), outbound.bytes() / 1024, outbound.coalesced,
+                     outbound.droppedNotifications);
     }
 }
 
@@ -675,35 +820,44 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
     return true;
 }
 
-bool RpcServer::flushNotifications(int connectionFd) {
+void RpcServer::collectNotifications(std::vector<QueuedFrame>* outbound) {
     OutputSession::PreviewReady ready;
     OutputSession::MediaError mediaError;
-    std::string outbound;
+    // One frame per slot that has something to say, keyed by slot: three slots,
+    // three frames, however many publishes piled up while the frontend was not
+    // listening. The consumer copies the newest content of a slot, so a frame
+    // that has since been superseded is not information, it is backlog.
     while (fSession.takePreviewReady(&ready)) {
-        proto::appendFrame(
-            proto::makeNotification(proto::kMethodPreviewReady,
-                                    boost::json::object{{"slot", ready.slot},
-                                                        {"seq", ready.seq},
-                                                        {"width", ready.width},
-                                                        {"height", ready.height},
-                                                        {"rowBytes", ready.rowBytes},
-                                                        {"revision", ready.revision},
-                                                        {"publishedNs", ready.publishedNs},
-                                                        // Stream identity: the release
-                                                        // must echo it (task 6.5).
-                                                        {"stream", ready.stream}}),
-            &outbound);
+        boost::json::object params{{"slot", ready.slot},
+                                   {"seq", ready.seq},
+                                   {"width", ready.width},
+                                   {"height", ready.height},
+                                   {"rowBytes", ready.rowBytes},
+                                   {"revision", ready.revision},
+                                   {"publishedNs", ready.publishedNs},
+                                   // Stream identity: the release
+                                   // must echo it (task 6.5).
+                                   {"stream", ready.stream}};
+        std::string frame;
+        if (proto::appendFrame(
+                proto::makeNotification(proto::kMethodPreviewReady, std::move(params)),
+                &frame)) {
+            outbound->push_back(
+                QueuedFrame{"preview.ready:" + std::to_string(ready.slot), std::move(frame)});
+        }
     }
     // Background media failure (task 5.5d): immediate visibility, the
     // same text output.status.media.error carries until it is replaced.
     while (fSession.takeMediaError(&mediaError)) {
-        proto::appendFrame(
-            proto::makeNotification(proto::kMethodMediaError,
-                                    boost::json::object{{"path", mediaError.path},
-                                                        {"message", mediaError.message}}),
-            &outbound);
+        std::string frame;
+        if (proto::appendFrame(
+                proto::makeNotification(proto::kMethodMediaError,
+                                        boost::json::object{{"path", mediaError.path},
+                                                            {"message", mediaError.message}}),
+                &frame)) {
+            outbound->push_back(QueuedFrame{"media.error", std::move(frame)});
+        }
     }
-    return outbound.empty() || writeAll(connectionFd, outbound);
 }
 
 }  // namespace openshow::worker

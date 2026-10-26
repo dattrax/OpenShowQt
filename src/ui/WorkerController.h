@@ -23,6 +23,7 @@
 #include <QTimer>
 #include <QVariantMap>
 
+#include <chrono>
 #include <cstdint>
 
 #include "openshow/protocol/preview_wire.h"
@@ -184,6 +185,17 @@ private:
 
     std::int64_t sendRequest(const char* method, boost::json::object params);
     void sendNotification(const char* method, boost::json::object params);
+    // Arms the stalled-write deadline when the socket's backlog is over budget
+    // (task 6.8b, review R11). When the window closes, a backlog that has shrunk
+    // at all means the worker is slow and stays connected; one that has not lost
+    // a single byte means it is gone, and the connection is closed rather than
+    // buffered indefinitely.
+    void watchWriteBacklog();
+    void onWriteStallExpired();
+    // The sentence both the disconnect path and the process-exit path use for a
+    // worker this side gave up on, so the reason survives whichever of the two
+    // arrives last.
+    QString writeStallMessage() const;
     void drainMessages();
     void handleReply(const boost::json::object& message);
     void handleNotification(const boost::json::object& message);
@@ -218,8 +230,25 @@ private:
     QString fSocketPath;
     QTimer fConnectRetry;
     int fConnectAttempts = 0;
+    // Armed by a refusal to queue more and then read on a short tick: what ends
+    // the connection is the worker taking no byte for kWriteStallMs, not the
+    // depth of the queue. fWriteStalled carries the reason into the disconnect
+    // message, and fWriteStalledBytes is the backlog as it stood when the deadline
+    // fired — abort() discards the buffer the number came from.
+    QTimer fWriteStallDeadline;
+    bool fWriteStalled = false;
+    qint64 fWriteStalledBytes = 0;
+    // When the worker last took a byte, as Qt reports it flushing the backlog.
+    // The deadline is measured from this and not from the depth of the queue: a
+    // worker that is slow keeps its session, one that has taken nothing for the
+    // whole window does not (task 6.8b, review R11).
+    std::chrono::steady_clock::time_point fLastByteOutAt{};
 
     std::int64_t fNextId = 1;
+    // The output.status request currently awaiting its answer, 0 for none. The
+    // poll is a refresh, so while one is outstanding the next tick asks for
+    // something already on its way (task 6.8b).
+    std::int64_t fStatusRequestId = 0;
     // Bumped on every successful connect. Replies are only honoured for
     // requests of the current connection; the decoder is reset with it,
     // so bytes of a dead stream can never answer a new one.

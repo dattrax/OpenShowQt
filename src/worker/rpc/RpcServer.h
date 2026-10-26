@@ -8,17 +8,28 @@
  * besides --render-test: every command is answered by a session operation,
  * never by reaching into scene internals (PLAN.md graduation rule).
  *
+ * Nothing here waits for the frontend (task 6.8b, review R11). The socket is
+ * O_NONBLOCK and everything owed to it goes through a bounded, coalescing
+ * outbound queue that the loop drains when the socket says POLLOUT, so a peer
+ * that stops reading costs a queue full of bytes and a logged disconnect
+ * within a deadline — not a server thread parked inside send(), which is what
+ * used to stop command handling, disconnect detection and shutdown alike. No
+ * session lock is held across a socket operation: handlers finish their
+ * session call and return the frame, and only the loop touches the descriptor.
+ *
  * Lifecycle: listen() binds and accepts one connection; when that client
- * disconnects or a shutdown is served, requestStop() is called so the
- * worker exits with its frontend gone. Nothing is served before a
- * successful "hello".
+ * disconnects, is served a shutdown, or proves it is not reading, the session
+ * is asked to stop so the worker exits with its frontend gone. Nothing is
+ * served before a successful "hello".
  */
 
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <boost/json.hpp>
 
@@ -53,20 +64,41 @@ public:
     const std::string& socketPath() const { return fOptions.socketPath; }
 
 private:
+    // One message owed to the frontend. `key` says whether it may be replaced
+    // by a newer one of the same kind: empty means it answers a request and is
+    // therefore never dropped or reordered, and a non-empty key (one per
+    // preview slot, one for media.error) means the newest wins, because the
+    // consumer of those wants the current state and not a transcript of how it
+    // got there.
+    struct QueuedFrame {
+        std::string key;
+        std::string bytes;
+    };
+
     void run();
     void serve(int connectionFd);
     // Handles one decoded message; returns false to drop the connection.
     bool handle(const boost::json::value& message, bool handshakeDone,
                 bool* handshakeNow, std::string* outbound);
-    // Sends any queued preview.ready and media.error notifications; false
-    // when the socket write side is gone. Called on every poll tick,
-    // including timeouts, so notifications travel within one tick of
-    // being queued.
-    bool flushNotifications(int connectionFd);
+    // Drains the notifications the session is holding — queued by the render
+    // thread, already reduced to the newest per slot — into frames for the
+    // outbound queue. Called on every poll tick, timeout included, so a
+    // notification travels within one tick of being queued. It cannot fail:
+    // nothing is written here, which is what keeps the session's lock out of
+    // the socket's path.
+    void collectNotifications(std::vector<QueuedFrame>* outbound);
 
     OutputSession& fSession;
     Options fOptions;
     int fListenFd = -1;
+    // The accepted descriptor belongs to the serving thread and only that
+    // thread closes it. stop() may wake it with shutdown(), but only while
+    // holding fConnectionMutex, and run() clears the member under the same
+    // mutex BEFORE closing — so the descriptor number stop() acts on is one
+    // that is still open, never a closed number the kernel has since handed to
+    // another thread's socket or pipe. Before this, run() and stop() read and
+    // wrote a plain int with nothing between them (review R11).
+    std::mutex fConnectionMutex;
     int fConnectionFd = -1;
     std::atomic<bool> fRunning{false};
     std::thread fThread;
