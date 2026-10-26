@@ -167,6 +167,12 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                                                {"fps", preview.fps},
                                                                {"published", preview.published},
                                                                {"dropped", preview.dropped},
+                                                               // Task 6.11a (review R13): what the
+                                                               // preview costs the output, and how
+                                                               // often it stood down for the
+                                                               // audience's sake.
+                                                               {"deferred", preview.deferred},
+                                                               {"worstMs", preview.worstMs},
                                                                {"error", preview.error}}},
                                {"scene", boost::json::object{{"active", status.scene.active},
                                                              {"pending", status.scene.pending},

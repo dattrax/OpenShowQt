@@ -26,10 +26,40 @@
 #include <string_view>
 #include <vector>
 
+#include "openshow/scene/scene.h"
+
 class SkCanvas;
 class SkImage;
 
 namespace openshow::worker {
+
+// The presentation currently on air, shared with whatever draws it. Null
+// means nothing has been presented: production draws nothing (the black
+// clear stands), a decorated development renderer shows its demo.
+using ActiveScene = std::shared_ptr<const openshow::scene::Scene>;
+
+// One composed frame, captured once and drawn read-only to every target
+// (task 6.11a, review R13).
+//
+// The worker draws the same moment to two targets — the audience panel and
+// the operator's preview — and both must show the SAME scene at the SAME
+// blend under the SAME revision tag. Reading the renderer's live state at
+// draw time cannot promise that: a preview tick that asked for the blend
+// "as of now" advanced the live crossfade with it, so a preview could run
+// a fade to its end on a clock the audience never saw, and leave the
+// audience stranded on whatever blend it had last been shown. So the frame
+// loop captures this snapshot once, per audience frame, and every target
+// draws these values; nothing a target does during its draw can change
+// another target's picture or the next frame's.
+struct SceneFrame {
+    ActiveScene scene;           // the composition on air (null: nothing shown)
+    ActiveScene fadeFrom;        // the outgoing scene, null when not fading
+    float mediaBlend = 1.0f;     // 0 = all fadeFrom, 1 = all scene
+    float textBlend = 1.0f;
+    double timeSeconds = 0.0;    // steady clock since output started
+    std::time_t wallClock = 0;   // fixed by selftests for deterministic text
+    std::uint64_t revision = 0;  // the command revision these pixels carry
+};
 
 enum class LayerId : uint8_t {
     kBackground = 0,  // solid colour, gradient, image or video behind everything
@@ -52,8 +82,13 @@ bool layerIdFromName(std::string_view name, LayerId* out);
 // centred), so layers draw in authored coordinates.
 struct FrameContext {
     SkCanvas* canvas = nullptr;
-    double timeSeconds = 0.0;  // steady clock since output started
-    std::time_t wallClock = 0;  // fixed by selftests for deterministic text
+    // The frame to draw (task 6.11a, review R13): scene, fade blends, clock
+    // and revision in one captured snapshot. Layers read their content here
+    // and nowhere else, which is what makes drawing to a target a read-only
+    // operation — the scene-aware layers used to point at the renderer's
+    // live state, so the second target of a frame saw whatever the first
+    // target's drawing had left behind. Never null in a real dispatch.
+    const SceneFrame* frame = nullptr;
     const char* statusLine = "";
     // The video frame the session's scheduler decided to draw this frame
     // (task 5.5): null when no video is on offer. The background layer

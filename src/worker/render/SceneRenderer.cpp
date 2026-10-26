@@ -53,27 +53,26 @@ constexpr SkRect kAuxBadge = SkRect::MakeLTRB(1560.0f, 40.0f, 1880.0f, 112.0f);
 // decorated development renderer paints the 1.x gradient backdrop there.
 class BackgroundLayer final : public RenderLayer {
 public:
-    BackgroundLayer(const ActiveScene* active, SceneImageCache* images,
-                    const SceneTransition* transition, const DemoDecoration* demo)
-        : fActive(active), fImages(images), fTransition(transition), fDemo(demo) {}
+    BackgroundLayer(SceneImageCache* images, const DemoDecoration* demo)
+        : fImages(images), fDemo(demo) {}
 
     LayerId id() const override { return LayerId::kBackground; }
 
     void draw(const FrameContext& ctx) override {
-        if (*fActive) {
+        const SceneFrame& frame = *ctx.frame;
+        if (frame.scene) {
             const bool videoInvolved =
-                (*fActive)->background.isVideo ||
-                (fTransition->fading() && fTransition->fFrom &&
-                 fTransition->fFrom->background.isVideo);
-            if (fTransition->fading() && !videoInvolved) {
-                drawSceneBackground(ctx.canvas, *fTransition->fFrom, fImages, nullptr);
+                frame.scene->background.isVideo ||
+                (frame.fadeFrom != nullptr && frame.fadeFrom->background.isVideo);
+            if (frame.fadeFrom != nullptr && !videoInvolved) {
+                drawSceneBackground(ctx.canvas, *frame.fadeFrom, fImages, nullptr);
                 SkPaint fade;
-                fade.setAlpha(static_cast<uint8_t>(fTransition->fMediaBlend * 255.0f + 0.5f));
-                drawSceneBackground(ctx.canvas, **fActive, fImages, &fade);
+                fade.setAlpha(static_cast<uint8_t>(frame.mediaBlend * 255.0f + 0.5f));
+                drawSceneBackground(ctx.canvas, *frame.scene, fImages, &fade);
             } else {
                 // Steady state, and the video media cut: on-air only,
                 // full strength.
-                drawSceneBackground(ctx.canvas, **fActive, fImages, nullptr,
+                drawSceneBackground(ctx.canvas, *frame.scene, fImages, nullptr,
                                     ctx.backgroundVideo);
             }
             return;
@@ -95,9 +94,7 @@ public:
     }
 
 private:
-    const ActiveScene* fActive;            // SceneRenderer-owned; outlives the layer
     SceneImageCache* fImages;              // SceneRenderer-owned image cache
-    const SceneTransition* fTransition;    // SceneRenderer-owned fade state
     const DemoDecoration* fDemo;           // development backdrop, if decorated
 };
 
@@ -107,14 +104,14 @@ private:
 // a presentation is on air.
 class ImageLayer final : public RenderLayer {
 public:
-    ImageLayer(const DemoDecoration* demo, sk_sp<SkTypeface> regular, const ActiveScene* active)
-        : fDemo(demo), fRegular(std::move(regular)), fActive(active) {}
+    ImageLayer(const DemoDecoration* demo, sk_sp<SkTypeface> regular)
+        : fDemo(demo), fRegular(std::move(regular)) {}
 
     LayerId id() const override { return LayerId::kImages; }
 
     void draw(const FrameContext& ctx) override {
         const sk_sp<SkImage>& photo = fDemo->photo;
-        if (*fActive || !photo) {
+        if (ctx.frame->scene || !photo) {
             return;
         }
         const float photoWidth = 820.0f;
@@ -159,26 +156,25 @@ private:
 // cross-dissolve (docs/reference.md §7 text transition).
 class WordsLayer final : public RenderLayer {
 public:
-    WordsLayer(const DemoDecoration* demo, const SceneTextEngine* engine,
-               const ActiveScene* active, const SceneTransition* transition)
-        : fDemo(demo), fEngine(engine), fActive(active), fTransition(transition) {}
+    WordsLayer(const DemoDecoration* demo, const SceneTextEngine* engine)
+        : fDemo(demo), fEngine(engine) {}
 
     LayerId id() const override { return LayerId::kWords; }
 
     void draw(const FrameContext& ctx) override {
-        if (*fActive) {
-            const bool fading = fTransition->fading();
+        const SceneFrame& frame = *ctx.frame;
+        if (frame.scene) {
+            const bool fading = frame.fadeFrom != nullptr;
             if (fading) {
-                const SceneTextEngine::SceneLayout& from = layoutFor(&fSlotA, fTransition->fFrom);
+                const SceneTextEngine::SceneLayout& from = layoutFor(&fSlotA, frame.fadeFrom);
                 SkPaint fade;
-                fade.setAlpha(
-                    static_cast<uint8_t>((1.0f - fTransition->fTextBlend) * 255.0f + 0.5f));
+                fade.setAlpha(static_cast<uint8_t>((1.0f - frame.textBlend) * 255.0f + 0.5f));
                 fEngine->drawLayout(ctx.canvas, from, &fade);
             }
-            const SceneTextEngine::SceneLayout& current = layoutFor(&fSlotB, *fActive);
+            const SceneTextEngine::SceneLayout& current = layoutFor(&fSlotB, frame.scene);
             if (fading) {
                 SkPaint fade;
-                fade.setAlpha(static_cast<uint8_t>(fTransition->fTextBlend * 255.0f + 0.5f));
+                fade.setAlpha(static_cast<uint8_t>(frame.textBlend * 255.0f + 0.5f));
                 fEngine->drawLayout(ctx.canvas, current, &fade);
             } else {
                 fEngine->drawLayout(ctx.canvas, current);
@@ -191,9 +187,11 @@ public:
     }
 
 private:
-    // One layout cache slot. The scenes cross-fading through here are the
-    // two this layer was handed, so a two-slot cache (this struct twice)
-    // covers every frame of a fade without rebuilding a layout.
+    // One layout cache slot. A frame carries at most two scenes (on air and
+    // fading out), so a two-slot cache (this struct twice) covers every
+    // frame of a fade without rebuilding a layout. The key is the scene
+    // itself, so two targets drawing the same captured frame share the work
+    // and any frame that really changed rebuilds it.
     struct LayoutSlot {
         ActiveScene scene;  // the scene fLayout was built from, if any
         SceneTextEngine::SceneLayout layout;
@@ -212,8 +210,6 @@ private:
 
     const DemoDecoration* fDemo;             // development title, if decorated
     const SceneTextEngine* fEngine;
-    const ActiveScene* fActive;              // SceneRenderer-owned; outlives the layer
-    const SceneTransition* fTransition;      // SceneRenderer-owned fade state
     LayoutSlot fSlotA;                       // holds the outgoing scene during a fade
     LayoutSlot fSlotB;                       // holds the on-air scene
 };
@@ -269,7 +265,7 @@ public:
     void draw(const FrameContext& ctx) override {
         char clock[16] = "";
         std::tm local{};
-        if (localtime_r(&ctx.wallClock, &local) != nullptr) {
+        if (localtime_r(&ctx.frame->wallClock, &local) != nullptr) {
             std::strftime(clock, sizeof(clock), "%H:%M:%S", &local);
         }
         const std::string footer = std::string(ctx.statusLine ? ctx.statusLine : "") +
@@ -329,10 +325,9 @@ bool SceneRenderer::create(std::string* error, const DemoBuilder& demo) {
     // the compositor will dispatch them (PLAN.md "Output layer model").
     // Audio is not here: it is a playback source, never a composition
     // item.
-    fLayers.add(std::make_unique<BackgroundLayer>(&fActiveScene, &fImages, &fTransition, &fDemo));
-    fLayers.add(std::make_unique<ImageLayer>(&fDemo, fText->regular(), &fActiveScene));
-    fLayers.add(
-        std::make_unique<WordsLayer>(&fDemo, fText.get(), &fActiveScene, &fTransition));
+    fLayers.add(std::make_unique<BackgroundLayer>(&fImages, &fDemo));
+    fLayers.add(std::make_unique<ImageLayer>(&fDemo, fText->regular()));
+    fLayers.add(std::make_unique<WordsLayer>(&fDemo, fText.get()));
     fLayers.add(std::make_unique<AuxLayer>(fText->regular()));
     fLayers.add(std::make_unique<ClockLayer>(fText->regular()));
     // Aux is not part of the agreed use case and starts off in both
@@ -356,42 +351,58 @@ void SceneRenderer::setActiveScene(ActiveScene scene, SceneTransitionKind kind) 
         fTransitionRunning = false;
         return;
     }
-    // A fade keeps the outgoing scene alive as fFrom and starts the clock on
-    // the next draw (advanceTransition), so the blend is measured in the same
-    // monotonic timeSeconds the loop drives.
+    // A fade keeps the outgoing scene alive as fFrom and starts its clock on
+    // the next captureFrame, so the blend is measured in the same monotonic
+    // timeSeconds the audience loop drives — and by nothing else.
     fTransition.fFrom = fActiveScene;
-    fTransition.fMediaBlend = 0.0f;
-    fTransition.fTextBlend = 0.0f;
+    fTransition.fStartSeconds = -1.0;
     fActiveScene = std::move(scene);
     fTransitionRunning = true;
-    fTransitionStart = -1.0;
 }
 
-void SceneRenderer::advanceTransition(double timeSeconds) {
-    if (!fTransitionRunning) {
-        return;
+SceneFrame SceneRenderer::captureFrame(double timeSeconds, std::uint64_t revision,
+                                       std::time_t wallClock) {
+    SceneFrame frame;
+    frame.scene = fActiveScene;
+    frame.timeSeconds = timeSeconds;
+    frame.wallClock = wallClock != 0 ? wallClock : std::time(nullptr);
+    frame.revision = revision;
+    if (fTransition.fFrom == nullptr) {
+        return frame;  // steady state: the on-air scene, at full strength
     }
-    if (fTransitionStart < 0.0) {
-        fTransitionStart = timeSeconds;  // first frame of the fade
+    if (fTransition.fStartSeconds < 0.0) {
+        fTransition.fStartSeconds = timeSeconds;  // first frame of the fade
     }
-    const double elapsed = timeSeconds - fTransitionStart;
-    fTransition.fTextBlend = fadeBlend(elapsed, kTextFadeSeconds);
-    fTransition.fMediaBlend = fadeBlend(elapsed, kMediaFadeSeconds);
-    if (fTransition.fMediaBlend >= 1.0f && fTransition.fTextBlend >= 1.0f) {
+    const double elapsed = timeSeconds - fTransition.fStartSeconds;
+    frame.mediaBlend = fadeBlend(elapsed, kMediaFadeSeconds);
+    frame.textBlend = fadeBlend(elapsed, kTextFadeSeconds);
+    if (frame.mediaBlend >= 1.0f && frame.textBlend >= 1.0f) {
+        // The fade's last blend: this frame is the on-air scene alone. The
+        // state machine keeps the outgoing scene until commitFrame() credits
+        // this frame with reaching the panel, so a frame that is captured
+        // and then lost (backpressure, a failed submit) leaves the loop
+        // presenting until the settled picture actually arrives.
+        return frame;
+    }
+    frame.fadeFrom = fTransition.fFrom;
+    return frame;
+}
+
+void SceneRenderer::commitFrame(const SceneFrame& frame) {
+    if (fTransition.fFrom == nullptr) {
+        return;  // nothing in flight (or already retired by an earlier commit)
+    }
+    // Only the frame that fades TO the scene now on air may retire it: a
+    // stale capture being credited after a newer present must not end the
+    // fade that newer present started.
+    if (frame.scene == fActiveScene && frame.mediaBlend >= 1.0f && frame.textBlend >= 1.0f) {
         fTransition = SceneTransition{};  // done: drop the outgoing scene
         fTransitionRunning = false;
     }
 }
 
-void SceneRenderer::draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
+void SceneRenderer::draw(const SceneFrame& frame, SkCanvas* canvas, int widthPx, int heightPx,
                          const std::string& statusLine, const SkImage* backgroundVideo) {
-    draw(canvas, widthPx, heightPx, timeSeconds, std::time(nullptr), statusLine,
-         backgroundVideo);
-}
-
-void SceneRenderer::draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
-                         std::time_t wallClock, const std::string& statusLine,
-                         const SkImage* backgroundVideo) {
     // The swapchain surface hands out the same canvas every frame and Skia
     // keeps its matrix: without this reset the output-rule scale below
     // compounds frame after frame and the scene collapses into the top-left
@@ -409,15 +420,22 @@ void SceneRenderer::draw(SkCanvas* canvas, int widthPx, int heightPx, double tim
                       (static_cast<float>(heightPx) - kCanvasHeight * scale) * 0.5f);
     canvas->scale(scale, scale);
 
-    // Advance any crossfade in flight before dispatching, so every layer
-    // this frame sees one consistent blend (steady frames pay nothing).
-    advanceTransition(timeSeconds);
-
     // Single pass, no render-to-texture: the layer stack dispatches each
     // enabled layer into this canvas in z order and skips disabled ones.
-    const FrameContext ctx{canvas, timeSeconds, wallClock, statusLine.c_str(),
-                           backgroundVideo};
+    // Everything the layers composite comes from the captured frame, which
+    // this call only reads (task 6.11a): the second, third and hundredth
+    // target of a frame draw the picture the audience was owed, and leave
+    // the renderer's own state exactly as they found it.
+    const FrameContext ctx{canvas, &frame, statusLine.c_str(), backgroundVideo};
     fLayers.draw(ctx);
+}
+
+void SceneRenderer::drawLive(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
+                             std::time_t wallClock, const std::string& statusLine,
+                             const SkImage* backgroundVideo) {
+    const SceneFrame frame = captureFrame(timeSeconds, 0, wallClock);
+    draw(frame, canvas, widthPx, heightPx, statusLine, backgroundVideo);
+    commitFrame(frame);
 }
 
 }  // namespace openshow::worker

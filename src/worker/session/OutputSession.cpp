@@ -69,6 +69,10 @@ struct Faults {
     int scenePresentFails = 0;    // OPENSHOW_FAULT_SCENE_PRESENT_FAILS
     int armedPresents = 0;        // runtime: scene-change failures left to burn
     int holdMs = 0;               // OPENSHOW_FAULT_HOLD_MS: sleep after a failure
+    // Task 6.11a (review R13): the cost of an expensive preview target,
+    // paid inside the measured region of publishPreviewFrame so the
+    // audience-budget policy is tested against real milliseconds.
+    int previewDelayMs = 0;       // OPENSHOW_FAULT_PREVIEW_MS
     Faults() {
         const auto read = [](const char* name) {
             const char* value = std::getenv(name);
@@ -77,6 +81,7 @@ struct Faults {
         applyDelayMs = read("OPENSHOW_FAULT_SCENE_APPLY_MS");
         scenePresentFails = read("OPENSHOW_FAULT_SCENE_PRESENT_FAILS");
         holdMs = read("OPENSHOW_FAULT_HOLD_MS");
+        previewDelayMs = read("OPENSHOW_FAULT_PREVIEW_MS");
     }
 };
 
@@ -85,6 +90,17 @@ Faults& faults() {
     static Faults instance;
     return instance;
 }
+
+// The audience's frame period at 60 Hz, and the share of it the preview is
+// lent (task 6.11a, review R13). The preview is composed on the render
+// thread, so every millisecond it takes is a millisecond the audience's
+// next frame waits: a preview frame that costs more than its share defers
+// its own next attempt until the average is inside the share again, rather
+// than taking its cost out of every audience frame.
+constexpr double kAudienceFrameSeconds = 1.0 / 60.0;
+constexpr double kPreviewShareOfAudienceFrame = 0.25;
+constexpr double kPreviewBudgetSeconds =
+    kAudienceFrameSeconds * kPreviewShareOfAudienceFrame;
 
 }  // namespace
 
@@ -1334,8 +1350,7 @@ void OutputSession::applyPreviewState() {
     }
 }
 
-void OutputSession::publishPreviewFrame(double elapsed, SkImage* video,
-                                        uint64_t snapshotRevision) {
+void OutputSession::publishPreviewFrame(const SceneFrame& frame, SkImage* video) {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t fps = 0;
@@ -1350,11 +1365,12 @@ void OutputSession::publishPreviewFrame(double elapsed, SkImage* video,
         fps = fStatus.preview.fps;
         stream = fPreviewStream;
     }
-    // Task 6.4 (review R4): the tag names the revision of the content this
-    // publish draws — the snapshot the presenting frame drew, or the last
-    // presented frame on a republish. Reading the latest desired fRevision
-    // here tagged frames with scenes nobody had drawn yet.
-    const uint32_t revision = static_cast<uint32_t>(snapshotRevision);
+    // The tag is the FRAME's revision (task 6.11a), which is what makes it
+    // honest both ways: after a present it is the revision this frame put on
+    // the panel (task 6.4's rule), and on a republish it is the revision of
+    // the presented frame being redrawn. Reading the latest desired fRevision
+    // here would tag frames with scenes nobody had drawn yet.
+    const uint32_t revision = static_cast<uint32_t>(frame.revision);
     if (!stream) {
         return;
     }
@@ -1368,6 +1384,17 @@ void OutputSession::publishPreviewFrame(double elapsed, SkImage* video,
 
     const auto now = std::chrono::steady_clock::now();
     if (now - fLastPreview < std::chrono::duration<double>(1.0 / fps)) {
+        return;
+    }
+    // Audience timing budget (task 6.11a, review R13): the preview is drawn
+    // on the render thread, so its cost comes straight out of the frame the
+    // audience is waiting for. A frame that cost more than the audience can
+    // lend stands this attempt down instead of taking it; the content stays
+    // owed (the gates above are untouched), so the picture arrives as soon
+    // as the audience can pay for it again.
+    if (now < fPreviewDeferredUntil) {
+        std::lock_guard<std::mutex> lock(fMutex);
+        ++fStatus.preview.deferred;
         return;
     }
     fLastPreview = now;
@@ -1398,19 +1425,32 @@ void OutputSession::publishPreviewFrame(double elapsed, SkImage* video,
         }
     }
 
-    // The same scene through the same draw path as the audience output,
-    // only smaller; the diagnostics status line stays empty so it does
-    // not crowd the preview. Video belongs to what the audience sees: a
-    // background video (task 5.5) goes into the scene's background layer
-    // through draw() itself, anything else (the 1.5e bench) stays the dev
-    // overlay over the whole preview — the readPixels below is
-    // CPU-synchronous, which keeps this sampling of a released slot
-    // ordered ahead of any later reuse.
+    // The same scene through the same draw path as the audience output, only
+    // smaller — and the SAME FRAME: what this preview publishes is the
+    // composition the audience was shown (task 6.11a, review R13), never one
+    // the preview captured for itself, so no preview frame can carry a
+    // scene, a blend or a clock the panel has not been shown. The
+    // diagnostics status line stays empty so it does not crowd the preview.
+    // Video belongs to what the audience sees: a background video (task 5.5)
+    // goes into the scene's background layer through draw() itself, anything
+    // else (the 1.5e bench) stays the dev overlay over the whole preview —
+    // the readPixels below is CPU-synchronous, which keeps this sampling of a
+    // released slot ordered ahead of any later reuse.
+    //
+    // The measured region is everything the audience pays for: composition
+    // plus the CPU readback that hands the slot over.
+    const auto started = std::chrono::steady_clock::now();
+    if (faults().previewDelayMs > 0) {
+        // Fixture knob (task 6.11a): stand in for an expensive preview
+        // target — a large preview on a weak GPU, a slow readback — inside
+        // the measured region, so the deferral policy is tested against a
+        // real cost rather than a microsecond.
+        std::this_thread::sleep_for(std::chrono::milliseconds(faults().previewDelayMs));
+    }
     const bool asSceneBackground =
         video != nullptr && fRenderScene && fRenderScene->background.isVideo;
-    fScene->draw(fPreviewSurface->getCanvas(), static_cast<int>(width),
-                 static_cast<int>(height), elapsed, std::string(),
-                 asSceneBackground ? video : nullptr);
+    fScene->draw(frame, fPreviewSurface->getCanvas(), static_cast<int>(width),
+                 static_cast<int>(height), std::string(), asSceneBackground ? video : nullptr);
     if (video && !asSceneBackground) {
         fPreviewSurface->getCanvas()->drawImageRect(
             video, SkRect::MakeIWH(static_cast<int>(width), static_cast<int>(height)),
@@ -1420,8 +1460,32 @@ void OutputSession::publishPreviewFrame(double elapsed, SkImage* video,
     const SkImageInfo dst = SkImageInfo::Make(static_cast<int>(width),
                                               static_cast<int>(height),
                                               kRGBA_8888_SkColorType, kPremul_SkAlphaType);
-    if (!fPreviewSurface->readPixels(dst, stream->slotPixels(slot), stream->rowBytes(), 0,
-                                     0)) {
+    const bool readbackOk =
+        fPreviewSurface->readPixels(dst, stream->slotPixels(slot), stream->rowBytes(), 0, 0);
+    // Whatever the frame did to the panel's time is settled here, success or
+    // not: the milliseconds were spent either way.
+    const double costSeconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (costSeconds > kPreviewBudgetSeconds) {
+        // Give the audience the overrun back. Standing down for
+        // cost × (period / budget − 1) keeps the AVERAGE preview cost at or
+        // under the share it was lent, whatever one frame cost: a preview
+        // that needs 40 ms gives up its frames (here, roughly 3 in 4)
+        // instead of taking 40 ms out of every audience frame.
+        fPreviewDeferredUntil =
+            std::chrono::steady_clock::now() +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(costSeconds *
+                                              (kAudienceFrameSeconds / kPreviewBudgetSeconds -
+                                               1.0)));
+    } else {
+        fPreviewDeferredUntil = std::chrono::steady_clock::time_point{};
+    }
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        fStatus.preview.worstMs = std::max(fStatus.preview.worstMs, costSeconds * 1000.0);
+    }
+    if (!readbackOk) {
         stream->abort(slot);
         std::lock_guard<std::mutex> lock(fMutex);
         ++fStatus.preview.dropped;
@@ -1590,8 +1654,19 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
         // be drawn on the identity.
         const bool videoIsBackground =
             videoImage != nullptr && fRenderScene && fRenderScene->background.isVideo;
-        fScene->draw(surface->getCanvas(), fSwapchain->width(), fSwapchain->height(), elapsed,
-                     statusLine, videoIsBackground ? videoImage : nullptr);
+        // One frame, every target (task 6.11a, review R13). The composition
+        // is captured exactly once for this audience frame — on-air scene,
+        // crossfade blends, clock and the revision the frame presents — and
+        // both the panel and the preview below draw THAT. Capturing is what
+        // advances a crossfade, so a preview tick, a slow consumer or a
+        // second target cannot move the show along or leave the audience on
+        // a blend nobody meant to finish; and because the revision travels
+        // inside the frame, the preview's tag belongs to the pixels it
+        // publishes.
+        fComposedFrame = fScene->captureFrame(elapsed, snapshot.revision);
+        fScene->draw(fComposedFrame, surface->getCanvas(), fSwapchain->width(),
+                     fSwapchain->height(), statusLine,
+                     videoIsBackground ? videoImage : nullptr);
         ++fFrames;
         if (videoImage && !videoIsBackground) {
             surface->getCanvas()->save();
@@ -1696,18 +1771,25 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
             return;
         }
         presentedFrame = true;
+        // The picture in fComposedFrame is on the panel now: credit it (the
+        // only place a completed crossfade is retired) and remember it as
+        // the frame every preview redraws until the audience is owed a
+        // newer one (task 6.11a).
+        fScene->commitFrame(fComposedFrame);
+        fPresentedFrame = fComposedFrame;
     }
 
     // Preview (task 1.4) runs after the audience frame is presented: the
     // extra pass never delays the swapchain work it follows, and its
     // throttling, content gate and drop policy live in publishPreviewFrame.
-    // The tag is the snapshot's revision — the scene these pixels carry —
-    // not whatever a later command has meanwhile made desired (task 6.4).
+    // It draws fComposedFrame — the snapshot this frame put on the panel,
+    // revision included (task 6.11a, review R13). Before that it asked the
+    // renderer for a composition of its own at a later timestamp, which
+    // advanced the live crossfade a second time: the preview ran the fade to
+    // a blend the audience had not been shown, on a clock the audience's
+    // 800 ms does not own.
     if (fFrames > 0) {
-        const double elapsed =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - fStartTime)
-                .count();
-        publishPreviewFrame(elapsed, videoImage, snapshot.revision);
+        publishPreviewFrame(fComposedFrame, videoImage);
     }
 
     // The present's sampling obligation is handed back last:
@@ -1900,11 +1982,20 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
                 fFrames != fPreviewPublishedFrames) {
                 // A change is owed to the preview but the cadence throttled
                 // it: republish when allowed without a fresh output frame.
+                // The audience budget (task 6.11a) is a second gate on the
+                // same wake-up, and it has to be: a publish that stood down
+                // left fLastPreview where it was, so the cadence arithmetic
+                // below kept calling this pass "due" for the whole defer
+                // window — the first fixture measured that re-ask loop at
+                // ~20,000 iterations a second, which is precisely the busy
+                // loop 1.5e exists to prevent. The horizon is when the
+                // audience can pay again, so the loop sleeps to it.
                 const auto nextAllowed =
-                    fLastPreview +
-                    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                        std::chrono::duration<double>(
-                            1.0 / std::max(1u, fStatus.preview.fps)));
+                    std::max(fLastPreview +
+                                 std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                     std::chrono::duration<double>(
+                                         1.0 / std::max(1u, fStatus.preview.fps))),
+                             fPreviewDeferredUntil);
                 if (now >= nextAllowed) {
                     previewDue = true;
                 } else {
@@ -1952,9 +2043,6 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             // by the time the branch is done — and the frame's lease
             // keeps the slot off the producer's table throughout.)
             std::lock_guard queueLock(graphicsQueueMutex());
-            const double elapsed =
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - fStartTime)
-                    .count();
             SkImage* held = nullptr;
             if (fVideoPresenter && fDrawnVideo) {
                 held = fVideoPresenter->acquireImage(fDrawnVideo->token,
@@ -1963,7 +2051,13 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             // No present this round, so the honest tag is the revision of
             // the last presented frame — the content a republish redraws
             // (task 6.4: presentNow==false means nothing newer was applied).
-            publishPreviewFrame(elapsed, held, fPresentedRevision);
+            // Task 6.11a makes that literal: the preview redraws the LAST
+            // PRESENTED FRAME, captured blends and all. This branch used to
+            // re-draw the live composition at a fresh timestamp, which
+            // advanced the crossfade with the audience asleep — the preview
+            // could run a fade to its end and report it done while the panel
+            // still showed a half-blended picture.
+            publishPreviewFrame(fPresentedFrame, held);
             continue;
         }
         const auto waitUntil = std::min(nextHousekeeping, wakeAt);

@@ -43,23 +43,22 @@
 
 namespace openshow::worker {
 
-// The presentation currently on air, shared with the layers that read it.
-// Null means nothing has been presented: production draws nothing (the
-// black clear stands), a decorated development renderer shows its demo.
-using ActiveScene = std::shared_ptr<const openshow::scene::Scene>;
-
 // How a presentation takes effect. FreeShow defaults every transition to
 // fade (docs/reference.md §7: text 500ms, media 800ms); a cut is "none".
 enum class SceneTransitionKind { kFade, kCut };
 
-// The crossfade in flight, read by the scene-aware layers on each draw.
-// In steady state fFrom is null and both blends are 1. Media (background
-// and image) and text fade on independent clocks matching FreeShow's two
-// transition defaults. Owned by SceneRenderer; advanced once per frame.
+// The live crossfade: the state machine the audience's frame clock drives.
+// In steady state fFrom is null. It holds NO blend: the blends belong to a
+// frame (SceneFrame), and this one only says who is fading and when the
+// fade began, so asking about the composition cannot move it along
+// (task 6.11a, review R13). Owned by SceneRenderer.
 struct SceneTransition {
     ActiveScene fFrom;
-    float fMediaBlend = 1.0f;  // 0 = all fFrom, 1 = all on-air
-    float fTextBlend = 1.0f;
+    double fStartSeconds = -1.0;  // the frame clock the fade began at
+    // Negative until the fade's first audience frame stamps it: a fade
+    // begun between two frames is measured from the first one drawn, which
+    // is what makes its 800 ms the audience's 800 ms rather than a race
+    // against the command thread.
 
     bool fading() const { return fFrom != nullptr; }
 };
@@ -75,6 +74,7 @@ struct DemoDecoration {
     sk_sp<SkImage> photo;                       // images tab, demo photo
     bool gradient = false;                      // background tab, 1.x backdrop
 };
+
 
 class SceneRenderer {
 public:
@@ -106,21 +106,62 @@ public:
     // identical scene (6.1a).
     bool production() const { return !fDemo.gradient && !fDemo.photo && !fDemo.titlePaint; }
 
-    // Draws the composition into width x height device pixels, scaling the
-    // canvas with the output rule and centring it. statusLine is the small
-    // diagnostics line the clock layer prefixes (production passes the
-    // empty string); timeSeconds drives the clock so a live loop visibly
-    // moves. backgroundVideo (task 5.5) is the frame the session's
-    // scheduler decided to draw; the background layer consumes it when the
-    // on-air scene's background names a video asset, and nothing else
-    // looks at it.
-    void draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
-              const std::string& statusLine, const SkImage* backgroundVideo = nullptr);
-    // Deterministic variant: fixed wall clock so two frames with the same
-    // layer configuration are pixel identical (used by --check-layers).
-    void draw(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
-              std::time_t wallClock, const std::string& statusLine,
-              const SkImage* backgroundVideo = nullptr);
+    // --- one captured frame, drawn to every target (task 6.11a, R13) -----
+    //
+    // The audience panel and the operator's preview show the same moment,
+    // so both must draw the same values: same scene, same fade blends, same
+    // clock, same revision tag. Three calls carry that contract:
+    //
+    //   captureFrame(clock)  the immutable picture the audience is owed now
+    //   draw(frame, ...)     paint one captured frame into one target
+    //   commitFrame(frame)   credit the frame that reached the panel
+    //
+    // captureFrame is the only thing that moves a fade and the frame loop
+    // calls it exactly once per audience frame; draw() and the layers read
+    // their whole composition from the frame they were handed. So a second
+    // target, a hundred preview ticks or a consumer that stopped reading
+    // its slots can none of them complete a fade, skip a blend or restage a
+    // scene the audience has not been shown — the failure the review found
+    // when the preview called the same draw() the output did, with its own
+    // later timestamp.
+
+    // The picture the audience is owed at this instant, as an immutable
+    // snapshot tagged with the command revision these pixels carry. This is
+    // where the crossfade advances and where it begins: a fade started
+    // between frames takes its first captureFrame as its origin, so its
+    // 800 ms are the audience's 800 ms and not a race against the command
+    // thread. A wallClock of 0 means "whatever the audience's clock says";
+    // selftests pass a fixed one so two frames with the same layers come out
+    // pixel identical.
+    SceneFrame captureFrame(double timeSeconds, std::uint64_t revision,
+                            std::time_t wallClock = 0);
+
+    // Credits a captured frame with reaching the audience. This is where a
+    // completed fade is retired — nowhere else — so the event-driven loop
+    // keeps presenting until the settled picture is really on the panel: a
+    // frame that never made it (an acquire timeout, a failed submit) leaves
+    // the fade running, and the audience is never left holding a blend
+    // nobody intends to finish.
+    void commitFrame(const SceneFrame& frame);
+
+    // Draws one captured frame into width x height device pixels, scaling
+    // the canvas with the output rule and centring it. backgroundVideo
+    // (task 5.5) is the frame the session's scheduler decided to draw; the
+    // background layer consumes it when the on-air scene's background names
+    // a video asset, and nothing else looks at it. statusLine is the small
+    // diagnostics line the clock layer prefixes — target chrome, like the
+    // size, so it belongs to the draw call rather than the frame (the
+    // audience's footer and the preview's empty one are the same scene).
+    void draw(const SceneFrame& frame, SkCanvas* canvas, int widthPx, int heightPx,
+              const std::string& statusLine = {}, const SkImage* backgroundVideo = nullptr);
+
+    // Single-target convenience for the development harness and the CLI:
+    // capture, draw and commit in one call, which is right only when this
+    // call owns the frame. The session never uses it — its preview draws
+    // the frame the audience was shown, not one of its own.
+    void drawLive(SkCanvas* canvas, int widthPx, int heightPx, double timeSeconds,
+                  std::time_t wallClock = 0, const std::string& statusLine = {},
+                  const SkImage* backgroundVideo = nullptr);
 
     // Presents the compiled scene (task 3.1): the background fills the
     // scene colour (or its cover-fitted image / video frame), the words
@@ -156,16 +197,12 @@ public:
     const SceneTextEngine& textEngine() const { return *fText; }
 
 private:
-    // Advances the fade for a frame at timeSeconds (see SceneTransition).
-    void advanceTransition(double timeSeconds);
-
     // Shared text services; the layer objects own the drawn content. The
     // engine outlives the layers (declared before fLayers).
     std::unique_ptr<SceneTextEngine> fText;
     SceneImageCache fImages;     // persists background images across scenes
     SceneTransition fTransition;
     bool fTransitionRunning = false;
-    double fTransitionStart = -1.0;  // first draw timeSeconds of the fade
     LayerStack fLayers;
     ActiveScene fActiveScene;
     DemoDecoration fDemo;        // development decoration; empty in production

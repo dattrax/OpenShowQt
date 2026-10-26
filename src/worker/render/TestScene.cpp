@@ -184,8 +184,8 @@ struct RasterFrame {
         }
         // Fixed wall clock and status line: two frames with the same layer
         // configuration must come out pixel identical.
-        scene.draw(surface->getCanvas(), width, height, timeSeconds, std::time_t{1234567890},
-                   "layers");
+        scene.drawLive(surface->getCanvas(), width, height, timeSeconds,
+                       std::time_t{1234567890}, "layers");
         pixels.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
         const bool ok = surface->readPixels(SkImageInfo::MakeN32Premul(width, height),
                                             pixels.data(),
@@ -314,7 +314,7 @@ bool renderTestSnapshot(const std::string& path, int width, int height,
         }
         return false;
     }
-    scene.draw(surface->getCanvas(), width, height, 0.0, "snapshot (CPU raster)");
+    scene.drawLive(surface->getCanvas(), width, height, 0.0, 0, "snapshot (CPU raster)");
     return writePngRaster(surface.get(), path, error);
 }
 

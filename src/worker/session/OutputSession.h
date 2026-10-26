@@ -109,6 +109,14 @@ public:
         uint32_t fps = 0;
         uint64_t published = 0;
         uint64_t dropped = 0;
+        // Task 6.11a (review R13): the audience's timing budget. A preview
+        // frame that cost more than the audience can spare defers the next
+        // one instead of repeating on every frame; `deferred` counts the
+        // publish attempts that stood down, and `worstMs` is the most
+        // expensive preview frame since the stream started — what the
+        // preview is charging the output, on the wire.
+        uint64_t deferred = 0;
+        double worstMs = 0.0;
         std::string error;
     };
 
@@ -439,7 +447,11 @@ private:
     // (frame()), or of the last presented frame when the run loop
     // republishes without presenting (task 6.4: tags name drawn content,
     // never merely desired state).
-    void publishPreviewFrame(double elapsed, SkImage* video, uint64_t snapshotRevision);
+    // Publishes ONE captured frame to the preview stream (task 6.11a): the
+    // caller hands it the frame the audience drew (a presenting frame) or
+    // was last shown (a republish), and this function never composes a frame
+    // of its own. The revision tag travels inside the frame.
+    void publishPreviewFrame(const SceneFrame& frame, SkImage* video);
     void refreshDisplaySnapshot();
 
     // Wakes the thread blocked in run()'s glfwWaitEventsTimeout. Safe from
@@ -532,6 +544,16 @@ private:
     // the window itself asks (close, resize).
     uint64_t fPresentedRevision = 0;      // render thread
     bool fNeedsPresent = false;           // render thread (swapchain recreated)
+
+    // The frame this loop is drawing, and the last one the panel took
+    // (task 6.11a, review R13). Every target of a frame — the audience
+    // swapchain and the operator's preview — draws fComposedFrame, and a
+    // preview-only wake redraws fPresentedFrame; neither composes a frame of
+    // its own, so a preview cannot advance a crossfade, spend the audience's
+    // clock, or publish pixels under a revision it does not carry. Both are
+    // render-thread only, like the loop that writes them.
+    SceneFrame fComposedFrame;            // render thread
+    SceneFrame fPresentedFrame;           // render thread
 
     // Video seam state (task 1.5e).
     // fVideoPresenter (task 6.6b, review R6): the render thread writes it
@@ -641,6 +663,9 @@ private:
     sk_sp<SkSurface> fPreviewSurface;          // render thread only
     std::optional<PreviewReady> fPendingReady[protocol::kPreviewSlotCount];  // fMutex
     std::chrono::steady_clock::time_point fLastPreview;  // render thread
+    // Audience timing budget (task 6.11a, review R13): no preview attempt
+    // before this instant, set when one cost more than the audience can lend.
+    std::chrono::steady_clock::time_point fPreviewDeferredUntil;  // render thread
     // Content gate (task 1.5e): the preview republishes only when the
     // presented frame changed since the last publish.
     unsigned long long fPreviewPublishedFrames = 0;  // render thread

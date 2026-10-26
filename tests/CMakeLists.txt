@@ -40,6 +40,20 @@ set_source_files_properties(scene_image_cache_tests.cpp PROPERTIES
 add_test(NAME scene_image_cache_tests COMMAND scene_image_cache_tests)
 set_tests_properties(scene_image_cache_tests PROPERTIES TIMEOUT 300)
 
+# Task 6.11a (review R13): the frame snapshot the audience and the preview
+# share — both targets draw one blend, drawing moves neither the pixels nor
+# the fade's clock, a captured frame does not follow the show, the layers
+# read the frame rather than live renderer state, a fade retires on the
+# present and not on computation, and the revision tag belongs to the frame.
+# CPU raster only, so both presets run it.
+add_executable(scene_frame_tests scene_frame_tests.cpp)
+target_link_libraries(scene_frame_tests PRIVATE openshow::worker_render)
+set_source_files_properties(scene_frame_tests.cpp PROPERTIES
+  COMPILE_OPTIONS "-fno-rtti"
+)
+add_test(NAME scene_frame_tests COMMAND scene_frame_tests)
+set_tests_properties(scene_frame_tests PROPERTIES TIMEOUT 300)
+
 # Task 6.5 (review R5): preview slot ownership is proven, not assumed —
 # only the exact published sequence releases a slot, odd/stale/future/
 # duplicate/out-of-range releases free nothing, and the geometry is
@@ -309,6 +323,19 @@ target_link_libraries(preview_ownership_tests PRIVATE openshow::protocol)
 add_test(NAME preview_ownership_tests
   COMMAND preview_ownership_tests $<TARGET_FILE:openshow-worker>)
 set_tests_properties(preview_ownership_tests PROPERTIES LABELS display TIMEOUT 120)
+
+# Task 6.11a (review R13): the audience's timing budget. With the preview
+# publish armed at 40 ms (~10x the 4.17 ms share the render thread lends
+# it) and the fastest cadence the worker accepts, the preview must publish
+# a bounded number of frames per window, count the attempts it stood down,
+# report the honest worst cost — and the audience's fade must still
+# animate, still show a mid blend and still land on the new scene.
+# Needs a display.
+add_executable(preview_budget_tests preview_budget_tests.cpp)
+target_link_libraries(preview_budget_tests PRIVATE openshow::protocol)
+add_test(NAME preview_budget_tests
+  COMMAND preview_budget_tests $<TARGET_FILE:openshow-worker>)
+set_tests_properties(preview_budget_tests PROPERTIES LABELS display TIMEOUT 180)
 
 # Real FFmpeg get_buffer2 allocations into Vulkan linear images, independent
 # reference/presentation lifetimes, all native plane layouts and strict errors.

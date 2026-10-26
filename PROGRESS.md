@@ -681,13 +681,78 @@ Updated: 2026-10-25 (Europe/London).
   JPEG-generated with ffmpeg (`exit 77` when absent): this libskia decodes
   JPEG but has no PNG codec and no WPG encoder header. Gates desktop
   **39/39**, headless **23/23**.
-- Exact next action: **6.11a** per the PLAN.md ledger — draw output and
-  previews from one immutable frame snapshot and prevent target drawing from
-  advancing live transitions (R13: preview-only work must not alter the
-  live scene, time or blends; both targets must use the same revision and
-  composition; a slow preview must drop or defer its work within the
-  audience's timing budget). Then continue the focused M6 leaves in order
-  (6.11b, 6.12, 6.13a/b).
+- **6.11a — one immutable frame for output and preview (R13) — DONE.** The
+  worker composes a moment once and shows it twice. `SceneFrame`
+  (`src/worker/render/Layer.h`, next to `ActiveScene`, which moved out of
+  `SceneRenderer.h` for the purpose) carries `{scene, fadeFrom, mediaBlend,
+  textBlend, timeSeconds, wallClock, revision}`; `FrameContext` hands the
+  layers that frame instead of a timestamp and the scene-aware layers keep no
+  pointers to renderer state at all, which is what makes drawing into a target
+  the read-only operation R13 asked for. Three calls own the contract:
+  `captureFrame(clock, revision)` is the only thing that advances a crossfade
+  (and stamps its origin, so the fade's 800 ms are the audience's 800 ms),
+  `draw(frame, canvas, …)` composes without touching anything, and
+  `commitFrame(frame)` is the only place a completed fade retires — and only
+  for the frame whose scene is still the one on air, so a credited-but-lost
+  frame leaves the loop owing the panel instead of stranding it mid blend. The
+  mutating `draw(canvas, …, timeSeconds, …)` overloads are deleted: a target
+  can no longer ask for "the composition as of now". In the session
+  `fComposedFrame` is captured once per audience frame before the output draw,
+  credited as soon as the present succeeds, and is what the preview draws; the
+  preview-only republish draws `fPresentedFrame`, and the revision tag travels
+  inside the frame, so published pixels and the published revision cannot come
+  from different moments. **The audience's timing budget:** the preview is
+  composed on the render thread, so it is lent 25 % of the 1/60 s frame
+  (≈4.17 ms); a publish costing more stands its OWN next attempt down for
+  `cost × (period/budget − 1)` so the average returns inside the share, and
+  `output.status.preview.{deferred,worstMs}` put the trade on the wire
+  (additive, no capability change) with `OPENSHOW_FAULT_PREVIEW_MS` placing a
+  test cost inside the measured region. **A real defect fell out of the
+  fixture:** the stand-down was enforced only inside `publishPreviewFrame`
+  while the run loop still computed its wake-up from `fLastPreview + 1/fps`, so
+  for the whole defer window the loop believed a frame it had just refused was
+  still due and asked again — **58,035 stand-downs in the same 700 ms window
+  where the fixed loop counts 44**. `nextAllowed` is now
+  `max(cadence, fPreviewDeferredUntil)`; refusing work without sleeping
+  through it is the 1.5e busy loop with better manners. **Measured** (live
+  worker, 640×360 @ 60 fps, 40 ms armed cost, consumer releasing every slot):
+  **published 5, deferred 44, worstMs 43.5 ms, narrowest gap between
+  deliveries 150 ms, across 49 audience frames**, worst preview **lead** over
+  the audience's own clock **+0.005** against a 0.2 ceiling; the same window
+  with the fault off **published 29, deferred 0, worstMs 3.14 ms, gap 0** — a
+  normal preview costs under the share, so nothing defers today and the policy
+  only bites when the target really is expensive (a 5 ms fault, cost ~8 ms,
+  defers proportionally: 23 published, 10 stood down). The CPU fixture
+  (`scene_frame_tests`, both presets) shows the two targets of one frame
+  agreeing to **0.11** in redness (ceiling 3.0; one audience frame's slip of
+  the media track moves that metric ~7) while the fade's ends read
+  **+175.08/−175.20** and its midpoint **0.00**, mid-fade ink **2031 px**
+  against **1218 px** settled (both words on screen as the text track
+  dissolves at 0.8/0.2) and near-white ink **0 px** mid fade against **829
+  panel / 147 preview** settled — the incoming word drawn AT `textBlend`.
+  **Mutations** m01 background ignores `mediaBlend`, m02/m03 incoming and
+  outgoing words ignore `textBlend`, m04 `draw()` reads live renderer state
+  (R13's own bug), m05 capture never stamps the origin, m06 capture ignores the
+  revision, m07 commit never retires, m08 commit ignores scene identity, m09
+  retire on computation, m10 budget gate off, m11 share = the whole frame
+  period, m12 audience period = 1 s, m13 stand-down ignores cost, m14 the loop
+  ignores the defer horizon, m15 worst cost unreported, m16 deferrals
+  uncounted, m17 the preview captures a frame of its own: **17/17 CAUGHT**.
+  Three escapes on the first pass, all three the FIXTURE's blind spots and all
+  recorded in the files: mean-channel metrics cannot see white text alpha (so
+  count near-white pixels), a preview composing its own moment is invisible to
+  counts of the other target (so bound its blend against the audience's clock
+  — the rule is one-directional: lag allowed, lead refused), and a `// MUTANT`
+  comment swallows the rest of an `if` line. Gates desktop **41/41** (165 s),
+  headless **24/24** (42 s).
+- Exact next action: **6.11b** per the PLAN.md ledger — correct the image
+  crossfade math (`drawSceneBackground` applies alpha separately to the fill
+  and to the incoming image, so an opaque still at blend 0.5 composites to
+  0.25 incoming rather than 0.5) and remove the text fade's `saveLayer`
+  intermediate target through a public paragraph paint path, with
+  image→image and identical-image midpoint pixel fixtures and the low-end
+  timing recorded (R13's second half). Then continue the focused M6 leaves in
+  order (6.12, 6.13a/b).
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -3107,6 +3172,38 @@ of this work.
 
 ## Decisions
 
+- (2026-10-26, task 6.11a) A composition two targets read must be a VALUE, not
+  a query. `SceneRenderer::draw(canvas, …, timeSeconds, …)` looked pure and was
+  not: it advanced the shared crossfade, so the second target of a frame saw
+  whatever the first had left, and a preview could run a fade to a blend the
+  audience never saw or retire it while the panel still held a half-blend. The
+  fix is a captured `SceneFrame` (scene, both blend tracks, clocks, revision)
+  with exactly one mutator — `captureFrame` on the audience's clock — and
+  retirement moved to `commitFrame`, the point where the frame is KNOWN to have
+  reached the panel. Retiring on computation is the subtle half: the
+  event-driven loop presents while `transitionRunning()`, so a blend that
+  completed in a frame that then failed to present would leave the audience
+  holding a half-blend nobody intends to finish. Retirement also needs the
+  scene-identity guard, or a stale credited frame ends a fade a newer present
+  has just started. The old draw overloads are deleted rather than deprecated:
+  a target that cannot ask "what does it look like now" cannot answer with a
+  different moment than its sibling — and the one form of "the same moment"
+  observable from outside is directional, so the live fixture lets the preview
+  LAG and refuses only a LEAD.
+- (2026-10-26, task 6.11a) Sharing work between targets is not free, so the
+  audience prices it. The preview's share is 25 % of the frame period and an
+  expensive publish pays its overrun back in deferred attempts, which holds the
+  AVERAGE inside the share whatever one frame cost; `preview.{deferred,worstMs}`
+  make the trade visible instead of asking the operator to notice a stutter.
+  The lesson is about deferral in general: **a refusal must move the loop's
+  wake-up, not just the callee** — gate the work but leave `fLastPreview` in the
+  past and the render loop asks again twenty thousand times a second (measured
+  58,035 stand-downs in one 700 ms window, against 44 once the horizon feeds
+  `nextAllowed`). Fixture law paid for here: bound such a meter by what the
+  loop can physically do (one attempt per audience frame, plus one per horizon
+  wake, plus housekeeping), never by the counter's own value, and publish the
+  control run — 29 publishes, 0 deferrals, 3.14 ms worst cost — because that is
+  what makes both the floor and the ceiling credible.
 - (2026-10-22) Output composition follows the layer model now recorded in
   PLAN.md: one pass, no render-to-texture, disabled layers functionally
   skipped, frontend-toggled; audio is never a composition layer.
