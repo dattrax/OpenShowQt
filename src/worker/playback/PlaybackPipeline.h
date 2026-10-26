@@ -146,6 +146,9 @@ public:
     bool paused() const { return fPaused.load(); }
     void seekTo(double seconds);
     void setLoop(bool enabled);
+    // Whether this transport is supposed to never end (task 6.7c: an EOF
+    // that arrives anyway is then a fault rather than a finished clip).
+    bool looping() const { return fLoop.load(); }
     // Media position presented so far (loop-continuous pts); -1 before the
     // first submission, frozen while paused.
     double position() const;

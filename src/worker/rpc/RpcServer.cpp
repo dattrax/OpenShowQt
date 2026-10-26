@@ -120,9 +120,13 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                // Background media (task 5.5d): the video
                                // transport's live state; error is sticky
                                // until a successful open replaces it.
+                               // "audio" (task 6.7c, review R18) is the
+                               // typed audible lane: none | silent |
+                               // no-output | degraded | paused | live.
                                {"media", boost::json::object{{"playing", status.media.playing},
                                                              {"path", status.media.path},
                                                              {"error", status.media.error},
+                                                             {"audio", status.media.audio},
                                                              {"position", status.media.position}}}};
 }
 

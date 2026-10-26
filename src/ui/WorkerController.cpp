@@ -142,6 +142,7 @@ void WorkerController::onSocketDisconnected() {
     resetSceneTracking();
     fMediaPlaying = false;
     fMediaError.clear();  // the media state describes a worker we lost
+    fMediaAudio = QStringLiteral("none");
     emit mediaChanged();
     emit stateChanged();
     if (!fShutdownRequested) {
@@ -156,6 +157,7 @@ void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exit
     resetSceneTracking();
     fMediaPlaying = false;
     fMediaError.clear();
+    fMediaAudio = QStringLiteral("none");
     emit mediaChanged();
     emit stateChanged();
     if (fShutdownRequested) {
@@ -437,6 +439,13 @@ void WorkerController::handleReply(const boost::json::object& message) {
             fMediaPlaying = media.at("playing").as_bool();
             fMediaError =
                 QString::fromStdString(std::string(media.at("error").as_string()));
+            // Optional even within minor 5's spirit: a worker that does not
+            // send the lane leaves the last known answer rather than
+            // pretending the audio went away.
+            const auto audio = media.find("audio");
+            if (audio != media.end() && audio->value().is_string()) {
+                fMediaAudio = QString::fromStdString(std::string(audio->value().as_string()));
+            }
             emit mediaChanged();
         }
         QVariantMap layers;

@@ -25,13 +25,19 @@ namespace openshow::protocol {
 // before any other message is exchanged. Minor 3 (task 5.5d) adds the
 // media.error notification and the status "media" object; minor 4 (task
 // 6.5) adds the stream identity that preview.ready carries and
-// preview.released must echo. Minor-3 additions a frontend ignores are
-// harmless — the "media.error.v1" capability names them. The minor-4
-// release rule is stricter, not additive: releases without the stream
-// identity are refused, so "preview.stream-id.v1" is the capability a
-// frontend checks before expecting its preview to keep flowing.
+// preview.released must echo; minor 5 (task 6.7c) adds the typed audio
+// lane status.media.audio carries ("none", "silent", "no-output",
+// "degraded", "paused", "live"), which is what tells a frontend why an
+// on-air background with sound is silent. Minor-3 additions a frontend
+// ignores are harmless — the "media.error.v1" capability names them, and
+// "media.audio-state.v1" names the lane (an unknown extra field in a
+// status object costs nothing, so a minor-5 worker still serves an older
+// frontend). The minor-4 release rule is stricter, not additive: releases
+// without the stream identity are refused, so "preview.stream-id.v1" is
+// the capability a frontend checks before expecting its preview to keep
+// flowing.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 4;
+inline constexpr std::uint32_t kProtocolMinor = 5;
 
 // Worker-to-frontend notification (task 5.5d): a background media asset
 // failed. {"path":...,"message":...} — sent when the failure happens,

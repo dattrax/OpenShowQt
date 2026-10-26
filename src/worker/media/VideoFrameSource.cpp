@@ -512,6 +512,11 @@ void VideoFrameSource::run() {
     const AVPixelFormat ringFormat =
         fRingFormat == FrameFormat::kP010 ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
     const int componentBytes = fRingFormat == FrameFormat::kP010 ? 2 : 1;
+    // Frames published since the last end-of-stream (task 6.7c). A rewind
+    // that yields nothing is not a loop: it is the same EOF again, and
+    // rewinding it forever would spin the decode thread while the audience
+    // watched a frozen frame. The counter is what tells the two apart.
+    uint64_t publishedSinceEof = 0;
 
     auto bump = [&](auto&& update) {
         std::lock_guard lock(fStatsMutex);
@@ -697,6 +702,7 @@ void VideoFrameSource::run() {
             return false;
         }
         bump([&](Stats& s) { ++s.framesProduced; if (fDirectDecode) ++s.directFrames; });
+        ++publishedSinceEof;
         return true;
     };
 
@@ -790,7 +796,15 @@ void VideoFrameSource::run() {
             if (!drain(/*flushDecoder=*/true)) {
                 break;
             }
-            if (fLoop.load()) {
+            // Progress is what makes a rewind a loop (task 6.7c). Without
+            // frames between two ends of stream the container has nothing
+            // left to give — a clip truncated to nothing while it played is
+            // the shape — and rewinding to 0 would rewind into the same EOF
+            // again, spinning here while the audience kept the last frame.
+            // Recording the end instead is both honest and cheap.
+            const bool madeProgress = publishedSinceEof > 0;
+            publishedSinceEof = 0;
+            if (fLoop.load() && madeProgress) {
                 if (av_seek_frame(format, fVideoStreamIndex, 0, AVSEEK_FLAG_BACKWARD) >= 0) {
                     avcodec_flush_buffers(decoder);
                     fSyntheticPtsSeconds = 0.0;

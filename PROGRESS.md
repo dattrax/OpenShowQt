@@ -343,10 +343,67 @@ Updated: 2026-10-25 (Europe/London).
   complaint), `fallbackClockBeforeStart`. Mutations M-F/G/H/I each fail
   exactly their intended checks. Gates desktop **35/35**, headless
   **21/21**.
-- Exact next action: **6.7c** per the PLAN.md ledger — propagate
-  preparation/runtime decoder, still-image, feeder and sink failures
-  into acknowledged media state. Then continue the focused M6 leaves in
-  order.
+- **6.7c DONE (2026-10-26).** The media report is typed (review R18, first
+  half). `AvPlayer` answers `audioLaneState()` from state it already keeps
+  honest plus one new counter: `fSourcesOpen` — how many wanted sources
+  ACTUALLY opened. That counter is the whole discovery: `fAudioLive` is
+  `sinkUp`, so a live PipeWire sink over a file whose decoder never came up
+  read "started" with silence and no field anywhere saying so. Precedence:
+  nothing wanted → `none`; audio wanted and transport down → `degraded` (a
+  failed start keeps the expectation deliberately — it is the only thing
+  between this and a report of nothing-at-all; a clean `stop()` clears it);
+  no source open → `degraded` (an asset fault outranks the machine's state,
+  so a broken file can never be reported as "silent, output switched off");
+  output off → `silent`; no server connection → `no-output`; paused →
+  `paused`; live and active → `live`; else `degraded` (activation refused).
+  Session: `status.media.audio` names the lane (protocol minor 5, capability
+  `media.audio-state.v1`, UI `mediaAudio` + amber TopBar line for
+  degraded/no-output); faults are typed (`MediaFault {image,video,audio}` +
+  the path) so `mediaFaultCleared*` erases only its own class *and* asset,
+  and `fExpectedAudioLoss` carries the one thing `AvPlayer` cannot know (the
+  container has an audio stream, no decoder opened) through the per-frame
+  reconcile. Two honesty fixes fell out: `playing` no longer credits at
+  open (promoted on `submitted > 0`, demoted on `fatalError`/`eof`, with
+  eof-while-looping reported as a video fault rather than silence), and
+  `housekeep()` reconciles under `fMutex` every 500 ms before touching the
+  graphics-queue lock — the run loop is event-driven and presents NOTHING
+  once frames stop, so a frame-refreshed status would have claimed playback
+  forever after a mid-play death. `SceneImageCache::refreshFor()` always
+  decodes a cached failure (an operator action, unlike the 60 Hz draw path
+  that keeps negative caching) and states its reason; `media.path` always
+  names the on-air background asset, error set only when that asset is what
+  cannot be shown; `VideoFrameSource::run()` no longer rewinds into its own
+  end-of-stream when nothing was published since the last one. Fixtures:
+  `audioLaneOfflineStates`/`audioLaneLiveStates` (six wire names pinned;
+  no-output reached by cutting `XDG_RUNTIME_DIR` away so it reproduces on a
+  box that HAS a daemon; live: live→paused→live, sink-up-with-broken-source
+  →degraded, stop→none) and five new `background_media_tests` scenarios —
+  `exerciseImageRepair` (missing still names itself and its class, the file
+  returns under the same slide → repaired, error cleared, **no** new
+  notification), `exerciseMidPlayFailure` (`::truncate(...,0)` mid-play →
+  stops being reported as playing within 4 s, notification names the file,
+  exactly ONE notification across 1.2 s of heartbeats, healthy clip heals
+  it), `exerciseAudioLane` (anullsrc clip: never `none`, lane and error
+  self-consistent whichever way the server came up), `exerciseFaultsDoNot-
+  CrossAssets` (a queued slide's image fault stands through the healthy
+  on-air transport's continuous reconcile), `exerciseAudioStartFailure`
+  (own faulted worker: muted picture plays, lane `degraded` + pushed
+  message, a silent clip clears it). Mutations m1–m7 (no heartbeat,
+  `refreshFor` reusing the cached failure, lane ignoring `fSourcesOpen`,
+  lane ignoring a failed start, untyped clear, lane ignoring sink
+  readiness, `playing` at open) are each CAUGHT. Accepted limits: one
+  sticky error string, so simultaneous faults share text; a server
+  self-deactivating our stream is not observed; the "stream present, no
+  decoder" branch has no dedicated fixture (no encodable-but-undecodable
+  audio codec in this FFmpeg 9.0.2 build), and a media-level fixture for the
+  progress guard was reverted because FFmpeg legitimately loops a truncated
+  mp4 from its packet cache (755 frames, 107 loops). Gates desktop
+  **35/35**, headless **21/21** (background_media 3-run, av_sync 2-run
+  stress green).
+- Exact next action: **6.7d** per the PLAN.md ledger — pair seek targets
+  with applied generations, report failed seeks, and unify media-position/
+  deadline mapping across pacing and session. Then continue the focused M6
+  leaves in order.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -2874,6 +2931,26 @@ of this work.
   machine uptime and paces the whole scheduler by it (bench drift in
   tens of thousands of seconds; the fix's proof is a bounded reading
   plus one honest bench rerun).
+- (2026-10-26, task 6.7c) A status field derived from a component's own
+  success flag is not a report — derive it from what the audience can
+  receive. "Sink up" was true while every source had failed to open, so
+  silence was reported as success; the fix is a separate expectation
+  (audio was wanted) from an outcome (N sources opened, sink ready,
+  activation accepted, transport held), typed into named lanes so each
+  silence says who owes it. Two corollaries: an ASSET fault outranks
+  machine state (a broken file must never read as "output switched off"),
+  and recovery must be typed to the class AND asset that recovered, because
+  a per-frame reconcile of the healthy on-air transport will otherwise
+  erase a queued asset's standing fault. Related: a status refreshed only
+  by frames cannot report the death of the thing that produces them — the
+  event-driven loop presents nothing once frames stop, so a heartbeat must
+  reconcile it; "playing" is a frame-time claim (credit on submitted
+  frames, never at open); and a cached failure may be reused by the hot
+  path but never by an operator action, since the repair is a new file at
+  the same path. Proof discipline: FFmpeg serving a truncated mp4 from its
+  AVIO/packet cache makes partial truncation legitimately loopable, so a
+  producer-level fixture cannot isolate a no-progress guard — pin such
+  guards where the observable behaviour lives, and say so.
 - Layout and names as in the table: `openshow-ui` and `openshow-worker` are the
   two shipped executables, with `src/domain` and `src/protocol` Qt-free and
   shared by both.

@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -72,9 +73,18 @@ std::string socketPath(const char* tag) {
     return "/tmp/openshow-bg-" + std::to_string(getpid()) + "-" + tag + ".sock";
 }
 
-pid_t spawnWorker(const std::string& path) {
+pid_t spawnWorker(const std::string& path, const std::vector<std::string>& extraEnv = {}) {
     const pid_t pid = fork();
     if (pid == 0) {
+        // Fault knobs (OPENSHOW_FAULT_*) are set in the child only: the
+        // test process itself must stay un-faulted, and a scenario that
+        // needs a broken component owns a worker where nothing else does.
+        for (const std::string& entry : extraEnv) {
+            const std::size_t equals = entry.find('=');
+            if (equals != std::string::npos) {
+                ::setenv(entry.substr(0, equals).c_str(), entry.substr(equals + 1).c_str(), 1);
+            }
+        }
         execl(gWorkerBinary.c_str(), "openshow-worker", "--socket", path.c_str(),
               static_cast<char*>(nullptr));
         _exit(127);
@@ -563,6 +573,289 @@ bool generate(const std::string& command) {
     return std::system(command.c_str()) == 0;
 }
 
+// --- task 6.7c (review R18): the typed media report -------------------------
+//
+// The scenarios below are the acceptance sentences of 6.7c, each one on the
+// worker's own report rather than on its log:
+//
+//   * an undecodable still names itself, and the SAME slide recovers when
+//     the operator puts the file back (no new asset, no new notification);
+//   * a background that dies while it plays stops being reported as
+//     playing, within the heartbeat, and pushes the failure;
+//   * a clip that carries audio never reports the "none" lane, and its
+//     error matches whatever lane its machine really has;
+//   * a worker whose audio start is refused plays the picture and says
+//     "degraded" — and a silent clip clears that report (recovery is typed).
+
+// Polls status until the media object satisfies predicate (bounded).
+bool waitMedia(int fd, const std::function<bool(const boost::json::object&)>& predicate,
+               int timeoutMs) {
+    for (int waited = 0; waited < timeoutMs; waited += 50) {
+        const boost::json::object media = mediaOf(status(fd));
+        if (!media.empty() && predicate(media)) {
+            return true;
+        }
+        sleepMs(50);
+    }
+    return false;
+}
+
+// The still that cannot be decoded, then repaired under the same slide.
+void exerciseImageRepair(int fd, const std::string& missingStill,
+                         const std::string& stillFixture) {
+    gMediaErrors.clear();
+    const std::uint64_t broken =
+        preparePresent(fd, lyricScene("Broken still", "t1", missingStill, false));
+    check(broken != 0 && waitActive(fd, broken, nullptr),
+          "the undecodable-still scene goes on air (the slide works, the picture does not)");
+    sleepMs(300);  // let the notification ride one flush tick
+    check(!gMediaErrors.empty(),
+          "an undecodable still pushes media.error instead of a silent colour fill");
+    if (!gMediaErrors.empty()) {
+        check(textOf(gMediaErrors.front(), "path") == missingStill,
+              "the notification names the still it could not decode");
+        check(textOf(gMediaErrors.front(), "message").find("image") != std::string::npos,
+              "the message names the class of asset that failed");
+    }
+    const boost::json::object brokenMedia = mediaOf(status(fd));
+    check(!textOf(brokenMedia, "error").empty(), "status.media.error holds the still's failure");
+    check(textOf(brokenMedia, "path") == missingStill,
+          "and the report stays paired with the asset the audience is looking at");
+    check(!brokenMedia.contains("playing") || !brokenMedia.at("playing").as_bool(),
+          "a still is never reported as playing");
+    check(textOf(brokenMedia, "audio") == "none", "a still has no audio lane to report");
+
+    // The operator restores the file. A prepare is an operator action, so a
+    // cached failure must not be reused: the picture has to come back and
+    // its error has to clear — while NOTHING new is pushed for the good
+    // news (recovery is a status change, not an event).
+    if (!generate("cp '" + stillFixture + "' '" + missingStill + "'")) {
+        check(false, "the repaired still could be staged (fixture failure)");
+        return;
+    }
+    gMediaErrors.clear();
+    const std::uint64_t repaired =
+        preparePresent(fd, lyricScene("Broken still", "t1", missingStill, false));
+    check(repaired != 0 && waitActive(fd, repaired, nullptr),
+          "the same slide re-presents after the file returns");
+    const bool cleared = waitMedia(
+        fd, [](const boost::json::object& media) { return textOf(media, "error").empty(); }, 3000);
+    check(cleared, "the repaired still clears the sticky error on the SAME asset");
+    check(gMediaErrors.empty(), "recovering the still pushes nothing new");
+    const boost::json::object repairedMedia = mediaOf(status(fd));
+    check(textOf(repairedMedia, "path") == missingStill,
+          "the report still names the asset now on air — with no error attached to it");
+}
+
+// A clip whose file is destroyed while it plays.
+void exerciseMidPlayFailure(int fd, const std::string& healthyClip) {
+    // A private copy: this scenario destroys its file, and the fixture
+    // clips are needed whole by every other scenario.
+    const std::string victim = "background-media-fixtures/victim.mp4";
+    if (!generate("cp '" + healthyClip + "' '" + victim + "'")) {
+        check(false, "the victim clip could be staged (fixture failure)");
+        return;
+    }
+    const std::uint64_t scene = preparePresent(fd, lyricScene("Doomed", "t2", victim, true));
+    check(scene != 0 && waitActive(fd, scene, nullptr), "the doomed background goes on air");
+    const bool rolling = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            return media.contains("playing") && media.at("playing").as_bool() &&
+                   numberOf(media, "position") > 0.0;
+        },
+        6000);
+    check(rolling, "the doomed background plays first (the failure has to be mid-play)");
+
+    gMediaErrors.clear();
+    check(::truncate(victim.c_str(), 0) == 0, "the file is destroyed while the transport runs");
+    // The heartbeat is what reports this: the event-driven loop presents
+    // nothing once the frames stop, so a status refreshed only by frames
+    // would go on claiming playback forever.
+    const bool reported = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            return !media.at("playing").as_bool() && !textOf(media, "error").empty();
+        },
+        4000);
+    const boost::json::object dead = mediaOf(status(fd));
+    check(reported, "a background whose file dies mid-play stops being reported as playing");
+    check(!gMediaErrors.empty(), "and pushes media.error while it happens");
+    if (!gMediaErrors.empty()) {
+        check(textOf(gMediaErrors.front(), "path") == victim,
+              "the notification names the file that broke");
+    }
+    check(textOf(dead, "path") == victim,
+          "the sticky report still names the asset that was on air");
+    // The refresh runs every heartbeat and every frame while this fault
+    // stands. It reports ONCE (the isNew guard): a socket that re-announced
+    // the same death 120 times a minute would be noise, not a signal.
+    sleepMs(1200);
+    check(gMediaErrors.size() == 1,
+          "the standing fault is pushed once, not once per heartbeat");
+
+    // Presenting a healthy background is the recovery.
+    const std::uint64_t healed = preparePresent(fd, lyricScene("Healed", "t3", healthyClip, true));
+    check(healed != 0 && waitActive(fd, healed, nullptr), "the healthy background takes the air");
+    const bool recovered = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            return textOf(media, "error").empty() && media.at("playing").as_bool() &&
+                   numberOf(media, "position") > 0.0;
+        },
+        6000);
+    check(recovered, "a healthy background clears the mid-play failure and plays");
+    ::unlink(victim.c_str());
+}
+
+// The lane of a clip that HAS audio. Which lane a machine reports depends
+// on its audio server, so the assertion is the one R18 needs everywhere:
+// never "none", and the error must match the lane.
+void exerciseAudioLane(int fd, const std::string& audioClip) {
+    const std::uint64_t scene = preparePresent(fd, lyricScene("Audio", "t4", audioClip, true));
+    check(scene != 0 && waitActive(fd, scene, nullptr), "the audio-bearing background goes on air");
+    // The head frame first (playing is a frame-time claim, 6.7c), then the
+    // lane beside it — the pair is the report an operator reads.
+    const bool rolling = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            return media.at("playing").as_bool() && numberOf(media, "position") > 0.0;
+        },
+        6000);
+    check(rolling, "the audio-bearing background plays");
+    const boost::json::object media = mediaOf(status(fd));
+    const std::string lane = textOf(media, "audio");
+    const std::string error = textOf(media, "error");
+    const bool faultLane = lane == "degraded" || lane == "no-output";
+    check(lane != "none", "a clip that carries audio never reports the none lane (R18)");
+    std::printf("   audio lane for a clip with sound: %s (%s)\n", lane.c_str(),
+                error.empty() ? "no error" : error.c_str());
+    check(lane == "live" || lane == "paused" || lane == "silent" || faultLane,
+          "the reported lane is one of the protocol's six");
+    if (faultLane) {
+        check(!error.empty() && error.find("audio") != std::string::npos,
+              "a fault lane carries a message naming the audio");
+    } else {
+        check(error.empty(), "a healthy lane reports no error");
+    }
+}
+
+// Recovery is typed, and the per-frame refresh is what makes that matter:
+// a healthy background on air reconciles its own audio lane every frame,
+// and that must not erase the report of an asset that is still broken —
+// here a prepared-but-unchanged slide whose still cannot be decoded.
+void exerciseFaultsDoNotCrossAssets(int fd, const std::string& healthyClip,
+                                    const std::string& missingStill) {
+    // Put a healthy video on air and let it settle: its refresh is running
+    // continuously by the time the queued fault appears.
+    const std::uint64_t onAir = preparePresent(fd, lyricScene("Healthy", "x1", healthyClip, true));
+    check(onAir != 0 && waitActive(fd, onAir, nullptr), "the healthy background goes on air");
+    check(waitMedia(
+              fd,
+              [](const boost::json::object& media) {
+                  return media.at("playing").as_bool() && numberOf(media, "position") > 0.0;
+              },
+              6000),
+          "the healthy background plays");
+
+    // Prepare (do NOT present) a slide whose still cannot be decoded: the
+    // preload reports it while the healthy video is still what the audience
+    // sees.
+    gMediaErrors.clear();
+    boost::json::value reply;
+    check(call(fd, "scene.prepare", lyricScene("Queued broken", "x2", missingStill, false),
+               &reply) &&
+              reply.as_object().contains("result"),
+          "the scene with the undecodable still is accepted into the store");
+    sleepMs(300);
+    const boost::json::object afterQueue = mediaOf(status(fd));
+    check(!textOf(afterQueue, "error").empty(),
+          "a prepared slide's broken still is reported before it is presented");
+    check(textOf(afterQueue, "error").find("image") != std::string::npos,
+          "the standing report is the IMAGE fault");
+    check(afterQueue.at("playing").as_bool(),
+          "and the healthy background keeps playing while it stands");
+
+    // Frames and heartbeats keep reconciling the on-air transport. None of
+    // them may clear a fault they do not describe.
+    sleepMs(1200);
+    const boost::json::object still = mediaOf(status(fd));
+    check(textOf(still, "error").find("image") != std::string::npos,
+          "the on-air transport's healthy lane does NOT clear another asset's fault (R18)");
+    check(textOf(still, "path") == missingStill, "and the report keeps naming the broken asset");
+    gMediaErrors.clear();
+}
+
+// A worker whose audio mixer refuses to start (the 6.7a fault knob): the
+// picture must roll on the monotonic clock, the lane must say so, and a
+// silent clip must clear the report because it lost nothing.
+void exerciseAudioStartFailure(const std::string& audioClip, const std::string& silentClip) {
+    const std::string socket = socketPath("audiofault");
+    ::unlink(socket.c_str());
+    const pid_t worker = spawnWorker(socket, {"OPENSHOW_FAULT_AUDIO_MIXER_FAIL=1"});
+    if (worker < 0) {
+        check(false, "the audio-fault worker could be spawned");
+        return;
+    }
+    const int fd = connectRetry(socket);
+    if (fd < 0) {
+        check(false, "the audio-fault worker never answered its socket");
+        kill(worker, SIGTERM);
+        return;
+    }
+    boost::json::value reply;
+    check(call(fd, "hello",
+               proto::helloParams("openshow-background-media", proto::kProtocolMajor,
+                                  proto::kProtocolMinor),
+               &reply) &&
+              reply.as_object().contains("result"),
+          "handshake with the audio-fault worker");
+
+    gMediaErrors.clear();
+    const std::uint64_t scene = preparePresent(fd, lyricScene("No mixer", "f1", audioClip, true));
+    check(scene != 0 && waitActive(fd, scene, nullptr),
+          "the video plays on even though its audio could not start");
+    // Frames first: "playing" is the frame-time claim it now is, and a
+    // muted transport still has to earn it by submitting.
+    const bool rolling = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            return media.at("playing").as_bool() && numberOf(media, "position") > 0.0;
+        },
+        6000);
+    check(rolling, "the muted picture still plays (the audio's failure is not the video's)");
+    const bool degraded = waitMedia(
+        fd, [](const boost::json::object& media) { return textOf(media, "audio") == "degraded"; },
+        4000);
+    const boost::json::object media = mediaOf(status(fd));
+    check(degraded, "a refused audio start reports the degraded lane");
+    check(!textOf(media, "error").empty() &&
+              textOf(media, "error").find("audio") != std::string::npos,
+          "and carries a message naming what the audience is missing");
+    check(!gMediaErrors.empty(), "the degradation is pushed, not only pollable");
+
+    // A silent clip loses nothing, so its report is clean: recovery is
+    // typed to the class that actually recovered.
+    const std::uint64_t silent = preparePresent(fd, lyricScene("Silent", "f2", silentClip, true));
+    check(silent != 0 && waitActive(fd, silent, nullptr), "the silent background takes the air");
+    const bool clean = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            return textOf(media, "error").empty() && textOf(media, "audio") == "none";
+        },
+        4000);
+    check(clean, "a clip with no audio clears the audio fault (it has nothing to be missing)");
+
+    boost::json::value shutdownReply;
+    check(call(fd, "shutdown", {}, &shutdownReply), "the audio-fault worker answers shutdown");
+    close(fd);
+    int waitStatus = 0;
+    waitpid(worker, &waitStatus, 0);
+    check(WIFEXITED(waitStatus) && WEXITSTATUS(waitStatus) == 0,
+          "the audio-fault worker exits cleanly");
+    ::unlink(socket.c_str());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -655,6 +948,53 @@ int main(int argc, char** argv) {
 
     exerciseBackgroundMedia(fd, videoA, videoB, missing, corrupt, bigStill);
 
+    // --- task 6.7c (review R18): the typed media report ---
+    //
+    // A still whose file appears later, a clip destroyed mid-play, a clip
+    // with real audio, and a worker whose audio cannot start.
+    const std::string missingStill = "/tmp/openshow-still-" + std::to_string(getpid()) + ".png";
+    const std::string stillFixture = "/tmp/openshow-still-src-" + std::to_string(getpid()) + ".png";
+    ::unlink(missingStill.c_str());
+    const bool stillOk =
+        generate("ffmpeg -v error -y -f lavfi -i color=c=0x336699:s=64x64:r=1 -frames:v 1 '" +
+                 stillFixture + "' >/dev/null 2>&1");
+    if (stillOk && fileExists(stillFixture)) {
+        exerciseImageRepair(fd, missingStill, stillFixture);
+    } else {
+        std::printf("   skipped the still-repair scenario (no still fixture)\n");
+    }
+
+    // An audio-bearing clip: a silent STREAM on purpose (anullsrc). The
+    // transport must have a decoder to open — that is what the lane is
+    // about — while a ctest run still keeps the room quiet.
+    const std::string audioClip = dir + "/with-audio.mp4";
+    const bool audioOk =
+        generate("ffmpeg -hide_banner -loglevel error -nostdin -y "
+                 "-f lavfi -i testsrc2=size=320x240:rate=25:duration=4 "
+                 "-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 "
+                 "-t 4 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac " +
+                 audioClip) &&
+        fileExists(audioClip);
+    exerciseMidPlayFailure(fd, videoA);
+    if (stillOk && fileExists(stillFixture)) {
+        // A path the image cache has never seen: unlinking the repaired
+        // still would NOT reproduce a failure (its success is cached for
+        // good, which is the point), so the queued-broken case needs its
+        // own missing asset.
+        const std::string queuedMissing =
+            "/tmp/openshow-queued-" + std::to_string(getpid()) + ".png";
+        ::unlink(queuedMissing.c_str());
+        exerciseFaultsDoNotCrossAssets(fd, videoA, queuedMissing);
+        ::unlink(queuedMissing.c_str());
+    }
+    if (audioOk) {
+        exerciseAudioLane(fd, audioClip);
+    } else {
+        std::printf("   skipped the audio-lane scenario (no audio fixture)\n");
+    }
+    ::unlink(missingStill.c_str());
+    ::unlink(stillFixture.c_str());
+
     // A healthy exit even after the injected failures.
     boost::json::value shutdownReply;
     check(call(fd, "shutdown", {}, &shutdownReply), "the worker answers shutdown");
@@ -663,6 +1003,12 @@ int main(int argc, char** argv) {
     waitpid(worker, &waitStatus, 0);
     check(WIFEXITED(waitStatus) && WEXITSTATUS(waitStatus) == 0,
           "the worker exits cleanly after the media scenarios");
+
+    // The audio-fault worker runs alone: two outputs on one display fight
+    // over the compositor, and this one needs a sink attempt of its own.
+    if (audioOk) {
+        exerciseAudioStartFailure(audioClip, videoA);
+    }
 
     ::unlink(corrupt.c_str());
     if (!bigStill.empty()) {

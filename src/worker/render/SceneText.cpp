@@ -311,6 +311,51 @@ void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
     }
 }
 
+namespace {
+
+// The one decode both entry points share (task 6.7c): file -> SkCodec ->
+// premul bitmap. `error`, when asked for, names the reason a null means
+// "no picture" — file unreadable, not an image, or a codec that gave up.
+sk_sp<SkImage> decodeImageFile(const std::string& path, std::string* error) {
+    auto fail = [&](std::string message) -> sk_sp<SkImage> {
+        if (error) {
+            *error = std::move(message);
+        }
+        return nullptr;
+    };
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return fail("cannot open '" + path + "' for reading");
+    }
+    const std::string bytes((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+    if (bytes.empty()) {
+        return fail("'" + path + "' is empty");
+    }
+    sk_sp<SkData> data = SkData::MakeWithCopy(bytes.data(), bytes.size());
+    auto codec = SkCodec::MakeFromData(std::move(data));
+    if (!codec) {
+        return fail("'" + path + "' is not a readable image");
+    }
+    const SkImageInfo info = codec->getInfo().makeColorType(kN32_SkColorType)
+                                 .makeAlphaType(kPremul_SkAlphaType);
+    SkBitmap bitmap;
+    if (!bitmap.tryAllocPixels(info)) {
+        return fail("no pixels for a " + std::to_string(info.width()) + "x" +
+                    std::to_string(info.height()) + " image");
+    }
+    const SkCodec::Result result = codec->getPixels(info, bitmap.getPixels(), bitmap.rowBytes());
+    if (result != SkCodec::kSuccess) {
+        return fail("image decode failed (SkCodec result " + std::to_string(result) + ")");
+    }
+    if (error) {
+        error->clear();
+    }
+    return SkImages::RasterFromBitmap(bitmap);
+}
+
+}  // namespace
+
 sk_sp<SkImage> SceneImageCache::imageFor(const std::string& path) {
     {
         std::lock_guard<std::mutex> lock(fMutex);
@@ -319,28 +364,11 @@ sk_sp<SkImage> SceneImageCache::imageFor(const std::string& path) {
             return existing->second;  // cached, or a cached failure (null)
         }
     }
-    sk_sp<SkImage> image;
-    std::ifstream in(path, std::ios::binary);
-    if (in) {
-        const std::string bytes((std::istreambuf_iterator<char>(in)),
-                                std::istreambuf_iterator<char>());
-        sk_sp<SkData> data = SkData::MakeWithCopy(bytes.data(), bytes.size());
-        auto codec = SkCodec::MakeFromData(std::move(data));
-        if (codec) {
-            const SkImageInfo info = codec->getInfo().makeColorType(kN32_SkColorType)
-                                         .makeAlphaType(kPremul_SkAlphaType);
-            SkBitmap bitmap;
-            if (bitmap.tryAllocPixels(info) &&
-                codec->getPixels(info, bitmap.getPixels(), bitmap.rowBytes()) ==
-                    SkCodec::kSuccess) {
-                image = SkImages::RasterFromBitmap(bitmap);
-            }
-        }
-    }
     // Decode done off-lock (task 5.5: an RPC-thread prefetch must never
     // stall the render thread's own lookups). Whoever inserts first wins;
     // a losing duplicate is identical bytes, and holding the fresh image
     // either way keeps the return honest.
+    const sk_sp<SkImage> image = decodeImageFile(path, nullptr);
     std::lock_guard<std::mutex> lock(fMutex);
     const auto existing = fImages.find(path);
     if (existing != fImages.end()) {
@@ -348,6 +376,34 @@ sk_sp<SkImage> SceneImageCache::imageFor(const std::string& path) {
     }
     fImages.emplace(path, image);
     return image;
+}
+
+sk_sp<SkImage> SceneImageCache::refreshFor(const std::string& path, std::string* error) {
+    // Always decode (off-lock, like the prefetch), then let a success
+    // overwrite a cached failure. A cached SUCCESS is returned without
+    // re-decoding: the bytes are the same file, and re-decoding a 4K still
+    // on every prepare would defeat the preload this path exists to do.
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        const auto existing = fImages.find(path);
+        if (existing != fImages.end() && existing->second != nullptr) {
+            if (error) {
+                error->clear();
+            }
+            return existing->second;
+        }
+    }
+    sk_sp<SkImage> image = decodeImageFile(path, error);
+    std::lock_guard<std::mutex> lock(fMutex);
+    const auto existing = fImages.find(path);
+    if (existing == fImages.end()) {
+        fImages.emplace(path, image);
+        return image;
+    }
+    if (image != nullptr && existing->second == nullptr) {
+        existing->second = image;  // repaired: the draw path picks it up now
+    }
+    return existing->second;
 }
 
 void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,

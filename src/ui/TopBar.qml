@@ -103,12 +103,19 @@ Rectangle {
             // (task 5.5d): amber means the output lives but its picture
             // or sound is broken. The connection state stays visible as
             // the dot, and about/version still carries the full status.
-            color: worker.mediaError !== "" ? "#e0a030"
+            // Task 6.7c adds the audio lane, and only its fault lanes are
+            // worth an amber line: "none" (a clip with no audio), "silent"
+            // (an output switched off by configuration), "paused" and
+            // "live" all describe a sound situation nobody needs warning
+            // about.
+            color: worker.mediaError !== "" || worker.mediaAudio === "degraded" ||
+                   worker.mediaAudio === "no-output" ? "#e0a030"
                  : worker.outputLive ? "#27a827" : "#a82727"
             font.pixelSize: 12
-            text: worker.mediaError !== ""
-                  ? "media: " + worker.mediaError
-                  : worker.status
+            text: worker.mediaError !== "" ? "media: " + worker.mediaError
+                  : worker.mediaAudio === "degraded" || worker.mediaAudio === "no-output"
+                      ? "audio: " + worker.mediaAudio
+                      : worker.status
         }
     }
 }

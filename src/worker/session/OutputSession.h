@@ -146,6 +146,12 @@ public:
         bool playing = false;
         std::string path;
         std::string error;
+        // The audio lane (task 6.7c, review R18): "none", "silent",
+        // "no-output", "degraded", "paused" or "live" — why the audience
+        // hears what it hears. Refreshed with the transport's other state
+        // each frame, so a sink that activates (or dies) after the present
+        // is visible without another present.
+        std::string audio = "none";
         // Loop-continuous media position in seconds, refreshed by the
         // render thread each frame while a video background plays; -1
         // otherwise. It is the proof of the continuity rule: a lyric
@@ -427,9 +433,34 @@ private:
     // fStatus.media under fMutex; mediaFailed additionally fills the
     // pending notification slot the RPC thread sends as media.error.
     // mediaPlaying is the success path: it clears the sticky error.
+    //
+    // Task 6.7c (review R18) types the failure. Every report names the
+    // class of fault it is (a still that will not decode, the video
+    // transport, the audible lane), and recovery clears only the fault of
+    // its own class and asset — the audio returning must not hide an image
+    // that is still missing. The *Locked variants are for callers that
+    // already hold fMutex (the frame's status refresh reconciles the
+    // transport's own report there, every frame).
+    enum class MediaFault { kImage, kVideo, kAudio };
+
     void mediaPlaying(const openshow::scene::Background& background);
     void mediaStopped();
-    void mediaFailed(const std::string& path, const std::string& message);
+    void mediaFailed(MediaFault fault, const std::string& path, const std::string& message);
+    void mediaFailedLocked(MediaFault fault, const std::string& path, const std::string& message);
+    // Clears the sticky error when (and only when) it is this class of
+    // fault for this asset: the honest shape of "recovered".
+    void mediaFaultCleared(MediaFault fault, const std::string& path);
+    void mediaFaultClearedLocked(MediaFault fault, const std::string& path);
+    // The frame-time reconciliation of the transport's report with what
+    // status claims (task 6.7c): position, audio lane, a decode that died
+    // after opening, and an end-of-file the transport should not have
+    // reached. Caller holds fMutex.
+    void refreshMediaStateLocked();
+
+    // The lane to publish: the transport's own, unless this asset's audio
+    // loss is something only the session knows (a stream no decoder can
+    // handle never becomes a source, so AvPlayer's lane says "none").
+    AvPlayer::AudioLane mediaLaneLocked() const;
 
     // Seconds against the installed video clock; caller holds fMutex.
     double videoClockSecondsLocked(std::chrono::steady_clock::time_point now) const;
@@ -478,6 +509,14 @@ private:
     ActiveScene fRenderScene;                              // = the composition's scene
     bool fBackgroundMedia = false;                         // from Options
     std::optional<MediaError> fPendingMediaError;          // fMutex; media.error push
+    // Which fault the sticky fStatus.media.error describes, and the asset it
+    // describes (task 6.7c, review R18): recovery has to know which report
+    // it is allowed to erase. fMutex.
+    std::optional<std::pair<MediaFault, std::string>> fMediaFault;
+    // Why the ON-AIR background's audio cannot be heard, when the transport
+    // itself has no idea (task 6.7c, review R18). Set for the identity it
+    // describes, cleared by mediaStopped(). fMutex.
+    std::string fExpectedAudioLoss;
 
     // Guards fDesiredMask, fRevision and the fields of fStatus that the
     // render thread refreshes (frames, extent, applied mask, revision).

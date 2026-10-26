@@ -57,8 +57,13 @@ class WorkerController : public QObject {
     // state. mediaError is the last failure for the on-air background and
     // stays set until a successful open replaces it (the worker carries it
     // in status and pushes the same text as a media.error notification).
+    // mediaAudio (task 6.7c) is the typed audible lane — "none", "silent",
+    // "no-output", "degraded", "paused" or "live" — so a clip that is on
+    // air with sound the audience cannot hear is visible as something other
+    // than a green light.
     Q_PROPERTY(bool mediaPlaying READ mediaPlaying NOTIFY mediaChanged)
     Q_PROPERTY(QString mediaError READ mediaError NOTIFY mediaChanged)
+    Q_PROPERTY(QString mediaAudio READ mediaAudio NOTIFY mediaChanged)
     // Scene store (task 2.4c): what the worker has applied and is about
     // to apply, and how many prepared scenes it keeps. demoSlideCount is
     // the fixture's size, fixed for the session.
@@ -146,6 +151,7 @@ public:
     QString previewError() const { return fPreviewError; }
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
+    QString mediaAudio() const { return fMediaAudio; }
 
 signals:
     void stateChanged();
@@ -276,6 +282,9 @@ private:
     QString fPreviewError;
     bool fMediaPlaying = false;
     QString fMediaError;
+    // The lane as the worker last reported it (task 6.7c); "none" is also
+    // the answer for a worker too old to send the field.
+    QString fMediaAudio = QStringLiteral("none");
 };
 
 }  // namespace openshow::ui

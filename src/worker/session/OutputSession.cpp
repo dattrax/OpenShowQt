@@ -324,9 +324,21 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene) {
         return;
     }
     if (!background.isVideo) {
-        // Stills: decode now. The cache keeps failures too, so a bad
-        // path is one attempt, not a retry on every frame.
-        fScene->imageCache()->imageFor(background.assetPath);
+        // Stills: decode now, through the REFRESHING entry point (task
+        // 6.7c, review R18). The per-frame draw path keeps a cached failure
+        // — one attempt per path, not a retry at frame rate — but a prepare
+        // is an operator action, and two things follow: a file that cannot
+        // be decoded must be NAMED (media.error), not degraded into a silent
+        // colour fill, and a file that was missing and has been put back
+        // must come back on air and clear its error.
+        std::string error;
+        if (fScene->imageCache()->refreshFor(background.assetPath, &error) == nullptr) {
+            std::fprintf(stderr, "openshow-worker: background image %s: %s\n",
+                         background.assetPath.c_str(), error.c_str());
+            mediaFailed(MediaFault::kImage, background.assetPath, "background image: " + error);
+        } else {
+            mediaFaultCleared(MediaFault::kImage, background.assetPath);
+        }
         return;
     }
     // Videos: opening a transport belongs to the present (the audience
@@ -340,7 +352,12 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene) {
         openshow::media::ProbeStatus::kOk) {
         std::fprintf(stderr, "openshow-worker: background preload %s: %s\n",
                      background.assetPath.c_str(), error.c_str());
+        mediaFailed(MediaFault::kVideo, background.assetPath, "background preload: " + error);
     }
+    // A successful probe deliberately clears nothing: the audience still
+    // has the previous background until this one's transport opens, and the
+    // report of what is on air belongs to that transport (mediaPlaying),
+    // not to a probe of something not yet shown.
 }
 
 bool OutputSession::presentScene(uint64_t prepared, uint64_t* revisionOut,
@@ -490,30 +507,138 @@ bool OutputSession::takeMediaError(MediaError* out) {
 
 void OutputSession::mediaPlaying(const openshow::scene::Background& background) {
     std::lock_guard<std::mutex> lock(fMutex);
-    fStatus.media.playing = true;
+    // Task 6.7c (review R18): the transport is UP, which is not yet the
+    // statement "the audience is watching frames". playing waits for the
+    // first frame the transport actually hands over (the frame refresh
+    // promotes it); position -1 and the lane say what is true meanwhile.
+    fStatus.media.playing = false;
     fStatus.media.path = background.assetPath;
     fStatus.media.error.clear();  // a successful open replaces any old failure
+    fMediaFault.reset();
     fStatus.media.position = -1.0;  // until the transport presents its head
+    fStatus.media.audio = AvPlayer::laneName(mediaLaneLocked());
+}
+
+AvPlayer::AudioLane OutputSession::mediaLaneLocked() const {
+    // The session's knowledge outranks the transport's ignorance (task
+    // 6.7c, review R18): an asset whose audio never reached AvPlayer — a
+    // stream no decoder can handle — leaves the transport honestly
+    // reporting "none", while the audience is missing sound the file has.
+    if (!fExpectedAudioLoss.empty()) {
+        return AvPlayer::AudioLane::kDegraded;
+    }
+    return fAudio.audioLaneState();
 }
 
 void OutputSession::mediaStopped() {
     std::lock_guard<std::mutex> lock(fMutex);
     fStatus.media.playing = false;
     fStatus.media.position = -1.0;
+    fStatus.media.audio = "none";  // no transport, so no lane to report
+    // The on-air asset's known audio loss went out with the transport it
+    // describes (task 6.7c): the next identity recomputes it.
+    fExpectedAudioLoss.clear();
     // The last error stays visible (the operator still needs to read it);
     // path stays so the message and the asset that caused it stay paired.
 }
 
-void OutputSession::mediaFailed(const std::string& path, const std::string& message) {
+void OutputSession::mediaFailed(MediaFault fault, const std::string& path,
+                                const std::string& message) {
     std::lock_guard<std::mutex> lock(fMutex);
+    mediaFailedLocked(fault, path, message);
+}
+
+void OutputSession::mediaFailedLocked(MediaFault fault, const std::string& path,
+                                      const std::string& message) {
     fStatus.media.path = path;
     // The same failure repeated (a re-prepare of a still-broken asset, or
-    // a probe that keeps failing) updates the text but notifies only when
-    // the message actually changes — the socket must not spam.
+    // the frame refresh re-reading one death every frame) updates the text
+    // but notifies only when the message actually changes — the socket must
+    // not spam, and this is now a per-frame path.
     const bool isNew = fStatus.media.error != message;
     fStatus.media.error = message;
+    fMediaFault = std::make_pair(fault, path);
     if (isNew) {
         fPendingMediaError = MediaError{path, message};
+    }
+}
+
+void OutputSession::mediaFaultCleared(MediaFault fault, const std::string& path) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    mediaFaultClearedLocked(fault, path);
+}
+
+void OutputSession::mediaFaultClearedLocked(MediaFault fault, const std::string& path) {
+    // Recovery is typed (task 6.7c): it clears only the fault it is the
+    // recovery OF. Anything else on file — another class, another asset —
+    // stays exactly where it is, because nothing about this event speaks
+    // for it.
+    if (!fMediaFault || fMediaFault->first != fault || fMediaFault->second != path) {
+        return;
+    }
+    fMediaFault.reset();
+    fStatus.media.error.clear();
+}
+
+void OutputSession::refreshMediaStateLocked() {
+    if (fBackground == nullptr) {
+        return;
+    }
+    const PlaybackPipeline::Stats transport = fBackground->stats();
+    const std::string& path = fAppliedBackground.assetPath;
+    fStatus.media.position = fBackground->position();
+    const AvPlayer::AudioLane lane = mediaLaneLocked();
+    fStatus.media.audio = AvPlayer::laneName(lane);
+
+    if (!transport.fatalError.empty()) {
+        // A decode that died after a successful open (review R18): no
+        // further frame can ever arrive, so the picture is frozen and
+        // "playing" would be a lie. The transport's own reason is the
+        // media's story, and it holds the shared error text — the lane
+        // above still tells the audio truth.
+        fStatus.media.playing = false;
+        mediaFailedLocked(MediaFault::kVideo, path,
+                          "background decode failed: " + transport.fatalError);
+        return;
+    }
+    if (transport.eof) {
+        fStatus.media.playing = false;
+        if (fBackground->looping()) {
+            // A looping transport must never reach an end: the rewind
+            // itself failed (or the media stopped yielding frames), which
+            // is a fault, not a finished clip.
+            mediaFailedLocked(MediaFault::kVideo, path,
+                              "background ended while looping (the media cannot be read again)");
+            return;
+        }
+        // The clip simply finished: accurate status, no fault — and this
+        // asset's earlier video fault no longer describes anything.
+        mediaFaultClearedLocked(MediaFault::kVideo, path);
+    } else if (transport.submitted > 0) {
+        // Frames are flowing: the point at which status may claim playback.
+        fStatus.media.playing = true;
+    }
+
+    // The audible lane (review R18): a fault lane is a fault the operator
+    // must see; a healthy lane is the recovery that clears it. A fault
+    // already on file keeps its text — the transport's start path can name
+    // a reason more specific than a lane ever states, and rewriting it each
+    // frame would notify the same degradation over and over.
+    const bool laneFault = lane == AvPlayer::AudioLane::kDegraded ||
+                           lane == AvPlayer::AudioLane::kNoOutput;
+    const bool audioFaultOnFile = fMediaFault && fMediaFault->first == MediaFault::kAudio &&
+                                  fMediaFault->second == path;
+    if (!laneFault) {
+        mediaFaultClearedLocked(MediaFault::kAudio, path);
+    } else if (!audioFaultOnFile) {
+        mediaFailedLocked(
+            MediaFault::kAudio, path,
+            !fExpectedAudioLoss.empty()
+                ? fExpectedAudioLoss
+                : (lane == AvPlayer::AudioLane::kNoOutput
+                       ? "background audio has no output (no audio server connection)"
+                       : "background audio is not audible (no source could be opened, or "
+                         "the audio server refused the stream)"));
     }
 }
 
@@ -718,13 +843,33 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
     if (!wanted.hasImage || !wanted.isVideo) {
         // Colour fill or still image: no video transport, so the media
         // status goes idle (a stale video error is not the story of the
-        // scene now on air). Still-image decode is the image cache's
-        // business (task 3.2) and degrades to the colour fill there.
+        // scene now on air). A still is different: the picture it could not
+        // decode IS the story, and the colour fill is a degradation rather
+        // than a success (task 6.7c, review R18). So the asset the audience
+        // is looking at is always NAMED, and the error is set only when
+        // that asset is what cannot be shown.
+        //
+        // The cache is consulted BEFORE fMutex (the 5.5 rule: a decode must
+        // never hold up status or layer commands). Normally the prepare's
+        // preload already answered for this path; whoever gets there first
+        // pays the decode, off the lock either way.
+        const bool brokenStill =
+            wanted.hasImage && !wanted.isVideo &&
+            (fScene == nullptr || fScene->imageCache()->imageFor(wanted.assetPath) == nullptr);
         std::lock_guard<std::mutex> lock(fMutex);
         fStatus.media.playing = false;
-        fStatus.media.path.clear();
-        fStatus.media.error.clear();
         fStatus.media.position = -1.0;
+        fStatus.media.audio = "none";
+        // The asset the audience is looking at, whether or not it works:
+        // media.path always names what media.error describes, and a healthy
+        // still is an asset on air like any other. (The identity short-cut
+        // above means a re-present of the SAME still cannot rewrite this,
+        // which is why the rule has to hold in both directions.)
+        fStatus.media.path = wanted.hasImage ? wanted.assetPath : std::string();
+        if (!brokenStill) {
+            fStatus.media.error.clear();
+            fMediaFault.reset();
+        }
         return;
     }
 
@@ -751,7 +896,7 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
     if (!pipeline->openGpu(gpu, options, &error)) {
         std::fprintf(stderr, "openshow-worker: background video %s: %s\n",
                      wanted.assetPath.c_str(), error.c_str());
-        mediaFailed(wanted.assetPath, "background video: " + error);
+        mediaFailed(MediaFault::kVideo, wanted.assetPath, "background video: " + error);
         return;  // the colour fill stands; the scene stays legible
     }
 
@@ -763,22 +908,37 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
     AvPlayer::Config config;
     config.loop = true;
     bool wantsAudio = false;
+    // What the audience is missing, when the clip's audio cannot be heard
+    // (task 6.7c, review R18). AvPlayer cannot know this: a stream no
+    // decoder can handle never reaches it as a source at all, so its own
+    // lane would honestly report "none" — silence by nature — while the
+    // file plainly carries sound. The session knows, and says so.
+    std::string audioLoss;
     if (openshow::media::probeMedia(wanted.assetPath, &info, &error) ==
         openshow::media::ProbeStatus::kOk) {
-        if (!info.audioStreams.empty() && info.audioStreams.front().decoderAvailable) {
-            config.videoAudioPath = wanted.assetPath;
-            wantsAudio = true;
+        if (!info.audioStreams.empty()) {
+            if (info.audioStreams.front().decoderAvailable) {
+                config.videoAudioPath = wanted.assetPath;
+                wantsAudio = true;
+            } else {
+                audioLoss = "background video has an audio stream no decoder can handle; "
+                            "playing muted";
+            }
         }
     } else {
+        // The container opened a moment ago, so a second probe failing is
+        // a curiosity rather than a story; it stays in the log. (Nothing
+        // was expected yet, so no audio is claimed lost.)
         std::fprintf(stderr, "openshow-worker: background audio probe %s: %s\n",
                      wanted.assetPath.c_str(), error.c_str());
     }
-    bool audioFailed = false;
     if (!fAudio.start(config, &error)) {
         std::fprintf(stderr, "openshow-worker: background audio: %s (video continues, "
                              "paced by the monotonic clock)\n",
                      error.c_str());
-        audioFailed = wantsAudio;  // only a real loss when audio was expected
+        if (wantsAudio) {  // only a real loss when audio was expected
+            audioLoss = "background video audio failed to start: " + error + "; playing muted";
+        }
     }
     fAudio.attachPipeline(pipeline.get());
 
@@ -792,7 +952,7 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
             fAudio.clockFn(), &error)) {
         std::fprintf(stderr, "openshow-worker: background decode %s: %s\n",
                      wanted.assetPath.c_str(), error.c_str());
-        mediaFailed(wanted.assetPath, "background decode: " + error);
+        mediaFailed(MediaFault::kVideo, wanted.assetPath, "background decode: " + error);
         // No quiesce boundary is needed here (6.6b): a false start() means
         // no pacing or decode thread was ever spawned, so nothing can read
         // the presenter or the clock after this point. The audio player
@@ -805,13 +965,20 @@ void OutputSession::applyBackgroundTransport(const openshow::scene::Background& 
         fBackground.reset();
         return;
     }
-    // The video is on air. A real audio-start failure is recorded on top
-    // (playing stays true — the picture rolls on the monotonic clock);
-    // otherwise the success clears any earlier failure for this asset.
+    // The video transport is up. The audio's bad news (if any) is recorded
+    // on top of the success, in that order: mediaPlaying clears the previous
+    // asset's reports, and this asset's known audio loss then rides them.
+    // The loss also drives the lane (a stream no decoder can handle never
+    // reaches AvPlayer as a source, so its own lane would truthfully say
+    // "none"), and it belongs to this identity: a new background recomputes
+    // it from scratch.
     mediaPlaying(wanted);
-    if (audioFailed) {
-        mediaFailed(wanted.assetPath,
-                    "background video audio failed to start; playing muted");
+    if (!audioLoss.empty()) {
+        {
+            std::lock_guard<std::mutex> lock(fMutex);
+            fExpectedAudioLoss = audioLoss;
+        }
+        mediaFailed(MediaFault::kAudio, wanted.assetPath, audioLoss);
     }
     // The M5 clock rule, visible at transport start (checkpoint rule:
     // "use the audio clock when audio is present and a monotonic clock
@@ -1306,12 +1473,13 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
         fStatus.frames = fFrames;
         fStatus.width = fSwapchain->width();
         fStatus.height = fSwapchain->height();
-        // Background media position rides the frame's status refresh
-        // (task 5.5): the render thread owns the transport, so this is
-        // the one honest place to sample it.
-        if (fBackground != nullptr) {
-            fStatus.media.position = fBackground->position();
-        }
+        // Background media state rides the frame's status refresh (task
+        // 5.5, typed in 6.7c): the render thread owns the transport, so
+        // this is the one honest place to sample position, the audible
+        // lane, and a decode that died or ended after opening — and to let
+        // "playing" describe a frame that exists rather than an open() that
+        // returned.
+        refreshMediaStateLocked();
         // The commit (task 6.4, review R4): applied state is published
         // only from a frame that reached the compositor, and it describes
         // exactly what that frame drew — the staged applied fields, all
@@ -1336,6 +1504,18 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
 }
 
 void OutputSession::housekeep() {
+    // Media state heartbeat (task 6.7c, review R18), taken and released
+    // before the graphics queue is touched: a transport whose decode dies,
+    // or which ends when it should have looped, changes what status must
+    // say — and the event-driven loop presents NOTHING while the picture
+    // sits still, so a status only refreshed by frames would go on claiming
+    // playback after the last one. The per-frame refresh stays (immediate
+    // while frames flow); this is the half-second catch for when they stop.
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        refreshMediaStateLocked();
+    }
+
     std::lock_guard queueLock(graphicsQueueMutex());
     // Time-based chores that must not depend on frames being presented:
     // the event-driven loop presents nothing while content sits still.

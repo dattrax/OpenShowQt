@@ -26,6 +26,12 @@
 //     IS the continuation — flushing would punch a hole), seekTo()
 //     rebases the clock to the target and the sink's flush counter moves.
 //     Without a daemon this scenario reports an honest skip.
+//  5. The typed audible lane (task 6.7c, review R18): the states of layer 3
+//     cover none/silent and the survived expectation of a start that died;
+//     layer 4's daemon covers live, paused, no-output (reached by cutting
+//     the server away with XDG_RUNTIME_DIR, so it is reproducible anywhere)
+//     and the degraded case R18 named — a sink that is up while no source
+//     could be opened.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -507,6 +513,86 @@ bool fallbackClockBeforeStart() {
     return ok;
 }
 
+// --- 3d. The audible lane, daemon-free states (task 6.7c, review R18) ---
+//
+// R18's complaint: every silent outcome looked the same. A clip with no
+// audio, an output switched off by configuration, a machine with no audio
+// server, an expected source that would not open, and a refused activation
+// all reported "started" plus silence. The lane is the typed answer. The
+// states below need no daemon; the ones that do are next.
+bool audioLaneOfflineStates(const std::string& wav) {
+    bool ok = true;
+    // The wire names are part of the protocol (status.media.audio), so
+    // they are pinned here as well as by the status fixture.
+    ok = check(std::string(AvPlayer::laneName(AvPlayer::AudioLane::kNone)) == "none" &&
+                   std::string(AvPlayer::laneName(AvPlayer::AudioLane::kSilent)) == "silent" &&
+                   std::string(AvPlayer::laneName(AvPlayer::AudioLane::kNoOutput)) == "no-output" &&
+                   std::string(AvPlayer::laneName(AvPlayer::AudioLane::kDegraded)) == "degraded" &&
+                   std::string(AvPlayer::laneName(AvPlayer::AudioLane::kPaused)) == "paused" &&
+                   std::string(AvPlayer::laneName(AvPlayer::AudioLane::kLive)) == "live",
+               "the six lanes have the wire names the protocol promises") && ok;
+
+    AvPlayer player;
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kNone,
+               "a player that never started has no lane") && ok;
+
+    // The output switched off on purpose: audio is wanted and the mix runs,
+    // but nothing can be heard and no fault is implied.
+    AvPlayer::Config config;
+    config.videoAudioPath = wav;
+    config.loop = true;
+    config.enableSink = false;
+    std::string error;
+    ok = check(player.start(config, &error), "lane: the sinkless transport starts") && ok;
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kSilent,
+               "audio with the output switched off reads silent, not a fault") && ok;
+    player.pause();
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kSilent,
+               "a switched-off output stays silent across a pause (it was never on)") && ok;
+    player.play();
+    player.stop();
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kNone,
+               "a cleanly stopped transport misses nothing, so it has no lane") && ok;
+
+    // The state R18 singles out: audio was wanted and the start DIED. The
+    // expectation must survive the self-clean, because "degraded" is the
+    // only thing standing between this and a report of nothing-at-all —
+    // which is exactly how the bug read (start() failed, status said the
+    // clip simply had no sound).
+    setenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL", "1", 1);
+    std::string injected;
+    ok = check(!player.start(config, &injected) && !injected.empty(),
+               "lane: the injected mixer failure fails with a reason") && ok;
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kDegraded,
+               "a start that died while audio was wanted reads degraded, not none") && ok;
+    unsetenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL");
+    ok = check(player.start(config, &error), "lane: the retry after the failed start works") && ok;
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kSilent,
+               "a successful recovery puts the lane back to the configured state") && ok;
+    player.stop();
+
+    // A transport with nothing to play has no lane even with the output on:
+    // "silent" means the audience is missing something they could have had.
+    AvPlayer::Config empty;
+    ok = check(player.start(empty, &error), "lane: the no-source transport starts") && ok;
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kNone,
+               "no source wanted: the lane is none, not a fault") && ok;
+    player.stop();
+
+    // And the ordering between the two kinds of silence: a source that
+    // cannot be opened is a fault of the ASSET, so it reads degraded even
+    // with the output switched off — "silent, by configuration" would
+    // blame the machine for a broken file.
+    AvPlayer::Config broken;
+    broken.videoAudioPath = "av-sync-fixtures/definitely-not-here.wav";
+    broken.enableSink = false;
+    ok = check(player.start(broken, &error), "lane: a broken source still starts") && ok;
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kDegraded,
+               "a broken source outranks a switched-off output: degraded, not silent") && ok;
+    player.stop();
+    return ok;
+}
+
 // --- 4. AvPlayer with the live PipeWire sink ---
 
 bool avPlayerLive(const std::string& wav) {
@@ -657,9 +743,10 @@ bool avPlayerRestart(const std::string& wav) {
                "restart: a missing input degrades to silence, not a crash") && ok;
     // Degradation shape (documented in start()): the input slot registers,
     // the feeder that would fill it does not, so the mixer never runs —
-    // zero blocks, zero delivered, no live-audio claim. A later status field
-    // for audio failure is task 6.7c; what 6.7a pins is that silence is
-    // never disguised as mixing.
+    // zero blocks, zero delivered, no live-audio claim. Task 6.7c added the
+    // status field for exactly this (the lane reads "degraded", pinned by
+    // audioLaneLiveStates); what 6.7a pins is that silence is never
+    // disguised as mixing.
     ok = check(player.mixerStats().blocks == 0 && player.mixerStats().deliveredFrames == 0 &&
                    !player.audioLive(),
                "restart: the silent failure shows in stats, not disguised as mix") && ok;
@@ -791,6 +878,89 @@ bool sinkRestartLive() {
     return ok;
 }
 
+// --- 4e. The audible lane where only a daemon can answer (6.7c/R18) ---
+//
+// The remaining lanes need a real connection: live, paused, and the case
+// R18 could not see at all (the sink is up and every source failed, so the
+// transport "succeeds" into silence). The no-output lane is reached here too
+// by cutting the daemon away with XDG_RUNTIME_DIR — the connection the sink
+// needs lives there, so the state is reproducible on a machine that HAS a
+// server rather than a fixture that only passes on one that has none.
+bool audioLaneLiveStates(const std::string& wav) {
+    // No-output first, daemon-independent: an unreachable server is exactly
+    // the state, and asserting it here means the lane is covered even on a
+    // box with PipeWire running.
+    bool ok = true;
+    {
+        const char* savedRuntime = std::getenv("XDG_RUNTIME_DIR");
+        const std::string saved = savedRuntime ? savedRuntime : "";
+        setenv("XDG_RUNTIME_DIR", "/tmp/openshow-no-daemon-dir", 1);
+        unsetenv("PIPEWIRE_REMOTE");
+        unsetenv("PIPEWIRE_SOCKET");
+        AvPlayer player;
+        AvPlayer::Config config;
+        config.videoAudioPath = wav;
+        config.enableSink = true;
+        std::string error;
+        ok = check(player.start(config, &error),
+                   "lane: a transport with no reachable output still starts (video must not die "
+                   "over sound)") && ok;
+        ok = check(!player.sinkActive(), "lane: with no output the stream never activates") && ok;
+        ok = check(player.audioLaneState() == AvPlayer::AudioLane::kNoOutput,
+                   "audio wanted, no server: the lane says no-output, not silent or degraded") && ok;
+        player.stop();
+        if (saved.empty()) {
+            unsetenv("XDG_RUNTIME_DIR");
+        } else {
+            setenv("XDG_RUNTIME_DIR", saved.c_str(), 1);
+        }
+    }
+
+    PipeWireSink probe;
+    std::string probeError;
+    if (!probe.start(kRate, &probeError)) {
+        std::printf("   skipped the live lane states (no PipeWire daemon: %s)\n",
+                    probeError.c_str());
+        return ok;
+    }
+    probe.stop();
+
+    AvPlayer player;
+    AvPlayer::Config config;
+    config.videoAudioPath = wav;
+    config.loop = true;
+    std::string error;
+    ok = check(player.start(config, &error), "lane-live: the transport starts") && ok;
+    // Activation is what the daemon says, not what start() assumed: wait
+    // for the stream, then read the lane.
+    ok = check(waitFor([&] { return player.audioLaneState() == AvPlayer::AudioLane::kLive; }, 3000),
+               "a playing background with audible audio reads live") && ok;
+    player.pause();
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kPaused,
+               "a paused transport reads paused — a hold, not a fault") && ok;
+    player.play();
+    ok = check(waitFor([&] { return player.audioLaneState() == AvPlayer::AudioLane::kLive; }, 3000),
+               "play returns the lane to live") && ok;
+    player.stop();
+
+    // R18's invisible case, with the daemon up so the sink cannot be
+    // blamed: the wanted source cannot be opened, start() still succeeds
+    // (the picture rolls) and the audience hears nothing. Before 6.7c no
+    // status field distinguished this from a silent clip.
+    AvPlayer::Config broken = config;
+    broken.videoAudioPath = "av-sync-fixtures/definitely-not-here.wav";
+    ok = check(player.start(broken, &error),
+               "lane-live: a broken source degrades the audio, it does not fail the transport") && ok;
+    ok = check(player.mixerStats().deliveredFrames == 0 && !player.audioLive(),
+               "lane-live: the broken source mixed nothing") && ok;
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kDegraded,
+               "a sink that is up with no openable source reads degraded, not live") && ok;
+    player.stop();
+    ok = check(player.audioLaneState() == AvPlayer::AudioLane::kNone,
+               "lane-live: stopping clears the fault lane too") && ok;
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -810,9 +980,11 @@ int main() {
     ok = avPlayerFallback(wav) && ok;
     ok = avPlayerStandaloneOnly(wav) && ok;
     ok = fallbackClockBeforeStart() && ok;
+    ok = audioLaneOfflineStates(wav) && ok;
     ok = avPlayerLive(wav) && ok;
     ok = avPlayerRestart(wav) && ok;
     ok = avPlayerRestartLive(wav) && ok;
     ok = sinkRestartLive() && ok;
+    ok = audioLaneLiveStates(wav) && ok;
     return ok ? 0 : 1;
 }

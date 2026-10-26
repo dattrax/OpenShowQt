@@ -147,6 +147,15 @@ public:
     // insert wins.
     sk_sp<SkImage> imageFor(const std::string& path);
 
+    // Task 6.7c (review R18): the operator-facing entry point. It decodes
+    // AGAIN even for a path whose failure is cached, and says why a decode
+    // failed. A cached null is right for the per-frame draw path (one
+    // attempt per path, never a retry at 60 Hz) but wrong for an explicit
+    // prepare, which is an operator action: the missing file that has been
+    // put back must come back on air, and its error must clear. A success
+    // replaces a cached failure, so the draw path picks the picture up.
+    sk_sp<SkImage> refreshFor(const std::string& path, std::string* error);
+
 private:
     std::mutex fMutex;
     std::map<std::string, sk_sp<SkImage>> fImages;

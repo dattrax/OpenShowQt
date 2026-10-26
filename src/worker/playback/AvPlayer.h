@@ -70,6 +70,25 @@ public:
     static constexpr int kVideoInput = 0;
     static constexpr int kSecondInput = 1;
 
+    // The AUDIBLE outcome of the transport as one typed lane (task 6.7c,
+    // review R18). The question an operator asks is not "did start()
+    // return" but "why is there no sound", and a boolean cannot answer it:
+    // an expected source that failed to open, a machine with no audio
+    // server, and an output deliberately switched off all look identical
+    // from audioLive() alone while start() still reports success.
+    enum class AudioLane {
+        kNone,      // no transport, or a transport with no audio source
+        kSilent,    // audio wanted, output switched off by configuration
+        kNoOutput,  // audio wanted and an output wanted: no server connection
+        kDegraded,  // audio and output armed, but nothing can be heard:
+                    // every expected source failed to open, or the server
+                    // refused the stream activation
+        kPaused,    // the transport holds; the lane holds with it
+        kLive,      // the mix is armed and the server consumes it
+    };
+    // The wire name of a lane (task 6.7c: status.media.audio).
+    static const char* laneName(AudioLane lane);
+
     struct Config {
         // The file whose embedded audio drives the output ("" = none).
         std::string videoAudioPath;
@@ -126,6 +145,14 @@ public:
     bool audioLive() const { return fAudioLive.load(); }
     bool sinkActive() const { return fSinkActive.load(); }
 
+    // The audio lane for status (task 6.7c, review R18): derived only from
+    // state this class already keeps honest (started, what was wanted, what
+    // opened, sink readiness/activation, pause) so a paused transport reads
+    // "paused" rather than a fault, a machine without an audio server reads
+    // "no-output", and an expected source that never opened reads
+    // "degraded" instead of a successful-looking silent mix.
+    AudioLane audioLaneState() const;
+
     // The clock video paces against: the sink's audio clock while live,
     // one monotonic clock anchored at start() otherwise.
     std::function<double()> clockFn() const;
@@ -172,6 +199,19 @@ private:
 
     std::atomic<bool> fAudioLive{false};
     std::atomic<bool> fSinkActive{false};
+    // What this transport EXPECTED (task 6.7c): an audio source at all,
+    // and an output to play it through. start() writes them, stop() clears
+    // the expectation, and a start that failed halfway leaves the
+    // expectation set — that is exactly the state whose lane must read
+    // "degraded" instead of the emptiness of "none".
+    std::atomic<bool> fWantsAudio{false};
+    std::atomic<bool> fSinkEnabled{true};
+    std::atomic<bool> fSinkReady{false};
+    // Sources this transport ACTUALLY opened (task 6.7c, review R18): an
+    // expected file whose decoder never came up leaves this at zero, which
+    // is the difference between a mix that is running and one that plays
+    // nothing. Written by start(), cleared by stop().
+    std::atomic<unsigned> fSourcesOpen{0};
     std::atomic<bool> fPaused{false};
     std::atomic<bool> fStarted{false};
     std::atomic<bool> fLoop{false};

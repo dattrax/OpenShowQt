@@ -53,6 +53,14 @@ bool AvPlayer::start(const Config& config, std::string* error) {
 
     const bool wantVideo = !config.videoAudioPath.empty();
     const bool wantSecond = !config.secondAudioPath.empty();
+    // What this transport EXPECTS (task 6.7c, review R18). Written before
+    // anything can fail and kept set when a start dies halfway: the lane of
+    // a transport that wanted audio and never came up is a fault, and
+    // "none" — the lane of a clip with no audio at all — would hide it.
+    fWantsAudio.store(wantVideo || wantSecond, std::memory_order_release);
+    fSinkEnabled.store(config.enableSink, std::memory_order_release);
+    fSinkReady.store(false, std::memory_order_release);
+    fSourcesOpen.store(0, std::memory_order_release);
 
     // The sink first (inactive): the mixer needs its negotiated rate, and
     // a missing daemon must degrade to the monotonic clock, not fail.
@@ -67,6 +75,7 @@ bool AvPlayer::start(const Config& config, std::string* error) {
                          sinkError.c_str());
         }
     }
+    fSinkReady.store(sinkUp, std::memory_order_release);
     const uint32_t rate =
         sinkUp && fSink.negotiatedRate() != 0 ? fSink.negotiatedRate() : config.preferredRate;
 
@@ -129,6 +138,11 @@ bool AvPlayer::start(const Config& config, std::string* error) {
         }
         fFeeders.push_back({std::move(feeder), input});
     }
+    // How much of what was wanted actually came up (task 6.7c): the lane
+    // needs the count, and it needs it whether or not the mixer runs — a
+    // transport whose every source failed opens no mixer at all, which is
+    // precisely the silent-success R18 could not see.
+    fSourcesOpen.store(static_cast<unsigned>(fFeeders.size()), std::memory_order_release);
 
     // Pre-roll: every feeder that took its slot pre-fills, so the mix
     // head is real audio from all of them.
@@ -193,6 +207,7 @@ bool AvPlayer::start(const Config& config, std::string* error) {
                                          std::memory_order_relaxed);
             fAudioLive.store(false);
             fSinkActive.store(false);
+            fSinkReady.store(false, std::memory_order_release);
             fStarted.store(false);
             return false;
         }
@@ -229,6 +244,12 @@ void AvPlayer::stop() {
     // address a next transport's inputs through this run's indices.
     fInputOf[kVideoInput].store(media::AudioMixer::kNoInput, std::memory_order_relaxed);
     fInputOf[kSecondInput].store(media::AudioMixer::kNoInput, std::memory_order_relaxed);
+    // A stopped transport has no lane (task 6.7c): the expectation goes
+    // with it, so "degraded" is reserved for audio that was wanted and is
+    // not audible, not for a transport that simply is not running.
+    fWantsAudio.store(false, std::memory_order_release);
+    fSinkReady.store(false, std::memory_order_release);
+    fSourcesOpen.store(0, std::memory_order_release);
     // Re-armable: the session's background transport stops and restarts
     // the player as backgrounds change (every component's stop is
     // idempotent, so a never-started player tears down cleanly too).
@@ -374,7 +395,63 @@ std::function<double()> AvPlayer::clockFn() const {
     };
 }
 
+AvPlayer::AudioLane AvPlayer::audioLaneState() const {
+    if (!fWantsAudio.load(std::memory_order_acquire)) {
+        return AudioLane::kNone;  // a silent clip by nature, or no transport
+    }
+    if (!fStarted.load(std::memory_order_acquire)) {
+        // Audio was wanted and the transport is not up: either start()
+        // failed (self-cleaned, so the expectation survived on purpose) or
+        // it never ran — stop() cleared the expectation. This branch is
+        // therefore the failed-start case R18 names, not an idle player.
+        return AudioLane::kDegraded;
+    }
+    if (fSourcesOpen.load(std::memory_order_acquire) == 0) {
+        // Nothing reached the mixer at all. This outranks the output's
+        // state: a source that cannot be opened is a fault of the ASSET,
+        // and reporting "silent — output switched off" or "no-output" for
+        // it would blame the machine for a broken file.
+        return AudioLane::kDegraded;
+    }
+    if (!fSinkEnabled.load(std::memory_order_relaxed)) {
+        return AudioLane::kSilent;  // switched off by configuration
+    }
+    if (!fSinkReady.load(std::memory_order_acquire)) {
+        return AudioLane::kNoOutput;  // wanted an output; no server connection
+    }
+    if (fPaused.load(std::memory_order_relaxed)) {
+        return AudioLane::kPaused;  // fSinkActive is false across a pause: say so
+    }
+    if (fAudioLive.load(std::memory_order_acquire) && fSinkActive.load(std::memory_order_relaxed)) {
+        return AudioLane::kLive;
+    }
+    // Armed and playing, yet inaudible: the server refused the stream
+    // activation (resume() rewound the flags rather than claim a live
+    // stream it does not have). Sources opened and the sink is up, so this
+    // is the output's fault to carry.
+    return AudioLane::kDegraded;
+}
+
+const char* AvPlayer::laneName(AudioLane lane) {
+    switch (lane) {
+        case AudioLane::kNone:
+            return "none";
+        case AudioLane::kSilent:
+            return "silent";
+        case AudioLane::kNoOutput:
+            return "no-output";
+        case AudioLane::kDegraded:
+            return "degraded";
+        case AudioLane::kPaused:
+            return "paused";
+        case AudioLane::kLive:
+            return "live";
+    }
+    return "none";
+}
+
 int AvPlayer::mixerIndexFor(int identity) const {
+
     if (identity == kVideoInput || identity == kSecondInput) {
         return fInputOf[identity].load(std::memory_order_relaxed);
     }

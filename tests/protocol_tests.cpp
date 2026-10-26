@@ -210,7 +210,7 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 7, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 8, "hello lists capabilities");
         {  // Task 5.5d's media visibility is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasMedia = std::any_of(
@@ -218,6 +218,14 @@ void testHello() {
                     return v.is_string() && v.as_string() == "media.error.v1";
                 });
             check(hasMedia, "capabilities name media.error.v1");
+        }
+        {  // Task 6.7c's typed audio lane is named by one too (R18).
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasAudioState = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == "media.audio-state.v1";
+                });
+            check(hasAudioState, "capabilities name media.audio-state.v1");
         }
         {  // Task 6.5's stream-identified preview release is named too.
             const auto& caps = result.at("capabilities").as_array();
