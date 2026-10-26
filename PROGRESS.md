@@ -840,12 +840,58 @@ Updated: 2026-10-25 (Europe/London).
   adopted while the restore slot was empty, so the snapshot inherited an
   already-rewritten payload (see Decisions). Gates desktop **44/44** (180 s),
   headless **27/27** (48 s).
-- Exact next action: **6.13a** per the PLAN.md ledger — make the package's
-  asset+manifest commit preserve the previous package when interrupted
-  (fault-injected copy/write/close/rename failures leave the previous service
-  and assets readable; report flush/close failures; define what durability is
-  promised), then 6.13b (loaded-ID validation and package-relative asset
-  containment including symlinks). R8's finding.
+- **6.13a — saving becomes a commit: staged assets, synced manifest,
+  reported refusals (R8) — DONE.** The manifest already committed through
+  tmp+rename; the asset copies did not, and `copy_file(overwrite_existing)`
+  could smear half-written bytes over the very file the still-valid
+  manifest named (the review's measured probe). Saving is now a commit
+  protocol:
+  - **Assets** stream into a unique `.…openshow-staging-<pid>-<n>` file
+  inside the package's `assets/`, are fsynced, then renamed onto the
+  destination. Rename is atomic — a reader of the previous manifest sees
+  either the whole old file or the whole new one — and an interrupted copy
+  dies under a name nothing references. A changed asset gets its new
+  version under the same name (documented: never torn, possibly newer than
+  what the old manifest was saved against).
+  - **Manifest**: raw writes (write() returning IS the flush — nothing is
+  left in a user-space buffer), fsync, close with its status **reported**
+  (the old code checked good() and let the destructor swallow the close
+  failure — R8's exact half), rename, then the containing directory. The
+  assets directory is synced BEFORE the manifest is written: the manifest
+  commits only after all referenced bytes are durable.
+  - **Durability defined** (storage.h): a save that returns true has
+  synced every file and every naming directory entry to the device — the
+  commit survives subsequent process crashes and power loss, as far as an
+  honest fsync can promise. The one reported failure that can leave the
+  new manifest installed (the final directory sync) says exactly that,
+  and the package is consistent either way. `Autosave::tick` rides the
+  same commit.
+  - **Fault seam**: `OPENSHOW_STORAGE_FAULT` refuses one named step per
+  save, read at each step so a fixture faults, recovers and re-commits in
+  one process. `exerciseCommitAtomicity` runs all nine steps against an
+  existing package: refusal reported naming the step, previous manifest
+  byte-identical, packaged asset never a torn mix (the asset-copy round
+  checks it byte-for-byte — R8's detector), package loadable with assets
+  round-tripping, zero staging or tmp debris; then the clean retry lands
+  model and asset whole, re-save is byte-identical (staging names never
+  leak into the manifest), and a refused autosave tick names its step and
+  leaves no manifest.
+  - **Mutations** m01 copy-overwrite restored, m02–m08 each barrier or
+  refusal made deaf (m06 is R8's close-swallow), m09 manifest written
+  straight over service.json, m10/m11 debris left behind, m12 manifest
+  committed before the assets-directory barrier: **12/12 CAUGHT** with
+  blame on precisely the intended checks. In-process tests cannot see a
+  silently-DELETED fsync, so barrier presence on the success path is
+  evidenced outside the test: strace counts **93 fsync calls** on a clean
+  domain_tests run. Gates desktop **44/44** (180 s), headless **27/27**
+  (48 s).
+- Exact next action: **6.13b** per the PLAN.md ledger — validate loaded IDs
+  and package-relative asset containment including symlinks: absolute,
+  traversal and escaping paths and unsafe IDs must refuse without changing
+  documents or writing outside the package, while authorized import still
+  copies external files (loaded IDs are merely nonempty/unique today, and
+  `assetFileName()` trusts an ID as a filename prefix; loaded asset paths
+  accept absolute paths and `..`). R8's second half.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -3265,6 +3311,23 @@ of this work.
 
 ## Decisions
 
+- (2026-10-26, task 6.13a) The commit protocol generalises three rules past
+  this package. **Never write in place a file a reader may trust**: write a
+  new name, then rename — rename's atomicity is what turns "the bytes are
+  somewhere" into "the name resolves to a whole version", and it makes
+  process interruption a non-event for readers. **Durability is a barrier
+  crossed before success is reported, and the report crosses it too**:
+  fsync per file and per naming directory, with every status (write, fsync,
+  close, rename) inspected — a close() whose failure nobody reads is a lie
+  with a return value. The one thing that cannot roll back (the last
+  directory sync after a committed rename) gets its failure written down
+  rather than papered over. **A fault-injection seam is a contract test for
+  error paths**: named steps that refuse on demand, read per step so
+  fault → recover → re-commit runs in one process, messages naming their
+  step so fixtures and operators can tell an injected refusal from real
+  disk trouble. Its one blind spot — an in-process test cannot observe a
+  silently-deleted fsync — is closed by external observation (the strace
+  count), not by more assertions.
 - (2026-10-26, task 6.12) A save that copies bytes is a MOVE of ownership,
   and ownership has to be TOLD. The defect was not the copy — correct since
   2.2 — but that every other holder of the path kept reading the old

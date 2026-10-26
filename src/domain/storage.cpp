@@ -12,14 +12,19 @@
 
 #include <boost/json.hpp>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -56,6 +61,166 @@ std::string assetFileName(const Asset& asset) {
         safe.insert(safe.begin(), 'f');
     }
     return asset.id + "-" + safe;
+}
+
+/*
+ * Test seam (task 6.13a, review R8): with OPENSHOW_STORAGE_FAULT set to
+ * one of the commit step names below, the next commit attempt fails at
+ * exactly that step — before the step's effect happens, the way a device
+ * refuses rather than half-does and denies. The variable is read at each
+ * step, not cached, so a fixture can set it, watch one save fail, clear
+ * it, and save for real, all in one process. The steps: asset-copy,
+ * asset-fsync, asset-rename, assets-fsync, manifest-write,
+ * manifest-fsync, manifest-close, manifest-rename, dir-fsync. Every
+ * failure message names its step, which is how the fixtures tell an
+ * injected refusal from real disk trouble. This is the only purpose of
+ * the variable; an operator who sets it makes their own saves fail.
+ */
+bool storageFault(const char* step) {
+    const char* fault = std::getenv("OPENSHOW_STORAGE_FAULT");
+    return fault != nullptr && std::string_view(step) == fault;
+}
+
+std::string osError(const std::string& what) {
+    return what + ": " + std::strerror(errno);
+}
+
+// Durability barrier over a directory (task 6.13a): a rename — of a
+// staged asset or of the manifest — is durable only once the directory
+// holding it has been synced. Faulted syncs report the refusal and do
+// not run, so a fixture proves a barrier is present by proving its
+// absence makes the save succeed where it must not.
+bool syncDirectory(const std::filesystem::path& directory, const char* faultStep,
+                   std::string* error) {
+    if (storageFault(faultStep)) {
+        fail(error, "syncing the directory of '" + directory.string() +
+                        "' failed: simulated fault at '" + faultStep + "'");
+        return false;
+    }
+    const int fd = ::open(directory.c_str(), O_RDONLY);
+    if (fd < 0) {
+        fail(error, osError("cannot open '" + directory.string() + "' for syncing"));
+        return false;
+    }
+    const int syncStatus = ::fsync(fd);
+    const int syncErrno = errno;
+    const int closeStatus = ::close(fd);
+    if (syncStatus != 0) {
+        fail(error, osError("syncing directory '" + directory.string() + "'"));
+        return false;
+    }
+    if (closeStatus != 0) {
+        fail(error, osError("closing directory '" + directory.string() + "' after syncing"));
+        return false;
+    }
+    return true;
+}
+
+// Copy one asset's bytes into the package WITHOUT ever touching the file
+// the CURRENT manifest may be naming (task 6.13a, review R8): stream into
+// a unique staging file inside assets/, sync it, then rename it onto the
+// destination. The rename is atomic — a reader of the previous manifest
+// sees either the whole old file or the whole new one — and an
+// interrupted copy dies under a staging name nothing references. The old
+// copy_file(overwrite_existing) smeared partial bytes over the file the
+// still-valid manifest named; that is the defect this replaces.
+bool stageAndInstallAsset(const Asset& asset, const std::filesystem::path& source,
+                          const std::filesystem::path& destination, std::string* error) {
+    static unsigned stagingCounter = 0;
+    const std::string stagingName =
+        "." + destination.filename().string() + ".openshow-staging-" +
+        std::to_string(static_cast<long>(::getpid())) + "-" + std::to_string(++stagingCounter);
+    const std::filesystem::path staging = destination.parent_path() / stagingName;
+    const int in = ::open(source.c_str(), O_RDONLY);
+    if (in < 0) {
+        fail(error, "asset '" + asset.name + "' has no readable file at '" + asset.sourcePath +
+                        "' (opening it failed)");
+        return false;
+    }
+    const int out = ::open(staging.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (out < 0) {
+        ::close(in);
+        fail(error, osError("cannot create staging file '" + staging.string() + "'"));
+        return false;
+    }
+    const auto abandon = [out, &staging] {
+        ::close(out);
+        std::error_code ignored;
+        std::filesystem::remove(staging, ignored);
+    };
+    const auto copyFailed = [&, error](const std::string& why) {
+        abandon();
+        fail(error, "copying asset '" + asset.name + "' into the package failed: " + why);
+        return false;
+    };
+    std::vector<char> buffer(64 * 1024);
+    for (;;) {
+        const ssize_t got = ::read(in, buffer.data(), buffer.size());
+        if (got < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return copyFailed(osError("reading '" + asset.sourcePath + "'"));
+        }
+        if (got == 0) {
+            break;  // the whole file streamed; the staging name holds every byte
+        }
+        if (storageFault("asset-copy")) {
+            return copyFailed("simulated fault at 'asset-copy' — the staged copy "
+                              "stopped here and the destination was never touched");
+        }
+        ssize_t written = 0;
+        while (written < got) {
+            const ssize_t n = ::write(out, buffer.data() + written,
+                                      static_cast<size_t>(got - written));
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                return copyFailed(osError("writing the staging copy of '" + asset.name + "'"));
+            }
+            written += n;
+        }
+    }
+    ::close(in);
+    // The staged bytes are durable BEFORE the rename puts them where a
+    // committed manifest can point: that is the whole point of the sync.
+    const bool fsyncFault = storageFault("asset-fsync");
+    const int syncStatus = ::fsync(out);
+    const int syncErrno = errno;
+    if (fsyncFault) {
+        return copyFailed("the staged copy could not be synced: simulated fault at "
+                          "'asset-fsync'");
+    }
+    if (syncStatus != 0) {
+        errno = syncErrno;
+        return copyFailed(osError("syncing the staged copy of '" + asset.name + "'"));
+    }
+    const int closeStatus = ::close(out);
+    if (closeStatus != 0) {
+        std::error_code ignored;
+        std::filesystem::remove(staging, ignored);
+        fail(error, "copying asset '" + asset.name + "' into the package failed: " +
+                        osError("closing the staged copy"));
+        return false;
+    }
+    if (storageFault("asset-rename")) {
+        std::error_code ignored;
+        std::filesystem::remove(staging, ignored);
+        fail(error, "installing the staged copy of asset '" + asset.name +
+                        "' failed: simulated fault at 'asset-rename'");
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::rename(staging, destination, ec);
+    if (ec) {
+        std::error_code ignored;
+        std::filesystem::remove(staging, ignored);
+        fail(error, "installing the staged copy of asset '" + asset.name +
+                        "' failed: " + ec.message());
+        return false;
+    }
+    return true;
 }
 
 // Trailing digits of a store-issued id ("slide12" -> 12); ids without a
@@ -554,8 +719,10 @@ bool ServiceCodec::save(const Documents& documents, const std::filesystem::path&
         return false;
     }
 
-    // Assets first: a service.json that exists must name only files
-    // that exist.
+    // Assets first, staged: a service.json that exists must name only
+    // files that exist and are COMPLETE (task 6.13a, review R8). Each
+    // copy lands through its own staging file and atomic rename, so the
+    // file the previous manifest names is never written in place.
     if (!documents.fAssets.empty()) {
         std::filesystem::create_directories(directory / kAssetsDir, ec);
         if (ec && !std::filesystem::is_directory(directory / kAssetsDir)) {
@@ -577,31 +744,100 @@ bool ServiceCodec::save(const Documents& documents, const std::filesystem::path&
         if (std::filesystem::equivalent(source, destination, ec) && !ec) {
             continue;  // already inside the package
         }
-        std::filesystem::copy_file(source, destination,
-                                   std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) {
-            fail(error, "copying asset '" + asset.name + "' into the package failed: " +
-                            ec.message());
+        if (!stageAndInstallAsset(asset, source, destination, error)) {
             return false;
         }
     }
+    // The renames above changed the assets directory's CONTENTS; those
+    // directory entries must be durable before any manifest that names
+    // them is committed (task 6.13a: "commit the manifest only after all
+    // referenced bytes are durable").
+    if (!documents.fAssets.empty() &&
+        !syncDirectory(directory / kAssetsDir, "assets-fsync", error)) {
+        return false;
+    }
 
-    // The manifest through a temporary in the same directory, so the
-    // rename is atomic against readers of service.json.
+    // The manifest commits through a temporary in the same directory, so
+    // the rename is atomic against readers of service.json — and it is
+    // synced before that rename. Raw writes mean there is no user-space
+    // buffer left unsent when write() returns (the flush, in std::stream
+    // terms); fsync is the durability barrier; close is where deferred
+    // write-back errors surface, and its status is REPORTED — the old
+    // code checked good() before the destructor silently swallowed the
+    // close failure (task 6.13a, review R8).
     const std::filesystem::path temporary =
         directory / (std::string(kManifestName) + ".tmp");
+    const std::string manifest = boost::json::serialize(toJson(documents));
+    if (storageFault("manifest-write")) {
+        fail(error, "writing '" + temporary.string() +
+                        "' failed: simulated fault at 'manifest-write'");
+        return false;
+    }
     {
-        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            fail(error, "cannot write '" + temporary.string() + "'");
+        const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            fail(error, "cannot write '" + temporary.string() + "': " + std::strerror(errno));
             return false;
         }
-        out << boost::json::serialize(toJson(documents));
-        if (!out.good()) {
-            fail(error, "writing '" + temporary.string() + "' failed");
-            std::filesystem::remove(temporary);
+        const auto abandon = [&temporary, fd] {
+            ::close(fd);
+            std::error_code ignored;
+            std::filesystem::remove(temporary, ignored);
+        };
+        size_t offset = 0;
+        while (offset < manifest.size()) {
+            const ssize_t n = ::write(fd, manifest.data() + offset, manifest.size() - offset);
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                abandon();
+                fail(error, osError("writing '" + temporary.string() + "'"));
+                return false;
+            }
+            offset += static_cast<size_t>(n);
+        }
+        const bool fsyncFault = storageFault("manifest-fsync");
+        const int syncStatus = ::fsync(fd);
+        const int syncErrno = errno;
+        if (fsyncFault) {
+            abandon();
+            fail(error, "syncing the new manifest failed: simulated fault at "
+                        "'manifest-fsync'");
             return false;
         }
+        if (syncStatus != 0) {
+            abandon();
+            errno = syncErrno;
+            fail(error, osError("syncing the new manifest"));
+            return false;
+        }
+        // POSIX frees the file descriptor even when close() reports a
+        // failure, so closing once and reporting the status matches what
+        // a real refusing device leaves behind.
+        const bool closeFault = storageFault("manifest-close");
+        const int closeStatus = ::close(fd);
+        if (closeFault) {
+            std::error_code ignored;
+            std::filesystem::remove(temporary, ignored);
+            fail(error, "closing '" + temporary.string() +
+                            "' after syncing failed: simulated fault at 'manifest-close'");
+            return false;
+        }
+        if (closeStatus != 0) {
+            std::error_code ignored;
+            std::filesystem::remove(temporary, ignored);
+            fail(error, "closing '" + temporary.string() + "' after syncing failed: " +
+                            osError("close"));
+            return false;
+        }
+    }
+    if (storageFault("manifest-rename")) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        fail(error, "installing '" + manifestPath(directory) +
+                        "' failed: simulated fault at 'manifest-rename'");
+        return false;
     }
     std::filesystem::rename(temporary, directory / kManifestName, ec);
     if (ec) {
@@ -609,7 +845,15 @@ bool ServiceCodec::save(const Documents& documents, const std::filesystem::path&
         fail(error, "installing '" + manifestPath(directory) + "' failed: " + ec.message());
         return false;
     }
-    return true;
+    // The final barrier: the rename is durable only when the containing
+    // directory's entry change is. This is the ONE reported failure that
+    // can leave the new manifest installed — an un-renaming would itself
+    // rewrite the committed name — so the save says exactly where it
+    // stands, and the package is consistent either way: the rename was
+    // atomic, so a crash here leaves a reader on the old manifest or the
+    // new one, and both name files whose bytes and directory entries are
+    // already synced.
+    return syncDirectory(directory, "dir-fsync", error);
 }
 
 bool ServiceCodec::load(Documents* documents, const std::filesystem::path& directory,

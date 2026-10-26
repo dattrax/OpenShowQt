@@ -10,13 +10,20 @@
  *                      a collision-proof "<asset id>-<sanitised name>"
  *
  * The package is self-contained: after saveService() the assets no
- * longer depend on wherever the original files happened to live. Save
- * writes service.json through a temporary file in the same directory
- * and renames it, so an interrupted save leaves the previous file
- * intact; asset copies run before the rename, so a service.json that
- * exists always names files that exist. saveServiceAndAdopt() carries
- * that promise one step further and retargets the MODEL at the package:
- * afterwards the originals are releasable while the session runs.
+ * longer depend on wherever the original files happened to live. Saving
+ * is a commit (task 6.13a, review R8): each asset streams into a
+ * staging file inside assets/, is synced, and is renamed into place;
+ * the manifest is written to a temporary in the same directory, synced,
+ * and renamed; the directories are synced before success. Nothing a
+ * live manifest references is ever written in place, so at every instant
+ * an interrupted save leaves service.json naming complete files — the
+ * old copy_file(overwrite) could leave HALF a file under a name the
+ * still-valid manifest named; that hole is what this closes. A changed
+ * asset gets its new version under the same name, so the previous
+ * manifest never resolves it to torn bytes but could resolve it to the
+ * whole newer ones. saveServiceAndAdopt() carries the promise one step
+ * further and retargets the MODEL at the package: afterwards the
+ * originals are releasable while the session runs.
  *
  * loadService() replaces *documents only on success — a corrupt,
  * truncated, future-format or reference-dangling file fails with a
@@ -35,10 +42,24 @@
 namespace openshow::domain {
 
 // Writes directory/service.json (+ assets/ when there are assets),
-// creating the directory if needed. An asset whose source file is
-// missing fails the save naming the asset. Re-saving a service loaded
-// from this package is byte-identical: the file records package-
-// relative paths, never the loaded sourcePath.
+// creating the directory when needed. The write is a COMMIT (task 6.13a,
+// review R8): every asset streams into a staging file inside the
+// package's assets directory, is synced, and is renamed into place; the
+// manifest is written to a temporary, synced, renamed over service.json,
+// and both directories are synced before success is reported. No file a
+// live manifest references is ever written in place, so at every instant
+// — including mid-save, including a process kill — service.json names
+// only complete files, and a save that fails names the step it failed
+// at and leaves the previous package readable (the single exception, a
+// failure of the FINAL directory sync, says so and leaves a consistent
+// new one). A save that returns true has synced every byte and every
+// naming directory entry to the storage device: the commit survives
+// subsequent process crashes and power loss, as far as a device that
+// answers fsync honestly can promise. OPENSHOW_STORAGE_FAULT (see
+// storage.cpp) injects per-step refusals so fixtures can prove it. An
+// asset whose source file is missing fails the save naming the asset.
+// Re-saving a service loaded from this package is byte-identical: the
+// file records package-relative paths, never the loaded sourcePath.
 bool saveService(const Documents& documents, const std::filesystem::path& directory,
                  std::string* error = nullptr);
 

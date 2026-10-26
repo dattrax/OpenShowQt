@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -1018,6 +1019,142 @@ void exerciseAdoption(const fs::path& tempRoot) {
           "adoption: id and path match, the asset is retargeted");
 }
 
+// --- task 6.13a (review R8): a failed commit buries nothing and smears nothing -
+
+// Every step of the save's commit, run as an injected refusal AGAINST a
+// valid existing package: the previous service.json must survive
+// byte-identical (dir-fsync excepted, the documented case where the new
+// manifest is already installed and consistent), the packaged asset file
+// the old manifest names must never hold a torn mix of versions, the
+// package must stay loadable, and the failed save must leave no staging
+// or temp debris. R8's mechanism was copy_file(overwrite_existing)
+// smearing partial bytes over the file the still-valid manifest named —
+// in the round that faults mid-copy, THIS check is the defect detector.
+void exerciseCommitAtomicity(const fs::path& tempRoot) {
+    std::string error;
+    const fs::path package = tempRoot / "commit";
+    const fs::path originals = tempRoot / "commit-originals";
+    fs::create_directories(originals);
+    const fs::path alpha = originals / "alpha.jpg";
+    const fs::path beta = originals / "beta.png";
+    const std::string alphaOld(300 * 1024, 'A');
+    const std::string alphaNew(500 * 1024, 'Z');
+    writeFile(alpha, alphaOld);
+    writeFile(beta, "DEADBEEFBYTES");
+
+    Documents docs;
+    const Id show = docs.createShow("Commit", &error);
+    const Id a = docs.addAsset("alpha.jpg", alpha.string(), &error);
+    const Id b = docs.addAsset("beta.png", beta.string(), &error);
+    check(saveService(docs, package, &error), "commit: the first package is saved");
+    const fs::path manifest = package / "service.json";
+    const fs::path alphaFile = package / "assets" / (a + "-alpha.jpg");
+    const std::string goldenManifest = readFile(manifest);
+    check(readFile(alphaFile) == alphaOld,
+          "commit: the packaged alpha holds the whole original file");
+    check(fs::is_regular_file(package / "assets" / (b + "-beta.png")),
+          "commit: the second asset landed too");
+
+    // The asset's bytes CHANGE, and so does the model. Every faulted save
+    // below must leave the packaged copy — named by the manifest that is
+    // still committed — as a whole version, never half of each, and the
+    // committed manifest must still be the golden one: these saves have
+    // work to commit, they are not no-ops.
+    writeFile(alpha, alphaNew);
+    check(docs.setShowNotes(show, "second version, waiting to be committed", &error),
+          "commit: the model has a pending change to commit");
+
+    // dir-fsync is LAST on purpose: it is the one failure the commit can
+    // only report from after installing the new manifest, and the rounds
+    // before it all compare against the golden manifest.
+    for (const char* step : {"asset-copy", "asset-fsync", "asset-rename", "assets-fsync",
+                             "manifest-write", "manifest-fsync", "manifest-close",
+                             "manifest-rename", "dir-fsync"}) {
+        ::setenv("OPENSHOW_STORAGE_FAULT", step, 1);
+        error.clear();
+        const bool refused = !saveService(docs, package, &error);
+        ::unsetenv("OPENSHOW_STORAGE_FAULT");
+        check(refused, (std::string("commit: the save refuses the injected fault at '") + step +
+                        "'")
+                           .c_str());
+        check(error.find(step) != std::string::npos,
+              (std::string("commit: the failure message names the step '") + step + "'")
+                  .c_str());
+
+        if (std::string_view(step) == "dir-fsync") {
+            check(readFile(manifest) != goldenManifest,
+                  "commit: the final-sync failure reports from AFTER the install - the new "
+                  "manifest is in place, exactly as the header documents");
+        } else {
+            check(readFile(manifest) == goldenManifest,
+                  (std::string("commit: the fault at '") + step +
+                   "' left the previous service.json byte-identical")
+                      .c_str());
+        }
+        const std::string packagedAlpha = readFile(alphaFile);
+        const bool whole = packagedAlpha == alphaOld || packagedAlpha == alphaNew;
+        check(whole,
+              (std::string("commit: the packaged alpha is a WHOLE version after the fault at '") +
+               step + "', never a torn mix - R8's smeared overwrite detector")
+                  .c_str());
+        if (std::string_view(step) == "asset-copy") {
+            check(packagedAlpha == alphaOld,
+                  "commit: a fault INSIDE the copy never touched the destination - the old "
+                  "manifest's file is byte-for-byte what it was");
+        }
+        Documents reloaded;
+        check(loadService(&reloaded, package, &error),
+              (std::string("commit: after the fault at '") + step +
+               "' the package still loads")
+                  .c_str());
+        check(!reloaded.findAsset(a)->sourcePath.empty() &&
+                  readFile(reloaded.findAsset(a)->sourcePath) == packagedAlpha,
+              "commit: and its asset reads back the whole file the manifest names");
+        bool debris = false;
+        for (fs::recursive_directory_iterator it(package), end; it != end; ++it) {
+            if (it->is_regular_file()) {
+                const std::string name = it->path().filename().string();
+                if (name.find(".openshow-staging-") != std::string::npos ||
+                    name == "service.json.tmp") {
+                    debris = true;
+                }
+            }
+        }
+        check(!debris,
+              (std::string("commit: the failed save swept away its staging and temp files '") +
+               step + "'")
+                  .c_str());
+    }
+
+    // With the faults cleared, the real commit lands in full.
+    check(saveService(docs, package, &error), "commit: the clean retry after the faults succeeds");
+    check(readFile(manifest) != goldenManifest && readFile(alphaFile) == alphaNew,
+          "commit: the new manifest AND the changed asset's new version are both installed");
+    Documents committed;
+    check(loadService(&committed, package, &error), "commit: the committed package loads");
+    const std::string secondManifest = readFile(manifest);
+    check(saveService(docs, package, &error) && readFile(manifest) == secondManifest,
+          "commit: re-saving the committed state is byte-identical - staging names never "
+          "leak into the manifest");
+
+    // The autosave rides the same commit, so an injected refusal reaches
+    // tick()'s error too - and a refused tick claims no baseline.
+    const fs::path scratch = tempRoot / "commit-autosave";
+    Autosave guarded(scratch);
+    ::setenv("OPENSHOW_STORAGE_FAULT", "asset-copy", 1);
+    error.clear();
+    check(!guarded.tick(docs, &error) && error.find("asset-copy") != std::string::npos,
+          "commit: an autosave tick refused mid-copy reports the step");
+    ::unsetenv("OPENSHOW_STORAGE_FAULT");
+    check(!Autosave::exists(scratch),
+          "commit: the refused tick left no manifest behind - no half-written recovery bait");
+    check(guarded.tick(docs, &error) && Autosave::exists(scratch),
+          "commit: the retry after the cleared fault writes the scratch for real");
+    Documents recovered;
+    check(guarded.recover(&recovered, &error),
+          "commit: and that scratch recovers - the commit kept its word end to end");
+}
+
 }  // namespace
 
 int main() {
@@ -1044,6 +1181,13 @@ int main() {
     std::filesystem::remove_all(tempRoot);
 
     exerciseHistory();
+
+    const std::filesystem::path commitRoot = std::filesystem::temp_directory_path() /
+                                             ("openshow-domain-commit-" +
+                                              std::to_string(getpid()));
+    std::filesystem::remove_all(commitRoot);
+    exerciseCommitAtomicity(commitRoot);
+    std::filesystem::remove_all(commitRoot);
 
     const std::filesystem::path autosaveRoot = std::filesystem::temp_directory_path() /
                                               ("openshow-domain-autosave-" + std::to_string(getpid()));
