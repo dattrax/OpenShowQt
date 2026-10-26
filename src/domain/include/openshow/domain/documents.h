@@ -104,6 +104,17 @@ struct Asset {
     std::string sourcePath; // current location of the file's bytes
 };
 
+// One asset's bytes now live at `to` rather than `from`: what a save
+// that adopts reports (task 6.12, review R7). Everyone still holding the
+// old path — the model, a history snapshot, a cached scene payload — has
+// to be told, because after the save the old location may be deleted
+// while the session keeps running.
+struct AssetRebind {
+    Id assetId;
+    std::string from;
+    std::string to;
+};
+
 // One playlist row: a show, optionally introduced by a section marker.
 struct PlaylistEntry {
     Id id;
@@ -223,6 +234,13 @@ public:
                             std::string* error = nullptr);
     const Asset* findAsset(const Id& assetId) const;
     std::vector<Id> assetIds() const;  // creation order
+    // Retargets assets to the files that now own their bytes (task 6.12,
+    // review R7): each rebind applies to the asset named by id, and only
+    // while its sourcePath is still `from` — an asset re-imported or
+    // retargeted after the save keeps its newer path. Returns how many
+    // assets were retargeted. Purely in-memory; the bytes are storage's
+    // business, and saveServiceAndAdopt() is what made them durable.
+    std::size_t adoptAssets(const std::vector<AssetRebind>& rebinds);
 
     // --- playlists ---
 

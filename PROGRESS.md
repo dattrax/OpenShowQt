@@ -795,11 +795,57 @@ Updated: 2026-10-25 (Europe/London).
   for — m11 a layer with its own target, m12/m13 the same hidden behind a
   comment: **13/13 CAUGHT**. Gates desktop **44/44** (175 s), headless **27/27**
   (48 s).
-- Exact next action: **6.12** per the PLAN.md ledger — rebind durable asset
-  ownership after save/recovery, including undo/history and pending scene
-  references: recover → save → present → edit → undo/redo → save must work after
-  the scratch directory is deleted and the original imports removed, with no
-  live reference into deleted autosave storage (R7). Then 6.13a/b.
+- **6.12 — the save adopts, and the deleted scratch stops biting (R7) — DONE.**
+  Saving already copied asset bytes into the package; what it never did was
+  tell anyone that the copy was now the file. Every holder of the old path —
+  the live model, both history stacks, the compiled scene payloads the UI had
+  already handed to the worker side — kept naming a file the save (or the
+  operator) was free to delete, and the next present, autosave tick or save
+  read a ghost. Now:
+  - **Domain**: `saveServiceAndAdopt()` saves, then retargets every
+  `Asset::sourcePath` at the package's own copy and reports the moves as
+  `AssetRebind{id, from, to}`. Nothing is rebound unless the whole save
+  succeeded (the model cannot point at bytes that were never copied), and an
+  asset already inside the package produces no rebind at all.
+  `Documents::adoptAssets` matches id AND path, so an asset re-imported after
+  the save keeps its newer file.
+  - **Controller**: `save()` adopts into the model and BOTH undo/redo stacks
+  before `fAutosave->clear()` removes the scratch tree, and emits
+  `assetsAdopted(old→new)` — a tested contract, the fixture spies on it and
+  counts it: exactly one emission for a moving save, none for a save that
+  moved nothing.
+  - **Worker side**: `adoptAssetPaths()` rewrites `background.assetPath` in
+  every payload the controller holds — revision mirror, in-flight prepares,
+  the retained restore snapshot, the pending logical presentation — and
+  re-prepares the scene owed to the output. Prepare, never present:
+  presenting would restart a fade the audience is watching, and the worker
+  needs no change because its pins are path-keyed — the on-air old file stays
+  decoded until the next go names the new one.
+  - **Fixtures**: storage-level (recover→adopt→scratch deleted→save again→
+  tick again, failed-save adopts nothing, autosave ticks do not adopt, the
+  match rules); the controller's real-file R7 sequence (import→crash→recover
+  →edit→undo→save→redo→delete the original→present/edit/undo/redo→second save
+  succeeds — pre-task that save failed "has no readable file", and the tick
+  after the first save had already failed silently against the deleted
+  scratch); and S12's scripted-peer ledger — seven prepares, the old path
+  named exactly once and never by anything the adoption ran over, restore
+  after a snapshot-time adoption naming the new file, adoptions moving the
+  audience not at all, a map naming nothing sending not even a byte.
+  - **Mutations** m01 never-adopts, m02 adopt-before-success, m03 always-
+  rebinds, m04 ignores the `from` match, m05/m06 undo/redo stack untold,
+  m07 the old const save in `save()` (R7 itself), m08 signal never emitted,
+  m09 no re-prepare, m10 presents instead of prepares, m11 adoption no-op,
+  m12/m13 restore snapshot / mirror keep the old name: **13/13 CAUGHT** —
+  m12 escaped the first pass and the scenario, not the code, was wrong: it
+  adopted while the restore slot was empty, so the snapshot inherited an
+  already-rewritten payload (see Decisions). Gates desktop **44/44** (180 s),
+  headless **27/27** (48 s).
+- Exact next action: **6.13a** per the PLAN.md ledger — make the package's
+  asset+manifest commit preserve the previous package when interrupted
+  (fault-injected copy/write/close/rename failures leave the previous service
+  and assets readable; report flush/close failures; define what durability is
+  promised), then 6.13b (loaded-ID validation and package-relative asset
+  containment including symlinks). R8's finding.
   Review completion does not mark any finding fixed; no new implementation
   blocker was found.
 
@@ -3219,6 +3265,35 @@ of this work.
 
 ## Decisions
 
+- (2026-10-26, task 6.12) A save that copies bytes is a MOVE of ownership,
+  and ownership has to be TOLD. The defect was not the copy — correct since
+  2.2 — but that every other holder of the path kept reading the old
+  location: the model, whole-state history snapshots, and compiled scene
+  payloads already sitting in the worker controller's caches. The rule that
+  generalises: **a snapshot-based history is a hidden cache of everything the
+  state references**, filesystem paths included; adopting storage moves must
+  rewrite the snapshots, and the undo and redo stacks are two separate
+  oversights (the redo one only bites when the operator undoes BEFORE the
+  save, so the snapshot sits in `fRedo` at adoption time — fixtures need that
+  order, not just the obvious one). Second rule: **rebind reports beat
+  re-derivation**. The save hands out `{id, from, to}` triples and every
+  holder applies the same map, matching id AND old path: a holder that was
+  updated after the save keeps its newer value instead of being yanked back
+  by a stale rebind, and nobody has to re-read disk to find out what moved.
+  Third: **prepare, never present** — the worker needed no new primitive
+  because its media pins are path-keyed; the on-air path stays decoded and
+  pinned until the next present swaps to the new one, so renamed payloads can
+  be re-prepared silently. Re-presenting on adoption would restart a fade the
+  audience is watching for a rename they cannot perceive.
+- (2026-10-26, task 6.12) A mutation that ESCAPES is a fixture bug worth
+  more than ten that get caught. m12 (skip rewriting the retained restore
+  snapshot) survived because S12 adopted while the restore slot was EMPTY:
+  the snapshot was later taken from the pending payload, which the adoption
+  had already rewritten, so the skipped rewrite was never observable. The
+  general rule for testing caches: the rebind must arrive while the holder is
+  ALREADY populated with the old value — clear (retain snapshot) → adopt →
+  restore, not adopt → clear → restore. Fixtures that populate the holder
+  after the event test inheritance, not the rewrite.
 - (2026-10-26, task 6.11b) A group alpha without a group target: put the
   composite where the pixels are. Every fade wants transparency applied to a
   BLOCK as composited, and `saveLayer` buys that with a render target per frame.

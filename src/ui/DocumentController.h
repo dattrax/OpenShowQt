@@ -223,6 +223,12 @@ signals:
     void navigationChanged();
     void slideTextChanged();
     void stateChanged();
+    // Task 6.12 (review R7): a save adopted the package-owned copies of
+    // asset bytes — the map is old path -> new path. Anything still
+    // holding a scene payload that names an old path must stop: the file
+    // behind it is now safe to delete, and after an autosave-clear it
+    // IS gone. WorkerController listens; tests can too.
+    void assetsAdopted(const QVariantMap& pathMap);
 
 private slots:
     void commitPendingText();

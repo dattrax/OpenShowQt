@@ -938,10 +938,19 @@ QString DocumentController::sceneJsonForSlide(const QString& slideId) {
 bool DocumentController::save() {
     flushText();
     std::string error;
-    if (!openshow::domain::saveService(fDocuments, fServiceDirectory, &error)) {
+    std::vector<openshow::domain::AssetRebind> rebinds;
+    if (!openshow::domain::saveServiceAndAdopt(fDocuments, fServiceDirectory, &rebinds,
+                                               &error)) {
         setStatus(QStringLiteral("save failed: %1").arg(QString::fromStdString(error)));
         return false;
     }
+    // The model now names the package's own copies. The history snapshots
+    // have to hear it too (task 6.12, review R7): the next lines delete the
+    // autosave tree, which may be exactly where a pre-save snapshot points,
+    // and an undo must not hand the model back a path to a directory that
+    // no longer exists — that undo looks fine until the following present,
+    // save or autosave tick tries to read the file.
+    fHistory->adoptAssets(rebinds);
     // The service now holds everything the autosave was protecting. No
     // re-tick after clear: clear() resets the fingerprint, so a tick would
     // immediately write a package claiming unsaved work that does not
@@ -951,6 +960,16 @@ bool DocumentController::save() {
     fDirty = false;
     setStatus(QStringLiteral("saved %1")
                   .arg(QString::fromStdWString(fServiceDirectory.wstring())));
+    if (!rebinds.empty()) {
+        // Downstream caches of compiled scenes (the worker controller's
+        // payload mirror) must stop naming the paths these files came from.
+        QVariantMap adopted;
+        for (const openshow::domain::AssetRebind& rebind : rebinds) {
+            adopted.insert(QString::fromStdString(rebind.from),
+                           QString::fromStdString(rebind.to));
+        }
+        emit assetsAdopted(adopted);
+    }
     emit stateChanged();
     return true;
 }

@@ -60,6 +60,12 @@
  * real worker's bounded store) behind the newest handed out is refused, so
  * a restore that still depended on the store being asked cannot hide that.
  *
+ * Task 6.12 (review R7) added S12: a save MOVES an asset file and tells
+ * this side. The peer now keeps a per-prepare ledger of the background file
+ * each payload named, which is the only way to see a rename done right: the
+ * adoption must re-prepare the owed scene, feed rewritten payloads to clears
+ * and restores, repeat the old name never, and move the audience not at all.
+ *
  * Each child writes a small report (prepares, presents, requests for methods it
  * does not model, presented revision list, every request counted by method, and
  * the bytes it ever took from the socket) to OPENSHOW_FAKE_REPORT so the parent
@@ -374,6 +380,23 @@ private:
         }
         if (method == "scene.prepare") {
             ++fPrepares;
+            // Task 6.12 (review R7): WHICH background file each prepare
+            // carried. The adoption fixture asserts over this list — the
+            // paths are what prove the client re-prepared the moved file,
+            // derived clears from it, and never sent the old name again.
+            std::string assetPath;
+            if (request.contains("params") && request.at("params").is_object()) {
+                const auto& params = request.at("params").as_object();
+                const auto background = params.find("background");
+                if (background != params.end() && background->value().is_object()) {
+                    const auto path = background->value().as_object().find("assetPath");
+                    if (path != background->value().as_object().end() &&
+                        path->value().is_string()) {
+                        assetPath = std::string(path->value().as_string());
+                    }
+                }
+            }
+            fAssetPaths.push_back(std::move(assetPath));
             if (fScenario == "die-first-prepare" && fPrepares == 1) {
                 writeReport();
                 _exit(44);  // no answer at all: the go hangs, then dies
@@ -455,6 +478,10 @@ private:
         for (const int revision : fPresented) {
             presented.push_back(revision);
         }
+        boost::json::array assetPaths;
+        for (const std::string& assetPath : fAssetPaths) {
+            assetPaths.emplace_back(assetPath);
+        }
         boost::json::object methods;
         std::int64_t total = 0;
         for (const auto& counted : fMethodCounts) {
@@ -467,6 +494,7 @@ private:
             {"presents", fPresents},
             {"unknown", fUnknown},
             {"presented", std::move(presented)},
+            {"assetPaths", std::move(assetPaths)},
             {"methods", std::move(methods)},
             {"requests", total},
             {"bytesReceived", fBytesReceived},
@@ -490,6 +518,7 @@ private:
     std::vector<std::string> fHeld;  // hold3: acks awaiting the burst
     std::vector<DelayedReply> fQueue;  // slow-first: acks awaiting their due
     std::vector<int> fPresented;       // revisions the controller went to
+    std::vector<std::string> fAssetPaths;  // each prepare's background file (task 6.12)
 
     std::string fSocketPath;
     std::string fScenario;
@@ -633,6 +662,18 @@ std::string smuggledMediaPayload() {
     scene::Scene scene = authoredScene({"text"}, 0u);
     scene.background.hasImage = true;
     scene.background.assetPath = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg";
+    return boost::json::serialize(scene::toJson(scene));
+}
+
+// Task 6.12 (review R7): a background PICTURE naming a file on disk. The
+// adoption fixture asserts on WHICH path each prepare carried, so the file
+// name is the payload's whole point.
+std::string sceneStill(const char* slideId, const std::string& assetPath) {
+    scene::Scene scene = authoredScene({}, 0x102030u);
+    scene.slideId = slideId;
+    scene.background.hasImage = true;
+    scene.background.assetId = std::string("asset-") + slideId;
+    scene.background.assetPath = assetPath;
     return boost::json::serialize(scene::toJson(scene));
 }
 
@@ -1467,6 +1508,155 @@ void scenarioStalledThenResumingPeerKeepsItsSession() {
           "recovering worker rather than one that was never stressed");
 }
 
+// S12 (task 6.12, review R7): a save MOVES an asset — the model now names
+// the package's copy of the bytes — and tells this side through
+// adoptAssetPaths. Every payload the client still holds has to stop naming
+// the old path; the scene owed to the output must be RE-PREPARED but never
+// re-presented (presenting would restart the audience's fade); a clear must
+// compose against the rewritten payload and a restore re-prepare it; and a
+// map that names nothing the session uses must send nothing at all. The
+// scripted peer's per-prepare asset-path ledger is what proves the traffic
+// pattern, because every other client-visible property stays unchanged by
+// a rename done right. A second round runs go -> clear -> adopt -> restore,
+// so the rewrite that is tested is the one into the RETAINED snapshot
+// itself, not one inherited from a payload adoption had already rewritten.
+void scenarioAdoptedPaths() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
+    const std::string report = tempPath("adopt");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "adopt: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    const QString oldPath = QStringLiteral("/old/dir/still.jpg");
+    const QString newPath = QStringLiteral("/new/dir/still.jpg");
+    controller.presentSceneJson(
+        QString::fromStdString(sceneStill("PIC-A", oldPath.toStdString())));
+    if (!check(waitUntil([&controller] {
+                   return controller.sceneActive() == 1 && controller.scenePending() == 0;
+               }),
+               "adopt: the scene naming the original path is on air")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    // A map naming a path no payload uses changes nothing and SENDS nothing:
+    // a phantom re-prepare would raise the peer's prepared count, and the
+    // status poll below has had every chance to report it.
+    controller.adoptAssetPaths({{QStringLiteral("/nowhere/file.jpg"), newPath}});
+    digestThenRefresh(controller, 300);
+    check(controller.scenePrepared() == 1,
+          "adopt: naming a path no payload uses re-prepared nothing");
+
+    // The adoption itself: exactly one new prepare, and no present — the
+    // audience is watching the revision that is already on air, whose path
+    // the worker has pinned, and a fresh present would restart the fade.
+    controller.adoptAssetPaths({{oldPath, newPath}});
+    check(waitUntil([&controller] {
+              return controller.scenePrepared() == 2 && controller.scenePending() == 0;
+          }),
+          "adopt: the scene owed to the output was re-prepared with the new path");
+    check(controller.sceneActive() == 1,
+          "adopt: the re-prepare was not a go - the audience never moved");
+
+    // An explicit present of the FIRST revision: with this, the pending
+    // logical presentation comes from the revision MIRROR's entry, so the
+    // snapshot the next clear retains has to carry the rewritten name —
+    // proof the mirror was told, not just the payload the adoption itself
+    // re-prepared.
+    controller.presentScene(1);
+    digestThenRefresh(controller, 200);
+
+    // A clear composes against the REWRITTEN pending payload, and the
+    // restore re-prepares the rewritten snapshot: together they prove every
+    // cached holder was told, not just the one the next go happens to read.
+    controller.clearBackground();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 3 && controller.scenePending() == 0;
+          }),
+          "adopt: the clear presented over the adopted payload");
+    controller.restoreOutput();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 4 && controller.scenePending() == 0;
+          }),
+          "adopt: the restore brought the adopted scene back");
+
+    // Round two, in the order that catches the lazy rewrite: the OLD-named
+    // scene goes out again, a clear RETAINS its old-named payload, and ONLY
+    // THEN does the adoption arrive — so the rewrite that matters is the one
+    // into the retained snapshot itself, not one inherited from a payload
+    // that had already been rewritten. The restore that follows must name
+    // the new file, and the adoption must re-prepare nothing: the scene
+    // owed to the output is the cleared one, which names no file at all.
+    controller.presentSceneJson(
+        QString::fromStdString(sceneStill("PIC-A", oldPath.toStdString())));
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 5 && controller.scenePending() == 0;
+          }),
+          "adopt: the old-named scene went out again for the snapshot test");
+    controller.clearBackground();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 6 && controller.scenePending() == 0;
+          }),
+          "adopt: the second clear retained the old-named snapshot");
+    controller.adoptAssetPaths({{oldPath, newPath}});
+    digestThenRefresh(controller, 300);
+    check(controller.scenePrepared() == 6,
+          "adopt: with the cleared scene owed, the adoption re-prepared nothing new - it "
+          "rewrote the retained snapshot instead (the sixth prepare is that clear)");
+    controller.restoreOutput();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 7 && controller.scenePending() == 0;
+          }),
+          "adopt: the second restore came back after the snapshot-time adoption");
+
+    controller.shutdownNow();
+    const boost::json::object counts = readReport(report);
+    check(reportNumber(counts, "prepares") == 7,
+          "adopt: seven prepares - the go, the re-prepare, the clear, the restore, and the "
+          "snapshot round's go, clear, restore");
+    check(reportNumber(counts, "presents") == 7,
+          "adopt: seven presents - every go and re-present; the adoptions themselves added none");
+    std::string joined;
+    std::size_t listed = 0;
+    if (const auto entry = counts.find("assetPaths");
+        entry != counts.end() && entry->value().is_array()) {
+        for (const auto& value : entry->value().as_array()) {
+            if (value.is_string()) {
+                joined += (joined.empty() ? "" : " | ") + std::string(value.as_string());
+                ++listed;
+            }
+        }
+    }
+    const std::string o = oldPath.toStdString();
+    const std::string n = newPath.toStdString();
+    const std::string expect = o + " | " + n + " |  | " + n + " | " + o + " |  | " + n;
+    check(listed == 7 && joined == expect,
+          ("adopt: each prepare named exactly the background it should, the old path never "
+           "named by anything the adoption ran over (got [" + joined + "])")
+              .c_str());
+    if (const auto presented = counts.find("presented");
+        presented != counts.end() && presented->value().is_array()) {
+        const boost::json::array& revs = presented->value().as_array();
+        const std::vector<std::int64_t> wantRevisions{1, 1, 3, 4, 5, 6, 7};
+        bool revsOk = revs.size() == wantRevisions.size();
+        for (std::size_t i = 0; revsOk && i < wantRevisions.size(); ++i) {
+            revsOk = revs[i].to_number<std::int64_t>() == wantRevisions[i];
+        }
+        check(revsOk, "adopt: the audience moved only for real go's, never for an adoption");
+    } else {
+        check(false, "adopt: the peer recorded its presented revisions");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -1503,6 +1693,7 @@ int main(int argc, char* argv[]) {
     scenarioUnansweredRequestsStayBounded();
     scenarioWriteStallIsRefusedBoundedAndClosed();
     scenarioStalledThenResumingPeerKeepsItsSession();
+    scenarioAdoptedPaths();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "worker_controller_tests: %d failure(s)\n", gFailures);

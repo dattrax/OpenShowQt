@@ -112,6 +112,18 @@ public:
     // one call; the revision, as ever, is the worker's to hand out).
     Q_INVOKABLE void presentSceneJson(const QString& sceneJson);
 
+    // Adoption after a save moves an asset's bytes (task 6.12, review R7).
+    // pathMap names each move old-path -> new-path. Every scene payload this
+    // controller still holds — the revision mirror, the retained restore
+    // snapshot, the pending logical presentation, and a prepare still
+    // awaiting its ack — has background.assetPath rewritten where it names
+    // an old path, and the scene owed to the output is RE-PREPARED so the
+    // worker opens the new file before the next go. It is deliberately
+    // never re-presented: presenting again would restart a fade the
+    // audience is watching, and the worker keeps the on-air old path pinned
+    // (path-keyed) until the next present takes the new one.
+    Q_INVOKABLE void adoptAssetPaths(const QVariantMap& pathMap);
+
     // Output controls (task 3.4, hardened by task 6.3b). Each clear is a
     // derived presentation: the pending logical scene (the newest go's
     // payload — not merely the last confirmed status, so back-to-back

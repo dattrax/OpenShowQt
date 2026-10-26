@@ -13,6 +13,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -20,6 +21,7 @@
 #include <boost/json.hpp>
 
 #include <QCoreApplication>
+#include <QFileInfo>
 
 #include "openshow/domain/storage.h"
 #include "openshow/scene/scene.h"
@@ -320,6 +322,149 @@ void exercisePersistence(const std::filesystem::path& root) {
         check(docs.songs().size() == 1 && !docs.dirty() && !docs.canUndo() &&
                   !Autosave::exists(root / "autosave"),
               "load restores the file and clears history, dirty and autosave");
+    }
+}
+
+// --- task 6.12 (review R7): the package owns the bytes after a save --------
+
+// R7's exact sequence with real files: import, an interrupted session
+// (scratch present, nothing saved), restart into recovery — where every
+// recovered asset names a file inside the scratch tree — save, and then the
+// scratch AND the original import are gone. The session must still present,
+// edit, undo, redo and save again. Before this task the second save failed
+// with "has no readable file": the live model, the undo snapshots and the
+// autosave ticks all still named deleted files.
+void exerciseRecoveredAssetOwnership(const std::filesystem::path& root) {
+    std::filesystem::create_directories(root / "originals");
+    const std::filesystem::path original = root / "originals" / "still.jpg";
+    {
+        std::ofstream out(original, std::ios::binary);
+        out << "REALSTILLBYTES";
+    }
+    const std::filesystem::path scratch = root / "autosave";
+    const std::filesystem::path package = root / "service";
+    QString slideId;
+    QString assetId;
+    QString owned;
+
+    {
+        // The interrupted session: import and attach; the autosave protects
+        // the edit and the app dies before any save.
+        DocumentController docs(nullptr, root);
+        check(docs.createSong(QStringLiteral("Petition")), "adopt: the song exists");
+        check(docs.addSlide(), "adopt: the slide exists");
+        slideId = QString::fromStdString(
+            docs.slides().at(0).toMap().value(QStringLiteral("id")).toString().toStdString());
+        check(docs.importMediaFile(QString::fromStdString(original.string())),
+              "adopt: the import is recorded");
+        assetId = QString::fromStdString(
+            docs.assets().at(0).toMap().value(QStringLiteral("id")).toString().toStdString());
+        check(docs.setSlideBackground(assetId), "adopt: the slide takes the background");
+        check(docs.assets().at(0).toMap().value(QStringLiteral("sourcePath")).toString() ==
+                  QString::fromStdString(original.string()),
+              "adopt: before any save the asset names the original");
+        check(Autosave::exists(scratch),
+              "adopt: the unsaved edit is protected in the scratch tree");
+    }
+    {
+        DocumentController docs(nullptr, root);
+        check(docs.status().contains(QStringLiteral("recovered")),
+              "adopt: the new session recovers the scratch");
+        const QString scratchPath =
+            docs.assets().at(0).toMap().value(QStringLiteral("sourcePath")).toString();
+        check(scratchPath.contains(QStringLiteral("/autosave/")) && QFileInfo::exists(scratchPath),
+              "adopt: the recovered asset names a file inside the scratch tree");
+
+        // One edit BEFORE the save, and an undo, so both history stacks hold
+        // a pre-adoption snapshot when the adoption runs — undo/redo after
+        // the save is exactly where the deleted scratch used to resurface.
+        docs.setSlideText(QStringLiteral("O for a thousand tongues"));
+        docs.flushText();
+        docs.undo();
+
+        // The signal the worker controller is wired to: the save's report
+        // of what moved, captured here so the emission itself is a tested
+        // contract rather than a line of main.cpp nobody watches.
+        QVariantMap emitted;
+        int emissions = 0;
+        QObject::connect(&docs, &DocumentController::assetsAdopted,
+                         [&emitted, &emissions](const QVariantMap& moved) {
+                             emitted = moved;
+                             ++emissions;
+                         });
+
+        check(docs.save(), "adopt: saving the recovered session succeeds");
+        owned = docs.assets().at(0).toMap().value(QStringLiteral("sourcePath")).toString();
+        check(emissions == 1 && emitted.value(scratchPath).toString() == owned,
+              "adopt: the save announced the move scratch -> package, once");
+        const std::filesystem::path packaged =
+            (package / "assets" / (assetId.toStdString() + "-still.jpg")).lexically_normal();
+        check(owned == QString::fromStdString(packaged.string()),
+              "adopt: the model now names the package's own copy by name");
+        check(!Autosave::exists(scratch), "adopt: the save removed the scratch tree");
+        check(docs.currentSlideText().isEmpty(), "adopt: the pre-save edit is still undone");
+        docs.redo();
+        check(docs.assets().at(0).toMap().value(QStringLiteral("sourcePath")).toString() == owned &&
+                  docs.currentSlideText() == QStringLiteral("O for a thousand tongues"),
+              "adopt: redo lands on an adopted snapshot, not the deleted scratch path");
+        check(Autosave::exists(scratch),
+              "adopt: the tick right after the save can copy the bytes it names - before the "
+              "fix this was the first thing to fail, silently, against a deleted file");
+
+        // The worst housekeeping: the original import is deleted too. This
+        // is the half of R7 the operator notices — the live document used
+        // to keep depending on this file until a reload.
+        std::filesystem::remove(original);
+
+        // Present: the compiled scene names the owned copy and nothing else.
+        openshow::scene::Scene scene;
+        boost::system::error_code parseError;
+        const boost::json::value parsed =
+            boost::json::parse(docs.sceneJsonForSlide(slideId).toStdString(), parseError);
+        std::string sceneError;
+        check(!parseError && openshow::scene::fromJson(parsed, &scene, &sceneError) &&
+                  scene.background.assetPath == packaged.string(),
+              "adopt: the compiled scene names the package's copy");
+        check(scene.background.assetPath.find("autosave") == std::string::npos,
+              "adopt: no live reference into deleted scratch storage");
+
+        // Edit again: the autosave must be able to protect the new work —
+        // before this task its tick copied from the scratch file IT had
+        // just deleted, and the operator's edits went unguarded in silence.
+        docs.setSlideText(QStringLiteral("O for a thousand tongues, as"));
+        docs.flushText();
+        check(Autosave::exists(scratch),
+              "adopt: after the save, edits are protected by a writable autosave again");
+
+        docs.undo();
+        check(docs.assets().at(0).toMap().value(QStringLiteral("sourcePath")).toString() == owned,
+              "adopt: undo did not resurrect a deleted scratch path");
+        check(Autosave::exists(scratch), "adopt: the post-undo tick can still write");
+        docs.redo();
+        check(docs.save(),
+              "adopt: the second save succeeds - before task 6.12 it failed 'has no readable file'");
+        check(emissions == 1,
+              "adopt: a save that moves nothing emits no adoption signal - caches are not "
+              "disturbed by a save with nothing to rebind");
+
+        for (const QVariant& entry : docs.assets()) {
+            const QString path = entry.toMap().value(QStringLiteral("sourcePath")).toString();
+            check(path.startsWith(QString::fromStdString(package.string())) &&
+                      QFileInfo::exists(path),
+                  "adopt: every asset names a file inside the package, and it exists");
+        }
+    }
+    {
+        DocumentController docs(nullptr, root);
+        check(!docs.dirty() && docs.assets().size() == 1 &&
+                  docs.assets().at(0).toMap().value(QStringLiteral("sourcePath")).toString() ==
+                      owned,
+              "adopt: a clean startup keeps naming the package's copy");
+        check(docs.assets().at(0).toMap()
+                  .value(QStringLiteral("sourcePath"))
+                  .toString()
+                  .indexOf(QStringLiteral("autosave")) == -1,
+              "adopt: and the whole session names no scratch path at all");
     }
 }
 
@@ -718,6 +863,7 @@ int main(int argc, char* argv[]) {
     exerciseUndoRedo(tempRoot / "undo");
     exerciseGeometryEdits(tempRoot / "geometry");
     exercisePersistence(tempRoot / "persist");
+    exerciseRecoveredAssetOwnership(tempRoot / "adopt");
     exercisePlaylistAndLibrary(tempRoot / "playlist");
     exerciseStylePanel(tempRoot / "styles");
     exerciseClipboard(tempRoot / "clipboard");

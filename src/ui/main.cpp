@@ -66,6 +66,14 @@ int main(int argc, char* argv[]) {
     QObject::connect(&app, &QGuiApplication::aboutToQuit,
                      [&worker] { worker.shutdownNow(); });
 
+    // Task 6.12 (review R7): when a save adopts the package's own copies of
+    // asset bytes, the scene payloads the worker controller still holds have
+    // to stop naming the old files — those are what the operator is now free
+    // to delete, and the autosave tree among them is deleted by the save
+    // itself.
+    QObject::connect(&documents, &openshow::ui::DocumentController::assetsAdopted, &worker,
+                     &openshow::ui::WorkerController::adoptAssetPaths);
+
     std::signal(SIGTERM, handleQuitSignal);
     std::signal(SIGINT, handleQuitSignal);
     QTimer signalPoll;

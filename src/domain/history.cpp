@@ -58,6 +58,15 @@ void History::clear() {
     bumpWatermark();
 }
 
+void History::adoptAssets(const std::vector<AssetRebind>& rebinds) {
+    for (Documents& snapshot : fUndo) {
+        snapshot.adoptAssets(rebinds);
+    }
+    for (Documents& snapshot : fRedo) {
+        snapshot.adoptAssets(rebinds);
+    }
+}
+
 void History::bumpWatermark() {
     fWatermark = std::max(fWatermark, fDocuments->fNextOrdinal);
 }

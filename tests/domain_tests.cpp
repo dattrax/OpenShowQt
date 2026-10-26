@@ -38,6 +38,7 @@ bool check(bool condition, const char* what) {
 
 using openshow::domain::Documents;
 using openshow::domain::Id;
+using openshow::domain::AssetRebind;
 using openshow::domain::kDefaultLineSpacing;
 using Asset = openshow::domain::Asset;
 using Autosave = openshow::domain::Autosave;
@@ -892,6 +893,131 @@ void exerciseAutosave(const fs::path& tempRoot) {
           "recovering from a cleared scratch fails cleanly");
 }
 
+// --- task 6.12 (review R7): the save adopts, and everything follows ---------
+
+// R7's mechanism in one sentence: a save COPIES asset bytes into the
+// package but left the model pointing at wherever the file happened to
+// live before — the original import, or a scratch autosave tree that the
+// very same save then deletes. These fixtures run the storage-level
+// sequence the UI runs, so the ownership rule is pinned without Qt.
+void exerciseAdoption(const fs::path& tempRoot) {
+    std::string error;
+    const fs::path package = tempRoot / "adopt-service";
+    const fs::path scratch = tempRoot / "adopt-autosave";
+    const fs::path originals = tempRoot / "adopt-originals";
+    std::filesystem::create_directories(originals);
+    const fs::path still = originals / "still.jpg";
+    const fs::path loop = originals / "loop.mp4";
+    writeFile(still, "STILLBYTES");
+    writeFile(loop, "LOOPBYTES");
+
+    Documents docs;
+    const Id a1 = docs.addAsset("still.jpg", still.string(), &error);
+    const Id a2 = docs.addAsset("loop.mp4", loop.string(), &error);
+    check(!a1.empty() && !a2.empty(), "adoption: two assets are recorded");
+    const Id show = docs.createShow("Petition", &error);
+    // A history snapshot taken BEFORE the save: it holds the assets at the
+    // original paths, exactly the state an undo must not resurrect.
+    History history(&docs);
+    check(history.apply([&] { return docs.setShowNotes(show, "touched after import"); }),
+          "adoption: an edit goes through history");
+
+    std::vector<AssetRebind> rebinds;
+    check(saveServiceAndAdopt(docs, package, &rebinds, &error),
+          "adoption: the save succeeds");
+    const fs::path packaged1 = (package / "assets" / (a1 + "-still.jpg")).lexically_normal();
+    check(rebinds.size() == 2, "adoption: both moves are reported");
+    check(rebinds[0].assetId == a1 && rebinds[0].from == still.string() &&
+              rebinds[0].to == packaged1.string(),
+          "adoption: the rebind names the asset, the old path and the new one");
+    check(docs.findAsset(a1)->sourcePath == packaged1.string(),
+          "adoption: the model now names the package's own copy");
+    check(readFile(packaged1) == "STILLBYTES", "adoption: the bytes really are in the package");
+
+    history.adoptAssets(rebinds);
+    check(history.undo(&error), "adoption: the edit undoes");
+    check(docs.findAsset(a1)->sourcePath == packaged1.string(),
+          "adoption: undo does not put the original path back");
+
+    // The outside files go away — the operator's cleanup, or in the defect
+    // this task fixes, the scratch tree a real save deletes. Nothing may
+    // care: the package owns the bytes now.
+    fs::remove(still);
+    fs::remove(loop);
+    check(saveService(docs, package, &error),
+          "adoption: a later save works with the originals deleted");
+    rebinds.clear();
+    check(saveServiceAndAdopt(docs, package, &rebinds, &error) && rebinds.empty(),
+          "adoption: re-saving an adopted service reports no moves");
+    check(docs.findAsset(a1)->sourcePath == packaged1.string() &&
+              docs.findAsset(a2)->sourcePath ==
+                  (package / "assets" / (a2 + "-loop.mp4")).lexically_normal().string(),
+          "adoption: paths stay exactly where the first adoption put them");
+
+    // A save that FAILS adopts nothing: the model must not point at bytes
+    // the save refused to copy.
+    const fs::path extra = originals / "extra.jpg";
+    writeFile(extra, "EXTRA");
+    Documents half;
+    const Id good = half.addAsset("extra.jpg", extra.string(), &error);
+    half.addAsset("gone.jpg", (originals / "gone.jpg").string(), &error);  // never written
+    rebinds.clear();
+    check(!saveServiceAndAdopt(half, tempRoot / "adopt-half", &rebinds, &error),
+          "adoption: a save refused by a missing asset fails");
+    check(rebinds.empty() && half.findAsset(good)->sourcePath == extra.string(),
+          "adoption: a failed save rebinds nothing, reported or real");
+
+    // Autosave mirrors; it does NOT adopt. (tick takes the state by const
+    // reference precisely so the scratch cannot steal the model's paths.)
+    Documents live;
+    const Id one = live.addAsset("extra.jpg", extra.string(), &error);
+    Autosave saver(scratch);
+    check(saver.tick(live, &error), "adoption: the autosave tick succeeds");
+    check(live.findAsset(one)->sourcePath == extra.string(),
+          "adoption: the tick leaves the model pointing at the original");
+
+    // R7's exact sequence at this level: recover from scratch (paths INTO
+    // the scratch tree), save-and-adopt, delete the scratch — everything
+    // downstream keeps working.
+    Documents recovered;
+    Autosave nextSession(scratch);
+    check(nextSession.recover(&recovered, &error), "adoption: the scratch package recovers");
+    const std::string scratchFile = recovered.findAsset(one)->sourcePath;
+    check(scratchFile == (scratch / "assets" / (one + "-extra.jpg")).lexically_normal().string(),
+          "adoption: the recovered asset names a file inside the scratch tree");
+    const fs::path package3 = tempRoot / "adopt-recovered";
+    rebinds.clear();
+    check(saveServiceAndAdopt(recovered, package3, &rebinds, &error),
+          "adoption: saving the recovered session succeeds");
+    check(rebinds.size() == 1 && rebinds[0].from == scratchFile,
+          "adoption: the one move reported is scratch -> package");
+    check(nextSession.clear(&error), "adoption: the scratch tree is removed, as a real save does");
+    fs::remove(extra);  // the last copy outside the package, gone
+    rebinds.clear();
+    check(saveServiceAndAdopt(recovered, package3, &rebinds, &error) && rebinds.empty(),
+          "adoption: with the scratch deleted, a later save still succeeds");
+    Autosave later(scratch);
+    check(later.tick(recovered, &error),
+          "adoption: and so does the next autosave tick - before this task it read a deleted file");
+    Documents reloaded;
+    check(loadService(&reloaded, package3, &error) &&
+              reloaded.findAsset(one)->sourcePath ==
+                  (package3 / "assets" / (one + "-extra.jpg")).lexically_normal().string(),
+          "adoption: a reload names the same package file the model already names");
+
+    // adoptAssets matches id AND path: an asset retargeted after the save
+    // keeps its newer path instead of being yanked back by a stale rebind.
+    Documents picky;
+    const Id x = picky.addAsset("x.jpg", "/outside/x.jpg", &error);
+    check(picky.adoptAssets({{"asset-nope", "/outside/x.jpg", "/pkg/x.jpg"}}) == 0,
+          "adoption: a rebind for an unknown id is skipped");
+    check(picky.adoptAssets({{x, "/somewhere/else.jpg", "/pkg/x.jpg"}}) == 0,
+          "adoption: a rebind whose 'from' does not match is skipped");
+    check(picky.adoptAssets({{x, "/outside/x.jpg", "/pkg/x.jpg"}}) == 1 &&
+              picky.findAsset(x)->sourcePath == "/pkg/x.jpg",
+          "adoption: id and path match, the asset is retargeted");
+}
+
 }  // namespace
 
 int main() {
@@ -924,6 +1050,13 @@ int main() {
     std::filesystem::remove_all(autosaveRoot);
     exerciseAutosave(autosaveRoot);
     std::filesystem::remove_all(autosaveRoot);
+
+    const std::filesystem::path adoptionRoot = std::filesystem::temp_directory_path() /
+                                               ("openshow-domain-adoption-" +
+                                                std::to_string(getpid()));
+    std::filesystem::remove_all(adoptionRoot);
+    exerciseAdoption(adoptionRoot);
+    std::filesystem::remove_all(adoptionRoot);
 
     if (!ok || gFailed) {
         return 1;

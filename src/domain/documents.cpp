@@ -596,6 +596,20 @@ std::vector<Id> Documents::assetIds() const {
     return ids;
 }
 
+std::size_t Documents::adoptAssets(const std::vector<AssetRebind>& rebinds) {
+    std::size_t adopted = 0;
+    for (const AssetRebind& rebind : rebinds) {
+        const auto found = std::find_if(fAssets.begin(), fAssets.end(),
+                                        [&](const Asset& a) { return a.id == rebind.assetId; });
+        if (found == fAssets.end() || found->sourcePath != rebind.from) {
+            continue;  // removed, or already pointing somewhere newer
+        }
+        found->sourcePath = rebind.to;
+        ++adopted;
+    }
+    return adopted;
+}
+
 // --- playlists ---------------------------------------------------------------
 
 Id Documents::createPlaylist(const std::string& name, std::string* error) {

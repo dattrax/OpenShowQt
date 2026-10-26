@@ -69,6 +69,13 @@ public:
     bool undo(std::string* error = nullptr);
     bool redo(std::string* error = nullptr);
 
+    // Retargets asset paths inside every snapshot (task 6.12, review R7).
+    // A save that adopted the package-owned asset files deletes the scratch
+    // tree it may have loaded from; an undo afterwards must not hand the
+    // model back a path into storage that no longer exists. Snapshots follow
+    // the same rule as Documents::adoptAssets: same id, same old path.
+    void adoptAssets(const std::vector<AssetRebind>& rebinds);
+
     bool canUndo() const { return !fUndo.empty(); }
     bool canRedo() const { return !fRedo.empty(); }
     std::size_t undoDepth() const { return fUndo.size(); }

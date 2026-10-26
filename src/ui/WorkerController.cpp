@@ -628,6 +628,74 @@ void WorkerController::presentSceneJson(const QString& sceneJson) {
     fRestoreDoneRevision = 0;
 }
 
+void WorkerController::adoptAssetPaths(const QVariantMap& pathMap) {
+    if (pathMap.isEmpty()) {
+        return;
+    }
+    // One payload's rewrite: the new JSON when background.assetPath named a
+    // path this save moved, empty for anything else — an unreadable payload
+    // or one that does not name the file is left exactly as it was, because
+    // there is nothing here that was made stale by the move.
+    const auto rewrite = [&pathMap](const QString& sceneJson) {
+        if (sceneJson.isEmpty()) {
+            return QString();
+        }
+        boost::system::error_code parseError;
+        boost::json::value parsed = boost::json::parse(sceneJson.toStdString(), parseError);
+        if (parseError || !parsed.is_object()) {
+            return QString();
+        }
+        const auto background = parsed.as_object().find("background");
+        if (background == parsed.as_object().end() || !background->value().is_object()) {
+            return QString();
+        }
+        const auto path = background->value().as_object().find("assetPath");
+        if (path == background->value().as_object().end() || !path->value().is_string()) {
+            return QString();
+        }
+        const QString oldPath = QString::fromStdString(std::string(path->value().as_string()));
+        if (!pathMap.contains(oldPath)) {
+            return QString();
+        }
+        path->value() = pathMap.value(oldPath).toString().toStdString();
+        return QString::fromStdString(boost::json::serialize(parsed));
+    };
+
+    // The mirror: each retained revision's payload. A later explicit
+    // presentScene(revision) must not put a deleted path back on air.
+    for (auto entry = fSceneJson.begin(); entry != fSceneJson.end(); ++entry) {
+        const QString adopted = rewrite(entry.value());
+        if (!adopted.isEmpty()) {
+            entry.value() = adopted;
+        }
+    }
+    // A prepare whose ack has not landed yet: the worker has the old payload
+    // (it decoded it at prepare time, and the on-air path stays pinned), but
+    // when the ack arrives the mirror must record what the session now
+    // believes owns those bytes.
+    for (auto& pending : fPendingRequests) {
+        const QString adopted = rewrite(pending.prepareJson);
+        if (!adopted.isEmpty()) {
+            pending.prepareJson = adopted;
+        }
+    }
+    // The restore snapshot re-prepares through presentSceneInternal when the
+    // operator clicks it, so rewriting it here is enough: it names the new
+    // file at the moment it is used.
+    const QString adoptedRestore = rewrite(fRestoreJson);
+    if (!adoptedRestore.isEmpty()) {
+        fRestoreJson = adoptedRestore;
+    }
+    const QString adoptedDesired = rewrite(fDesiredSceneJson);
+    if (adoptedDesired.isEmpty()) {
+        return;  // nothing the output is owed named a moved file
+    }
+    fDesiredSceneJson = adoptedDesired;
+    // Stage the corrected payload for the next go (a clear deriving from it,
+    // an explicit present). Prepare only: presenting would restart a fade.
+    prepareScene(fDesiredSceneJson);
+}
+
 std::int64_t WorkerController::presentSceneInternal(const QString& sceneJson) {
     if (!fConnected || !fHandshakeDone) {
         return 0;

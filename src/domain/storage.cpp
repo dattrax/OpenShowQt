@@ -670,6 +670,33 @@ bool loadService(Documents* documents, const std::filesystem::path& directory,
     return ServiceCodec::load(documents, directory, error);
 }
 
+bool saveServiceAndAdopt(Documents& documents, const std::filesystem::path& directory,
+                         std::vector<AssetRebind>* rebinds, std::string* error) {
+    if (!ServiceCodec::save(documents, directory, error)) {
+        return false;  // nothing was copied: nothing has a new home
+    }
+    // A successful save means every asset's bytes are in the package under
+    // the name the codec picks; the adoption is the same computation, and
+    // the model changes only for assets that were NOT already there.
+    std::vector<AssetRebind> moved;
+    for (const Id& id : documents.assetIds()) {
+        const Asset* asset = documents.findAsset(id);
+        const std::filesystem::path packaged =
+            (directory / kAssetsDir / assetFileName(*asset)).lexically_normal();
+        std::error_code ec;
+        if (std::filesystem::equivalent(std::filesystem::path(asset->sourcePath), packaged, ec) &&
+            !ec) {
+            continue;  // already package-owned: a re-save of a loaded service
+        }
+        moved.push_back({asset->id, asset->sourcePath, packaged.string()});
+    }
+    documents.adoptAssets(moved);
+    if (rebinds != nullptr) {
+        *rebinds = std::move(moved);
+    }
+    return true;
+}
+
 // --- autosave -----------------------------------------------------------------
 
 Autosave::Autosave(std::filesystem::path directory) : fDirectory(std::move(directory)) {}
