@@ -98,10 +98,10 @@ private:
     const DemoDecoration* fDemo;           // development backdrop, if decorated
 };
 
-// Slide images (task 6.17b will bring the authored ones): a production
-// renderer draws nothing until then. The development decoration's demo
-// photo with its border and caption stands in, and stands down the moment
-// a presentation is on air.
+// The development decoration's demo photo with its border and caption —
+// a slide-image STAND-IN only. Task 6.17b's authored foreground pictures
+// are real scene items and draw in SceneItemsLayer, in the stack's order;
+// this layer keeps standing down the moment a presentation is on air.
 class ImageLayer final : public RenderLayer {
 public:
     ImageLayer(const DemoDecoration* demo, sk_sp<SkTypeface> regular)
@@ -147,18 +147,20 @@ private:
     const ActiveScene* fActive;    // SceneRenderer-owned; outlives the layer
 };
 
-// Words: while a scene is on air, its text laid out through
-// SceneTextEngine (wrap, centre, fallback, fit — task 3.1); otherwise the
-// decoration's demo title, if this renderer was decorated for development.
+// The item stack: while a scene is on air, its items through
+// SceneTextEngine — text laid out (wrap, centre, fallback, fit — task 3.1)
+// and, since task 6.17b, foreground pictures looked up in the image cache —
+// drawn in the stack's authored order; otherwise the decoration's demo
+// title, if this renderer was decorated for development.
 // Layouts are cached per scene pointer, four slots deep, so a crossfade
 // never re-lays-out either side; during the fade the two scenes dissolve —
 // outgoing at 1 - textBlend, incoming at textBlend, the classic lyric
 // cross-dissolve (docs/reference.md §7 text transition).
-class WordsLayer final : public RenderLayer {
+class SceneItemsLayer final : public RenderLayer {
 public:
-    WordsLayer(const DemoDecoration* demo, const SceneTextEngine* engine,
-               std::atomic<std::uint64_t>* layoutBuilds)
-        : fDemo(demo), fEngine(engine), fLayoutBuilds(layoutBuilds) {}
+    SceneItemsLayer(const DemoDecoration* demo, const SceneTextEngine* engine,
+                    SceneImageCache* images, std::atomic<std::uint64_t>* layoutBuilds)
+        : fDemo(demo), fEngine(engine), fImages(images), fLayoutBuilds(layoutBuilds) {}
 
     LayerId id() const override { return LayerId::kWords; }
 
@@ -170,15 +172,15 @@ public:
                 const SceneTextEngine::SceneLayout& from = layoutFor(frame.fadeFrom);
                 SkPaint fade;
                 fade.setAlpha(static_cast<uint8_t>((1.0f - frame.textBlend) * 255.0f + 0.5f));
-                fEngine->drawLayout(ctx.canvas, from, &fade);
+                fEngine->drawLayout(ctx.canvas, from, &fade, fImages);
             }
             const SceneTextEngine::SceneLayout& current = layoutFor(frame.scene);
             if (fading) {
                 SkPaint fade;
                 fade.setAlpha(static_cast<uint8_t>(frame.textBlend * 255.0f + 0.5f));
-                fEngine->drawLayout(ctx.canvas, current, &fade);
+                fEngine->drawLayout(ctx.canvas, current, &fade, fImages);
             } else {
-                fEngine->drawLayout(ctx.canvas, current);
+                fEngine->drawLayout(ctx.canvas, current, nullptr, fImages);
             }
             return;
         }
@@ -240,6 +242,7 @@ private:
 
     const DemoDecoration* fDemo;             // development title, if decorated
     const SceneTextEngine* fEngine;
+    SceneImageCache* fImages;                // SceneRenderer-owned, shared below
     std::atomic<std::uint64_t>* fLayoutBuilds;
     LayoutSlot fSlots[kLayoutSlots];
     std::uint64_t fLayoutClock = 0;          // render thread only
@@ -374,7 +377,8 @@ bool SceneRenderer::buildLayers(std::string* error, const DemoBuilder& demo) {
     // item.
     fLayers.add(std::make_unique<BackgroundLayer>(&fImages, &fDemo));
     fLayers.add(std::make_unique<ImageLayer>(&fDemo, fText->regular()));
-    fLayers.add(std::make_unique<WordsLayer>(&fDemo, fText.get(), &fTextLayoutBuilds));
+    fLayers.add(
+        std::make_unique<SceneItemsLayer>(&fDemo, fText.get(), &fImages, &fTextLayoutBuilds));
     fLayers.add(std::make_unique<AuxLayer>(fText->regular()));
     fLayers.add(std::make_unique<ClockLayer>(fText->regular()));
     // Aux is not part of the agreed use case and starts off in both

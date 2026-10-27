@@ -930,7 +930,7 @@ void exerciseMultiBoxSession(const std::filesystem::path& root) {
         std::set<std::string> boxIds;
         std::size_t total = 0;
         for (const openshow::domain::Slide& slide : show->slides) {
-            for (const openshow::domain::TextBox& box : slide.items) {
+            for (const openshow::domain::SlideItem& box : slide.items) {
                 boxIds.insert(box.id);
                 ++total;
             }
@@ -1094,6 +1094,138 @@ void exerciseStylePanel(const std::filesystem::path& root) {
 }
 
 // --- slide clipboard --------------------------------------------------------
+
+// --- a picture in the stack, seen from the panel (task 6.17b) ---------------
+
+// The editor that AUTHORS a foreground picture is 6.17b2, so this fixture's
+// service is a FILE: one slide, a verse under a picture, the picture's bytes
+// in the package. Everything below is what the panel does with a stack it did
+// not build — the canvas's list, the paste, the asset's removal, the save —
+// none of which has an "add picture" button to lean on yet.
+void writeMixedService(const std::filesystem::path& service) {
+    std::filesystem::create_directories(service / "assets");
+    std::ofstream plate(service / "assets" / "asset1-plate.png", std::ios::binary);
+    plate << "PLATEBYTES";
+    plate.close();
+    std::ofstream out(service / "service.json");
+    out << R"svc({"format":3,"nextOrdinal":90,"shows":[{"id":"show1","name":"Mixed","notes":"","defaultStyleId":"","slides":[{"id":"slide1","group":"","items":[{"id":"text1","kind":"text","lines":["Verse"],"x":160,"y":100,"width":1600,"height":880},{"id":"image2","kind":"image","assetId":"asset1","x":1000,"y":80,"width":800,"height":450}],"notes":"","styleId":"","backgroundAssetId":""}]}],"styles":[],"assets":[{"id":"asset1","name":"plate.png","file":"assets/asset1-plate.png"}],"playlists":[]})svc";
+    out.close();
+}
+
+void exerciseImageItemSession(const std::filesystem::path& root) {
+    const std::filesystem::path service = root / "service";
+    writeMixedService(service);
+    DocumentController docs(nullptr, root);
+    docs.selectSong(QStringLiteral("show1"));
+    docs.selectSlide(0);
+    const QString slide1 = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+    const std::string packaged = (service / "assets" / "asset1-plate.png").string();
+
+    // The canvas chrome has to tell a picture's outline from a text box's.
+    // Guessing from "no words" is the inference that breaks the first time a
+    // slide has an empty verse, so the kind is handed to it.
+    const QVariantList outlines = docs.currentSlideBoxes();
+    check(outlines.size() == 2 &&
+              outlines.at(0).toMap().value(QStringLiteral("kind")).toString() ==
+                  QStringLiteral("text") &&
+              outlines.at(1).toMap().value(QStringLiteral("kind")).toString() ==
+                  QStringLiteral("image") &&
+              outlines.at(1).toMap().value(QStringLiteral("assetId")).toString() ==
+                  QStringLiteral("asset1") &&
+              outlines.at(1).toMap().value(QStringLiteral("x")).toDouble() == 1000.0,
+          "the canvas is handed the picture AS a picture: its kind, its asset, its box");
+
+    const openshow::scene::Scene mixed = compiledFor(docs, slide1);
+    check(mixed.items.size() == 2 && mixed.items[1].isImage &&
+              mixed.items[1].assetPath == packaged && mixed.items[1].lines.empty(),
+          "and the scene the panel hands the worker resolves that asset to its file");
+
+    // Typing into a selected picture is refused by the model. What the session
+    // owns is what does NOT happen: no words in the picture, none in the box
+    // under it, and no dirty flag — so the autosave and the close prompt both
+    // still describe the deck the operator has.
+    check(docs.selectTextBox(1) && docs.currentBox() == 1, "the picture can be selected");
+    docs.setSlideText(QStringLiteral("words into a picture"));
+    docs.flushText();
+    const openshow::scene::Scene afterTyping = compiledFor(docs, slide1);
+    check(afterTyping.items[1].lines.empty() &&
+              afterTyping.items[0].lines == std::vector<std::string>{"Verse"} && !docs.dirty(),
+          "typing on a selected picture writes nowhere — not into the picture, not into "
+          "the box under it — and leaves the session clean");
+
+    // --- the paste re-identifies a picture exactly as it does a text box ---
+    docs.selectSlide(0);
+    check(docs.copyCurrentSlide() && docs.pasteSlide(), "the mixed slide copies and pastes");
+    check(docs.slides().size() == 2, "paste inserted one slide");
+    const QString pastedId =
+        docs.slides().at(1).toMap().value(QStringLiteral("id")).toString();
+    const openshow::scene::Scene pasted = compiledFor(docs, pastedId);
+    check(pasted.items.size() == 2 && pasted.items[1].isImage &&
+              pasted.items[1].assetPath == packaged && pasted.items[1].x == 1000.0 &&
+              pasted.items[0].lines == std::vector<std::string>{"Verse"},
+          "the pasted slide carries the picture as well as the words, in the same order");
+    const QVariantList pastedBoxes = docs.currentSlideBoxes();
+    const QString pastedPicture =
+        pastedBoxes.at(1).toMap().value(QStringLiteral("id")).toString();
+    check(!pastedPicture.isEmpty() && pastedPicture != QStringLiteral("image2"),
+          "and the pasted picture wears a fresh id: one asset placed twice is two stack "
+          "entries, never one edited into the other");
+    check(docs.pasteSlide() && docs.slides().size() == 3, "the same slide pastes a second time");
+    const QVariantList twice = docs.currentSlideBoxes();
+    check(twice.size() == 2 &&
+              twice.at(1).toMap().value(QStringLiteral("id")).toString() != pastedPicture,
+          "the second paste gets its own picture id too");
+
+    check(docs.save(), "the session with pasted pictures saves");
+    openshow::domain::Documents fromDisk;
+    std::string loadError;
+    check(openshow::domain::loadService(&fromDisk, service, &loadError),
+          "and the package with three copies of one picture loads");
+    if (const openshow::domain::Show* show = fromDisk.findShow("show1")) {
+        std::size_t pictures = 0;
+        std::set<std::string> itemIds;
+        for (const openshow::domain::Slide& slide : show->slides) {
+            for (const openshow::domain::SlideItem& item : slide.items) {
+                itemIds.insert(item.id);
+                pictures += item.kind == openshow::domain::ItemKind::Image ? 1u : 0u;
+            }
+        }
+        check(pictures == 3 && itemIds.size() == 6,
+              "three pictures, six items, six identities — a pasted deck that reused an "
+              "item id would write a file no loader accepts");
+    } else {
+        check(false, "the saved package still holds its show");
+    }
+
+    // --- deleting the asset takes every copy of its picture with it ---
+    check(docs.removeAsset(QStringLiteral("asset1")), "the asset is removed");
+    check(docs.currentSlideBoxes().size() == 1 &&
+              compiledFor(docs, pastedId).items.size() == 1,
+          "every slide loses its picture and keeps its words: an item without its file is "
+          "not a half-drawn stack entry");
+    docs.undo();
+    check(docs.currentSlideBoxes().size() == 2 &&
+              compiledFor(docs, pastedId).items[1].isImage,
+          "one undo brings the asset back with its pictures beside it, in their own slides");
+
+    // A clip captured with a picture, pasted AFTER the asset is gone: the
+    // paste is not refused — the operator's words still arrive — and the
+    // picture is what falls away, exactly as a deleted style or background
+    // reference has since 4.5.
+    docs.selectSlide(0);
+    check(docs.copyCurrentSlide(), "the mixed slide is captured again");
+    check(docs.removeAsset(QStringLiteral("asset1")),
+          "and its asset is deleted from under the clipboard");
+    check(docs.pasteSlide() && docs.slides().size() == 4,
+          "the paste still succeeds: a stale picture is not a reason to lose the words");
+    const QString staleId =
+        docs.slides().at(1).toMap().value(QStringLiteral("id")).toString();
+    const openshow::scene::Scene stale = compiledFor(docs, staleId);
+    check(stale.slideId != slide1.toStdString() && stale.items.size() == 1 &&
+              !stale.items[0].isImage &&
+              stale.items[0].lines == std::vector<std::string>{"Verse"},
+          "and the pasted slide carries the words with no picture item in it");
+}
 
 void exerciseClipboard(const std::filesystem::path& root) {
     DocumentController docs(nullptr, root);
@@ -1523,6 +1655,7 @@ int main(int argc, char* argv[]) {
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");
     exerciseClipboard(tempRoot / "clipboard");
+    exerciseImageItemSession(tempRoot / "mixeditem");
     exerciseAutosaveSurfacing(tempRoot / "surfacing");
     exerciseBackgroundPersistence(tempRoot / "background");
     std::filesystem::remove_all(tempRoot);

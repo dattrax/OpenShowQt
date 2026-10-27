@@ -324,14 +324,14 @@ std::pair<double, double> meanRedGreen() {
 boost::json::object solidScene(const char* slideId, std::uint32_t color,
                                const char* word) {
     return boost::json::object{
-        {"scene", 1},
+        {"scene", 2},
         {"showId", "live-fade"},
         {"slideId", slideId},
         {"backgroundColor", color},
         {"background",
          boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
         {"items",
-         boost::json::array{boost::json::object{{"lines", boost::json::array{word}},
+         boost::json::array{boost::json::object{{"kind", "text"}, {"lines", boost::json::array{word}},
                                                 {"color", 0xFFFFFFu},
                                                 {"fontFamily", ""},
                                                 {"fontSize", 120.0},
@@ -399,7 +399,7 @@ bool writeSolidPng(const std::string& path, const char* rgbHex) {
 boost::json::object stillScene(const char* slideId, const std::string& path,
                                std::uint32_t fillColor) {
     return boost::json::object{
-        {"scene", 1},
+        {"scene", 2},
         {"showId", "live-fade"},
         {"slideId", slideId},
         {"backgroundColor", fillColor},
@@ -415,7 +415,7 @@ boost::json::object stillScene(const char* slideId, const std::string& path,
 // produced. Measured, not assumed.
 boost::json::object fillScene(std::uint32_t fillColor) {
     return boost::json::object{
-        {"scene", 1},
+        {"scene", 2},
         {"showId", "live-fade"},
         {"slideId", "PIC-FILL"},
         {"backgroundColor", fillColor},

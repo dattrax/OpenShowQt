@@ -176,20 +176,20 @@ void exerciseMultiBox(Fixture& fx) {
     std::string error;
     const Id show = fx.show;
     const Id slide = fx.docs.appendSlide(show);
-    openshow::domain::TextBox title;
+    openshow::domain::SlideItem title;
     title.lines = {"Title line"};
     title.x = 100.0;
     title.y = 40.0;
     title.width = 800.0;
     title.height = 120.0;
-    const Id titleId = fx.docs.addTextBox(show, slide, title, &error);
-    openshow::domain::TextBox credit;
+    const Id titleId = fx.docs.addItem(show, slide, title, &error);
+    openshow::domain::SlideItem credit;
     credit.lines = {"small", "credit"};
     credit.x = 1200.0;
     credit.y = 900.0;
     credit.width = 600.0;
     credit.height = 100.0;
-    const Id creditId = fx.docs.addTextBox(show, slide, credit, &error);
+    const Id creditId = fx.docs.addItem(show, slide, credit, &error);
     check(!titleId.empty() && !creditId.empty(), "the fixture's slide now has three boxes");
 
     scene::Scene out;
@@ -227,7 +227,7 @@ void exerciseMultiBox(Fixture& fx) {
 
     // A slide drained of boxes is a background, not a broken scene.
     const Id bare = fx.docs.appendSlide(show);
-    check(fx.docs.removeTextBox(show, bare, fx.docs.findShow(show)->slides.back().items[0].id,
+    check(fx.docs.removeItem(show, bare, fx.docs.findShow(show)->slides.back().items[0].id,
                                 &error),
           "the fixture's bare slide loses its only box");
     scene::Scene words;
@@ -241,7 +241,7 @@ void exerciseMultiBox(Fixture& fx) {
     // it exists so a slide can never compile into a scene its own codec would
     // refuse. The constants being equal is the load-bearing half, pinned in
     // exerciseBoxConstants(); this is the sentence about which half is real.
-    check(openshow::domain::kMaxTextBoxes == scene::kMaxSceneItems &&
+    check(openshow::domain::kMaxSlideItems == scene::kMaxSceneItems &&
               fx.docs.findShow(show)->slides[1].items.size() <= scene::kMaxSceneItems,
           "no slide the model can hold exceeds the scene wire's item budget");
 }
@@ -299,7 +299,10 @@ void exerciseWireRoundTrip(const Fixture& fx) {
         obj[key] = replacement;
         return boost::json::serialize(obj);
     };
-    refuses(mutate("scene", 2), "unsupported scene format", "a future scene format refuses");
+    // One past this build's scene 2 (task 6.17b moved the number with the
+    // item kinds; anchoring a "future" on the wrong side of that move is how
+    // a version check gets tested against a format someone else agreed to).
+    refuses(mutate("scene", 3), "unsupported scene format", "a future scene format refuses");
     refuses(boost::json::serialize(7), "top level must be an object",
             "a bare number refuses");
     refuses(mutate("backgroundColor", 0x1000000), "outside 0xRRGGBB",
@@ -557,7 +560,7 @@ void exerciseBudgets(const Fixture& fx) {
     check(readRefused(boost::json::value(sceneWithLines(
               shape, std::vector<std::vector<std::string>>(scene::kMaxSceneItems + 1,
                                                            linesOf(1, 4)))))
-              .find("text items is over the limit") != std::string::npos,
+              .find("items is over the limit") != std::string::npos,
           "one item past the budget refuses naming the limit");
 
     {  // Lines in one layer.
@@ -682,6 +685,195 @@ void exerciseBudgets(const Fixture& fx) {
     }
 }
 
+// Foreground image items on the scene wire (task 6.17b, review R17). Two
+// claims, and both are the silent-gap class the scene format exists to refuse:
+// the compiler resolves an item's asset to a path exactly as a background's
+// (so no raw image bytes ever cross RPC), and the wire's key set is CLOSED PER
+// KIND, so a payload cannot arrive carrying words attached to a picture, or a
+// path attached to a verse, that the reader has not validated.
+void exerciseImageWire(Fixture& fx) {
+    std::string error;
+    const Id slide = fx.docs.appendSlide(fx.show);
+    openshow::domain::SlideItem caption;
+    caption.lines = {"under the plate"};
+    caption.x = 100.0;
+    caption.y = 700.0;
+    caption.width = 900.0;
+    caption.height = 300.0;
+    openshow::domain::SlideItem picture;
+    picture.kind = openshow::domain::ItemKind::Image;
+    picture.assetId = fx.asset;
+    picture.x = 1000.0;
+    picture.y = 80.0;
+    picture.width = 800.0;
+    picture.height = 450.0;
+    const Id captionId = fx.docs.addItem(fx.show, slide, caption, &error);
+    const Id pictureId = fx.docs.addItem(fx.show, slide, picture, &error);
+    check(!captionId.empty() && !pictureId.empty(),
+          "a slide with words under a picture is authored");
+
+    scene::Scene out;
+    if (!check(scene::compileSlide(fx.docs, fx.show, slide, &out, &error) &&
+                   out.items.size() == 3,
+               "the mixed slide compiles to three items")) {
+        return;
+    }
+    const scene::SceneItem& image = out.items[2];
+    check(image.isImage && image.assetId == fx.asset &&
+              image.assetPath == fx.docs.findAsset(fx.asset)->sourcePath,
+          "the compiler resolves the item's asset to its path, exactly as a background's");
+    check(image.lines.empty() && image.x == 1000.0 && image.y == 80.0 &&
+              image.width == 800.0 && image.height == 450.0,
+          "the picture travels at its own box with no words of its own");
+    check(!out.items[0].isImage && !out.items[1].isImage && out.items[1].assetPath.empty() &&
+              out.items[1].assetId.empty(),
+          "the text items are text, and carry no asset reference to be guessed about");
+    check(out.items[1].color == out.items[0].color && image.color == scene::kWhite,
+          "a picture gets no typography baked in: its colour stays the default it never reads");
+
+    // --- the wire: per-kind keys, and a round trip that changes nothing ---
+    const boost::json::value written = scene::toJson(out);
+    check(written.at("scene").to_number<int>() == 2, "the payload says scene 2");
+    const boost::json::object& imageJson = written.at("items").as_array().at(2).as_object();
+    check(imageJson.at("kind").as_string() == "image" &&
+              imageJson.at("assetId").as_string() == fx.asset &&
+              imageJson.at("x").to_number<double>() == 1000.0,
+          "an image item's JSON names its kind, its asset and its path");
+    check(!imageJson.contains("lines") && !imageJson.contains("color") &&
+              !imageJson.contains("fontFamily") && !imageJson.contains("fontSize") &&
+              !imageJson.contains("align") && !imageJson.contains("lineSpacing"),
+          "and writes no typography the renderer would silently ignore");
+    const boost::json::object& captionJson = written.at("items").as_array().at(1).as_object();
+    check(captionJson.at("kind").as_string() == "text" && !captionJson.contains("assetId") &&
+              !captionJson.contains("assetPath"),
+          "a text item names its kind and no asset");
+    scene::Scene readBack;
+    check(scene::fromJson(written, &readBack, &error) && readBack == out,
+          "a mixed scene round-trips through the wire unchanged");
+
+    // --- what a hand-built payload cannot say ---
+    const auto withItems = [&](boost::json::array items) {
+        boost::json::object root = scene::toJson(out).as_object();
+        root["items"] = std::move(items);
+        return boost::json::value(root);
+    };
+    const boost::json::object goodImage{
+        {"kind", "image"},
+        {"assetId", "asset1"},
+        {"assetPath", "/services/svc/assets/plate.png"},
+        {"x", 10.0},
+        {"y", 20.0},
+        {"width", 300.0},
+        {"height", 200.0},
+    };
+    check(readRefused(withItems(boost::json::array{goodImage})).empty(),
+          "a hand-built image item with the background's pair reads");
+    {
+        boost::json::object stripped = goodImage;
+        stripped.erase("assetPath");
+        check(readRefused(withItems(boost::json::array{stripped})).find(
+                  "'assetPath' must be a string") != std::string::npos,
+              "an image item with no path to open is refused naming the key");
+        stripped = goodImage;
+        stripped["assetPath"] = "";
+        check(readRefused(withItems(boost::json::array{stripped})).find(
+                  "requires an 'assetPath'") != std::string::npos,
+              "and so is one whose path is empty: the box would draw nothing and say why nowhere");
+        stripped = goodImage;
+        stripped.erase("assetId");
+        check(readRefused(withItems(boost::json::array{stripped})).find(
+                  "'assetId' must be a string") != std::string::npos,
+              "an image item with no asset is refused naming the key");
+        stripped["assetId"] = "";
+        check(readRefused(withItems(boost::json::array{stripped})).find(
+                  "requires an 'assetId'") != std::string::npos,
+              "and so is one whose asset id is empty");
+    }
+    {
+        boost::json::object talking = goodImage;
+        talking["lines"] = boost::json::array{"words on a picture"};
+        check(readRefused(withItems(boost::json::array{talking})).find("has no field 'lines'") !=
+                  std::string::npos,
+              "words on an image item are refused as the unknown key they are");
+        boost::json::object walking =
+            scene::toJson(out).as_object().at("items").as_array().at(1).as_object();
+        walking["assetPath"] = "/services/svc/assets/plate.png";
+        check(readRefused(withItems(boost::json::array{walking})).find(
+                  "has no field 'assetPath'") != std::string::npos,
+              "and a path on a text item is refused the same way");
+    }
+    {
+        boost::json::object alien = goodImage;
+        alien["kind"] = "vector";
+        check(readRefused(withItems(boost::json::array{alien})).find("neither 'text' nor 'image'") !=
+                  std::string::npos,
+              "a kind this build cannot draw is refused naming it");
+        boost::json::object kindless = goodImage;
+        kindless.erase("kind");
+        check(readRefused(withItems(boost::json::array{kindless})).find("'kind' must be a string") !=
+                  std::string::npos,
+              "a scene-2 item with no kind is refused: defaulting it is the guess the "
+              "format number exists to prevent");
+    }
+    {  // The picture's path goes through the background's whole-reference gate.
+        boost::json::object smuggled = goodImage;
+        smuggled["assetPath"] = "data:image/png;base64,iVBORw0KGgo=";
+        check(readRefused(withItems(boost::json::array{smuggled})).find("local files only") !=
+                  std::string::npos,
+              "a data: URI as a foreground picture is refused as the payload it is");
+        smuggled["assetPath"] = "https://host/plate.png";
+        check(readRefused(withItems(boost::json::array{smuggled})).find("local files only") !=
+                  std::string::npos,
+              "and so is one the worker would have to fetch");
+        smuggled["assetPath"] = std::string("/tmp/plate") + '\0' + "x.png";
+        check(readRefused(withItems(boost::json::array{smuggled})).find("NUL") !=
+                  std::string::npos,
+              "and a NUL in the middle of it is refused as a NUL");
+        smuggled["assetPath"] = std::string(scene::kMaxPathChars + 1, 'p');
+        check(readRefused(withItems(boost::json::array{smuggled})).find("assetPath") !=
+                  std::string::npos,
+              "and the path budget applies to a foreground picture as it does to a background");
+    }
+    {  // Scene 1 is not scene 2 in either direction.
+        boost::json::object old = scene::toJson(out).as_object();
+        old["scene"] = 1;
+        check(readRefused(boost::json::value(old)).find("unsupported scene format") !=
+                  std::string::npos,
+              "a scene-1 payload is refused by a scene-2 worker rather than drawn with "
+              "whatever kinds an older build meant");
+    }
+
+    // The compiler's own video guard, reached the way an operator reaches it:
+    // task 6.12's adoption retargets an asset's id onto the file that now owns
+    // its bytes, and a re-import onto a video turns a placed picture into a
+    // claim the compositor cannot honour. The model refused it at add time;
+    // the compile refuses it now, naming the item.
+    {
+        Documents retargeted;
+        const Id house = retargeted.createShow("Rebind");
+        const Id plateSlide = retargeted.appendSlide(house);
+        const Id stillAsset = retargeted.addAsset("plate.jpg", "/media/plate.jpg");
+        openshow::domain::SlideItem placed;
+        placed.kind = openshow::domain::ItemKind::Image;
+        placed.assetId = stillAsset;
+        const Id placedId = retargeted.addItem(house, plateSlide, placed, &error);
+        scene::Scene before;
+        check(!placedId.empty() &&
+                  scene::compileSlide(retargeted, house, plateSlide, &before, &error) &&
+                  before.items.size() == 2 && before.items[1].isImage,
+              "a placed picture compiles while its asset is a still");
+        retargeted.adoptAssets({openshow::domain::AssetRebind{
+            stillAsset, "/media/plate.jpg", "/media/plate.mp4"}});
+        scene::Scene after;
+        error.clear();
+        check(!scene::compileSlide(retargeted, house, plateSlide, &after, &error) &&
+                  error.find(placedId) != std::string::npos &&
+                  error.find("video") != std::string::npos,
+              "the same item refused at compile once its asset's file became a video, "
+              "naming the item");
+    }
+}
+
 void exerciseAssetReferences(const Fixture& fx) {
     std::string error;
     scene::Scene shape;
@@ -791,7 +983,7 @@ void exerciseMeasuredSizes(const Fixture& fx) {
     worst.background.assetPath = "/worst/" + std::string(scene::kMaxPathChars - 7, 'p');
     worst.items.clear();
     for (std::size_t item = 0; item < scene::kMaxSceneItems; ++item) {
-        scene::TextItem text;
+        scene::SceneItem text;
         text.fontFamily = std::string(scene::kMaxFontFamilyChars, 'f');
         for (std::size_t line = 0; line < scene::kMaxItemLines; ++line) {
             // A layer's own text budget caps how many of its lines can be
@@ -847,7 +1039,7 @@ void exerciseBoxConstants() {
     // The domain's defaults and the scene library's constants are one promise
     // written twice (the domain cannot include scene.h): a fresh slide's box
     // must be exactly the scene's default text box...
-    const openshow::domain::TextBox fresh;
+    const openshow::domain::SlideItem fresh;
     check(fresh.x == scene::kDefaultBoxX && fresh.y == scene::kDefaultBoxY &&
               fresh.width == scene::kDefaultBoxWidth &&
               fresh.height == scene::kDefaultBoxHeight,
@@ -857,7 +1049,7 @@ void exerciseBoxConstants() {
     // neither can include the other's header: if these ever disagree, a model
     // can hold a slide its own wire format refuses, which is a failure an
     // operator meets while presenting rather than while editing.
-    check(openshow::domain::kMaxTextBoxes == scene::kMaxSceneItems,
+    check(openshow::domain::kMaxSlideItems == scene::kMaxSceneItems,
           "a slide's box cap IS the scene wire's item cap");
     // ...and that box is the canvas minus its margins, centred: the region
     // M2/M3 drew text in, so untouched slides keep drawing identically.
@@ -876,6 +1068,7 @@ int main() {
     exerciseWireRoundTrip(fx);
     exerciseBudgets(fx);
     exerciseAssetReferences(fx);
+    exerciseImageWire(fx);
     exerciseMeasuredSizes(fx);
     exerciseClearedScene();
     exerciseDemoFixture();

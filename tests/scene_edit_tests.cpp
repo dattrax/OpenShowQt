@@ -36,7 +36,7 @@ bool check(bool condition, const char* what) {
 }
 
 using openshow::scene::Scene;
-using openshow::scene::TextItem;
+using openshow::scene::SceneItem;
 using openshow::ui::SceneContent;
 
 // A scene with every interesting part present: a coloured background
@@ -51,8 +51,9 @@ QString fullSceneJson() {
     scene.background.assetId = "asset2";
     scene.background.assetPath = "/media/grape.jpg";
     scene.items = {
-        TextItem{{"First line", "second line"}, 0xFFFFFF, "serif", 64},
-        TextItem{{"Doxology"}, 0xFFDD44, "", 48},
+        SceneItem{.lines = {"First line", "second line"}, .color = 0xFFFFFF,
+                  .fontFamily = "serif", .fontSize = 64},
+        SceneItem{.lines = {"Doxology"}, .color = 0xFFDD44, .fontSize = 48},
     };
     return QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
 }

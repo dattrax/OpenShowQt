@@ -314,7 +314,7 @@ private:
     // currentBox property docs; nullptr with no slide or no boxes. Display
     // and every box-scoped op resolve through this one function, which is
     // what keeps the highlighted box and the edited box identical.
-    const openshow::domain::TextBox* selectedBox() const;
+    const openshow::domain::SlideItem* selectedBox() const;
     void setStatus(const QString& text);
     // Task 6.14a (review R14): report the outcome of an autosave tick. A
     // refusal means the crash net has a hole NOW and must not be discarded
@@ -356,7 +356,7 @@ private:
         // slides whose boxes shared an id would be two slides whose edits
         // name the same box on the wrong slide. Words, geometry and order are
         // what a clip carries; identity is not copyable.
-        std::vector<openshow::domain::TextBox> boxes;
+        std::vector<openshow::domain::SlideItem> boxes;
         std::string notes;
         std::string styleId;
         std::string backgroundAssetId;

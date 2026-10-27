@@ -13,7 +13,7 @@ namespace openshow::scene {
 
 namespace {
 
-constexpr int kSceneFormat = 1;
+constexpr int kSceneFormat = 2;
 
 void fail(std::string* error, const std::string& message) {
     if (error != nullptr) {
@@ -248,12 +248,14 @@ bool operator==(const Background& a, const Background& b) {
 }
 bool operator!=(const Background& a, const Background& b) { return !(a == b); }
 
-bool operator==(const TextItem& a, const TextItem& b) {
-    return a.lines == b.lines && a.color == b.color && a.fontFamily == b.fontFamily &&
-           a.fontSize == b.fontSize && a.x == b.x && a.y == b.y && a.width == b.width &&
-           a.height == b.height && a.align == b.align && a.lineSpacing == b.lineSpacing;
+bool operator==(const SceneItem& a, const SceneItem& b) {
+    return a.isImage == b.isImage && a.lines == b.lines && a.color == b.color &&
+           a.fontFamily == b.fontFamily && a.fontSize == b.fontSize && a.x == b.x &&
+           a.y == b.y && a.width == b.width && a.height == b.height &&
+           a.align == b.align && a.lineSpacing == b.lineSpacing &&
+           a.assetId == b.assetId && a.assetPath == b.assetPath;
 }
-bool operator!=(const TextItem& a, const TextItem& b) { return !(a == b); }
+bool operator!=(const SceneItem& a, const SceneItem& b) { return !(a == b); }
 
 bool operator==(const Scene& a, const Scene& b) {
     return a.showId == b.showId && a.slideId == b.slideId &&
@@ -266,31 +268,11 @@ Scene clearedScene() {
 }
 
 bool assetPathIsVideo(const std::string& path) {
-    // Extension-based, case-insensitive: the scene lib owns no filesystem
-    // access, so the kind travels with the name (see scene.h).
-    const size_t slash = path.find_last_of('/');
-    const std::string name =
-        slash == std::string::npos ? path : path.substr(slash + 1);
-    const size_t dot = name.find_last_of('.');
-    if (dot == std::string::npos || dot + 1 >= name.size()) {
-        return false;
-    }
-    std::string ext = name.substr(dot + 1);
-    for (char& c : ext) {
-        if (c >= 'A' && c <= 'Z') {
-            c = static_cast<char>(c - 'A' + 'a');
-        }
-    }
-    static constexpr const char* kVideoExtensions[] = {
-        "mp4", "mov", "m4v", "mkv", "webm", "avi",
-        "mpg", "mpeg", "wmv", "flv", "ogv", "ts",
-    };
-    for (const char* candidate : kVideoExtensions) {
-        if (ext == candidate) {
-            return true;
-        }
-    }
-    return false;
+    // One name rule for both uses (task 6.17b): the model refuses a video
+    // asset for a foreground image item with the SAME function this
+    // delegates to, so a kind cannot disagree between the two places a
+    // path's kind is asked. The scene lib still owns no filesystem access.
+    return domain::assetPathLooksLikeVideo(path);
 }
 
 bool assetPathIsLocal(const std::string& path, std::string* why) {
@@ -397,21 +379,47 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         // function emitted but its own codec refused would be a present-time
         // failure for a slide that composed fine.
         fail(error, "slide '" + slideId + "' holds " + std::to_string(slide->items.size()) +
-                        " text boxes and a scene carries at most " +
+                        " items and a scene carries at most " +
                         std::to_string(kMaxSceneItems));
         return false;
     }
-    for (const domain::TextBox& source : slide->items) {
-        TextItem item;
-        item.lines = source.lines;
-        item.color = textColor;
-        item.fontFamily = fontFamily;
-        item.fontSize = fontSize;
-        // The authored text box travels unchanged (task 4.3).
+    for (const domain::SlideItem& source : slide->items) {
+        SceneItem item;
+        // The authored box travels unchanged (task 4.3), either kind.
         item.x = source.x;
         item.y = source.y;
         item.width = source.width;
         item.height = source.height;
+        if (source.kind == domain::ItemKind::Image) {
+            // A foreground picture (task 6.17b): resolve asset -> path with
+            // the same discipline as the background below, so an item that
+            // names what the model cannot show fails the compile rather
+            // than painting a silent gap. The model already refuses an
+            // unknown or video-named asset at addItem; these guards are
+            // the same belt the unknown-BACKGROUND message wears — the
+            // libraries are compiled separately.
+            const domain::Asset* asset = documents.findAsset(source.assetId);
+            if (asset == nullptr) {
+                fail(error, "slide '" + slideId + "' image item '" + source.id +
+                                "' names unknown asset '" + source.assetId + "'");
+                return false;
+            }
+            if (domain::assetPathLooksLikeVideo(asset->sourcePath)) {
+                fail(error, "slide '" + slideId + "' image item '" + source.id +
+                                "' names the video asset '" + source.assetId +
+                                "'; foreground items composite stills");
+                return false;
+            }
+            item.isImage = true;
+            item.assetId = asset->id;
+            item.assetPath = asset->sourcePath;
+            scene.items.push_back(std::move(item));
+            continue;
+        }
+        item.lines = source.lines;
+        item.color = textColor;
+        item.fontFamily = fontFamily;
+        item.fontSize = fontSize;
         // Typography: the resolved style's alignment and line box (task 4.4),
         // falling back to the item defaults when the slide carries no style.
         // Boxes on one slide share its style — per-box typography is a later
@@ -466,8 +474,23 @@ boost::json::value toJson(const Scene& scene) {
     root.emplace("background", std::move(background));
 
     boost::json::array items;
-    for (const TextItem& item : scene.items) {
+    for (const SceneItem& item : scene.items) {
         boost::json::object jsonItem;
+        jsonItem.emplace("kind", item.isImage ? "image" : "text");
+        if (item.isImage) {
+            // An image item carries the background's pair and its box —
+            // and nothing else: the per-kind key set is as closed as the
+            // scene's own, so a text item's typography can never travel
+            // attached to a picture the renderer would ignore.
+            jsonItem.emplace("assetId", item.assetId);
+            jsonItem.emplace("assetPath", item.assetPath);
+            jsonItem.emplace("x", item.x);
+            jsonItem.emplace("y", item.y);
+            jsonItem.emplace("width", item.width);
+            jsonItem.emplace("height", item.height);
+            items.push_back(std::move(jsonItem));
+            continue;
+        }
         boost::json::array lines;
         for (const std::string& line : item.lines) {
             lines.emplace_back(line);
@@ -502,7 +525,7 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     const boost::json::value* format = field(root, "scene");
     if (format == nullptr || !format->is_int64() ||
         format->as_int64() != kSceneFormat) {
-        fail(error, "scene: unsupported scene format (this build reads scene 1)");
+        fail(error, "scene: unsupported scene format (this build reads scene 2)");
         return false;
     }
 
@@ -585,7 +608,7 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     }
     if (items->as_array().size() > kMaxSceneItems) {
         fail(error, "scene: " + std::to_string(items->as_array().size()) +
-                        " text items is over the limit of " +
+                        " items is over the limit of " +
                         std::to_string(kMaxSceneItems));
         return false;
     }
@@ -596,13 +619,69 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
             return false;
         }
         const boost::json::object& jsonItem = element.as_object();
+        // Scene 2 (task 6.17b): the kind comes first, because the CLOSED key
+        // set is per kind — a text item's typography on a picture, or a
+        // picture's path on a verse, is the same silent-gap class the scene
+        // format has refused since 6.8a.
+        const boost::json::value* kindValue = field(jsonItem, "kind");
+        if (kindValue == nullptr || !kindValue->is_string()) {
+            fail(error, "scene: an item's 'kind' must be a string");
+            return false;
+        }
+        const std::string kind(kindValue->as_string());
+        if (kind == "image") {
+            if (!noUnknownKeys(jsonItem, {"kind", "assetId", "assetPath", "x", "y", "width",
+                                          "height"},
+                               "an image item", error)) {
+                return false;
+            }
+            SceneItem item;
+            item.isImage = true;
+            if (!wantString(jsonItem, "assetId", &item.assetId, kMaxIdChars, error)) {
+                return false;
+            }
+            if (item.assetId.empty()) {
+                fail(error, "scene: an image item requires an 'assetId'");
+                return false;
+            }
+            // The same whole-reference gate the background's assetPath is
+            // put through: scheme, NUL and control bytes are refused on the
+            // RAW value, before the length budget names what is left.
+            const boost::json::value* rawPath = field(jsonItem, "assetPath");
+            if (rawPath != nullptr && rawPath->is_string()) {
+                std::string why;
+                if (!assetPathIsLocal(std::string(rawPath->as_string()), &why)) {
+                    fail(error, "scene: " + why);
+                    return false;
+                }
+            }
+            if (!wantString(jsonItem, "assetPath", &item.assetPath, kMaxPathChars, error)) {
+                return false;
+            }
+            if (item.assetPath.empty()) {
+                fail(error, "scene: an image item requires an 'assetPath'");
+                return false;
+            }
+            if (!wantBoxEdge(jsonItem, "x", &item.x, error) ||
+                !wantBoxEdge(jsonItem, "y", &item.y, error) ||
+                !wantBoxSize(jsonItem, "width", &item.width, error) ||
+                !wantBoxSize(jsonItem, "height", &item.height, error)) {
+                return false;
+            }
+            scene.items.push_back(std::move(item));
+            continue;
+        }
+        if (kind != "text") {
+            fail(error, "scene: item kind '" + kind + "' is neither 'text' nor 'image'");
+            return false;
+        }
         if (!noUnknownKeys(jsonItem,
-                           {"lines", "color", "fontFamily", "fontSize", "x", "y", "width",
-                            "height", "align", "lineSpacing"},
+                           {"kind", "lines", "color", "fontFamily", "fontSize", "x", "y",
+                            "width", "height", "align", "lineSpacing"},
                            "a text item", error)) {
             return false;
         }
-        TextItem item;
+        SceneItem item;
         const boost::json::value* lines = field(jsonItem, "lines");
         if (lines == nullptr || !lines->is_array()) {
             fail(error, "scene: an item's 'lines' must be an array");

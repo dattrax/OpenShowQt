@@ -49,11 +49,13 @@ inline constexpr double kRendererDefaultFontSize = 0.0;
 // Task 5.5's classification: whether a path's extension names a video
 // container (mp4, mov, m4v, mkv, webm, avi, mpg, mpeg, wmv, flv, ogv,
 // ts — case-insensitive). compileSlide uses it to mark the background's
-// kind without touching the filesystem; the UI may use it to label
-// assets. Everything else — images and the unknown — keeps image
-// semantics; a video extension whose file is not a video is a reported
-// decode failure, not a silent still. Animated gifs stay images (SkCodec
-// decodes their first frame, unchanged from 3.2).
+// kind without touching the filesystem; the model uses the same function
+// (domain::assetPathLooksLikeVideo, which this is) to refuse a video for
+// a FOREGROUND image item (task 6.17b), so one name list decides both.
+// Everything else — images and the unknown — keeps image semantics; a
+// video extension whose file is not a video is a reported decode failure,
+// not a silent still. Animated gifs stay images (SkCodec decodes their
+// first frame, unchanged from 3.2).
 bool assetPathIsVideo(const std::string& path);
 
 // True when `path` is a plain local filesystem reference the renderer can
@@ -80,7 +82,7 @@ bool assetPathIsLocal(const std::string& path, std::string* why = nullptr);
 // path at their limits) reaches 408 KiB inside a scene.prepare: 39% of the
 // frame budget, at depth 5 of kMaxParseDepth. Nothing an operator can author
 // is refused by the wire.
-inline constexpr std::size_t kMaxSceneItems = 8;    // text layers on one slide
+inline constexpr std::size_t kMaxSceneItems = 8;    // items on one slide, either kind
 inline constexpr std::size_t kMaxItemLines = 256;   // lines in one text layer
 inline constexpr std::size_t kMaxLineChars = 1024;  // characters in one line
 inline constexpr std::size_t kMaxItemTextChars = 16 * 1024;  // one layer's lines
@@ -122,13 +124,22 @@ struct Background {
     std::string assetPath;
 };
 
-// One block of slide text with its resolved appearance. lines keeps
-// blank strings (stanza breaks), exactly as authored. The x/y/width/height
-// box is in authored canvas units (task 4.3): the text wraps at width and
-// is centred — horizontally in the box, vertically in its height.
-// align places the lines inside the box (task 4.4), and lineSpacing is
-// the renderer's line-box multiplier.
-struct TextItem {
+// One item of a slide's draw stack, compiled for presentation (tasks
+// 4.3/6.17b). isImage says which half of the struct means something:
+//
+//  - a text item keeps its lines (blank strings included — stanza breaks),
+//    exactly as authored, plus the resolved appearance. The x/y/width/
+//    height box is in authored canvas units (task 4.3): the text wraps at
+//    width and is centred — horizontally in the box, vertically in its
+//    height. align places the lines inside the box (task 4.4), and
+//    lineSpacing is the renderer's line-box multiplier.
+//  - an image item names its asset (assetId) and carries the path
+//    compileSlide resolved (assetPath), drawn stretched into the same
+//    kind of box. Its text fields hold defaults and draw nothing —
+//    the wire's closed per-kind key set keeps a hand-built payload from
+//    filling them with something the renderer would ignore.
+struct SceneItem {
+    bool isImage = false;
     std::vector<std::string> lines;
     Color color = kWhite;
     std::string fontFamily;  // "" = platform default
@@ -139,22 +150,28 @@ struct TextItem {
     double height = kDefaultBoxHeight;
     std::string align = "center";  // "left" | "center" | "right"
     double lineSpacing = domain::kDefaultLineSpacing;
+    // Image items only (6.17b): what compileSlide resolved from the
+    // model's asset reference, same discipline as the background's pair.
+    domain::Id assetId;
+    std::string assetPath;
 };
 
 // One slide compiled for presentation. showId/slideId are provenance
 // for status lines and debug dumps; a cleared/black scene simply has
-// no items (PLAN.md: worker restart begins black).
+// no items (PLAN.md: worker restart begins black). items is the draw
+// stack: index 0 is painted first and a later item covers an earlier
+// one where they overlap.
 struct Scene {
     domain::Id showId;
     domain::Id slideId;
     Background background;
-    std::vector<TextItem> items;
+    std::vector<SceneItem> items;
 };
 
 bool operator==(const Background& a, const Background& b);
 bool operator!=(const Background& a, const Background& b);
-bool operator==(const TextItem& a, const TextItem& b);
-bool operator!=(const TextItem& a, const TextItem& b);
+bool operator==(const SceneItem& a, const SceneItem& b);
+bool operator!=(const SceneItem& a, const SceneItem& b);
 bool operator==(const Scene& a, const Scene& b);
 bool operator!=(const Scene& a, const Scene& b);
 
@@ -174,15 +191,20 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 
 // --- wire form ---------------------------------------------------------------
 
-// {"scene":1,"showId":...,"slideId":...,"backgroundColor":<int>,
+// {"scene":2,"showId":...,"slideId":...,"backgroundColor":<int>,
 //  "background":{"image":bool,"video":bool,"assetId":...,"assetPath":...},
-//  "items":[{"lines":[...],"color":<int>,"fontFamily":...,"fontSize":<num>,
-//            "x":<num>,"y":<num>,"width":<num>,"height":<num>,
-//            "align":"left"|"center"|"right","lineSpacing":<num>}]}
+//  "items":[{"kind":"text","lines":[...],"color":<int>,"fontFamily":...,
+//            "fontSize":<num>,"x":<num>,"y":<num>,"width":<num>,
+//            "height":<num>,"align":"left"|"center"|"right",
+//            "lineSpacing":<num>}
+//           ,{"kind":"image","assetId":...,"assetPath":...,
+//             "x":<num>,"y":<num>,"width":<num>,"height":<num>}]}
 // Colours are packed 0xRRGGBB integers. Serialisation order is fixed.
-// "video" (task 5.5) is optional on input and defaults to false — scene
-// 1 payloads written before the kind existed stay valid — but always
-// written out, and true requires image:true.
+// "video" (task 5.5) is always written out, and true requires image:true.
+// Scene 2 (task 6.17b) names every item's "kind" and gives image items
+// the background's asset pair; there is no scene-1 tolerance in either
+// direction — frontend and worker ship together, and a payload whose
+// items mean something the reader has not validated must not draw.
 boost::json::value toJson(const Scene& scene);
 
 // Strict reader for the above; see the header for the contract. Fails

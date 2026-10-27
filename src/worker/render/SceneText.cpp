@@ -55,7 +55,7 @@ namespace openshow::worker {
 
 namespace {
 
-// The fallback line box: a TextItem that carries no line spacing (a
+// The fallback line box: a SceneItem that carries no line spacing (a
 // hand-built item, or a NaN the wire would have refused) lays out at the
 // domain's default, so it looks exactly as scenes did before task 4.4.
 constexpr float kDefaultLineSpacing =
@@ -151,7 +151,7 @@ bool SceneTextEngine::create(std::string* error) {
 
 namespace {
 
-float effectiveSize(const openshow::scene::TextItem& item, float scale) {
+float effectiveSize(const openshow::scene::SceneItem& item, float scale) {
     const float base =
         item.fontSize > 0.0 ? static_cast<float>(item.fontSize) : kSceneDefaultFontSize;
     return base * scale;
@@ -159,7 +159,7 @@ float effectiveSize(const openshow::scene::TextItem& item, float scale) {
 
 }  // namespace
 
-SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::TextItem& item,
+SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::SceneItem& item,
                                                      float scale, float maxWidth) const {
     LaidOutItem out;
     out.fontSize = effectiveSize(item, scale);
@@ -179,7 +179,7 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Text
     skia::textlayout::ParagraphStyle paragraphStyle;
     // Where the lines sit inside the box (task 4.4); anything unknown
     // falls back to centred, the contract both the domain and the wire
-    // enforce, so this only guards a hand-built TextItem.
+    // enforce, so this only guards a hand-built SceneItem.
     skia::textlayout::TextAlign align = skia::textlayout::TextAlign::kCenter;
     if (item.align == "left") {
         align = skia::textlayout::TextAlign::kLeft;
@@ -249,6 +249,23 @@ SceneTextEngine::SceneLayout SceneTextEngine::layoutScene(
         const float boxY = static_cast<float>(item.y);
         const float boxWidth = std::max(static_cast<float>(item.width), 1.0f);
         const float boxHeight = std::max(static_cast<float>(item.height), 1.0f);
+
+        if (item.isImage) {
+            // A foreground picture (task 6.17b): no shaping and no fit
+            // loop — the authored box is where the picture is stretched,
+            // so layout contributes only the shared degenerate-box clamp.
+            // It stays IN this list at its stack position, which is what
+            // makes draw order survive layout untouched.
+            LaidOutItem laid;
+            laid.isImage = true;
+            laid.assetPath = item.assetPath;
+            laid.boxX = boxX;
+            laid.boxY = boxY;
+            laid.boxWidth = boxWidth;
+            laid.boxHeight = boxHeight;
+            out.items.push_back(std::move(laid));
+            continue;
+        }
 
         // Per-item shrinkToFit (FreeShow's textFit): wrapping changes with
         // the scale, so height is not linear in it — lay out, shrink,
@@ -379,15 +396,44 @@ private:
 }  // namespace
 
 void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
-                                 const SkPaint* paint) const {
+                                 const SkPaint* paint, SceneImageCache* images) const {
     // Centred: the paragraph aligns its lines inside boxWidth, and the block
     // sits at the box's vertical middle.
     const auto centerY = [](const LaidOutItem& item) {
         return item.boxY + std::max(0.0f, (item.boxHeight - item.height) * 0.5f);
     };
+    // A foreground picture (task 6.17b) draws beside the paragraphs, in the
+    // stack's array order, so the composition honours the order the operator
+    // authored: later items over earlier ones, either kind. LOOKUP ONLY —
+    // the cache rule since 6.10: a picture the session has not decoded is
+    // simply not drawn and the frame shows what is under it rather than
+    // paying for a disk read at frame rate. The fade's alpha rides the paint
+    // (no render-to-texture, same rule as the text above and the background
+    // below), so a crossfading stack dissolves its words and pictures as
+    // one. A null cache means "no pictures here": the dev paths that build
+    // layouts without a renderer still draw every text item exactly as
+    // before.
+    const auto drawImageItem = [&](const LaidOutItem& item, std::uint8_t alpha) {
+        if (images == nullptr) {
+            return;
+        }
+        const sk_sp<SkImage> image = images->imageFor(item.assetPath);
+        if (image == nullptr) {
+            return;
+        }
+        SkPaint imagePaint;
+        imagePaint.setAlpha(alpha);
+        canvas->drawImageRect(image, SkRect::MakeIWH(image->width(), image->height()),
+                              SkRect::MakeXYWH(item.boxX, item.boxY, item.boxWidth,
+                                               item.boxHeight),
+                              SkSamplingOptions(SkFilterMode::kLinear), &imagePaint,
+                              SkCanvas::kFast_SrcRectConstraint);
+    };
     if (paint == nullptr || paint->getAlpha() >= 255) {
         for (const auto& item : layout.items) {
-            if (item.paragraph && item.hasText) {
+            if (item.isImage) {
+                drawImageItem(item, 255);
+            } else if (item.paragraph && item.hasText) {
                 item.paragraph->paint(canvas, item.boxX, centerY(item));
             }
         }
@@ -395,7 +441,9 @@ void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
     }
     GroupAlphaPainter painter(canvas, paint->getAlpha());
     for (const auto& item : layout.items) {
-        if (item.paragraph && item.hasText) {
+        if (item.isImage) {
+            drawImageItem(item, paint->getAlpha());
+        } else if (item.paragraph && item.hasText) {
             item.paragraph->paint(&painter, item.boxX, centerY(item));
         }
     }
@@ -956,11 +1004,24 @@ bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string&
     // Task 6.10 (review R12): imageFor() never hits the disk, so this
     // snapshot entry point — the dev CLI's --snapshot and the render
     // fixtures — loads its backgrounds up front, outside the draw, exactly
-    // as the live session's prepare does for the frame loop.
+    // as the live session's prepare does for the frame loop. Task 6.17b
+    // added the stack's foreground pictures to the same up-front pass;
+    // loadFor on a path already in the cache is the cheap lookup it always
+    // was, so a picture shared by the fade's two sides decodes once.
+    const auto loadStack = [&images](const openshow::scene::Scene& one) {
+        for (const openshow::scene::SceneItem& item : one.items) {
+            if (item.isImage && !item.assetPath.empty()) {
+                images.loadFor(item.assetPath);
+            }
+        }
+    };
     for (const openshow::scene::Scene* one : {&scene, options.fadeFrom}) {
         if (one != nullptr && one->background.hasImage && !one->background.isVideo &&
             !one->background.assetPath.empty()) {
             images.loadFor(one->background.assetPath);
+        }
+        if (one != nullptr) {
+            loadStack(*one);
         }
     }
     if (options.background) {
@@ -980,14 +1041,14 @@ bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string&
             const SceneTextEngine::SceneLayout fromLayout = engine.layoutScene(*options.fadeFrom);
             SkPaint fade;
             fade.setAlpha(static_cast<uint8_t>((1.0f - options.textBlend) * 255.0f + 0.5f));
-            engine.drawLayout(canvas, fromLayout, &fade);
+            engine.drawLayout(canvas, fromLayout, &fade, &images);
         }
         const SceneTextEngine::SceneLayout layout = engine.layoutScene(scene);
         SkPaint fade;
         if (fading) {
             fade.setAlpha(static_cast<uint8_t>(options.textBlend * 255.0f + 0.5f));
         }
-        engine.drawLayout(canvas, layout, fading ? &fade : nullptr);
+        engine.drawLayout(canvas, layout, fading ? &fade : nullptr, &images);
     }
     return writePngRaster(surface.get(), path, error);
 }

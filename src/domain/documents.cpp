@@ -172,7 +172,7 @@ Id Documents::insertSlide(const Id& showId, size_t index, std::string* error) {
     // A created slide owns ONE box with the default geometry (task 6.17a):
     // the slide an operator gets is the lyric box they could type straight
     // into before multiple boxes existed, not a slide that refuses typing.
-    TextBox box;
+    SlideItem box;
     box.id = nextId("text");
     slide.items.push_back(std::move(box));
     const Id newId = slide.id;
@@ -237,7 +237,16 @@ bool Documents::setSlideLines(const Id& showId, const Id& slideId,
         // The single-text op has nothing to address. Creating a box here
         // would mean typing into a slide the operator had deliberately
         // emptied silently grew one back, so the refusal is the answer.
-        fail(error, "slide '" + slideId + "' has no text box to write into");
+        fail(error, "slide '" + slideId + "' has no item to write into");
+        return false;
+    }
+    if (slide.items.front().kind == ItemKind::Image) {
+        // Task 6.17b: the legacy view addresses item 0, and item 0 can now
+        // be a picture. Refusing beats the two lies — writing words INTO
+        // the image item, or inventing a text box underneath it — and
+        // matches setItemLines refusing words for an image item.
+        fail(error, "the slide's first item '" + slide.items.front().id +
+                        "' is an image; there is no text box to write into");
         return false;
     }
     slide.items.front().lines = lines;
@@ -274,15 +283,15 @@ bool Documents::setSlideGeometry(const Id& showId, const Id& slideId, double x, 
     }
     Slide& slide = show->slides[static_cast<size_t>(index)];
     if (slide.items.empty()) {
-        fail(error, "slide '" + slideId + "' has no text box to place");
+        fail(error, "slide '" + slideId + "' has no item to place");
         return false;
     }
     if (!placeableBox(x, y, width, height)) {
-        fail(error, "text box '" + slide.items.front().id +
+        fail(error, "item '" + slide.items.front().id +
                         "' needs a finite box with positive width and height");
         return false;
     }
-    TextBox& box = slide.items.front();
+    SlideItem& box = slide.items.front();
     box.x = x;
     box.y = y;
     box.width = width;
@@ -290,10 +299,10 @@ bool Documents::setSlideGeometry(const Id& showId, const Id& slideId, double x, 
     return true;
 }
 
-// --- text boxes (task 6.17a, review R17) ------------------------------------
+// --- slide items (tasks 6.17a/6.17b, review R17) ------------------------------------
 
-Id Documents::addTextBox(const Id& showId, const Id& slideId, const TextBox& box,
-                         std::string* error) {
+Id Documents::addItem(const Id& showId, const Id& slideId, const SlideItem& item,
+                      std::string* error) {
     Show* show = findShow_mut(showId);
     if (show == nullptr) {
         fail(error, idError("show", showId));
@@ -305,30 +314,61 @@ Id Documents::addTextBox(const Id& showId, const Id& slideId, const TextBox& box
         return {};
     }
     Slide& slide = show->slides[static_cast<size_t>(index)];
-    // The ceiling is the scene wire's own: a ninth box would compile into a
+    // The ceiling is the scene wire's own: a ninth item would compile into a
     // scene the worker refuses, so the operator would be told at present time
-    // that a slide they composed cannot be shown.
-    if (slide.items.size() >= kMaxTextBoxes) {
+    // that a slide they composed cannot be shown. The stack is ONE budget for
+    // both kinds (6.17b): pictures cover words where they overlap, and what
+    // bounds the composition is the message, not the kind.
+    if (slide.items.size() >= kMaxSlideItems) {
         fail(error, "slide '" + slideId + "' already holds the " +
-                        std::to_string(kMaxTextBoxes) +
-                        " text boxes a scene can carry");
+                        std::to_string(kMaxSlideItems) +
+                        " items a scene can carry");
         return {};
     }
-    if (!placeableBox(box.x, box.y, box.width, box.height)) {
-        fail(error, "a new text box needs finite coordinates with positive width and height");
+    if (!placeableBox(item.x, item.y, item.width, item.height)) {
+        fail(error, "a new slide item needs finite coordinates with positive width and height");
         return {};
     }
-    TextBox added = box;
+    // Kind discipline (task 6.17b): which content fields mean something is
+    // always the kind, so a half-filled item is refused at the door. An
+    // image item names an asset that EXISTS and whose name the media
+    // pipeline treats as a still — refusing here what the compiler would
+    // otherwise refuse at present time is the same rule that made the stack
+    // ceiling a model check.
+    if (item.kind == ItemKind::Image) {
+        if (item.assetId.empty()) {
+            fail(error, "an image item needs an asset to place");
+            return {};
+        }
+        if (!item.lines.empty()) {
+            fail(error, "an image item cannot carry words");
+            return {};
+        }
+        const Asset* asset = findAsset(item.assetId);
+        if (asset == nullptr) {
+            fail(error, "image item names unknown asset '" + item.assetId + "'");
+            return {};
+        }
+        if (assetPathLooksLikeVideo(asset->sourcePath)) {
+            fail(error, "asset '" + item.assetId +
+                            "' is a video, and foreground items composite stills");
+            return {};
+        }
+    } else if (!item.assetId.empty()) {
+        fail(error, "a text item cannot name an asset");
+        return {};
+    }
+    SlideItem added = item;
     // The caller's id is dropped, not adopted: pasting the same slide twice
-    // must produce two sets of boxes with two sets of identities, or the
-    // second paste's edits would move the first paste's box on another slide.
-    added.id = nextId("text");
+    // must produce two sets of items with two sets of identities, or the
+    // second paste's edits would move the first paste's item on another slide.
+    added.id = nextId(item.kind == ItemKind::Image ? "image" : "text");
     slide.items.push_back(std::move(added));
     return slide.items.back().id;
 }
 
-bool Documents::removeTextBox(const Id& showId, const Id& slideId, const Id& boxId,
-                              std::string* error) {
+bool Documents::removeItem(const Id& showId, const Id& slideId, const Id& itemId,
+                             std::string* error) {
     Show* show = findShow_mut(showId);
     if (show == nullptr) {
         fail(error, idError("show", showId));
@@ -340,17 +380,17 @@ bool Documents::removeTextBox(const Id& showId, const Id& slideId, const Id& box
         return false;
     }
     Slide& slide = show->slides[static_cast<size_t>(slideIndex)];
-    const int boxIndex = findBoxIndex(slide, boxId);
+    const int boxIndex = findItemIndex(slide, itemId);
     if (boxIndex < 0) {
-        fail(error, "slide '" + slideId + "' has no text box '" + boxId + "'");
+        fail(error, "slide '" + slideId + "' has no item '" + itemId + "'");
         return false;
     }
     slide.items.erase(slide.items.begin() + boxIndex);
     return true;
 }
 
-bool Documents::setTextBoxLines(const Id& showId, const Id& slideId, const Id& boxId,
-                                const std::vector<std::string>& lines, std::string* error) {
+bool Documents::setItemLines(const Id& showId, const Id& slideId, const Id& itemId,
+                               const std::vector<std::string>& lines, std::string* error) {
     Show* show = findShow_mut(showId);
     if (show == nullptr) {
         fail(error, idError("show", showId));
@@ -362,17 +402,25 @@ bool Documents::setTextBoxLines(const Id& showId, const Id& slideId, const Id& b
         return false;
     }
     Slide& slide = show->slides[static_cast<size_t>(slideIndex)];
-    const int boxIndex = findBoxIndex(slide, boxId);
+    const int boxIndex = findItemIndex(slide, itemId);
     if (boxIndex < 0) {
-        fail(error, "slide '" + slideId + "' has no text box '" + boxId + "'");
+        fail(error, "slide '" + slideId + "' has no item '" + itemId + "'");
         return false;
     }
-    slide.items[static_cast<size_t>(boxIndex)].lines = lines;
+    SlideItem& target = slide.items[static_cast<size_t>(boxIndex)];
+    if (target.kind == ItemKind::Image) {
+        // Task 6.17b: words belong to a text item. An editor wired to the
+        // wrong item — or a hand-built call — gets the refusal, not words
+        // the compiler would drop on the floor.
+        fail(error, "item '" + itemId + "' is an image; words belong to a text item");
+        return false;
+    }
+    target.lines = lines;
     return true;
 }
 
-bool Documents::setTextBoxGeometry(const Id& showId, const Id& slideId, const Id& boxId,
-                                   double x, double y, double width, double height,
+bool Documents::setItemGeometry(const Id& showId, const Id& slideId, const Id& itemId,
+                                 double x, double y, double width, double height,
                                    std::string* error) {
     Show* show = findShow_mut(showId);
     if (show == nullptr) {
@@ -385,16 +433,16 @@ bool Documents::setTextBoxGeometry(const Id& showId, const Id& slideId, const Id
         return false;
     }
     Slide& slide = show->slides[static_cast<size_t>(slideIndex)];
-    const int boxIndex = findBoxIndex(slide, boxId);
+    const int boxIndex = findItemIndex(slide, itemId);
     if (boxIndex < 0) {
-        fail(error, "slide '" + slideId + "' has no text box '" + boxId + "'");
+        fail(error, "slide '" + slideId + "' has no item '" + itemId + "'");
         return false;
     }
     if (!placeableBox(x, y, width, height)) {
-        fail(error, "text box '" + boxId + "' needs a finite box with positive width and height");
+        fail(error, "item '" + itemId + "' needs a finite box with positive width and height");
         return false;
     }
-    TextBox& box = slide.items[static_cast<size_t>(boxIndex)];
+    SlideItem& box = slide.items[static_cast<size_t>(boxIndex)];
     box.x = x;
     box.y = y;
     box.width = width;
@@ -402,8 +450,8 @@ bool Documents::setTextBoxGeometry(const Id& showId, const Id& slideId, const Id
     return true;
 }
 
-bool Documents::moveTextBox(const Id& showId, const Id& slideId, const Id& boxId, size_t toIndex,
-                            std::string* error) {
+bool Documents::moveItem(const Id& showId, const Id& slideId, const Id& itemId, size_t toIndex,
+                           std::string* error) {
     Show* show = findShow_mut(showId);
     if (show == nullptr) {
         fail(error, idError("show", showId));
@@ -415,18 +463,18 @@ bool Documents::moveTextBox(const Id& showId, const Id& slideId, const Id& boxId
         return false;
     }
     Slide& slide = show->slides[static_cast<size_t>(slideIndex)];
-    const int from = findBoxIndex(slide, boxId);
+    const int from = findItemIndex(slide, itemId);
     if (from < 0) {
-        fail(error, "slide '" + slideId + "' has no text box '" + boxId + "'");
+        fail(error, "slide '" + slideId + "' has no item '" + itemId + "'");
         return false;
     }
     if (toIndex >= slide.items.size()) {
-        fail(error, "text box index " + std::to_string(toIndex) + " is past the end (" +
-                        std::to_string(slide.items.size()) + " boxes on slide '" + slideId +
+        fail(error, "item index " + std::to_string(toIndex) + " is past the end (" +
+                        std::to_string(slide.items.size()) + " items on slide '" + slideId +
                         "')");
         return false;
     }
-    const TextBox moving = slide.items[static_cast<size_t>(from)];
+    const SlideItem moving = slide.items[static_cast<size_t>(from)];
     slide.items.erase(slide.items.begin() + from);
     slide.items.insert(slide.items.begin() + static_cast<long>(toIndex), moving);
     return true;
@@ -717,12 +765,23 @@ bool Documents::removeAsset(const Id& assetId, std::string* error) {
         return false;
     }
     fAssets.erase(found);
-    // Backgrounds naming the asset degrade to none, mirroring styles.
+    // Backgrounds naming the asset degrade to none, mirroring styles. A
+    // FOREGROUND item cannot degrade the same way: an image item without
+    // its picture is not a half-drawn item but a claim about the stack the
+    // worker could never honour, so the item leaves with the asset — and
+    // the undo step that restores the asset restores the item beside it.
     for (Show& show : fShows) {
         for (Slide& slide : show.slides) {
             if (slide.backgroundAssetId == assetId) {
                 slide.backgroundAssetId.clear();
             }
+            slide.items.erase(
+                std::remove_if(slide.items.begin(), slide.items.end(),
+                               [&](const SlideItem& item) {
+                                   return item.kind == ItemKind::Image &&
+                                          item.assetId == assetId;
+                               }),
+                slide.items.end());
         }
     }
     return true;
@@ -953,9 +1012,9 @@ int Documents::findSlideIndex(const Show& show, const Id& slideId) {
                                       : static_cast<int>(found - show.slides.begin());
 }
 
-int Documents::findBoxIndex(const Slide& slide, const Id& boxId) {
+int Documents::findItemIndex(const Slide& slide, const Id& itemId) {
     const auto found = std::find_if(slide.items.begin(), slide.items.end(),
-                                    [&](const TextBox& b) { return b.id == boxId; });
+                                    [&](const SlideItem& b) { return b.id == itemId; });
     return found == slide.items.end() ? -1
                                       : static_cast<int>(found - slide.items.begin());
 }

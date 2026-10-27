@@ -119,7 +119,7 @@ void fixtureCjkWrapping(worker::SceneTextEngine& engine, SkUnicode& unicode) {
     for (int i = 0; i < 30; ++i) {
         han += "\u8A69";
     }
-    scene::TextItem item;
+    scene::SceneItem item;
     item.lines = {han};
     item.fontSize = 96;
     item.width = 480;   // four glyphs wide at 96 px
@@ -192,7 +192,7 @@ void fixtureMixedBidi(worker::SceneTextEngine& engine, SkUnicode& unicode) {
     // The engine still lays this mixed string out with both scripts
     // covered by the FontCollection's fallback (Noto Sans Hebrew).
     if (hasScriptFont(0x05E9, "he")) {  // ש
-        scene::TextItem item;
+        scene::SceneItem item;
         item.lines = {text};
         item.fontSize = 48;
         item.width = 1600;

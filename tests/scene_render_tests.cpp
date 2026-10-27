@@ -256,7 +256,7 @@ scene::Scene singleItemScene(std::vector<std::string> lines, double fontSize,
     subject.showId = "show1";
     subject.slideId = "slide1";
     subject.background.color = 0x102030u;
-    scene::TextItem item;
+    scene::SceneItem item;
     item.lines = std::move(lines);
     item.fontSize = fontSize;
     item.fontFamily = family;
@@ -444,7 +444,7 @@ void testPerBoxPlacement() {
     subject.items[0].y = 100.0;
     subject.items[0].width = 1600.0;
     subject.items[0].height = 300.0;
-    scene::TextItem second;
+    scene::SceneItem second;
     second.lines = {"lower box words"};
     second.fontSize = 60.0;
     second.color = 0xFFE0A0u;
@@ -520,13 +520,13 @@ void testAuthoredBoxStackRenders() {
     const domain::Id show = docs.createShow("Stacked", &error);
     const domain::Id slide = docs.appendSlide(show, &error);
     docs.setSlideLines(show, slide, {"bottom of the stack"}, &error);
-    domain::TextBox title;
+    domain::SlideItem title;
     title.lines = {"A TITLE STRIP"};
     title.x = 160.0;
     title.y = 60.0;
     title.width = 1600.0;
     title.height = 180.0;
-    check(!docs.addTextBox(show, slide, title, &error).empty(),
+    check(!docs.addItem(show, slide, title, &error).empty(),
           "the document accepts a second box");
 
     scene::Scene compiled;
@@ -599,14 +599,14 @@ void testAuthoredBoxStackRenders() {
                   legacyCompiled.items.size() == 1,
               "a format-1 service loads and compiles to one item: " + error)) {
         // What the single-box compiler emitted for the same slide, transcribed
-        // literally: one item carrying the slide's lines at TextItem's own
+        // literally: one item carrying the slide's lines at SceneItem's own
         // defaults, because those defaults ARE the legacy lyric box (pinned in
         // scene_tests). If migration or compilation ever shifts a default by a
         // pixel, this equality is what breaks.
         scene::Scene oldShape;
         oldShape.showId = "show1";
         oldShape.slideId = "slide1";
-        scene::TextItem only;
+        scene::SceneItem only;
         only.lines = {"Ancient grace", "", "still centred"};
         oldShape.items.push_back(only);
         check(legacyCompiled == oldShape,
@@ -799,7 +799,7 @@ scene::Scene bandImageScene(const std::string& path, std::vector<std::string> li
     subject.background.assetId = "asset1";
     subject.background.assetPath = path;
     if (!lines.empty()) {
-        scene::TextItem item;
+        scene::SceneItem item;
         item.lines = std::move(lines);
         item.fontSize = 200.0;
         item.color = 0xFFFFFFu;
@@ -891,7 +891,7 @@ void testCrossfadeStages() {
     from.showId = "show1";
     from.slideId = "fade-a";
     from.background.color = 0xE03030u;
-    scene::TextItem words;
+    scene::SceneItem words;
     words.lines = {"ONE"};
     words.fontSize = 300.0;
     words.color = 0xFFFFFFu;
@@ -1027,6 +1027,255 @@ scene::Scene flatImageScene(const std::string& path, uint32_t fillColor) {
     subject.background.assetId = "asset1";
     subject.background.assetPath = path;
     return subject;
+}
+
+// Foreground image items through the production draw (task 6.17b, review
+// R17). The claim is about pixels in three parts: a picture is stretched into
+// the authored box it was given (nothing else decides its size), it draws in
+// the stack's ARRAY order so the operator's stacking survives, and a picture
+// that is not in the cache draws nothing — the composition shows what is
+// under it instead of stalling the frame or inventing a placeholder.
+void testForegroundImageItems() {
+    std::string error;
+    const std::string plate = "scene-render-fg-plate.png";    // flat magenta
+    const std::string band = "scene-render-fg-band.png";      // red | green | blue
+    const std::string dark = "scene-render-fg-dark.png";      // flat black
+    const SkColor magenta = SkColorSetRGB(220, 40, 200);
+    if (!check(writeFlatPng(plate, magenta, &error), "foreground plate written: " + error) ||
+        !check(writeFlatPng(dark, SkColorSetRGB(0, 0, 0), &error),
+               "foreground dark plate written: " + error) ||
+        !check(writeBandPng(band, 120, 80, true, &error), "foreground band written: " + error)) {
+        return;
+    }
+    const auto imageItem = [](const std::string& path, double x, double y, double width,
+                              double height) {
+        scene::SceneItem item;
+        item.isImage = true;
+        item.assetId = "asset-plate";
+        item.assetPath = path;
+        item.x = x;
+        item.y = y;
+        item.width = width;
+        item.height = height;
+        return item;
+    };
+    const auto textItem = [](const char* word, double x, double y, double width, double height) {
+        scene::SceneItem item;
+        item.lines = {word};
+        item.color = 0xFFFFFFu;
+        item.fontSize = 200.0;
+        item.x = x;
+        item.y = y;
+        item.width = width;
+        item.height = height;
+        return item;
+    };
+    const auto sceneWith = [](std::vector<scene::SceneItem> items, uint32_t fill) {
+        scene::Scene subject;
+        subject.showId = "show1";
+        subject.slideId = "fg1";
+        subject.background.color = fill;
+        subject.items = std::move(items);
+        return subject;
+    };
+    // Pixels inside a rectangle that are near-white: the words, and nothing
+    // else in these fixtures is.
+    const auto whiteIn = [](const Frame& frame, int left, int top, int right, int bottom) {
+        int count = 0;
+        for (int y = top; y <= bottom && y < frame.height; ++y) {
+            for (int x = left; x <= right && x < frame.width; ++x) {
+                const SkColor pixel = frame.at(x, y);
+                if (SkColorGetR(pixel) > 200 && SkColorGetG(pixel) > 200 &&
+                    SkColorGetB(pixel) > 200) {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    };
+
+    // --- 1. the authored box is where the picture goes ---
+    const uint32_t fill = 0x3030E0u;  // blue behind everything
+    const scene::Scene placed =
+        sceneWith({imageItem(plate, 400.0, 200.0, 480.0, 320.0)}, fill);
+    Frame frame;
+    if (!check(renderFixture(placed, "fg-placed", &frame, &error),
+               "a foreground picture rendered: " + error)) {
+        return;
+    }
+    // Authored (400,200)-(880,520) at the 0.5 output scale is device
+    // (200,100)-(440,260).
+    check(closeTo(frame.at(320, 180), magenta), "the picture fills the box it was authored in");
+    check(closeTo(frame.at(100, 50), SkColorSetRGB(0x30, 0x30, 0xE0)),
+          "and the scene's own fill is still the background");
+    check(closeTo(frame.at(460, 180), SkColorSetRGB(0x30, 0x30, 0xE0)),
+          "nothing spills past the box's right edge");
+    check(closeTo(frame.at(200, 280), SkColorSetRGB(0x30, 0x30, 0xE0)),
+          "nor below its bottom edge");
+    const Ink bounds = measureInk(frame);
+    check(bounds.left >= 199 && bounds.right <= 441 && bounds.top >= 99 &&
+              bounds.bottom <= 261,
+          "the ink of the frame is the box: a foreground picture is positioned and sized "
+          "by its authored rectangle and nothing else");
+
+    // --- 2. stretched, not centred at native size and not letterboxed ---
+    // The band image is 120x80. Drawn into the WHOLE canvas it must show all
+    // three thirds across the full 960 device pixels, uniform top to bottom:
+    // a native-size draw would leave 60 device pixels in the middle, and a
+    // contain-fit would bar the top and bottom.
+    const scene::Scene stretched =
+        sceneWith({imageItem(band, 0.0, 0.0, 1920.0, 1080.0)}, fill);
+    Frame full;
+    if (!check(renderFixture(stretched, "fg-stretch", &full, &error),
+               "a stretched foreground picture rendered: " + error)) {
+        return;
+    }
+    check(closeTo(full.at(60, 270), SkColorSetRGB(235, 40, 40)),
+          "stretch: the picture's left third reaches the canvas's left edge");
+    check(closeTo(full.at(480, 270), SkColorSetRGB(40, 200, 40)),
+          "stretch: its middle third lands at the canvas's centre");
+    check(closeTo(full.at(900, 270), SkColorSetRGB(40, 40, 235)),
+          "and its right third reaches the canvas's right edge");
+    check(closeTo(full.at(60, 4), SkColorSetRGB(235, 40, 40)) &&
+              closeTo(full.at(60, 535), SkColorSetRGB(235, 40, 40)),
+          "and the stretch is vertical too: no letterbox band above or below");
+
+    // --- 3. the stack's array order IS the draw order ---
+    const std::vector<double> box{400.0, 200.0, 1120.0, 680.0};  // authored, covers the words
+    scene::Scene imageOnTop =
+        sceneWith({textItem("COVER", box[0], box[1], box[2], box[3]),
+                   imageItem(plate, box[0], box[1], box[2], box[3])},
+                  fill);
+    Frame over;
+    if (!check(renderFixture(imageOnTop, "fg-over-text", &over, &error),
+               "a picture stacked over words rendered: " + error)) {
+        return;
+    }
+    // Device box: x 200..760, y 100..440.
+    check(closeTo(over.at(480, 270), magenta),
+          "the later item of the stack is the one the audience sees");
+    check(whiteIn(over, 202, 102, 758, 438) == 0,
+          "no glyph of the earlier item leaks through the picture that covers it");
+
+    scene::Scene textOnTop =
+        sceneWith({imageItem(plate, box[0], box[1], box[2], box[3]),
+                   textItem("COVER", box[0], box[1], box[2], box[3])},
+                  fill);
+    Frame under;
+    if (!check(renderFixture(textOnTop, "fg-under-text", &under, &error),
+               "words stacked over a picture rendered: " + error)) {
+        return;
+    }
+    check(whiteIn(under, 202, 102, 758, 438) > 500,
+          "the same words in the same box, moved AFTER the picture, draw on top of it");
+    check(!closeTo(under.at(480, 270), SkColorSetRGB(0x30, 0x30, 0xE0)),
+          "and the picture is still under them: the fill shows nowhere inside the box");
+
+    // --- 4. a picture that cannot be decoded draws NOTHING ---
+    // The lookup-only rule (6.10) applied to the foreground: the frame the
+    // operator gets is the composition without that item, which is visibly
+    // not the slide they composed, rather than a stall or a placeholder.
+    scene::Scene missing =
+        sceneWith({imageItem("scene-render-fg-no-such-file.png", box[0], box[1], box[2], box[3]),
+                   textItem("COVER", box[0], box[1], box[2], box[3])},
+                  fill);
+    Frame gone;
+    if (!check(renderFixture(missing, "fg-missing", &gone, &error),
+               "a foreground picture with a missing file rendered: " + error)) {
+        return;
+    }
+    check(whiteIn(gone, 202, 102, 758, 438) > 500,
+          "the words over the missing picture still draw");
+    // The composition WITHOUT that item: the same slide with its words over
+    // the fill and no picture between them. Equality against that frame is
+    // the claim — not equality with the slide whose picture drew.
+    const scene::Scene textOnly =
+        sceneWith({textItem("COVER", box[0], box[1], box[2], box[3])}, fill);
+    Frame alone;
+    if (!check(renderFixture(textOnly, "fg-text-only", &alone, &error),
+               "the same slide with no picture at all rendered: " + error)) {
+        return;
+    }
+    int worst = 0;
+    for (int y = 0; y < gone.height; y += 3) {
+        for (int x = 0; x < gone.width; x += 3) {
+            const SkColor a = gone.at(x, y);
+            const SkColor b = alone.at(x, y);
+            worst = std::max({worst,
+                              std::abs(static_cast<int>(SkColorGetR(a)) -
+                                       static_cast<int>(SkColorGetR(b))),
+                              std::abs(static_cast<int>(SkColorGetG(a)) -
+                                       static_cast<int>(SkColorGetG(b))),
+                              std::abs(static_cast<int>(SkColorGetB(a)) -
+                                       static_cast<int>(SkColorGetB(b)))});
+        }
+    }
+    std::printf("measured: missing foreground file vs the same slide with no item — worst %d/255\n",
+                worst);
+    check(worst <= 2,
+          "and the frame is the composition WITHOUT the item, to the pixel: a missing "
+          "foreground picture is an honest absence, not a black rectangle");
+}
+
+// A fading stack dissolves its pictures with its words: the alpha the fade
+// carries rides the image paint, with no render-to-texture (R13's rule for
+// the whole composition). Measured against a white fill, a black picture at
+// half strength is the mid grey the blend says, and the two ends are the
+// steady frames.
+void testForegroundImageFade() {
+    std::string error;
+    // Written here as well as in the item fixture: each test owns the files it
+    // reads, so running one without the other still measures something.
+    if (!check(writeFlatPng("scene-render-fg-dark.png", SkColorSetRGB(0, 0, 0), &error),
+               "the fade fixture's black plate is written: " + error)) {
+        return;
+    }
+    scene::Scene plain;
+    plain.showId = "show1";
+    plain.slideId = "fade-plain";
+    plain.background.color = 0xFFFFFFu;
+    scene::Scene withPicture;
+    withPicture.showId = "show1";
+    withPicture.slideId = "fade-picture";
+    withPicture.background.color = 0xFFFFFFu;
+    withPicture.items.push_back(
+        [&] {
+            scene::SceneItem item;
+            item.isImage = true;
+            item.assetId = "asset-dark";
+            item.assetPath = "scene-render-fg-dark.png";
+            item.x = 400.0;
+            item.y = 200.0;
+            item.width = 480.0;
+            item.height = 320.0;
+            return item;
+        }());
+
+    Frame mid;
+    worker::SnapshotOptions options;
+    options.fadeFrom = &plain;
+    options.mediaBlend = 1.0f;
+    options.textBlend = 0.5f;
+    if (!check(renderFixture(withPicture, "fg-fade-mid", options, &mid, &error),
+               "a foreground picture mid-fade rendered: " + error)) {
+        return;
+    }
+    options.textBlend = 1.0f;
+    Frame on;
+    check(renderFixture(withPicture, "fg-fade-on", options, &on, &error),
+          "and the same scene at the end of the fade");
+    const int grey = SkColorGetG(mid.at(320, 180));
+    std::printf("measured: foreground picture fade — half strength g%d, steady g%d, fill g%d\n",
+                grey, static_cast<int>(SkColorGetG(on.at(320, 180))),
+                static_cast<int>(SkColorGetG(mid.at(100, 50))));
+    check(grey > 100 && grey < 160,
+          "at half strength the picture is the grey its own alpha says, measured g" +
+              std::to_string(grey));
+    check(SkColorGetG(on.at(320, 180)) < 40,
+          "and at full strength it is the steady picture: the mid frame is a blend, "
+          "not a different drawing");
+    check(SkColorGetG(mid.at(100, 50)) > 200,
+          "the fill outside the box is unaffected by the fading item");
 }
 
 // The rule the acceptance names, stated without reference to how anything is
@@ -1506,7 +1755,7 @@ void testFadeCostMeasured() {
     }
     const scene::Scene outgoing = flatImageScene("scene-render-flat-red.png", 0x28C828u);
     scene::Scene incoming = flatImageScene("scene-render-flat-blue.png", 0x28C828u);
-    scene::TextItem stanza;
+    scene::SceneItem stanza;
     stanza.lines = {"Praise the king of glory,", "lift up your heads,",
                     "and the gates of understanding"};
     stanza.fontSize = 96.0;
@@ -1635,6 +1884,8 @@ int main() {
     testDemoSlidesRender();
     testImageBackgroundCover();
     testMissingBackgroundFile();
+    testForegroundImageItems();
+    testForegroundImageFade();
     testCrossfadeStages();
     testImageCrossfadeBlend();
     testTranslucentPictureBlend();

@@ -417,7 +417,7 @@ bool verifySceneTransition(std::string* error) {
         subject->slideId = "transition";
         subject->background.color = color;
         if (line != nullptr) {
-            openshow::scene::TextItem item;
+            openshow::scene::SceneItem item;
             item.lines = {line};
             item.fontSize = 300.0;
             item.color = 0xFFFFFFu;
@@ -583,7 +583,7 @@ bool verifyProductionCompositor(std::string* error) {
     subject->showId = "check";
     subject->slideId = "production";
     subject->background.color = 0xE03030u;  // scene colours are 0xRRGGBB
-    openshow::scene::TextItem item;
+    openshow::scene::SceneItem item;
     item.lines = {"PROD"};
     item.fontSize = 300.0;
     item.color = 0xFFFFFFu;

@@ -420,7 +420,7 @@ void testServedSession() {
         const boost::json::value& result = reply.at("result");
         check(result.as_object().at("protocol").as_object().at("major").is_number(),
               "hello negotiates a protocol version");
-        check(result.as_object().at("capabilities").as_array().size() == 12,
+        check(result.as_object().at("capabilities").as_array().size() == 13,
               "hello lists worker capabilities");
     }
 
@@ -687,13 +687,13 @@ void testPreviewStream() {
     // content, so present a solid-colour scene with words first; a cut
     // means the very next frame is already the scene.
     const boost::json::object redScene{
-        {"scene", 1},
+        {"scene", 2},
         {"showId", "ipc-preview"},
         {"slideId", "content"},
         {"backgroundColor", 0xFF0000u},
         {"background",
          boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
-        {"items", boost::json::array{boost::json::object{{"lines", boost::json::array{"IPC"}},
+        {"items", boost::json::array{boost::json::object{{"kind", "text"}, {"lines", boost::json::array{"IPC"}},
                                                          {"color", 0xFFFFFFu},
                                                          {"fontFamily", ""},
                                                          {"fontSize", 120.0},
@@ -945,14 +945,14 @@ void testSceneStore() {
     // A compiled scene as the frontend's scene::toJson would emit it.
     const auto compiledScene = [](const char* line) {
         return boost::json::object{
-            {"scene", 1},
+            {"scene", 2},
             {"showId", "show1"},
             {"slideId", "slide2"},
             {"backgroundColor", 0x202040},
             {"background",
              boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
             {"items",
-             boost::json::array{boost::json::object{{"lines", boost::json::array{line}},
+             boost::json::array{boost::json::object{{"kind", "text"}, {"lines", boost::json::array{line}},
                                                     {"color", 0xffffff},
                                                     {"fontFamily", "DejaVu Serif"},
                                                     {"fontSize", 64.0},
@@ -974,7 +974,7 @@ void testSceneStore() {
     }
     {
         boost::json::object broken = compiledScene("x");
-        broken["scene"] = 2;  // unsupported scene format
+        broken["scene"] = 3;  // one past this build's scene 2 (task 6.17b)
         check(call(fd, 3, "scene.prepare", broken, &reply) &&
                   isErrorCode(reply, proto::kInvalidParams),
               "a future scene format is refused by scene.prepare");

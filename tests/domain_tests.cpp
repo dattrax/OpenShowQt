@@ -44,7 +44,7 @@ using openshow::domain::Documents;
 using openshow::domain::Id;
 using openshow::domain::AssetRebind;
 using openshow::domain::kDefaultLineSpacing;
-using openshow::domain::kMaxTextBoxes;
+using openshow::domain::kMaxSlideItems;
 using Asset = openshow::domain::Asset;
 using Autosave = openshow::domain::Autosave;
 using History = openshow::domain::History;
@@ -52,7 +52,9 @@ using Playlist = openshow::domain::Playlist;
 using Show = openshow::domain::Show;
 using Slide = openshow::domain::Slide;
 using Style = openshow::domain::Style;
-using TextBox = openshow::domain::TextBox;
+using SlideItem = openshow::domain::SlideItem;
+using openshow::domain::assetPathLooksLikeVideo;
+using ItemKind = openshow::domain::ItemKind;
 
 void exerciseShows() {
     Documents docs;
@@ -175,83 +177,83 @@ void exerciseTextBoxes() {
     const Id slide = docs.appendSlide(show, &error);
     const Id first = docs.findShow(show)->slides[0].items[0].id;
 
-    TextBox second;
+    SlideItem second;
     second.id = "already-taken";  // a caller's id is dropped, never adopted
     second.lines = {"second box"};
     second.x = 100.0;
     second.y = 200.0;
     second.width = 300.0;
     second.height = 120.0;
-    const Id secondId = docs.addTextBox(show, slide, second, &error);
+    const Id secondId = docs.addItem(show, slide, second, &error);
     const Slide& stacked = docs.findShow(show)->slides[0];
     check(!secondId.empty() && secondId != "already-taken" && stacked.items.size() == 2 &&
               stacked.items[1].id == secondId,
-          "addTextBox puts a box on top of the stack under an id the store issued");
+          "addItem puts a box on top of the stack under an id the store issued");
     check(stacked.items[1].lines == std::vector<std::string>({"second box"}) &&
               stacked.items[1].x == 100.0 && stacked.items[1].height == 120.0,
           "a new box arrives with the words it was given and the place it was given");
     // The rule that lets one slide be pasted twice: the same shape added
     // again is a DIFFERENT identity, so the two copies can never be edited
     // into each other.
-    check(docs.addTextBox(show, slide, second, &error) != secondId,
+    check(docs.addItem(show, slide, second, &error) != secondId,
           "adding the same box shape twice yields two distinct ids");
-    check(docs.removeTextBox(show, slide, docs.findShow(show)->slides[0].items[2].id, &error),
+    check(docs.removeItem(show, slide, docs.findShow(show)->slides[0].items[2].id, &error),
           "clearing the third box back down to two");
 
-    check(docs.setTextBoxLines(show, slide, secondId, {"changed"}, &error) &&
+    check(docs.setItemLines(show, slide, secondId, {"changed"}, &error) &&
               docs.findShow(show)->slides[0].items[1].lines ==
                   std::vector<std::string>({"changed"}) &&
               docs.findShow(show)->slides[0].items[0].lines.empty(),
-          "setTextBoxLines edits one box and not its neighbour");
-    check(docs.setTextBoxGeometry(show, slide, secondId, 0.0, 0.0, 640.0, 200.0, &error) &&
+          "setItemLines edits one box and not its neighbour");
+    check(docs.setItemGeometry(show, slide, secondId, 0.0, 0.0, 640.0, 200.0, &error) &&
               docs.findShow(show)->slides[0].items[0].x == 160.0 &&
               docs.findShow(show)->slides[0].items[1].x == 0.0,
-          "setTextBoxGeometry moves one box and not its neighbour");
-    check(!docs.setTextBoxGeometry(show, slide, secondId, 0.0, 0.0, 0.0, 200.0, &error) &&
-              !docs.setTextBoxGeometry(show, slide, secondId, std::nan(""), 0.0, 640.0,
+          "setItemGeometry moves one box and not its neighbour");
+    check(!docs.setItemGeometry(show, slide, secondId, 0.0, 0.0, 0.0, 200.0, &error) &&
+              !docs.setItemGeometry(show, slide, secondId, std::nan(""), 0.0, 640.0,
                                        200.0,
                                        &error) &&
               docs.findShow(show)->slides[0].items[1].width == 640.0,
           "an unplaceable box is refused naming the box, and the box keeps its size");
-    TextBox collapsed;
+    SlideItem collapsed;
     collapsed.width = 0.0;
-    check(docs.addTextBox(show, slide, collapsed, &error).empty() &&
+    check(docs.addItem(show, slide, collapsed, &error).empty() &&
               error.find("positive width") != std::string::npos &&
               docs.findShow(show)->slides[0].items.size() == 2,
           "a new box with nothing in it is refused naming the rule, stack unchanged");
-    check(!docs.setTextBoxLines(show, slide, "text999", {"x"}, &error) &&
-              !docs.setTextBoxGeometry(show, slide, "text999", 0.0, 0.0, 10.0, 10.0, &error) &&
-              !docs.removeTextBox(show, slide, "text999", &error) &&
-              !docs.moveTextBox(show, slide, "text999", 0, &error) &&
+    check(!docs.setItemLines(show, slide, "text999", {"x"}, &error) &&
+              !docs.setItemGeometry(show, slide, "text999", 0.0, 0.0, 10.0, 10.0, &error) &&
+              !docs.removeItem(show, slide, "text999", &error) &&
+              !docs.moveItem(show, slide, "text999", 0, &error) &&
               error.find("text999") != std::string::npos,
           "every box operation refuses an unknown id naming that id");
-    check(!docs.setTextBoxLines(show, "slide999", secondId, {"x"}, &error),
+    check(!docs.setItemLines(show, "slide999", secondId, {"x"}, &error),
           "a box edit on an unknown slide is refused");
 
     // The stack order IS the draw order, and a move names a destination in
     // the final list — the same rule moveSlide follows, so the operator's
     // hands do not have to learn a second one.
-    check(docs.moveTextBox(show, slide, secondId, 0, &error) &&
+    check(docs.moveItem(show, slide, secondId, 0, &error) &&
               docs.findShow(show)->slides[0].items[0].id == secondId &&
               docs.findShow(show)->slides[0].items[1].id == first,
-          "moveTextBox sends a box to the bottom of the stack");
-    check(docs.moveTextBox(show, slide, secondId, 0, &error) &&
+          "moveItem sends a box to the bottom of the stack");
+    check(docs.moveItem(show, slide, secondId, 0, &error) &&
               docs.findShow(show)->slides[0].items[0].id == secondId,
           "moving a box onto its own slot succeeds and changes nothing");
-    check(!docs.moveTextBox(show, slide, secondId, 2, &error),
+    check(!docs.moveItem(show, slide, secondId, 2, &error),
           "a destination at the box count is out of range");
 
     // The ceiling is the scene wire's item limit: nine boxes would compile
     // into a scene the worker refuses, so the model refuses the ninth.
     bool filled = true;
-    while (filled && docs.findShow(show)->slides[0].items.size() < kMaxTextBoxes) {
-        filled = !docs.addTextBox(show, slide, TextBox{}, &error).empty();
+    while (filled && docs.findShow(show)->slides[0].items.size() < kMaxSlideItems) {
+        filled = !docs.addItem(show, slide, SlideItem{}, &error).empty();
     }
-    check(filled && docs.findShow(show)->slides[0].items.size() == kMaxTextBoxes,
+    check(filled && docs.findShow(show)->slides[0].items.size() == kMaxSlideItems,
           "a slide fills to the scene wire's box limit");
-    check(docs.addTextBox(show, slide, TextBox{}, &error).empty() &&
-              error.find(std::to_string(kMaxTextBoxes)) != std::string::npos &&
-              docs.findShow(show)->slides[0].items.size() == kMaxTextBoxes,
+    check(docs.addItem(show, slide, SlideItem{}, &error).empty() &&
+              error.find(std::to_string(kMaxSlideItems)) != std::string::npos &&
+              docs.findShow(show)->slides[0].items.size() == kMaxSlideItems,
           "the next box is refused naming the limit, and the slide keeps its count");
 
     // Draining to nothing is legal — a background with no words is a slide an
@@ -262,14 +264,14 @@ void exerciseTextBoxes() {
     while (!docs.findShow(show)->slides[0].items.empty()) {
         const Id doomed = docs.findShow(show)->slides[0].items.front().id;
         drained.push_back(doomed);
-        check(docs.removeTextBox(show, slide, doomed, &error), "draining one box");
+        check(docs.removeItem(show, slide, doomed, &error), "draining one box");
     }
     check(docs.findShow(show)->slides[0].items.empty() &&
               !docs.setSlideLines(show, slide, {"into nothing"}, &error) &&
               error.find(slide) != std::string::npos,
           "a slide with no boxes refuses typing naming the slide");
     check(docs.findShow(show)->slides[0].items.empty(), "the refusal did not create a box");
-    check(docs.addTextBox(show, slide, TextBox{}, &error) != drained.front(),
+    check(docs.addItem(show, slide, SlideItem{}, &error) != drained.front(),
           "a box added after the slide was emptied does not reuse the first id");
 
     // Addressing is BY ID, not by position (task 6.17a). Removing the MIDDLE
@@ -282,18 +284,209 @@ void exerciseTextBoxes() {
         const Id midShow = middle.createShow("Middle", &error);
         const Id midSlide = middle.appendSlide(midShow, &error);
         const Id low = middle.findShow(midShow)->slides[0].items[0].id;
-        TextBox shape;
+        SlideItem shape;
         shape.lines = {"b"};
-        const Id centre = middle.addTextBox(midShow, midSlide, shape, &error);
-        const Id high = middle.addTextBox(midShow, midSlide, shape, &error);
-        check(middle.removeTextBox(midShow, midSlide, centre, &error) &&
+        const Id centre = middle.addItem(midShow, midSlide, shape, &error);
+        const Id high = middle.addItem(midShow, midSlide, shape, &error);
+        check(middle.removeItem(midShow, midSlide, centre, &error) &&
                   middle.findShow(midShow)->slides[0].items.size() == 2 &&
                   middle.findShow(midShow)->slides[0].items[0].id == low &&
                   middle.findShow(midShow)->slides[0].items[1].id == high,
               "removing the middle box by id leaves the outer two, in order");
-        check(!middle.removeTextBox(midShow, midSlide, centre, &error) &&
+        check(!middle.removeItem(midShow, midSlide, centre, &error) &&
                   middle.findShow(midShow)->slides[0].items.size() == 2,
               "a box that is already gone cannot be removed again");
+    }
+}
+
+// Foreground image items (task 6.17b, review R17). What is being pinned here
+// is the DISCIPLINE, not the drawing: a stack entry is text or a picture, the
+// kind says which content fields mean anything, and an item the compiler could
+// never honour is refused by the model rather than at present time.
+void exerciseImageItems() {
+    Documents docs;
+    std::string error;
+    const Id show = docs.createShow("Mixed", &error);
+    const Id slide = docs.appendSlide(show, &error);
+    const Id still = docs.addAsset("plate.jpg", "/media/plate.jpg", &error);
+    const Id loop = docs.addAsset("loop.MP4", "/media/loop.MP4", &error);
+    check(!still.empty() && !loop.empty(), "a still and a video asset are recorded");
+    // The predicate the model refuses with is the one the scene lib classifies
+    // backgrounds with, and it is case-insensitive: an asset called UPPER.MP4
+    // is a video, and the check below is what stops that name list from
+    // drifting apart from the model's rule.
+    check(assetPathLooksLikeVideo("/media/loop.MP4") && !assetPathLooksLikeVideo("/media/a.png"),
+          "assetPathLooksLikeVideo reads a name's kind, case-insensitively");
+
+    SlideItem picture;
+    picture.kind = ItemKind::Image;
+    picture.assetId = still;
+    picture.id = "borrowed";  // dropped, like every caller's id
+    picture.x = 900.0;
+    picture.y = 60.0;
+    picture.width = 900.0;
+    picture.height = 500.0;
+    const Id pictureId = docs.addItem(show, slide, picture, &error);
+    const Slide& withPicture = docs.findShow(show)->slides[0];
+    check(!pictureId.empty() && pictureId != "borrowed" && withPicture.items.size() == 2 &&
+              withPicture.items[1].id == pictureId &&
+              withPicture.items[1].kind == ItemKind::Image &&
+              withPicture.items[1].assetId == still && withPicture.items[1].x == 900.0,
+          "addItem places a picture on top of the stack under an id the store issued");
+    check(withPicture.items[1].lines.empty(),
+          "an image item carries no words — the kind is what says so");
+    check(pictureId.find("image") == 0, "the id the store issues names the kind it belongs to");
+    // One id space across kinds: the counter is shared, so an image and a text
+    // item created one after the other can never wear the same identity.
+    SlideItem words;
+    words.lines = {"over the plate"};
+    const Id wordsId = docs.addItem(show, slide, words, &error);
+    check(!wordsId.empty() && wordsId != pictureId &&
+              docs.findShow(show)->slides[0].items[2].kind == ItemKind::Text,
+          "a text item added beside a picture gets its own id in the same space");
+
+    // --- kind discipline: a half-filled item is refused, naming the rule ---
+    SlideItem bare;
+    bare.kind = ItemKind::Image;
+    check(docs.addItem(show, slide, bare, &error).empty() &&
+              error.find("asset") != std::string::npos,
+          "an image item naming no asset is refused naming the asset rule");
+    bare.assetId = "asset-missing";
+    check(docs.addItem(show, slide, bare, &error).empty() &&
+              error.find("asset-missing") != std::string::npos,
+          "an image item naming an unknown asset is refused naming that id");
+    bare.assetId = loop;
+    check(docs.addItem(show, slide, bare, &error).empty() &&
+              error.find("video") != std::string::npos,
+          "an image item naming a VIDEO asset is refused: foreground items composite stills");
+    check(docs.findShow(show)->slides[0].items.size() == 3,
+          "and none of the three refusals grew the stack");
+    bare.assetId = still;
+    bare.lines = {"words on a picture"};
+    check(docs.addItem(show, slide, bare, &error).empty() &&
+              error.find("words") != std::string::npos,
+          "an image item carrying lines is refused naming the words rule");
+    SlideItem texty;
+    texty.assetId = still;
+    check(docs.addItem(show, slide, texty, &error).empty() &&
+              error.find("text item") != std::string::npos,
+          "a text item naming an asset is refused: an asset belongs to an image");
+
+    // Words belong to a text item. Naming a picture here is the mistake an
+    // editor wired to the wrong item makes, and the operator typed something
+    // that can never draw.
+    check(!docs.setItemLines(show, slide, pictureId, {"into a jpeg"}, &error) &&
+              error.find(pictureId) != std::string::npos &&
+              docs.findShow(show)->slides[0].items[1].lines.empty(),
+          "setItemLines refuses an image item naming that item, and the item stays empty");
+    check(docs.setItemGeometry(show, slide, pictureId, 10.0, 20.0, 300.0, 200.0, &error) &&
+              docs.findShow(show)->slides[0].items[1].x == 10.0 &&
+              docs.findShow(show)->slides[0].items[1].width == 300.0,
+          "setItemGeometry moves a picture exactly as it moves a text box");
+    check(!docs.setItemGeometry(show, slide, pictureId, 0.0, 0.0, 100.0, -1.0, &error) &&
+              docs.findShow(show)->slides[0].items[1].height == 200.0,
+          "an unplaceable picture box is refused and the picture keeps its size");
+    check(docs.moveItem(show, slide, pictureId, 0, &error) &&
+              docs.findShow(show)->slides[0].items[0].id == pictureId,
+          "moveItem sends a picture to the bottom of the draw stack");
+
+    // The legacy single-text view addresses item 0, and item 0 can now be a
+    // picture. Both lies are refused: writing words INTO the picture, and
+    // inventing a text box underneath it.
+    {
+        Documents front;
+        const Id frontShow = front.createShow("Front image", &error);
+        const Id frontSlide = front.appendSlide(frontShow, &error);
+        const Id plate = front.addAsset("plate.png", "/media/plate.png", &error);
+        SlideItem cover;
+        cover.kind = ItemKind::Image;
+        cover.assetId = plate;
+        const Id coverId = front.addItem(frontShow, frontSlide, cover, &error);
+        const Id defaultBox = front.findShow(frontShow)->slides[0].items[0].id;
+        check(!coverId.empty() && front.removeItem(frontShow, frontSlide, defaultBox, &error) &&
+                  front.findShow(frontShow)->slides[0].items.front().id == coverId,
+              "a slide whose only remaining item is a picture is a legal slide");
+        check(!front.setSlideLines(frontShow, frontSlide, {"nowhere to type"}, &error) &&
+                  error.find(coverId) != std::string::npos &&
+                  front.findShow(frontShow)->slides[0].items.front().lines.empty(),
+              "setSlideLines refuses a slide whose front item is an image, naming that item");
+        check(front.setSlideGeometry(frontShow, frontSlide, 40.0, 40.0, 800.0, 400.0, &error) &&
+                  front.findShow(frontShow)->slides[0].items.front().x == 40.0,
+              "setSlideGeometry still edits the front item's box: geometry belongs to both kinds");
+    }
+
+    // The stack is ONE budget for both kinds: pictures cover words where they
+    // overlap, and what bounds a composition is the scene message, not the
+    // kind of the thing being added.
+    bool filled = true;
+    while (filled &&
+           docs.findShow(show)->slides[0].items.size() < kMaxSlideItems) {
+        SlideItem next;
+        if (docs.findShow(show)->slides[0].items.size() % 2 == 0) {
+            next.kind = ItemKind::Image;
+            next.assetId = still;
+        }
+        filled = !docs.addItem(show, slide, next, &error).empty();
+    }
+    check(filled && docs.findShow(show)->slides[0].items.size() == kMaxSlideItems,
+          "a slide fills to the scene wire's item limit with kinds mixed");
+    SlideItem ninth;
+    ninth.kind = ItemKind::Image;
+    ninth.assetId = still;
+    check(docs.addItem(show, slide, ninth, &error).empty() &&
+              error.find(std::to_string(kMaxSlideItems)) != std::string::npos &&
+              docs.findShow(show)->slides[0].items.size() == kMaxSlideItems,
+          "a ninth item is refused naming the limit whether it is a picture or words");
+
+    // Deleting the asset takes its foreground items with it. A background
+    // degrades to none; a stack entry without its picture is not a half-drawn
+    // item but a claim about the composition the worker could never honour.
+    {
+        Documents owner;
+        History history(&owner);
+        const Id ownerShow = owner.createShow("Owner", &error);
+        const Id ownerSlide = owner.appendSlide(ownerShow, &error);
+        const Id firstAsset = owner.addAsset("one.jpg", "/media/one.jpg", &error);
+        const Id secondAsset = owner.addAsset("two.jpg", "/media/two.jpg", &error);
+        const Id keepText = owner.findShow(ownerShow)->slides[0].items[0].id;
+        SlideItem over;
+        over.kind = ItemKind::Image;
+        over.assetId = firstAsset;
+        const Id dropOne = owner.addItem(ownerShow, ownerSlide, over, &error);
+        over.assetId = secondAsset;
+        const Id keepTwo = owner.addItem(ownerShow, ownerSlide, over, &error);
+        check(!dropOne.empty() && !keepTwo.empty(), "two pictures on one slide are placed");
+        check(history.apply([&] { return owner.removeAsset(firstAsset); }),
+              "removing the asset runs through history");
+        check(owner.findShow(ownerShow)->slides[0].items.size() == 2,
+              "removing an asset drops exactly one stack entry");
+        const Slide& after = owner.findShow(ownerShow)->slides[0];
+        check(after.items[0].id == keepText && after.items[1].id == keepTwo,
+              "the words and the other picture survive, in order — a removal that "
+              "deleted whatever sat at the front would pass every other fixture here");
+        bool orphaned = false;
+        for (const Id& showId : owner.showIds()) {
+            for (const Slide& sl : owner.findShow(showId)->slides) {
+                for (const SlideItem& it : sl.items) {
+                    if (it.kind == ItemKind::Image && it.assetId == firstAsset) {
+                        orphaned = true;
+                    }
+                }
+            }
+        }
+        check(!orphaned && owner.findAsset(firstAsset) == nullptr,
+              "no stack entry anywhere still names the deleted asset: a picture whose "
+              "file is gone is not a half-drawn item");
+        // The undo restores the asset AND the item beside it — history holds
+        // whole states, and a slide the operator composed must not come back
+        // with a hole in the middle of its stack.
+        check(history.undo(&error) && owner.findAsset(firstAsset) != nullptr,
+              "undo brings the asset back");
+        const Slide& restored = owner.findShow(ownerShow)->slides[0];
+        check(restored.items.size() == 3 && restored.items[1].id == dropOne &&
+                  restored.items[1].kind == ItemKind::Image &&
+                  restored.items[1].assetId == firstAsset,
+              "and undo restores the picture with its own id in its own slot");
     }
 }
 
@@ -572,9 +765,10 @@ bool sameService(const Documents& a, const Documents& b) {
                 return false;
             }
             for (size_t box = 0; box < x.items.size(); ++box) {
-                const TextBox& bx = x.items[box];
-                const TextBox& by = y.items[box];
-                if (bx.id != by.id || bx.lines != by.lines || bx.x != by.x || bx.y != by.y ||
+                const SlideItem& bx = x.items[box];
+                const SlideItem& by = y.items[box];
+                if (bx.id != by.id || bx.kind != by.kind || bx.assetId != by.assetId ||
+                    bx.lines != by.lines || bx.x != by.x || bx.y != by.y ||
                     bx.width != by.width || bx.height != by.height) {
                     return false;
                 }
@@ -863,10 +1057,23 @@ void exercisePersistence(const fs::path& tempRoot) {
     }
     {
         const fs::path dir = tempRoot / "wrong-era";
-        check(tamperedPackage(package, dir,
-                              [](std::string& m) {
-                                  return replaceOnce(m, "\"format\":2", "\"format\":1");
-                              }),
+        // Same push-the-written-number discipline as the format tamper
+        // above: this build writes 3 (task 6.17b), and anchoring on a
+        // literal would stop matching the day the format moves again.
+        check(tamperedPackage(package, dir, [](std::string& m) {
+                  const std::string key = "\"format\":";
+                  const size_t at = m.find(key);
+                  if (at == std::string::npos) {
+                      return false;
+                  }
+                  const size_t from = at + key.size();
+                  size_t to = from;
+                  while (to < m.size() && std::isdigit(static_cast<unsigned char>(m[to])) != 0) {
+                      ++to;
+                  }
+                  m.replace(from, to - from, "1");
+                  return true;
+              }),
               "test tamper anchors exist (this build's format)");
         // A package claiming the OLDER era is the dangerous lie: a format-1
         // reader looks for each slide's own "lines", and these slides keep
@@ -960,20 +1167,20 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         const Id show = authored.createShow("Three boxes", &error);
         const Id slide = authored.appendSlide(show, &error);
         const Id firstId = authored.findShow(show)->slides[0].items[0].id;
-        TextBox middle;
+        SlideItem middle;
         middle.lines = {"middle"};
         middle.x = 200.0;
         middle.y = 300.0;
         middle.width = 400.0;
         middle.height = 90.0;
-        const Id middleId = authored.addTextBox(show, slide, middle, &error);
-        TextBox top;
+        const Id middleId = authored.addItem(show, slide, middle, &error);
+        SlideItem top;
         top.lines = {"top"};
         top.x = 20.0;
         top.y = 30.0;
         top.width = 500.0;
         top.height = 1000.0;
-        const Id topId = authored.addTextBox(show, slide, top, &error);
+        const Id topId = authored.addItem(show, slide, top, &error);
         check(!middleId.empty() && !topId.empty() && middleId != firstId && topId != middleId,
               "two more boxes are accepted under their own ids");
 
@@ -1006,7 +1213,7 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
 
         // Order is document state, so reordering must change the file: a
         // manifest that recorded boxes in id order would lose the composition.
-        check(back.moveTextBox(show, slide, topId, 0, &error), "the reloaded stack reorders");
+        check(back.moveItem(show, slide, topId, 0, &error), "the reloaded stack reorders");
         const fs::path reordered = tempRoot / "three-boxes-moved";
         Documents movedBack;
         check(openshow::domain::saveService(back, reordered, &error) &&
@@ -1057,7 +1264,7 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                   promotedBack.findShow("show1")->slides[0].items[0].lines ==
                       std::vector<std::string>({"Ancient", "line"}),
               "the id and the words survive the promotion unchanged");
-        check(promotedBack.setTextBoxGeometry("show1", "slide1", "slide1-text1", 5.0, 5.0, 640.0,
+        check(promotedBack.setItemGeometry("show1", "slide1", "slide1-text1", 5.0, 5.0, 640.0,
                                               200.0, &error) &&
                   promotedBack.findShow("show1")->slides[0].items[0].x == 5.0,
               "a migrated box is editable by the id the migration gave it");
@@ -1106,7 +1313,7 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                     "a bare string where a box should be is refused");
 
         std::string many = head + R"("items":[)";
-        for (int i = 0; i <= static_cast<int>(kMaxTextBoxes); ++i) {
+        for (int i = 0; i <= static_cast<int>(kMaxSlideItems); ++i) {
             if (i > 0) {
                 many += ",";
             }
@@ -1114,13 +1321,13 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                     R"(","lines":[],"x":1,"y":1,"width":10,"height":10})";
         }
         many += "]}" + tail;
-        refusesJson(many, std::to_string(kMaxTextBoxes),
+        refusesJson(many, std::to_string(kMaxSlideItems),
                     "more boxes than a scene can carry are refused naming the limit");
 
         // Exactly at the limit loads — the refusal above is about the ceiling,
         // not about the feature.
         std::string exact = head + R"("items":[)";
-        for (size_t i = 0; i < kMaxTextBoxes; ++i) {
+        for (size_t i = 0; i < kMaxSlideItems; ++i) {
             if (i > 0) {
                 exact += ",";
             }
@@ -1134,8 +1341,168 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         Documents atLimit;
         error.clear();
         check(openshow::domain::loadService(&atLimit, exactDir, &error) &&
-                  atLimit.findShow("show1")->slides[0].items.size() == kMaxTextBoxes,
+                  atLimit.findShow("show1")->slides[0].items.size() == kMaxSlideItems,
               "a slide at exactly the limit loads");
+    }
+
+    // --- format 3: kinds and asset references round-trip, and a file that
+    //     lies about either is refused naming the lie (task 6.17b) ---
+    {
+        Documents mixed;
+        const Id show = mixed.createShow("Stacked", &error);
+        const Id slide = mixed.appendSlide(show, &error);
+        const fs::path plateSource = tempRoot / "plate.png";
+        writeFile(plateSource, "PLATEBYTES");
+        const Id plate = mixed.addAsset("plate.png", plateSource.string(), &error);
+        check(!plate.empty(), "the mixed fixture has an asset to name");
+        check(mixed.setItemLines(show, slide,
+                                 mixed.findShow(show)->slides[0].items[0].id, {"under"}),
+              "the fixture's text box is written first");
+        SlideItem picture;
+        picture.kind = ItemKind::Image;
+        picture.assetId = plate;
+        picture.x = 1000.0;
+        picture.y = 80.0;
+        picture.width = 700.0;
+        picture.height = 400.0;
+        const Id pictureId = mixed.addItem(show, slide, picture, &error);
+        SlideItem caption;
+        caption.lines = {"over"};
+        const Id captionId = mixed.addItem(show, slide, caption, &error);
+
+        const fs::path stacked = tempRoot / "v3-stacked";
+        Documents back;
+        error.clear();
+        check(openshow::domain::saveService(mixed, stacked, &error) &&
+                  openshow::domain::loadService(&back, stacked, &error),
+              "a slide of text, picture, text saves and reloads");
+        const Slide& reloaded = back.findShow(show)->slides[0];
+        check(reloaded.items.size() == 3 && reloaded.items[0].id != pictureId &&
+                  reloaded.items[0].kind == ItemKind::Text &&
+                  reloaded.items[0].lines == std::vector<std::string>({"under"}),
+              "the bottom text item keeps its words and its place");
+        check(reloaded.items[1].id == pictureId &&
+                  reloaded.items[1].kind == ItemKind::Image &&
+                  reloaded.items[1].assetId == plate && reloaded.items[1].lines.empty() &&
+                  reloaded.items[1].x == 1000.0 && reloaded.items[1].height == 400.0,
+              "the picture comes back as a picture: its id, its asset, its box, and no words");
+        check(reloaded.items[2].id == captionId &&
+                  reloaded.items[2].kind == ItemKind::Text &&
+                  reloaded.items[2].lines == std::vector<std::string>({"over"}),
+              "and the top text item is where the operator left it");
+        check(sameService(mixed, back), "the whole mixed service compares field by field");
+        const std::string manifest = readFile(stacked / "service.json");
+        check(manifest.find("\"kind\":\"text\"") != std::string::npos,
+              "a TEXT item's kind is written too: leaving it to inference is how a "
+              "future default would redefine what an old item drew");
+        check(manifest.find("\"kind\":\"image\"") != std::string::npos &&
+                  manifest.find("\"assetId\":\"" + plate + "\"") != std::string::npos,
+              "the manifest names the item's kind and the asset it shows");
+        size_t linesKeys = 0;
+        for (size_t at = manifest.find("\"lines\":"); at != std::string::npos;
+             at = manifest.find("\"lines\":", at + 1)) {
+            ++linesKeys;
+        }
+        check(linesKeys == 2,
+              "exactly two lines lists in the manifest — one per text item: a picture's "
+              "words are not stored as an empty list the reader would have to forgive");
+        const fs::path restacked = tempRoot / "v3-restacked";
+        check(openshow::domain::saveService(back, restacked, &error) &&
+                  readFile(restacked / "service.json") == manifest,
+              "re-saving a mixed service writes a byte-identical manifest");
+
+        // And the mixed slide is editable after the reload, by the ids the
+        // file carried: the picture is still a picture the operator can move.
+        check(back.setItemGeometry(show, slide, pictureId, 10.0, 10.0, 100.0, 100.0) &&
+                  !back.setItemLines(show, slide, pictureId, {"nope"}, &error) &&
+                  error.find("image") != std::string::npos,
+              "a reloaded picture moves, and still refuses words");
+
+        // --- the lies a hand-edited format-3 file can tell ---
+        const std::string head3 = R"({"format":3,"nextOrdinal":99,"shows":[{"id":"show1",)"
+                                  R"("name":"Boxed","slides":[{"id":"slide1",)";
+        const std::string tail3 = R"(]}],"styles":[],"assets":[],"playlists":[]})";
+        const std::string goodText =
+            R"({"id":"text1","kind":"text","lines":["a"],"x":1,"y":1,"width":10,"height":10})";
+        const std::string goodImage =
+            R"({"id":"image2","kind":"image","assetId":"asset1","x":1,"y":1,"width":10,)"
+            R"("height":10})";
+        refusesJson(head3 + R"("items":[{"id":"image2","kind":"video","assetId":"asset1",)"
+                        R"("x":1,"y":1,"width":10,"height":10}]})" + tail3,
+                    "neither 'text' nor 'image'",
+                    "an item whose kind this build does not draw is refused naming it");
+        refusesJson(head3 +
+                        R"("items":[{"id":"text1","lines":["a"],"x":1,"y":1,"width":10,)"
+                        R"("height":10}]})" + tail3,
+                    "'kind' must be a string",
+                    "a format-3 item with no kind of its own is refused");
+        refusesJson(head3 + R"("items":[)" + goodText + "," + goodImage + "]}" + tail3,
+                    "names unknown asset",
+                    "an image item naming an asset the service does not hold is refused "
+                    "naming the slide, the item and the id");
+        refusesJson(head3 +
+                        R"("items":[{"id":"image2","kind":"image","assetId":"asset1",)"
+                        R"("lines":["a"],"x":1,"y":1,"width":10,"height":10}]})" + tail3,
+                    "words belong to a text item",
+                    "an image item carrying lines is refused, not read as a half-item");
+        refusesJson(head3 +
+                        R"("items":[{"id":"text1","kind":"text","assetId":"asset1",)"
+                        R"("lines":["a"],"x":1,"y":1,"width":10,"height":10}]})" + tail3,
+                    "only images do",
+                    "a text item naming an asset is refused");
+        refusesJson(head3 +
+                        R"("items":[{"id":"image2","kind":"image","assetId":"",)"
+                        R"("x":1,"y":1,"width":10,"height":10}]})" + tail3,
+                    "names no asset",
+                    "an image item with an empty asset reference is refused");
+
+        // A "kind" in a FORMAT-2 file: the key did not exist there, so a file
+        // carrying one was not written by this build, and reading it as a text
+        // item would guess at what a newer build meant by it.
+        const std::string head2 = R"({"format":2,"nextOrdinal":99,"shows":[{"id":"show1",)"
+                                  R"("name":"Boxed","slides":[{"id":"slide1",)";
+        refusesJson(head2 + R"("items":[)" + goodText + "]}" + tail3,
+                    "format-2 file",
+                    "a hand-bumped 'kind' in a format-2 file is refused rather than "
+                    "read as text");
+
+        // The honest format-3 hand-written file: the asset is in the package,
+        // the item names it, and the load takes both as written — including
+        // the item id, which is what lets an operator's selection survive.
+        {
+            const fs::path real = tempRoot / "v3-hand-written";
+            std::filesystem::create_directories(real / "assets");
+            const std::string packaged = "assets/" + plate + "-plate.png";
+            writeFile(real / packaged, "PLATEBYTES");
+            const std::string realImage =
+                R"({"id":"image2","kind":"image","assetId":")" + plate +
+                R"(","x":1,"y":1,"width":10,"height":10})";
+            writeFile(real / "service.json",
+                      std::string(R"({"format":3,"nextOrdinal":99,"shows":[{"id":"show1",)"
+                      R"("name":"Boxed","slides":[{"id":"slide1","items":[)") +
+                          goodText + "," + realImage +
+                          R"(]}]}],"styles":[],"assets":[{"id":")" + plate +
+                          R"(","name":"plate.png","file":")" + packaged +
+                          R"("}],"playlists":[]})");
+            Documents handWritten;
+            error.clear();
+            const bool handLoaded =
+                openshow::domain::loadService(&handWritten, real, &error);
+            if (!handLoaded) {
+                std::fprintf(stderr, "   hand-written load said: %s\n", error.c_str());
+            }
+            check(handLoaded &&
+                      handWritten.findShow("show1")->slides[0].items.size() == 2 &&
+                      handWritten.findShow("show1")->slides[0].items[1].id == "image2" &&
+                      handWritten.findShow("show1")->slides[0].items[1].kind ==
+                          ItemKind::Image &&
+                      handWritten.findShow("show1")->slides[0].items[1].assetId == plate,
+                  "a hand-written format-3 file with a real asset loads, item id included");
+            if (check(handWritten.findAsset(plate) != nullptr, "and its asset is there")) {
+                check(readFile(handWritten.findAsset(plate)->sourcePath) == "PLATEBYTES",
+                      "pointing at the packaged bytes like any other asset");
+            }
+        }
     }
 
     // --- a slide with no boxes at all is a slide, not a corrupt file ---
@@ -1143,7 +1510,7 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         Documents drained;
         const Id show = drained.createShow("Backdrop only", &error);
         const Id slide = drained.appendSlide(show, &error);
-        check(drained.removeTextBox(show, slide,
+        check(drained.removeItem(show, slide,
                                     drained.findShow(show)->slides[0].items[0].id, &error),
               "the only box on a slide can be removed");
         const fs::path package = tempRoot / "no-boxes";
@@ -1230,13 +1597,13 @@ void exerciseHistory() {
         boxHistory.apply([&] { boxSlide = stacked.appendSlide(boxShow);
                                return !boxSlide.empty(); });
         const Id bottom = stacked.findShow(boxShow)->slides[0].items[0].id;
-        TextBox shape;
+        SlideItem shape;
         shape.lines = {"added"};
         Id added;
-        check(boxHistory.apply([&] { added = stacked.addTextBox(boxShow, boxSlide, shape);
+        check(boxHistory.apply([&] { added = stacked.addItem(boxShow, boxSlide, shape);
                                       return !added.empty(); }),
               "adding a box runs through history");
-        check(boxHistory.apply([&] { return stacked.moveTextBox(boxShow, boxSlide, added, 0); }),
+        check(boxHistory.apply([&] { return stacked.moveItem(boxShow, boxSlide, added, 0); }),
               "reordering the stack runs through history");
         check(stacked.findShow(boxShow)->slides[0].items[0].id == added &&
                   stacked.findShow(boxShow)->slides[0].items[1].id == bottom,
@@ -1251,7 +1618,7 @@ void exerciseHistory() {
                   stacked.findShow(boxShow)->slides[0].items.size() == 1,
               "undoing the add leaves the slide its one original box");
         Id next;
-        check(boxHistory.apply([&] { next = stacked.addTextBox(boxShow, boxSlide, shape);
+        check(boxHistory.apply([&] { next = stacked.addItem(boxShow, boxSlide, shape);
                                       return !next.empty(); }),
               "a new box added after the undo is accepted");
         check(next != added && next != bottom,
@@ -1901,6 +2268,7 @@ int main() {
     exerciseSlides();
     exerciseGeometry();
     exerciseTextBoxes();
+    exerciseImageItems();
     exerciseGroups();
     exerciseStyles();
     exercisePlaylists();

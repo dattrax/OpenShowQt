@@ -66,8 +66,18 @@ namespace openshow::protocol {
 // method replies "method not found" and a client too old for target 2
 // would read a thumbnail as the audience's picture. It does not: a worker
 // draws a thumbnail only for a frontend that asked.
+// Minor 10 (task 6.17b, review R17) moves the scene payload to format 2:
+// every item names its "kind" and image items carry the background's asset
+// pair, named by "scene.image-items.v1". This one is NOT additive — scene
+// 1 payloads are refused by a scene 2 worker and the reverse, loudly, by
+// the format number each side already checks — because an item whose kind
+// the reader has not validated is exactly the silent gap the scene format
+// refuses: a picture drawn as an empty text box, or words dropped from a
+// stack. The frontend launches the worker it ships with, so the pair
+// always matches in practice; the capability is what a tool inspecting a
+// live worker reads to learn which scene format that worker draws.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 9;
+inline constexpr std::uint32_t kProtocolMinor = 10;
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without

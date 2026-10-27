@@ -391,8 +391,32 @@ bool OutputSession::prepareScene(const openshow::scene::Scene& scene,
 }
 
 void OutputSession::preloadScene(const openshow::scene::Scene& scene) {
+    if (fScene == nullptr) {
+        return;
+    }
+    // Foreground pictures (task 6.17b): the same discipline as the
+    // background's still — decoded NOW, on this RPC thread, through the
+    // REFRESHING entry point so a file that was missing and has been put
+    // back comes back at the next prepare — and every failure NAMED on
+    // stderr while the old scene is still on air. The MEDIA LANE
+    // deliberately stays background-only: status.media names what the
+    // audience's transport is showing, and a stack picture's decode error
+    // would evict that truth with a file nobody is playing. A missing
+    // foreground picture is honest on screen — its box shows what is
+    // under it, which is visibly not the slide the operator composed —
+    // and per-item fault reporting is the R19 media lane's to grow.
+    for (const openshow::scene::SceneItem& item : scene.items) {
+        if (!item.isImage || item.assetPath.empty()) {
+            continue;
+        }
+        std::string error;
+        if (fScene->imageCache()->refreshFor(item.assetPath, &error) == nullptr) {
+            std::fprintf(stderr, "openshow-worker: foreground image %s: %s\n",
+                         item.assetPath.c_str(), error.c_str());
+        }
+    }
     const openshow::scene::Background& background = scene.background;
-    if (!background.hasImage || fScene == nullptr) {
+    if (!background.hasImage) {
         return;
     }
     if (!background.isVideo) {
@@ -749,14 +773,33 @@ bool OutputSession::requestThumbnails(const std::vector<ThumbnailEntry>& batch,
         // cannot be presented by anything, which is the point — a slide list
         // is a picture of a slide, not show content.
         job.content = std::make_shared<const openshow::scene::Scene>(entry.scene);
-        // What the command thread has to decode before this one can be drawn:
-        // a still background and nothing else. A video belongs to a transport
-        // this scene will never have, so its thumbnail gets the colour fill
-        // the audience itself would draw with no frame to show — the same
-        // honesty rule as an off-air edit (6.16a), not a borrowed frame.
-        if (entry.scene.background.hasImage && !entry.scene.background.isVideo &&
-            !entry.scene.background.assetPath.empty()) {
-            job.imagePath = entry.scene.background.assetPath;
+        // What the command thread has to decode before this one can be
+        // drawn: a still background (6.16b) and the stack's foreground
+        // stills (6.17b), in draw order and deduplicated. A video belongs
+        // to a transport this scene will never have, so its thumbnail gets
+        // the colour fill the audience itself would draw with no frame to
+        // show — the same honesty rule as an off-air edit (6.16a), not a
+        // borrowed frame. The model never lets a foreground item name a
+        // video; a hand-built wire that says otherwise resolves to a failed
+        // decode, settled like any other.
+        {
+            std::vector<std::string> unique;
+            const auto want = [&](const std::string& path) {
+                if (!path.empty() &&
+                    std::find(unique.begin(), unique.end(), path) == unique.end()) {
+                    unique.push_back(path);
+                }
+            };
+            if (entry.scene.background.hasImage && !entry.scene.background.isVideo) {
+                want(entry.scene.background.assetPath);
+            }
+            for (const openshow::scene::SceneItem& item : entry.scene.items) {
+                if (item.isImage) {
+                    want(item.assetPath);
+                }
+            }
+            job.imagePaths = std::move(unique);
+            job.pathSettled.assign(job.imagePaths.size(), false);
         }
         if (ack != nullptr) {
             ack->accepted.emplace_back(job.key, job.id);
@@ -841,29 +884,56 @@ bool OutputSession::pumpThumbnailDecode() {
             return false;
         }
         SceneImageCache* cache = fThumbnailScene->imageCache();
+        // A job is complete when every path it names has been settled; the
+        // lookahead counts finished JOBS, as the memory bound was set in
+        // 6.16b — a slide with two pictures spends two decodes inside one
+        // lookahead slot, still a bounded, reported number.
+        const auto allSettled = [](const ThumbnailJob& job) {
+            for (bool ready : job.pathSettled) {
+                if (!ready) {
+                    return false;
+                }
+            }
+            return true;
+        };
         std::size_t decodedAhead = 0;
         for (ThumbnailJob& job : fThumbnailQueue) {
             if (job.decoded) {
                 ++decodedAhead;
                 continue;
             }
-            if (job.imagePath.empty() || cache->has(job.imagePath)) {
+            for (std::size_t i = 0; i < job.imagePaths.size(); ++i) {
+                if (job.pathSettled[i]) {
+                    continue;
+                }
+                if (cache->has(job.imagePaths[i])) {
+                    // Answered for free: a picture an earlier band already
+                    // installed, or one the run ahead of this very pass
+                    // decoded for a job behind it.
+                    job.pathSettled[i] = true;
+                    settled = true;
+                    continue;
+                }
+                // The first path that needs a file. Run ahead of the draw
+                // head by the lookahead and no further: the decoded
+                // pictures between here and the frame that consumes them
+                // are the memory this feature costs, and the bound is what
+                // lets a list scroll without the budget having to win a
+                // race against eviction.
+                if (decodedAhead >= kThumbnailDecodeLookahead) {
+                    break;
+                }
+                path = job.imagePaths[i];
+                width = fThumbnailWidth;
+                height = fThumbnailHeight;
+                break;  // exactly one decode per pump call
+            }
+            if (!path.empty()) {
+                break;  // the decode happens outside the lock
+            }
+            if (allSettled(job)) {
                 job.decoded = true;
-                settled = true;
-                continue;
             }
-            // The first job that needs a file. Run ahead of the draw head by
-            // the lookahead and no further: the decoded pictures between here
-            // and the frame that consumes them are the memory this feature
-            // costs, and the bound is what lets a list scroll without the
-            // budget having to win a race against eviction.
-            if (decodedAhead >= kThumbnailDecodeLookahead) {
-                break;
-            }
-            path = job.imagePath;
-            width = fThumbnailWidth;
-            height = fThumbnailHeight;
-            break;
         }
         syncThumbnailCountersLocked();
     }
@@ -888,14 +958,27 @@ bool OutputSession::pumpThumbnailDecode() {
             fThumbnailScene->imageCache()->install(path, image);
         }
         // Settle by path, not by position: the batch may have been replaced
-        // while the codec ran, and a new band that wants the same backdrop
-        // finds the picture already installed (the next pump settles it for
-        // free), while one that no longer names it has lost nothing.
+        // while the codec ran, and a new band that wants the same picture
+        // finds it already installed (the next pump settles it for free),
+        // while one that no longer names it has lost nothing. A job only
+        // becomes drawn-ready when its LAST path settled — a slide with a
+        // background and a foreground picture shows both or is not owed a
+        // frame yet (task 6.17b).
         for (ThumbnailJob& job : fThumbnailQueue) {
-            if (!job.decoded && job.imagePath == path) {
-                job.decoded = true;
-                break;
+            if (job.decoded) {
+                continue;
             }
+            bool complete = true;
+            for (std::size_t i = 0; i < job.imagePaths.size(); ++i) {
+                if (!job.pathSettled[i]) {
+                    if (job.imagePaths[i] == path) {
+                        job.pathSettled[i] = true;
+                    } else {
+                        complete = false;
+                    }
+                }
+            }
+            job.decoded = complete;
         }
         syncThumbnailCountersLocked();
     }
@@ -1821,6 +1904,15 @@ void OutputSession::syncScenePins() {
         const openshow::scene::Background& background = scene.background;
         if (background.hasImage && !background.isVideo && !background.assetPath.empty()) {
             held.push_back(background.assetPath);
+        }
+        // A foreground picture (task 6.17b) can be put on air exactly as
+        // its background can — it rides the same scene — so the union
+        // takes the same reference rule: one pin per distinct path,
+        // shared pictures counted once.
+        for (const openshow::scene::SceneItem& item : scene.items) {
+            if (item.isImage && !item.assetPath.empty()) {
+                held.push_back(item.assetPath);
+            }
         }
     };
     for (const auto& entry : fScenes) {

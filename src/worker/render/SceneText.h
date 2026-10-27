@@ -18,7 +18,7 @@
  *
  * Coordinates are authored 1920x1080 units: callers apply the output rule
  * (scale = width / 1920, centred) before drawing, exactly like every other
- * layer. Sizes in a TextItem are authored units too — 0 means the engine's
+ * layer. Sizes in a SceneItem are authored units too — 0 means the engine's
  * default lyric size.
  */
 
@@ -58,12 +58,14 @@ inline constexpr float kSceneCanvasHeight = 1080.0f;
 inline constexpr float kSceneMarginX = 160.0f;
 inline constexpr float kSceneMarginY = 100.0f;
 
-// The size a TextItem with fontSize 0 (the model's "renderer default")
+// The size a SceneItem with fontSize 0 (the model's "renderer default")
 // gets — a lyric body size on the authored canvas.
 inline constexpr float kSceneDefaultFontSize = 96.0f;
 
 // Shrink-to-fit never goes below this authored size.
 inline constexpr float kSceneMinFontSize = 12.0f;
+
+class SceneImageCache;  // below; drawLayout looks images up through it
 
 class SceneTextEngine {
 public:
@@ -89,8 +91,14 @@ public:
     const sk_sp<SkUnicode>& unicode() const { return fUnicode; }
 
     // One item laid out: wrapped at its authored box width, centred,
-    // explicit line height. The box fields are the item's authored text
-    // box (task 4.3) — the region drawLayout centres the paragraph in.
+    // explicit line height. The box fields are the item's authored box
+    // (task 4.3) — the region drawLayout centres the paragraph in.
+    //
+    // Task 6.17b makes the laid-out stack heterogeneous: an image entry
+    // has no paragraph and no text; its box is where the picture is
+    // stretched and assetPath names what to look up in the image cache.
+    // drawLayout draws the entries in this order, so the stack's draw
+    // order survives layout untouched.
     struct LaidOutItem {
         std::unique_ptr<skia::textlayout::Paragraph> paragraph;
         float fontSize = 0.0f;   // authored px actually used (after fit scale)
@@ -101,10 +109,12 @@ public:
         float boxY = 0.0f;
         float boxWidth = 0.0f;
         float boxHeight = 0.0f;
+        bool isImage = false;    // an image entry: box + assetPath, nothing else
+        std::string assetPath;
     };
 
     // scale multiplies the item's size before layout (the fit pass).
-    LaidOutItem layout(const openshow::scene::TextItem& item, float scale,
+    LaidOutItem layout(const openshow::scene::SceneItem& item, float scale,
                        float maxWidth) const;
 
     // A whole scene's text: each item laid out inside its own box and
@@ -118,12 +128,17 @@ public:
 
     // Draws a laid-out scene's text (which the caller's canvas transform
     // must map from authored units): each paragraph centred in its item's
-    // box. The optional paint's alpha dissolves the whole block for the
-    // fade transition — carried by a ParagraphPainter so the alpha rides
-    // each glyph draw and the composition pass keeps no intermediate
-    // render target (task 6.11b, review R13).
+    // box, and each image entry of the stack drawn stretched into its box
+    // from `images` (task 6.17b) — lookup only, an uncached path draws
+    // nothing rather than decoding. The optional paint's alpha dissolves
+    // the whole block for the fade transition — carried by a
+    // ParagraphPainter so the alpha rides each glyph draw and the
+    // composition pass keeps no intermediate render target (task 6.11b,
+    // review R13); a fading image item takes the same alpha on its own
+    // paint. A null `images` draws only the text items.
     void drawLayout(SkCanvas* canvas, const SceneLayout& layout,
-                    const SkPaint* paint = nullptr) const;
+                    const SkPaint* paint = nullptr,
+                    SceneImageCache* images = nullptr) const;
 
 private:
     sk_sp<SkFontMgr> fFontMgr;

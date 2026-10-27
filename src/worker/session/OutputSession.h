@@ -690,7 +690,13 @@ private:
         std::string key;
         std::uint32_t id = 0;
         ActiveScene content;
-        std::string imagePath;  // empty = nothing to decode
+        // Everything this thumbnail must decode before it can draw (task
+        // 6.16b's still background first, then the stack's foreground
+        // stills in draw order — task 6.17b), deduplicated and non-empty.
+        std::vector<std::string> imagePaths;
+        // Per-path settle flag (decoded, failed, or found in the cache):
+        // the job owes its picture once every path has been settled.
+        std::vector<bool> pathSettled;
         bool decoded = false;
     };
 

@@ -452,7 +452,7 @@ void testOversizedContent() {
           Oversize{"one layer past the layer-count budget",
                    std::vector<std::vector<std::size_t>>(scene::kMaxSceneItems + 1,
                                                          std::vector<std::size_t>{4}),
-                   "text items is over the limit"},
+                   "items is over the limit"},
           Oversize{"one layer past the whole-slide text budget",
                    std::vector<std::vector<std::size_t>>(
                        scene::kMaxSceneTextChars / scene::kMaxItemTextChars + 1,

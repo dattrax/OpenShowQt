@@ -257,7 +257,7 @@ boost::json::object lyricScene(const std::string& line, const std::string& slide
             assetId.empty() ? "asset-" + slideId : assetId;
         sceneValue.background.assetPath = backgroundPath;
     }
-    scene::TextItem item;
+    scene::SceneItem item;
     item.lines = {line};
     item.color = 0xFFFFFF;
     item.fontFamily = "DejaVu Sans";

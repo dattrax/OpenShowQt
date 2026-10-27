@@ -361,7 +361,7 @@ boost::json::object scenePayload(const char* slideId, std::uint32_t color,
                                  bool withWords) {
     boost::json::array items;
     if (withWords) {
-        items.push_back(boost::json::object{{"lines", boost::json::array{"PROD"}},
+        items.push_back(boost::json::object{{"kind", "text"}, {"lines", boost::json::array{"PROD"}},
                                             {"color", 0xFFFFFFu},
                                             {"fontFamily", ""},
                                             {"fontSize", 120.0},
@@ -373,7 +373,7 @@ boost::json::object scenePayload(const char* slideId, std::uint32_t color,
                                             {"lineSpacing", 1.25}});
     }
     return boost::json::object{
-        {"scene", 1},
+        {"scene", 2},
         {"showId", "production-output"},
         {"slideId", slideId},
         {"backgroundColor", color},

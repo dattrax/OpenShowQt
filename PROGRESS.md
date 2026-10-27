@@ -1561,15 +1561,125 @@ Updated: 2026-10-27 (Europe/London).
     `preview_selection_tests` 14.49 s; both trees build clean apart from the
     pre-existing GCC `-Wfree-nonheap-object` false positive at
     `tests/background_media_tests.cpp:2294` (6.15b test code).
-- Exact next action: **6.17b** per the PLAN.md ledger (review R17) — authored
-  foreground image items with geometry and layer order: the model grows an item
-  kind that carries a picture, the wire gains what it needs (6.17a1 recorded
-  that item ids may want to join the wire here), the canvas selects and moves
-  images alongside text boxes on the same selection machinery, and the worker
-  draws them in the model's layer order. Then 6.17c (background gradient and
-  supported fit modes). R17's multi-text-box halves are closed across model,
-  file, compiler, worker and editor; evidence is in the 6.17a1/6.17a2 ledger
-  rows.
+- **Task 6.17b1 DONE — a picture in the stack: model, file, wire and worker
+  draw (review R17, first half of the 6.17b split).** `TextBox` became
+  `SlideItem` with a `kind` and an `assetId`, and the ceiling became
+  `kMaxSlideItems` — ONE budget of 8 for both kinds, pinned equal to
+  `scene::kMaxSceneItems` by test, because what bounds a composition is the
+  scene message and not the kind of the thing being added. The kind is what
+  says which content fields mean anything, so the model refuses a half-item at
+  the door naming its rule: a picture names an asset that EXISTS and whose
+  name the media pipeline reads as a still, and carries no words; a text item
+  naming an asset is refused; `setItemLines` refuses a picture; and
+  `setSlideLines` — the legacy view that addresses item 0, which can now be a
+  picture — refuses rather than write words INTO the image or invent a box
+  underneath it.
+  - **One video test, not two.** The predicate the model refuses with is
+    `domain::assetPathLooksLikeVideo`, and `scene::assetPathIsVideo` now
+    delegates to it: the name list that classifies a background and the rule
+    that rejects a video in the foreground are the same list, so they cannot
+    drift apart, and a fixture that rebinds a placed picture onto `.mp4`
+    reaches the compiler's own guard through the real path (task 6.12's
+    adoption), naming the item.
+  - **Deleting an asset takes its pictures with it.** A background degrades to
+    none; a stack entry whose file is gone is not a half-drawn item but a claim
+    about the composition the worker could never honour, so the item leaves
+    with the asset — and because History holds whole states, the undo restores
+    the asset AND the item, with the item's own id in its own slot, rather than
+    a slide coming back with a hole in the middle of its stack.
+  - **Format 3, and why text's kind is written too.** `kServiceFormat` 2→**3**:
+    the kind rides EVERY item (leaving text's to inference is how a future
+    default would silently redefine what an old file drew), the key set is
+    closed PER KIND, and formats 1/2/3 all read. Seven hand-written lies are
+    refused naming themselves — unknown kind, missing kind, a dangling asset
+    reference, words on an image, an assetId on a text item, an empty asset
+    reference, and a `"kind"` in a format-2 file, where that key does not exist
+    and its presence means somebody else's build meant something by it.
+  - **Scene format 2 and the same gate for both paths.** `SceneItem` carries
+    `isImage/assetId/assetPath`; `kSceneFormat` 1→**2** with no tolerance in
+    either direction (a scene-1 payload is refused rather than drawn with
+    whatever kinds an older build meant); a picture's `assetPath` goes through
+    the background's own `assetPathIsLocal`, so a `data:` URI is refused as the
+    payload it is and a path the worker would have to fetch as the network it
+    has no contract for. Protocol minor 9→**10** plus `scene.image-items.v1`
+    (13 capabilities).
+  - **The draw: array order, the authored box, and an honest absence.**
+    `drawLayout` walks the stack in the order the model gives, so image-over-
+    text and text-over-image are the operator's choice and nobody else's; a
+    picture is STRETCHED into its authored rectangle (a native-size draw leaves
+    60 device pixels of background in the middle of a 120x80 plate, a
+    contain-fit bars the top and bottom); the lookup stays the 6.10 rule — a
+    picture the session has not decoded is simply not drawn, measured equal to
+    the composition WITHOUT the item at worst 0/255; and the fade's alpha rides
+    the image paint, no render-to-texture, measured g127 at half strength with
+    the steady frame at g0 and the fill outside the box at g255.
+  - **The session decodes, pins and pumps.** `preloadScene` refreshes each
+    foreground path on the RPC thread and names every failure on stderr while
+    the old scene is still on air; the MEDIA lane deliberately stays
+    background-only, because `status.media` names what the audience's transport
+    is showing and a stack picture's decode error would evict that truth with a
+    file nobody is playing (per-item fault reporting belongs to R19's media
+    lane, not here). `syncScenePins` unions the foreground paths under the same
+    distinct-path rule (measured: 0 → 1 pins across one prepare of a plated
+    slide). `ThumbnailJob` grew a path VECTOR with settled flags: **a row's unit
+    of debt is the row, its unit of work a path**, so a two-picture slide is
+    ONE frame and arrives only when both settle — measured r134 g142 b142,
+    where the first-settle-draws mutant reads r239 g222 b46: pure backdrop.
+  - **`pasteClip` rewritten, because the legacy view cannot address a
+    picture.** The inserted default box is removed and every clip item is
+    re-added through `addItem`, which issues the fresh identity and enforces
+    the kind rules; a picture whose asset vanished falls away exactly as a
+    deleted style or background reference has since 4.5. `currentSlideBoxes`
+    gained `kind` and `assetId` for the 6.17b2 chrome.
+  - **Tests.** `exerciseImageItems()` (kinds and every refusal, a mixed slide
+    filling to the ceiling, `removeAsset`'s drop with the surviving order, the
+    undo restoring both, the legacy-view refusal, the video predicate); the
+    format-3 round trip with byte-stable re-save, `sameService()` now comparing
+    kind and asset, the seven hand-written refusals and an honest hand-written
+    package; `exerciseImageWire()` (the compiler's asset→path resolve, per-kind
+    wire keys with no typography on a picture, round trip, and the refusals
+    including the compile-time video guard reached by rebinding a placed
+    picture onto `.mp4`); `testForegroundImageItems()` and
+    `testForegroundImageFade()` in the Skia suite; and in the live suite a
+    two-picture row (one frame for two decodes, the pool holding exactly two
+    pictures at thumbnail scale, a re-ask costing nothing) plus
+    `testForegroundImageOffAir()` (mean 0.00 → 84.50 with the plate over half a
+    black canvas) and the pins delta above.
+  - **Mutations** m01–m37: **37/37 CAUGHT**, each on the check named for it —
+    the discipline, both word-writing views, the drop, the writer's kind, five
+    reader refusals, the compiler's resolve and guard, both wire key sets, kind
+    defaulting, the reference gate, scene-1 tolerance, the steady draw, the fade
+    alpha, the stretch, layout dropping a picture, the snapshot's up-front load,
+    prepare-time decoding, first-settle-draws, the pin union, paste losing its
+    pictures, the canvas's kind and asset, and the capability. Two mutants were
+    scored twice: the first run's anchors for the fade and the paste had gone
+    stale (a re-indent, a dropped `.empty()`), so the driver's dry run now
+    preflights every anchor and both re-scored against named refusals — a
+    mutant that cannot run is the driver lying, not a fixture passing.
+    Disclosed blind: `preloadScene`'s choice of `refreshFor` over `imageFor`
+    (needs a file missing at one prepare and back at the next, and a foreground
+    decode failure is a stderr line with no status to make false — the REPORTED
+    equivalent is the media lane's, tested in `background_media_tests`); the
+    job's path DEDUP and the lookahead accounting inside one job (no fixture
+    names one file as both a background and a foreground, so a duplicate settles
+    for free); `pasteClip`'s fresh identity, which is `addItem`'s to mutate and
+    6.17a1's battery already scores; and the two QML files, whose use of the new
+    canvas fields is 6.17b2's to write — `ui_loads` proves they still load.
+  - Gates desktop **48/48** (230.6 s), headless **27/27** (48.8 s); `domain_tests`
+    0.02 s, `scene_tests` 0.00 s, `protocol_tests` 0.01 s, `document_controller_tests`
+    3.48 s, `scene_render_tests` 7.21 s, `worker_rpc_limits` 11.64 s,
+    `preview_selection_tests` 15.28 s; both trees
+    build clean apart from the pre-existing GCC `-Wfree-nonheap-object` false
+    positive at `tests/background_media_tests.cpp:2294` (6.15b test code).
+- Exact next action: **6.17b2** per the PLAN.md ledger (review R17) — the
+  operator's half of the picture item: the asset list places an asset on the
+  current slide as a new topmost item, and the selection machinery (outlines,
+  handles, Tab, nudge, reorder, delete, undo) treats the MIXED stack as one,
+  with text-only edits honestly refused on an image item (the model already
+  refuses them, and `currentSlideBoxes` already carries `kind` and `assetId`)
+  and the inspector showing the picture's asset instead of a text field. Then
+  6.17c (background gradient and supported fit modes). R17's stack work is
+  closed across model, file, wire, worker and — from 6.17b2 — the editor.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -3986,6 +4096,59 @@ of this work.
   development tool and nothing in the build references it.
 
 ## Decisions
+
+- (2026-10-27, task 6.17b1) Kind is a fact, absence is a fact, and neither is
+  allowed to be inferred.
+  **A stack entry says what it is.** The cheap version of this leaf inferred the
+  kind — `assetId` non-empty means picture, empty `lines` means picture — and
+  every one of those readings is wrong the first time a slide has an empty text
+  box or an item someone hand-edited. So `kind` is a field, written to the file
+  for TEXT items too (a default that changes would silently redefine what an
+  old file drew, which is the one thing a format number exists to prevent), and
+  the scene wire's closed key set became closed PER KIND: typography attached to
+  a picture, or a path attached to a verse, is the same silent-gap class the
+  scene format has refused since 6.8a. Format 3 accepts no `"kind"` in a
+  format-2 file for the same reason: the key did not exist there, so its
+  presence means another build meant something by it, and guessing is the quiet
+  corruption the loader is supposed to make loud.
+  **One video test, because two lists drift.** The model refuses a video asset
+  in the foreground and the scene library decides whether a background is a
+  video. Those are the same question — "does the media pipeline read this name
+  as moving pictures?" — so `domain::assetPathLooksLikeVideo` is the one name
+  list and `scene::assetPathIsVideo` delegates. A fixture reaches the
+  compiler's guard through the real path (task 6.12's adoption rebinding a
+  placed picture onto `.mp4`) rather than trusting the two agree.
+  **A picture without its file is not a half-drawn item.** Deleting an asset
+  degrades a BACKGROUND to none, because "no backdrop" is a slide. It cannot do
+  the same to a stack entry: an item is a position in a composition, and an
+  item naming nothing is a claim about the picture the worker would have to
+  invent. So `removeAsset` drops the entries, and the reason that is SAFE — not
+  data loss — is that History holds whole states: the undo puts the asset back
+  AND its items, each with its own id in its own slot. The same reasoning
+  decided `setSlideLines`: the legacy single-text view addresses item 0, item 0
+  can now be a picture, and the two lies available (type into the image, or
+  invent a box under it) are both worse than the refusal.
+  **The media lane stayed background-only, on purpose.** A foreground decode
+  failure is a stderr line while the old scene is still on air; it does NOT
+  touch `status.media` or push `media.error`. `status.media` names what the
+  audience's transport is showing, and a stack picture nobody is playing would
+  evict that truth with a file. The honest on-screen answer is already correct —
+  the box shows what is under it, which is visibly not the slide the operator
+  composed — and per-item fault reporting belongs to R19's media lane, where
+  there is something to report INTO. Disclosed as unmutated rather than
+  papered over.
+  **A row's unit of debt is the ROW; its unit of work is a path.** 6.16b's
+  thumbnail pump settled one path per job, which was invisible while a slide
+  named one file. A slide with a backdrop and a picture now carries a path
+  VECTOR plus settled flags, draws when the LAST one settles, and keeps the
+  lookahead counting finished jobs so the memory bound means what it meant
+  before. The check that pins it is a row whose two halves are different colours:
+  measured r134 g142 b142 against the first-settle-draws mutant's r239 g222
+  b46 — pure backdrop, the frame shipped before the second decode landed.
+  Then the battery's own lesson, second time: two mutants were scored against
+  anchors that had gone stale (a re-indent, a dropped `.empty()`), so the dry
+  run now preflights EVERY anchor before a run. A mutant that cannot run is the
+  driver lying, not a fixture passing.
 
 - (2026-10-27, task 6.17a2) Where a fact lives, and three ways a fixture
   nearly lied on the way.

@@ -1654,7 +1654,7 @@ scene::Scene authoredScene(const std::vector<std::string>& lines, unsigned color
     scene.slideId = "fixture-slide";
     scene.background.color = color;
     if (!lines.empty()) {
-        scene::TextItem item;
+        scene::SceneItem item;
         item.lines = lines;
         scene.items.push_back(std::move(item));
     }

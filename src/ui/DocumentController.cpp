@@ -136,8 +136,8 @@ QVariantList DocumentController::slides() const {
         // A slide authored down to no boxes reports the default box rather
         // than zeros, so a view drawing the row's outline is never handed a
         // rectangle with no size.
-        const openshow::domain::TextBox fallback;
-        const openshow::domain::TextBox& box =
+        const openshow::domain::SlideItem fallback;
+        const openshow::domain::SlideItem& box =
             slide.items.empty() ? fallback : slide.items.front();
         QVariantMap entry;
         entry.insert(QStringLiteral("id"), QString::fromStdString(slide.id));
@@ -165,7 +165,7 @@ QString DocumentController::currentSlideText() const {
     // The inspector edits the SELECTED box (task 6.17a2) — which is box 0
     // until the operator picks another, so a slide with one box and every
     // pre-6.17a file read the same as they always did.
-    const openshow::domain::TextBox* box = selectedBox();
+    const openshow::domain::SlideItem* box = selectedBox();
     return box == nullptr ? QString() : linesToText(box->lines);
 }
 
@@ -386,7 +386,7 @@ void DocumentController::commitPendingText() {
     }
     const openshow::domain::Id slideId = currentSlideId();
     const openshow::domain::Id songId = fCurrentSongId;
-    const openshow::domain::TextBox* box = selectedBox();
+    const openshow::domain::SlideItem* box = selectedBox();
     if (box == nullptr) {
         return;  // the box the words were typed into is gone; nothing to write
     }
@@ -399,7 +399,7 @@ void DocumentController::commitPendingText() {
     // FIRST, so by the time this runs "selected" is still "typed into".
     // That flush is also what stops a burst of keystrokes from landing in
     // the box the operator tabbed to.
-    edit([&] { return fDocuments.setTextBoxLines(songId, slideId, boxId, lines, &error); });
+    edit([&] { return fDocuments.setItemLines(songId, slideId, boxId, lines, &error); });
 }
 
 void DocumentController::flushText() {
@@ -472,18 +472,18 @@ bool DocumentController::setSlideGeometry(double x, double y, double width, doub
 
 // --- text-box authoring (task 6.17a2, review R17) ---------------------------
 
-const openshow::domain::TextBox* DocumentController::selectedBox() const {
+const openshow::domain::SlideItem* DocumentController::selectedBox() const {
     const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
     if (show == nullptr || fCurrentSlide < 0 ||
         static_cast<std::size_t>(fCurrentSlide) >= show->slides.size()) {
         return nullptr;
     }
-    const std::vector<openshow::domain::TextBox>& items =
+    const std::vector<openshow::domain::SlideItem>& items =
         show->slides[static_cast<std::size_t>(fCurrentSlide)].items;
     if (items.empty()) {
         return nullptr;
     }
-    for (const openshow::domain::TextBox& box : items) {
+    for (const openshow::domain::SlideItem& box : items) {
         if (box.id == fCurrentBoxId) {
             return &box;
         }
@@ -497,12 +497,12 @@ const openshow::domain::TextBox* DocumentController::selectedBox() const {
 }
 
 int DocumentController::currentBox() const {
-    const openshow::domain::TextBox* box = selectedBox();
+    const openshow::domain::SlideItem* box = selectedBox();
     if (box == nullptr) {
         return -1;
     }
     const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
-    const std::vector<openshow::domain::TextBox>& items =
+    const std::vector<openshow::domain::SlideItem>& items =
         show->slides[static_cast<std::size_t>(fCurrentSlide)].items;
     return static_cast<int>(box - items.data());
 }
@@ -514,12 +514,21 @@ QVariantList DocumentController::currentSlideBoxes() const {
         static_cast<std::size_t>(fCurrentSlide) >= show->slides.size()) {
         return list;
     }
-    const std::vector<openshow::domain::TextBox>& items =
+    const std::vector<openshow::domain::SlideItem>& items =
         show->slides[static_cast<std::size_t>(fCurrentSlide)].items;
     for (std::size_t i = 0; i < items.size(); ++i) {
         QVariantMap entry;
         entry.insert(QStringLiteral("id"), QString::fromStdString(items[i].id));
         entry.insert(QStringLiteral("index"), static_cast<int>(i));
+        // Kind travels with the box (task 6.17b): the canvas chrome can
+        // already tell a picture's outline from a text box's without
+        // guessing from empty words, and the 6.17b2 editor will show the
+        // picture's asset here.
+        entry.insert(QStringLiteral("kind"),
+                     items[i].kind == openshow::domain::ItemKind::Image
+                         ? QStringLiteral("image")
+                         : QStringLiteral("text"));
+        entry.insert(QStringLiteral("assetId"), QString::fromStdString(items[i].assetId));
         entry.insert(QStringLiteral("x"), items[i].x);
         entry.insert(QStringLiteral("y"), items[i].y);
         entry.insert(QStringLiteral("width"), items[i].width);
@@ -540,7 +549,7 @@ bool DocumentController::selectTextBox(int index) {
         setStatus(QStringLiteral("text box: no current slide"));
         return false;
     }
-    const std::vector<openshow::domain::TextBox>& items =
+    const std::vector<openshow::domain::SlideItem>& items =
         show->slides[static_cast<std::size_t>(fCurrentSlide)].items;
     if (items.empty()) {
         setStatus(QStringLiteral("text box: this slide has no text box to select"));
@@ -565,13 +574,13 @@ int DocumentController::boxAt(double x, double y) const {
         static_cast<std::size_t>(fCurrentSlide) >= show->slides.size()) {
         return -1;
     }
-    const std::vector<openshow::domain::TextBox>& items =
+    const std::vector<openshow::domain::SlideItem>& items =
         show->slides[static_cast<std::size_t>(fCurrentSlide)].items;
     // Back to front: the box drawn last paints over the others, so it is the
     // box under the pointer wherever they overlap, and the click should land
     // on what the operator can see.
     for (std::size_t i = items.size(); i-- > 0;) {
-        const openshow::domain::TextBox& box = items[i];
+        const openshow::domain::SlideItem& box = items[i];
         if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) {
             return static_cast<int>(i);
         }
@@ -589,7 +598,7 @@ bool DocumentController::addTextBox() {
     std::string error;
     openshow::domain::Id newId;
     if (!edit([&] {
-            newId = fDocuments.addTextBox(fCurrentSongId, slideId, openshow::domain::TextBox{},
+            newId = fDocuments.addItem(fCurrentSongId, slideId, openshow::domain::SlideItem{},
                                           &error);
             return !newId.empty();
         })) {
@@ -605,14 +614,14 @@ bool DocumentController::addTextBox() {
 bool DocumentController::removeCurrentTextBox() {
     flushText();
     const openshow::domain::Id slideId = currentSlideId();
-    const openshow::domain::TextBox* box = selectedBox();
+    const openshow::domain::SlideItem* box = selectedBox();
     if (slideId.empty() || box == nullptr) {
         setStatus(QStringLiteral("delete text box: this slide has no text box to delete"));
         return false;
     }
     const openshow::domain::Id boxId = box->id;
     std::string error;
-    if (!edit([&] { return fDocuments.removeTextBox(fCurrentSongId, slideId, boxId, &error); })) {
+    if (!edit([&] { return fDocuments.removeItem(fCurrentSongId, slideId, boxId, &error); })) {
         setStatus(QStringLiteral("delete text box: %1").arg(QString::fromStdString(error)));
         return false;
     }
@@ -627,7 +636,7 @@ bool DocumentController::removeCurrentTextBox() {
 
 bool DocumentController::moveCurrentTextBox(int toIndex) {
     flushText();
-    const openshow::domain::TextBox* box = selectedBox();
+    const openshow::domain::SlideItem* box = selectedBox();
     if (box == nullptr) {
         setStatus(QStringLiteral("reorder text box: this slide has no text box to move"));
         return false;
@@ -640,7 +649,7 @@ bool DocumentController::moveCurrentTextBox(int toIndex) {
     const openshow::domain::Id boxId = box->id;
     std::string error;
     if (!edit([&] {
-            return fDocuments.moveTextBox(fCurrentSongId, slideId, boxId,
+            return fDocuments.moveItem(fCurrentSongId, slideId, boxId,
                                           static_cast<std::size_t>(toIndex), &error);
         })) {
         setStatus(QStringLiteral("reorder text box: %1").arg(QString::fromStdString(error)));
@@ -655,7 +664,7 @@ bool DocumentController::moveCurrentTextBox(int toIndex) {
 
 bool DocumentController::setTextBoxGeometry(double x, double y, double width, double height) {
     flushText();
-    const openshow::domain::TextBox* box = selectedBox();
+    const openshow::domain::SlideItem* box = selectedBox();
     if (box == nullptr) {
         setStatus(QStringLiteral("text box: this slide has no text box to resize"));
         return false;
@@ -664,7 +673,7 @@ bool DocumentController::setTextBoxGeometry(double x, double y, double width, do
     const openshow::domain::Id boxId = box->id;
     std::string error;
     if (!edit([&] {
-            return fDocuments.setTextBoxGeometry(fCurrentSongId, slideId, boxId, x, y, width,
+            return fDocuments.setItemGeometry(fCurrentSongId, slideId, boxId, x, y, width,
                                                  height, &error);
         })) {
         setStatus(QStringLiteral("text box: %1").arg(QString::fromStdString(error)));
@@ -883,7 +892,7 @@ bool DocumentController::copyCurrentSlide() {
         }
         fClip.valid = true;
         fClip.boxes = slide.items;
-        for (openshow::domain::TextBox& box : fClip.boxes) {
+        for (openshow::domain::SlideItem& box : fClip.boxes) {
             box.id.clear();  // a paste re-identifies (task 6.17a)
         }
         fClip.notes = slide.notes;
@@ -933,36 +942,36 @@ bool DocumentController::pasteClip(const SlideClip& clip) {
             // History will not roll a refused mutation back for us, so a
             // half-filled slide must leave on its own.
             bool ok = fDocuments.setSlideNotes(song, inserted, clip.notes, &error);
-            // The inserted slide came with one default box. It takes the
-            // clip's first box, and every further box is added on top of it
-            // (task 6.17a), so a pasted slide keeps the original's draw order
-            // while every box on it is a fresh identity: addTextBox drops the
-            // id the clip held, which is what lets the same slide be pasted
-            // twice.
-            for (std::size_t i = 0; ok && i < clip.boxes.size(); ++i) {
-                const openshow::domain::TextBox& box = clip.boxes[i];
-                if (i == 0) {
-                    ok = fDocuments.setSlideLines(song, inserted, box.lines, &error) &&
-                         fDocuments.setSlideGeometry(song, inserted, box.x, box.y, box.width,
-                                                     box.height, &error);
-                } else {
-                    ok = !fDocuments.addTextBox(song, inserted, box, &error).empty();
-                }
-            }
-            if (ok && clip.boxes.empty()) {
-                // A copied slide with no boxes at all pastes as a slide with
-                // no boxes: the default box the new slide arrived with goes,
-                // because a copy that quietly adds a box is not a copy.
+            // The inserted slide came with one default text box, and the
+            // clip's stack REPLACES it wholesale. Task 6.17b made that the
+            // only honest route: the legacy single-text view addresses words
+            // and the clip's first item may be a picture. Remove the default
+            // box, then re-add every clip item in draw order through
+            // addItem, which issues the fresh identity (addTextBox always
+            // dropped the id the clip held — that is what lets the same
+            // slide be pasted twice) and enforces the kind rules the copied
+            // stack already satisfies. An item whose asset was deleted since
+            // the capture falls away with it, like the style and the
+            // background reference do.
+            if (ok) {
                 const openshow::domain::Show* made = fDocuments.findShow(song);
                 if (made != nullptr) {
                     for (const openshow::domain::Slide& slide : made->slides) {
                         if (slide.id == inserted && !slide.items.empty()) {
-                            ok = fDocuments.removeTextBox(song, inserted, slide.items.front().id,
-                                                          &error);
+                            ok = fDocuments.removeItem(song, inserted,
+                                                       slide.items.front().id, &error);
                             break;
                         }
                     }
                 }
+            }
+            for (std::size_t i = 0; ok && i < clip.boxes.size(); ++i) {
+                openshow::domain::SlideItem box = clip.boxes[i];
+                if (box.kind == openshow::domain::ItemKind::Image &&
+                    fDocuments.findAsset(box.assetId) == nullptr) {
+                    continue;
+                }
+                ok = !fDocuments.addItem(song, inserted, box, &error).empty();
             }
             if (ok) {
                 ok = fDocuments.setSlideStyle(song, inserted, styleId, &error);
@@ -1009,7 +1018,7 @@ bool DocumentController::duplicateCurrentSlide() {
         for (const openshow::domain::Slide& slide : show->slides) {
             if (slide.id == slideId) {
                 clip.boxes = slide.items;
-                for (openshow::domain::TextBox& box : clip.boxes) {
+                for (openshow::domain::SlideItem& box : clip.boxes) {
                     box.id.clear();  // the duplicate gets its own (task 6.17a)
                 }
                 clip.notes = slide.notes;
@@ -1207,7 +1216,7 @@ QVariantList DocumentController::searchShows(const QString& query) const {
             // Every box's words are searchable (task 6.17a): an index over
             // box 0 only would hide a slide whose text lives in the box the
             // operator added second — the search would say the show is empty.
-            for (const openshow::domain::TextBox& box : slide.items) {
+            for (const openshow::domain::SlideItem& box : slide.items) {
                 for (const std::string& line : box.lines) {
                     lines.append(QString::fromStdString(line));
                 }

@@ -283,14 +283,14 @@ void toggleLayers(int fd, int rounds) {
 
 boost::json::object solidScene(std::uint32_t color, const char* word) {
     return boost::json::object{
-        {"scene", 1},
+        {"scene", 2},
         {"showId", "preview-ownership"},
         {"slideId", word},
         {"backgroundColor", color},
         {"background",
          boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
         {"items",
-         boost::json::array{boost::json::object{{"lines", boost::json::array{word}},
+         boost::json::array{boost::json::object{{"kind", "text"}, {"lines", boost::json::array{word}},
                                                 {"color", 0xFFFFFFu},
                                                 {"fontFamily", ""},
                                                 {"fontSize", 120.0},

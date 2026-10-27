@@ -625,7 +625,7 @@ bool writePng(const std::string& path, const char* colour, int width, int height
 boost::json::object stillScene(const char* slideId, const std::string& path,
                                std::uint32_t fill) {
     return boost::json::object{
-        {"scene", 1},
+        {"scene", 2},
         {"showId", "select16"},
         {"slideId", slideId},
         {"backgroundColor", fill},
@@ -645,14 +645,14 @@ boost::json::object listEntry(const char* key, const boost::json::object& scene)
 // A solid-colour scene with one word.
 boost::json::object solidScene(const char* slideId, std::uint32_t color, const char* word) {
     return boost::json::object{
-        {"scene", 1},
+        {"scene", 2},
         {"showId", "select16"},
         {"slideId", slideId},
         {"backgroundColor", color},
         {"background",
          boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
         {"items",
-         boost::json::array{boost::json::object{{"lines", boost::json::array{word}},
+         boost::json::array{boost::json::object{{"kind", "text"}, {"lines", boost::json::array{word}},
                                                 {"color", 0xFFFFFFu},
                                                 {"fontFamily", ""},
                                                 {"fontSize", 120.0},
@@ -1336,6 +1336,76 @@ void testSlideList(std::int64_t& nextId, int fd, std::uint64_t blueRevision) {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 10. A row that needs TWO pictures: a backdrop AND a foreground
+    //     still (task 6.17b).
+    // ------------------------------------------------------------------
+    // The pump's unit of work is a PATH and its unit of debt is a ROW: a
+    // slide with two pictures owes ONE frame, and that frame is owed only
+    // when both paths have settled. Marking a job drawn-ready on its first
+    // decode is the bug this section exists to catch, and it is invisible in
+    // every fixture above, where a row names at most one file.
+    //
+    // It runs last because the extent below differs from the 64x36 ask that
+    // ended section 9, and a changed extent builds the list a fresh
+    // compositor: the pool here is the row's own, which is what makes its
+    // entry count a claim about this batch.
+    const std::string foreground = dir + "/plate.png";
+    if (!check(writePng(foreground, "0x2040F0", 800, 450),
+               "a blue foreground PNG is staged for a two-picture row")) {
+        return;
+    }
+    boost::json::object both = stillScene("L6", backdrop, kRed);
+    both["items"].as_array().push_back(boost::json::object{
+        {"kind", "image"},
+        {"assetId", "fg-asset"},
+        {"assetPath", foreground},
+        {"x", 0.0},
+        {"y", 0.0},
+        {"width", 960.0},
+        {"height", 1080.0},
+    });
+    const ThumbnailAck pair =
+        askThumbnails(fd, nextId, boost::json::array{listEntry("row-both", both)}, 160, 90, 2);
+    check(pair.ok && pair.accepted.size() == 1,
+          "the two-picture slide is accepted as one row on the new stream");
+    Delivery pairRow;
+    if (check(waitForThumbnail(fd, 2, acceptedId(pair, "row-both"), 4000, &pairRow),
+              "and its row arrives - one frame for two decodes")) {
+        // Left half the blue picture, right half the yellow backdrop, over a
+        // red fill neither half leaves visible. A row drawn the moment its
+        // FIRST path settled would be pure backdrop yellow: blue 48, red 240.
+        const std::string seen = "r" + std::to_string(static_cast<int>(pairRow.red)) + " g" +
+                                 std::to_string(static_cast<int>(pairRow.green)) + " b" +
+                                 std::to_string(static_cast<int>(pairRow.blue));
+        std::printf("measured: a row of two pictures, mean channels %s\n", seen.c_str());
+        check(pairRow.blue > 100.0 && pairRow.red < 200.0,
+              ("the row shows BOTH pictures, the foreground over half of it, measured " + seen)
+                  .c_str());
+    }
+    {
+        const boost::json::object pool = thumbnailImages(fd, nextId);
+        check(fieldValue(pool, "entries") == 2,
+              "the list's pool holds exactly two pictures: the backdrop and this row's own");
+        check(fieldValue(pool, "decodedBytes") > 0 &&
+                  fieldValue(pool, "decodedBytes") <= 2u * 57600u,
+              "both accounted at thumbnail scale, neither at the file's own size");
+    }
+    // Asking again at the SAME extent keeps the list's compositor, so both
+    // paths are answered from its cache: the row arrives with no further
+    // picture memory spent. This is the free-settle leg of the pump, which a
+    // single-path row can only ever half-prove.
+    const ThumbnailAck pairAgain =
+        askThumbnails(fd, nextId, boost::json::array{listEntry("row-both", both)}, 160, 90, 3);
+    check(pairAgain.ok && pairAgain.accepted.size() == 1, "the two-picture row can be asked again");
+    Delivery againRow;
+    if (check(waitForThumbnail(fd, 3, acceptedId(pairAgain, "row-both"), 4000, &againRow),
+              "and it arrives again, settled from the cache")) {
+        const boost::json::object pool = thumbnailImages(fd, nextId);
+        check(fieldValue(pool, "entries") == 2,
+              "and the pool holds the same two pictures: a scroll does not re-decode a slide");
+    }
+
     std::filesystem::remove_all(dir);
 }
 
@@ -1426,6 +1496,7 @@ void testAudienceUnaffected(std::int64_t& nextId, int fd, std::uint64_t redRevis
 void testStackedBoxesOffAir(std::int64_t& nextId, int fd) {
     boost::json::object stacked = solidScene("STACKED16", 0x000000u, "EVERY BOX");
     boost::json::object strip;
+    strip["kind"] = "text";
     strip["lines"] = boost::json::array{"ALSO ON AIR"};
     strip["color"] = 0xFFFFFFu;
     strip["fontFamily"] = "";
@@ -1478,6 +1549,114 @@ void testStackedBoxesOffAir(std::int64_t& nextId, int fd) {
     check(fullInk > leanInk + 0.5,
           ("the SECOND box's words are in the off-air picture (mean " +
            std::to_string(leanInk) + " -> " + std::to_string(fullInk) + ")").c_str());
+}
+
+// --- a foreground picture on an off-air slide -------------------------
+//
+// Task 6.17b's other half of the same promise: the panel's draw is the
+// audience's composition, so a STACKED PICTURE has to reach it too. Two
+// frames are measured against each other, both black except for what the
+// worker decoded: the slide with a yellow plate over its left half, and the
+// same slide with the item removed. A prepare that never decoded the item, or
+// a draw that never looked it up, leaves the two frames identical - and the
+// measurement says so in numbers.
+void testForegroundImageOffAir(std::int64_t& nextId, int fd) {
+    const std::string dir = "/tmp/opencode/preview-foreground-fixtures-" +
+                            std::to_string(static_cast<long>(::getpid()));
+    ::mkdir(dir.c_str(), 0755);
+    const std::string plate = dir + "/plate.png";
+    if (!check(writePng(plate, "0xF0E030", 800, 450),
+               "a yellow foreground PNG is staged for the off-air draw")) {
+        return;
+    }
+    const auto pictureScene = [&plate](bool withPicture) {
+        boost::json::array items;
+        if (withPicture) {
+            items.push_back(boost::json::object{{"kind", "image"},
+                                                {"assetId", "fg-asset"},
+                                                {"assetPath", plate},
+                                                {"x", 0.0},
+                                                {"y", 0.0},
+                                                {"width", 960.0},
+                                                {"height", 1080.0}});
+        }
+        return boost::json::object{
+            {"scene", 2},
+            {"showId", "select16"},
+            {"slideId", withPicture ? "FG1" : "FG0"},
+            {"backgroundColor", 0x000000u},
+            {"background",
+             boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
+            {"items", std::move(items)},
+        };
+    };
+    // The show's own picture accounting: a prepared scene's FOREGROUND
+    // picture has to enter the pin union, or the housekeeping pass can
+    // evict it while the scene is still in the store — the panel would then
+    // draw a slide with a hole in it that a re-present would not fix.
+    // Measured as a DELTA across one prepare because the prepared store
+    // holds everything earlier scenarios made: the claim is about THIS
+    // picture, and a delta is the only number that says so.
+    const auto showImages = [fd, &nextId]() {
+        const boost::json::object state = status(fd, nextId);
+        if (!state.contains("scene") || !state.at("scene").is_object()) {
+            return boost::json::object{};
+        }
+        const boost::json::object& sceneState = state.at("scene").as_object();
+        if (!sceneState.contains("images") || !sceneState.at("images").is_object()) {
+            return boost::json::object{};
+        }
+        return sceneState.at("images").as_object();
+    };
+    const double pinsBeforePlate = fieldValue(showImages(), "pins");
+    const std::uint64_t bare = prepareScene(fd, nextId, pictureScene(false));
+    const std::uint64_t plated = prepareScene(fd, nextId, pictureScene(true));
+    const double pinsAfterPlate = fieldValue(showImages(), "pins");
+    std::printf("measured: prepared-store pins around a foreground prepare — %.0f -> %.0f\n",
+                pinsBeforePlate, pinsAfterPlate);
+    check(pinsAfterPlate == pinsBeforePlate + 1.0,
+          "the stack's picture is pinned with its scene: one held slide, one reference "
+          "(a union that only walked backgrounds reads 0 here)");
+    if (!check(bare != 0 && plated != 0, "the bare and plated off-air slides prepare")) {
+        std::filesystem::remove_all(dir);
+        return;
+    }
+    // Requests continue the session's numbering, whatever earlier scenarios
+    // spent: the worker's gate is monotonic, not zero-based.
+    const boost::json::object settled = selectionStatus(fd, nextId);
+    std::uint32_t request = static_cast<std::uint32_t>(fieldValue(settled, "request")) + 1;
+
+    const std::string bareAsk = selectScene(fd, nextId, bare, request);
+    check(bareAsk.empty(), ("the bare slide is selected: " + bareAsk).c_str());
+    Delivery black;
+    if (!check(waitForSelection(fd, request, 3000, &black), "and its frame arrives")) {
+        std::filesystem::remove_all(dir);
+        return;
+    }
+    ++request;
+    const std::string platedAsk = selectScene(fd, nextId, plated, request);
+    check(platedAsk.empty(), ("the plated slide is selected: " + platedAsk).c_str());
+    Delivery yellow;
+    if (!check(waitForSelection(fd, request, 3000, &yellow),
+               "and the frame with the foreground picture arrives")) {
+        std::filesystem::remove_all(dir);
+        return;
+    }
+    check(yellow.target == proto::kPreviewTargetSelection && yellow.request == request,
+          "the plated frame answers this ask, on the selection target");
+    const double blackInk = (black.red + black.green + black.blue) / 3.0;
+    const double yellowInk = (yellow.red + yellow.green + yellow.blue) / 3.0;
+    std::printf("measured: off-air foreground picture — no item mean %.2f, with item %.2f\n",
+                blackInk, yellowInk);
+    // A yellow plate over half a black canvas is worth ~120 of mean red. The
+    // floor is generous by a factor of twenty; the point is the direction and
+    // the gap, not the exact colour the codec round-trips.
+    check(yellowInk > blackInk + 20.0,
+          ("the foreground picture is IN the off-air frame (mean " +
+           std::to_string(blackInk) + " -> " + std::to_string(yellowInk) + ")").c_str());
+    check(yellow.red > yellow.blue + 40.0,
+          "and it is the picture's yellow, not a decode that came out grey");
+    std::filesystem::remove_all(dir);
 }
 
 void testStandDown(std::int64_t& nextId, int fd, std::uint64_t greenRevision) {
@@ -1629,6 +1808,7 @@ int main(int argc, char* argv[]) {
     testAudienceUnaffected(nextId, fd, redRevision, greenRevision, blueRevision);
     testSlideList(nextId, fd, blueRevision);
     testStackedBoxesOffAir(nextId, fd);
+    testForegroundImageOffAir(nextId, fd);
     testStandDown(nextId, fd, greenRevision);
 
     close(fd);

@@ -243,7 +243,7 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                             "preview.stream-id.v1", "preview.select.v1",
                             "preview.thumbnail.v1", "scene.store.v1", "shutdown.v1",
                             "media.error.v1", "media.audio-state.v1", "media.transport.v1",
-                            "media.standalone.v1"}}};
+                            "media.standalone.v1", "scene.image-items.v1"}}};
     return true;
 }
 

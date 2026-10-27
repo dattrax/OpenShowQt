@@ -131,7 +131,7 @@ ActiveScene stage(std::uint32_t colour, const char* word) {
     scene->showId = "r13";
     scene->slideId = word;
     scene->background.color = colour;
-    openshow::scene::TextItem item;
+    openshow::scene::SceneItem item;
     item.lines = {word};
     item.color = 0xFFFFFFu;
     item.fontSize = 120.0;
