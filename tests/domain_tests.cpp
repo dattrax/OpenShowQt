@@ -6,6 +6,7 @@
  * reports it.
  */
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -43,6 +44,7 @@ using openshow::domain::Documents;
 using openshow::domain::Id;
 using openshow::domain::AssetRebind;
 using openshow::domain::kDefaultLineSpacing;
+using openshow::domain::kMaxTextBoxes;
 using Asset = openshow::domain::Asset;
 using Autosave = openshow::domain::Autosave;
 using History = openshow::domain::History;
@@ -50,6 +52,7 @@ using Playlist = openshow::domain::Playlist;
 using Show = openshow::domain::Show;
 using Slide = openshow::domain::Slide;
 using Style = openshow::domain::Style;
+using TextBox = openshow::domain::TextBox;
 
 void exerciseShows() {
     Documents docs;
@@ -97,8 +100,8 @@ void exerciseSlides() {
           "insert past the end is refused");
 
     check(docs.setSlideLines(show, b, {"Amazing grace", "", "how sweet"}, &error) &&
-              docs.findShow(show)->slides[2].lines.size() == 3 &&
-              docs.findShow(show)->slides[2].lines[1].empty(),
+              docs.findShow(show)->slides[2].items[0].lines.size() == 3 &&
+              docs.findShow(show)->slides[2].items[0].lines[1].empty(),
           "lines round-trip including the meaningful blank line");
     check(docs.setSlideNotes(show, b, "quiet", &error) &&
               docs.findShow(show)->slides[2].notes == "quiet",
@@ -130,18 +133,22 @@ void exerciseGeometry() {
     const Id show = docs.createShow("Deck", &error);
     const Id slide = docs.appendSlide(show, &error);
 
-    // A fresh slide carries the authored lyric box: the canvas minus the
-    // margins, so untouched slides keep drawing exactly as pre-4.3 did.
+    // A fresh slide carries ONE box on the authored lyric geometry: the
+    // canvas minus the margins, so untouched slides keep drawing exactly as
+    // pre-4.3 did — and the box arrives with an id, because from the moment
+    // it exists an edit has to be able to name it (task 6.17a).
     const auto& fresh = docs.findShow(show)->slides[0];
-    check(fresh.x == 160.0 && fresh.y == 100.0 && fresh.width == 1600.0 &&
-              fresh.height == 880.0,
+    check(fresh.items.size() == 1 && !fresh.items[0].id.empty(),
+          "a new slide starts with exactly one identified text box");
+    check(fresh.items[0].x == 160.0 && fresh.items[0].y == 100.0 &&
+              fresh.items[0].width == 1600.0 && fresh.items[0].height == 880.0,
           "a new slide starts on the default lyric box");
 
     check(docs.setSlideGeometry(show, slide, 300.5, 200.0, 1200.0, 500.0, &error) &&
-              docs.findShow(show)->slides[0].x == 300.5 &&
-              docs.findShow(show)->slides[0].y == 200.0 &&
-              docs.findShow(show)->slides[0].width == 1200.0 &&
-              docs.findShow(show)->slides[0].height == 500.0,
+              docs.findShow(show)->slides[0].items[0].x == 300.5 &&
+              docs.findShow(show)->slides[0].items[0].y == 200.0 &&
+              docs.findShow(show)->slides[0].items[0].width == 1200.0 &&
+              docs.findShow(show)->slides[0].items[0].height == 500.0,
           "setSlideGeometry moves and resizes the box");
     check(!docs.setSlideGeometry(show, slide, std::nan(""), 0.0, 100.0, 100.0, &error),
           "a NaN box edge is refused");
@@ -151,9 +158,143 @@ void exerciseGeometry() {
     check(!docs.setSlideGeometry(show, "slide999", 0.0, 0.0, 100.0, 100.0, &error),
           "geometry on an unknown slide fails");
     // Every refusal above left the accepted box untouched.
-    check(docs.findShow(show)->slides[0].x == 300.5 &&
-              docs.findShow(show)->slides[0].height == 500.0,
+    check(docs.findShow(show)->slides[0].items[0].x == 300.5 &&
+              docs.findShow(show)->slides[0].items[0].height == 500.0,
           "a refused geometry edit leaves the box as it was");
+}
+
+// Task 6.17a (review R17): a slide is a STACK of text boxes, each with an id
+// the store issued and every edit addresses it by. What an operator needs from
+// this is order (what covers what), identity (that moving a box does not move
+// their selection) and a ceiling they meet while editing rather than while
+// presenting.
+void exerciseTextBoxes() {
+    Documents docs;
+    std::string error;
+    const Id show = docs.createShow("Deck", &error);
+    const Id slide = docs.appendSlide(show, &error);
+    const Id first = docs.findShow(show)->slides[0].items[0].id;
+
+    TextBox second;
+    second.id = "already-taken";  // a caller's id is dropped, never adopted
+    second.lines = {"second box"};
+    second.x = 100.0;
+    second.y = 200.0;
+    second.width = 300.0;
+    second.height = 120.0;
+    const Id secondId = docs.addTextBox(show, slide, second, &error);
+    const Slide& stacked = docs.findShow(show)->slides[0];
+    check(!secondId.empty() && secondId != "already-taken" && stacked.items.size() == 2 &&
+              stacked.items[1].id == secondId,
+          "addTextBox puts a box on top of the stack under an id the store issued");
+    check(stacked.items[1].lines == std::vector<std::string>({"second box"}) &&
+              stacked.items[1].x == 100.0 && stacked.items[1].height == 120.0,
+          "a new box arrives with the words it was given and the place it was given");
+    // The rule that lets one slide be pasted twice: the same shape added
+    // again is a DIFFERENT identity, so the two copies can never be edited
+    // into each other.
+    check(docs.addTextBox(show, slide, second, &error) != secondId,
+          "adding the same box shape twice yields two distinct ids");
+    check(docs.removeTextBox(show, slide, docs.findShow(show)->slides[0].items[2].id, &error),
+          "clearing the third box back down to two");
+
+    check(docs.setTextBoxLines(show, slide, secondId, {"changed"}, &error) &&
+              docs.findShow(show)->slides[0].items[1].lines ==
+                  std::vector<std::string>({"changed"}) &&
+              docs.findShow(show)->slides[0].items[0].lines.empty(),
+          "setTextBoxLines edits one box and not its neighbour");
+    check(docs.setTextBoxGeometry(show, slide, secondId, 0.0, 0.0, 640.0, 200.0, &error) &&
+              docs.findShow(show)->slides[0].items[0].x == 160.0 &&
+              docs.findShow(show)->slides[0].items[1].x == 0.0,
+          "setTextBoxGeometry moves one box and not its neighbour");
+    check(!docs.setTextBoxGeometry(show, slide, secondId, 0.0, 0.0, 0.0, 200.0, &error) &&
+              !docs.setTextBoxGeometry(show, slide, secondId, std::nan(""), 0.0, 640.0,
+                                       200.0,
+                                       &error) &&
+              docs.findShow(show)->slides[0].items[1].width == 640.0,
+          "an unplaceable box is refused naming the box, and the box keeps its size");
+    TextBox collapsed;
+    collapsed.width = 0.0;
+    check(docs.addTextBox(show, slide, collapsed, &error).empty() &&
+              error.find("positive width") != std::string::npos &&
+              docs.findShow(show)->slides[0].items.size() == 2,
+          "a new box with nothing in it is refused naming the rule, stack unchanged");
+    check(!docs.setTextBoxLines(show, slide, "text999", {"x"}, &error) &&
+              !docs.setTextBoxGeometry(show, slide, "text999", 0.0, 0.0, 10.0, 10.0, &error) &&
+              !docs.removeTextBox(show, slide, "text999", &error) &&
+              !docs.moveTextBox(show, slide, "text999", 0, &error) &&
+              error.find("text999") != std::string::npos,
+          "every box operation refuses an unknown id naming that id");
+    check(!docs.setTextBoxLines(show, "slide999", secondId, {"x"}, &error),
+          "a box edit on an unknown slide is refused");
+
+    // The stack order IS the draw order, and a move names a destination in
+    // the final list — the same rule moveSlide follows, so the operator's
+    // hands do not have to learn a second one.
+    check(docs.moveTextBox(show, slide, secondId, 0, &error) &&
+              docs.findShow(show)->slides[0].items[0].id == secondId &&
+              docs.findShow(show)->slides[0].items[1].id == first,
+          "moveTextBox sends a box to the bottom of the stack");
+    check(docs.moveTextBox(show, slide, secondId, 0, &error) &&
+              docs.findShow(show)->slides[0].items[0].id == secondId,
+          "moving a box onto its own slot succeeds and changes nothing");
+    check(!docs.moveTextBox(show, slide, secondId, 2, &error),
+          "a destination at the box count is out of range");
+
+    // The ceiling is the scene wire's item limit: nine boxes would compile
+    // into a scene the worker refuses, so the model refuses the ninth.
+    bool filled = true;
+    while (filled && docs.findShow(show)->slides[0].items.size() < kMaxTextBoxes) {
+        filled = !docs.addTextBox(show, slide, TextBox{}, &error).empty();
+    }
+    check(filled && docs.findShow(show)->slides[0].items.size() == kMaxTextBoxes,
+          "a slide fills to the scene wire's box limit");
+    check(docs.addTextBox(show, slide, TextBox{}, &error).empty() &&
+              error.find(std::to_string(kMaxTextBoxes)) != std::string::npos &&
+              docs.findShow(show)->slides[0].items.size() == kMaxTextBoxes,
+          "the next box is refused naming the limit, and the slide keeps its count");
+
+    // Draining to nothing is legal — a background with no words is a slide an
+    // operator makes — but the single-text operations then have nothing to
+    // address, and refuse rather than silently growing a box back under
+    // whoever was typing.
+    std::vector<Id> drained;
+    while (!docs.findShow(show)->slides[0].items.empty()) {
+        const Id doomed = docs.findShow(show)->slides[0].items.front().id;
+        drained.push_back(doomed);
+        check(docs.removeTextBox(show, slide, doomed, &error), "draining one box");
+    }
+    check(docs.findShow(show)->slides[0].items.empty() &&
+              !docs.setSlideLines(show, slide, {"into nothing"}, &error) &&
+              error.find(slide) != std::string::npos,
+          "a slide with no boxes refuses typing naming the slide");
+    check(docs.findShow(show)->slides[0].items.empty(), "the refusal did not create a box");
+    check(docs.addTextBox(show, slide, TextBox{}, &error) != drained.front(),
+          "a box added after the slide was emptied does not reuse the first id");
+
+    // Addressing is BY ID, not by position (task 6.17a). Removing the MIDDLE
+    // box of a three-box stack leaves the outer two in their order — a removal
+    // that deleted whatever happened to sit at the front of the stack passes
+    // every single-box fixture in this file, which is exactly why this one is
+    // here rather than another empty-slide check.
+    {
+        Documents middle;
+        const Id midShow = middle.createShow("Middle", &error);
+        const Id midSlide = middle.appendSlide(midShow, &error);
+        const Id low = middle.findShow(midShow)->slides[0].items[0].id;
+        TextBox shape;
+        shape.lines = {"b"};
+        const Id centre = middle.addTextBox(midShow, midSlide, shape, &error);
+        const Id high = middle.addTextBox(midShow, midSlide, shape, &error);
+        check(middle.removeTextBox(midShow, midSlide, centre, &error) &&
+                  middle.findShow(midShow)->slides[0].items.size() == 2 &&
+                  middle.findShow(midShow)->slides[0].items[0].id == low &&
+                  middle.findShow(midShow)->slides[0].items[1].id == high,
+              "removing the middle box by id leaves the outer two, in order");
+        check(!middle.removeTextBox(midShow, midSlide, centre, &error) &&
+                  middle.findShow(midShow)->slides[0].items.size() == 2,
+              "a box that is already gone cannot be removed again");
+    }
 }
 
 void exerciseGroups() {
@@ -330,7 +471,7 @@ void exerciseFailureLeavesNoTrace() {
     const auto& after = docs.findShow(show)->slides;
     check(before.size() == after.size() && before[0].id == after[0].id &&
               before[1].id == after[1].id && after[0].id == b && after[0].group.empty() &&
-              after[0].lines.empty(),
+              after[0].items[0].lines.empty(),
           "the model is untouched after the refusals");
 }
 
@@ -417,10 +558,26 @@ bool sameService(const Documents& a, const Documents& b) {
         for (size_t i = 0; i < sa->slides.size(); ++i) {
             const Slide& x = sa->slides[i];
             const Slide& y = sb->slides[i];
-            if (x.id != y.id || x.group != y.group || x.lines != y.lines ||
-                x.notes != y.notes || x.styleId != y.styleId ||
-                x.backgroundAssetId != y.backgroundAssetId) {
+            if (x.id != y.id || x.group != y.group || x.notes != y.notes ||
+                x.styleId != y.styleId || x.backgroundAssetId != y.backgroundAssetId) {
                 return false;
+            }
+            // A slide's boxes are compared IN ORDER, id and geometry included
+            // (task 6.17a). Order and identity are the document's own: a round
+            // trip that swapped two boxes, or handed one a new id, would leave
+            // the operator's selection pointing at something else. The old
+            // comparison passed over the geometry silently, so this is also
+            // where a saved box's place first gets pinned.
+            if (x.items.size() != y.items.size()) {
+                return false;
+            }
+            for (size_t box = 0; box < x.items.size(); ++box) {
+                const TextBox& bx = x.items[box];
+                const TextBox& by = y.items[box];
+                if (bx.id != by.id || bx.lines != by.lines || bx.x != by.x || bx.y != by.y ||
+                    bx.width != by.width || bx.height != by.height) {
+                    return false;
+                }
             }
         }
     }
@@ -548,10 +705,10 @@ void exercisePersistence(const fs::path& tempRoot) {
         Documents back;
         check(openshow::domain::saveService(boxes, boxed, &error) &&
                   openshow::domain::loadService(&back, boxed, &error) &&
-                  back.findShow(boxShow)->slides[0].x == 240.25 &&
-                  back.findShow(boxShow)->slides[0].y == 180.0 &&
-                  back.findShow(boxShow)->slides[0].width == 1400.0 &&
-                  back.findShow(boxShow)->slides[0].height == 720.0,
+                  back.findShow(boxShow)->slides[0].items[0].x == 240.25 &&
+                  back.findShow(boxShow)->slides[0].items[0].y == 180.0 &&
+                  back.findShow(boxShow)->slides[0].items[0].width == 1400.0 &&
+                  back.findShow(boxShow)->slides[0].items[0].height == 720.0,
               "a text box round-trips through the manifest");
 
         // A legacy manifest: the same shape without the four box fields.
@@ -563,10 +720,10 @@ void exercisePersistence(const fs::path& tempRoot) {
                   R"("styles":[],"assets":[],"playlists":[]})");
         Documents oldBack;
         check(openshow::domain::loadService(&oldBack, legacy, &error) &&
-                  oldBack.findShow("show1")->slides[0].x == 160.0 &&
-                  oldBack.findShow("show1")->slides[0].y == 100.0 &&
-                  oldBack.findShow("show1")->slides[0].width == 1600.0 &&
-                  oldBack.findShow("show1")->slides[0].height == 880.0,
+                  oldBack.findShow("show1")->slides[0].items[0].x == 160.0 &&
+                  oldBack.findShow("show1")->slides[0].items[0].y == 100.0 &&
+                  oldBack.findShow("show1")->slides[0].items[0].width == 1600.0 &&
+                  oldBack.findShow("show1")->slides[0].items[0].height == 880.0,
               "a manifest without geometry loads with the default box");
 
         const fs::path warped = tempRoot / "warped";
@@ -680,10 +837,43 @@ void exercisePersistence(const fs::path& tempRoot) {
     {
         const fs::path dir = tempRoot / "future";
         check(tamperedPackage(package, dir, [](std::string& m) {
-                  return replaceOnce(m, "\"format\":1", "\"format\":999");
+                  // The refusal is about a version this build does NOT read,
+                  // so push up whatever number it actually wrote rather than
+                  // hard-coding today's. The hard-coded "1" this test used
+                  // until task 6.17a stopped matching the day the format moved
+                  // to 2, and a tamper that finds no anchor is a test passing
+                  // by not testing.
+                  const std::string key = "\"format\":";
+                  const size_t at = m.find(key);
+                  if (at == std::string::npos) {
+                      return false;
+                  }
+                  const size_t from = at + key.size();
+                  size_t to = from;
+                  while (to < m.size() && std::isdigit(static_cast<unsigned char>(m[to])) != 0) {
+                      ++to;
+                  }
+                  const unsigned long long written = std::strtoull(
+                      m.substr(from, to - from).c_str(), nullptr, 10);
+                  m.replace(from, to - from, std::to_string(written + 1000));
+                  return true;
               }),
               "test tamper anchors exist (format)");
         refuses(dir, "unsupported format", "a future format version is refused");
+    }
+    {
+        const fs::path dir = tempRoot / "wrong-era";
+        check(tamperedPackage(package, dir,
+                              [](std::string& m) {
+                                  return replaceOnce(m, "\"format\":2", "\"format\":1");
+                              }),
+              "test tamper anchors exist (this build's format)");
+        // A package claiming the OLDER era is the dangerous lie: a format-1
+        // reader looks for each slide's own "lines", and these slides keep
+        // their words in boxes. The load must refuse rather than hand back a
+        // service whose every slide has gone blank (task 6.17a).
+        refuses(dir, "must be an array",
+                "a format-2 manifest claiming to be format 1 is refused, not read as blank");
     }
     {
         const fs::path dir = tempRoot / "dangling-show";
@@ -741,6 +931,230 @@ void exercisePersistence(const fs::path& tempRoot) {
 
 // --- undo/redo and autosave (task 2.3) ---------------------------------------
 
+// Task 6.17a's storage half: what a slide's boxes look like in a file, what a
+// file written before they existed means, and every way a boxes-shaped file
+// can lie to the loader.
+void exerciseBoxStorage(const fs::path& tempRoot) {
+    std::string error;
+    int seq = 0;
+    const auto refusesJson = [&](const std::string& manifest, const std::string& expectIn,
+                                 const char* what) {
+        const fs::path dir = tempRoot / ("refuse-" + std::to_string(++seq));
+        std::filesystem::create_directories(dir);
+        writeFile(dir / "service.json", manifest);
+        Documents attempt;
+        error.clear();
+        const bool refused = openshow::domain::loadService(&attempt, dir, &error);
+        if (!check(!refused && error.find(expectIn) != std::string::npos, what)) {
+            // Which refusal did we get instead (or none at all)? Without this
+            // line the answer is a guess, and guessing is how a wrong expected
+            // string gets "fixed" to whatever the code happens to say.
+            std::fprintf(stderr, "   wanted \"%s\", load %s: %s\n", expectIn.c_str(),
+                         refused ? "succeeded" : "said", error.c_str());
+        }
+    };
+
+    // --- three boxes: order, identity and place all survive the file ---
+    {
+        Documents authored;
+        const Id show = authored.createShow("Three boxes", &error);
+        const Id slide = authored.appendSlide(show, &error);
+        const Id firstId = authored.findShow(show)->slides[0].items[0].id;
+        TextBox middle;
+        middle.lines = {"middle"};
+        middle.x = 200.0;
+        middle.y = 300.0;
+        middle.width = 400.0;
+        middle.height = 90.0;
+        const Id middleId = authored.addTextBox(show, slide, middle, &error);
+        TextBox top;
+        top.lines = {"top"};
+        top.x = 20.0;
+        top.y = 30.0;
+        top.width = 500.0;
+        top.height = 1000.0;
+        const Id topId = authored.addTextBox(show, slide, top, &error);
+        check(!middleId.empty() && !topId.empty() && middleId != firstId && topId != middleId,
+              "two more boxes are accepted under their own ids");
+
+        const fs::path package = tempRoot / "three-boxes";
+        Documents back;
+        check(openshow::domain::saveService(authored, package, &error) &&
+                  openshow::domain::loadService(&back, package, &error),
+              "a three-box slide saves and reloads");
+        const Slide& reloaded = back.findShow(show)->slides[0];
+        check(reloaded.items.size() == 3 && reloaded.items[0].id == firstId &&
+                  reloaded.items[1].id == middleId && reloaded.items[2].id == topId,
+              "the boxes come back in the same DRAW ORDER under the same ids");
+        check(reloaded.items[1].lines == std::vector<std::string>({"middle"}) &&
+                  reloaded.items[2].width == 500.0 && reloaded.items[2].y == 30.0,
+              "each box keeps its own words and its own rectangle");
+        check(readFile(package / "service.json").find("\"items\":[{\"id\"") !=
+                  std::string::npos,
+              "the manifest names its boxes and their ids, in order");
+
+        // The file's order is the model's rather than a hash walk's, so saving
+        // what was just loaded is byte-identical — and sameService() now
+        // compares box ids and geometry, which it passed over before.
+        const fs::path again = tempRoot / "three-boxes-again";
+        Documents twice;
+        check(openshow::domain::saveService(back, again, &error) &&
+                  openshow::domain::loadService(&twice, again, &error) &&
+                  sameService(back, twice) &&
+                  readFile(again / "service.json") == readFile(package / "service.json"),
+              "a multi-box service re-saves byte-identically and compares equal");
+
+        // Order is document state, so reordering must change the file: a
+        // manifest that recorded boxes in id order would lose the composition.
+        check(back.moveTextBox(show, slide, topId, 0, &error), "the reloaded stack reorders");
+        const fs::path reordered = tempRoot / "three-boxes-moved";
+        Documents movedBack;
+        check(openshow::domain::saveService(back, reordered, &error) &&
+                  openshow::domain::loadService(&movedBack, reordered, &error) &&
+                  movedBack.findShow(show)->slides[0].items[0].id == topId &&
+                  readFile(reordered / "service.json") != readFile(package / "service.json"),
+              "a reordered stack round-trips in its new order, in a different file");
+    }
+
+    // --- migration: a format-1 slide is ONE box, deterministically ---
+    {
+        const fs::path legacy = tempRoot / "migrate-1";
+        std::filesystem::create_directories(legacy);
+        writeFile(legacy / "service.json",
+                  R"({"format":1,"nextOrdinal":9,"shows":[{"id":"show1","name":"Old",)"
+                  R"("slides":[{"id":"slide1","lines":["Ancient","line"],)"
+                  R"("x":50,"y":60,"width":700,"height":300}]}],)"
+                  R"("styles":[],"assets":[],"playlists":[]})");
+        Documents first;
+        Documents second;
+        error.clear();
+        const bool loadedOnce = openshow::domain::loadService(&first, legacy, &error);
+        error.clear();
+        const bool loadedTwice = openshow::domain::loadService(&second, legacy, &error);
+        check(loadedOnce && loadedTwice, "a format-1 service still loads");
+        const Slide& migrated = first.findShow("show1")->slides[0];
+        check(migrated.items.size() == 1 &&
+                  migrated.items[0].lines == std::vector<std::string>({"Ancient", "line"}),
+              "a format-1 slide reads as exactly one box carrying its words");
+        check(migrated.items[0].x == 50.0 && migrated.items[0].y == 60.0 &&
+                  migrated.items[0].width == 700.0 && migrated.items[0].height == 300.0,
+              "the legacy slide's own geometry becomes the box's geometry");
+        check(migrated.items[0].id == "slide1-text1" &&
+                  second.findShow("show1")->slides[0].items[0].id == migrated.items[0].id,
+              "the migrated box's derived id is the same on every load of that file");
+
+        // The migration closes behind it: the next save writes the id, so from
+        // then on the box's identity lives in the file like any other.
+        const fs::path promoted = tempRoot / "migrate-promoted";
+        Documents promotedBack;
+        check(openshow::domain::saveService(first, promoted, &error) &&
+                  openshow::domain::loadService(&promotedBack, promoted, &error),
+              "the migrated service saves as format 2 and reloads");
+        check(readFile(promoted / "service.json").find("\"id\":\"slide1-text1\"") !=
+                  std::string::npos,
+              "the re-save writes the migrated box's id into the file");
+        check(promotedBack.findShow("show1")->slides[0].items[0].id == "slide1-text1" &&
+                  promotedBack.findShow("show1")->slides[0].items[0].lines ==
+                      std::vector<std::string>({"Ancient", "line"}),
+              "the id and the words survive the promotion unchanged");
+        check(promotedBack.setTextBoxGeometry("show1", "slide1", "slide1-text1", 5.0, 5.0, 640.0,
+                                              200.0, &error) &&
+                  promotedBack.findShow("show1")->slides[0].items[0].x == 5.0,
+              "a migrated box is editable by the id the migration gave it");
+    }
+
+    // --- a format-2 file can lie in eight ways; each is refused, naming it ---
+    {
+        const std::string head = R"({"format":2,"nextOrdinal":99,"shows":[{"id":"show1",)"
+                                 R"("name":"Boxed","slides":[{"id":"slide1",)";
+        const std::string tail = R"(]}],"styles":[],"assets":[],"playlists":[]})";
+        const std::string goodBox =
+            R"({"id":"text1","lines":["a"],"x":1,"y":1,"width":10,"height":10})";
+        const fs::path goodDir = tempRoot / "v2-good";
+        std::filesystem::create_directories(goodDir);
+        writeFile(goodDir / "service.json", head + R"("items":[)" + goodBox + "]}" + tail);
+        Documents fine;
+        error.clear();
+        check(openshow::domain::loadService(&fine, goodDir, &error) &&
+                  fine.findShow("show1")->slides[0].items[0].id == "text1",
+              "a hand-written format-2 manifest loads and the box keeps the file's id");
+
+        const std::string dupeBox =
+            R"({"id":"text1","lines":["b"],"x":1,"y":1,"width":10,"height":10})";
+        refusesJson(head + R"("items":[)" + goodBox + "," + dupeBox + "]}" + tail,
+                    "duplicate id",
+                    "two boxes sharing an id are refused: an edit could not say which");
+        refusesJson(head + R"("notes":"no boxes here"})" + tail, "must be an array",
+                    "a format-2 slide with no items list is refused, not read as empty");
+        refusesJson(head + R"("lines":["hand-bumped"],"items":[]})" + tail, "format 1",
+                    "a format-1 slide inside a format-2 file is refused naming the slide");
+        refusesJson(
+            head + R"("items":[{"lines":["a"],"x":1,"y":1,"width":10,"height":10}]})" + tail,
+            "must be a string", "a box with no id of its own is refused");
+        refusesJson(head +
+                        R"("items":[{"id":"../escape","lines":["a"],"x":1,"y":1,"width":10,)"
+                        R"("height":10}]})" + tail,
+                    "unsafe id", "a box id that is not a name is refused (6.13b's rule)");
+        refusesJson(head + R"("items":[{"id":"text1","lines":["a"],"x":1,"y":1,"width":0,)"
+                        R"("height":10}]})" + tail,
+                    "cannot be placed",
+                    "a box with no width is refused naming the slide and the box");
+        refusesJson(head + R"("items":[{"id":"text1","x":1,"y":1,"width":10,"height":10}]})" +
+                        tail,
+                    "must be an array", "a box with no lines list is refused");
+        refusesJson(head + R"("items":["text1"]})" + tail, "not an object",
+                    "a bare string where a box should be is refused");
+
+        std::string many = head + R"("items":[)";
+        for (int i = 0; i <= static_cast<int>(kMaxTextBoxes); ++i) {
+            if (i > 0) {
+                many += ",";
+            }
+            many += R"({"id":"text)" + std::to_string(i + 1) +
+                    R"(","lines":[],"x":1,"y":1,"width":10,"height":10})";
+        }
+        many += "]}" + tail;
+        refusesJson(many, std::to_string(kMaxTextBoxes),
+                    "more boxes than a scene can carry are refused naming the limit");
+
+        // Exactly at the limit loads — the refusal above is about the ceiling,
+        // not about the feature.
+        std::string exact = head + R"("items":[)";
+        for (size_t i = 0; i < kMaxTextBoxes; ++i) {
+            if (i > 0) {
+                exact += ",";
+            }
+            exact += R"({"id":"text)" + std::to_string(i + 1) +
+                     R"(","lines":[],"x":1,"y":1,"width":10,"height":10})";
+        }
+        exact += "]}" + tail;
+        const fs::path exactDir = tempRoot / "v2-exact";
+        std::filesystem::create_directories(exactDir);
+        writeFile(exactDir / "service.json", exact);
+        Documents atLimit;
+        error.clear();
+        check(openshow::domain::loadService(&atLimit, exactDir, &error) &&
+                  atLimit.findShow("show1")->slides[0].items.size() == kMaxTextBoxes,
+              "a slide at exactly the limit loads");
+    }
+
+    // --- a slide with no boxes at all is a slide, not a corrupt file ---
+    {
+        Documents drained;
+        const Id show = drained.createShow("Backdrop only", &error);
+        const Id slide = drained.appendSlide(show, &error);
+        check(drained.removeTextBox(show, slide,
+                                    drained.findShow(show)->slides[0].items[0].id, &error),
+              "the only box on a slide can be removed");
+        const fs::path package = tempRoot / "no-boxes";
+        Documents back;
+        check(openshow::domain::saveService(drained, package, &error) &&
+                  openshow::domain::loadService(&back, package, &error) &&
+                  back.findShow(show)->slides[0].items.empty(),
+              "a slide with no text boxes round-trips as a slide with no text boxes");
+    }
+}
+
 void exerciseHistory() {
     std::string error;
     Documents docs;
@@ -758,17 +1172,17 @@ void exerciseHistory() {
           "apply runs an append");
     check(history.apply([&] { return docs.setSlideLines(show, slide, {"First"}); }),
           "apply runs an edit");
-    check(docs.findShow(show)->slides[0].lines == std::vector<std::string>({"First"}),
+    check(docs.findShow(show)->slides[0].items[0].lines == std::vector<std::string>({"First"}),
           "the edit is live in the store");
     check(history.undoDepth() == 3, "three edits sit on the undo stack");
 
     check(history.undo(&error), "undo succeeds");
     check(docs.findShow(show)->slides.size() == 1 &&
-              docs.findShow(show)->slides[0].lines.empty(),
+              docs.findShow(show)->slides[0].items[0].lines.empty(),
           "undo reverses the lines edit");
     check(history.canRedo(), "the undone edit waits on the redo stack");
     check(history.redo(&error), "redo replays the edit");
-    check(docs.findShow(show)->slides[0].lines == std::vector<std::string>({"First"}),
+    check(docs.findShow(show)->slides[0].items[0].lines == std::vector<std::string>({"First"}),
           "the edit is back");
 
     check(history.undo(&error) && history.undo(&error), "undo twice more");
@@ -802,6 +1216,47 @@ void exerciseHistory() {
           "a later creation succeeds");
     check(replacement != doomed,
           "ids never recycle across undo (the watermark keeps the counter moving)");
+
+    // Task 6.17a, the two properties a stack of boxes adds to that rule:
+    // draw order is document state an undo step restores, and a box whose
+    // creation was undone does not come back as the identity of the next box
+    // an operator adds — the selection a canvas holds is a box id, and a
+    // recycled id is a selection that silently moved to different words.
+    {
+        Documents stacked;
+        History boxHistory(&stacked);
+        Id boxShow, boxSlide;
+        boxHistory.apply([&] { boxShow = stacked.createShow("Stack"); return !boxShow.empty(); });
+        boxHistory.apply([&] { boxSlide = stacked.appendSlide(boxShow);
+                               return !boxSlide.empty(); });
+        const Id bottom = stacked.findShow(boxShow)->slides[0].items[0].id;
+        TextBox shape;
+        shape.lines = {"added"};
+        Id added;
+        check(boxHistory.apply([&] { added = stacked.addTextBox(boxShow, boxSlide, shape);
+                                      return !added.empty(); }),
+              "adding a box runs through history");
+        check(boxHistory.apply([&] { return stacked.moveTextBox(boxShow, boxSlide, added, 0); }),
+              "reordering the stack runs through history");
+        check(stacked.findShow(boxShow)->slides[0].items[0].id == added &&
+                  stacked.findShow(boxShow)->slides[0].items[1].id == bottom,
+              "the stack reads in the moved order");
+        check(boxHistory.undo(&error) &&
+                  stacked.findShow(boxShow)->slides[0].items[0].id == bottom,
+              "one undo puts the stack back in the order it was");
+        check(boxHistory.redo(&error) &&
+                  stacked.findShow(boxShow)->slides[0].items[0].id == added,
+              "redo takes the new order back");
+        check(boxHistory.undo(&error) && boxHistory.undo(&error) &&
+                  stacked.findShow(boxShow)->slides[0].items.size() == 1,
+              "undoing the add leaves the slide its one original box");
+        Id next;
+        check(boxHistory.apply([&] { next = stacked.addTextBox(boxShow, boxSlide, shape);
+                                      return !next.empty(); }),
+              "a new box added after the undo is accepted");
+        check(next != added && next != bottom,
+              "the undone box's id is not back in circulation");
+    }
 
     // Whole-service rewind: undo everything to an empty store, redo it
     // all back, comparing field by field.
@@ -1445,6 +1900,7 @@ int main() {
     exerciseShows();
     exerciseSlides();
     exerciseGeometry();
+    exerciseTextBoxes();
     exerciseGroups();
     exerciseStyles();
     exercisePlaylists();
@@ -1455,6 +1911,7 @@ int main() {
                                            ("openshow-domain-tests-" + std::to_string(getpid()));
     std::filesystem::remove_all(tempRoot);
     exercisePersistence(tempRoot);
+    exerciseBoxStorage(tempRoot);
     std::filesystem::remove_all(tempRoot);
 
     exerciseHistory();

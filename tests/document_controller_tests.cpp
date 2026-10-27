@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -29,6 +30,7 @@
 
 #include <sys/stat.h>
 
+#include "openshow/domain/documents.h"
 #include "openshow/domain/storage.h"
 #include "openshow/scene/scene.h"
 
@@ -596,6 +598,155 @@ openshow::scene::Scene compiledFor(DocumentController& docs, const QString& slid
     return scene;
 }
 
+// --- several text boxes on one slide (task 6.17a) ---------------------------
+
+std::string readManifest(const std::filesystem::path& file) {
+    std::ifstream in(file);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+// A service written by hand, because this half of the split has no editor for
+// a second box yet (that is 6.17a2). A file is how a multi-box service really
+// reaches this controller: from another build, or from this one later.
+//   slide1 — three boxes: the default one, a title strip, a credit corner
+//   slide2 — no boxes at all: a backdrop with no words
+void writeMultiBoxService(const std::filesystem::path& service) {
+    std::filesystem::create_directories(service);
+    std::ofstream out(service / "service.json");
+    // One raw literal with its own delimiter: this manifest is JSON, so it
+    // contains no ')' at all, and a custom closing sequence means a stray
+    // paren in the data cannot silently end the string early. (Two earlier
+    // attempts at this fixture did exactly that and produced malformed JSON
+    // the loader refused for the wrong reason.)
+    out << R"svc({"format":2,"nextOrdinal":90,"shows":[{"id":"show1","name":"Stacked","notes":"","defaultStyleId":"","slides":[{"id":"slide1","group":"","items":[{"id":"text1","lines":["Verse line"],"x":160,"y":100,"width":1600,"height":880},{"id":"text2","lines":["TITLE"],"x":100,"y":40,"width":800,"height":120},{"id":"text3","lines":["photo: someone"],"x":1400,"y":980,"width":460,"height":60}],"notes":"","styleId":"","backgroundAssetId":""},{"id":"slide2","group":"","items":[],"notes":"","styleId":"","backgroundAssetId":""}]}],"styles":[],"assets":[],"playlists":[]})svc";
+    out.close();
+}
+
+void exerciseMultiBoxSession(const std::filesystem::path& root) {
+    const std::filesystem::path service = root / "service";
+    writeMultiBoxService(service);
+    DocumentController docs(nullptr, root);
+    check(docs.songs().size() == 1, "the multi-box service loads at startup");
+    docs.selectSong(QStringLiteral("show1"));
+    check(docs.slides().size() == 2, "both of its slides are listed");
+
+    // The row the list paints: the FIRST box, which is the one the canvas and
+    // the nudge keys edit until an operator can pick (6.17a2).
+    const QVariantMap row1 = docs.slides().at(0).toMap();
+    const QString slide1 = row1.value(QStringLiteral("id")).toString();
+    check(row1.value(QStringLiteral("preview")).toString() == QStringLiteral("Verse line") &&
+              row1.value(QStringLiteral("x")).toDouble() == 160.0 &&
+              row1.value(QStringLiteral("width")).toDouble() == 1600.0,
+          "a stacked slide previews and positions by its first box");
+    const QVariantMap row2 = docs.slides().at(1).toMap();
+    const QString slide2 = row2.value(QStringLiteral("id")).toString();
+    check(row2.value(QStringLiteral("preview")).toString() == QStringLiteral("(empty)") &&
+              row2.value(QStringLiteral("width")).toDouble() == 1600.0,
+          "a slide with no boxes still reports a placeable box, not zeros");
+
+    // The inspector shows ONE box's words until an operator can pick (6.17a2),
+    // and it shows the first: the same rule the rows and the nudge keys use, so
+    // the panel, the list and the canvas cannot be looking at three different
+    // boxes on a slide nobody has selected a box on yet.
+    docs.selectSlide(0);
+    check(docs.currentSlideText() == QStringLiteral("Verse line"),
+          "the text inspector shows the FIRST box's words");
+
+    // Search covers every box. An index over box 0 only would tell the operator
+    // this show does not contain the credit they typed second — the search
+    // result is a claim about the slide, not about its first element.
+    check(!docs.searchShows(QStringLiteral("photo: someone")).isEmpty(),
+          "a word living only in the third box still finds the show");
+    check(docs.searchShows(QStringLiteral("no such wording")).isEmpty(),
+          "and the same search is not simply always true");
+
+    // What the worker is handed: every box, in order, at its own size. This is
+    // the acceptance for the half — the compiled scene the operator sees off
+    // air is the model's stack, not its first element.
+    const openshow::scene::Scene stacked = compiledFor(docs, slide1);
+    check(stacked.items.size() == 3, "the compiled scene carries all three boxes");
+    check(stacked.items[0].lines == std::vector<std::string>{"Verse line"} &&
+              stacked.items[1].lines == std::vector<std::string>{"TITLE"} &&
+              stacked.items[2].lines == std::vector<std::string>{"photo: someone"},
+          "each box's words stay in its own item");
+    check(stacked.items[1].x == 100.0 && stacked.items[1].width == 800.0 &&
+              stacked.items[2].x == 1400.0 && stacked.items[2].y == 980.0,
+          "each box's rectangle travels to the wire unchanged");
+    check(compiledFor(docs, slide2).items.empty(),
+          "the no-box slide compiles to a scene with no items");
+
+    // Typing edits box 0 and nobody else — the legacy rule, and the reason the
+    // old single-box services and the text inspector are untouched by this.
+    docs.selectSlide(0);
+    docs.setSlideText(QStringLiteral("Verse line two"));
+    docs.flushText();
+    const openshow::scene::Scene afterTyping = compiledFor(docs, slide1);
+    check(afterTyping.items[0].lines == std::vector<std::string>{"Verse line two"} &&
+              afterTyping.items[1].lines == std::vector<std::string>{"TITLE"} &&
+              afterTyping.items[2].lines == std::vector<std::string>{"photo: someone"},
+          "typing edits the first box and leaves the other two alone");
+
+    // Copy and paste a stacked slide. A clip that carried the boxes' ids would
+    // write a file no loader accepts, so the paste is checked where it hurts:
+    // save it, and read the saved package back.
+    docs.selectSlide(0);
+    check(docs.copyCurrentSlide() && docs.pasteSlide(), "a stacked slide copies and pastes");
+    check(docs.slides().size() == 3, "paste inserted one slide");
+    const QString pastedId =
+        docs.slides().at(1).toMap().value(QStringLiteral("id")).toString();
+    const openshow::scene::Scene pasted = compiledFor(docs, pastedId);
+    check(pasted.items.size() == 3 && pasted.items[1].x == 100.0 &&
+              pasted.items[2].y == 980.0 &&
+              pasted.items[1].lines == std::vector<std::string>{"TITLE"},
+          "the pasted slide carries the same stack in the same order");
+    check(docs.pasteSlide() && docs.slides().size() == 4, "the same slide pastes a second time");
+    const QString pastedTwice =
+        docs.slides().at(2).toMap().value(QStringLiteral("id")).toString();
+    check(compiledFor(docs, pastedTwice).items.size() == 3,
+          "and the second paste is a full copy too");
+
+    check(docs.save(), "the session with pasted stacks saves");
+    openshow::domain::Documents fromDisk;
+    std::string loadError;
+    check(openshow::domain::loadService(&fromDisk, service, &loadError),
+          "the saved package with pasted stacks loads (a copied box id would refuse it)");
+    if (!fromDisk.showIds().empty()) {
+        const openshow::domain::Show* show = fromDisk.findShow("show1");
+        std::set<std::string> boxIds;
+        std::size_t total = 0;
+        for (const openshow::domain::Slide& slide : show->slides) {
+            for (const openshow::domain::TextBox& box : slide.items) {
+                boxIds.insert(box.id);
+                ++total;
+            }
+        }
+        // Three slides of three boxes (the original plus two pastes of it)
+        // and one slide with none: nine boxes, and the two pastes cannot have
+        // written the original's ids a second time.
+        check(total == 9 && boxIds.size() == total,
+              "every box in the saved file has its own id, paste included");
+    }
+
+    // One undo removes a pasted slide whole — its boxes are not separate steps.
+    const int before = static_cast<int>(docs.slides().size());
+    docs.undo();
+    check(static_cast<int>(docs.slides().size()) == before - 1,
+          "one undo removes a pasted stacked slide, boxes included");
+
+    // Pasting a slide with NO boxes does not hand back a slide with a box in
+    // it: the copy is the copy, and a slide whose author deleted every box is
+    // a backdrop an operator makes on purpose.
+    docs.selectSlide(2);  // the box-less original slide, back where it started
+    check(docs.currentSlide() == 2, "the box-less original slide is selected by index");
+    check(docs.copyCurrentSlide() && docs.pasteSlide(), "the box-less slide copies and pastes");
+    // Paste inserts after the source and selects what it made.
+    const QString emptyPaste =
+        docs.slides().at(docs.currentSlide()).toMap().value(QStringLiteral("id")).toString();
+    check(!emptyPaste.isEmpty() && emptyPaste != slide2 &&
+              compiledFor(docs, emptyPaste).items.empty(),
+          "the pasted box-less slide is a new slide with still no boxes");
+}
+
 void exerciseStylePanel(const std::filesystem::path& root) {
     DocumentController docs(nullptr, root);
     docs.createSong(QStringLiteral("Consistency"));
@@ -1154,6 +1305,7 @@ int main(int argc, char* argv[]) {
     exerciseRecoveredAssetOwnership(tempRoot / "adopt");
     exercisePlaylistAndLibrary(tempRoot / "playlist");
     exerciseStylePanel(tempRoot / "styles");
+    exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseClipboard(tempRoot / "clipboard");
     exerciseAutosaveSurfacing(tempRoot / "surfacing");
     exerciseBackgroundPersistence(tempRoot / "background");

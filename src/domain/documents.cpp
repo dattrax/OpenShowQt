@@ -40,6 +40,15 @@ std::string idError(const char* what, const Id& id) {
     return std::string(what) + " '" + id + "' does not exist";
 }
 
+// A box only paints if the math survives it: NaN/inf cannot be placed, and a
+// non-positive width or height leaves nothing to draw (task 4.3). Shared by
+// every path that places one, so the slide-level and box-level operations
+// cannot drift into honouring different numbers.
+bool placeableBox(double x, double y, double width, double height) {
+    return std::isfinite(x) && std::isfinite(y) && std::isfinite(width) &&
+           std::isfinite(height) && width > 0.0 && height > 0.0;
+}
+
 // Typography (task 4.4): the size convention is the domain's (0 = the
 // renderer's default), the alignment is the three words the scene wire
 // carries, and the line box is a sane multiplier — beyond these the
@@ -160,6 +169,12 @@ Id Documents::insertSlide(const Id& showId, size_t index, std::string* error) {
     }
     Slide slide;
     slide.id = nextId("slide");
+    // A created slide owns ONE box with the default geometry (task 6.17a):
+    // the slide an operator gets is the lyric box they could type straight
+    // into before multiple boxes existed, not a slide that refuses typing.
+    TextBox box;
+    box.id = nextId("text");
+    slide.items.push_back(std::move(box));
     const Id newId = slide.id;
     show->slides.insert(show->slides.begin() + static_cast<long>(index), std::move(slide));
     return newId;
@@ -217,7 +232,15 @@ bool Documents::setSlideLines(const Id& showId, const Id& slideId,
         fail(error, idError("slide", slideId));
         return false;
     }
-    show->slides[static_cast<size_t>(index)].lines = lines;
+    Slide& slide = show->slides[static_cast<size_t>(index)];
+    if (slide.items.empty()) {
+        // The single-text op has nothing to address. Creating a box here
+        // would mean typing into a slide the operator had deliberately
+        // emptied silently grew one back, so the refusal is the answer.
+        fail(error, "slide '" + slideId + "' has no text box to write into");
+        return false;
+    }
+    slide.items.front().lines = lines;
     return true;
 }
 
@@ -249,19 +272,163 @@ bool Documents::setSlideGeometry(const Id& showId, const Id& slideId, double x, 
         fail(error, idError("slide", slideId));
         return false;
     }
-    // A box only paints if the math survives it: NaN/inf cannot be
-    // placed, and a non-positive width or height leaves nothing to draw.
-    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(width) ||
-        !std::isfinite(height) || width <= 0.0 || height <= 0.0) {
-        fail(error, "slide '" + slideId +
-                        "' needs a finite text box with positive width and height");
+    Slide& slide = show->slides[static_cast<size_t>(index)];
+    if (slide.items.empty()) {
+        fail(error, "slide '" + slideId + "' has no text box to place");
         return false;
     }
+    if (!placeableBox(x, y, width, height)) {
+        fail(error, "text box '" + slide.items.front().id +
+                        "' needs a finite box with positive width and height");
+        return false;
+    }
+    TextBox& box = slide.items.front();
+    box.x = x;
+    box.y = y;
+    box.width = width;
+    box.height = height;
+    return true;
+}
+
+// --- text boxes (task 6.17a, review R17) ------------------------------------
+
+Id Documents::addTextBox(const Id& showId, const Id& slideId, const TextBox& box,
+                         std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return {};
+    }
+    const int index = findSlideIndex(*show, slideId);
+    if (index < 0) {
+        fail(error, idError("slide", slideId));
+        return {};
+    }
     Slide& slide = show->slides[static_cast<size_t>(index)];
-    slide.x = x;
-    slide.y = y;
-    slide.width = width;
-    slide.height = height;
+    // The ceiling is the scene wire's own: a ninth box would compile into a
+    // scene the worker refuses, so the operator would be told at present time
+    // that a slide they composed cannot be shown.
+    if (slide.items.size() >= kMaxTextBoxes) {
+        fail(error, "slide '" + slideId + "' already holds the " +
+                        std::to_string(kMaxTextBoxes) +
+                        " text boxes a scene can carry");
+        return {};
+    }
+    if (!placeableBox(box.x, box.y, box.width, box.height)) {
+        fail(error, "a new text box needs finite coordinates with positive width and height");
+        return {};
+    }
+    TextBox added = box;
+    // The caller's id is dropped, not adopted: pasting the same slide twice
+    // must produce two sets of boxes with two sets of identities, or the
+    // second paste's edits would move the first paste's box on another slide.
+    added.id = nextId("text");
+    slide.items.push_back(std::move(added));
+    return slide.items.back().id;
+}
+
+bool Documents::removeTextBox(const Id& showId, const Id& slideId, const Id& boxId,
+                              std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    const int slideIndex = findSlideIndex(*show, slideId);
+    if (slideIndex < 0) {
+        fail(error, idError("slide", slideId));
+        return false;
+    }
+    Slide& slide = show->slides[static_cast<size_t>(slideIndex)];
+    const int boxIndex = findBoxIndex(slide, boxId);
+    if (boxIndex < 0) {
+        fail(error, "slide '" + slideId + "' has no text box '" + boxId + "'");
+        return false;
+    }
+    slide.items.erase(slide.items.begin() + boxIndex);
+    return true;
+}
+
+bool Documents::setTextBoxLines(const Id& showId, const Id& slideId, const Id& boxId,
+                                const std::vector<std::string>& lines, std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    const int slideIndex = findSlideIndex(*show, slideId);
+    if (slideIndex < 0) {
+        fail(error, idError("slide", slideId));
+        return false;
+    }
+    Slide& slide = show->slides[static_cast<size_t>(slideIndex)];
+    const int boxIndex = findBoxIndex(slide, boxId);
+    if (boxIndex < 0) {
+        fail(error, "slide '" + slideId + "' has no text box '" + boxId + "'");
+        return false;
+    }
+    slide.items[static_cast<size_t>(boxIndex)].lines = lines;
+    return true;
+}
+
+bool Documents::setTextBoxGeometry(const Id& showId, const Id& slideId, const Id& boxId,
+                                   double x, double y, double width, double height,
+                                   std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    const int slideIndex = findSlideIndex(*show, slideId);
+    if (slideIndex < 0) {
+        fail(error, idError("slide", slideId));
+        return false;
+    }
+    Slide& slide = show->slides[static_cast<size_t>(slideIndex)];
+    const int boxIndex = findBoxIndex(slide, boxId);
+    if (boxIndex < 0) {
+        fail(error, "slide '" + slideId + "' has no text box '" + boxId + "'");
+        return false;
+    }
+    if (!placeableBox(x, y, width, height)) {
+        fail(error, "text box '" + boxId + "' needs a finite box with positive width and height");
+        return false;
+    }
+    TextBox& box = slide.items[static_cast<size_t>(boxIndex)];
+    box.x = x;
+    box.y = y;
+    box.width = width;
+    box.height = height;
+    return true;
+}
+
+bool Documents::moveTextBox(const Id& showId, const Id& slideId, const Id& boxId, size_t toIndex,
+                            std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    const int slideIndex = findSlideIndex(*show, slideId);
+    if (slideIndex < 0) {
+        fail(error, idError("slide", slideId));
+        return false;
+    }
+    Slide& slide = show->slides[static_cast<size_t>(slideIndex)];
+    const int from = findBoxIndex(slide, boxId);
+    if (from < 0) {
+        fail(error, "slide '" + slideId + "' has no text box '" + boxId + "'");
+        return false;
+    }
+    if (toIndex >= slide.items.size()) {
+        fail(error, "text box index " + std::to_string(toIndex) + " is past the end (" +
+                        std::to_string(slide.items.size()) + " boxes on slide '" + slideId +
+                        "')");
+        return false;
+    }
+    const TextBox moving = slide.items[static_cast<size_t>(from)];
+    slide.items.erase(slide.items.begin() + from);
+    slide.items.insert(slide.items.begin() + static_cast<long>(toIndex), moving);
     return true;
 }
 
@@ -784,6 +951,13 @@ int Documents::findSlideIndex(const Show& show, const Id& slideId) {
                                     [&](const Slide& s) { return s.id == slideId; });
     return found == show.slides.end() ? -1
                                       : static_cast<int>(found - show.slides.begin());
+}
+
+int Documents::findBoxIndex(const Slide& slide, const Id& boxId) {
+    const auto found = std::find_if(slide.items.begin(), slide.items.end(),
+                                    [&](const TextBox& b) { return b.id == boxId; });
+    return found == slide.items.end() ? -1
+                                      : static_cast<int>(found - slide.items.begin());
 }
 
 int Documents::findEntryIndex(const Playlist& playlist, const Id& entryId) {

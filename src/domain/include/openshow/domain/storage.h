@@ -5,7 +5,12 @@
  *   <directory>/
  *     service.json   — the entire model: shows, slides, groups (as
  *                      slide labels), styles, playlists and assets,
- *                      ids included, in "format": 1
+ *                      ids included, in "format": 2. Format 2 gives a
+ *                      slide an ORDERED list of text boxes, each with
+ *                      its own id (task 6.17a); format 1, which held one
+ *                      box written on the slide itself, still loads and
+ *                      is migrated — its box takes an id derived from its
+ *                      slide and keeps it into the next save.
  *     assets/        — every asset's bytes, copied in at save under
  *                      a collision-proof "<asset id>-<sanitised name>"
  *

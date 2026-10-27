@@ -385,21 +385,42 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         fontSize = style->fontSize;
     }
 
-    TextItem item;
-    item.lines = slide->lines;
-    item.color = textColor;
-    item.fontFamily = fontFamily;
-    item.fontSize = fontSize;
-    // The authored text box travels unchanged (task 4.3).
-    item.x = slide->x;
-    item.y = slide->y;
-    item.width = slide->width;
-    item.height = slide->height;
-    // Typography: the resolved style's alignment and line box (task 4.4),
-    // falling back to the item defaults when the slide carries no style.
-    item.align = style != nullptr ? style->align : std::string("center");
-    item.lineSpacing = style != nullptr ? style->lineSpacing : domain::kDefaultLineSpacing;
-    scene.items.push_back(std::move(item));
+    // One wire item per authored box, in the model's DRAW order (task 6.17a,
+    // review R17): the renderer already lays out and paints a list, so what
+    // the operator stacked is what gets painted, later boxes over earlier
+    // ones. A slide with no boxes compiles to a scene with no items — a
+    // background with no words is a thing operators make.
+    if (slide->items.size() > kMaxSceneItems) {
+        // Unreachable through the model's own operations, which cap a slide at
+        // kMaxTextBoxes and are pinned equal to this constant by a test. It
+        // stays because the two libraries are compiled separately: a scene this
+        // function emitted but its own codec refused would be a present-time
+        // failure for a slide that composed fine.
+        fail(error, "slide '" + slideId + "' holds " + std::to_string(slide->items.size()) +
+                        " text boxes and a scene carries at most " +
+                        std::to_string(kMaxSceneItems));
+        return false;
+    }
+    for (const domain::TextBox& source : slide->items) {
+        TextItem item;
+        item.lines = source.lines;
+        item.color = textColor;
+        item.fontFamily = fontFamily;
+        item.fontSize = fontSize;
+        // The authored text box travels unchanged (task 4.3).
+        item.x = source.x;
+        item.y = source.y;
+        item.width = source.width;
+        item.height = source.height;
+        // Typography: the resolved style's alignment and line box (task 4.4),
+        // falling back to the item defaults when the slide carries no style.
+        // Boxes on one slide share its style — per-box typography is a later
+        // slice of R17, and inventing a field the editor cannot set yet is how
+        // a file gets a meaning nothing can write.
+        item.align = style != nullptr ? style->align : std::string("center");
+        item.lineSpacing = style != nullptr ? style->lineSpacing : domain::kDefaultLineSpacing;
+        scene.items.push_back(std::move(item));
+    }
 
     if (!slide->backgroundAssetId.empty()) {
         const domain::Asset* asset = documents.findAsset(slide->backgroundAssetId);

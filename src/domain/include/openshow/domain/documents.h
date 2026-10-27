@@ -14,10 +14,13 @@
  * operation on Documents rather than free access to the members.
  *
  * Identity: every object owns a string Id issued by Documents
- * ("show1", "slide2", ... — a kind prefix plus a store-wide counter, so
+ * ("show1", "slide2", "text7" — a kind prefix plus a store-wide counter, so
  * ids stay unique across kinds and are reproducible in tests). Slides
  * live inside their show's vector (presentation order is vector order)
- * but keep their Id, which operations use; Ids never recycle.
+ * but keep their Id, which operations use; Ids never recycle. The counter is
+ * shared rather than per-kind, which is what makes a slide id skip a number
+ * once the slide owns a text box — ids name objects, and an operator reads
+ * names, never numbering.
  *
  * Failure contract, matching the rest of the project: operations return
  * false and fill the optional error string when an argument is unknown
@@ -27,6 +30,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -36,28 +40,63 @@ namespace openshow::domain {
 // uniqueness; persistence (2.2) serialises it verbatim.
 using Id = std::string;
 
-// One line of slide text. Blank strings are meaningful (stanza breaks)
-// and survive untouched.
+// One authored text box (task 6.17a, review R17): its own identity, its own
+// words, its own place in the 1920x1080 canvas space.
+//
+// The id is store-unique like every other id here, and it is how every edit
+// names the box — select it, move it, delete it — so it has to survive a
+// save, a reload and an undo unchanged. That is the whole reason a second
+// box needs an id at all: address by position and moving one box silently
+// retargets whatever the operator had selected.
+struct TextBox {
+    Id id;
+    // Blank lines are meaningful (stanza breaks) and survive untouched.
+    std::vector<std::string> lines;
+    // The authored box in the 1920x1080 canvas space (docs/reference.md §7).
+    // Defaults to the canvas minus the lyric margins — the region M2/M3 laid
+    // text inside, so untouched slides render exactly as before — and the
+    // renderer centres the text in the box (task 4.3).
+    double x = 160.0;
+    double y = 100.0;
+    double width = 1600.0;
+    double height = 880.0;
+};
+
+// A slide holds at most this many boxes. The number is not a taste limit: a
+// compiled scene is one RPC message, and the scene wire refuses a scene with
+// more items than this (scene.h's kMaxSceneItems, pinned equal to this
+// constant by a test). A model that could hold a tenth box could hold a slide
+// that cannot be drawn, and the failure would surface at present time.
+inline constexpr std::size_t kMaxTextBoxes = 8;
+
+// One slide of a show: a stack of text boxes over a background.
 struct Slide {
     Id id;
     // Group label ("Chorus", "Verse", ...). Empty means the slide is
     // ungrouped, which is the state a new slide starts in.
     std::string group;
-    std::vector<std::string> lines;
+    // The slide's words, as boxes, in DRAW ORDER: index 0 is painted first
+    // and a later box covers an earlier one where they overlap. Ordering is
+    // part of the document, so it is stored and undone like any other field.
+    //
+    // Empty is a legal slide — a background with no words — but only an
+    // authored one: every operation that creates a slide gives it one box
+    // with the default geometry, which is what a service written before
+    // multiple boxes existed describes.
+    std::vector<TextBox> items;
     std::string notes;
     // Style override; empty follows the show's default style.
     Id styleId;
     // Background image asset; empty means no background.
     Id backgroundAssetId;
-    // The authored text box in the 1920x1080 canvas space
-    // (docs/reference.md §7). Defaults to the canvas minus the lyric
-    // margins — the region M2/M3 laid text inside, so untouched slides
-    // render exactly as before — and the renderer centres the text in
-    // the box (task 4.3).
-    double x = 160.0;
-    double y = 100.0;
-    double width = 1600.0;
-    double height = 880.0;
+
+    // The box the slide's single-text operations address (setSlideLines,
+    // setSlideGeometry): the FIRST in draw order, which for every slide
+    // written before 6.17a is the only one there is. Null when the slide has
+    // no box at all.
+    const TextBox* firstTextBox() const {
+        return items.empty() ? nullptr : &items.front();
+    }
 };
 
 struct Show {
@@ -159,15 +198,44 @@ public:
     // Destination is where the slide lands after removal (moving onto
     // one's own position is a no-op that succeeds).
     bool moveSlide(const Id& showId, const Id& slideId, size_t toIndex, std::string* error = nullptr);
+    // THE SLIDE'S FIRST TEXT BOX (task 6.17a). Both single-text operations
+    // address box 0 in draw order, which is the only box a slide written
+    // before multiple boxes existed has: the operator-facing text editor and
+    // every old service keep working through them unchanged, and a slide
+    // authored down to no boxes at all has nothing for them to edit, which is
+    // refused rather than silently creating one.
     bool setSlideLines(const Id& showId, const Id& slideId,
                        const std::vector<std::string>& lines, std::string* error = nullptr);
     bool setSlideNotes(const Id& showId, const Id& slideId, const std::string& notes,
                        std::string* error = nullptr);
-    // The slide's authored text box in the 1920x1080 canvas space
+    // The first box's authored geometry in the 1920x1080 canvas space
     // (task 4.3): every value finite, width and height positive. The
     // renderer wraps at the width and centres the text in the box.
     bool setSlideGeometry(const Id& showId, const Id& slideId, double x, double y,
                           double width, double height, std::string* error = nullptr);
+
+    // --- text boxes (task 6.17a, review R17) ---
+    //
+    // The only way to add, move or delete one of a slide's boxes. `box.id` is
+    // IGNORED: the store issues the id, so a clipboard, a template or a
+    // half-built undo snapshot can never smuggle a duplicate identity in.
+    // The new box goes on TOP of the stack (drawn last), which is what an
+    // operator adding a box to a composed slide expects; reorder it with
+    // moveTextBox. Returns the new box's id, or "" on failure.
+    Id addTextBox(const Id& showId, const Id& slideId, const TextBox& box,
+                  std::string* error = nullptr);
+    bool removeTextBox(const Id& showId, const Id& slideId, const Id& boxId,
+                       std::string* error = nullptr);
+    bool setTextBoxLines(const Id& showId, const Id& slideId, const Id& boxId,
+                         const std::vector<std::string>& lines, std::string* error = nullptr);
+    bool setTextBoxGeometry(const Id& showId, const Id& slideId, const Id& boxId,
+                            double x, double y, double width, double height,
+                            std::string* error = nullptr);
+    // Reorders the DRAW stack: index 0 is painted first. As with moveSlide,
+    // positions name destinations in the FINAL list, so the ceiling is the
+    // unchanged count and the box's own slot is a legal no-op that succeeds.
+    bool moveTextBox(const Id& showId, const Id& slideId, const Id& boxId, size_t toIndex,
+                     std::string* error = nullptr);
 
     // --- groups ---
 
@@ -276,6 +344,8 @@ private:
     // Index of the slide/entry within its container, or -1.
     static int findSlideIndex(const Show& show, const Id& slideId);
     static int findEntryIndex(const Playlist& playlist, const Id& entryId);
+    // Index of the box within its slide's DRAW order, or -1 (task 6.17a).
+    static int findBoxIndex(const Slide& slide, const Id& boxId);
     // "#rgb"/"#rrggbb" only; error names the bad value.
     static bool validColor(const std::string& color, std::string* error);
     Id nextId(const char* kind);

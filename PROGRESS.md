@@ -1390,13 +1390,121 @@ Updated: 2026-10-27 (Europe/London).
     `-Wfree-nonheap-object` false positive at
     `tests/background_media_tests.cpp:2294` (6.15b test code); offscreen UI
     loads with the five pre-existing QML notices and no load error.
-- Exact next action: **6.17a** per the PLAN.md ledger (review R17) — close the
-  multiple-text-box authoring/storage/compiler gap using stable item ids: legacy
-  single-box files render identically, while multiple boxes create, edit, move,
-  resize and reorder with undo, save/reload and a correct worker preview; split
-  the slice before coding if it exceeds two days. R16 is closed on both halves;
-  review completion does not mark any finding fixed, and no new implementation
-  blocker was found.
+- **Task 6.17a1 DONE — a slide is a stack of text boxes (review R17, first
+  half of the 6.17a split).** `domain::Slide` no longer owns one lines/geometry
+  tuple: it owns `items`, an ordered `std::vector<TextBox>` in DRAW order, each
+  box carrying a store-issued id, its own words and its own 1920x1080
+  rectangle. The old representation is gone rather than shadowed — there is no
+  `slide.lines`, no `slide.x` — because a model that keeps both makes every
+  reader pick a favourite and every writer remember both, and the first reader
+  to disagree is the preview an operator trusts.
+  - **The legacy pair still works, and says what it addresses.**
+    `setSlideLines`/`setSlideGeometry` are documented as addressing box 0 in
+    draw order — the only box a pre-6.17a slide has — and a slide drained to no
+    boxes REFUSES them ("slide '…' has no text box to write into") instead of
+    growing a box back under whoever was typing. The new operations own the
+    rest: `addTextBox` (appends on top; **the caller's id is dropped**, so a
+    clip or a template cannot smuggle a duplicate identity in), `removeTextBox`,
+    `setTextBoxLines`, `setTextBoxGeometry`, `moveTextBox` (destinations name a
+    slot in the FINAL list and the box's own slot is a legal no-op — the rule
+    `moveSlide` already follows), all sharing one `placeableBox()` so the
+    slide-level and box-level paths cannot drift into honouring different
+    numbers. Box ids come from the store-wide `nextId("text")`: a per-kind
+    counter would need its own persistence and its own history watermark, and
+    the cost — a fresh slide's id now skips an ordinal — falls on a name nobody
+    asserts.
+  - **The ceiling is the wire's own number.** `domain::kMaxTextBoxes` is pinned
+    EQUAL to `scene::kMaxSceneItems` by test: a ninth box would compile into a
+    scene the worker's codec refuses, which is a failure an operator meets while
+    presenting rather than while editing. Enforced at `addTextBox`, at
+    `fromJson`, and defensively in `compileSlide`, where it is unreachable
+    through the model and disclosed as such rather than counted.
+  - **`service.json` is format 2.** A slide writes `"items": [{id, lines, x, y,
+    width, height}]` in draw order and no longer writes slide-level
+    `lines`/`x`/`y`/`width`/`height`. That is a version bump rather than an
+    optional key, and the difference is who finds out: an optional key lets a
+    v2 file open in an older build, which shows the first box of a slide whose
+    author had composed four and says nothing. Format 1 still LOADS and migrates
+    to one box whose id is DERIVED (`slide.id + "-text1"`), because a load must
+    be a function of its file — loading the same legacy service twice agrees
+    about which box is which — and the next save writes that id into the file so
+    the migrated identity becomes durable from then on. A v2 slide still
+    carrying `"lines"` is refused: `… is format 1 in a format 2 file`.
+  - **No item ids on the scene wire.** The compiler emits one wire item per box
+    in draw order and the renderer, which has laid out several items since 4.3,
+    needs nothing new; the wire's closed key set is not bumped for an identity
+    no worker decision depends on. Recorded for 6.17b, where a layer-ordered
+    image item may want one.
+  - **The session's rules follow from "a copy is a copy".** Rows and the text
+    inspector address box 0 until an operator can pick a box (6.17a2); a slide
+    with no boxes still reports the DEFAULT rectangle rather than zeros, so a
+    canvas drawing the row's outline is never handed nothing; the clip holds the
+    boxes with ids CLEARED and a paste re-issues them, which is what lets the
+    same slide be pasted twice; pasting a ZERO-box slide removes the box the new
+    slide arrived with; the search index covers EVERY box, because a box-0-only
+    index tells the operator a show does not contain the credit they typed
+    second; and one undo removes a pasted stacked slide whole.
+  - **Tests.** `domain_tests`: `exerciseTextBoxes()` (order, per-box edits that
+    leave their neighbour alone, unknown ids refusing and naming themselves, the
+    cap naming 8, an unplaceable new box refused, the MIDDLE box removed by id
+    leaving the outer two in order, drain-to-zero, ids not reused after a
+    drain) and `exerciseBoxStorage()` (three boxes' order/id/geometry round
+    trip, a re-save byte-identical, a reorder that changes the file, format-1
+    migration including "the same derived id on every load" and that id's
+    promotion into the next save, nine format-2 refusals, a slide at exactly the
+    limit loading, a zero-box slide round-tripping). `scene_tests`:
+    `exerciseMultiBox()` (three boxes → three wire items in draw order at three
+    rectangles, the slide's style applied to every box alike, the wire round trip
+    unchanged, a zero-box slide compiling to no items) and
+    `exerciseBoxConstants()` now pinning `kMaxTextBoxes == kMaxSceneItems`.
+    `document_controller_tests`: `exerciseMultiBoxSession()` drives a
+    hand-written format-2 service — how a stacked slide reaches this build until
+    the editor can author one — and checks the row, the inspector, a search hit
+    that lives only in the third box, the compiled three-item scene, a stacked
+    slide pasted twice with all nine saved box ids verified distinct, and a
+    box-less paste that stays box-less. `scene_render_tests`:
+    `testAuthoredBoxStackRenders()` compiles TWO boxes from a real
+    `domain::Documents` and measures two separated bands each centred in its own
+    box, unchanged through the wire, then loads a format-1 file and requires its
+    frame to be BYTE-IDENTICAL to a literal transcription of what the
+    single-box compiler emitted — "legacy single-box files render identically"
+    measured rather than argued. `document_present_tests`: the stacked slide's
+    JSON clears a live worker's validator and reports itself on air, the
+    box-less slide presents as a scene with no items, and nine items are refused
+    at `scene.prepare` naming "over the limit of 8" with the store unharmed
+    afterwards.
+  - **Mutations** m01–m26 plus m04a/m05a/m10a/m14a: **28/30 CAUGHT**, with blame
+    on the intended check (adopting the caller's id failed the
+    two-pastes-yield-distinct-ids check, the reversed writer failed the
+    draw-order round trip, swapping the two format eras failed the whole package
+    load, the shared-geometry compiler mutant failed "none of them inherits a
+    neighbour's", box-0-only search failed the credit living in the third box).
+    Disclosed: **m19**, `compileSlide`'s own item ceiling, moves nothing because
+    the model caps first and the two constants are pinned equal — two libraries
+    compiled separately, the same class of truth as 6.14b's pause-drop; **m25**,
+    the clipboard clearing the ids it copied, is the second of two identical
+    locks, since `addTextBox` drops the id it is handed (m02 shows that one has
+    teeth). Two verdicts are reported as they were observed rather than as they
+    would read better: **m07** (reorder's off-by-one) was caught by a CRASH in
+    the reorder fixture, not by a printed refusal, and **m13** first scored
+    "caught (build failure)" because the mutant had swallowed a closing brace —
+    rewritten to replace the condition only, it re-scored against a named
+    refusal, since a mutant that cannot build is the driver lying rather than a
+    fixture passing.
+  - Gates desktop **48/48** (229.0 s), headless **27/27** (48.5 s);
+    `domain_tests` 0.02 s, `scene_tests` 0.00 s, `document_controller_tests`
+    3.73 s, `scene_render_tests` 7.01 s, `document_present_tests` 0.94 s; both
+    trees build clean apart from the pre-existing GCC `-Wfree-nonheap-object`
+    false positive at `tests/background_media_tests.cpp:2294` (6.15b test code).
+- Exact next action: **6.17a2** per the PLAN.md ledger (review R17) — author
+  several text boxes from the editor: an outline per box with handles on the
+  selected one only, hit-testing for the topmost box under the pointer, the
+  inspector editing the SELECTED box, keyboard nudge and tab order reaching boxes
+  as well as slides, and add/delete/reorder as one undo step each, so what the
+  operator drags is what Skia draws with no second layout anywhere. The model,
+  the file format and the compiler already carry a stack (6.17a1), so 6.17a2
+  needs no schema change; R17's remaining halves are 6.17b (authored image items
+  and layer order) and 6.17c (background fits).
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -3813,6 +3921,53 @@ of this work.
   development tool and nothing in the build references it.
 
 ## Decisions
+
+- (2026-10-27, task 6.17a1) Four rules about identity, and three about the ways
+  this repo's own testing nearly lied.
+  **A model with two representations of one fact is two chances to disagree**:
+  the cheap version of this change kept `Slide::lines` as "the main box" and put
+  `items` beside it. It compiles, and then every reader picks a favourite and
+  every writer has to remember both, and the first thing to drift is a preview
+  an operator trusts. The legacy pair is now a documented VIEW onto
+  `items.front()` — the box a pre-6.17a slide has exactly one of — and a slide
+  the operator drained to nothing REFUSES the legacy ops naming itself rather
+  than growing a box back under their hands.
+  **A format version exists for the reader who is not in this build**: adding
+  `"items"` as an optional key to format 1 was the tempting move, and it is the
+  one that hides the bug — an older build opens the file, finds no slide-level
+  `lines`, shows one box of a slide whose author composed four, and says
+  nothing. Bumping to 2 makes that build refuse the package loudly; format 1
+  still loads here, migrated. The corollary: an identity a load invents must be
+  a FUNCTION of the file (`slide.id + "-text1"`, derived and deterministic,
+  promoted into the file by the next save). An id minted from a counter agrees
+  with itself only until the same file is opened a second time, and then the
+  operator's selection is pointing at a different box than it was.
+  **Two libraries, one number, pinned by a test**: `kMaxTextBoxes` is
+  `scene::kMaxSceneItems`, and neither header may include the other's, so
+  `exerciseBoxConstants()` compares them. The guard inside `compileSlide` that
+  the equality makes unreachable stays — the libraries are compiled separately,
+  and a scene this function emits but its own codec refuses is a present-time
+  failure — but it is DISCLOSED as unmutable rather than counted in the tally.
+  **A copy is a copy, or it is a new thing**: the clip clears the ids it copies,
+  `addTextBox` drops the id it is handed, a slide pasted twice gets two sets of
+  identities, and pasting a slide with NO boxes removes the default box the new
+  slide arrived with. A copy that quietly adds a box is a different slide, and
+  the operator finds out by pressing undo once and having two boxes appear.
+  Then the three testing lessons. **A C++ raw string ends at the first `)"`, so
+  a JSON fixture needs its own delimiter** — two hand-written manifests were
+  malformed in the source and got refused for a reason that had nothing to do
+  with what they claimed to test, and the surviving fixture says so where it
+  sits. **A tamper anchor that stops matching is a test that passes by not
+  testing**: the "future format" case had been replacing `"format":1` since
+  before the format moved to 2 and passed both ways; it now parses whatever
+  number the writer emitted and adds 1000, and the helper still reports failure
+  when it finds no anchor. **A refusal assertion must print what the refusal
+  actually said**, or a wrong expected string gets "fixed" to whatever the code
+  happens to say; the box-refusal helper now prints the loader's sentence on
+  mismatch, which is how a wrong expectation was found in the test rather than a
+  bug in the loader. One more, inherited and applied here before it bit: the
+  mutation battery's rebuild set includes the WORKER binary, because a live
+  fixture that spawns a stale binary scores a mutant that never ran.
 
 - (2026-10-27, task 6.16b) Four rules, one of them about how this repo tests.
   **A shared helper that ignores what makes its callers different is worse than

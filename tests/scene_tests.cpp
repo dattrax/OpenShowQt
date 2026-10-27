@@ -168,6 +168,84 @@ void exerciseCompile(const Fixture& fx) {
           "an unknown slide refuses and leaves the target alone");
 }
 
+// Task 6.17a (review R17): the compiler's job with a stack of boxes is to
+// hand the renderer the SAME stack — same order, same rectangles, same words
+// per box — because the renderer has drawn several items since 4.3 and the
+// whole point is that a second box is not a second opinion about layout.
+void exerciseMultiBox(Fixture& fx) {
+    std::string error;
+    const Id show = fx.show;
+    const Id slide = fx.docs.appendSlide(show);
+    openshow::domain::TextBox title;
+    title.lines = {"Title line"};
+    title.x = 100.0;
+    title.y = 40.0;
+    title.width = 800.0;
+    title.height = 120.0;
+    const Id titleId = fx.docs.addTextBox(show, slide, title, &error);
+    openshow::domain::TextBox credit;
+    credit.lines = {"small", "credit"};
+    credit.x = 1200.0;
+    credit.y = 900.0;
+    credit.width = 600.0;
+    credit.height = 100.0;
+    const Id creditId = fx.docs.addTextBox(show, slide, credit, &error);
+    check(!titleId.empty() && !creditId.empty(), "the fixture's slide now has three boxes");
+
+    scene::Scene out;
+    check(scene::compileSlide(fx.docs, show, slide, &out, &error) && out.items.size() == 3,
+          "a three-box slide compiles to three wire items");
+    check(out.items[0].x == 160.0 && out.items[1].x == 100.0 && out.items[2].x == 1200.0,
+          "the items arrive in the model's DRAW order, each at its own x");
+    check(out.items[1].y == 40.0 && out.items[1].width == 800.0 && out.items[1].height == 120.0 &&
+              out.items[2].y == 900.0 && out.items[2].width == 600.0,
+          "every box's own rectangle travels; none of them inherits a neighbour's");
+    check(out.items[1].lines == std::vector<std::string>({"Title line"}) &&
+              out.items[2].lines == std::vector<std::string>({"small", "credit"}),
+          "words stay in the box they were written in, blank lines and all");
+    // Style is per slide today (R17's later slices own per-box typography), so
+    // what every box must do is agree: same colour, same face, same typography.
+    check(out.items[0].color == out.items[1].color &&
+              out.items[1].fontFamily == out.items[2].fontFamily &&
+              out.items[1].fontSize == out.items[2].fontSize &&
+              out.items[1].align == out.items[2].align &&
+              out.items[1].lineSpacing == out.items[2].lineSpacing,
+          "the slide's resolved style is applied to every box alike");
+
+    // The wire: three items with three geometries, unchanged through JSON.
+    const std::string text = boost::json::serialize(scene::toJson(out));
+    boost::system::error_code parseError;
+    const boost::json::value parsed = boost::json::parse(text, parseError);
+    scene::Scene readBack;
+    check(!parseError && scene::fromJson(parsed.as_object(), &readBack, &error) &&
+              readBack == out,
+          "a multi-box scene round-trips through the wire unchanged");
+    const boost::json::array& wireItems = parsed.as_object().at("items").as_array();
+    check(wireItems.size() == 3 &&
+              wireItems[2].as_object().at("x").to_number<double>() == 1200.0,
+          "the JSON keeps the order and each box's own geometry");
+
+    // A slide drained of boxes is a background, not a broken scene.
+    const Id bare = fx.docs.appendSlide(show);
+    check(fx.docs.removeTextBox(show, bare, fx.docs.findShow(show)->slides.back().items[0].id,
+                                &error),
+          "the fixture's bare slide loses its only box");
+    scene::Scene words;
+    check(scene::compileSlide(fx.docs, show, bare, &words, &error) && words.items.empty(),
+          "a slide with no boxes compiles to a scene with no items");
+    check(words.background.color == scene::Scene{}.background.color ||
+              !words.background.hasImage,
+          "and it still carries its background, just no words");
+
+    // The compiler's own ceiling is unreachable because the model caps first;
+    // it exists so a slide can never compile into a scene its own codec would
+    // refuse. The constants being equal is the load-bearing half, pinned in
+    // exerciseBoxConstants(); this is the sentence about which half is real.
+    check(openshow::domain::kMaxTextBoxes == scene::kMaxSceneItems &&
+              fx.docs.findShow(show)->slides[1].items.size() <= scene::kMaxSceneItems,
+          "no slide the model can hold exceeds the scene wire's item budget");
+}
+
 void exerciseImmutability(Fixture& fx) {
     std::string error;
     scene::Scene compiled;
@@ -766,14 +844,21 @@ void exerciseMeasuredSizes(const Fixture& fx) {
 }  // namespace
 
 void exerciseBoxConstants() {
-    // The domain's Slide defaults and the scene library's constants are
-    // one promise written twice (the domain cannot include scene.h):
-    // a fresh slide must carry exactly the scene's default text box...
-    const openshow::domain::Slide fresh;
+    // The domain's defaults and the scene library's constants are one promise
+    // written twice (the domain cannot include scene.h): a fresh slide's box
+    // must be exactly the scene's default text box...
+    const openshow::domain::TextBox fresh;
     check(fresh.x == scene::kDefaultBoxX && fresh.y == scene::kDefaultBoxY &&
               fresh.width == scene::kDefaultBoxWidth &&
               fresh.height == scene::kDefaultBoxHeight,
           "a fresh Slide carries the scene library's default text box");
+    // ...and the number of boxes a slide may hold must be the number a scene
+    // may carry (task 6.17a). Two libraries, one limit, stated twice because
+    // neither can include the other's header: if these ever disagree, a model
+    // can hold a slide its own wire format refuses, which is a failure an
+    // operator meets while presenting rather than while editing.
+    check(openshow::domain::kMaxTextBoxes == scene::kMaxSceneItems,
+          "a slide's box cap IS the scene wire's item cap");
     // ...and that box is the canvas minus its margins, centred: the region
     // M2/M3 drew text in, so untouched slides keep drawing identically.
     check(scene::kDefaultBoxX + scene::kDefaultBoxWidth / 2.0 ==
@@ -786,6 +871,7 @@ void exerciseBoxConstants() {
 int main() {
     Fixture fx = buildFixture();
     exerciseCompile(fx);
+    exerciseMultiBox(fx);
     exerciseImmutability(fx);
     exerciseWireRoundTrip(fx);
     exerciseBudgets(fx);

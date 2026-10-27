@@ -20,9 +20,12 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 #include "include/codec/SkCodec.h"
 #include "include/core/SkBitmap.h"
@@ -34,6 +37,8 @@
 #include "include/core/SkRect.h"
 #include "include/core/SkSurface.h"
 
+#include "openshow/domain/documents.h"
+#include "openshow/domain/storage.h"
 #include "openshow/scene/demo.h"
 #include "openshow/scene/scene.h"
 
@@ -492,6 +497,132 @@ void testPerBoxPlacement() {
           "upper item centres in its own box (" + std::to_string(upperCenter) + ")");
     check(std::abs(lowerCenter - 830.0 * kScale) <= 12.0,
           "lower item centres in its own box (" + std::to_string(lowerCenter) + ")");
+}
+
+// Task 6.17a (review R17), the pixel end of the chain. Every fixture above
+// hands the renderer a hand-built Scene; this one starts where an operator
+// starts — a document — because the thing that had to be proved is the seam
+// between them. Two claims, measured:
+//
+//   - a SECOND authored box reaches the pixels as its own words inside its own
+//     rectangle, in the model's draw order, rather than being dropped or
+//     folded into the first box's layout;
+//   - a service written before boxes existed draws the SAME frame it drew
+//     before this change — checked against a literal transcription of what the
+//     single-box compiler emitted, byte for byte, not argued from re-reading
+//     the code that changed.
+void testAuthoredBoxStackRenders() {
+    namespace domain = openshow::domain;
+    std::string error;
+
+    // --- two authored boxes -> two pieces of ink, each where its box is ---
+    domain::Documents docs;
+    const domain::Id show = docs.createShow("Stacked", &error);
+    const domain::Id slide = docs.appendSlide(show, &error);
+    docs.setSlideLines(show, slide, {"bottom of the stack"}, &error);
+    domain::TextBox title;
+    title.lines = {"A TITLE STRIP"};
+    title.x = 160.0;
+    title.y = 60.0;
+    title.width = 1600.0;
+    title.height = 180.0;
+    check(!docs.addTextBox(show, slide, title, &error).empty(),
+          "the document accepts a second box");
+
+    scene::Scene compiled;
+    if (!check(scene::compileSlide(docs, show, slide, &compiled, &error) &&
+                   compiled.items.size() == 2,
+               "a two-box slide compiles to two wire items: " + error)) {
+        return;
+    }
+    Frame stacked;
+    if (!renderFixture(compiled, "authored-stack", &stacked, &error)) {
+        check(false, "the two-box slide renders: " + error);
+        return;
+    }
+    check(inkBands(stacked) >= 2, "both authored boxes draw as separated ink bands");
+
+    // Each box alone lands at the centre of its OWN box (150 and 540 authored
+    // y). Without this, "two bands" would still pass if the compiler drew both
+    // items in the first box's rectangle and one happened to sit above the
+    // other's baseline.
+    scene::Scene onlyTitle = compiled;
+    onlyTitle.items.erase(onlyTitle.items.begin());
+    scene::Scene onlyBottom = compiled;
+    onlyBottom.items.erase(onlyBottom.items.begin() + 1);
+    Frame titleFrame;
+    Frame bottomFrame;
+    if (!renderFixture(onlyTitle, "authored-title-only", &titleFrame, &error) ||
+        !renderFixture(onlyBottom, "authored-bottom-only", &bottomFrame, &error)) {
+        check(false, "the single-box renders: " + error);
+        return;
+    }
+    const double titleCentre = measureInk(titleFrame).centerY;
+    const double bottomCentre = measureInk(bottomFrame).centerY;
+    check(std::abs(titleCentre - 150.0 * kScale) <= 12.0,
+          "the second box's words centre in the second box (" + std::to_string(titleCentre) + ")");
+    check(std::abs(bottomCentre - 540.0 * kScale) <= 12.0,
+          "the first box's words stay in the first box (" + std::to_string(bottomCentre) + ")");
+
+    // And through the wire, unchanged: the picture the worker paints from a
+    // scene.prepare payload of a stacked slide is the picture of the scene.
+    const std::string wire = boost::json::serialize(scene::toJson(compiled));
+    boost::system::error_code parseError;
+    scene::Scene fromWire;
+    if (check(scene::fromJson(boost::json::parse(wire, parseError), &fromWire, &error) &&
+                  !parseError && fromWire == compiled,
+              "a stacked scene round-trips through the wire unchanged")) {
+        Frame stackedAgain;
+        if (renderFixture(fromWire, "authored-stack-wire", &stackedAgain, &error)) {
+            check(stackedAgain.pixels == stacked.pixels,
+                  "the stacked scene renders identically before and after the wire");
+        } else {
+            check(false, "the wire-stacked scene renders: " + error);
+        }
+    }
+
+    // --- a format-1 service still draws yesterday's frame ---
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("openshow-render-legacy-" + std::to_string(static_cast<long>(::getpid())));
+    std::filesystem::create_directories(root);
+    {
+        std::ofstream out(root / "service.json");
+        // Deliberately the whole old shape: format 1, no items, the slide's own
+        // lines and geometry. This is a file from before the change, not a file
+        // this build wrote and renamed.
+        out << R"svc({"format":1,"nextOrdinal":9,"shows":[{"id":"show1","name":"Old","notes":"","defaultStyleId":"","slides":[{"id":"slide1","group":"","lines":["Ancient grace","","still centred"],"notes":"","styleId":"","backgroundAssetId":"","x":160,"y":100,"width":1600,"height":880}]}],"styles":[],"assets":[],"playlists":[]})svc";
+    }
+    domain::Documents legacy;
+    scene::Scene legacyCompiled;
+    if (check(domain::loadService(&legacy, root, &error) &&
+                  scene::compileSlide(legacy, "show1", "slide1", &legacyCompiled, &error) &&
+                  legacyCompiled.items.size() == 1,
+              "a format-1 service loads and compiles to one item: " + error)) {
+        // What the single-box compiler emitted for the same slide, transcribed
+        // literally: one item carrying the slide's lines at TextItem's own
+        // defaults, because those defaults ARE the legacy lyric box (pinned in
+        // scene_tests). If migration or compilation ever shifts a default by a
+        // pixel, this equality is what breaks.
+        scene::Scene oldShape;
+        oldShape.showId = "show1";
+        oldShape.slideId = "slide1";
+        scene::TextItem only;
+        only.lines = {"Ancient grace", "", "still centred"};
+        oldShape.items.push_back(only);
+        check(legacyCompiled == oldShape,
+              "the migrated slide compiles to the exact scene the single-box compiler emitted");
+        Frame now;
+        Frame then;
+        if (renderFixture(legacyCompiled, "legacy-now", &now, &error) &&
+            renderFixture(oldShape, "legacy-old", &then, &error)) {
+            check(now.pixels == then.pixels,
+                  "and the frame is byte-for-byte the frame that file always drew");
+            check(inkBands(now) >= 1, "which is still ink");
+        } else {
+            check(false, "the legacy frames render: " + error);
+        }
+    }
+    std::filesystem::remove_all(root);
 }
 
 void testTypographyAlignsAndSpaces() {
@@ -1498,6 +1629,7 @@ int main() {
     testFitShrinksOversizedStanzas();
     testFallbackAndShaping();
     testPerBoxPlacement();
+    testAuthoredBoxStackRenders();
     testTypographyAlignsAndSpaces();
     testWireSceneRendersIdentically();
     testDemoSlidesRender();

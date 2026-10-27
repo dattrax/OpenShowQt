@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 
@@ -182,6 +183,22 @@ std::uint64_t presentJson(int fd, std::int64_t& nextId, const QString& sceneJson
     return presentRevision(fd, nextId, prepareRevision(fd, nextId, sceneJson));
 }
 
+
+// A service holding a slide with THREE text boxes and one with NONE. The
+// editor cannot author a second box yet (task 6.17a2 owns that), so this is
+// how a stacked slide reaches the panel for real: as a file, written by a
+// build that has the handles. The claim under test is the seam the editor will
+// use — a stacked slide's compiled scene must clear scene.prepare's validator
+// and go on air, and a backdrop slide's empty item list must still present.
+// One raw literal with its own delimiter: JSON contains no ')', so nothing in
+// the data can end the string early.
+void writeStackedService(const std::filesystem::path& service) {
+    std::filesystem::create_directories(service);
+    std::ofstream out(service / "service.json");
+    out << R"svc({"format":2,"nextOrdinal":90,"shows":[{"id":"show1","name":"Stacked","notes":"","defaultStyleId":"","slides":[{"id":"slide1","group":"","items":[{"id":"text1","lines":["Verse one"],"x":160,"y":100,"width":1600,"height":880},{"id":"text2","lines":["TITLE STRIP"],"x":100,"y":40,"width":800,"height":120},{"id":"text3","lines":["photo: someone"],"x":1400,"y":980,"width":460,"height":60}],"notes":"","styleId":"","backgroundAssetId":""},{"id":"slide2","group":"","items":[],"notes":"","styleId":"","backgroundAssetId":""}]}],"styles":[],"assets":[],"playlists":[]})svc";
+    out.close();
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -280,6 +297,77 @@ int main(int argc, char* argv[]) {
     check(!undone.isEmpty() && undone != second,
           "after undo the slide compiles its pre-typing state");
     check(presentJson(fd, nextId, undone) != 0, "the undone slide presents cleanly");
+
+    // --- task 6.17a: a slide with SEVERAL text boxes, on a live worker ---
+    {
+        const std::filesystem::path stackedDir = scratch / "stacked";
+        writeStackedService(stackedDir / "service");
+        DocumentController stacked(nullptr, stackedDir);
+        check(stacked.songs().size() == 1, "the stacked service loads at startup");
+        const QVariantList rows = stacked.slides();
+        check(rows.size() == 2, "both of its slides are listed");
+        const QString stackedId = rows.at(0).toMap().value(QStringLiteral("id")).toString();
+        const QString backdropId = rows.at(1).toMap().value(QStringLiteral("id")).toString();
+
+        const QString stackedJson = stacked.sceneJsonForSlide(stackedId);
+        std::size_t wireItems = 0;
+        double secondBoxX = -1.0;
+        if (!stackedJson.isEmpty()) {
+            const boost::json::value parsed = boost::json::parse(stackedJson.toStdString());
+            const boost::json::array& items = parsed.as_object().at("items").as_array();
+            wireItems = items.size();
+            if (items.size() > 1) {
+                secondBoxX = items[1].as_object().at("x").to_number<double>();
+            }
+        }
+        check(wireItems == 3 && secondBoxX == 100.0,
+              "the stacked slide compiles to three items, each at its own box");
+        const std::uint64_t revStacked = presentJson(fd, nextId, stackedJson);
+        check(revStacked != 0,
+              "a slide with three text boxes is prepared, presented and reports itself on air");
+
+        // A slide drained of boxes is a backdrop, not a malformed scene: it
+        // compiles with no items at all and still presents.
+        const QString backdropJson = stacked.sceneJsonForSlide(backdropId);
+        const bool noItems = !backdropJson.isEmpty() &&
+                             boost::json::parse(backdropJson.toStdString()).as_object()
+                                 .at("items").as_array().empty();
+        check(noItems && presentJson(fd, nextId, backdropJson) != 0,
+              "the box-less slide compiles to no items and presents cleanly");
+
+        // The wire's own ceiling, measured at the door rather than assumed:
+        // one item past the limit the MODEL refuses at (scene_tests pins the two
+        // constants equal) must be refused by the worker, with the limit named.
+        // The frontend cannot build this slide; a different build or a hand-
+        // edited package can, and the audience must not be the one to find out.
+        boost::json::value tooMany = boost::json::parse(stackedJson.toStdString());
+        boost::json::array& items = tooMany.as_object()["items"].as_array();
+        while (items.size() <= 8) {
+            items.push_back(items[0]);
+        }
+        boost::json::value refusedReply;
+        // An error IS an answer, so the refusal is "answered, and what came
+        // back was an error naming the limit" — not "no reply", which would
+        // also be true of a timeout and would pass for the wrong reason.
+        const bool answered = call(fd, nextId++, "scene.prepare", tooMany.as_object(),
+                                   &refusedReply);
+        std::string refusalText;
+        const bool refused =
+            answered && refusedReply.is_object() && !refusedReply.as_object().contains("result");
+        if (refused) {
+            const auto error = refusedReply.as_object().find("error");
+            if (error != refusedReply.as_object().end() && error->value().is_object()) {
+                const auto message = error->value().as_object().find("message");
+                if (message != error->value().as_object().end() && message->value().is_string()) {
+                    refusalText = std::string(message->value().as_string());
+                }
+            }
+        }
+        check(refused && refusalText.find("over the limit of 8") != std::string::npos,
+              "nine text items are refused at scene.prepare, naming the limit");
+        check(presentJson(fd, nextId, stackedJson) != 0,
+              "and the store is unharmed: the stacked slide presents again after the refusal");
+    }
 
     call(fd, nextId++, "shutdown", {}, &reply);
     int status = 0;

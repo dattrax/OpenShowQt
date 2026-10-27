@@ -34,7 +34,16 @@ namespace openshow::domain {
 
 namespace {
 
-constexpr int kServiceFormat = 1;
+// service.json's version. Format 1 held one text box per slide, written as
+// the slide's own "lines" plus x/y/width/height; format 2 (task 6.17a, review
+// R17) holds an ORDERED LIST of boxes, each with its own id, and a slide can
+// no longer say what it means in the format-1 shape. The reader still loads 1
+// and migrates it; the writer only ever emits kServiceFormat, and a 2-file
+// read by an older build refuses the whole package rather than quietly
+// showing the first box of a slide whose author had composed four.
+constexpr unsigned long long kServiceFormat = 2;
+// The one older version this build reads: single-box slides.
+constexpr unsigned long long kServiceFormatLegacyBoxes = 1;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -458,20 +467,31 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             boost::json::object slideJson;
             slideJson.emplace("id", slide.id);
             slideJson.emplace("group", slide.group);
-            boost::json::array lines;
-            for (const std::string& line : slide.lines) {
-                lines.emplace_back(line);
+            // The slide's words, as a stack of boxes in draw order (task
+            // 6.17a). Each box carries the id every later edit names it by,
+            // which is why the list is written at all: order and identity are
+            // the document's, not the loader's guess. A format-1 file's lone
+            // "lines" plus slide-level geometry is read on the way in and
+            // promoted to this shape on the way out.
+            boost::json::array boxes;
+            for (const TextBox& box : slide.items) {
+                boost::json::object boxJson;
+                boxJson.emplace("id", box.id);
+                boost::json::array lines;
+                for (const std::string& line : box.lines) {
+                    lines.emplace_back(line);
+                }
+                boxJson.emplace("lines", std::move(lines));
+                boxJson.emplace("x", box.x);
+                boxJson.emplace("y", box.y);
+                boxJson.emplace("width", box.width);
+                boxJson.emplace("height", box.height);
+                boxes.push_back(std::move(boxJson));
             }
-            slideJson.emplace("lines", std::move(lines));
+            slideJson.emplace("items", std::move(boxes));
             slideJson.emplace("notes", slide.notes);
             slideJson.emplace("styleId", slide.styleId);
             slideJson.emplace("backgroundAssetId", slide.backgroundAssetId);
-            // The authored text box (task 4.3); the loader defaults these
-            // so a service written before geometry existed still reads.
-            slideJson.emplace("x", slide.x);
-            slideJson.emplace("y", slide.y);
-            slideJson.emplace("width", slide.width);
-            slideJson.emplace("height", slide.height);
             slides.push_back(std::move(slideJson));
         }
         entry.emplace("slides", std::move(slides));
@@ -541,11 +561,19 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     if (!wantInteger(root, "format", &format, error)) {
         return false;
     }
-    if (format != static_cast<unsigned long long>(kServiceFormat)) {
+    // Format 1 — one text box per slide, written as the slide's own "lines"
+    // plus x/y/width/height — is READ rather than rejected: it is what every
+    // service on disk says until this build saves it again (task 6.17a). A
+    // future version is refused naming both numbers, because guessing at a
+    // format means quietly dropping whatever the newer build's operator wrote.
+    if (format != kServiceFormat && format != kServiceFormatLegacyBoxes) {
         fail(error, "service.json: unsupported format " + std::to_string(format) +
-                        " (this build reads format " + std::to_string(kServiceFormat) + ")");
+                        " (this build reads format " + std::to_string(kServiceFormat) +
+                        ", and format " + std::to_string(kServiceFormatLegacyBoxes) +
+                        " with its single text box migrated to a list)");
         return false;
     }
+    const bool singleBoxFile = format == kServiceFormatLegacyBoxes;
     unsigned long long nextOrdinal = 0;
     if (!wantInteger(root, "nextOrdinal", &nextOrdinal, error)) {
         return false;
@@ -607,25 +635,92 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             const boost::json::object& jsonSlide = slideValue.as_object();
             Slide slide;
             if (!wantString(jsonSlide, "id", &slide.id, error) ||
-                !claimId(slide.id, "slide") ||
-                !wantStringArray(jsonSlide, "lines", &slide.lines, error) ||
-                !wantOptionalString(jsonSlide, "group", &slide.group, error) ||
+                !claimId(slide.id, "slide")) {
+                return false;
+            }
+            // A box's fields are READ in whichever shape the file uses and
+            // PLACED in the one the model keeps, so everything after this
+            // paragraph is common to both formats and a migrated slide cannot
+            // mean something slightly different from an authored one.
+            if (singleBoxFile) {
+                TextBox box;
+                // The id is DERIVED, not issued. A load must be a function of
+                // its file, so loading the same legacy service twice agrees
+                // on which box is which — and the next save writes this id
+                // into the file, making the migrated box's identity durable
+                // from that moment. It embeds the slide id, claimed unique
+                // immediately above, and "-text1" is a suffix no store-issued
+                // id can take ("text7" has no slide prefix).
+                box.id = slide.id + "-text1";
+                if (!wantStringArray(jsonSlide, "lines", &box.lines, error) ||
+                    !wantOptionalNumber(jsonSlide, "x", &box.x, error) ||
+                    !wantOptionalNumber(jsonSlide, "y", &box.y, error) ||
+                    !wantOptionalNumber(jsonSlide, "width", &box.width, error) ||
+                    !wantOptionalNumber(jsonSlide, "height", &box.height, error)) {
+                    return false;
+                }
+                if (!claimId(box.id, "text box")) {
+                    return false;
+                }
+                slide.items.push_back(std::move(box));
+            } else {
+                // Format 2 names its boxes and their order; a slide with no
+                // "items" is not a slide this build wrote, and a slide that
+                // still carries format-1's "lines" is a file someone hand-
+                // bumped. Loading the second as an empty slide would be the
+                // quietest possible way to lose somebody's words.
+                if (jsonSlide.contains("lines")) {
+                    fail(error, "service.json: slide '" + slide.id +
+                                    "' is format 1 in a format " +
+                                    std::to_string(kServiceFormat) + " file");
+                    return false;
+                }
+                const boost::json::array* boxArray = nullptr;
+                if (!wantArray(jsonSlide, "items", &boxArray, error)) {
+                    return false;
+                }
+                if (boxArray->size() > kMaxTextBoxes) {
+                    fail(error, "service.json: slide '" + slide.id + "' holds " +
+                                    std::to_string(boxArray->size()) +
+                                    " text boxes and a slide takes at most " +
+                                    std::to_string(kMaxTextBoxes));
+                    return false;
+                }
+                for (const boost::json::value& boxValue : *boxArray) {
+                    if (!boxValue.is_object()) {
+                        fail(error, "service.json: slide '" + slide.id +
+                                        "' holds a text box that is not an object");
+                        return false;
+                    }
+                    const boost::json::object& jsonBox = boxValue.as_object();
+                    TextBox box;
+                    if (!wantString(jsonBox, "id", &box.id, error) ||
+                        !claimId(box.id, "text box") ||
+                        !wantStringArray(jsonBox, "lines", &box.lines, error) ||
+                        !wantNumber(jsonBox, "x", &box.x, error) ||
+                        !wantNumber(jsonBox, "y", &box.y, error) ||
+                        !wantNumber(jsonBox, "width", &box.width, error) ||
+                        !wantNumber(jsonBox, "height", &box.height, error)) {
+                        return false;
+                    }
+                    slide.items.push_back(std::move(box));
+                }
+            }
+            if (!wantOptionalString(jsonSlide, "group", &slide.group, error) ||
                 !wantOptionalString(jsonSlide, "notes", &slide.notes, error) ||
                 !wantOptionalString(jsonSlide, "styleId", &slide.styleId, error) ||
                 !wantOptionalString(jsonSlide, "backgroundAssetId",
-                                    &slide.backgroundAssetId, error) ||
-                !wantOptionalNumber(jsonSlide, "x", &slide.x, error) ||
-                !wantOptionalNumber(jsonSlide, "y", &slide.y, error) ||
-                !wantOptionalNumber(jsonSlide, "width", &slide.width, error) ||
-                !wantOptionalNumber(jsonSlide, "height", &slide.height, error)) {
+                                    &slide.backgroundAssetId, error)) {
                 return false;
             }
-            if (!std::isfinite(slide.x) || !std::isfinite(slide.y) ||
-                !std::isfinite(slide.width) || !std::isfinite(slide.height) ||
-                slide.width <= 0.0 || slide.height <= 0.0) {
-                fail(error, "service.json: slide '" + slide.id +
-                                "' holds a text box that cannot be placed");
-                return false;
+            for (const TextBox& box : slide.items) {
+                if (!std::isfinite(box.x) || !std::isfinite(box.y) ||
+                    !std::isfinite(box.width) || !std::isfinite(box.height) ||
+                    box.width <= 0.0 || box.height <= 0.0) {
+                    fail(error, "service.json: slide '" + slide.id + "' holds text box '" +
+                                    box.id + "' that cannot be placed");
+                    return false;
+                }
             }
             show.slides.push_back(std::move(slide));
         }

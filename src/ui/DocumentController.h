@@ -300,12 +300,13 @@ private:
     // The slide clipboard (task 4.5): one slide's whole presentation.
     struct SlideClip {
         bool valid = false;
-        std::vector<std::string> lines;
+        // The slide's boxes in DRAW order, with their ids cleared (task
+        // 6.17a): a paste asks the store for fresh identities, because two
+        // slides whose boxes shared an id would be two slides whose edits
+        // name the same box on the wrong slide. Words, geometry and order are
+        // what a clip carries; identity is not copyable.
+        std::vector<openshow::domain::TextBox> boxes;
         std::string notes;
-        double x = 0.0;
-        double y = 0.0;
-        double width = 0.0;
-        double height = 0.0;
         std::string styleId;
         std::string backgroundAssetId;
     };
