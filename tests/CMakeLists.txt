@@ -364,6 +364,20 @@ set_tests_properties(preview_ownership_tests PROPERTIES LABELS display TIMEOUT 1
 # report the honest worst cost — and the audience's fade must still
 # animate, still show a mid blend and still land on the new scene.
 # Needs a display.
+# Task 6.16a (review R16): the editor's picture, drawn by the worker and
+# never presented. The off-air render must be the scene the operator asked
+# for, one frame per accepted request, refused outright when the generation
+# does not advance or the store has forgotten the revision — and a draw that
+# a newer ask overtakes must be destroyed rather than delivered (armed with
+# the preview-cost fault knob, so the race is real rather than imagined).
+# Meanwhile the audience keeps its scene, its fade and its mid blend.
+# Needs a display.
+add_executable(preview_selection_tests preview_selection_tests.cpp)
+target_link_libraries(preview_selection_tests PRIVATE openshow::protocol)
+add_test(NAME preview_selection_tests
+  COMMAND preview_selection_tests $<TARGET_FILE:openshow-worker>)
+set_tests_properties(preview_selection_tests PROPERTIES LABELS display TIMEOUT 240)
+
 add_executable(preview_budget_tests preview_budget_tests.cpp)
 target_link_libraries(preview_budget_tests PRIVATE openshow::protocol)
 add_test(NAME preview_budget_tests

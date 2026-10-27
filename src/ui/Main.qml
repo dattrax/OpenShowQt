@@ -1275,6 +1275,63 @@ Window {
             anchors.bottomMargin: 12
         }
 
+        /*
+         * Asking the worker for its picture of the slide under edit (task
+         * 6.16a, review R16). Debounced: one ask costs a scene.prepare and an
+         * off-air draw, so a keystroke at a time would be renders nobody has
+         * looked at yet. The triggers below are everything that can change
+         * what the canvas should show — text, style, geometry (a drag
+         * commits on release, which is a document change), navigation and
+         * page entry — and the payload is compiled at the tick, so the
+         * render is of the slide as it ended up rather than as it was when
+         * typing started.
+         */
+        Timer {
+            id: selectionAsk
+            interval: 250
+            repeat: false
+            onTriggered: {
+                if (!editPage.visible || !editCanvas.hasSlide) {
+                    worker.clearSelectionPreview()
+                    return
+                }
+                worker.requestSelectionPreview(
+                    docs.sceneJsonForSlide(docs.slides[docs.currentSlide].id))
+            }
+        }
+        function askForWorkerPicture() {
+            selectionAsk.restart()
+        }
+        Connections {
+            target: docs
+            function onDocumentsChanged() {
+                if (editPage.visible) {
+                    editPage.askForWorkerPicture()
+                }
+            }
+            function onSlideTextChanged() {
+                if (editPage.visible) {
+                    editPage.askForWorkerPicture()
+                }
+            }
+            function onNavigationChanged() {
+                if (editPage.visible) {
+                    editPage.askForWorkerPicture()
+                }
+            }
+        }
+        // Leaving the page stands the target down: the worker stops drawing
+        // (and holding a scene for) a slide nobody is looking at, and the
+        // stream goes back to mirroring the audience alone.
+        onVisibleChanged: {
+            if (editPage.visible) {
+                editPage.askForWorkerPicture()
+            } else {
+                selectionAsk.stop()
+                worker.clearSelectionPreview()
+            }
+        }
+
         Row {
             id: boxFields
             anchors.bottom: parent.bottom

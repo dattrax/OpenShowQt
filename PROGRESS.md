@@ -1,6 +1,6 @@
 # OpenShowQt progress and session handoff
 
-Updated: 2026-10-25 (Europe/London).
+Updated: 2026-10-27 (Europe/London).
 
 ## Current checkpoint
 
@@ -1192,13 +1192,120 @@ Updated: 2026-10-25 (Europe/London).
     move together).
   - Gates desktop **44/44** (196 s), headless **27/27** (48 s); offscreen
     QML smoke zero errors.
-- Exact next action: **6.16a** per the PLAN.md ledger (review R16) — a
-  bounded worker-rendered selected-scene preview used beneath the QML edit
-  handles: off-air edits must show Skia text and media without presenting,
-  with no QML text-layout twin, selection generations rejecting stale
-  imagery, and active playback unchanged. R15 is now closed on both halves
-  (6.15a transport, 6.15b independent track); review completion does not mark
-  any finding fixed, and no new implementation blocker was found.
+- **6.16a — the editor's picture comes from the renderer, not from a second
+  text layout (R16, first half) — DONE.** `EditCanvas.qml` painted a QML
+  `Text` over a rectangle and called it a preview of the selected slide:
+  Qt's wrapping, Qt's fit, Qt's font fallbacks, measured against Skia's, and
+  nothing at all about the scene's media. That twin is deleted. The canvas
+  now paints the worker's own render of the scene the operator has selected,
+  drawn while it is NOT on air, under the QML handles.
+  - **One stream carries both targets.** A second segment for the same
+    consumer would have duplicated the slot accounting, the identity rule and
+    the drop-don't-block producer to carry the same kind of pixels, so the
+    layout is versioned 1->2 and `PreviewSlotHeader` gains `target` and
+    `request`; `preview.ready` carries the same two values under the same
+    seqlock, so metadata and pixels agree on one read, and a version-1 frame
+    with neither field reads as the audience — all it ever could be. New
+    method `preview.select {revision, request}`, protocol minor 7->8,
+    capability `preview.select.v1` (11 advertised).
+  - **The generation rule has two halves and both are enforced.** The
+    frontend owns a monotonic counter; the worker accepts only a request
+    strictly after the accepted one (modular order) and refuses naming the
+    action — start the stream, re-prepare because the store is bounded,
+    advance the counter. The consumer mirrors it: a frame whose request is not
+    the newest it sent is released unpainted. The producer's half alone would
+    not help, because the honest race is that the render thread was already
+    drawing the ask the operator has moved past.
+  - **"Off the air" is asserted, not assumed.** The selection frame is built
+    by hand — pinned scene, `fadeFrom` null, blends at full strength, the
+    scene's own revision — and `publishSelectionFrame` never calls
+    `captureFrame` (the only call that advances a crossfade), `commitFrame`,
+    `setActiveScene` or the transport's apply. Six asks fired during a live
+    crossfade leave the audience's active scene id, its presented-frame
+    counter and its own mid-blend mirror exactly as they were. Video is
+    sampled only when the off-air scene names the same asset: an unpublished
+    scene has no transport, so any other video draws as the colour fill it has
+    no frame for, rather than wearing the audience's moving picture.
+  - **Pinned at the accept**, not at the draw: the accepted scene becomes a
+    `shared_ptr<const Scene>` and joins the pin set inside the lock that
+    accepts it, because entries are immutable per revision, the store may
+    evict before the pass that draws, and the frame loop must never open a
+    file (R4's rule, applied to a target that has no present to pin it).
+  - **One stream means one budget**, so the targets take turns:
+    `drawPreviewTarget` publishes at most one frame per pass, whichever has
+    gone longest, each with its own cadence marker and a shared deferral, and
+    the run loop sleeps to the sooner horizon. The generation is re-read under
+    the accept lock AFTER the CPU-synchronous readback; a frame that no longer
+    answers the newest ask is `abort()`ed — the slot closes on its previous
+    value, so the consumer never sees half a frame — `stale` moves, and the
+    ask stays owed for the newer one.
+  - **A renderer cost the two targets found**: the words layer's layout cache
+    held two slots, and alternating the audience's scene with a pinned copy of
+    the same scene rebuilt a layout every single pass. It is a four-slot LRU
+    now, with `SceneRenderer::textLayoutBuilds()` published so the fixture
+    measures rebuilds rather than trusting the size.
+  - **UI**: asking is `scene.prepare` — deliberately NOT `armPrepare`, which
+    would make it the next thing to present — plus `preview.select` on that
+    ack. Main.qml debounces selection at 250 ms across document, text and
+    navigation changes, re-asks on a `preview.start` ack (a restarted stream
+    dropped the target) and on one status reporting `selection.active` false
+    while an ask stands, and stands down when the page is left. `PreviewView`
+    gained a `Target` enum; the canvas says "waiting for the worker's render
+    of this slide" versus "this worker cannot render a slide that is not on
+    air", so an old worker is a stated limitation instead of a silent blank.
+  - **Fixtures**: new live `preview_selection_tests` (display label, two
+    worker sessions) — the edit's pixels ARE the blue scene, slot header and
+    notification agree, the audience's scene, counter and mirror unmoved, one
+    frame per accepted request across a burst with strictly increasing
+    generations and nothing after the last ask, an unknown revision refused
+    naming the store, a replayed generation refused twice over with the
+    accepted number unmoved, edits through a live crossfade, the stand-down
+    stopping frames, refusal with no stream, and — on a worker with an
+    expensive draw armed — the superseded draw never reaching the wire with
+    `stale >= 1`. `worker_controller_tests` S14 turns the scripted peer into a
+    REAL producer of the transport: its own shm segment, seqlock, a slot freed
+    only on a release that proves ownership and sequence, a verbatim
+    `preview.select` ledger, and two markers in the prepared scene's slideId —
+    `SLOW` holds a frame 500 ms so the stale frame the consumer must drop
+    actually exists, `FORGET` reports the target gone once so the re-ask is
+    behaviour under test. It asserts capability gating, two panes with
+    different pixels, a companion audience frame landing behind every edit
+    without trading places with it, no `scene.present` ever, dedupe, the late
+    frame dropped before the copy, the stale counter mirrored and ending at
+    exactly one, recovery asking exactly once, the whole ledger
+    (1,1) (2,2) (3,3) (4,4) (5,5) (6,6) (0,7), a version-1 frame with no
+    target routed to the mirror, and zero frames dropped for want of a slot.
+  - **Mutations** m01–m22 plus m04b — the stream, store and stand-down gates,
+    the once-per-ask rule everywhere, the publish gate, both targets in one
+    pass, the presented counter bumped by an edit and frozen, the slot
+    header's target, the layout slots, ready's two fields, the method, the
+    status block, the capability, and on the client dropping ready, an open
+    generation gate, no dedupe, no re-ask, no stale mirror, wrong-pane
+    routing, a peer counter turned unconditional, a QML property error:
+    **21/23 CAUGHT**. Run 1 left five alive and three were weak checks, now
+    strengthened and caught — m07 (`status.frames` is written at the end of a
+    composed pass, so an idle audience never republishes a bump; the fixture
+    now asserts the CONSEQUENCE: an edit draw creates **no mirror debt**), m20
+    (the peer had never sent an audience frame while an ask stood, which is
+    precisely the race the routing exists for), m22 (qmlcachegen makes a bad
+    property fatal AND silent, so the smoke now requires the app to be alive at
+    its `timeout` deadline as well as silent). Disclosed equivalents: m04 —
+    the same predicate guards three layers, and m04b removing all three is
+    caught; m06 — the per-pass `return` bounds draw cost, which no fixture can
+    measure without a stopwatch on a shared desktop; `selection.dropped` and
+    `.deferred`; the pin set's membership (needs >16 background-holding
+    scenes); `PreviewView::paint()`'s target ternary; the version constants.
+  - Gates desktop **45/45** (210 s, one test added), headless **27/27**
+    (48 s); both trees build without warnings; offscreen UI smoke silent and
+    alive at its deadline.
+- Exact next action: **6.16b** per the PLAN.md ledger (review R16) — bounded
+  on-demand worker THUMBNAILS over the transport 6.16a just extended: thumbnail
+  requests carry scene and target identity, coalesce and cancel, and return
+  only composed preview pixels, with no audience mutation and no queue or
+  memory growth. The generation rule, the per-target cadence and the scripted
+  producer in S14 are the pieces to build on. R15 is closed on both halves;
+  review completion does not mark any finding fixed, and no new implementation
+  blocker was found.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -3615,6 +3722,49 @@ of this work.
   development tool and nothing in the build references it.
 
 ## Decisions
+
+- (2026-10-27, task 6.16a) Three rules, plus an autopsy worth keeping.
+  **Extend the transport you have before you add a parallel one**: the cheap
+  shape for a second picture was a second shm segment, and it is worse than it
+  looks — two slot accountings, two identity rules, two drop policies, and the
+  interesting failure (a frame of the wrong kind arriving under perfectly valid
+  handles) moves to a seam no fixture watches. Versioning the layout instead
+  costs one field pair, and the rule that makes it safe is the same one 6.5
+  taught me about optional fields: an ABSENT field means the old meaning, so a
+  version-1 frame is the audience's picture and not an undefined target.
+  **A rule that crosses the wire needs both halves, and they are not the same
+  rule**: the producer refuses a generation that does not advance, the consumer
+  refuses a frame answering an ask it has already superseded. The first is
+  state on the accept, the second is state on the newest ask, and only the
+  second one protects the operator's eye — the honest race is that the render
+  thread was already drawing yesterday's edit. Which forced the rule I most
+  want written down: **if a property is about a race, the fixture has to be
+  able to ARRANGE that race, not hope for it**. The scripted peer therefore
+  takes markers in the payload the frontend already sends (`SLOW` holds a frame
+  500 ms, `FORGET` reports the target gone once) instead of the code growing
+  hooks to be testable: the marker travels with the scene, the ledger the peer
+  writes is verbatim, and the two markers turned the two hardest paths in R16
+  into ordinary checks. Related: **when a counter is published lazily, assert
+  the consequence**. Mutation m07 made an off-air draw bump the presented-frame
+  counter and my "the counter stays flat" check passed, because `status.frames`
+  is copied at the end of a composed pass and an idle audience composes no
+  further pass — the corrupt value simply was never republished. The honest
+  question was never "does a number move" but "what must not happen because an
+  edit was drawn", and downstream of that counter sits the mirror's debt: an
+  edit that pretended to present would leave the audience's stream owing a
+  frame nothing presented, which is observable at rest. The rewritten check
+  caught m07 immediately. And **know what your smoke can see**: qmlcachegen
+  turns QML into C++ and swallows an invalid property assignment into a silent
+  process exit, so "no error text on stderr" was worth nothing; the smoke now
+  also requires the app to still be alive at its `timeout` deadline, which is
+  what a load failure actually takes down. The autopsy rule: when a mutant
+  survives, sort it into ONE of three bins before touching anything — a weak
+  check (fix the check: m07, m20, m22), defense in depth (mutate every layer
+  that holds the predicate, and if the all-layers mutant is caught say so: m04
+  vs m04b), or a cost policy no fixture measures (disclose it and say why a
+  check would be a stopwatch on a shared desktop: m06). Five survivors in run 1
+  were three of the first, one of the second and one of the third, and each
+  bin has a different honest answer.
 
 - (2026-10-26, task 6.15b) Three rules came out of giving the standalone
   track its lifetime. **A lifetime chooses its own component**: the obvious

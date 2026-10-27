@@ -33,7 +33,14 @@ void PreviewView::paint(QPainter* painter) {
     if (!fController) {
         return;
     }
-    const QImage& image = fController->previewImage();
+    // The stream carries two pictures (task 6.16a). Which one this item
+    // shows is the whole of its involvement in that: it never assembles or
+    // merges them, and an empty selection frame paints nothing rather than
+    // falling back to the audience's — a canvas that quietly showed a
+    // different scene under the drag handles is the failure the task is
+    // about. QML keeps its placeholder for that case.
+    const QImage& image = fTarget == Target::Selection ? fController->selectionImage()
+                                                       : fController->previewImage();
     if (image.isNull()) {
         return;
     }

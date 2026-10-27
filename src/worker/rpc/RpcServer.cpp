@@ -212,6 +212,21 @@ boost::json::object standaloneStatus(const OutputSession::MediaStatus::Standalon
 
 boost::json::object statusResult(const OutputSession::Status& status) {
     const OutputSession::PreviewStatus& preview = status.preview;
+    // The editor's off-air target of the same stream (task 6.16a, review
+    // R16). `active` is the accept of a preview.select; revision/request name
+    // what it accepted. Then the same three questions the mirror answers —
+    // published counts frames that reached the socket, dropped the ones the
+    // consumer's slots blocked, deferred the ones that stood down for the
+    // audience — plus the one only a generation-managed target has: stale,
+    // the frames a newer ask superseded before they could be published.
+    const boost::json::object selection{
+        {"active", preview.selection.active},
+        {"revision", preview.selection.revision},
+        {"request", preview.selection.request},
+        {"published", preview.selection.published},
+        {"dropped", preview.selection.dropped},
+        {"deferred", preview.selection.deferred},
+        {"stale", preview.selection.stale}};
     return boost::json::object{{"device", status.deviceName},
                                {"width", status.width},
                                {"height", status.height},
@@ -236,6 +251,7 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                                                // audience's sake.
                                                                {"deferred", preview.deferred},
                                                                {"worstMs", preview.worstMs},
+                                                               {"selection", selection},
                                                                {"error", preview.error}}},
                                {"scene", boost::json::object{{"active", status.scene.active},
                                                              {"pending", status.scene.pending},
@@ -876,6 +892,47 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
         fSession.stopPreview();
         proto::appendFrame(proto::makeResult(id, boost::json::object{{"ok", true}}),
                            outbound);
+    } else if (name == proto::kMethodPreviewSelect) {
+        // The editor's off-air render (task 6.16a, review R16): "draw THIS
+        // prepared scene into the preview stream without presenting it".
+        // Both arguments are required, in their own widths, for the usual
+        // reason — a revision that silently truncated to 0 would read as a
+        // stand-down, and a request that wrapped into a smaller number would
+        // be refused as stale by a client that believes it advanced.
+        if (!given.is_object()) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "preview.select wants {revision, request}"),
+                               outbound);
+            return true;
+        }
+        const boost::json::object& args = given.as_object();
+        std::uint64_t revision = 0;
+        std::uint32_t request = 0;
+        if (!jsonUint64(args, "revision", &revision) || !jsonUint32(args, "request", &request)) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "preview.select wants a whole-number revision and a "
+                                 "request between 0 and 4294967295"),
+                outbound);
+            return true;
+        }
+        std::string error;
+        if (!fSession.selectPreviewScene(revision, request, &error)) {
+            // The refusal names what the client can act on: no stream, a
+            // generation that does not follow the accepted one (both numbers
+            // in the text), or a revision the bounded store no longer holds.
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams, error), outbound);
+            return true;
+        }
+        // The answer is the accept, not the picture: whether a frame landed
+        // is status.preview.selection.published's report, because the render
+        // thread owns when it draws and this socket must not wait on it.
+        proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                     {"accepted", true},
+                                                     {"revision", revision},
+                                                     {"request", request}}),
+                           outbound);
     } else if (name == proto::kMethodPreviewReleased) {
         // A notification from the consumer: it finished copying that slot
         // frame, so the producer may claim it again. Answered only if the
@@ -1109,6 +1166,18 @@ void RpcServer::collectNotifications(std::vector<QueuedFrame>* outbound) {
                                    {"height", ready.height},
                                    {"rowBytes", ready.rowBytes},
                                    {"revision", ready.revision},
+                                   // Whose picture this is and which ask it
+                                   // answers (task 6.16a). The consumer needs
+                                   // them BEFORE copying: one stream now
+                                   // carries the audience's mirror and the
+                                   // editor's off-air render, and a frame of
+                                   // the wrong kind under the right handles
+                                   // is precisely the stale imagery R16 was
+                                   // about. They are the same values the slot
+                                   // header carries, published under the same
+                                   // seqlock, so metadata and pixels agree.
+                                   {"target", ready.target},
+                                   {"request", ready.request},
                                    {"publishedNs", ready.publishedNs},
                                    // Stream identity: the release
                                    // must echo it (task 6.5).

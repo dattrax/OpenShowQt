@@ -163,10 +163,17 @@ proto::PreviewSlotHeader* PreviewStream::slotHeader(int slot) {
 }
 
 std::uint64_t PreviewStream::publish(int slot, std::uint32_t revision,
+                                     std::uint32_t target, std::uint32_t request,
                                      std::uint64_t publishedNs) {
     std::lock_guard<std::mutex> lock(fMutex);
     auto* header = slotHeader(slot);
     header->revision = revision;
+    // Which picture these are, and which request answers it (task 6.16a):
+    // written inside the seqlock's odd window like every other field, so a
+    // consumer that sees an even sequence has a consistent (target,
+    // request, pixels) triple and can drop the frame on metadata alone.
+    header->target = target;
+    header->request = request;
     header->publishedNs = publishedNs;
     const std::uint64_t even = fPublished[static_cast<std::size_t>(slot)] + 2;
     seqOf(header).store(even, std::memory_order_seq_cst);

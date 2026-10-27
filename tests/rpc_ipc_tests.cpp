@@ -420,7 +420,7 @@ void testServedSession() {
         const boost::json::value& result = reply.at("result");
         check(result.as_object().at("protocol").as_object().at("major").is_number(),
               "hello negotiates a protocol version");
-        check(result.as_object().at("capabilities").as_array().size() == 10,
+        check(result.as_object().at("capabilities").as_array().size() == 11,
               "hello lists worker capabilities");
     }
 

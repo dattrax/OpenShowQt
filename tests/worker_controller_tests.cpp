@@ -55,6 +55,14 @@
  *                    (the counter-scenario: the deadline measures whether the
  *                    backlog is moving, so a worker that resumes keeps its
  *                    session and its pending conversation)
+ *   preview          a real producer of the shared-memory preview stream plus
+ *                    the off-air selection target (task 6.16a, review R16):
+ *                    it creates the segment, publishes frames tagged with the
+ *                    target and generation they answer, recycles a slot only
+ *                    on a release that proves ownership, refuses a generation
+ *                    that does not follow the accepted one, and delivers one
+ *                    frame deliberately LATE — the only way to watch the
+ *                    consumer drop imagery of an ask it has superseded
  *
  * scene.present of a revision more than kStoreWindow (16, mirroring the
  * real worker's bounded store) behind the newest handed out is refused, so
@@ -103,14 +111,18 @@
 #include <thread>
 #include <vector>
 
+#include <fcntl.h>
 #include <poll.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #include <QCoreApplication>
 #include <QString>
 
+#include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
 #include "openshow/scene/scene.h"
 
@@ -209,6 +221,7 @@ public:
         fClient = client;
         pump();
         writeReport();
+        cleanupPreviewSegment();
         return 0;
     }
 
@@ -300,6 +313,18 @@ private:
                     ++entry;
                 }
             }
+            // A preview frame the peer is holding back. Pixels go into the
+            // slot when the frame is DUE, not when it was asked for: the point
+            // of the delay is that a newer ask has been accepted, and drawn,
+            // by the time this one reaches the wire.
+            for (auto entry = fPendingFrames.begin(); entry != fPendingFrames.end();) {
+                if (entry->when <= flushBefore) {
+                    publishPreview(entry->target, entry->request, entry->revision, entry->legacy);
+                    entry = fPendingFrames.erase(entry);
+                } else {
+                    ++entry;
+                }
+            }
             // A resumed peer is a SLOW peer: it takes the backlog in slices with
             // a pause between them, so what the controller owes comes down over
             // seconds rather than in one go. The pace is the whole point of
@@ -350,6 +375,16 @@ private:
                 {"protocol", boost::json::object{{"major", 0}, {"minor", 1}}},
                 {"capabilities", boost::json::array{}},
             };
+            // Task 6.16a (review R16): the controller only asks for a stream
+            // when the worker says it has one, and only offers the edit
+            // canvas a worker-drawn picture when the SECOND capability is
+            // present. Advertising both is what lets this peer be the one
+            // that draws the frames the fixture reads.
+            if (fScenario == "preview") {
+                result["capabilities"] = boost::json::array{"preview.shm.v1",
+                                                            "preview.stream-id.v1",
+                                                            "preview.select.v1"};
+            }
             sendResult(id, std::move(result));
             return;
         }
@@ -388,6 +423,34 @@ private:
                                      {"dropped", 0},
                                      {"error", ""}}},
             };
+            // Task 6.16a: the scripted stream is RUNNING, and its second
+            // target reports for itself. `stale` is derived, not pinned: the
+            // peer counts a superseded draw when a new ask arrives while a
+            // previously accepted one is still undelivered, so the count the
+            // controller mirrors is the peer's state and not a number the
+            // fixture chose. `active` goes false once after a prepare whose
+            // slide is marked FORGET — a worker that has lost a target the
+            // client believes it asked for, which the client must recover
+            // from by asking again rather than by painting nothing.
+            if (fScenario == "preview") {
+                bool active = fSelectionActive;
+                if (fForgetReportsLeft > 0) {
+                    --fForgetReportsLeft;
+                    active = false;
+                }
+                result["preview"] = boost::json::object{
+                    {"running", true},
+                    {"dropped", static_cast<std::uint64_t>(fPreviewDropped)},
+                    {"error", ""},
+                    {"selection", boost::json::object{{"active", active},
+                                                      {"revision", fSelectionRevision},
+                                                      {"request", fSelectionAccepted},
+                                                      {"published", fSelectionPublished},
+                                                      {"dropped", 0},
+                                                      {"deferred", 0},
+                                                      {"stale", fSelectionStale}}},
+                };
+            }
             // Task 6.15a (review R15): a scripted transport whose state ONLY
             // the media.* commands move. The controller reads its media
             // properties from this echo and nowhere else, so a control that
@@ -436,6 +499,7 @@ private:
             // paths are what prove the client re-prepared the moved file,
             // derived clears from it, and never sent the old name again.
             std::string assetPath;
+            std::string slideId;
             if (request.contains("params") && request.at("params").is_object()) {
                 const auto& params = request.at("params").as_object();
                 const auto background = params.find("background");
@@ -445,6 +509,10 @@ private:
                         path->value().is_string()) {
                         assetPath = std::string(path->value().as_string());
                     }
+                }
+                const auto slide = params.find("slideId");
+                if (slide != params.end() && slide->value().is_string()) {
+                    slideId = std::string(slide->value().as_string());
                 }
             }
             fAssetPaths.push_back(std::move(assetPath));
@@ -465,6 +533,7 @@ private:
             }
             const std::int64_t revision = ++fLastRevision;
             ++fPrepared;
+            fSceneSlides[revision] = slideId;  // the preview scenario's markers
             std::string wire;
             proto::appendFrame(
                 proto::makeResult(id, boost::json::object{{"revision",
@@ -643,9 +712,153 @@ private:
             sendResult(id, boost::json::object{{"pending", true}});
             return;
         }
+        // --- the scripted preview stream (task 6.16a, review R16) ---------
+        //
+        // preview.start makes this peer a real producer of the transport: a
+        // segment with three seqlocked slots, a ready per frame, and slot
+        // recycling that waits for a release proving ownership (task 6.5's
+        // rule, enforced here so a consumer that stops releasing is visible as
+        // dropped frames rather than silently fine). preview.select then does
+        // what the session does — refuse without a stream, refuse a revision
+        // the store does not have, refuse a generation that does not advance,
+        // stand down on revision 0 — and answers an accepted ask with a frame.
+        // Two markers, carried in the prepared scene's slideId, arm the cases
+        // that cannot be produced honestly any other way: SLOW delivers that
+        // frame 500 ms late (so a newer ask really does overtake it), and
+        // FORGET makes the peer report the target as gone once, so the
+        // client's recovery is a behaviour under test instead of a comment.
+        if (method == "preview.start") {
+            if (fScenario != "preview") {
+                sendError(id, "fake: this scenario has no preview stream");
+                return;
+            }
+            std::string error;
+            if (!startPreviewSegment(&error)) {
+                sendError(id, error);
+                return;
+            }
+            sendResult(id, boost::json::object{{"name", fPreviewName},
+                                               {"width", static_cast<std::int64_t>(kFrameWidth)},
+                                               {"height", static_cast<std::int64_t>(kFrameHeight)},
+                                               {"slotCount", static_cast<std::int64_t>(kSlots)},
+                                               {"bytesPerSlot",
+                                                static_cast<std::int64_t>(fSlotStride)},
+                                               {"fps", 15}});
+            // The audience's own picture, immediately: the panel is live
+            // before anybody asks for an edit, and stays that way.
+            publishPreview(proto::kPreviewTargetAudience, 0, 7, false);
+            return;
+        }
+        if (method == proto::kMethodPreviewSelect) {
+            fSelects.push_back(boost::json::object{
+                {"method", method},
+                {"params", request.contains("params") ? request.at("params")
+                                                      : boost::json::object{}}});
+            writeReport();  // live: the fixture reads generations mid-scenario
+            if (!fStreamStarted) {
+                sendError(id, "fake: no preview stream is running: preview.start first");
+                return;
+            }
+            boost::json::object args;
+            if (request.contains("params") && request.at("params").is_object()) {
+                args = request.at("params").as_object();
+            }
+            if (!args.contains("revision") || !args.contains("request")) {
+                sendError(id, "fake: preview.select wants {revision, request}");
+                return;
+            }
+            const std::int64_t revision = args.at("revision").to_number<std::int64_t>();
+            const std::int64_t asked = args.at("request").to_number<std::int64_t>();
+            if (revision != 0 && fSceneSlides.find(revision) == fSceneSlides.end()) {
+                sendError(id, "fake: preview.select scene " + std::to_string(revision) +
+                                  " is not in the prepared store");
+                return;
+            }
+            if (static_cast<std::int32_t>(asked - static_cast<std::int64_t>(fSelectionAccepted)) <=
+                0) {
+                sendError(id, "fake: preview.select request " + std::to_string(asked) +
+                                  " does not follow the accepted " +
+                                  std::to_string(fSelectionAccepted));
+                return;
+            }
+            // A draw the new ask overtook: the peer counts it exactly where
+            // the real session counts one — an accepted ask still waiting for
+            // its frame when the next one arrives.
+            if (!fPendingFrames.empty()) {
+                ++fSelectionStale;
+            }
+            fSelectionAccepted = static_cast<std::uint64_t>(asked);
+            if (revision == 0) {
+                fSelectionActive = false;
+                fSelectionRevision = 0;
+                sendResult(id, boost::json::object{{"accepted", true},
+                                                   {"revision", 0},
+                                                   {"request", asked}});
+                // The audience keeps ticking after a stand-down, and THIS
+                // frame arrives the way a version-1 worker sends one: no
+                // target, no request. An absent target means the audience;
+                // read it as an edit and the canvas lights up with the show's
+                // own picture after the operator has stopped asking for one.
+                publishPreview(proto::kPreviewTargetAudience, 0, 7, true);
+                return;
+            }
+            fSelectionRevision = static_cast<std::uint64_t>(revision);
+            fSelectionActive = true;
+            sendResult(id, boost::json::object{{"accepted", true},
+                                               {"revision", revision},
+                                               {"request", asked}});
+            const std::string marker = fSceneSlides[revision];
+            // The audience owes a frame too, and a real worker sends it
+            // BESIDE the edit rather than politely waiting for the next
+            // quiet pass: two frames in a row on one segment, each under
+            // perfectly good handles, one for each pane. That is exactly the
+            // arrival R16's routing has to get right, so the scripted
+            // producer creates it on every accepted ask.
+            publishPreview(proto::kPreviewTargetAudience, 0, 7, false);
+            if (marker == "SLOW") {
+                fPendingFrames.push_back({std::chrono::steady_clock::now() +
+                                              std::chrono::milliseconds(500),
+                                          proto::kPreviewTargetSelection,
+                                          static_cast<std::uint32_t>(asked),
+                                          static_cast<std::uint32_t>(revision),
+                                          false});
+            } else {
+                publishPreview(proto::kPreviewTargetSelection, static_cast<std::uint32_t>(asked),
+                               static_cast<std::uint32_t>(revision), false);
+            }
+            if (marker == "FORGET" && !fForgetUsed) {
+                fForgetUsed = true;
+                fForgetReportsLeft = 1;  // the next status says the target is gone
+            }
+            return;
+        }
+        if (method == proto::kMethodPreviewReleased) {
+            ++fReleases;
+            if (request.contains("params") && request.at("params").is_object()) {
+                const auto& params = request.at("params").as_object();
+                const auto slot = params.find("slot");
+                const auto seq = params.find("seq");
+                const auto stream = params.find("stream");
+                if (slot != params.end() && seq != params.end() && stream != params.end() &&
+                    stream->value().is_string() &&
+                    std::string_view(stream->value().as_string()) == fPreviewName) {
+                    const std::int64_t index = slot->value().to_number<std::int64_t>();
+                    const std::uint64_t sequence = seq->value().to_number<std::uint64_t>();
+                    // The exact sequence, or nothing is freed: a release that
+                    // names a stale sequence leaves the slot owned, which is
+                    // how a consumer that mis-counts shows up as drops.
+                    if (index >= 0 && index < kSlots && fSlotSeq[index] == sequence) {
+                        fSlotOwned[index] = false;
+                    }
+                }
+            }
+            writeReport();
+            return;
+        }
         if (method == "shutdown") {
             sendResult(id, boost::json::object{{"ok", true}});
             writeReport();
+            cleanupPreviewSegment();
             _exit(0);
         }
         // Anything else the controller sent that this peer does not model
@@ -687,6 +900,15 @@ private:
             {"stoppedReading", fStoppedReading},
             {"resumed", fResumed},
             {"mediaOps", fMediaOps},  // task 6.15a: every transport command, verbatim
+            // Task 6.16a: every preview.select verbatim (the generations the
+            // client actually put on the wire), plus what the scripted
+            // producer did with them and how many slot releases came back.
+            {"selects", fSelects},
+            {"releases", fReleases},
+            {"previewDropped", fPreviewDropped},
+            {"selectionPublished", fSelectionPublished},
+            {"selectionStale", fSelectionStale},
+            {"selectionAccepted", fSelectionAccepted},
         };
         // Written through a temporary file and renamed, so a parent reading this
         // while the peer is mid-run sees either the old report or the new one and
@@ -701,6 +923,159 @@ private:
             std::rename(staging.c_str(), fReportPath.c_str());
         }
     }
+
+    // --- the scripted preview producer (task 6.16a, review R16) -----------
+    //
+    // A frame's colour IS its answer: an audience frame is (1, 2, 3) and an
+    // edit frame is (revision, 77, 155), so "these are the pixels of the
+    // scene that ask named" and "no edit frame ever reached the audience's
+    // pane" are pixel tests rather than hopes. 8x8 keeps the segment at a
+    // kilobyte; the seqlock, the ownership rule and the routing do not care.
+    static constexpr std::uint32_t kFrameWidth = 8;
+    static constexpr std::uint32_t kFrameHeight = 8;
+    static constexpr int kSlots = 3;
+    static_assert(static_cast<int>(proto::kPreviewSlotCount) == kSlots,
+                  "the scripted stream has the slot count the wire promises");
+
+    bool startPreviewSegment(std::string* error) {
+        fPreviewName = "/openshow-fakepv-" + std::to_string(static_cast<long>(::getpid()));
+        ::shm_unlink(fPreviewName.c_str());  // a previous run's leftover
+        fSlotStride = proto::previewSlotStrideBytes(kFrameWidth, kFrameHeight);
+        const std::size_t total = 64 + static_cast<std::size_t>(kSlots) * fSlotStride;
+        const int fd = ::shm_open(fPreviewName.c_str(), O_CREAT | O_RDWR, 0600);
+        if (fd < 0) {
+            *error = "fake: shm_open failed";
+            return false;
+        }
+        if (::ftruncate(fd, static_cast<off_t>(total)) != 0) {
+            ::close(fd);
+            *error = "fake: ftruncate failed";
+            return false;
+        }
+        void* map = ::mmap(nullptr, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (map == MAP_FAILED) {
+            ::close(fd);
+            *error = "fake: mmap failed";
+            return false;
+        }
+        auto* segment = static_cast<proto::PreviewSegmentHeader*>(map);
+        segment->magic = proto::kPreviewMagic;
+        segment->layoutVersion = proto::kPreviewLayoutVersion;
+        segment->slotCount = proto::kPreviewSlotCount;
+        segment->bytesPerSlot = static_cast<std::uint32_t>(fSlotStride);
+        segment->width = kFrameWidth;
+        segment->height = kFrameHeight;
+        segment->format = proto::kPreviewFourccRGBA8;
+        fSlotMap = static_cast<std::uint8_t*>(map);
+        fSlotFd = fd;
+        fStreamStarted = true;
+        return true;
+    }
+
+    void cleanupPreviewSegment() {
+        if (fSlotMap != nullptr) {
+            ::munmap(fSlotMap, 64 + static_cast<std::size_t>(kSlots) * fSlotStride);
+            fSlotMap = nullptr;
+        }
+        if (fSlotFd >= 0) {
+            ::close(fSlotFd);
+            fSlotFd = -1;
+        }
+        if (!fPreviewName.empty()) {
+            ::shm_unlink(fPreviewName.c_str());
+        }
+    }
+
+    void publishPreview(std::uint32_t target, std::uint32_t request, std::uint32_t revision,
+                        bool legacyFields) {
+        int slot = -1;
+        for (int i = 0; i < kSlots; ++i) {
+            if (!fSlotOwned[i]) {
+                slot = i;
+                break;
+            }
+        }
+        if (fSlotMap == nullptr || slot < 0) {
+            ++fPreviewDropped;  // the producer drops rather than waits
+            return;
+        }
+        std::uint8_t* base =
+            fSlotMap + proto::previewSlotOffset(static_cast<std::uint32_t>(slot), fSlotStride);
+        auto* header = reinterpret_cast<proto::PreviewSlotHeader*>(base);
+        const std::uint64_t seq = fSlotSeq[slot] + 2;
+        std::atomic_ref<std::uint64_t>(header->seq).store(seq - 1);  // odd: mid-write
+        header->width = kFrameWidth;
+        header->height = kFrameHeight;
+        header->rowBytes = kFrameWidth * 4;
+        header->format = proto::kPreviewFourccRGBA8;
+        header->revision = revision;
+        header->target = target;
+        header->request = request;
+        header->publishedNs = 1000 + seq;
+        const bool edit = target == proto::kPreviewTargetSelection;
+        const auto red = static_cast<std::uint8_t>(edit ? (revision & 0xFFu) : 1u);
+        const auto green = static_cast<std::uint8_t>(edit ? 77u : 2u);
+        const auto blue = static_cast<std::uint8_t>(edit ? 155u : 3u);
+        for (int pixel = 0; pixel < static_cast<int>(kFrameWidth * kFrameHeight); ++pixel) {
+            std::uint8_t* out = base + 64 + pixel * 4;
+            out[0] = red;
+            out[1] = green;
+            out[2] = blue;
+            out[3] = 255;
+        }
+        std::atomic_ref<std::uint64_t>(header->seq).store(seq);  // even: published
+        fSlotSeq[slot] = seq;
+        fSlotOwned[slot] = true;
+        if (edit) {
+            ++fSelectionPublished;
+        }
+        boost::json::object params{
+            {"slot", static_cast<std::int64_t>(slot)},
+            {"seq", static_cast<std::int64_t>(seq)},
+            {"width", static_cast<std::int64_t>(kFrameWidth)},
+            {"height", static_cast<std::int64_t>(kFrameHeight)},
+            {"rowBytes", static_cast<std::int64_t>(kFrameWidth * 4)},
+            {"revision", static_cast<std::int64_t>(revision)},
+            {"publishedNs", static_cast<std::int64_t>(1000 + seq)},
+            {"stream", fPreviewName}};
+        // A version-1 worker sends neither field, and the client must read
+        // that as the audience rather than as an edit.
+        if (!legacyFields) {
+            params["target"] = static_cast<std::int64_t>(target);
+            params["request"] = static_cast<std::int64_t>(request);
+        }
+        std::string wire;
+        proto::appendFrame(
+            proto::makeNotification(proto::kMethodPreviewReady, std::move(params)), &wire);
+        send(wire);
+    }
+
+    bool fStreamStarted = false;
+    std::string fPreviewName;
+    std::size_t fSlotStride = 0;
+    std::uint8_t* fSlotMap = nullptr;
+    int fSlotFd = -1;
+    std::uint64_t fSlotSeq[kSlots] = {};
+    bool fSlotOwned[kSlots] = {};
+    std::uint64_t fPreviewDropped = 0;
+    std::uint64_t fSelectionPublished = 0;
+    std::uint64_t fSelectionStale = 0;
+    std::uint64_t fReleases = 0;
+    bool fSelectionActive = false;
+    std::uint64_t fSelectionRevision = 0;
+    std::uint64_t fSelectionAccepted = 0;
+    bool fForgetUsed = false;
+    int fForgetReportsLeft = 0;
+    boost::json::array fSelects;
+    std::map<std::int64_t, std::string> fSceneSlides;
+    struct PendingFrame {
+        std::chrono::steady_clock::time_point when;
+        std::uint32_t target;
+        std::uint32_t request;
+        std::uint32_t revision;
+        bool legacy;
+    };
+    std::vector<PendingFrame> fPendingFrames;
 
     std::vector<std::string> fHeld;  // hold3: acks awaiting the burst
     std::vector<DelayedReply> fQueue;  // slow-first: acks awaiting their due
@@ -884,6 +1259,73 @@ std::string sceneStill(const char* slideId, const std::string& assetPath) {
     scene.background.assetId = std::string("asset-") + slideId;
     scene.background.assetPath = assetPath;
     return boost::json::serialize(scene::toJson(scene));
+}
+
+// The payload the edit canvas hands the controller: a compiled scene whose
+// slideId the scripted peer reads as its marker (SLOW delivers that frame late,
+// FORGET makes the peer report the target gone once).
+std::string sceneForSelection(const char* slideId, const char* line, unsigned colour) {
+    scene::Scene scene = authoredScene({std::string(line)}, colour);
+    scene.slideId = slideId;
+    return boost::json::serialize(scene::toJson(scene));
+}
+
+// A report read ONCE, no retry: the preview fixture polls the ledger between
+// pumping its own event loop, and a helper that sleeps for a second waiting
+// for a file that does not exist yet stops the client from answering.
+boost::json::object readReportNow(const std::string& path) {
+    if (std::FILE* file = std::fopen(path.c_str(), "rb")) {
+        char buffer[65536];
+        const size_t count = std::fread(buffer, 1, sizeof(buffer) - 1, file);
+        std::fclose(file);
+        buffer[count] = '\0';
+        boost::system::error_code error;
+        boost::json::value parsed = boost::json::parse(std::string(buffer), error);
+        if (!error && parsed.is_object()) {
+            return parsed.as_object();
+        }
+    }
+    return {};
+}
+
+// The peer's preview.select ledger as (revision, request) pairs in arrival
+// order. Every promise the generation counter makes is read out of this list:
+// one entry per accepted ask, the numbers strictly advancing, the stand-down
+// revision 0, and nothing sent twice for an unchanged slide.
+std::vector<std::pair<std::int64_t, std::int64_t>> selectLedger(
+    const boost::json::object& report) {
+    std::vector<std::pair<std::int64_t, std::int64_t>> out;
+    const auto entry = report.find("selects");
+    if (entry == report.end() || !entry->value().is_array()) {
+        return out;
+    }
+    for (const auto& value : entry->value().as_array()) {
+        if (!value.is_object() || !value.at("params").is_object()) {
+            continue;
+        }
+        const auto& params = value.at("params").as_object();
+        const auto revision = params.find("revision");
+        const auto request = params.find("request");
+        if (revision == params.end() || request == params.end()) {
+            continue;
+        }
+        out.emplace_back(revision->value().to_number<std::int64_t>(),
+                         request->value().to_number<std::int64_t>());
+    }
+    return out;
+}
+
+// The scripted producer paints (1, 2, 3) for the audience and
+// (revision, 77, 155) for an edit, so an image says both which target it was
+// drawn for and which ask answered it. Read as bytes: the controller copies
+// RGBA8888 straight out of the slot, and that is the layout under test.
+bool pixelsAre(const QImage& image, int red, int green, int blue) {
+    if (image.isNull() || image.sizeInBytes() < 3 ||
+        image.format() != QImage::Format_RGBA8888) {
+        return false;
+    }
+    const auto* bytes = static_cast<const uchar*>(image.constBits());
+    return bytes[0] == red && bytes[1] == green && bytes[2] == blue;
 }
 
 // --- the scenarios ------------------------------------------------------------
@@ -2109,6 +2551,210 @@ void scenarioMediaTransport() {
     }
 }
 
+// S14 (task 6.16a, review R16): the editor's picture on the client's side of
+// the socket.
+//
+// The live fixture proves the worker draws an off-air scene into the shared
+// stream and destroys a frame a newer ask overtakes. This scenario is the
+// other half — the consumer, which has to route two kinds of frame onto two
+// different panes, refuse to paint imagery of an ask it has already
+// superseded, and never let an edit look like a present. It needs a producer
+// that will actually deliver a stale frame, which is what the peer's SLOW
+// marker is for: without it, the frame the client must drop would never exist.
+void scenarioSelectionPreview() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "preview", 1);
+    const std::string report = tempPath("preview");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "preview: handshake with the scripted producer")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(controller.selectionSupported(),
+          "preview: the capability is what offers a worker-drawn edit");
+    if (!check(waitUntil([&controller] { return controller.previewActive(); }),
+               "preview: preview.start's answer maps the stream")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(waitUntil([&controller] { return controller.previewFrames() >= 1; }),
+          "preview: the audience's mirror arrives without being asked");
+    check(pixelsAre(controller.previewImage(), 1, 2, 3),
+          "preview: the mirror is the audience's own picture");
+    check(!controller.selectionReady() && controller.selectionFrames() == 0,
+          "preview: and nothing has been asked for, so the canvas has no edit yet");
+
+    // --- an ask is a prepare and a select, and it presents nothing -------
+    const QString first = QString::fromStdString(sceneForSelection("A", "verse one", 0x101030u));
+    controller.requestSelectionPreview(first);
+    const bool editArrives = waitUntil([&controller] { return controller.selectionReady(); });
+    if (!check(editArrives, "preview: the off-air render reaches the edit target")) {
+        controller.shutdownNow();
+        return;
+    }
+    {
+        const auto ledger = selectLedger(readReportNow(report));
+        const bool shape =
+            ledger.size() == 1 && ledger[0].first == 1 && ledger[0].second == 1;
+        check(shape, "preview: prepare then preview.select, naming the revision and generation 1");
+    }
+    check(pixelsAre(controller.selectionImage(), 1, 77, 155),
+          "preview: the pixels answer the revision the ask named");
+    check(pixelsAre(controller.previewImage(), 1, 2, 3),
+          "preview: the audience's pane is untouched by the edit's frame");
+    check(reportNumber(readReportNow(report), "presents") == 0,
+          "preview: looking at a slide is not a present - the peer saw no scene.present");
+
+    // --- an unchanged slide is not re-asked ------------------------------
+    controller.requestSelectionPreview(first);
+    pumpEventsFor(500);
+    {
+        const boost::json::object settled = readReportNow(report);
+        check(selectLedger(settled).size() == 1 && reportNumber(settled, "prepares") == 1,
+              "preview: the same payload does not cost a second prepare and select");
+    }
+
+    // --- a changed slide is a new render, tagged with the new revision ----
+    const QString second = QString::fromStdString(sceneForSelection("B", "chorus", 0x301010u));
+    const qint64 audienceBefore = controller.previewFrames();
+    controller.requestSelectionPreview(second);
+    check(waitUntil([&controller] { return controller.selectionFrames() >= 2; }),
+          "preview: a changed slide costs a new render");
+    check(pixelsAre(controller.selectionImage(), 2, 77, 155),
+          "preview: and the picture answers the NEW revision, not the first one");
+    // The peer published the audience's own frame immediately behind this
+    // edit's, as a live worker does whenever both targets are owed. Wait for
+    // THAT copy, then ask whether either pane traded pictures: the edit image
+    // must still be the edit's and the mirror still the show's. Routing by
+    // the target field is the only thing that makes that true, so a client
+    // that took either frame for either pane fails here and nowhere else.
+    const qint64 editCopiesWithTheNewPicture = controller.selectionFrames();
+    if (check(waitUntil([&controller, audienceBefore] {
+                  return controller.previewFrames() > audienceBefore;
+              }),
+              "preview: the audience's frame that followed the ask arrives on the same stream")) {
+        check(pixelsAre(controller.selectionImage(), 2, 77, 155),
+              "preview: an audience frame did not become the edit's picture");
+        check(pixelsAre(controller.previewImage(), 1, 2, 3),
+              "preview: and the edit's frame never entered the audience's pane");
+        check(controller.selectionFrames() == editCopiesWithTheNewPicture,
+              "preview: the audience's copy did not count as an edit frame");
+    }
+    const qint64 audienceFrames = controller.previewFrames();
+    pumpEventsFor(300);
+    check(controller.previewFrames() == audienceFrames,
+          "preview: edit frames never count as audience frames");
+
+    // --- the frame that arrives after the operator moved on ---------------
+    //
+    // The peer accepts the SLOW ask and holds its frame for half a second,
+    // which is the render thread still drawing yesterday's slide when the
+    // operator picks something else. The newer ask lands first; the late one
+    // arrives afterwards and must never be painted.
+    const QString slow = QString::fromStdString(sceneForSelection("SLOW", "bridge", 0x201020u));
+    controller.requestSelectionPreview(slow);
+    check(waitUntil([&report] { return selectLedger(readReportNow(report)).size() == 3; }),
+          "preview: the slow ask is accepted while its frame is still being drawn");
+    const qint64 copiesBefore = controller.selectionFrames();
+    controller.requestSelectionPreview(second);
+    check(waitUntil([&controller] { return pixelsAre(controller.selectionImage(), 4, 77, 155); }),
+          "preview: the newer ask's frame is the one painted");
+    pumpEventsFor(900);  // the held frame is due at +500 ms and is delivered
+    check(pixelsAre(controller.selectionImage(), 4, 77, 155),
+          "preview: the superseded frame never gets painted over the newer one");
+    check(controller.selectionFrames() == copiesBefore + 1,
+          "preview: the late frame is dropped before the copy, not after it");
+    {
+        const boost::json::object superseded = readReportNow(report);
+        check(reportNumber(superseded, "selectionPublished") == 4,
+              "preview: the producer did publish all four - so the drop is the consumer's");
+    }
+    // The property is a MIRROR of the worker's counter, so what this leg
+    // waits for is "non-zero reached the client". The exact number belongs to
+    // the peer's ledger below: the ledger is the authority on how many draws
+    // were superseded, and the property is only required to follow it.
+    check(waitUntil([&controller] { return controller.selectionStale() >= 1; }),
+          "preview: the worker's superseded-draw counter mirrors into the property");
+
+    // --- a worker that lost the target gets asked again ------------------
+    //
+    // FORGET arms the peer to report the target as unregistered once. The
+    // canvas showing nothing because the worker forgot is the failure this
+    // recovers from; recovering twice for one forget would be a spin, so the
+    // ask is counted.
+    const QString forget = QString::fromStdString(sceneForSelection("FORGET", "ending", 0x002020u));
+    controller.requestSelectionPreview(forget);
+    // The observable is the PICTURE. The peer writes its ledger the instant it
+    // accepts an ask, so waiting on the ledger would only prove the ask was
+    // sent; waiting on the pixels proves the re-issue came all the way back.
+    const bool recovered =
+        waitUntil([&controller] { return pixelsAre(controller.selectionImage(), 6, 77, 155); },
+                  6000);
+    check(recovered,
+          "preview: a worker that reports the target gone gets asked again, and the "
+          "re-issued render is what ends up shown");
+    pumpEventsFor(700);  // two status polls' worth: an unsettled canvas would spin
+    {
+        const boost::json::object settled = readReportNow(report);
+        check(selectLedger(settled).size() == 6 && reportNumber(settled, "prepares") == 6,
+              "preview: the recovery asks exactly once - no prepare storm");
+    }
+
+    // --- the stand-down, and a frame from a version-1 worker --------------
+    controller.clearSelectionPreview();
+    check(!controller.selectionReady(),
+          "preview: standing down drops the edit picture immediately");
+    check(waitUntil([&report] {
+              const auto ledger = selectLedger(readReportNow(report));
+              return !ledger.empty() && ledger.back().first == 0;
+          }),
+          "preview: the stand-down reaches the worker as revision 0");
+    {
+        const auto ledger = selectLedger(readReportNow(report));
+        // The whole conversation, in one picture of the client's counter:
+        // every accepted ask one generation newer than the last, unchanged
+        // slides absent (the dedupe leg sent nothing), and the stand-down a
+        // generation of its own. A client that reused a number, or advanced it
+        // for a refusal, cannot produce this sequence.
+        const std::vector<std::pair<std::int64_t, std::int64_t>> expected = {
+            {1, 1},  // the first ask: prepare 1, generation 1
+            {2, 2},  // a changed slide
+            {3, 3},  // the SLOW ask, whose frame the peer held back
+            {4, 4},  // the ask that overtook it
+            {5, 5},  // the FORGET ask
+            {6, 6},  // the single re-issue after the worker forgot
+            {0, 7},  // the stand-down: revision 0, and still advancing
+        };
+        check(ledger == expected,
+              "preview: the generation ledger is one strictly increasing ask per change, "
+              "and nothing else");
+    }
+    check(waitUntil([&controller] { return controller.previewFrames() >= 2; }),
+          "preview: the audience keeps its mirror after the edit goes away");
+    check(!controller.selectionReady(),
+          "preview: a frame with no target field is the audience's, never an edit");
+    {
+        const boost::json::object settled = readReportNow(report);
+        check(reportNumber(settled, "selectionStale") == 1,
+              "preview: exactly one draw was superseded in the whole conversation - the "
+              "counter is derived, not incremented for every edit frame");
+        check(controller.selectionStale() == reportNumber(settled, "selectionStale"),
+              "preview: and the property ended where the worker's counter ended");
+        check(reportNumber(settled, "previewDropped") == 0,
+              "preview: no frame was dropped for want of a slot - the consumer released every "
+              "one it was given");
+        check(reportNumber(settled, "releases") >= reportNumber(settled, "selectionPublished"),
+              "preview: releases keep pace with the frames published");
+    }
+    controller.shutdownNow();
+}
+
 int main(int argc, char* argv[]) {
     const char* scenario = std::getenv("OPENSHOW_FAKE_SCENARIO");
     if (scenario != nullptr) {
@@ -2145,6 +2791,7 @@ int main(int argc, char* argv[]) {
     scenarioStalledThenResumingPeerKeepsItsSession();
     scenarioAdoptedPaths();
     scenarioMediaTransport();
+    scenarioSelectionPreview();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "worker_controller_tests: %d failure(s)\n", gFailures);

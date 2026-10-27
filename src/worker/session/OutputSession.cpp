@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -237,6 +238,13 @@ void OutputSession::close() {
     {
         std::lock_guard<std::mutex> lock(fMutex);
         fPreviewStream.reset();  // unlinks the preview segment (unless a release call still holds it)
+        // The off-air target's content pin goes with the stream it was drawn
+        // for (task 6.16a): a closed session must not sit on a scene the
+        // store would otherwise be free to evict, and no later pass exists
+        // to draw it.
+        fDesiredSelection = SelectionDesired{};
+        fAppliedSelectionGeneration = fDesiredSelection.generation;
+        fStatus.preview.selection = PreviewStatus::Selection{};
     }
     fContext.reset();
     if (fVk) {
@@ -468,6 +476,13 @@ bool OutputSession::startPreview(uint32_t width, uint32_t height, uint32_t fps,
     for (auto& pending : fPendingReady) {
         pending.reset();  // slots belong to the stream being replaced
     }
+    // A new stream is a new generation domain for the off-air target
+    // (task 6.16a): the accepted request resets, and the selection itself
+    // stands down until the frontend asks again — pixels of a scene nobody
+    // re-asked for have no stream to arrive on.
+    fDesiredSelection = SelectionDesired{};
+    fAppliedSelectionGeneration = fDesiredSelection.generation;
+    fStatus.preview.selection.active = false;
 
     if (info) {
         info->name = fDesiredPreview.name;
@@ -493,8 +508,89 @@ void OutputSession::stopPreview() {
         for (auto& pending : fPendingReady) {
             pending.reset();
         }
+        // No stream, no off-air target (task 6.16a): the content copy goes
+        // back with it, so a stopped preview does not sit on a scene the
+        // store would otherwise be free to evict.
+        fDesiredSelection = SelectionDesired{};
+        fAppliedSelectionGeneration = fDesiredSelection.generation;
+        fStatus.preview.selection = PreviewStatus::Selection{};
+        syncScenePins();  // the selection's still is no longer held
     }
     wakeRenderThread();
+}
+
+bool OutputSession::selectPreviewScene(uint64_t revision, std::uint32_t request,
+                                       std::string* error) {
+    std::unique_lock<std::mutex> lock(fMutex);
+    if (!fDesiredPreview.enabled) {
+        // The honest refusal, in the order the operator can act on it: no
+        // stream means there is nowhere for these pixels to go. (The gate is
+        // the DESIRED stream, not status().preview.running: preview.start is
+        // acknowledged before the render thread has built the segment, and a
+        // selection that arrives in that window is a normal race, not a
+        // refusal.)
+        if (error != nullptr) {
+            *error = "no preview stream is running: preview.start first";
+        }
+        return false;
+    }
+    // THE GENERATION GATE. `request` is the frontend's own counter, so the
+    // rule is one-directional: it must come strictly after the accepted one
+    // in modular order. A frontend that replays an ask it already made — a
+    // retry after a dropped reply, a frame its socket buffered, a signal
+    // fired twice — is refused here rather than resurrecting imagery of a
+    // scene the operator has moved on from. 0 means "stand down"; it is a
+    // change like any other and needs a new generation too.
+    const std::uint32_t accepted = fDesiredSelection.request;
+    if (static_cast<std::int32_t>(request - accepted) <= 0) {
+        if (error != nullptr) {
+            *error = "preview.select request " + std::to_string(request) +
+                     " does not follow the accepted " + std::to_string(accepted) +
+                     " (the frontend's counter must advance)";
+        }
+        return false;
+    }
+    ActiveScene content;
+    if (revision != 0) {
+        const auto entry = fScenes.find(revision);
+        if (entry == fScenes.end()) {
+            // The store is bounded, so this is the ordinary way to be wrong:
+            // the frontend named a revision that no longer exists (or never
+            // did). It must re-prepare rather than wait for imagery that is
+            // never coming.
+            if (error != nullptr) {
+                *error = "preview.select scene " + std::to_string(revision) +
+                         " is not in the prepared store";
+            }
+            return false;
+        }
+        // Pin the content here rather than looking the revision up again on
+        // the render thread: entries are immutable per revision, and the
+        // store may evict this one before the pass that draws it (R4's rule,
+        // applied to a target that has no present to pin it).
+        content = std::make_shared<const openshow::scene::Scene>(entry->second);
+    }
+    fDesiredSelection.content = std::move(content);
+    fDesiredSelection.revision = revision;
+    fDesiredSelection.request = request;
+    ++fDesiredSelection.generation;
+    // `active` is the accept, not the draw: it says this stream has an
+    // off-air target registered, which is what the frontend's status mirror
+    // needs in order to know its ask was understood. Whether the frame made
+    // it out is what published/dropped/stale are for.
+    fStatus.preview.selection.active = revision != 0;
+    fStatus.preview.selection.revision = revision;
+    fStatus.preview.selection.request = request;
+    // The accepted scene's still joins the pin set NOW, not on the render
+    // pass that draws it, so the frame loop never opens a file (task 6.10's
+    // rule for a target that has no present to pin it through).
+    syncScenePins();
+    lock.unlock();
+    // The ask is a reason to wake: an idle show with nothing else owed
+    // sleeps in glfwWaitEventsTimeout, and an edit that waits for the next
+    // housekeeping tick is an edit the operator watched not happen.
+    wakeRenderThread();
+    return true;
 }
 
 void OutputSession::releasePreviewSlot(uint32_t slot, uint64_t seq,
@@ -1433,6 +1529,15 @@ void OutputSession::syncScenePins() {
     if (fRenderScene) {
         collect(*fRenderScene);
     }
+    // The editor's off-air target (task 6.16a): its still is drawn by the
+    // render thread like any other background, so it is held for as long as
+    // the selection is registered — even after the store evicts the revision
+    // the pin was taken from. That is the whole point of pinning at accept:
+    // looking at an edit must never leave a background image unpinned while
+    // something is still drawing it.
+    if (fDesiredSelection.content) {
+        collect(*fDesiredSelection.content);
+    }
     std::sort(held.begin(), held.end());
     held.erase(std::unique(held.begin(), held.end()), held.end());
     fScene->imageCache()->syncPinSet(held);
@@ -1757,8 +1862,117 @@ void OutputSession::applyPreviewState() {
     if (ok) {
         fPreviewStream = std::move(stream);
         fLastPreview = std::chrono::steady_clock::time_point{};  // tick immediately
+        // Same for the other target: a new stream is due its first frame at
+        // once, and its cadence marker must not inherit the old stream's.
+        fLastSelection = std::chrono::steady_clock::time_point{};
         fPreviewPublishedFrames = 0;  // a fresh stream owes its first frame
     }
+}
+
+void OutputSession::drawPreviewTarget(const SceneFrame& audienceFrame, SkImage* video) {
+    // ONE preview frame per pass (task 6.16a). The audience mirror and the
+    // editor's off-air render share one stream, one cadence and one
+    // audience budget, so they take turns rather than both drawing in the
+    // pass the audience is waiting on: whichever has gone longest without a
+    // frame goes first, and the other stays owed for the next one. During a
+    // burst of edit asks that is what keeps the panel's picture arriving;
+    // while a show plays it is what keeps an edit from waiting for the
+    // audience to go quiet. A target that stood down for its own cadence or
+    // for the budget does not consume the pass — the other one draws.
+    const bool mirrorOwed = fFrames > 0 && fFrames != fPreviewPublishedFrames;
+    bool selectionOwed = false;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        selectionOwed = fStatus.preview.running && fDesiredSelection.revision != 0 &&
+                        fDesiredSelection.generation != fAppliedSelectionGeneration;
+    }
+    if (selectionOwed && (!mirrorOwed || fLastSelection <= fLastPreview)) {
+        if (publishSelectionFrame(video)) {
+            return;
+        }
+    }
+    if (mirrorOwed) {
+        publishPreviewFrame(audienceFrame, video);
+    }
+}
+
+OutputSession::PreviewFill OutputSession::fillPreviewSlot(const SceneFrame& frame,
+                                                          const SkImage* sceneVideo,
+                                                          const SkImage* overlayVideo,
+                                                          PreviewStream& stream, int slot,
+                                                          uint32_t width, uint32_t height) {
+    // One target's draw into a claimed slot, shared by the audience mirror
+    // and the editor's off-air render (task 6.16a): the two differ in WHICH
+    // frame they draw and WHOSE request the result answers, and nowhere
+    // else. Two copies of this would mean two cost policies, and the
+    // audience's budget is exactly the kind of number that drifts when it
+    // is computed twice.
+    if (!fPreviewSurface || fPreviewSurface->width() != static_cast<int>(width) ||
+        fPreviewSurface->height() != static_cast<int>(height)) {
+        const SkImageInfo info =
+            SkImageInfo::Make(static_cast<int>(width), static_cast<int>(height),
+                              kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+        fPreviewSurface =
+            SkSurfaces::RenderTarget(fContext.get(), skgpu::Budgeted::kNo, info);
+        if (!fPreviewSurface) {
+            return PreviewFill::kNoSurface;
+        }
+    }
+
+    // The measured region is everything the render thread spends on the
+    // preview: composition plus the CPU readback that hands the slot over.
+    // The fault knob sits inside it, so the deferral policy is tested
+    // against a real cost rather than a microsecond — and inside it for
+    // BOTH targets, because an off-air edit is the same work on the same
+    // thread and pays the audience the same way.
+    const auto started = std::chrono::steady_clock::now();
+    if (faults().previewDelayMs > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(faults().previewDelayMs));
+    }
+    // The diagnostics status line stays empty so it does not crowd the
+    // preview; video goes where the caller decided it belongs.
+    fScene->draw(frame, fPreviewSurface->getCanvas(), static_cast<int>(width),
+                 static_cast<int>(height), std::string(), sceneVideo);
+    if (overlayVideo != nullptr) {
+        // The development placement only (task 1.5e): the bench's video,
+        // when it is not the scene's own background, over the whole preview.
+        // Only the audience target ever passes one — an edit of a scene with
+        // no video on its background has no business showing somebody
+        // else's.
+        fPreviewSurface->getCanvas()->drawImageRect(
+            overlayVideo, SkRect::MakeIWH(static_cast<int>(width), static_cast<int>(height)),
+            SkSamplingOptions(SkFilterMode::kLinear));
+    }
+
+    const SkImageInfo dst = SkImageInfo::Make(static_cast<int>(width),
+                                              static_cast<int>(height),
+                                              kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    const bool readbackOk =
+        fPreviewSurface->readPixels(dst, stream.slotPixels(slot), stream.rowBytes(), 0, 0);
+    // Whatever the frame did to the panel's time is settled here, success or
+    // not: the milliseconds were spent either way.
+    const double costSeconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (costSeconds > kPreviewBudgetSeconds) {
+        // Give the audience the overrun back. Standing down for
+        // cost × (period / budget − 1) keeps the AVERAGE preview cost at or
+        // under the share it was lent, whatever one frame cost: a preview
+        // that needs 40 ms gives up its frames (here, roughly 3 in 4)
+        // instead of taking 40 ms out of every audience frame.
+        fPreviewDeferredUntil =
+            std::chrono::steady_clock::now() +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(costSeconds *
+                                              (kAudienceFrameSeconds / kPreviewBudgetSeconds -
+                                               1.0)));
+    } else {
+        fPreviewDeferredUntil = std::chrono::steady_clock::time_point{};
+    }
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        fStatus.preview.worstMs = std::max(fStatus.preview.worstMs, costSeconds * 1000.0);
+    }
+    return readbackOk ? PreviewFill::kFilled : PreviewFill::kReadbackFailed;
 }
 
 void OutputSession::publishPreviewFrame(const SceneFrame& frame, SkImage* video) {
@@ -1819,84 +2033,30 @@ void OutputSession::publishPreviewFrame(const SceneFrame& frame, SkImage* video)
         return;
     }
 
-    if (!fPreviewSurface || fPreviewSurface->width() != static_cast<int>(width) ||
-        fPreviewSurface->height() != static_cast<int>(height)) {
-        const SkImageInfo info =
-            SkImageInfo::Make(static_cast<int>(width), static_cast<int>(height),
-                              kRGBA_8888_SkColorType, kPremul_SkAlphaType);
-        fPreviewSurface =
-            SkSurfaces::RenderTarget(fContext.get(), skgpu::Budgeted::kNo, info);
-        if (!fPreviewSurface) {
-            stream->abort(slot);
-            std::lock_guard<std::mutex> lock(fMutex);
-            ++fStatus.preview.dropped;
-            fStatus.preview.running = false;
-            fStatus.preview.error = "could not create the preview surface";
-            return;
-        }
-    }
-
     // The same scene through the same draw path as the audience output, only
     // smaller — and the SAME FRAME: what this preview publishes is the
     // composition the audience was shown (task 6.11a, review R13), never one
     // the preview captured for itself, so no preview frame can carry a
-    // scene, a blend or a clock the panel has not been shown. The
-    // diagnostics status line stays empty so it does not crowd the preview.
+    // scene, a blend or a clock the panel has not been shown.
     // Video belongs to what the audience sees: a background video (task 5.5)
     // goes into the scene's background layer through draw() itself, anything
     // else (the 1.5e bench) stays the dev overlay over the whole preview —
-    // the readPixels below is CPU-synchronous, which keeps this sampling of a
-    // released slot ordered ahead of any later reuse.
-    //
-    // The measured region is everything the audience pays for: composition
-    // plus the CPU readback that hands the slot over.
-    const auto started = std::chrono::steady_clock::now();
-    if (faults().previewDelayMs > 0) {
-        // Fixture knob (task 6.11a): stand in for an expensive preview
-        // target — a large preview on a weak GPU, a slow readback — inside
-        // the measured region, so the deferral policy is tested against a
-        // real cost rather than a microsecond.
-        std::this_thread::sleep_for(std::chrono::milliseconds(faults().previewDelayMs));
-    }
+    // the readPixels inside fillPreviewSlot is CPU-synchronous, which keeps
+    // this sampling of a released slot ordered ahead of any later reuse.
     const bool asSceneBackground =
         video != nullptr && fRenderScene && fRenderScene->background.isVideo;
-    fScene->draw(frame, fPreviewSurface->getCanvas(), static_cast<int>(width),
-                 static_cast<int>(height), std::string(), asSceneBackground ? video : nullptr);
-    if (video && !asSceneBackground) {
-        fPreviewSurface->getCanvas()->drawImageRect(
-            video, SkRect::MakeIWH(static_cast<int>(width), static_cast<int>(height)),
-            SkSamplingOptions(SkFilterMode::kLinear));
-    }
-
-    const SkImageInfo dst = SkImageInfo::Make(static_cast<int>(width),
-                                              static_cast<int>(height),
-                                              kRGBA_8888_SkColorType, kPremul_SkAlphaType);
-    const bool readbackOk =
-        fPreviewSurface->readPixels(dst, stream->slotPixels(slot), stream->rowBytes(), 0, 0);
-    // Whatever the frame did to the panel's time is settled here, success or
-    // not: the milliseconds were spent either way.
-    const double costSeconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    if (costSeconds > kPreviewBudgetSeconds) {
-        // Give the audience the overrun back. Standing down for
-        // cost × (period / budget − 1) keeps the AVERAGE preview cost at or
-        // under the share it was lent, whatever one frame cost: a preview
-        // that needs 40 ms gives up its frames (here, roughly 3 in 4)
-        // instead of taking 40 ms out of every audience frame.
-        fPreviewDeferredUntil =
-            std::chrono::steady_clock::now() +
-            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                std::chrono::duration<double>(costSeconds *
-                                              (kAudienceFrameSeconds / kPreviewBudgetSeconds -
-                                               1.0)));
-    } else {
-        fPreviewDeferredUntil = std::chrono::steady_clock::time_point{};
-    }
-    {
+    const PreviewFill fill =
+        fillPreviewSlot(frame, asSceneBackground ? video : nullptr,
+                        asSceneBackground ? nullptr : video, *stream, slot, width, height);
+    if (fill == PreviewFill::kNoSurface) {
+        stream->abort(slot);
         std::lock_guard<std::mutex> lock(fMutex);
-        fStatus.preview.worstMs = std::max(fStatus.preview.worstMs, costSeconds * 1000.0);
+        ++fStatus.preview.dropped;
+        fStatus.preview.running = false;
+        fStatus.preview.error = "could not create the preview surface";
+        return;
     }
-    if (!readbackOk) {
+    if (fill == PreviewFill::kReadbackFailed) {
         stream->abort(slot);
         std::lock_guard<std::mutex> lock(fMutex);
         ++fStatus.preview.dropped;
@@ -1907,7 +2067,8 @@ void OutputSession::publishPreviewFrame(const SceneFrame& frame, SkImage* video)
     const uint64_t publishedNs = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch())
             .count());
-    const uint64_t seq = stream->publish(slot, revision, publishedNs);
+    const uint64_t seq = stream->publish(slot, revision, protocol::kPreviewTargetAudience, 0,
+                                         publishedNs);
     fPreviewPublishedFrames = fFrames;  // the gate counts this publish
 
     PreviewReady ready;
@@ -1917,11 +2078,171 @@ void OutputSession::publishPreviewFrame(const SceneFrame& frame, SkImage* video)
     ready.height = height;
     ready.rowBytes = stream->rowBytes();
     ready.revision = revision;
+    ready.target = protocol::kPreviewTargetAudience;
+    ready.request = 0;
     ready.publishedNs = publishedNs;
     ready.stream = stream->name();  // ownership identity (task 6.5)
     std::lock_guard<std::mutex> lock(fMutex);
     fPendingReady[slot] = ready;
     ++fStatus.preview.published;
+}
+
+bool OutputSession::publishSelectionFrame(SkImage* video) {
+    // The gates, in the order that costs least to answer.
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t fps = 0;
+    std::shared_ptr<PreviewStream> stream;
+    ActiveScene content;
+    uint64_t revision = 0;
+    std::uint32_t request = 0;
+    std::uint32_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (!fStatus.preview.running || fDesiredSelection.revision == 0 ||
+            fDesiredSelection.generation == fAppliedSelectionGeneration) {
+            // Nothing asked, or this ask has already been answered: one
+            // request is one frame, not a second stream to keep ticking.
+            return false;
+        }
+        content = fDesiredSelection.content;
+        revision = fDesiredSelection.revision;
+        request = fDesiredSelection.request;
+        generation = fDesiredSelection.generation;
+        width = fStatus.preview.width;
+        height = fStatus.preview.height;
+        fps = fStatus.preview.fps;
+        stream = fPreviewStream;
+    }
+    if (!stream || !content) {
+        return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    // The stream's cadence, per target: the mirror and the edit share the
+    // transport and so share its rate, but neither waits on the other's
+    // last frame (see run()'s horizon, which wakes for whichever is due
+    // first).
+    if (now - fLastSelection < std::chrono::duration<double>(1.0 / fps)) {
+        return false;
+    }
+    if (now < fPreviewDeferredUntil) {
+        std::lock_guard<std::mutex> lock(fMutex);
+        ++fStatus.preview.selection.deferred;
+        return false;
+    }
+    fLastSelection = now;
+
+    const int slot = stream->claim();
+    if (slot < 0) {
+        // The consumer owns every slot: drop, and stay owed — the next pass
+        // tries again for the same request. Dropping is bounded (the loop's
+        // cadence), the ask never is.
+        std::lock_guard<std::mutex> lock(fMutex);
+        ++fStatus.preview.selection.dropped;
+        return false;
+    }
+
+    // THE FRAME, and the whole point of the task: a SceneFrame built by
+    // hand from the pinned scene, at full strength with no fade, carrying
+    // the revision of the scene rather than of any present. Nothing here
+    // calls captureFrame (the only call that advances a crossfade),
+    // commitFrame, setActiveScene or the transport's apply — so the audience
+    // keeps its scene, its blend, its clock and its media exactly as they
+    // were, however many edits are drawn while they watch.
+    SceneFrame frame;
+    frame.scene = content;
+    frame.fadeFrom = nullptr;
+    frame.mediaBlend = 1.0f;
+    frame.textBlend = 1.0f;
+    frame.timeSeconds =
+        std::chrono::duration<double>(now - fStartTime).count();
+    frame.wallClock = std::time(nullptr);
+    frame.revision = revision;
+
+    // Media, honestly: an off-air scene draws its background STILL out of
+    // the pinned image cache (prepared scenes are preloaded and pinned, so
+    // the cost is not paid here). A VIDEO background is a transport that
+    // belongs to the present — an unpublished scene has none — so the only
+    // frame this render may sample is the one the audience's own transport
+    // is showing, and only when the two scenes name the same asset. Any
+    // other video stands as the colour fill it draws with no frame to show:
+    // pretending otherwise would put a moving picture behind an edit that
+    // the audience has no reason to be seeing.
+    const bool sameVideoAsset =
+        video != nullptr && fRenderScene && fRenderScene->background.isVideo &&
+        content->background.isVideo &&
+        content->background.assetPath == fRenderScene->background.assetPath;
+
+    const PreviewFill fill =
+        fillPreviewSlot(frame, sameVideoAsset ? video : nullptr, nullptr, *stream, slot,
+                        width, height);
+    if (fill == PreviewFill::kNoSurface) {
+        stream->abort(slot);
+        std::lock_guard<std::mutex> lock(fMutex);
+        ++fStatus.preview.selection.dropped;
+        fStatus.preview.running = false;
+        fStatus.preview.error = "could not create the preview surface";
+        return false;
+    }
+    if (fill == PreviewFill::kReadbackFailed) {
+        stream->abort(slot);
+        std::lock_guard<std::mutex> lock(fMutex);
+        ++fStatus.preview.selection.dropped;
+        fStatus.preview.error = "preview readback failed";
+        return false;
+    }
+
+    const uint64_t publishedNs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch())
+            .count());
+    bool stale = false;
+    {
+        // THE PUBLISH GATE. The draw above took time, and a frontend that
+        // kept editing may have asked again since; publishing THAT would put
+        // an old scene's pixels on the wire tagged with a generation the
+        // operator has already moved past. The generation is re-read here,
+        // under the same lock the accept takes, and a superseded frame is
+        // destroyed rather than published — the slot closes on its previous
+        // value, so the consumer never sees half a frame either.
+        std::lock_guard<std::mutex> lock(fMutex);
+        if (fDesiredSelection.generation != generation) {
+            ++fStatus.preview.selection.stale;
+            stale = true;
+        }
+    }
+    if (stale) {
+        stream->abort(slot);
+        // Stay owed: the newer ask is what the render thread draws next, and
+        // this one is nobody's picture any more.
+        return false;
+    }
+
+    const uint64_t seq =
+        stream->publish(slot, static_cast<uint32_t>(revision), protocol::kPreviewTargetSelection,
+                        request, publishedNs);
+    PreviewReady ready;
+    ready.slot = static_cast<uint32_t>(slot);
+    ready.seq = seq;
+    ready.width = width;
+    ready.height = height;
+    ready.rowBytes = stream->rowBytes();
+    ready.revision = static_cast<uint32_t>(revision);
+    ready.target = protocol::kPreviewTargetSelection;
+    ready.request = request;
+    ready.publishedNs = publishedNs;
+    ready.stream = stream->name();
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        // Satisfied only now: this request has produced exactly one frame.
+        // The mirror's content gate is deliberately NOT touched — these
+        // pixels are not the audience's, and the panel's own picture still
+        // has to reach the stream on its own terms.
+        fAppliedSelectionGeneration = generation;
+        fPendingReady[slot] = ready;
+        ++fStatus.preview.selection.published;
+    }
+    return true;
 }
 
 void OutputSession::frame(const FrameSnapshot& snapshot) {
@@ -2199,9 +2520,7 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
     // advanced the live crossfade a second time: the preview ran the fade to
     // a blend the audience had not been shown, on a clock the audience's
     // 800 ms does not own.
-    if (fFrames > 0) {
-        publishPreviewFrame(fComposedFrame, videoImage);
-    }
+    drawPreviewTarget(fComposedFrame, videoImage);
 
     // The present's sampling obligation is handed back last:
     // publishPreviewFrame's readback above is CPU-synchronous, so by now
@@ -2389,31 +2708,42 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
                 fCapturedSceneId = snapshot.scene;
             }
             snapshot.content = fCapturedScene;
-            if (!presentNow && fStatus.preview.running &&
-                fFrames != fPreviewPublishedFrames) {
-                // A change is owed to the preview but the cadence throttled
-                // it: republish when allowed without a fresh output frame.
-                // The audience budget (task 6.11a) is a second gate on the
-                // same wake-up, and it has to be: a publish that stood down
-                // left fLastPreview where it was, so the cadence arithmetic
-                // below kept calling this pass "due" for the whole defer
-                // window — the first fixture measured that re-ask loop at
-                // ~20,000 iterations a second, which is precisely the busy
-                // loop 1.5e exists to prevent. The horizon is when the
-                // audience can pay again, so the loop sleeps to it.
-                const auto nextAllowed =
-                    std::max(fLastPreview +
-                                 std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                                     std::chrono::duration<double>(
-                                         1.0 / std::max(1u, fStatus.preview.fps))),
-                             fPreviewDeferredUntil);
-                if (now >= nextAllowed) {
-                    previewDue = true;
-                } else {
-                    wakeAt = std::min(wakeAt, nextAllowed);
+            if (!presentNow && fStatus.preview.running) {
+                // Either preview target can owe a frame: the MIRROR when the
+                // audience's last presented frame has not reached the stream
+                // (task 1.5e's content gate), the EDITOR when an accepted
+                // off-air ask has not been drawn (task 6.16a). Each has its
+                // own cadence marker and they share the audience's budget, so
+                // the loop sleeps to whichever comes round first. The re-ask
+                // lesson applies to both: a publish that stood down left its
+                // own marker where it was, so a horizon in the future is a
+                // SLEEP and never a spin — the first fixture measured that
+                // loop at ~20,000 iterations a second, which is precisely the
+                // busy loop 1.5e exists to prevent.
+                const auto period =
+                    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<double>(
+                            1.0 / std::max(1u, fStatus.preview.fps)));
+                const auto horizonOf = [&](const std::chrono::steady_clock::time_point& last) {
+                    return std::max(last + period, fPreviewDeferredUntil);
+                };
+                const bool mirrorOwed = fFrames != fPreviewPublishedFrames;
+                const bool selectionOwed =
+                    fDesiredSelection.revision != 0 &&
+                    fDesiredSelection.generation != fAppliedSelectionGeneration;
+                if (mirrorOwed || selectionOwed) {
+                    const auto nextAllowed = mirrorOwed && selectionOwed
+                                                 ? std::min(horizonOf(fLastPreview),
+                                                            horizonOf(fLastSelection))
+                                                 : horizonOf(mirrorOwed ? fLastPreview
+                                                                        : fLastSelection);
+                    if (now >= nextAllowed) {
+                        previewDue = true;
+                    } else {
+                        wakeAt = std::min(wakeAt, nextAllowed);
+                    }
                 }
-            }
-        }
+            }        }
 
         if (now >= nextHousekeeping) {
             housekeep();
@@ -2468,7 +2798,10 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             // advanced the crossfade with the audience asleep — the preview
             // could run a fade to its end and report it done while the panel
             // still showed a half-blended picture.
-            publishPreviewFrame(fPresentedFrame, held);
+            // The off-air edit rides the same decision (task 6.16a): an idle
+            // show is exactly when the operator edits, so the target cannot
+            // wait for the audience to produce a frame of its own.
+            drawPreviewTarget(fPresentedFrame, held);
             continue;
         }
         const auto waitUntil = std::min(nextHousekeeping, wakeAt);

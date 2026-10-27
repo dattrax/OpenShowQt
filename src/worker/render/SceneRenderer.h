@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <ctime>
 #include <functional>
 #include <memory>
@@ -183,6 +184,18 @@ public:
     // on the fade's first frame (which still looks like the old scene).
     bool transitionRunning() const { return fTransitionRunning; }
 
+    // How many text layouts the words layer has SHAPED since this renderer
+    // was created (task 6.16a). Drawing a scene is cheap once its text is
+    // laid out, and laying text out is not; with the audience and the
+    // editor's off-air target drawing alternating frames, a cache keyed on
+    // the scene pointer can turn one edit into a re-shape every pass, which
+    // is cost the audience pays for a preview's benefit. The counter is the
+    // evidence a fixture asserts on: two steady scenes alternating across
+    // many passes must cost a handful of builds, not one per pass.
+    std::uint64_t textLayoutBuilds() const {
+        return fTextLayoutBuilds.load(std::memory_order_relaxed);
+    }
+
     // Layer toggles, driven by the RPC layer controls (and the dev CLI).
     void setLayerEnabled(LayerId id, bool enabled) { fLayers.setEnabled(id, enabled); }
     bool layerEnabled(LayerId id) const { return fLayers.isEnabled(id); }
@@ -201,6 +214,9 @@ private:
     // engine outlives the layers (declared before fLayers).
     std::unique_ptr<SceneTextEngine> fText;
     SceneImageCache fImages;     // persists background images across scenes
+    // The words layer's layout-build counter (declared ahead of fLayers so
+    // it outlives the layer that writes it).
+    std::atomic<std::uint64_t> fTextLayoutBuilds{0};
     SceneTransition fTransition;
     bool fTransitionRunning = false;
     LayerStack fLayers;

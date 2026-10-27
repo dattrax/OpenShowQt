@@ -45,9 +45,38 @@ namespace openshow::protocol {
 // audio) that confirms it, named by "media.standalone.v1" — the track has
 // its OWN lifetime (scene changes neither restart nor stop it) and its own
 // status block, so the minor-6 background-transport fields keep meaning
-// exactly what they did.
+// exactly what they did. Minor 8 (task 6.16a, review R16) adds the
+// editor's off-air preview target: the preview.select command, the
+// "target"/"request" fields every preview.ready now carries alongside the
+// shm slot header's own copy of them (layout version 2), and the
+// status.preview.selection block, named by "preview.select.v1". A frontend
+// that ignores all three still mirrors the audience — the new ready fields
+// are additive and the mirror's request is always 0 — but it cannot ask
+// for a scene the audience is not shown, which is what the capability is
+// for. preview.select's refusal is not a compatibility question: a worker
+// that does not know the method answers "method not found", which is
+// exactly the signal to keep the QML text representation instead.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 7;
+inline constexpr std::uint32_t kProtocolMinor = 8;
+
+// preview.select {"revision":r,"request":g} (task 6.16a, review R16):
+// render the PREPARED scene `r` into the running preview stream without
+// presenting it, so the edit canvas can show the worker's own Skia picture
+// of a slide that is not on air. `request` is the frontend's own
+// generation counter and must come strictly after the last accepted one
+// (modulo 2^32): replaying an old ask is refused rather than allowed to
+// resurrect imagery of a scene the operator has moved past. Revision 0
+// stands the target down. Every frame the stream carries names the target
+// it was drawn for and the request it answers, and a consumer that has
+// asked again since drops what it receives — so a stale edit is impossible
+// by construction, not unlikely by timing. Nothing about the audience
+// changes: no present, no scene apply, no crossfade advance, no transport
+// command. output.status.preview.selection is the acknowledgement
+// (active/revision/request, then published/dropped/deferred/stale), the
+// 3.4 rule again — the accept says the ask was understood, the counters
+// say what the render thread managed to draw. The method name itself lives
+// beside the transport it travels on: openshow/protocol/preview_wire.h,
+// next to preview.ready and preview.released.
 
 // Worker-to-frontend notification (task 5.5d): a background media asset
 // failed. {"path":...,"message":...} — sent when the failure happens,

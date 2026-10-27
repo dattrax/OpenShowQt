@@ -2,13 +2,17 @@ import QtQuick
 
 /*
  * The edit page stage (task 4.3, docs/reference.md §7): the slide's text
- * box drawn on a 16:9 canvas of 1920x1080 authored units, the view scaled
+ * box on a 16:9 canvas of 1920x1080 authored units, the view scaled
  * by width/1920 like the reference's. Drag inside the box moves it, a
  * corner handle resizes it around the opposite corner, and either
  * commits once on release — one undo entry per gesture, the reference's
- * rule. The text inside is a representation, not the render: wrapped at
- * the box width and shrunk when it overflows, so it stands where the
- * worker will paint while the true appearance stays on the preview.
+ * rule.
+ *
+ * What is inside the box is the worker's own render (task 6.16a): the
+ * slide is prepared and drawn into the preview stream's off-air target,
+ * so the text here wraps, fits and falls back exactly as the audience's
+ * will. The canvas contributes the geometry it is editing and the chrome
+ * around it, never a second layout of the words.
  *
  * With one item per slide, arriving on the page selects it; a click on
  * empty canvas, or an Escape (which Main hands to the selection before
@@ -131,31 +135,35 @@ Item {
         color: canvas.canvasColor
         border.color: "#2f3542"
 
-        // The text representation (task 4.4): the resolved style's font,
-        // colour, alignment and line box, shrunk to fit the way the
-        // worker's layout does. The size cap is the style's own when it
-        // sets one — this is a representation, not the render, and the
-        // true picture stays on the preview.
+        // The slide as the WORKER draws it, rendered off the air (task 6.16a,
+        // review R16). This replaced a QML Text that laid the same slide out
+        // a second time — Qt's wrapping, Qt's fit, Qt's font fallbacks
+        // against Skia's — so the operator composed one picture and the
+        // audience saw another. Now the text, the background image and the
+        // media under the box are the production render, and the only thing
+        // this canvas paints over them is the chrome below: the outline and
+        // the handles.
+        PreviewView {
+            id: workerPicture
+            anchors.fill: parent
+            controller: worker
+            target: PreviewView.Selection
+            visible: canvas.hasSlide && worker.selectionReady
+        }
+
+        // No picture yet (a first ask still in flight, a worker that cannot
+        // draw an off-air scene at all): say which, rather than approximate
+        // the slide. Any Qt layout of the text here would put the two
+        // renderers back exactly where the review found them.
         Text {
-            visible: canvas.hasSlide
-            x: canvas.boxX * canvas.zoom
-            y: canvas.boxY * canvas.zoom
-            width: canvas.boxW * canvas.zoom
-            height: canvas.boxH * canvas.zoom
-            horizontalAlignment: docs.currentStyle.align === "left" ? Text.AlignLeft
-                : docs.currentStyle.align === "right" ? Text.AlignRight
-                : Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            wrapMode: Text.WordWrap
-            fontSizeMode: Text.Fit
-            font.family: docs.currentStyle.fontFamily || ""
-            font.pixelSize: Math.round((docs.currentStyle.fontSize > 0
-                                        ? docs.currentStyle.fontSize : 96) * canvas.zoom)
-            lineHeight: docs.currentStyle.lineSpacing || 1.25
-            lineHeightMode: Text.ProportionalHeight
-            minimumPixelSize: 8
-            color: docs.currentStyle.textColor || "#f0f0ff"
-            text: docs.currentSlideText
+            anchors.centerIn: parent
+            visible: canvas.hasSlide && !worker.selectionReady
+            color: "#6a6f80"
+            font.pixelSize: 13
+            horizontalAlignment: Text.AlignHCenter
+            text: worker.selectionSupported
+                  ? "waiting for the worker's render of this slide\u2026"
+                  : "this worker cannot render a slide that is not on air"
         }
 
         // The box outline: quiet when unselected, accent-coloured and

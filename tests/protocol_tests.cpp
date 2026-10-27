@@ -213,7 +213,7 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 10, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 11, "hello lists capabilities");
         {  // Task 5.5d's media visibility is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasMedia = std::any_of(
@@ -253,6 +253,16 @@ void testHello() {
                     return v.is_string() && v.as_string() == "media.standalone.v1";
                 });
             check(hasStandalone, "capabilities name media.standalone.v1");
+        }
+        {  // Task 6.16a's off-air preview target (R16) is named by one too:
+            // the frontend keeps its own text representation unless the
+            // worker says it can draw a scene the audience is not shown.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasSelect = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == "preview.select.v1";
+                });
+            check(hasSelect, "capabilities name preview.select.v1");
         }
     }
 

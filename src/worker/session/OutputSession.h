@@ -118,6 +118,23 @@ public:
         uint64_t deferred = 0;
         double worstMs = 0.0;
         std::string error;
+        // The editor's off-air target (task 6.16a, review R16): a prepared
+        // scene the audience is NOT shown, rendered into the same stream so
+        // the edit canvas can show the worker's own picture. `active` says a
+        // selection is registered (whatever the render thread has managed to
+        // draw since); revision/request name the request it answers, and the
+        // counters are the same three questions as the mirror's — what
+        // reached the socket, what the consumer's slots blocked, and what a
+        // newer request superseded before it could be published.
+        struct Selection {
+            bool active = false;
+            uint64_t revision = 0;
+            std::uint32_t request = 0;
+            uint64_t published = 0;
+            uint64_t dropped = 0;
+            uint64_t deferred = 0;
+            uint64_t stale = 0;
+        } selection;
     };
 
     // Live scene-store state (task 2.4b). Prepared scenes are kept by
@@ -291,6 +308,11 @@ public:
         uint32_t height = 0;
         uint32_t rowBytes = 0;
         uint32_t revision = 0;
+        // Which target and which request these pixels answer (task 6.16a):
+        // the consumer needs both before it copies anything, because "the
+        // newest frame of slot 2" no longer says whose picture it is.
+        uint32_t target = 0;
+        uint32_t request = 0;
         uint64_t publishedNs = 0;
         std::string stream;  // segment name this frame belongs to (task 6.5)
     };
@@ -339,6 +361,26 @@ public:
     bool startPreview(uint32_t width, uint32_t height, uint32_t fps,
                       PreviewInfo* info, std::string* error);
     void stopPreview();
+
+    // The editor's off-air render (task 6.16a, review R16). `revision` is a
+    // scene in the prepared store; the render thread draws THAT scene into
+    // the preview stream — no present, no setActiveScene, no captureFrame,
+    // so the audience's scene, playback and crossfades are untouched by the
+    // act of looking at an edit. Revision 0 stands the target down and the
+    // stream goes back to mirroring the audience alone.
+    //
+    // `request` is the frontend's own generation for the ask, and it must
+    // come strictly after the last accepted one (modulo 2^32, so a frontend
+    // that has been open for four billion edits still advances). That rule
+    // is what makes stale imagery impossible rather than unlikely: a replay
+    // of an old ask — a queued frame, a retry of a request the worker
+    // already answered — cannot resurrect a picture of a scene the operator
+    // left behind, and every frame the stream carries names the generation
+    // it answers, so a consumer that has asked again since drops what it
+    // receives. Callable from any thread; like the stream itself, the
+    // render thread applies it on its next pass.
+    bool selectPreviewScene(uint64_t revision, std::uint32_t request,
+                            std::string* error);
 
     // The consumer finished copying slot@seq of the named stream; the
     // slot becomes claimable again. Proof of ownership (task 6.5, review
@@ -539,6 +581,27 @@ private:
     // was last shown (a republish), and this function never composes a frame
     // of its own. The revision tag travels inside the frame.
     void publishPreviewFrame(const SceneFrame& frame, SkImage* video);
+    // The other target of the same stream (task 6.16a, review R16): draws
+    // the accepted off-air selection and publishes it with the generation it
+    // answers. Returns true only when a frame reached the stream — a pass
+    // that owed nothing, or stood down for the audience, draws the mirror
+    // instead, and the ask stays owed until it lands.
+    bool publishSelectionFrame(SkImage* video);
+    // The one place the render thread decides which preview target draws
+    // (task 6.16a): both share the stream, its cadence and the audience's
+    // budget, so a pass publishes at most one frame and the other target
+    // stays owed. Called with the frame this pass put on the panel (or the
+    // last presented one when it presented nothing) and the video the
+    // audience's transport is showing.
+    void drawPreviewTarget(const SceneFrame& audienceFrame, SkImage* video);
+    // What one draw-and-readback did to the stream (task 6.16a). Both
+    // targets share this body, so the audience's cost policy — the reason a
+    // preview exists without owning the frame it is drawn out of — is one
+    // implementation rather than two that drift.
+    enum class PreviewFill { kFilled, kNoSurface, kReadbackFailed };
+    PreviewFill fillPreviewSlot(const SceneFrame& frame, const SkImage* sceneVideo,
+                                const SkImage* overlayVideo, PreviewStream& stream,
+                                int slot, uint32_t width, uint32_t height);
     void refreshDisplaySnapshot();
 
     // Wakes the thread blocked in run()'s glfwWaitEventsTimeout. Safe from
@@ -807,6 +870,29 @@ private:
     // Content gate (task 1.5e): the preview republishes only when the
     // presented frame changed since the last publish.
     unsigned long long fPreviewPublishedFrames = 0;  // render thread
+    // The editor's off-air target (task 6.16a, review R16). The accepted
+    // scene is PINNED AT ACCEPT — a content copy of the store entry, exactly
+    // as a frame snapshot pins its present — because the store may evict the
+    // revision while the render thread works, and an edit vanishing halfway
+    // to the panel is the same race R4 found for presents.
+    struct SelectionDesired {
+        ActiveScene content;  // null: no selection, the stream mirrors alone
+        uint64_t revision = 0;
+        std::uint32_t request = 0;      // the accepted generation
+        std::uint32_t generation = 0;   // bumped per accepted change (the wake)
+    };
+    SelectionDesired fDesiredSelection;  // fMutex
+    // The generation the last SUCCESSFUL selection publish satisfied: a
+    // dropped or budget-deferred attempt leaves the ask owed, so one accepted
+    // request yields exactly one frame rather than a second stream. Written
+    // under fMutex, which is also where the run loop reads it to decide
+    // whether a preview wake is due.
+    std::uint32_t fAppliedSelectionGeneration = 0;
+    // The two targets share the stream's cadence and the audience's budget
+    // but keep their own last attempt, so neither can starve the other: a
+    // pass draws whichever of the owed targets has gone longest (this is the
+    // evidence for that choice).
+    std::chrono::steady_clock::time_point fLastSelection;  // render thread
 };
 
 }  // namespace openshow::worker

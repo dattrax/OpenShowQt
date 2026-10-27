@@ -55,7 +55,15 @@ public:
 
     // Fills the remaining header fields and closes the seqlock; returns
     // the sequence number consumers must match to copy this frame.
-    std::uint64_t publish(int slot, std::uint32_t revision, std::uint64_t publishedNs);
+    //
+    // `target` and `request` (task 6.16a, review R16) say WHOSE picture
+    // this is and WHICH request it answers: one stream carries the
+    // audience's mirror and the editor's off-air render, and a consumer
+    // cannot tell them apart from bytes. Both are written inside the odd
+    // seqlock window, so an even sequence is always a consistent
+    // (target, request, pixels) triple.
+    std::uint64_t publish(int slot, std::uint32_t revision, std::uint32_t target,
+                          std::uint32_t request, std::uint64_t publishedNs);
 
     // A write failed mid-claim: close the seqlock with nothing changed.
     void abort(int slot);

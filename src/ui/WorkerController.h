@@ -54,6 +54,21 @@ class WorkerController : public QObject {
     Q_PROPERTY(qint64 previewFrames READ previewFrames NOTIFY previewChanged)
     Q_PROPERTY(qint64 previewDropped READ previewDropped NOTIFY previewChanged)
     Q_PROPERTY(QString previewError READ previewError NOTIFY previewChanged)
+    // The editor's off-air picture (task 6.16a, review R16): the worker's own
+    // Skia render of the slide under edit, drawn into the same stream without
+    // presenting it. selectionFrames counts the edit frames this client
+    // copied; selectionStale is the worker's counter of edit draws a newer
+    // ask overtook before they reached the wire (they are destroyed, never
+    // shown, so a rising stale is the editor being faster than the GPU, not
+    // the operator seeing yesterday's slide).
+    Q_PROPERTY(qint64 selectionFrames READ selectionFrames NOTIFY previewChanged)
+    Q_PROPERTY(qint64 selectionStale READ selectionStale NOTIFY previewChanged)
+    Q_PROPERTY(bool selectionSupported READ selectionSupported NOTIFY previewChanged)
+    // True once a picture answering the newest ask is in hand. The canvas
+    // shows its placeholder while this is false: the alternative — painting
+    // the slide's text with QML until the worker's version arrives — is the
+    // second text layout this task removes.
+    Q_PROPERTY(bool selectionReady READ selectionReady NOTIFY previewChanged)
     // Background media (task 5.5d): the worker's video-background transport
     // state. mediaError is the last failure for the on-air background and
     // stays set until a successful open replaces it (the worker carries it
@@ -135,6 +150,21 @@ public:
     // one call; the revision, as ever, is the worker's to hand out).
     Q_INVOKABLE void presentSceneJson(const QString& sceneJson);
 
+    // The editor's off-air picture (task 6.16a, review R16): prepare this
+    // scene and ask the worker to draw it into the preview stream WITHOUT
+    // presenting it, so the edit canvas can show the worker's own Skia
+    // composition — the production text layout, the background media — under
+    // the drag handles instead of a QML guess at it. Idempotent per payload
+    // (an unchanged slide is not re-asked) and every real change carries a
+    // new request generation, which is what makes yesterday's imagery
+    // impossible rather than unlikely: a replay cannot be accepted, and a
+    // frame answering an older ask is dropped here rather than painted.
+    Q_INVOKABLE void requestSelectionPreview(const QString& sceneJson);
+    // Stand the target down (no slide selected, the edit page closed): the
+    // stream goes back to mirroring the audience alone, and the worker stops
+    // holding a picture of a slide nobody is looking at.
+    Q_INVOKABLE void clearSelectionPreview();
+
     // Media transport (task 6.15a, review R15): play/pause/seek/loop/
     // gain/mute as operator operations over the socket. Each call is a
     // fire-and-confirm request — the reply says the worker took it, the
@@ -206,6 +236,14 @@ public:
     qint64 previewFrames() const { return fPreviewFrames; }
     qint64 previewDropped() const { return fPreviewDropped; }
     QString previewError() const { return fPreviewError; }
+    // The off-air edit frame (task 6.16a): the same transport, the same
+    // seqlock copy, a different target. Empty until the worker has drawn the
+    // slide under edit — callers paint the document's own placeholder then.
+    const QImage& selectionImage() const { return fSelectionImage; }
+    bool selectionReady() const { return !fSelectionImage.isNull(); }
+    qint64 selectionFrames() const { return fSelectionFrames; }
+    qint64 selectionStale() const { return fSelectionStale; }
+    bool selectionSupported() const { return fSelectionCapable; }
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
@@ -245,6 +283,11 @@ private:
         std::string method;
         QString prepareJson;       // scene.prepare: the payload to mirror
         bool autoPresent = false;  // present the acked revision (a "go")
+        // Set on a prepare issued for the editor's off-air target (task
+        // 6.16a): the ack answers it with preview.select naming the new
+        // revision and THIS generation, which is the only order in which a
+        // stale replay cannot resurrect an edit the operator has left.
+        std::uint32_t selectionRequest = 0;
         std::uint64_t connection = 0;
     };
 
@@ -379,6 +422,29 @@ private:
     qint64 fPreviewFrames = 0;
     qint64 fPreviewDropped = 0;
     QString fPreviewError;
+    // The editor's off-air target (task 6.16a, review R16), same stream and
+    // same copy rules as the mirror.
+    //
+    // fSelectionRequest is this client's own generation counter: one counter,
+    // advanced on every ask the socket actually carries. The worker accepts a
+    // strictly later one and refuses the rest, so a reply that arrives after
+    // the operator moved on, a retried request, or a queued frame from before
+    // a stream restart cannot put an old scene back on screen.
+    // fSelectionImageRequest records WHICH ask the picture being shown
+    // answers: a frame for anything else is released like any other and
+    // dropped rather than painted under today's handles.
+    std::uint32_t fSelectionRequest = 0;
+    std::uint32_t fSelectionImageRequest = 0;
+    // The payload the newest ask carried, and the one the UI wants shown.
+    // The first dedupes a debounced editor that has not really changed; the
+    // second survives a stream restart, which resets the worker's generation
+    // domain and needs the ask made again from scratch.
+    QString fSelectionAskedJson;
+    QString fSelectionWantedJson;
+    QImage fSelectionImage;
+    qint64 fSelectionFrames = 0;
+    qint64 fSelectionStale = 0;  // the worker's counter, mirrored from status
+    bool fSelectionCapable = false;
     bool fMediaPlaying = false;
     QString fMediaError;
     // The lane as the worker last reported it (task 6.7c); "none" is also

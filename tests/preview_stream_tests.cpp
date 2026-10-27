@@ -59,7 +59,8 @@ int main() {
         }
         const int slotA = stream.claim();
         check(slotA == 0, "probe: first claim takes slot 0");
-        const std::uint64_t seqA = stream.publish(slotA, 7, 1234);
+        const std::uint64_t seqA = stream.publish(slotA, 7, proto::kPreviewTargetAudience, 0,
+                                          1234);
         check(seqA == 2, "probe: first publish carries sequence 2");
         check(seqAt(stream, slotA) == seqA, "probe: seqlock reads the even sequence");
 
@@ -68,10 +69,10 @@ int main() {
         const int next = stream.claim();
         check(next != slotA, "probe: release(102) did NOT free the owned slot");
         check(next == 1, "probe: claim moved on to the next free slot");
-        stream.publish(next, 7, 1235);
+        stream.publish(next, 7, proto::kPreviewTargetAudience, 0, 1235);
         const int third = stream.claim();
         check(third == 2, "probe: third slot claims normally");
-        stream.publish(third, 7, 1236);
+        stream.publish(third, 7, proto::kPreviewTargetAudience, 0, 1236);
         check(stream.claim() == -1, "probe: all three slots still owned downstream");
 
         // Odd and future releases stay refused while the slots are held.
@@ -85,8 +86,30 @@ int main() {
         const int reused = stream.claim();
         check(reused == 0, "probe: the exact release returned slot 0 to the producer");
         check(seqAt(stream, 0) % 2 == 1, "probe: a claimed slot reads odd (mid-write)");
-        const std::uint64_t seqA2 = stream.publish(0, 8, 1240);
+        const std::uint64_t seqA2 = stream.publish(0, 8, proto::kPreviewTargetSelection, 5, 1240);
         check(seqA2 == 4, "probe: the reused slot continues its sequence");
+        {  // Task 6.16a (review R16): one stream, two audiences. The header
+            // says whose picture these are and which ask they answer, and it
+            // does so inside the same seqlock window as the pixels — so a
+            // consumer that reads an even sequence has a consistent
+            // (target, request, revision) triple and can drop a frame on
+            // metadata alone.
+            const auto* header = stream.slotHeader(0);
+            check(header->target == proto::kPreviewTargetSelection,
+                  "probe: the header names the selection target");
+            check(header->request == 5, "probe: the header names the request it answers");
+            check(header->revision == 8, "probe: the header carries the scene revision");
+            // And the mirror is distinguishable from it: an audience frame
+            // answers no request, and a consumer checking either field
+            // cannot confuse the two.
+            stream.release(0, seqA2);
+            const int mirrored = stream.claim();
+            check(mirrored == 0, "probe: the released slot is claimable for the mirror");
+            stream.publish(mirrored, 9, proto::kPreviewTargetAudience, 0, 1300);
+            check(stream.slotHeader(mirrored)->target == proto::kPreviewTargetAudience &&
+                      stream.slotHeader(mirrored)->request == 0,
+                  "probe: an audience frame claims no request generation");
+        }
 
         // The duplicate / late release of the now-SUPERSEDED sequence
         // frees nothing: one release per publish, ever.
@@ -140,14 +163,15 @@ int main() {
         const std::string second = streamName("rec2");
         check(stream.create(first, 64, 48, &error), "replace: first stream created");
         const int slot = stream.claim();
-        stream.publish(slot, 1, 10);
-        stream.publish(stream.claim(), 1, 11);
-        stream.publish(stream.claim(), 1, 12);
+        stream.publish(slot, 1, proto::kPreviewTargetAudience, 0, 10);
+        stream.publish(stream.claim(), 1, proto::kPreviewTargetAudience, 0, 11);
+        stream.publish(stream.claim(), 1, proto::kPreviewTargetSelection, 3, 12);
         check(stream.claim() == -1, "replace: everything owned before the swap");
         check(stream.create(second, 96, 64, &error), "replace: create() replaces the stream");
         check(stream.name() == second, "replace: the stream now answers to the new name");
         check(stream.claim() == 0, "replace: a fresh stream starts with free slots");
-        check(stream.publish(0, 2, 20) == 2, "replace: sequences restart at 2");
+        check(stream.publish(0, 2, proto::kPreviewTargetAudience, 0, 20) == 2,
+              "replace: sequences restart at 2");
         // A release carrying the OLD stream's bookkeeping (same slot/seq
         // numbers!) releases the NEW slot only if it happens to name the
         // exact published sequence — which is the session's job to gate

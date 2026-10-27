@@ -371,12 +371,21 @@ void WorkerController::handleReply(const boost::json::object& message) {
         // Preview (task 1.4): ask for the shm stream whenever the worker
         // speaks the capability; the start answer opens the mapping.
         bool previewCapable = false;
+        fSelectionCapable = false;
         if (payload.contains("capabilities") && payload.at("capabilities").is_array()) {
             for (const auto& capability : payload.at("capabilities").as_array()) {
-                if (capability.is_string() &&
-                    capability.as_string() == "preview.shm.v1") {
+                if (!capability.is_string()) {
+                    continue;
+                }
+                if (capability.as_string() == "preview.shm.v1") {
                     previewCapable = true;
-                    break;
+                } else if (capability.as_string() == "preview.select.v1") {
+                    // The worker can draw a scene the audience is NOT shown
+                    // (task 6.16a). Without this the edit canvas has no
+                    // worker picture to show and says so; it never falls
+                    // back to laying the text out itself, which is the two
+                    // renderers R16 was about.
+                    fSelectionCapable = true;
                 }
             }
         }
@@ -412,6 +421,18 @@ void WorkerController::handleReply(const boost::json::object& message) {
         fPendingPreviewName = std::string(payload.at("name").as_string());
         fPreviewFrames = 0;
         fPreviewError.clear();
+        // A new stream is a new generation domain (task 6.16a): the worker
+        // has no selection registered on it, so whatever the editor was
+        // looking at has to be asked for again — and the frame that answers
+        // the old stream's ask is gone with it.
+        fSelectionAskedJson.clear();
+        fSelectionImage = QImage();
+        fSelectionImageRequest = 0;
+        fSelectionFrames = 0;
+        if (!fSelectionWantedJson.isEmpty()) {
+            const QString wanted = fSelectionWantedJson;
+            requestSelectionPreview(wanted);
+        }
         emit previewChanged();
         return;
     }
@@ -459,6 +480,18 @@ void WorkerController::handleReply(const boost::json::object& message) {
                 fRestoreDoneRevision = prepared;
             }
         }
+        // The off-air ask (task 6.16a): this revision IS the picture the
+        // editor asked for, so name it back with the generation the ask
+        // carried. The worker refuses a generation that does not follow the
+        // one it accepted — which is the rule that keeps a retried or
+        // reordered prepare from putting an edit the operator abandoned back
+        // on the canvas.
+        if (pending.selectionRequest != 0) {
+            sendRequest(proto::kMethodPreviewSelect,
+                        boost::json::object{{"revision",
+                                            static_cast<std::uint64_t>(prepared)},
+                                           {"request", pending.selectionRequest}});
+        }
         emit sceneChanged();
         return;
     }
@@ -504,6 +537,34 @@ void WorkerController::handleReply(const boost::json::object& message) {
                 static_cast<qint64>(preview.at("dropped").to_number<std::uint64_t>());
             fPreviewError = QString::fromStdString(
                 std::string(preview.at("error").as_string()));
+            // The off-air target's counters (task 6.16a). Optional, like
+            // every newer field: a worker that predates the block keeps
+            // whatever the last poll said rather than reading as zero.
+            const auto selection = preview.find("selection");
+            if (selection != preview.end() && selection->value().is_object()) {
+                const boost::json::object& offAir = selection->value().as_object();
+                const auto stale = offAir.find("stale");
+                if (stale != offAir.end()) {
+                    fSelectionStale =
+                        static_cast<qint64>(stale->value().to_number<std::uint64_t>());
+                }
+                const auto active = offAir.find("active");
+                if (active != offAir.end() && active->value().is_bool() &&
+                    !active->value().as_bool() && !fSelectionAskedJson.isEmpty() &&
+                    !fPendingPreviewName.empty()) {
+                    // The worker has no target registered while this client
+                    // believes it asked for one: a stand-down it made, or a
+                    // stream that came up without the ask it was owed. The
+                    // ask is re-issued rather than argued about, because the
+                    // canvas showing yesterday's slide is the failure this
+                    // whole task exists to prevent.
+                    const QString wanted = fSelectionWantedJson;
+                    fSelectionAskedJson.clear();
+                    if (!wanted.isEmpty()) {
+                        requestSelectionPreview(wanted);
+                    }
+                }
+            }
             if (!preview.at("running").as_bool() && fMap) {
                 closePreviewSegment();  // the worker retired the stream
                 fPendingPreviewName.clear();
@@ -669,6 +730,78 @@ void WorkerController::prepareScene(const QString& sceneJson) {
     // The scene object itself is the params (the worker validates it too).
     const std::int64_t id = sendRequest("scene.prepare", parsed.as_object());
     armPrepare(id, parsed.as_object(), /*autoPresent=*/false);
+}
+
+// --- the editor's off-air picture (task 6.16a, review R16) ---------------
+//
+// The edit canvas used to render its own text with QML, which meant the
+// operator composed one picture and the audience saw another: Qt's wrapping,
+// Qt's fit, Qt's fallbacks against Skia's. The fix is not a better QML
+// approximation — it is the worker drawing the slide the operator picked,
+// into the preview stream it already owns, without the audience being shown
+// it. So this is a three-step conversation over the transport that exists:
+// prepare (the store hands out a revision), preview.select (the render thread
+// draws THAT revision off the air), preview.ready tagged with the generation
+// (the picture arrives). Nothing here presents, restores or clears.
+void WorkerController::requestSelectionPreview(const QString& sceneJson) {
+    if (sceneJson.isEmpty()) {
+        return;  // no slide: the caller stands the target down instead
+    }
+    // What the UI wants to see, remembered FIRST and even when this call
+    // cannot ask for it: a worker that is still starting, a stream
+    // mid-restart, and a capability that only appears at the handshake all
+    // re-issue from here, which is why opening the edit page on a cold start
+    // still ends with a picture rather than a placeholder forever.
+    fSelectionWantedJson = sceneJson;
+    if (!fHandshakeDone || !fSelectionCapable) {
+        return;  // the canvas keeps the frame it last had, awaiting its host
+    }
+    if (sceneJson == fSelectionAskedJson) {
+        return;  // the newest ask already carries this exact picture
+    }
+    boost::system::error_code parseError;
+    const boost::json::value parsed =
+        boost::json::parse(sceneJson.toStdString(), parseError);
+    if (parseError || !parsed.is_object()) {
+        setStatus(QStringLiteral("preview.select: the scene JSON is not readable"));
+        return;
+    }
+    if (!sceneIsSendable(parsed, "preview.select")) {
+        return;  // the reason is already in the status line
+    }
+    // Prepare first: an off-air scene is named by a store revision, and the
+    // only way to have one is to hand the scene over. No armPrepare — that
+    // mirrors the payload as a presentable scene, and this one is not being
+    // presented; the marker below is what makes the ack answer with a
+    // preview.select instead.
+    const std::int64_t id = sendRequest("scene.prepare", parsed.as_object());
+    if (id == 0) {
+        return;  // refused locally (backlog or in-flight bound); a later change re-asks
+    }
+    ++fSelectionRequest;
+    const auto entry = fPendingRequests.find(id);
+    if (entry != fPendingRequests.end()) {
+        entry->selectionRequest = fSelectionRequest;
+    }
+    fSelectionAskedJson = sceneJson;
+}
+
+void WorkerController::clearSelectionPreview() {
+    const bool hadAsk = !fSelectionAskedJson.isEmpty() || !fSelectionWantedJson.isEmpty();
+    fSelectionWantedJson.clear();
+    fSelectionAskedJson.clear();
+    fSelectionImage = QImage();
+    fSelectionImageRequest = 0;
+    if (hadAsk) {
+        emit previewChanged();
+    }
+    if (!fHandshakeDone || !fSelectionCapable || fPendingPreviewName.empty()) {
+        return;  // no stream: there is no registered target to stand down
+    }
+    ++fSelectionRequest;  // a stand-down is a change, and changes advance
+    sendRequest(proto::kMethodPreviewSelect,
+                boost::json::object{{"revision", 0},
+                                    {"request", fSelectionRequest}});
 }
 
 void WorkerController::presentScene(qint64 revision) {
@@ -1169,13 +1302,26 @@ void WorkerController::handleNotification(const boost::json::object& message) {
     const std::uint64_t width = number("width");
     const std::uint64_t height = number("height");
     const std::uint64_t rowBytes = number("rowBytes");
+    // Whose picture this is, and which ask answers it (task 6.16a). A worker
+    // too old to send the fields means the audience, which is what version 1
+    // of this stream could only ever carry.
+    const std::uint64_t target = number("target");
+    const std::uint32_t request = static_cast<std::uint32_t>(number("request"));
+    const bool forSelection = target == proto::kPreviewTargetSelection;
+    // THE CLIENT'S GENERATION GATE, the consumer's half of the rule. A frame
+    // answering an ask this client has already superseded is yesterday's
+    // edit: it is released like any other slot and never painted, because
+    // putting it under the handles of the slide now being edited is precisely
+    // the failure R16 reported — an operator changing one thing while looking
+    // at another.
+    const bool superseded = forSelection && request != fSelectionRequest;
 
     // Copy the payload under the slot's seqlock: same sequence before and
     // after means the producer never touched it mid-copy. A stale or torn
     // frame is simply skipped; the next notification brings a newer one.
     bool fresh = false;
-    if (fMap && slot < fPreviewSlotCount && rowBytes == width * 4 && width > 0 &&
-        height > 0 && width <= 4096 && height <= 4096 &&
+    if (!superseded && fMap && slot < fPreviewSlotCount && rowBytes == width * 4 &&
+        width > 0 && height > 0 && width <= 4096 && height <= 4096 &&
         sizeof(proto::PreviewSlotHeader) + rowBytes * height <= fPreviewSlotStride) {
         const std::uint8_t* slotBase =
             fMap + proto::previewSlotOffset(static_cast<std::uint32_t>(slot),
@@ -1193,8 +1339,14 @@ void WorkerController::handleNotification(const boost::json::object& message) {
                 const std::uint64_t seqAfter =
                     std::atomic_ref<const std::uint64_t>(header->seq).load();
                 if (seqAfter == seqBefore) {
-                    fPreviewImage = image;
-                    ++fPreviewFrames;
+                    if (forSelection) {
+                        fSelectionImage = std::move(image);
+                        fSelectionImageRequest = request;
+                        ++fSelectionFrames;
+                    } else {
+                        fPreviewImage = std::move(image);
+                        ++fPreviewFrames;
+                    }
                     fresh = true;
                 }
             }
@@ -1279,6 +1431,15 @@ void WorkerController::closePreviewSegment() {
         ::close(fMapFd);
         fMapFd = -1;
     }
+    // The off-air frame lived in this mapping (task 6.16a). Dropping it is
+    // not housekeeping: a picture from a retired stream, still on the canvas
+    // while the operator edits something else, is exactly the stale imagery
+    // the generation rule is designed to make impossible — so it goes now,
+    // and the ask goes with it. What the UI WANTS is kept: the next stream
+    // re-issues it as its own first ask.
+    fSelectionImage = QImage();
+    fSelectionImageRequest = 0;
+    fSelectionAskedJson.clear();
 }
 
 void WorkerController::shutdownNow() {

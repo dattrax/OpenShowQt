@@ -586,6 +586,115 @@ void testRevisionTravelsWithTheFrame() {
     check(latest.redness() < -kEndDistance, "and the newer frame is the blue its tag names");
 }
 
+// --- the layout cache serves two targets --------------------------------
+//
+// Task 6.16a (review R16) gave the render thread a second audience: while a
+// show plays, the editor asks for the worker's own picture of a slide that
+// is NOT on air. The scene it draws is a COPY pinned at the accept — a
+// distinct shared_ptr from the on-air scene even when the operator happens
+// to be looking at the slide the audience already has — and the words
+// layer caches layouts by scene pointer. With two slots the targets
+// alternate and each one's layout is the other's victim: every pass rebuilt
+// both, which is text shaping taken out of the audience's frame budget for
+// the pleasure of a preview.
+//
+// So the cache is four deep, and the meter is the renderer's build counter.
+// The scenario is the steady state that used to thrash, and it is checked in
+// both directions: an alternating pair must stop rebuilding, and a genuinely
+// new scene must still cost exactly one build (otherwise "no rebuilds" is
+// just a counter that stopped counting).
+void testLayoutCacheServesTwoTargets() {
+    std::unique_ptr<SceneRenderer> renderer = createRenderer();
+    Target panel(*renderer, kPanelWidth, kPanelHeight);
+    Target editor(*renderer, kPreviewWidth, kPreviewHeight);
+
+    const ActiveScene onAir = stage(kRed, "AUDIENCE");
+    renderer->setActiveScene(onAir, SceneTransitionKind::kCut);
+
+    // The pinned selection copy: same content as its store entry, a pointer
+    // of its own, exactly as the session builds it at the accept.
+    auto buildFrame = [](const ActiveScene& content, double clock,
+                         std::uint64_t revision) {
+        SceneFrame frame;
+        frame.scene = content;
+        frame.fadeFrom = nullptr;
+        frame.mediaBlend = 1.0f;
+        frame.textBlend = 1.0f;
+        frame.timeSeconds = clock;
+        frame.wallClock = kFixedWall;
+        frame.revision = revision;
+        return frame;
+    };
+
+    const ActiveScene edit = std::make_shared<openshow::scene::Scene>(*stage(kBlue, "EDIT"));
+    const SceneFrame audience = renderer->captureFrame(kAudienceStart, 7, kFixedWall);
+    const SceneFrame selection = buildFrame(edit, kAudienceStart, 3);
+
+    const std::uint64_t baseline = renderer->textLayoutBuilds();
+    panel.draw(audience);
+    editor.draw(selection);
+    const std::uint64_t afterWarm = renderer->textLayoutBuilds();
+    check(afterWarm > baseline,
+          "the first audience and edit frames shape their text (the counter counts)");
+    check(afterWarm - baseline == 2,
+          "two distinct scenes cost two layouts: one each, not one per target");
+
+    // The steady state: the same show and the same edit, alternating for as
+    // long as the operator stares at it. Nothing here changes either scene's
+    // content, so nothing has to be laid out again.
+    for (int pass = 0; pass < 40; ++pass) {
+        panel.draw(audience);
+        editor.draw(selection);
+    }
+    check(renderer->textLayoutBuilds() == afterWarm,
+          "forty alternating audience/edit passes rebuild no layout (the cache is deep "
+          "enough for two targets)");
+
+    // And a fade, which puts a THIRD scene in play — the outgoing one — on
+    // top of the two targets. This is the frame the R13 snapshot is captured
+    // for, so the audience's half of it is one capture per pass.
+    renderer->setActiveScene(stage(kGreen, "NEXT"), SceneTransitionKind::kFade);
+    const SceneFrame midFade = renderer->captureFrame(kAudienceStart + kHalfFade, 8, kFixedWall);
+    check(midFade.fadeFrom != nullptr, "the fade really has an outgoing scene to lay out");
+    panel.draw(midFade);
+    const std::uint64_t afterFadeStart = renderer->textLayoutBuilds();
+    check(afterFadeStart - afterWarm == 1,
+          "the fade's incoming scene costs one layout, once");
+    for (int pass = 0; pass < 40; ++pass) {
+        panel.draw(midFade);
+        editor.draw(selection);
+    }
+    check(renderer->textLayoutBuilds() == afterFadeStart,
+          "and the three live scenes settle: a fade under way alongside an edit rebuilds "
+          "nothing per pass");
+
+    // Non-vacuity, the other direction: a NEW edit is real work and must
+    // still be charged. If the counter had simply frozen, the two "rebuilds
+    // nothing" checks above would pass on a dead meter.
+    const ActiveScene fresh = std::make_shared<openshow::scene::Scene>(*stage(kRed, "CHORUS"));
+    editor.draw(buildFrame(fresh, kAudienceStart, 4));
+    check(renderer->textLayoutBuilds() == afterFadeStart + 1,
+          "a genuinely new scene costs exactly one more layout");
+
+    // The cache is bounded, so a scene nobody draws any more is what gets
+    // dropped. Four slots hold four live scenes; walking past them evicts in
+    // least-recent order, and coming back to a victim costs its layout
+    // again. That is the honest price of a bounded cache — the assertion is
+    // here so "four deep" is a measured bound, not an unchecked one.
+    const std::uint64_t afterFresh = renderer->textLayoutBuilds();
+    for (const char* word : {"FIFTH", "SIXTH", "SEVENTH"}) {
+        const ActiveScene newer =
+            std::make_shared<openshow::scene::Scene>(*stage(kBlue, word));
+        editor.draw(buildFrame(newer, kAudienceStart, 5));
+    }
+    const std::uint64_t afterWalk = renderer->textLayoutBuilds();
+    check(afterWalk == afterFresh + 3,
+          "each scene past the cache's four slots costs one layout");
+    editor.draw(buildFrame(edit, kAudienceStart, 3));
+    check(renderer->textLayoutBuilds() == afterWalk + 1,
+          "and the edit the walk evicted re-shapes when it comes back (LRU, not infinite)");
+}
+
 }  // namespace
 
 int main() {
@@ -595,6 +704,7 @@ int main() {
     testLayersDrawTheFrameNotTheLiveState();
     testFadeEndsWhenTheAudienceHasTheFrame();
     testRevisionTravelsWithTheFrame();
+    testLayoutCacheServesTwoTargets();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "scene_frame_tests: %d failure(s)\n", gFailures);

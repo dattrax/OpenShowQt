@@ -31,6 +31,17 @@
  * any other stream is refused — so a delayed release from a retired
  * stream can never free a live stream's slot.
  *
+ * Two kinds of picture share one stream (task 6.16a, review R16). The
+ * audience mirror is what the panel was shown; a SELECTION frame is the
+ * worker's render of a prepared scene the operator has picked and NOT put
+ * on air, so the editor can show the real Skia picture — text laid out by
+ * the production engine, background media included — without presenting
+ * anything. Every frame says which it is (`target`) and, for a selection,
+ * which REQUEST it answers (`request`, the generation the frontend asked
+ * for): a frame whose generation is not the one the client wants is stale
+ * imagery, and the client drops it rather than painting yesterday's edit
+ * under today's handles. Layout version 2 is exactly those two fields.
+ *
  * The header is deliberately Qt-free and dependency-free so both processes
  * compile the exact same definition.
  */
@@ -43,13 +54,23 @@
 namespace openshow::protocol {
 
 inline constexpr std::uint32_t kPreviewMagic = 0x4F565350;  // "OPSV" little-endian
-inline constexpr std::uint32_t kPreviewLayoutVersion = 1;
+// Version 2 (task 6.16a): the slot header names the TARGET the pixels were
+// rendered for and the request GENERATION they answer. Version 1 carried
+// neither, so a stream could only ever mirror the audience.
+inline constexpr std::uint32_t kPreviewLayoutVersion = 2;
 inline constexpr std::uint32_t kPreviewSlotCount = 3;
 inline constexpr std::uint32_t kPreviewFourccRGBA8 = 0x52474241;  // "RGBA"
+
+// Who a published frame was drawn for (PreviewSlotHeader::target).
+inline constexpr std::uint32_t kPreviewTargetAudience = 0;   // the panel's picture
+inline constexpr std::uint32_t kPreviewTargetSelection = 1;  // an off-air edit
 
 // Notification and method names shared by both sides.
 inline constexpr const char* kMethodPreviewReady = "preview.ready";
 inline constexpr const char* kMethodPreviewReleased = "preview.released";
+// Task 6.16a (review R16): ask the worker to render a PREPARED scene that is
+// not on air, into this same transport.
+inline constexpr const char* kMethodPreviewSelect = "preview.select";
 
 struct PreviewSegmentHeader {
     std::uint32_t magic = kPreviewMagic;
@@ -72,8 +93,13 @@ struct PreviewSlotHeader {
     std::uint32_t rowBytes = 0;       // width * 4
     std::uint32_t format = kPreviewFourccRGBA8;
     std::uint32_t revision = 0;       // session revision the frame shows
+    // Task 6.16a (review R16): which request these pixels answer. A stream
+    // now carries two kinds of picture, and the consumer cannot tell an
+    // off-air edit from the audience's own frame by looking at bytes.
+    std::uint32_t target = kPreviewTargetAudience;
+    std::uint32_t request = 0;        // selection generation; 0 for the mirror
     std::uint64_t publishedNs = 0;    // worker steady clock at publish time
-    std::uint8_t padding[24] = {};
+    std::uint8_t padding[16] = {};
 };
 
 static_assert(sizeof(PreviewSegmentHeader) == 64, "segment header must be one cache line");

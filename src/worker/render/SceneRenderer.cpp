@@ -150,14 +150,15 @@ private:
 // Words: while a scene is on air, its text laid out through
 // SceneTextEngine (wrap, centre, fallback, fit — task 3.1); otherwise the
 // decoration's demo title, if this renderer was decorated for development.
-// Layouts are cached per scene pointer (two slots, so a crossfade never
-// re-lays-out either side); during the fade the two scenes dissolve —
+// Layouts are cached per scene pointer, four slots deep, so a crossfade
+// never re-lays-out either side; during the fade the two scenes dissolve —
 // outgoing at 1 - textBlend, incoming at textBlend, the classic lyric
 // cross-dissolve (docs/reference.md §7 text transition).
 class WordsLayer final : public RenderLayer {
 public:
-    WordsLayer(const DemoDecoration* demo, const SceneTextEngine* engine)
-        : fDemo(demo), fEngine(engine) {}
+    WordsLayer(const DemoDecoration* demo, const SceneTextEngine* engine,
+               std::atomic<std::uint64_t>* layoutBuilds)
+        : fDemo(demo), fEngine(engine), fLayoutBuilds(layoutBuilds) {}
 
     LayerId id() const override { return LayerId::kWords; }
 
@@ -166,12 +167,12 @@ public:
         if (frame.scene) {
             const bool fading = frame.fadeFrom != nullptr;
             if (fading) {
-                const SceneTextEngine::SceneLayout& from = layoutFor(&fSlotA, frame.fadeFrom);
+                const SceneTextEngine::SceneLayout& from = layoutFor(frame.fadeFrom);
                 SkPaint fade;
                 fade.setAlpha(static_cast<uint8_t>((1.0f - frame.textBlend) * 255.0f + 0.5f));
                 fEngine->drawLayout(ctx.canvas, from, &fade);
             }
-            const SceneTextEngine::SceneLayout& current = layoutFor(&fSlotB, frame.scene);
+            const SceneTextEngine::SceneLayout& current = layoutFor(frame.scene);
             if (fading) {
                 SkPaint fade;
                 fade.setAlpha(static_cast<uint8_t>(frame.textBlend * 255.0f + 0.5f));
@@ -188,30 +189,60 @@ public:
 
 private:
     // One layout cache slot. A frame carries at most two scenes (on air and
-    // fading out), so a two-slot cache (this struct twice) covers every
-    // frame of a fade without rebuilding a layout. The key is the scene
-    // itself, so two targets drawing the same captured frame share the work
-    // and any frame that really changed rebuilds it.
+    // fading out), and the key is the scene pointer itself, so two targets
+    // drawing the same captured frame share the work and any frame that
+    // really changed rebuilds it.
     struct LayoutSlot {
         ActiveScene scene;  // the scene fLayout was built from, if any
         SceneTextEngine::SceneLayout layout;
+        std::uint64_t used = 0;  // the layout clock at its last hit
     };
 
-    // Returns the layout for `scene`, (re)building `slot` when it holds a
-    // different scene. The slots live inside this layer; the returned
-    // reference stays valid until the next call that rebuilds that slot.
-    const SceneTextEngine::SceneLayout& layoutFor(LayoutSlot* slot, const ActiveScene& scene) {
-        if (slot->scene != scene) {
-            slot->layout = fEngine->layoutScene(*scene);
-            slot->scene = scene;
+    // Four slots, least-recently-used. Two covered every frame of a fade
+    // when the audience was the only target; task 6.16a added a second one,
+    // and its scene is a COPY of a store entry pinned per accepted ask — a
+    // distinct pointer from the on-air scene even when the operator is
+    // looking at the slide already on air. A two-slot cache alternates
+    // between the targets and rebuilds both layouts on every pass, which is
+    // text shaping paid twice per frame for a preview that is supposed to
+    // cost the audience a quarter of one. Four holds the audience pair plus
+    // the edit and the one before it, so switching selection costs one
+    // rebuild and an idle show with a steady edit costs none (the fixture
+    // counts builds through fLayoutBuilds to prove exactly that).
+    static constexpr int kLayoutSlots = 4;
+
+    // Returns the layout for `scene`, (re)building a slot when none holds
+    // it. The slots live inside this layer; the returned reference stays
+    // valid until a later call rebuilds that slot — which no call does while
+    // the caller is still drawing, because a frame asks for at most its own
+    // two scenes before it is done with them.
+    const SceneTextEngine::SceneLayout& layoutFor(const ActiveScene& scene) {
+        const std::uint64_t now = ++fLayoutClock;
+        LayoutSlot* victim = &fSlots[0];
+        for (auto& slot : fSlots) {
+            if (slot.scene == scene) {
+                slot.used = now;
+                return slot.layout;
+            }
+            if (slot.used < victim->used) {
+                victim = &slot;
+            }
         }
-        return slot->layout;
+        victim->layout = fEngine->layoutScene(*scene);
+        victim->scene = scene;
+        victim->used = now;
+        // Diagnostics for the cache's own contract: shaping a scene's text
+        // is the expensive half of drawing it, so a fixture can assert that
+        // alternating two targets does not rebuild forever.
+        fLayoutBuilds->fetch_add(1, std::memory_order_relaxed);
+        return victim->layout;
     }
 
     const DemoDecoration* fDemo;             // development title, if decorated
     const SceneTextEngine* fEngine;
-    LayoutSlot fSlotA;                       // holds the outgoing scene during a fade
-    LayoutSlot fSlotB;                       // holds the on-air scene
+    std::atomic<std::uint64_t>* fLayoutBuilds;
+    LayoutSlot fSlots[kLayoutSlots];
+    std::uint64_t fLayoutClock = 0;          // render thread only
 };
 
 // Aux: placeholder for future overlay content, off by default. A badge so
@@ -327,7 +358,7 @@ bool SceneRenderer::create(std::string* error, const DemoBuilder& demo) {
     // item.
     fLayers.add(std::make_unique<BackgroundLayer>(&fImages, &fDemo));
     fLayers.add(std::make_unique<ImageLayer>(&fDemo, fText->regular()));
-    fLayers.add(std::make_unique<WordsLayer>(&fDemo, fText.get()));
+    fLayers.add(std::make_unique<WordsLayer>(&fDemo, fText.get(), &fTextLayoutBuilds));
     fLayers.add(std::make_unique<AuxLayer>(fText->regular()));
     fLayers.add(std::make_unique<ClockLayer>(fText->regular()));
     // Aux is not part of the agreed use case and starts off in both
