@@ -1411,6 +1411,75 @@ void testAudienceUnaffected(std::int64_t& nextId, int fd, std::uint64_t redRevis
 // Revision 0 takes the target off: the stream goes back to mirroring the
 // audience alone, and an ask with no stream at all is refused for the reason
 // the operator can act on.
+// --- every box in the off-air frame (task 6.17a2, review R17) ------------
+//
+// The canvas edits a STACK of boxes now, and the picture under its handles
+// is this scene. One claim, measured on real pixels: a selected scene with
+// two boxes draws the SECOND box's words into its off-air frame. A compiler
+// or renderer that dropped a trailing item - or a selection path that
+// reconstructed a single-box scene from the slide's first box, the bug the
+// stacked authoring is replacing - would answer with the base box alone.
+// The metric is luminance ink on black, and the two frames differ in
+// exactly one thing: the stacked scene has one more box. This suite is the
+// display-labelled one, running where fonts exist, because the words are
+// what is being weighed.
+void testStackedBoxesOffAir(std::int64_t& nextId, int fd) {
+    boost::json::object stacked = solidScene("STACKED16", 0x000000u, "EVERY BOX");
+    boost::json::object strip;
+    strip["lines"] = boost::json::array{"ALSO ON AIR"};
+    strip["color"] = 0xFFFFFFu;
+    strip["fontFamily"] = "";
+    strip["fontSize"] = 90.0;
+    strip["x"] = 960.0;
+    strip["y"] = 700.0;
+    strip["width"] = 800.0;
+    strip["height"] = 280.0;
+    strip["align"] = "center";
+    strip["lineSpacing"] = 1.25;
+    stacked["items"].as_array().push_back(strip);
+    const std::uint64_t leanRevision = prepareScene(fd, nextId,
+                                                    solidScene("STACKED16", 0x000000u,
+                                                               "EVERY BOX"));
+    const std::uint64_t stackedRevision = prepareScene(fd, nextId, stacked);
+    if (!check(leanRevision != 0 && stackedRevision != 0,
+               "both the one-box and the two-box scene prepare")) {
+        return;
+    }
+
+    // Requests continue the session's numbering, whatever the earlier
+    // scenarios spent - the worker's gate is monotonic, not zero-based.
+    const boost::json::object settled = selectionStatus(fd, nextId);
+    std::uint32_t request = static_cast<std::uint32_t>(fieldValue(settled, "request")) + 1;
+
+    const std::string leanRefusal = selectScene(fd, nextId, leanRevision, request);
+    check(leanRefusal.empty(), ("the one-box scene is accepted: " + leanRefusal).c_str());
+    Delivery lean;
+    if (!check(waitForSelection(fd, request, 3000, &lean), "its off-air frame arrives")) {
+        return;
+    }
+    ++request;
+    const std::string stackedRefusal = selectScene(fd, nextId, stackedRevision, request);
+    check(stackedRefusal.empty(),
+          ("the stacked scene is accepted: " + stackedRefusal).c_str());
+    Delivery full;
+    if (!check(waitForSelection(fd, request, 3000, &full), "and so does the stacked frame")) {
+        return;
+    }
+    check(full.target == proto::kPreviewTargetSelection && full.request == request,
+          "the stacked frame is the selection's answer to this ask");
+
+    const double leanInk = (lean.red + lean.green + lean.blue) / 3.0;
+    const double fullInk = (full.red + full.green + full.blue) / 3.0;
+    std::printf("measured: off-air frame mean luminance one box %.2f, stacked %.2f\n",
+                leanInk, fullInk);
+    // Two words at 90-120px on black put several points of mean luminance on
+    // the frame; the strip alone is worth far more than the 0.5 floor, and
+    // a dropped second box cannot reach it.
+    check(fullInk > leanInk + 0.5,
+          ("the SECOND box's words are in the off-air picture (mean " +
+           std::to_string(leanInk) + " -> " + std::to_string(fullInk) + ")").c_str());
+}
+
 void testStandDown(std::int64_t& nextId, int fd, std::uint64_t greenRevision) {
     const boost::json::object settled = selectionStatus(fd, nextId);
     const std::uint32_t next = static_cast<std::uint32_t>(fieldValue(settled, "request")) + 1;
@@ -1559,6 +1628,7 @@ int main(int argc, char* argv[]) {
     testRefusals(nextId, fd, greenRevision);
     testAudienceUnaffected(nextId, fd, redRevision, greenRevision, blueRevision);
     testSlideList(nextId, fd, blueRevision);
+    testStackedBoxesOffAir(nextId, fd);
     testStandDown(nextId, fd, greenRevision);
 
     close(fd);

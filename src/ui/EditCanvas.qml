@@ -2,31 +2,41 @@ import QtQuick
 
 /*
  * The edit page stage (task 4.3, docs/reference.md §7): the slide's text
- * box on a 16:9 canvas of 1920x1080 authored units, the view scaled
- * by width/1920 like the reference's. Drag inside the box moves it, a
- * corner handle resizes it around the opposite corner, and either
- * commits once on release — one undo entry per gesture, the reference's
- * rule.
+ * boxes on a 16:9 canvas of 1920x1080 authored units, the view scaled
+ * by width/1920 like the reference's. Since task 6.17a2 a slide is a
+ * STACK of boxes, and this canvas is the chrome over that stack: one
+ * outline per box in draw order, handles on the SELECTED box only, a
+ * press that selects the topmost box under the pointer, drag to move and
+ * a corner to resize — either commits once on release, one undo entry per
+ * gesture.
  *
- * What is inside the box is the worker's own render (task 6.16a): the
+ * What is inside the boxes is the worker's own render (task 6.16a): the
  * slide is prepared and drawn into the preview stream's off-air target,
  * so the text here wraps, fits and falls back exactly as the audience's
  * will. The canvas contributes the geometry it is editing and the chrome
  * around it, never a second layout of the words.
  *
- * With one item per slide, arriving on the page selects it; a click on
- * empty canvas, or an Escape (which Main hands to the selection before
- * the output clear-all can see it), steps back.
+ * Which box is selected lives in the controller, not here: the canvas
+ * highlights docs.currentBox and every gesture addresses it, so the
+ * outlined box, the inspector's words and the edited geometry cannot be
+ * three different boxes. Escape and a press on empty canvas drop the
+ * handles (a chrome state, local); a press on a box selects it (a session
+ * state, the controller's).
  */
 Item {
     id: canvas
 
+    // Handles shown on the selected box ("" between gestures hides them
+    // without moving the selection).
     property bool selected: true
     readonly property bool hasSlide: docs.currentSlide >= 0
         && docs.slides.length > docs.currentSlide
 
-    // The box under edit, in authored units. Synced from the document;
-    // only the gestures below move it, and a commit reloads it.
+    // The slide's boxes in DRAW order, straight from the model; and the
+    // selected one's rectangle, in authored units, mirrored from the
+    // document. Only the gestures below move it, and a commit reloads it.
+    readonly property var boxes: docs.currentSlideBoxes
+    readonly property int currentBox: docs.currentBox
     property real boxX: 160
     property real boxY: 100
     property real boxW: 1600
@@ -48,21 +58,22 @@ Item {
     }
 
     function syncFromDocuments() {
-        if (!hasSlide) {
-            return
+        const box = boxes[currentBox]
+        if (box === undefined) {
+            return  // no slide, or a slide the operator emptied of boxes
         }
-        const row = docs.slides[docs.currentSlide]
-        boxX = row.x
-        boxY = row.y
-        boxW = row.width
-        boxH = row.height
+        boxX = box.x
+        boxY = box.y
+        boxW = box.width
+        boxH = box.height
     }
 
-    // A page (re)entry selects the slide's item and shows its box; undo,
-    // redo and navigation refresh it, mid-drag document churn does not
-    // yank the box out from under the pointer. Completion matters most:
-    // the document loads before any QML exists, so no signal announces
-    // what the window opens on.
+    // A page (re)entry shows the slide's stack; undo, redo and navigation
+    // refresh it, mid-drag document churn does not yank the box out from
+    // under the pointer. Completion matters most: the document loads
+    // before any QML exists, so no signal announces what the window opens
+    // on. Selection changes re-sync too — the handles move to a box of a
+    // different size, and the X/Y/W/H fields read these same properties.
     Component.onCompleted: {
         syncFromDocuments()
         selected = true
@@ -82,27 +93,36 @@ Item {
             canvas.syncFromDocuments()
             canvas.selected = true
         }
+        function onBoxSelectionChanged() {
+            if (canvas.dragMode === "") {
+                canvas.syncFromDocuments()
+            }
+        }
     }
 
-    // Hit order mirrors the interaction: a selected handle beats the
-    // box body, the box body beats empty canvas.
+    // Hit order mirrors the interaction and the paint order: a selected
+    // handle beats its box, the TOPMOST box under the pointer beats the
+    // others and beats empty canvas. docs.boxAt is the same topmost rule
+    // in model coordinates — the canvas does not keep a second idea of
+    // which box is on top.
     function hitTest(px, py) {
         if (!hasSlide) {
             return ""
         }
         const tol = 8
-        const left = boxX * zoom
-        const top = boxY * zoom
-        const right = (boxX + boxW) * zoom
-        const bottom = (boxY + boxH) * zoom
-        if (selected) {
+        const box = boxes[currentBox]
+        if (selected && box !== undefined) {
+            const left = box.x * zoom
+            const top = box.y * zoom
+            const right = (box.x + box.width) * zoom
+            const bottom = (box.y + box.height) * zoom
             if (Math.abs(px - left) <= tol && Math.abs(py - top) <= tol) return "tl"
             if (Math.abs(px - right) <= tol && Math.abs(py - top) <= tol) return "tr"
             if (Math.abs(px - left) <= tol && Math.abs(py - bottom) <= tol) return "bl"
             if (Math.abs(px - right) <= tol && Math.abs(py - bottom) <= tol) return "br"
         }
-        if (px >= left && px <= right && py >= top && py <= bottom) return "move"
-        return ""
+        const hit = docs.boxAt(px / zoom, py / zoom)
+        return hit < 0 ? "" : "move"
     }
 
     // The opposite corner stays anchored; 20 authored px is the floor —
@@ -140,9 +160,9 @@ Item {
         // a second time — Qt's wrapping, Qt's fit, Qt's font fallbacks
         // against Skia's — so the operator composed one picture and the
         // audience saw another. Now the text, the background image and the
-        // media under the box are the production render, and the only thing
-        // this canvas paints over them is the chrome below: the outline and
-        // the handles.
+        // media under the boxes are the production render of the WHOLE
+        // stack, and the only thing this canvas paints over them is the
+        // chrome below: the outlines and the handles.
         PreviewView {
             id: workerPicture
             anchors.fill: parent
@@ -162,26 +182,36 @@ Item {
             font.pixelSize: 13
             horizontalAlignment: Text.AlignHCenter
             text: worker.selectionSupported
-                  ? "waiting for the worker's render of this slide\u2026"
+                  ? "waiting for the worker's render of this slide…"
                   : "this worker cannot render a slide that is not on air"
         }
 
-        // The box outline: quiet when unselected, accent-coloured and
-        // two pixels wide when it is the thing under the pointer.
-        Rectangle {
-            id: overlay
-            visible: canvas.hasSlide
-            x: canvas.boxX * canvas.zoom
-            y: canvas.boxY * canvas.zoom
-            width: canvas.boxW * canvas.zoom
-            height: canvas.boxH * canvas.zoom
-            color: "transparent"
-            border.width: canvas.selected ? 2 : 1
-            border.color: canvas.selected ? "#f0008c" : "#8f93a5"
+        // One outline per box, in the model's draw order — every box the
+        // worker paints is framed here, and the selected one wears the
+        // accent border and the handles. The selected box's outline follows
+        // the live drag (boxX.. are what the gesture moves); the others
+        // sit where the model says, because nothing else can move them.
+        Repeater {
+            model: canvas.hasSlide ? canvas.boxes : []
+            delegate: Rectangle {
+                required property var modelData
+                required property int index
+                readonly property bool liveDrag: index === canvas.currentBox
+                                                 && canvas.dragMode !== ""
+                visible: canvas.hasSlide
+                x: (liveDrag ? canvas.boxX : modelData.x) * canvas.zoom
+                y: (liveDrag ? canvas.boxY : modelData.y) * canvas.zoom
+                width: (liveDrag ? canvas.boxW : modelData.width) * canvas.zoom
+                height: (liveDrag ? canvas.boxH : modelData.height) * canvas.zoom
+                color: "transparent"
+                border.width: index === canvas.currentBox && canvas.selected ? 2 : 1
+                border.color: index === canvas.currentBox && canvas.selected
+                              ? "#f0008c" : "#8f93a5"
+            }
         }
 
         Repeater {
-            model: canvas.selected && canvas.hasSlide
+            model: canvas.selected && canvas.hasSlide && canvas.currentBox >= 0
                 ? [Qt.point(0, 0), Qt.point(1, 0), Qt.point(0, 1), Qt.point(1, 1)]
                 : []
             delegate: Rectangle {
@@ -190,17 +220,23 @@ Item {
                 height: 8
                 color: "#f0008c"
                 border.color: "#191923"
-                x: overlay.x + (modelData.x === 0 ? -width / 2 : overlay.width - width / 2)
-                y: overlay.y + (modelData.y === 0 ? -height / 2 : overlay.height - height / 2)
+                x: canvas.boxX * canvas.zoom
+                    + (modelData.x === 0 ? -width / 2
+                                         : canvas.boxW * canvas.zoom - width / 2)
+                y: canvas.boxY * canvas.zoom
+                    + (modelData.y === 0 ? -height / 2
+                                         : canvas.boxH * canvas.zoom - height / 2)
             }
         }
 
         Text {
             anchors.centerIn: parent
-            visible: !canvas.hasSlide
+            visible: !canvas.hasSlide || canvas.currentBox < 0
             color: "#6a6f80"
             font.pixelSize: 13
-            text: "Select or create a slide to edit its text box"
+            text: !canvas.hasSlide
+                  ? "Select or create a slide to edit its text boxes"
+                  : "this slide has no text boxes — use \"New box\" below"
         }
 
         MouseArea {
@@ -215,6 +251,25 @@ Item {
                 if (mode === "") {
                     canvas.selected = false
                     return
+                }
+                // Pressing a box BODY works on THAT box: the topmost one
+                // under the pointer becomes the session's selection before
+                // the gesture starts, so the drag, the fields and the
+                // inspector all follow what was clicked. A HANDLE press
+                // never re-selects — a selected box's corner can lie on
+                // another box, and the resize below is anchored to the box
+                // whose corner was grabbed, so silently moving the
+                // selection would commit that anchor's geometry onto the
+                // wrong box. Pressing the already-selected box re-selects
+                // it; the controller no-ops that without dirtying anything.
+                if (mode === "move") {
+                    const hit = docs.boxAt(mouse.x / canvas.zoom, mouse.y / canvas.zoom)
+                    if (hit >= 0) {
+                        docs.selectTextBox(hit)
+                        // startBox must be the box just clicked, not the one
+                        // the properties still hold from before the press.
+                        canvas.syncFromDocuments()
+                    }
                 }
                 canvas.selected = true
                 canvas.dragMode = mode
@@ -236,8 +291,8 @@ Item {
                 canvas.dragMode = ""
                 // Whole authored pixels: the same coordinates the X/Y/W/H
                 // fields show, and a clean value for the history entry.
-                docs.setSlideGeometry(Math.round(canvas.boxX), Math.round(canvas.boxY),
-                                      Math.round(canvas.boxW), Math.round(canvas.boxH))
+                docs.setTextBoxGeometry(Math.round(canvas.boxX), Math.round(canvas.boxY),
+                                        Math.round(canvas.boxW), Math.round(canvas.boxH))
             }
         }
     }

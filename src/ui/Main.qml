@@ -161,13 +161,16 @@ Window {
     // Task 4.3: the reference's nudge rule (EditTools.svelte:314-326) —
     // arrows walk the selected text box 1px, Ctrl+arrows 10px. Every step
     // is one undo entry, so it only runs on the edit page with a box
-    // selected and nobody typing.
+    // selected and nobody typing. Since 6.17a2 "the selected box" is the
+    // session's selection, not the slide's one tuple: the canvas mirrors
+    // its rectangle, and arrows, drag, fields and inspector all move the
+    // box that wears the handles.
     function nudgeBox(dx, dy) {
         if (docs.currentSlide < 0 || docs.slides.length === 0) {
             return
         }
-        const row = docs.slides[docs.currentSlide]
-        docs.setSlideGeometry(row.x + dx, row.y + dy, row.width, row.height)
+        docs.setTextBoxGeometry(editCanvas.boxX + dx, editCanvas.boxY + dy,
+                                editCanvas.boxW, editCanvas.boxH)
     }
     readonly property bool nudging: page === "edit" && editCanvas.selected
                                     && !typingIntoField && docs.slides.length > 0
@@ -210,6 +213,31 @@ Window {
         sequence: "Ctrl+Down"
         enabled: root.nudging
         onActivated: root.nudgeBox(0, 10)
+    }
+
+    // Task 6.17a2: Tab steps the selection through the slide's stack and
+    // Shift+Tab steps back, wrapping — the keyboard reaches every box the
+    // canvas outlines, so a slide of eight does not demand eight mouse
+    // presses. Same gates as the nudge: edit page, a box to select, and
+    // nobody typing (in a field, Tab belongs to the field).
+    readonly property bool boxStepping: page === "edit" && docs.currentBox >= 0
+                                        && !typingIntoField
+    function stepBox(delta) {
+        const count = editCanvas.boxes.length
+        if (count === 0) {
+            return
+        }
+        docs.selectTextBox((docs.currentBox + delta + count) % count)
+    }
+    Shortcut {
+        sequence: "Tab"
+        enabled: root.boxStepping
+        onActivated: root.stepBox(1)
+    }
+    Shortcut {
+        sequence: "Shift+Tab"
+        enabled: root.boxStepping
+        onActivated: root.stepBox(-1)
     }
 
     // Task 4.5: the reference's presenter keys (shortcuts.ts) — Space,
@@ -1334,10 +1362,12 @@ Window {
     }
 
     /* ------------------------------------------------------------------
-     * The edit page (task 4.3): the current slide's text box on a 16:9
-     * stage — drag to move, corners to resize, arrows to nudge — with
-     * exact X/Y/W/H fields under it as the deterministic path. One undo
-     * entry per drag, per nudge, and per field commit.
+     * The edit page (task 4.3, stack since 6.17a2): the current slide's
+     * boxes on a 16:9 stage — click selects the topmost box, drag moves
+     * it, corners resize it, Tab walks the stack, arrows nudge — with
+     * exact X/Y/W/H fields and New/Delete/Back/Forward under it as the
+     * deterministic path. One undo entry per drag, per nudge, per field
+     * commit, and per stack command.
      * ------------------------------------------------------------------ */
     Item {
         id: editPage
@@ -1429,9 +1459,11 @@ Window {
                 const y = parseFloat(fieldY.text)
                 const w = parseFloat(fieldW.text)
                 const h = parseFloat(fieldH.text)
+                // The exact-number path onto the SELECTED box — the same
+                // op the drag commits, so one entry lands either way.
                 if (!Number.isFinite(x) || !Number.isFinite(y)
                         || !(w >= 1) || !(h >= 1)
-                        || !docs.setSlideGeometry(x, y, w, h)) {
+                        || !docs.setTextBoxGeometry(x, y, w, h)) {
                     boxFields.sync()
                 }
             }
@@ -1536,11 +1568,54 @@ Window {
                 }
             }
 
+            // The stack's commands (task 6.17a2). One undo step each, and
+            // their enabled state reads the SELECTION: Delete takes the
+            // selected box away, Back/Forward re-order it in the stack the
+            // worker paints — what moves forward lands on top of the
+            // audience's picture, exactly where the outlines here say it
+            // will. "New" stays live at the ceiling and lets the status
+            // line name the limit; the refusal adds no undo step.
+            Column {
+                spacing: 2
+                Text {
+                    color: "#8f93a5"
+                    font.pixelSize: 10
+                    text: "STACK"
+                }
+                Row {
+                    spacing: 4
+                    PanelButton {
+                        objectName: "newBoxButton"
+                        text: "New box"
+                        onClicked: docs.addTextBox()
+                    }
+                    PanelButton {
+                        objectName: "deleteBoxButton"
+                        text: "Delete"
+                        enabled: docs.currentBox >= 0
+                        onClicked: docs.removeCurrentTextBox()
+                    }
+                    PanelButton {
+                        objectName: "boxBackButton"
+                        text: "Back"
+                        enabled: docs.currentBox > 0
+                        onClicked: docs.moveCurrentTextBox(docs.currentBox - 1)
+                    }
+                    PanelButton {
+                        objectName: "boxForwardButton"
+                        text: "Forward"
+                        enabled: docs.currentBox >= 0
+                                 && docs.currentBox < docs.currentSlideBoxes.length - 1
+                        onClicked: docs.moveCurrentTextBox(docs.currentBox + 1)
+                    }
+                }
+            }
+
             Text {
                 anchors.verticalCenter: parent.verticalCenter
                 color: "#6a6f80"
                 font.pixelSize: 11
-                text: "drag the box · corners resize · arrows nudge 1px, Ctrl 10px"
+                text: "drag a box · corners resize · Tab next box · arrows nudge 1px, Ctrl 10px"
             }
         }
 
@@ -1923,6 +1998,7 @@ Window {
                     { key: "Ctrl+Z \u00b7 Ctrl+Y / Ctrl+Shift+Z", what: "Undo \u00b7 redo" },
                     { key: "Ctrl+S", what: "Save the service file" },
                     { key: "Arrows / Ctrl+Arrows", what: "Nudge the selected box 1px / 10px (edit page)" },
+                    { key: "Tab / Shift+Tab", what: "Select the next / previous text box (edit page)" },
                     { key: "F11", what: "Fullscreen" }
                 ]
                 delegate: Row {

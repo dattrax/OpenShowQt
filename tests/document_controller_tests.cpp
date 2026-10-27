@@ -622,6 +622,220 @@ void writeMultiBoxService(const std::filesystem::path& service) {
     out.close();
 }
 
+// Task 6.17a2 (review R17): the operator's half — selecting, creating,
+// editing, moving, resizing and reordering boxes through the class the panel
+// binds to. The model has had these operations since 6.17a1; what this
+// fixture pins is the SESSION's rule on top of them: which box the inspector,
+// the fields and the canvas are looking at, and that every stack command is
+// exactly one undo step.
+void exerciseBoxAuthoring(const std::filesystem::path& root) {
+    const std::filesystem::path service = root / "service";
+    writeMultiBoxService(service);
+    DocumentController docs(nullptr, root);
+    docs.selectSong(QStringLiteral("show1"));
+    docs.selectSlide(0);
+    const QString slide1 = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+
+    // The canvas's data: one entry per box, in draw order, with geometry.
+    const QVariantList outlines = docs.currentSlideBoxes();
+    check(outlines.size() == 3 &&
+              outlines.at(2).toMap().value(QStringLiteral("x")).toDouble() == 1400.0,
+          "the canvas is handed every box of the stacked slide");
+    check(docs.currentBox() == 0, "with nothing selected the bottom box is the selection");
+
+    // Topmost hit: box 1 (100,40,800,120) overlaps box 0 (160,100,1600,880)
+    // in the band y=100..160, and the point in the overlap must answer with
+    // the box PAINTED LAST — the one the operator can see and therefore
+    // meant to click. A front-to-back scan answers with box 0 there and
+    // silently steals every click in that band from the title strip.
+    check(docs.boxAt(400.0, 120.0) == 1, "a point in two boxes hits the one on top");
+    check(docs.boxAt(400.0, 60.0) == 1, "a point in only the upper box hits it");
+    check(docs.boxAt(1000.0, 500.0) == 0, "a point clear of the strip still hits the base box");
+    check(docs.boxAt(1500.0, 1000.0) == 2, "the credit line is hittable where it is drawn");
+    check(docs.boxAt(50.0, 900.0) == -1, "empty canvas hits nothing");
+
+    // Selection by index, clamped like selectSlide; the inspector's words
+    // move WITH the selection (and it dirties nothing — see the dirty checks).
+    int boxSignals = 0;
+    int textSignals = 0;
+    int docSignals = 0;
+    QObject::connect(&docs, &DocumentController::boxSelectionChanged,
+                     [&] { ++boxSignals; });
+    QObject::connect(&docs, &DocumentController::slideTextChanged,
+                     [&] { ++textSignals; });
+    QObject::connect(&docs, &DocumentController::documentsChanged,
+                     [&] { ++docSignals; });
+    check(docs.selectTextBox(1) && docs.currentBox() == 1, "the operator selects the second box");
+    check(boxSignals == 1 && textSignals == 1 && docSignals == 0,
+          "selection announces itself as chrome: box and inspector repaint, the workspace does not");
+    check(docs.currentSlideText() == QStringLiteral("TITLE"),
+          "the inspector now shows the SELECTED box's words");
+    check(docs.selectTextBox(99) && docs.currentBox() == 2,
+          "a selection past the top clamps to the top box");
+    check(docs.selectTextBox(-3) && docs.currentBox() == 0, "and a negative one clamps to the bottom");
+
+    // Navigation is a new context: the selection belongs to a slide. The id
+    // must be picked just before crossing so a session that CARRIED it would
+    // find that very box again on the way back - falling back to 0 here
+    // because it was cleared, not because the lookup missed.
+    docs.selectTextBox(1);
+    docs.selectSlide(1);
+    check(docs.currentBox() == -1 && docs.currentSlideBoxes().isEmpty(),
+          "the box-less slide has no selection to show");
+    check(!docs.selectTextBox(0), "selecting on a slide with no boxes is refused");
+    check(docs.status().contains(QStringLiteral("no text box to select")),
+          "and the refusal says why");
+    // Back across while the (mutably carried) id still names THIS slide's
+    // title strip: a controller that kept the id across navigation would
+    // find that very box again, and only the clear can land on 0 here.
+    docs.selectSlide(0);
+    check(docs.currentBox() == 0,
+          "navigation clears the selection rather than carrying an id this slide can still resolve");
+    docs.selectSlide(1);
+    check(docs.addTextBox() && docs.currentBox() == 0,
+          "adding to the box-less slide creates one and selects it");
+    docs.selectSlide(0);  // and back: the stack sections below work the slide
+
+    // Typing follows the SELECTION, and moving the selection flushes first:
+    // a burst typed into box 2 must not land in box 0 because the operator
+    // tabbed away mid-sentence.
+    docs.selectTextBox(2);
+    docs.setSlideText(QStringLiteral("credit changed"));
+    docs.selectTextBox(0);  // the flush-before-move is the whole claim
+    openshow::scene::Scene afterSwitch = compiledFor(docs, slide1);
+    check(afterSwitch.items[2].lines == std::vector<std::string>{"credit changed"} &&
+              afterSwitch.items[0].lines == std::vector<std::string>{"Verse line"},
+          "keystrokes typed into the third box land there, not in the box tabbed to");
+    docs.undo();
+    check(compiledFor(docs, slide1).items[2].lines == std::vector<std::string>{"photo: someone"},
+          "that burst is exactly one undo step");
+
+    // One undo step each, for every stack command — with the selection's
+    // id-rule visible in the middle: undo of an ADD drops the box, the
+    // selection falls back; REDO brings the box back and the selection
+    // resolves onto it again, because the id names it.
+    check(docs.addTextBox(), "a new box is added on top");
+    check(docs.currentBox() == 3, "and the new box is the selection - it was added to be edited");
+    check(compiledFor(docs, slide1).items.size() == 4 &&
+              compiledFor(docs, slide1).items[3].x == 160.0,
+          "the off-air payload gains the new box at the default place");
+    docs.undo();
+    check(compiledFor(docs, slide1).items.size() == 3 && docs.currentBox() == 0,
+          "one undo drops the added box and the selection falls back to the bottom");
+    docs.redo();
+    check(compiledFor(docs, slide1).items.size() == 4 && docs.currentBox() == 3,
+          "redo restores the box and the selection resolves onto the same id again");
+    docs.undo();
+
+    // Delete by selection: the middle box goes, the outer two keep order;
+    // undo restores the box AND the selection lands back on it.
+    docs.selectTextBox(1);
+    check(docs.removeCurrentTextBox(), "the selected middle box is deleted");
+    openshow::scene::Scene drilled = compiledFor(docs, slide1);
+    check(drilled.items.size() == 2 &&
+              drilled.items[0].lines == std::vector<std::string>{"Verse line"} &&
+              drilled.items[1].lines == std::vector<std::string>{"photo: someone"},
+          "deleting the middle box leaves the outer two in draw order");
+    check(docs.currentBox() == 0, "with its box gone the selection falls back");
+    docs.undo();
+    check(compiledFor(docs, slide1).items.size() == 3 && docs.currentBox() == 1 &&
+              docs.currentSlideText() == QStringLiteral("TITLE"),
+          "undo brings the box back with its identity - and the selection with it");
+
+    // Reorder: the selection follows identity, so the handles stay on the
+    // box that moved, and the wire order - the paint order - changes.
+    docs.selectTextBox(0);
+    check(docs.moveCurrentTextBox(2), "the bottom box is moved to the top");
+    openshow::scene::Scene reordered = compiledFor(docs, slide1);
+    check(reordered.items[2].lines == std::vector<std::string>{"Verse line"} &&
+              reordered.items[0].lines == std::vector<std::string>{"TITLE"},
+          "the compiled scene paints in the new stack order");
+    check(docs.currentBox() == 2 && docs.currentSlideText() == QStringLiteral("Verse line"),
+          "the selection followed its box to its new position");
+    check(!docs.moveCurrentTextBox(-1), "a negative destination is refused, not clamped");
+    check(docs.status().contains(QStringLiteral("negative")),
+          "and the status names the controller's own guard, not a cast past the end");
+    docs.undo();
+    check(compiledFor(docs, slide1).items[0].lines == std::vector<std::string>{"Verse line"},
+          "one undo puts the stack back");
+
+    // Geometry now addresses the selected box, and a refusal is invisible to
+    // history: undo after a refused resize goes back to the PREVIOUS edit.
+    docs.selectTextBox(1);
+    check(docs.setTextBoxGeometry(10.0, 20.0, 30.0, 40.0), "the selected box is resized");
+    openshow::scene::Scene sized = compiledFor(docs, slide1);
+    check(sized.items[1].x == 10.0 && sized.items[0].x == 160.0,
+          "the edit moved the selected box and no other");
+    check(!docs.setTextBoxGeometry(10.0, 20.0, 0.0, 40.0),
+          "a box with no width is refused");
+    check(compiledFor(docs, slide1).items[1].width == 30.0,
+          "the refusal changed nothing");
+    docs.undo();
+    check(compiledFor(docs, slide1).items[1].x != 10.0,
+          "undo steps past the refusal to the last real edit - the refusal added no step");
+
+    // The ceiling: a slide at eight boxes refuses the ninth, by name. The
+    // box-less slide picked up one box earlier, so drain it first - and
+    // note each filled box is TWO history entries (the add, then the typed
+    // name), which is what makes the refusal's invisibility checkable:
+    // after the ninth add is refused, the next undo reverts the LAST TYPED
+    // NAME. A refusal that had pushed an entry would spend this undo on
+    // nothing instead.
+    docs.selectSlide(1);
+    for (int i = 0; i < 10 && docs.currentBox() >= 0; ++i) {
+        docs.removeCurrentTextBox();
+    }
+    check(docs.currentBox() == -1, "the slide is drained before the ceiling is tested");
+    const QString blank = docs.slides().at(1).toMap().value(QStringLiteral("id")).toString();
+    const char* names[] = {"A", "B", "C", "D", "E", "F", "G", "H"};
+    for (int i = 0; i < 8; ++i) {
+        docs.addTextBox();
+        docs.setSlideText(QString::fromLatin1(names[i]));
+        docs.flushText();
+    }
+    check(compiledFor(docs, blank).items.size() == 8, "eight boxes fill a slide");
+    check(!docs.addTextBox(), "the ninth box is refused");
+    check(docs.status().contains(QStringLiteral("8")), "and the refusal names the limit");
+    check(compiledFor(docs, blank).items.size() == 8, "the stack is unchanged by the refusal");
+    docs.undo();
+    check(compiledFor(docs, blank).items.size() == 8 &&
+              compiledFor(docs, blank).items[7].lines != std::vector<std::string>{"H"},
+          "the next undo reverts the last typed name - the refusal left no step behind");
+
+    // And a slide drained to nothing is a backdrop, not an error: deleting
+    // the last box is legal, and the box-scoped edits say so instead of
+    // inventing a box.
+    for (int i = 0; i < 10 && docs.currentBox() >= 0; ++i) {
+        docs.removeCurrentTextBox();
+    }
+    check(docs.currentBox() == -1 && compiledFor(docs, blank).items.empty(),
+          "deleting the last box leaves a backdrop with no items");
+    check(!docs.setTextBoxGeometry(10.0, 20.0, 30.0, 40.0),
+          "resizing a box-less slide is refused");
+    check(docs.status().contains(QStringLiteral("no text box to resize")), "naming what is missing");
+    check(!docs.removeCurrentTextBox(), "and there is nothing left to delete");
+
+    // Selection alone never dirties the session: a click is chrome. This has
+    // to be measured on a session that starts CLEAN - a second controller on
+    // `root` would recover the autosave scratch and be dirty BEFORE the
+    // click, and "still dirty after" would then be true of any controller,
+    // chrome or not. So: the same service bytes, copied somewhere no autosave
+    // has ever been written.
+    const auto pristine = root / "pristine";
+    std::filesystem::create_directories(pristine / "service");
+    std::filesystem::copy_file(root / "service" / "service.json",
+                               pristine / "service" / "service.json",
+                               std::filesystem::copy_options::overwrite_existing);
+    DocumentController quiet(nullptr, pristine);
+    quiet.selectSong(QStringLiteral("show1"));
+    quiet.selectSlide(0);
+    check(!quiet.dirty(), "a session that loaded a clean package is not dirty");
+    check(quiet.selectTextBox(2) && !quiet.dirty(),
+          "and selecting a box is not an edit - it did not make the session dirty");
+    check(quiet.currentSlideText() == QStringLiteral("photo: someone"),
+          "while still moving the inspector onto the box it selected");
+}
+
 void exerciseMultiBoxSession(const std::filesystem::path& root) {
     const std::filesystem::path service = root / "service";
     writeMultiBoxService(service);
@@ -630,8 +844,9 @@ void exerciseMultiBoxSession(const std::filesystem::path& root) {
     docs.selectSong(QStringLiteral("show1"));
     check(docs.slides().size() == 2, "both of its slides are listed");
 
-    // The row the list paints: the FIRST box, which is the one the canvas and
-    // the nudge keys edit until an operator can pick (6.17a2).
+    // The row the list paints: the FIRST box. The canvas now outlines every
+    // box and gestures address the selected one; a row still NAMES a slide,
+    // and its bottom box is what represents it to someone scanning the list.
     const QVariantMap row1 = docs.slides().at(0).toMap();
     const QString slide1 = row1.value(QStringLiteral("id")).toString();
     check(row1.value(QStringLiteral("preview")).toString() == QStringLiteral("Verse line") &&
@@ -644,10 +859,10 @@ void exerciseMultiBoxSession(const std::filesystem::path& root) {
               row2.value(QStringLiteral("width")).toDouble() == 1600.0,
           "a slide with no boxes still reports a placeable box, not zeros");
 
-    // The inspector shows ONE box's words until an operator can pick (6.17a2),
-    // and it shows the first: the same rule the rows and the nudge keys use, so
-    // the panel, the list and the canvas cannot be looking at three different
-    // boxes on a slide nobody has selected a box on yet.
+    // With nothing selected the inspector shows box 0 — the selection's
+    // fallback, which is the box every pre-6.17a slide has alone. The
+    // selection itself (and thus the inspector moving to box 1 or 2) is
+    // exercised by exerciseBoxAuthoring().
     docs.selectSlide(0);
     check(docs.currentSlideText() == QStringLiteral("Verse line"),
           "the text inspector shows the FIRST box's words");
@@ -1306,6 +1521,7 @@ int main(int argc, char* argv[]) {
     exercisePlaylistAndLibrary(tempRoot / "playlist");
     exerciseStylePanel(tempRoot / "styles");
     exerciseMultiBoxSession(tempRoot / "multibox");
+    exerciseBoxAuthoring(tempRoot / "boxauthoring");
     exerciseClipboard(tempRoot / "clipboard");
     exerciseAutosaveSurfacing(tempRoot / "surfacing");
     exerciseBackgroundPersistence(tempRoot / "background");

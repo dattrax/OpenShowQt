@@ -128,11 +128,14 @@ QVariantList DocumentController::slides() const {
     }
     for (std::size_t i = 0; i < show->slides.size(); ++i) {
         const openshow::domain::Slide& slide = show->slides[i];
-        // The row's position is the slide's FIRST box in draw order — the one
-        // the canvas and the arrow-key nudge edit until the operator can pick
-        // a box (6.17a2). A slide authored down to no boxes reports the
-        // default box rather than zeros, so a canvas that draws the row's
-        // outline is never handed a rectangle with no size.
+        // The row's position is the slide's FIRST box in draw order. The
+        // canvas outlines EVERY box (currentSlideBoxes) and its gestures
+        // address the selected one, but a list row names a slide, and the
+        // box that represents a slide to someone scanning the list is the
+        // bottom of its stack — the one a pre-6.17a slide had alone.
+        // A slide authored down to no boxes reports the default box rather
+        // than zeros, so a view drawing the row's outline is never handed a
+        // rectangle with no size.
         const openshow::domain::TextBox fallback;
         const openshow::domain::TextBox& box =
             slide.items.empty() ? fallback : slide.items.front();
@@ -159,9 +162,10 @@ QString DocumentController::currentSlideText() const {
         static_cast<std::size_t>(fCurrentSlide) >= show->slides.size()) {
         return QString();
     }
-    // The text inspector edits the first box (see slides()).
-    const openshow::domain::Slide& slide = show->slides[static_cast<std::size_t>(fCurrentSlide)];
-    const openshow::domain::TextBox* box = slide.firstTextBox();
+    // The inspector edits the SELECTED box (task 6.17a2) — which is box 0
+    // until the operator picks another, so a slide with one box and every
+    // pre-6.17a file read the same as they always did.
+    const openshow::domain::TextBox* box = selectedBox();
     return box == nullptr ? QString() : linesToText(box->lines);
 }
 
@@ -382,12 +386,20 @@ void DocumentController::commitPendingText() {
     }
     const openshow::domain::Id slideId = currentSlideId();
     const openshow::domain::Id songId = fCurrentSongId;
+    const openshow::domain::TextBox* box = selectedBox();
+    if (box == nullptr) {
+        return;  // the box the words were typed into is gone; nothing to write
+    }
+    const openshow::domain::Id boxId = box->id;
     std::vector<std::string> lines = textToLines(fPendingText);
     std::string error;
-    // The edit lands on whichever slide the text was typed into, even if
-    // the operator has since moved on; the guard above already flushed
-    // before any navigation, so this is the timer path only.
-    edit([&] { return fDocuments.setSlideLines(songId, slideId, lines, &error); });
+    // The edit lands on whichever box the text was typed into, even if the
+    // operator has since moved on; every path that moves the text or the
+    // selection (slide navigation, selectTextBox, undo, a box edit) flushes
+    // FIRST, so by the time this runs "selected" is still "typed into".
+    // That flush is also what stops a burst of keystrokes from landing in
+    // the box the operator tabbed to.
+    edit([&] { return fDocuments.setTextBoxLines(songId, slideId, boxId, lines, &error); });
 }
 
 void DocumentController::flushText() {
@@ -402,8 +414,10 @@ void DocumentController::selectSong(const QString& songId) {
     }
     fCurrentSongId = id;
     fCurrentSlide = 0;
+    fCurrentBoxId.clear();  // the selection belongs to a slide, not to the session
     emit navigationChanged();
     emit slideTextChanged();
+    emit boxSelectionChanged();
 }
 
 void DocumentController::selectSlide(int index) {
@@ -416,8 +430,10 @@ void DocumentController::selectSlide(int index) {
     if (last < 0) {
         if (fCurrentSlide != -1) {  // a song without slides has no current index
             fCurrentSlide = -1;
+            fCurrentBoxId.clear();
             emit navigationChanged();
             emit slideTextChanged();
+            emit boxSelectionChanged();
         }
         return;
     }
@@ -426,8 +442,10 @@ void DocumentController::selectSlide(int index) {
         return;
     }
     fCurrentSlide = clamped;
+    fCurrentBoxId.clear();
     emit navigationChanged();
     emit slideTextChanged();
+    emit boxSelectionChanged();
 }
 
 void DocumentController::stepSlide(int delta) {
@@ -445,6 +463,209 @@ bool DocumentController::setSlideGeometry(double x, double y, double width, doub
     if (!edit([&] {
             return fDocuments.setSlideGeometry(fCurrentSongId, slideId, x, y, width, height,
                                                &error);
+        })) {
+        setStatus(QStringLiteral("text box: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+// --- text-box authoring (task 6.17a2, review R17) ---------------------------
+
+const openshow::domain::TextBox* DocumentController::selectedBox() const {
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    if (show == nullptr || fCurrentSlide < 0 ||
+        static_cast<std::size_t>(fCurrentSlide) >= show->slides.size()) {
+        return nullptr;
+    }
+    const std::vector<openshow::domain::TextBox>& items =
+        show->slides[static_cast<std::size_t>(fCurrentSlide)].items;
+    if (items.empty()) {
+        return nullptr;
+    }
+    for (const openshow::domain::TextBox& box : items) {
+        if (box.id == fCurrentBoxId) {
+            return &box;
+        }
+    }
+    // The fallback is the bottom of the stack: a slide always has it (the
+    // empty case returned above), it is the box a pre-6.17a slide had alone,
+    // and because every box-scoped op resolves through this same function,
+    // the box wearing the canvas's handles is necessarily the box the
+    // inspector is editing.
+    return &items.front();
+}
+
+int DocumentController::currentBox() const {
+    const openshow::domain::TextBox* box = selectedBox();
+    if (box == nullptr) {
+        return -1;
+    }
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    const std::vector<openshow::domain::TextBox>& items =
+        show->slides[static_cast<std::size_t>(fCurrentSlide)].items;
+    return static_cast<int>(box - items.data());
+}
+
+QVariantList DocumentController::currentSlideBoxes() const {
+    QVariantList list;
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    if (show == nullptr || fCurrentSlide < 0 ||
+        static_cast<std::size_t>(fCurrentSlide) >= show->slides.size()) {
+        return list;
+    }
+    const std::vector<openshow::domain::TextBox>& items =
+        show->slides[static_cast<std::size_t>(fCurrentSlide)].items;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        QVariantMap entry;
+        entry.insert(QStringLiteral("id"), QString::fromStdString(items[i].id));
+        entry.insert(QStringLiteral("index"), static_cast<int>(i));
+        entry.insert(QStringLiteral("x"), items[i].x);
+        entry.insert(QStringLiteral("y"), items[i].y);
+        entry.insert(QStringLiteral("width"), items[i].width);
+        entry.insert(QStringLiteral("height"), items[i].height);
+        list.append(entry);
+    }
+    return list;
+}
+
+bool DocumentController::selectTextBox(int index) {
+    // Characters typed into the previous box belong to that box: they land
+    // in the model before the selection moves, or a burst of typing would
+    // commit into whatever box the operator tabbed to.
+    flushText();
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    if (show == nullptr || fCurrentSlide < 0 ||
+        static_cast<std::size_t>(fCurrentSlide) >= show->slides.size()) {
+        setStatus(QStringLiteral("text box: no current slide"));
+        return false;
+    }
+    const std::vector<openshow::domain::TextBox>& items =
+        show->slides[static_cast<std::size_t>(fCurrentSlide)].items;
+    if (items.empty()) {
+        setStatus(QStringLiteral("text box: this slide has no text box to select"));
+        return false;
+    }
+    const int last = static_cast<int>(items.size()) - 1;
+    const int clamped = index < 0 ? 0 : (index > last ? last : index);
+    if (items[static_cast<std::size_t>(clamped)].id == fCurrentBoxId) {
+        return true;  // already there
+    }
+    fCurrentBoxId = items[static_cast<std::size_t>(clamped)].id;
+    // Selection is chrome: no history entry, no dirty flag, no autosave.
+    // The inspector's content moved with the selection, so it repaints too.
+    emit boxSelectionChanged();
+    emit slideTextChanged();
+    return true;
+}
+
+int DocumentController::boxAt(double x, double y) const {
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    if (show == nullptr || fCurrentSlide < 0 ||
+        static_cast<std::size_t>(fCurrentSlide) >= show->slides.size()) {
+        return -1;
+    }
+    const std::vector<openshow::domain::TextBox>& items =
+        show->slides[static_cast<std::size_t>(fCurrentSlide)].items;
+    // Back to front: the box drawn last paints over the others, so it is the
+    // box under the pointer wherever they overlap, and the click should land
+    // on what the operator can see.
+    for (std::size_t i = items.size(); i-- > 0;) {
+        const openshow::domain::TextBox& box = items[i];
+        if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+bool DocumentController::addTextBox() {
+    flushText();
+    const openshow::domain::Id slideId = currentSlideId();
+    if (slideId.empty()) {
+        setStatus(QStringLiteral("add text box: no current slide"));
+        return false;
+    }
+    std::string error;
+    openshow::domain::Id newId;
+    if (!edit([&] {
+            newId = fDocuments.addTextBox(fCurrentSongId, slideId, openshow::domain::TextBox{},
+                                          &error);
+            return !newId.empty();
+        })) {
+        setStatus(QStringLiteral("add text box: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    fCurrentBoxId = newId;
+    emit boxSelectionChanged();
+    emit slideTextChanged();
+    return true;
+}
+
+bool DocumentController::removeCurrentTextBox() {
+    flushText();
+    const openshow::domain::Id slideId = currentSlideId();
+    const openshow::domain::TextBox* box = selectedBox();
+    if (slideId.empty() || box == nullptr) {
+        setStatus(QStringLiteral("delete text box: this slide has no text box to delete"));
+        return false;
+    }
+    const openshow::domain::Id boxId = box->id;
+    std::string error;
+    if (!edit([&] { return fDocuments.removeTextBox(fCurrentSongId, slideId, boxId, &error); })) {
+        setStatus(QStringLiteral("delete text box: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    // The id is deliberately left in place: it names nothing now, so the
+    // selection resolves to the fallback — until an UNDO puts the box back,
+    // at which point the selection is on the box it was deleted from again,
+    // which is exactly where the operator is looking.
+    emit boxSelectionChanged();
+    emit slideTextChanged();
+    return true;
+}
+
+bool DocumentController::moveCurrentTextBox(int toIndex) {
+    flushText();
+    const openshow::domain::TextBox* box = selectedBox();
+    if (box == nullptr) {
+        setStatus(QStringLiteral("reorder text box: this slide has no text box to move"));
+        return false;
+    }
+    if (toIndex < 0) {
+        setStatus(QStringLiteral("reorder text box: index %1 is negative").arg(toIndex));
+        return false;
+    }
+    const openshow::domain::Id slideId = currentSlideId();
+    const openshow::domain::Id boxId = box->id;
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.moveTextBox(fCurrentSongId, slideId, boxId,
+                                          static_cast<std::size_t>(toIndex), &error);
+        })) {
+        setStatus(QStringLiteral("reorder text box: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    // The box kept its identity and the selection follows identity, so the
+    // handles stay on it — but its index moved, and chrome keys off the
+    // index.
+    emit boxSelectionChanged();
+    return true;
+}
+
+bool DocumentController::setTextBoxGeometry(double x, double y, double width, double height) {
+    flushText();
+    const openshow::domain::TextBox* box = selectedBox();
+    if (box == nullptr) {
+        setStatus(QStringLiteral("text box: this slide has no text box to resize"));
+        return false;
+    }
+    const openshow::domain::Id slideId = currentSlideId();
+    const openshow::domain::Id boxId = box->id;
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setTextBoxGeometry(fCurrentSongId, slideId, boxId, x, y, width,
+                                                 height, &error);
         })) {
         setStatus(QStringLiteral("text box: %1").arg(QString::fromStdString(error)));
         return false;
@@ -1173,9 +1394,11 @@ bool DocumentController::load() {
                       .arg(QString::fromStdWString(fServiceDirectory.wstring())));
     }
     resumeAutosave();
+    fCurrentBoxId.clear();  // a fresh file is a fresh selection
     emit documentsChanged();
     emit navigationChanged();
     emit slideTextChanged();
+    emit boxSelectionChanged();
     emit stateChanged();
     return true;
 }
@@ -1209,6 +1432,10 @@ void DocumentController::undo() {
     emit documentsChanged();
     emit navigationChanged();
     emit slideTextChanged();
+    // The restored stack may no longer hold the selected box (or may have
+    // just brought it back, undo of a delete — the id is still there either
+    // way and the fallback resolves it). Chrome must repaint regardless.
+    emit boxSelectionChanged();
     emit stateChanged();
 }
 
@@ -1239,6 +1466,7 @@ void DocumentController::redo() {
     emit documentsChanged();
     emit navigationChanged();
     emit slideTextChanged();
+    emit boxSelectionChanged();  // same rule as undo
     emit stateChanged();
 }
 

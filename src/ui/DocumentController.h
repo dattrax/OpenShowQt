@@ -51,8 +51,19 @@ class DocumentController : public QObject {
     Q_PROPERTY(QVariantList slides READ slides NOTIFY documentsChanged)
     Q_PROPERTY(QString currentSongId READ currentSongId NOTIFY navigationChanged)
     Q_PROPERTY(int currentSlide READ currentSlide NOTIFY navigationChanged)
-    // The current slide's lyrics, lines joined with '\n'.
+    // The current slide's lyrics, lines joined with '\n'. Since 6.17a2 this
+    // is the SELECTED box's words, not the slide's one tuple — with nothing
+    // selected it is box 0, which is the box every pre-6.17a slide has.
     Q_PROPERTY(QString currentSlideText READ currentSlideText NOTIFY slideTextChanged)
+    // The selected text box of the current slide: its index in DRAW order,
+    // -1 when the slide has no boxes. The canvas puts handles on this box
+    // only; every box-scoped edit below lands on it.
+    Q_PROPERTY(int currentBox READ currentBox NOTIFY boxSelectionChanged)
+    // The current slide's boxes in draw order: [{id, index, x, y, width,
+    // height}]. The canvas draws one outline per entry, so what the operator
+    // sees framed is every box the worker will paint, in the order it paints.
+    Q_PROPERTY(QVariantList currentSlideBoxes READ currentSlideBoxes
+               NOTIFY documentsChanged)
     // Playlists (the reference's "projects"): [{id, name, entryCount}],
     // creation order; every session keeps at least one.
     Q_PROPERTY(QVariantList playlists READ playlists NOTIFY documentsChanged)
@@ -106,6 +117,8 @@ public:
     QString currentSongId() const { return QString::fromStdString(fCurrentSongId); }
     int currentSlide() const { return fCurrentSlide; }
     QString currentSlideText() const;
+    int currentBox() const;
+    QVariantList currentSlideBoxes() const;
     bool dirty() const { return fDirty; }
     QString serviceDirectory() const {
         return QString::fromStdWString(fServiceDirectory.wstring());
@@ -131,6 +144,34 @@ public:
     // 1920x1080 canvas units. One history entry per call, so a drag commits
     // once on release. Fails (with status) on a bad box or no current slide.
     Q_INVOKABLE bool setSlideGeometry(double x, double y, double width, double height);
+
+    // --- text-box authoring (task 6.17a2, review R17) ---
+    //
+    // The selection is an ID with a positional fallback: it follows its box
+    // across reorder and undo, and when the box it names is gone it falls to
+    // box 0 — the SAME box the canvas highlights — so what the inspector
+    // edits and what wears the handles can never be two different boxes.
+    // Navigation to another slide clears it (the selection belongs to a
+    // slide, not to the session). selectTextBox clamps like selectSlide and,
+    // being chrome, dirties nothing; add/remove/reorder/geometry each land
+    // one history entry, and a refusal lands a status line without one.
+    Q_INVOKABLE bool selectTextBox(int index);
+    // The TOPMOST box (last in draw order) whose authored rectangle contains
+    // the authored-unit point, or -1. Iterating backwards is the whole
+    // hit rule: the box drawn last is the one the operator sees on top, and
+    // clicking what one can see is what one meant.
+    Q_INVOKABLE int boxAt(double x, double y) const;
+    // Appends a box with the default geometry on top of the current slide's
+    // stack and SELECTS it — an operator adds a box in order to edit it.
+    Q_INVOKABLE bool addTextBox();
+    Q_INVOKABLE bool removeCurrentTextBox();
+    // Reorders the selected box within the current slide; toIndex is its
+    // position in the FINAL list (the domain's rule), and negative indices
+    // are refused here because QML's neighbours are expressions, not clamps.
+    Q_INVOKABLE bool moveCurrentTextBox(int toIndex);
+    // Geometry of the SELECTED box, in 1920x1080 canvas units: one history
+    // entry per call, so a drag commits once on release.
+    Q_INVOKABLE bool setTextBoxGeometry(double x, double y, double width, double height);
 
     // --- style panel (task 4.4) ---
 
@@ -248,6 +289,11 @@ signals:
     void documentsChanged();
     void navigationChanged();
     void slideTextChanged();
+    // The selected text box changed — through selectTextBox, an add/remove/
+    // move that took it away or moved it, or an undo/redo that restored a
+    // different stack. Not a document change: QML chrome listens here, and
+    // autosave must not fire for a click that edited nothing.
+    void boxSelectionChanged();
     void stateChanged();
     // Task 6.12 (review R7): a save adopted the package-owned copies of
     // asset bytes — the map is old path -> new path. Anything still
@@ -264,6 +310,11 @@ private slots:
 
 private:
     bool edit(const std::function<bool()>& mutation);  // history-wrapped edit
+    // The current slide's SELECTED box under the fallback rule of the
+    // currentBox property docs; nullptr with no slide or no boxes. Display
+    // and every box-scoped op resolve through this one function, which is
+    // what keeps the highlighted box and the edited box identical.
+    const openshow::domain::TextBox* selectedBox() const;
     void setStatus(const QString& text);
     // Task 6.14a (review R14): report the outcome of an autosave tick. A
     // refusal means the crash net has a hole NOW and must not be discarded
@@ -321,6 +372,7 @@ private:
     openshow::domain::Id fCurrentSongId;
     openshow::domain::Id fCurrentPlaylistId;
     int fCurrentSlide = 0;
+    openshow::domain::Id fCurrentBoxId;
     SlideClip fClip;
 
     // Debounced text edit.

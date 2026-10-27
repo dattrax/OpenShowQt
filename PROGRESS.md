@@ -1496,15 +1496,80 @@ Updated: 2026-10-27 (Europe/London).
     3.73 s, `scene_render_tests` 7.01 s, `document_present_tests` 0.94 s; both
     trees build clean apart from the pre-existing GCC `-Wfree-nonheap-object`
     false positive at `tests/background_media_tests.cpp:2294` (6.15b test code).
-- Exact next action: **6.17a2** per the PLAN.md ledger (review R17) — author
-  several text boxes from the editor: an outline per box with handles on the
-  selected one only, hit-testing for the topmost box under the pointer, the
-  inspector editing the SELECTED box, keyboard nudge and tab order reaching boxes
-  as well as slides, and add/delete/reorder as one undo step each, so what the
-  operator drags is what Skia draws with no second layout anywhere. The model,
-  the file format and the compiler already carry a stack (6.17a1), so 6.17a2
-  needs no schema change; R17's remaining halves are 6.17b (authored image items
-  and layer order) and 6.17c (background fits).
+- **Task 6.17a2 DONE — the editor authors the stack (review R17, second
+  half of the 6.17a split).** Which text box the session is editing is now
+  one fact in one place: `DocumentController` holds the selected box's ID and
+  resolves every box-scoped question — display or edit — through a single
+  `selectedBox()`, id-first with a box-0 fallback, so the canvas highlight,
+  the inspector's words, the X/Y/W/H fields and the arrow-key nudge cannot be
+  looking at four different boxes. `EditCanvas.qml` draws one outline per box
+  in model order (the selected box's outline follows the live drag), puts its
+  four handles on the selected box only, and a press on a box body selects the
+  TOPMOST box under the pointer (`boxAt`, back-to-front) before the gesture
+  starts. `Main.qml` gained New/Delete/Back/Forward (one undo step each) and
+  Tab/Shift+Tab walking the stack when nobody is typing. The worker's off-air
+  picture renders whatever the model compiles, and a new live leg measures it
+  for a stack against its own minus-one-box twin: mean luminance 2.59 -> 4.17
+  through the real shared preview stream, printed every run.
+  - **Selection is chrome, and chrome has rules.** It dirties nothing and
+    triggers no autosave — a click is not an edit — but it FLUSHES the
+    debounced keystrokes first: a pending burst belongs to the box it was
+    typed into, not the box the operator tabbed to. It announces itself on
+    `boxSelectionChanged` + `slideTextChanged` only; `documentsChanged` would
+    repaint the workspace and re-ask the worker for a click.
+  - **The id rules, with two deliberate exceptions.** The selection follows
+    its box across reorder and undo, and `removeCurrentTextBox` deliberately
+    LEAVES the id (resolving to nothing meanwhile) so an undo — which restores
+    the exact snapshot, ids included — puts the selection back on the very
+    box the operator deleted, which is where they are looking. Navigation to
+    another slide instead CLEARS it: the selection belongs to a slide, and a
+    carried id that silently re-selects an old box on the way back is a trick
+    nobody asked for.
+  - **The handle-anchor trap, found before it shipped.** A corner handle of
+    the selected box can lie over ANOTHER box; had a press there re-selected
+    by topmost hit, the resize would stay anchored to the old box's opposite
+    corner and commit onto the newly selected one. Body presses re-select;
+    handle presses never do.
+  - **Tests.** `exerciseBoxAuthoring()` (overlap hits the box on top, clamps,
+    box-less refusals naming themselves, the flush-before-move, the signal
+    pair without `documentsChanged`, the dirty-free click measured on a
+    session that starts clean, add/remove/move each exactly one undo step
+    with the id snap-back, eight boxes filling a slide and the ninth refused
+    naming the limit, and the refusal leaving no history step — checked by
+    watching the last TYPED name revert) and `testStackedBoxesOffAir()` in
+    the live suite (the stacked scene selected off-air against its own twin,
+    so the only difference between the two measured frames is the box under
+    test).
+  - **Mutations** m01–m17: **17/17 CAUGHT** — after three blind spots were
+    found and fixed mid-run, which is part of the result: the dirty-check
+    compared against a session that had RECOVERED autosave and was dirty
+    before the click; the navigation-clear left an id-overwriting add between
+    the crossings so a carried id still fell back to 0; and the first m16
+    mutated `compileSlide` while running the live suite alone — whose legs
+    prepare WIRE scenes and never call the compiler. Retargeted (m16 at the
+    renderer, caught with the stacked live frame going mean-identical at
+    2.593368 -> 2.593368; m17 the compiler against the payload checks,
+    caught), all four re-scored to named failures. m06 (the box-less-slide
+    guard) is caught by a CRASH, verdict real and message not. Disclosed
+    blind: the `boxSelectionChanged` emits in undo/redo/load (their consumer
+    is QML chrome; the selectTextBox pair IS counted), `boxAt`'s exact-edge
+    inclusiveness, and the gesture wiring inside the two QML files — the
+    load gate covers loading, and the invokables behind every gesture are the
+    mutated surface.
+  - Gates desktop **48/48** (228.3 s), headless **27/27** (48.5 s);
+    `document_controller_tests` 3.74 s, `scene_render_tests` 6.95 s,
+    `preview_selection_tests` 14.49 s; both trees build clean apart from the
+    pre-existing GCC `-Wfree-nonheap-object` false positive at
+    `tests/background_media_tests.cpp:2294` (6.15b test code).
+- Exact next action: **6.17b** per the PLAN.md ledger (review R17) — authored
+  foreground image items with geometry and layer order: the model grows an item
+  kind that carries a picture, the wire gains what it needs (6.17a1 recorded
+  that item ids may want to join the wire here), the canvas selects and moves
+  images alongside text boxes on the same selection machinery, and the worker
+  draws them in the model's layer order. Then 6.17c (background gradient and
+  supported fit modes). R17's multi-text-box halves are closed across model,
+  file, compiler, worker and editor; evidence is in the 6.17a1/6.17a2 ledger
+  rows.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -3922,6 +3987,52 @@ of this work.
 
 ## Decisions
 
+- (2026-10-27, task 6.17a2) Where a fact lives, and three ways a fixture
+  nearly lied on the way.
+  **Selection is a fact, so it gets one home**: the obvious way to add box
+  selection was a `property int selectedBox` in EditCanvas.qml — but that
+  answer would live in one panel while the inspector, the fields, the nudge
+  keys and the worker ask live in four other places, and "which box is the
+  session editing" would have five readings that drift the first time any of
+  them learns about a second kind of edit. The selection moved to
+  `DocumentController` as an ID with a documented fallback, and — the part
+  that actually prevents drift — every reader, display or edit, resolves it
+  through the SAME function (`selectedBox()`), so a highlighted box and an
+  edited box cannot disagree even in principle. Selection dirties nothing (a
+  click is not an edit, and autosaving one would make the crash net lie about
+  what the operator changed), but it flushes pending keystrokes first:
+  debounced text belongs to the box it was typed into.
+  **Undo is a time machine for identity, and the selection should ride it**:
+  deleting a box deliberately LEAVES the selected id pointing at nothing —
+  the fallback shows box 0 meanwhile — so an undo, which restores the exact
+  snapshot including ids, puts the selection back on the very box the
+  operator deleted. Navigation instead CLEARS the id: the selection belongs
+  to a slide, and a carried id that silently re-selects an old box on the way
+  back is a trick the operator never asked for. And a gesture detail the code
+  nearly got wrong: a corner handle of the selected box can lie over another
+  box, so a press that re-selects by topmost hit would anchor the resize to
+  the old box and commit onto the new one — body presses select, handle
+  presses never do.
+  Then the three nearly-lies, all found by the mutation battery rather than
+  by an operator. **A check that passes when the bug is present is not a
+  check**: "navigation clears the selection" originally selected nothing
+  before crossing slides, and an id-overwriting add sat between the crossings
+  — a controller that carried the id would still fall back to box 0 and pass.
+  **A comparison against a dirty baseline proves nothing**: the dirty-free
+  click was measured against a second controller on the same directory, which
+  RECOVERED the autosave scratch and was dirty before the click; "still dirty
+  after" was true of any controller, chrome or not. It now runs on a pristine
+  copy of the service where nothing was ever autosaved. **A mutant scored
+  against a suite that does not contain its code is the driver lying**: the
+  first m16 mutated `compileSlide` while running the live preview suite
+  alone, whose legs hand the worker WIRE scenes and never call the compiler —
+  it "survived" for a reason that belonged to neither the fixture nor the
+  product. Retargeted at the renderer (where the live leg sees it: the
+  stacked frame goes mean-identical, 2.593368 → 2.593368) and with the
+  compiler scored where the payload checks live, all four re-scored to named
+  failures. One rule kept from earlier and applied again before it bit: every
+  mutant's rebuild set includes whatever binary a live fixture SPAWNS, or the
+  mutant is scored against a build that never saw it.
 - (2026-10-27, task 6.17a1) Four rules about identity, and three about the ways
   this repo's own testing nearly lied.
   **A model with two representations of one fact is two chances to disagree**:
