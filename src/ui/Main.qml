@@ -1098,6 +1098,65 @@ Window {
             }
         }
 
+        // The slide list's pictures (task 6.16b, review R16): the worker
+        // renders the visible band with the production compositor, so a row
+        // shows the slide as the audience would see it — same fonts, same
+        // wrap, same background — instead of a line of Qt-laid-out text.
+        //
+        // The band is the current slide ±5, which is the rows on screen (the
+        // box fits about six at 26 px) plus a scroll's worth either way, and
+        // it is inside the 32-slide cap the protocol declares. Asking per
+        // visible row would send one batch per pixel of scroll; asking for a
+        // band moves the list in steps, and the client coalesces a band it
+        // already has. A slide the worker has not drawn yet keeps its text
+        // line: the fallback is the row's own, so a list is never blank while
+        // pictures are on their way.
+        function requestSlideBand() {
+            if (!worker.thumbnailSupported) {
+                return
+            }
+            const slides = docs.slides
+            if (slides.length === 0) {
+                worker.clearThumbnails()
+                return
+            }
+            const band = []
+            const first = Math.max(0, docs.currentSlide - 5)
+            const last = Math.min(slides.length - 1, docs.currentSlide + 5)
+            for (let i = first; i <= last; ++i) {
+                band.push({key: slides[i].id,
+                           scene: docs.sceneJsonForSlide(slides[i].id)})
+            }
+            worker.requestThumbnails(band, 160, 90)
+        }
+
+        // Navigating, editing and editing the document (a slide added, a song
+        // switched) all change what the list wants a picture of. The client
+        // re-issues across a preview restart and a worker that dropped the
+        // batch on its own, so the list does not have to watch the socket too.
+        Connections {
+            target: docs
+            function onNavigationChanged() { showPage.requestSlideBand() }
+            function onDocumentsChanged() { showPage.requestSlideBand() }
+            function onSlideTextChanged() { showPage.requestSlideBand() }
+        }
+        // The capability arrives with the handshake, which is usually after
+        // this page was built. ONE ask follows the first moment the worker can
+        // draw the list: previewChanged fires with every preview frame, and a
+        // handler that asked each time would recompile eleven scenes fifteen
+        // times a second for a list that already has them.
+        property bool bandAskedFor: false
+        Connections {
+            target: worker
+            function onPreviewChanged() {
+                if (worker.thumbnailSupported && !showPage.bandAskedFor) {
+                    showPage.bandAskedFor = true
+                    showPage.requestSlideBand()
+                }
+            }
+        }
+        Component.onCompleted: Qt.callLater(function() { showPage.requestSlideBand() })
+
         Rectangle {
             id: slideListBox
             anchors.top: slideActions.bottom
@@ -1122,12 +1181,36 @@ Window {
                     height: 26
                     text: (modelData.index + 1) + ".  " + modelData.preview
                     highlighted: modelData.index === docs.currentSlide
-                    contentItem: Text {
-                        text: control.text
-                        color: control.highlighted ? "#ffffff" : "#f0f0ff"
-                        font.pixelSize: 13
-                        verticalAlignment: Text.AlignVCenter
-                        elide: Text.ElideRight
+                    contentItem: Row {
+                        spacing: 6
+                        // The worker's own picture of this slide (task 6.16b).
+                        // It is an addition, not a replacement: the text line
+                        // stays, so a row is legible before its picture
+                        // arrives, on a worker that cannot draw the list, and
+                        // to a screen reader either way.
+                        PreviewView {
+                            id: rowPicture
+                            visible: worker.thumbnailSupported
+                            width: 46
+                            height: 26
+                            anchors.verticalCenter: parent.verticalCenter
+                            controller: worker
+                            target: PreviewView.Thumbnail
+                            key: modelData.id
+                        }
+                        Text {
+                            // The picture's 46 px only when there is one: a
+                            // positioner lays out nothing for an invisible
+                            // child, so narrowing the line for a picture that
+                            // is not there would elide it for no reason.
+                            width: slideList.width
+                                   - (rowPicture.visible ? rowPicture.width : 0) - 40
+                            text: control.text
+                            color: control.highlighted ? "#ffffff" : "#f0f0ff"
+                            font.pixelSize: 13
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                        }
                     }
                     background: Rectangle {
                         color: control.highlighted ? "#f0008c"

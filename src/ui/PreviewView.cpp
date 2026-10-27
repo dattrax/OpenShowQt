@@ -19,11 +19,21 @@ void PreviewView::setController(WorkerController* controller) {
     }
     if (fController) {
         disconnect(fController, &WorkerController::previewChanged, this, nullptr);
+        disconnect(fController, &WorkerController::thumbnailReady, this, nullptr);
     }
     fController = controller;
     if (fController) {
         connect(fController, &WorkerController::previewChanged, this,
                 [this] { update(); });
+        // A list is a hundred of these items and one arriving picture (task
+        // 6.16b), so the repaint is keyed: the controller says WHICH slide got
+        // one and every item that is not that row stays as it was painted.
+        connect(fController, &WorkerController::thumbnailReady, this,
+                [this](const QString& key) {
+                    if (fTarget == Target::Thumbnail && key == fKey) {
+                        update();
+                    }
+                });
     }
     emit controllerChanged();
 }
@@ -33,14 +43,25 @@ void PreviewView::paint(QPainter* painter) {
     if (!fController) {
         return;
     }
-    // The stream carries two pictures (task 6.16a). Which one this item
-    // shows is the whole of its involvement in that: it never assembles or
-    // merges them, and an empty selection frame paints nothing rather than
-    // falling back to the audience's — a canvas that quietly showed a
-    // different scene under the drag handles is the failure the task is
-    // about. QML keeps its placeholder for that case.
-    const QImage& image = fTarget == Target::Selection ? fController->selectionImage()
-                                                       : fController->previewImage();
+    // The stream carries three pictures (task 6.16a, and the list's band in
+    // 6.16b). Which one this item shows is the whole of its involvement in
+    // that: it never assembles or merges them, and an empty frame paints
+    // nothing rather than falling back to the audience's — a canvas that
+    // quietly showed a different scene under the drag handles, or a slide row
+    // wearing its neighbour's picture, is the failure these tasks are about.
+    // QML keeps its placeholder for that case.
+    QImage image;
+    switch (fTarget) {
+    case Target::Audience:
+        image = fController->previewImage();
+        break;
+    case Target::Selection:
+        image = fController->selectionImage();
+        break;
+    case Target::Thumbnail:
+        image = fController->thumbnail(fKey);
+        break;
+    }
     if (image.isNull()) {
         return;
     }

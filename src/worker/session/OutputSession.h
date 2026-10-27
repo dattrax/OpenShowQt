@@ -135,6 +135,38 @@ public:
             uint64_t deferred = 0;
             uint64_t stale = 0;
         } selection;
+        // The slide list's target (task 6.16b, review R16): a BATCH of
+        // scenes the store has never held, drawn small on demand. `active`
+        // says a batch stands (its request and extent are the accepted
+        // ones); `queued` counts the slides not yet drawn, and
+        // `decodePending` the ones waiting on a background decode that runs
+        // on the command thread — the pair is what distinguishes "the
+        // worker is working through the list" from "the worker is idle with
+        // a list it will never draw". published/dropped/deferred/stale are
+        // the same three questions as the other two targets, plus the
+        // superseded-batch count.
+        struct Thumbnails {
+            bool active = false;
+            std::uint32_t request = 0;
+            std::uint32_t width = 0;
+            std::uint32_t height = 0;
+            uint64_t queued = 0;
+            uint64_t decodePending = 0;
+            uint64_t published = 0;
+            uint64_t dropped = 0;
+            uint64_t deferred = 0;
+            uint64_t stale = 0;
+            // The LIST's decoded-picture cache, on the wire next to the
+            // show's own (status.scene.images): the evidence that a scrolled
+            // list plateaus instead of growing, and that its bytes are not
+            // the audience's. `budget` is the ceiling this cache holds the
+            // line at — a different number from the renderer's default is
+            // what proves the two caches are really two.
+            uint64_t decodedBytes = 0;
+            uint64_t entries = 0;
+            uint64_t evictions = 0;
+            uint64_t budget = 0;
+        } thumbnails;
     };
 
     // Live scene-store state (task 2.4b). Prepared scenes are kept by
@@ -382,6 +414,61 @@ public:
     bool selectPreviewScene(uint64_t revision, std::uint32_t request,
                             std::string* error);
 
+    // --- thumbnails (task 6.16b, review R16) ---
+
+    // One slide of a thumbnail batch. `key` is the FRONTEND's name for the
+    // slide (a slide id, in practice): the worker never interprets it, it
+    // only refuses an empty or absurd one and hands it back in the ack
+    // beside the id that names the entry on the wire. `scene` is a compiled
+    // scene — the same payload scene.prepare takes, and it goes nowhere near
+    // the store: no revision, no pin, nothing anyone could present.
+    struct ThumbnailEntry {
+        std::string key;
+        openshow::scene::Scene scene;
+    };
+
+    // What the worker made of a batch. `accepted` pairs each entry's key
+    // with the id its frames will carry (the slot header's `revision`), and
+    // `refused` names the entries it will not draw and why — a scene that
+    // does not compile costs that slide its picture, not the whole band.
+    struct ThumbnailAck {
+        std::uint32_t request = 0;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::vector<std::pair<std::string, std::uint32_t>> accepted;
+        std::vector<std::pair<std::string, std::string>> refused;
+    };
+
+    // Replaces the pending thumbnail batch with this one, at `width` x
+    // `height`, and answers with the per-slide ids. Replacement is the
+    // coalescing rule and the cancellation rule at once: whatever was queued
+    // for an older list is gone, so a band the operator has scrolled past
+    // costs nothing further, and the newest ask is the only debt.
+    //
+    // Refused, in the order the operator can act on it: no preview stream
+    // running; an extent outside the agreed box or too big for a slot
+    // (thumbnailExtentFits); a batch over kMaxThumbnailBatch; a key over
+    // kMaxThumbnailKeyLength; a request that does not come strictly after the
+    // accepted one, named on both sides (the rule preview.select follows —
+    // a replayed ask must not resurrect pictures of a list nobody is
+    // looking at). An empty batch with a new request stands the target down.
+    bool requestThumbnails(const std::vector<ThumbnailEntry>& batch, uint32_t width,
+                           uint32_t height, std::uint32_t request, ThumbnailAck* ack,
+                           std::string* error);
+
+    // Decodes at most ONE thumbnail background, on the CALLER's thread (the
+    // RPC loop, which wakes periodically). The rule that keeps the render
+    // thread clean (task 6.10) is that a draw never opens a file, so the
+    // pictures a thumbnail needs have to be decoded somewhere else, and the
+    // command thread is the only one with nothing frame-shaped to protect.
+    // One per wake is the bound: a show's socket answers commands in the
+    // gaps between decodes rather than after all thirty of them. Jobs whose
+    // scene has no still, or whose picture is already cached, are settled on
+    // the spot — the one thing this call never does twice is open a file.
+    // Returns true when it settled at least one job (so a caller can keep
+    // going while there is nothing else to do).
+    bool pumpThumbnailDecode();
+
     // The consumer finished copying slot@seq of the named stream; the
     // slot becomes claimable again. Proof of ownership (task 6.5, review
     // R5): the release must name the stream that is currently live —
@@ -587,6 +674,39 @@ private:
     // that owed nothing, or stood down for the audience, draws the mirror
     // instead, and the ask stays owed until it lands.
     bool publishSelectionFrame(SkImage* video);
+    // The list's target of the same stream (task 6.16b): draws the head of
+    // the batch whose background has been decoded, at the batch's own extent,
+    // and publishes it with the batch generation and the slide's id. Returns
+    // true only when a frame reached the stream; the slide is popped when it
+    // does, so one accepted slide is one picture and a draw that stood down
+    // or was superseded leaves it queued for the next pass.
+    bool publishThumbnailFrame(SkImage* video);
+    // One accepted slide of the pending batch. Declared here (ahead of the
+    // methods that hand one out) and used only through fThumbnailQueue: the
+    // scene is a transient the store has never held, `decoded` says its
+    // background has been settled by the command thread — decoded, failed,
+    // or not needed — and `id` is the name its frames carry.
+    struct ThumbnailJob {
+        std::string key;
+        std::uint32_t id = 0;
+        ActiveScene content;
+        std::string imagePath;  // empty = nothing to decode
+        bool decoded = false;
+    };
+
+    // The batch's head, under the same lock both the pump and the draw use:
+    // non-null only when a slide stands and its background has been settled
+    // (decoded, failed, or not needed). The run loop's horizon asks this and
+    // the publish asks it, so the loop cannot spin on a slide whose codec
+    // nobody has run yet.
+    ThumbnailJob* thumbnailHeadLocked();
+    // The batch's own two counters, re-derived from the queue wherever the
+    // queue or its decode flags change: `queued` is what the worker still
+    // owes a picture of, `decodePending` the part of that waiting on a codec.
+    // Both are reported rather than inferred by a frontend because the pair
+    // is the difference between "working through the list" and "idle with a
+    // list it will never draw".
+    void syncThumbnailCountersLocked();
     // The one place the render thread decides which preview target draws
     // (task 6.16a): both share the stream, its cadence and the audience's
     // budget, so a pass publishes at most one frame and the other target
@@ -594,14 +714,19 @@ private:
     // last presented one when it presented nothing) and the video the
     // audience's transport is showing.
     void drawPreviewTarget(const SceneFrame& audienceFrame, SkImage* video);
-    // What one draw-and-readback did to the stream (task 6.16a). Both
-    // targets share this body, so the audience's cost policy — the reason a
+    // What one draw-and-readback did to the stream (task 6.16a). Every
+    // target shares this body, so the audience's cost policy — the reason a
     // preview exists without owning the frame it is drawn out of — is one
-    // implementation rather than two that drift.
+    // implementation rather than three that drift. `renderer` and `surface`
+    // travel together (task 6.16b): a thumbnail is drawn by the companion
+    // compositor into a surface of the batch's own size, and a single shared
+    // surface holder would reallocate the audience's surface on every pass
+    // that alternated a 640x360 mirror with a 160x90 thumbnail.
     enum class PreviewFill { kFilled, kNoSurface, kReadbackFailed };
     PreviewFill fillPreviewSlot(const SceneFrame& frame, const SkImage* sceneVideo,
                                 const SkImage* overlayVideo, PreviewStream& stream,
-                                int slot, uint32_t width, uint32_t height);
+                                int slot, uint32_t width, uint32_t height,
+                                SceneRenderer* renderer, sk_sp<SkSurface>* surface);
     void refreshDisplaySnapshot();
 
     // Wakes the thread blocked in run()'s glfwWaitEventsTimeout. Safe from
@@ -893,6 +1018,43 @@ private:
     // pass draws whichever of the owed targets has gone longest (this is the
     // evidence for that choice).
     std::chrono::steady_clock::time_point fLastSelection;  // render thread
+
+    // The list's batch (task 6.16b, review R16). One pending set, replaced
+    // wholesale per accepted request: the queue IS the coalescing, so a
+    // slide the operator has scrolled past stops being owed the moment a
+    // newer band arrives, and its memory goes with it. Bounded by
+    // kMaxThumbnailBatch, and every entry is a compiled scene the store has
+    // never held — no revision, no pin, nothing presentable — so a scrolled
+    // list cannot grow the show's picture memory or its 16-entry store.
+    std::vector<ThumbnailJob> fThumbnailQueue;  // fMutex
+    // The accepted batch generation, following preview.select's rule
+    // (strictly after, modulo 2^32). Distinct from the selection's own
+    // counter: two targets ask independently and neither can advance the
+    // other's.
+    std::uint32_t fThumbnailRequest = 0;        // fMutex
+    // Per-slide ids, handed out per accepted entry and named in each frame's
+    // `revision`. Non-zero: 0 means "no id", the same convention every other
+    // identity in this session uses.
+    std::uint32_t fThumbnailIdCounter = 0;      // fMutex
+    std::uint32_t fThumbnailWidth = 0;          // fMutex, the accepted extent
+    std::uint32_t fThumbnailHeight = 0;         // fMutex
+    // The companion compositor (task 6.16b): built on the command thread at
+    // the first batch (font setup belongs nowhere near a frame) and
+    // published under fMutex, which is also what makes the render thread's
+    // read of it safe. Shared text engine, own layout cache, own decoded
+    // images at a small budget. Null until the first ask.
+    //
+    // Shared rather than unique because the render thread draws with it: the
+    // command thread may drop it (an extent change discards its decode cache)
+    // while a thumbnail publish is in flight, and a raw pointer across that
+    // moment is a use-after-free with a codec in the middle. The publish
+    // takes its own reference under the lock and the last one out destroys.
+    std::shared_ptr<SceneRenderer> fThumbnailScene;  // fMutex
+    // The batch's own surface: the mirror's fPreviewSurface is the stream's
+    // size, and a target of a different size needs its own or the two
+    // thrash one allocation per pass.
+    sk_sp<SkSurface> fThumbnailSurface;              // render thread only
+    std::chrono::steady_clock::time_point fLastThumbnail;  // render thread
 };
 
 }  // namespace openshow::worker

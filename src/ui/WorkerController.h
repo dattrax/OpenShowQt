@@ -69,6 +69,18 @@ class WorkerController : public QObject {
     // the slide's text with QML until the worker's version arrives — is the
     // second text layout this task removes.
     Q_PROPERTY(bool selectionReady READ selectionReady NOTIFY previewChanged)
+    // The slide list's pictures (task 6.16b, review R16): the worker's own
+    // render of the visible band, small and off the air, on the same stream.
+    // `thumbnailSupported` is the whole negotiation — a worker without the
+    // capability gets the list's text line and nothing else. The two counters
+    // are the client's own (frames copied) and the worker's (stale: pictures a
+    // newer band superseded before they reached the wire), and
+    // thumbnailCachedBytes is this client's byte-bounded LRU, so a document of
+    // any length has a picture memory that is a number rather than a habit.
+    Q_PROPERTY(bool thumbnailSupported READ thumbnailSupported NOTIFY previewChanged)
+    Q_PROPERTY(qint64 thumbnailFrames READ thumbnailFrames NOTIFY previewChanged)
+    Q_PROPERTY(qint64 thumbnailStale READ thumbnailStale NOTIFY previewChanged)
+    Q_PROPERTY(qint64 thumbnailCachedBytes READ thumbnailCachedBytes NOTIFY previewChanged)
     // Background media (task 5.5d): the worker's video-background transport
     // state. mediaError is the last failure for the on-air background and
     // stays set until a successful open replaces it (the worker carries it
@@ -165,6 +177,16 @@ public:
     // holding a picture of a slide nobody is looking at.
     Q_INVOKABLE void clearSelectionPreview();
 
+    // The slide list's band (task 6.16b, review R16): ask the worker to render
+    // THESE scenes at THIS size as thumbnails, off the air and out of the
+    // store. `slides` is [{key, scene}], the scene being the same compiled JSON
+    // scene.prepare takes, and the batch REPLACES whatever was asked before —
+    // which is what makes coalescing and cancelling one act: scroll past a
+    // slide and its picture stops being owed. An empty band stands the target
+    // down, exactly as clearSelectionPreview does for one edit.
+    Q_INVOKABLE void requestThumbnails(const QVariantList& slides, qint64 width, qint64 height);
+    Q_INVOKABLE void clearThumbnails();
+
     // Media transport (task 6.15a, review R15): play/pause/seek/loop/
     // gain/mute as operator operations over the socket. Each call is a
     // fire-and-confirm request — the reply says the worker took it, the
@@ -244,6 +266,15 @@ public:
     qint64 selectionFrames() const { return fSelectionFrames; }
     qint64 selectionStale() const { return fSelectionStale; }
     bool selectionSupported() const { return fSelectionCapable; }
+    // The list's pictures (task 6.16b). Keyed lookup, no assembly: the bytes
+    // are the worker's, copied under the same seqlock as every other target,
+    // and a key the cache has not received yet simply has no image — the
+    // caller shows its text line until the worker's version arrives.
+    bool thumbnailSupported() const { return fThumbnailCapable; }
+    qint64 thumbnailFrames() const { return fThumbnailFrames; }
+    qint64 thumbnailStale() const { return fThumbnailStale; }
+    qint64 thumbnailCachedBytes() const { return fThumbnailBytes; }
+    QImage thumbnail(const QString& key) const;
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
@@ -262,6 +293,10 @@ signals:
     void outputStatusChanged();
     void displaysChanged();
     void previewChanged();
+    // One slide's picture arrived (task 6.16b). Keyed, so a list delegate
+    // repaints its own row and not the thirty around it; previewChanged still
+    // carries the counters and the capability.
+    void thumbnailReady(const QString& key);
     void sceneChanged();
     void mediaChanged();
 
@@ -288,6 +323,11 @@ private:
         // revision and THIS generation, which is the only order in which a
         // stale replay cannot resurrect an edit the operator has left.
         std::uint32_t selectionRequest = 0;
+        // Set on a preview.thumbnails request: its reply carries the per-slide
+        // ids (task 6.16b), and only THIS request's reply may install them —
+        // an older ack arriving late would otherwise map a frame of a
+        // superseded band onto a row that is on screen.
+        std::uint32_t thumbnailRequest = 0;
         std::uint64_t connection = 0;
     };
 
@@ -445,6 +485,73 @@ private:
     qint64 fSelectionFrames = 0;
     qint64 fSelectionStale = 0;  // the worker's counter, mirrored from status
     bool fSelectionCapable = false;
+
+    // The batch's own send (task 6.16b): serialize what the UI wants, advance
+    // this client's generation, and record what the socket carried. Split from
+    // requestThumbnails() because three places need it — a row entering the
+    // band, a stream that came up without the ask it was owed, and the
+    // stand-down, which is the same message with an empty scenes array.
+    void sendThumbnailBatch(const QString& scenesPayload, qint64 width, qint64 height);
+    // One picture in the byte-bounded LRU (arrival is the recency), and one
+    // out of it. A slide the worker has never rendered has no entry at all,
+    // which is what its row's text line is for.
+    void storeThumbnail(const QString& key, QImage image);
+    void dropThumbnailPicture(const QString& key);
+    void clearThumbnailPictures();
+
+    // The slide list's target (task 6.16b, review R16): one batch of transient
+    // scenes, one ask at a time, one byte-bounded picture cache.
+    //
+    // fThumbnailRequest is this client's own generation counter for the
+    // batch (independent of the edit target's: the two ask separately and
+    // neither may advance the other's), and fThumbnailAcked is the newest one
+    // the worker said yes to. A frame is only painted when its `request` is
+    // that accepted generation AND its id is one the ack named for a slide
+    // this client still lists — so a picture of a band that has been scrolled
+    // away cannot land under a visible row.
+    std::uint32_t fThumbnailRequest = 0;
+    std::uint32_t fThumbnailAcked = 0;
+    bool fThumbnailAwaitAck = false;
+    bool fThumbnailCapable = false;
+    // What the UI wants shown (the serialized "scenes" array plus its extent)
+    // and what the socket last carried, deduplicated: the list re-asks when a
+    // row actually enters or leaves the band, and an unchanged band is not
+    // re-rendered because a handler fired twice. The wanted copy survives a
+    // stream restart, which is where the ask has to be made again from
+    // scratch — the same reason the edit target keeps its own two strings.
+    QString fThumbnailWantedPayload;
+    qint64 fThumbnailWantedWidth = 0;
+    qint64 fThumbnailWantedHeight = 0;
+    QString fThumbnailAskedPayload;
+    qint64 fThumbnailAskedWidth = 0;
+    qint64 fThumbnailAskedHeight = 0;
+    // The worker's id for each slide of the accepted batch, and the reverse:
+    // the key a copied frame's id belongs to. Both live only as long as the
+    // batch that named them.
+    QHash<QString, std::uint32_t> fThumbnailIds;
+    QHash<std::uint32_t, QString> fThumbnailKeys;
+    // The scene text each accepted slide was asked with, kept for exactly as
+    // long as the ask: a copied picture records what it was rendered FROM, so
+    // the next time that slide is listed with different words its old picture
+    // is recognised as stale and dropped instead of shown.
+    QHash<QString, QString> fThumbnailAskedScenes;
+    // The pictures, LRU by arrival and bounded TWICE: by count and by decoded
+    // bytes. A slide list is as long as a document, and "keep every picture we
+    // were ever sent" is precisely the growth this task must not have.
+    struct ThumbnailPicture {
+        QImage image;
+        // The scene text this picture was rendered from, so re-asking for a
+        // slide whose content changed drops the old picture instead of
+        // showing it under a new one.
+        QString sourceJson;
+    };
+    QHash<QString, ThumbnailPicture> fThumbnailCache;
+    QStringList fThumbnailOrder;  // front = least recently received
+    qint64 fThumbnailBytes = 0;
+    qint64 fThumbnailFrames = 0;
+    qint64 fThumbnailStale = 0;  // the worker's counter, mirrored from status
+    static constexpr std::size_t kThumbnailCacheEntries = 64;
+    static constexpr qint64 kThumbnailCacheBytes = 4 * 1024 * 1024;
     bool fMediaPlaying = false;
     QString fMediaError;
     // The lane as the worker last reported it (task 6.7c); "none" is also

@@ -179,6 +179,65 @@ int main() {
         check(stream.claim() == 1, "replace: the new stream owns only what it published");
     }
 
+    // --- a frame carries its own size (task 6.16b, review R16) ------------
+    //
+    // A thumbnail shares the segment without sharing the stream's geometry, so
+    // the header's width/height/rowBytes stopped being stream-wide constants
+    // and became per-frame state. Two ways to get that wrong, one check each:
+    // stamping only when a caller bothers to pass an extent (a mirror then
+    // reuses a slot whose header still claims the last thumbnail's size), and
+    // trusting the notification's numbers where the header's disagree.
+    {
+        openshow::worker::PreviewStream stream;
+        std::string error;
+        if (!check(stream.create(streamName("extent"), 64, 48, &error),
+                   "extent: stream created")) {
+            std::fprintf(stderr, "  %s\n", error.c_str());
+        }
+        check(stream.bytesPerSlot() == 64 + 64 * 48 * 4,
+              "extent: one slot's stride is a header plus 64x48 RGBA");
+        const int slot = stream.claim();
+        const std::uint64_t first =
+            stream.publish(slot, 1, proto::kPreviewTargetAudience, 0, 10);
+        const auto* header = stream.slotHeader(slot);
+        check(header->width == 64 && header->height == 48 && header->rowBytes == 256,
+              "extent: a frame published with no extent carries the stream's own geometry");
+
+        stream.release(slot, first);
+        const int again = stream.claim();
+        check(again == slot, "extent: the released slot is claimable for a smaller frame");
+        const openshow::worker::PreviewStream::FrameExtent small{32, 24, 128};
+        const std::uint64_t second = stream.publish(again, 7, proto::kPreviewTargetThumbnail, 3,
+                                                    20, &small);
+        check(header->width == 32 && header->height == 24 && header->rowBytes == 128,
+              "extent: the thumbnail stamps its OWN size, and a consumer bounded by it copies "
+              "exactly the bytes the producer wrote");
+        check(header->target == proto::kPreviewTargetThumbnail && header->request == 3 &&
+                  header->revision == 7,
+              "extent: a thumbnail frame names its target, batch generation and slide id");
+        check(sizeof(proto::PreviewSlotHeader) + 128ull * 24 <= stream.bytesPerSlot(),
+              "extent: the stamped frame does fit the slot it was published into");
+
+        stream.release(again, second);
+        const int third = stream.claim();
+        stream.publish(third, 9, proto::kPreviewTargetAudience, 0, 30);
+        check(header->width == 64 && header->height == 48 && header->rowBytes == 256,
+              "extent: the mirror reusing that slot restamps its own size — geometry is per "
+              "frame, not the first thing written to the slot");
+
+        // The helper both halves judge a batch by, on this stream's real
+        // numbers: the stream's own extent is the ceiling, the box is the
+        // floor and the cap, and neither is a suggestion.
+        check(proto::thumbnailExtentFits(32, 32, stream.bytesPerSlot()),
+              "extent: a 32x32 thumbnail fits a 64x48 slot");
+        check(!proto::thumbnailExtentFits(65, 48, stream.bytesPerSlot()),
+              "extent: one pixel wider than the slot's frame is refused, not clipped");
+        check(!proto::thumbnailExtentFits(16, 16, stream.bytesPerSlot()),
+              "extent: under the 32-pixel box is refused (a row that size is not worth a draw)");
+        check(!proto::thumbnailExtentFits(513, 32, stream.bytesPerSlot()),
+              "extent: over the 512-pixel box is refused whatever the slot could hold");
+    }
+
     if (gFailures > 0) {
         return 1;
     }

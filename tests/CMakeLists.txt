@@ -132,6 +132,37 @@ if(OPENSHOW_BUILD_UI)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoQt.cmake
   )
 
+  # Task 6.16b: the shell, loaded. QML is not compiled, so a property that was
+  # written as an accessor pair and never declared with Q_PROPERTY, or a `root.`
+  # where the id was another object's, ships silently and shows the operator an
+  # empty window. This runs the real executable offscreen (with no real worker:
+  # the shell is what is under test) and requires it to STAY UP and to have said
+  # nothing about loading. The two negatives are the same script against a
+  # process that exits at once, and against the output a broken shell really
+  # produced when this task's rows first loaded.
+  add_test(NAME ui_loads
+    COMMAND ${CMAKE_COMMAND}
+            -DTARGET=$<TARGET_FILE:openshow-ui>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckUiLoads.cmake
+  )
+  set_tests_properties(ui_loads PROPERTIES TIMEOUT 60)
+
+  add_test(NAME ui_loads_guard_exits_negative
+    COMMAND ${CMAKE_COMMAND}
+            -DTARGET=/bin/false
+            -DSMOKE_SECONDS=2
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckUiLoads.cmake
+  )
+  set_tests_properties(ui_loads_guard_exits_negative PROPERTIES WILL_FAIL TRUE)
+
+  add_test(NAME ui_loads_guard_output_negative
+    COMMAND ${CMAKE_COMMAND}
+            -DTARGET=$<TARGET_FILE:openshow-ui>
+            -DFAKE_OUTPUT=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/ui-load-complaint.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckUiLoads.cmake
+  )
+  set_tests_properties(ui_loads_guard_output_negative PROPERTIES WILL_FAIL TRUE)
+
 
   # Task 3.3: DocumentController, the document session behind the lyric
   # panel (editing, debounced text, navigation, compile hand-off, service

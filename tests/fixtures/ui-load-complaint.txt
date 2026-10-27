@@ -1,0 +1,7 @@
+qt.qpa.plugin: Could not find the Qt platform plugin "offscreen" in ""
+QQmlApplicationEngine failed to load component
+qrc:/qt/qml/OpenShow/Main.qml:1199:29: Cannot assign to non-existent property "key"
+qrc:/qt/qml/OpenShow/Main.qml:1153: Error: Cannot assign to non-existent property "bandAskedFor"
+qrc:/qt/qml/OpenShow/Main.qml:1158: Error: Qt.callLater: first argument not a function or signal
+qrc:/qt/qml/OpenShow/Main.qml:91:5: QML Shortcut: Shortcut: Only binding to one of multiple key bindings associated with 70. Use 'sequences: [ <key> ]' to bind to all of them.
+qrc:/qt/qml/OpenShow/Main.qml:887:21: QML Flow: Cannot specify anchors for items inside Flow. Flow will not function.

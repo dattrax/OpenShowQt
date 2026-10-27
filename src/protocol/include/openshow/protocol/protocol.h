@@ -56,8 +56,18 @@ namespace openshow::protocol {
 // for. preview.select's refusal is not a compatibility question: a worker
 // that does not know the method answers "method not found", which is
 // exactly the signal to keep the QML text representation instead.
+// Minor 9 (task 6.16b, review R16) adds the slide list's thumbnails: the
+// preview.thumbnails command, a third preview target ("thumbnail", 2) on
+// that same stream, and the status.preview.thumbnail block, named by
+// "preview.thumbnail.v1". It is additive in the same way minor 8 was —
+// frames the older frontend never asked for are the only new traffic, and
+// its own mirror keeps its request at 0 — but the capability is what a
+// frontend must check before asking, because a worker too old for the
+// method replies "method not found" and a client too old for target 2
+// would read a thumbnail as the audience's picture. It does not: a worker
+// draws a thumbnail only for a frontend that asked.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 8;
+inline constexpr std::uint32_t kProtocolMinor = 9;
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without
@@ -77,6 +87,51 @@ inline constexpr std::uint32_t kProtocolMinor = 8;
 // say what the render thread managed to draw. The method name itself lives
 // beside the transport it travels on: openshow/protocol/preview_wire.h,
 // next to preview.ready and preview.released.
+
+// preview.thumbnails {"scenes":[{"key":"slide-7","scene":{...}}, ...],
+//                     "width":160,"height":90,"request":g} (task 6.16b,
+// review R16): render each scene as a picture of that size, into the same
+// running preview stream, as target "thumbnail".
+//
+// The scenes travel as text, exactly the payload scene.prepare takes, and
+// they are NOT prepared: they enter no store, pin no full-size decode,
+// hold no revision anyone can present, and change nothing about what the
+// audience is shown. That is the whole shape of the request. A list of
+// slides is not show content — it is a picture of what a slide would look
+// like — so it must not spend the 16-entry store or the pinned-decode
+// budget that guarantee the operator can put a prepared scene on air.
+// Pixels still never ride the socket in either direction.
+//
+// The batch REPLACES the pending set wholesale, which is what makes
+// coalescing and cancellation one act: the newest list is the only thing
+// the worker still owes, and a slide the operator has scrolled past has no
+// render queued for it. `request` follows preview.select's rule (strictly
+// after the accepted one, modulo 2^32); an empty `scenes` array is the
+// stand-down, and it needs a new request like any other change.
+//
+// Bounds, enforced by both halves and declared once, in preview_wire.h: at
+// most kMaxThumbnailBatch scenes, a key of 1..kMaxThumbnailKeyLength
+// characters, each dimension in [kMinThumbnailDimension,
+// kMaxThumbnailDimension] AND small enough that its pixels fit the slot
+// they would be published into (thumbnailExtentFits). A batch over the cap
+// is refused naming the cap; a scene that does not compile is refused
+// per-entry in the ack without costing the other slides their pictures.
+//
+// The answer is {"accepted":true,"request":g,"width":w,"height":h,
+// "frames":[{"key":...,"id":n},...],"refused":[{"key":...,"why":...}]} —
+// and `id` is what identifies a thumbnail on the wire. These scenes have
+// no prepared revision to name, so the worker assigns each accepted entry a
+// per-slide id from its own counter, every frame it publishes carries that
+// id in the slot header's `revision` field beside `request` = the batch
+// generation, and the consumer maps id back to its own key. A frame whose
+// request is not the newest batch the client sent is dropped before it is
+// copied: a scrolled-past list's picture never lands under a visible row.
+//
+// output.status.preview.thumbnail is the acknowledgement — active/request/
+// width/height, then queued (accepted, not yet drawn), decodePending (its
+// background still being decoded on the command thread), drawn, dropped,
+// deferred and stale — the 3.4 rule unchanged: the accept says the batch
+// was understood, the counters say what the render thread got to.
 
 // Worker-to-frontend notification (task 5.5d): a background media asset
 // failed. {"path":...,"message":...} — sent when the failure happens,

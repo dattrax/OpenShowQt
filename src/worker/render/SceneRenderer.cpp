@@ -341,11 +341,27 @@ bool SceneRenderer::create(std::string* error, const DemoBuilder& demo) {
     // assembles the fontconfig manager, typefaces and FontCollection; the
     // words layer lays scene text out through it, and a development
     // decoration builds its demo title through it too.
-    fText = std::make_unique<SceneTextEngine>();
+    fText = std::make_shared<SceneTextEngine>();
     if (!fText->create(error)) {
         return false;
     }
+    return buildLayers(error, demo);
+}
 
+std::unique_ptr<SceneRenderer> SceneRenderer::createCompanion(const SceneRenderer& primary,
+                                                              std::size_t imageBudget,
+                                                              std::string* error) {
+    auto companion = std::unique_ptr<SceneRenderer>(new SceneRenderer(imageBudget));
+    // Borrowed, not copied: the engine is the fonts, and the primary owns
+    // them for as long as any companion draws with them.
+    companion->fText = primary.fText;
+    if (!companion->buildLayers(error, nullptr)) {
+        return nullptr;
+    }
+    return companion;
+}
+
+bool SceneRenderer::buildLayers(std::string* error, const DemoBuilder& demo) {
     // Production creates nothing else: no demo photo or title exists, so
     // the renderer cannot fall back onto development content.
     if (demo && !demo(*fText, &fDemo, error)) {

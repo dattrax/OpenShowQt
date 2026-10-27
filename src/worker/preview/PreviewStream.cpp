@@ -164,7 +164,7 @@ proto::PreviewSlotHeader* PreviewStream::slotHeader(int slot) {
 
 std::uint64_t PreviewStream::publish(int slot, std::uint32_t revision,
                                      std::uint32_t target, std::uint32_t request,
-                                     std::uint64_t publishedNs) {
+                                     std::uint64_t publishedNs, const FrameExtent* extent) {
     std::lock_guard<std::mutex> lock(fMutex);
     auto* header = slotHeader(slot);
     header->revision = revision;
@@ -175,6 +175,13 @@ std::uint64_t PreviewStream::publish(int slot, std::uint32_t revision,
     header->target = target;
     header->request = request;
     header->publishedNs = publishedNs;
+    // How big it is (task 6.16b), stamped every time: the geometry fields
+    // belong to the slot, and the slot alternates between sizes.
+    const FrameExtent own{fWidth, fHeight, fWidth * 4};
+    const FrameExtent& size = extent != nullptr ? *extent : own;
+    header->width = size.width;
+    header->height = size.height;
+    header->rowBytes = size.rowBytes;
     const std::uint64_t even = fPublished[static_cast<std::size_t>(slot)] + 2;
     seqOf(header).store(even, std::memory_order_seq_cst);
     fPublished[static_cast<std::size_t>(slot)] = even;

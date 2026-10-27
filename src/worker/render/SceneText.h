@@ -179,12 +179,46 @@ public:
     static constexpr std::int32_t kMaxImageDimension = 8192;
     static constexpr std::uint64_t kMaxDecodedPixels = 40u * 1000u * 1000u;
 
+    // A second budget for a second target (task 6.16b, review R16). The
+    // slide list's thumbnails decode their backgrounds at thumbnail size,
+    // and they must not share the audience's 192 MiB ceiling for two
+    // reasons: the audience's budget is a promise about SHOW content, and a
+    // scrolled list would spend it on pictures nobody is about to present.
+    // A companion cache therefore carries its own, small, budget. The
+    // limits above are NOT relaxed: a file that is not an asset at full
+    // size is not an asset at 160x90 either.
+    explicit SceneImageCache(std::size_t budget = kDecodedImageBudget)
+        : fBudget(budget) {}
+
     struct Stats {
         std::size_t decodedBytes = 0;   // pixel bytes of the cached images
         std::size_t entries = 0;        // cached paths, failures included
         std::size_t pins = 0;           // live pin references
         std::size_t evictions = 0;      // images forgotten to stay in budget
+        std::size_t budget = 0;         // what evictLocked is holding the line at
     };
+
+    // Decode a file at MOST maxW x maxH pixels (task 6.16b). Skia is asked
+    // for the closest supported scaled size, so a 4K backdrop for a 160x90
+    // thumbnail costs the codec a fraction of the full decode rather than
+    // all of it — which is what makes a 20-slide list affordable to picture.
+    // Because PNG has no scaled mode at all, the box is finished off with a
+    // resample: what comes back always fits it, so a cache that stores the
+    // result cannot be handed a 5.8 MB picture for a 57 KB row.
+    // The pre-allocation gates are the full-size ones, unchanged. Static
+    // because the result is installed explicitly rather than loaded into a
+    // cache by a lookup: decoding belongs to a loader thread, and this is how
+    // one hands pixels to a cache it owns.
+    static sk_sp<SkImage> decodeAtMost(const std::string& path, std::uint32_t maxW,
+                                       std::uint32_t maxH, std::string* error);
+
+    // Put an already-decoded picture into the cache and account for it
+    // exactly as a load would (a null records a remembered failure, so a
+    // broken file is not re-tried at the next pass). This is the loader's
+    // way in for pixels a lookup could never have produced — a scaled
+    // thumbnail decode — and it keeps the ONE rule that matters: the draw
+    // path only ever looks up, never decodes.
+    sk_sp<SkImage> install(const std::string& path, sk_sp<SkImage> image);
 
     // Lookup only — callable from the draw path. Returns the cached image,
     // or null when the path is uncached or its cached load failed. It never
@@ -251,6 +285,11 @@ private:
     mutable std::mutex fMutex;
     std::map<std::string, Entry> fEntries;
     std::size_t fBytes = 0;
+    // What evictLocked holds the line at: kDecodedImageBudget for the show's
+    // renderer, something much smaller for a companion's (task 6.16b). One
+    // number per cache, reported in stats() so a test can assert which cache
+    // it is looking at rather than assuming the class-wide constant.
+    std::size_t fBudget = kDecodedImageBudget;
     std::uint64_t fClock = 0;
     std::size_t fPins = 0;
     std::size_t fEvictions = 0;

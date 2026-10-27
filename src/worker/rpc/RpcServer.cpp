@@ -227,6 +227,29 @@ boost::json::object statusResult(const OutputSession::Status& status) {
         {"dropped", preview.selection.dropped},
         {"deferred", preview.selection.deferred},
         {"stale", preview.selection.stale}};
+    // The slide list's target (task 6.16b, review R16). Same questions as
+    // the other two, answered for a BATCH: queued is what the worker still
+    // owes a picture of and decodePending the part of it waiting on a codec
+    // on the command thread, which is the difference between "working through
+    // the list" and "idle with a list it will never draw". `images` is the
+    // list's own decoded-picture cache: its budget differs from
+    // status.scene.images' by design, and that is the evidence on the wire
+    // that a scrolling document costs a bounded, SEPARATE pool.
+    const boost::json::object thumbnails{
+        {"active", preview.thumbnails.active},
+        {"request", preview.thumbnails.request},
+        {"width", preview.thumbnails.width},
+        {"height", preview.thumbnails.height},
+        {"queued", preview.thumbnails.queued},
+        {"decodePending", preview.thumbnails.decodePending},
+        {"published", preview.thumbnails.published},
+        {"dropped", preview.thumbnails.dropped},
+        {"deferred", preview.thumbnails.deferred},
+        {"stale", preview.thumbnails.stale},
+        {"images", boost::json::object{{"decodedBytes", preview.thumbnails.decodedBytes},
+                                      {"entries", preview.thumbnails.entries},
+                                      {"evictions", preview.thumbnails.evictions},
+                                      {"budget", preview.thumbnails.budget}}}};
     return boost::json::object{{"device", status.deviceName},
                                {"width", status.width},
                                {"height", status.height},
@@ -252,6 +275,7 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                                                {"deferred", preview.deferred},
                                                                {"worstMs", preview.worstMs},
                                                                {"selection", selection},
+                                                               {"thumbnail", thumbnails},
                                                                {"error", preview.error}}},
                                {"scene", boost::json::object{{"active", status.scene.active},
                                                              {"pending", status.scene.pending},
@@ -518,6 +542,17 @@ void RpcServer::serve(int connectionFd) {
         // notifications and this thread is the only one holding the socket.
         // Collecting is not writing — no session lock is held anywhere near the
         // socket, which is the other half of what R11 asked for.
+        //
+        // One thumbnail background per tick (task 6.16b, review R16). The
+        // rule that keeps a frame clean is that a draw never opens a file
+        // (task 6.10), so the pictures a slide list needs are decoded HERE,
+        // on the thread with nothing frame-shaped to protect — and ONE per
+        // tick, because this is also the thread that answers the operator's
+        // present. A band of thirty backdrops decodes over thirty ticks: the
+        // list fills in over a second and a half while every command is
+        // answered inside the tick it arrived in. With no batch queued this
+        // returns after one locked check of an empty vector.
+        fSession.pumpThumbnailDecode();
         std::vector<QueuedFrame> notifications;
         collectNotifications(&notifications);
         for (QueuedFrame& note : notifications) {
@@ -932,6 +967,137 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
                                                      {"accepted", true},
                                                      {"revision", revision},
                                                      {"request", request}}),
+                           outbound);
+    } else if (name == proto::kMethodPreviewThumbnails) {
+        // The slide list (task 6.16b, review R16): "picture these scenes at
+        // this size, off the record". These scenes are NOT prepared — they
+        // enter no store, pin no full-size decode and hold no revision anyone
+        // can present — so this handler is the only place their cost is paid,
+        // and the bounds below are what keep that cost proportionate to a
+        // list of rows rather than to whatever a buggy client can send.
+        if (!given.is_object()) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "preview.thumbnails wants {scenes, width, height, request}"),
+                outbound);
+            return true;
+        }
+        const boost::json::object& args = given.as_object();
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::uint32_t request = 0;
+        if (!jsonUint32(args, "width", &width) || !jsonUint32(args, "height", &height) ||
+            !jsonUint32(args, "request", &request)) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "preview.thumbnails wants width, height and request as "
+                                 "whole numbers between 0 and 4294967295"),
+                outbound);
+            return true;
+        }
+        const auto scenesEntry = args.find("scenes");
+        if (scenesEntry == args.end() || !scenesEntry->value().is_array()) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "preview.thumbnails wants a \"scenes\" array (an empty "
+                                 "one stands the list down)"),
+                outbound);
+            return true;
+        }
+        const boost::json::array& scenes = scenesEntry->value().as_array();
+        // THE CAP, BEFORE ANYTHING IS PARSED. Three hundred scenes would be
+        // three hundred scene objects compiled before the worker said no;
+        // judging the count first makes the refusal cost one comparison,
+        // which is the only way a cap bounds the work a request can cause
+        // rather than the work it succeeds at.
+        if (scenes.size() > proto::kMaxThumbnailBatch) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "preview.thumbnails takes at most " +
+                                     std::to_string(proto::kMaxThumbnailBatch) +
+                                     " scenes, asked for " + std::to_string(scenes.size()) +
+                                     " (request the visible band)"),
+                outbound);
+            return true;
+        }
+        // Per-entry parsing, per-entry refusal: a slide whose JSON does not
+        // compile loses its own picture, and the rest of the band still gets
+        // its. A key over the limit is refused rather than clipped INTO the
+        // identity — an accepted entry always carries the exact key it was
+        // sent — and any key that is echoed back on the wire is clipped
+        // first, R11's rule about putting a client's text in a reply.
+        std::vector<OutputSession::ThumbnailEntry> batch;
+        batch.reserve(scenes.size());
+        std::vector<std::pair<std::string, std::string>> refused;
+        for (const boost::json::value& item : scenes) {
+            if (!item.is_object()) {
+                refused.emplace_back(std::string(), "entry is not an object");
+                continue;
+            }
+            const boost::json::object& entry = item.as_object();
+            const auto key = entry.find("key");
+            if (key == entry.end() || !key->value().is_string() ||
+                key->value().as_string().empty()) {
+                refused.emplace_back(std::string(), "entry has no \"key\"");
+                continue;
+            }
+            const std::string_view rawKey = key->value().as_string();
+            if (rawKey.size() > proto::kMaxThumbnailKeyLength) {
+                refused.emplace_back(proto::clippedForEcho(rawKey),
+                                     "key is over the " +
+                                         std::to_string(proto::kMaxThumbnailKeyLength) +
+                                         "-character limit");
+                continue;
+            }
+            const auto sceneEntry = entry.find("scene");
+            if (sceneEntry == entry.end() || !sceneEntry->value().is_object()) {
+                refused.emplace_back(std::string(rawKey), "entry has no \"scene\" object");
+                continue;
+            }
+            openshow::scene::Scene compiled;
+            std::string sceneError;
+            if (!openshow::scene::fromJson(sceneEntry->value(), &compiled, &sceneError)) {
+                refused.emplace_back(std::string(rawKey),
+                                     sceneError.empty() ? "not a compiled scene" : sceneError);
+                continue;
+            }
+            OutputSession::ThumbnailEntry job;
+            job.key = std::string(rawKey);
+            job.scene = std::move(compiled);
+            batch.push_back(std::move(job));
+        }
+        OutputSession::ThumbnailAck ack;
+        std::string error;
+        // Everything the session judges — no stream, an extent that could not
+        // fit a slot, a replayed generation — refuses the WHOLE batch, and it
+        // refuses it without having touched the pending list, so a refusal
+        // leaves the previous band exactly as it stood.
+        if (!fSession.requestThumbnails(batch, width, height, request, &ack, &error)) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams, error), outbound);
+            return true;
+        }
+        // The accept with the id each slide's frames will carry. Pixels are
+        // not here and never will be: they arrive as preview.ready frames of
+        // target "thumbnail" whose `revision` is this id.
+        boost::json::array frames;
+        for (const std::pair<std::string, std::uint32_t>& accepted : ack.accepted) {
+            frames.push_back(
+                boost::json::object{{"key", accepted.first}, {"id", accepted.second}});
+        }
+        boost::json::array refusals;
+        for (const std::pair<std::string, std::string>& why : ack.refused) {
+            refused.push_back(why);
+        }
+        for (const std::pair<std::string, std::string>& why : refused) {
+            refusals.push_back(boost::json::object{{"key", why.first}, {"why", why.second}});
+        }
+        proto::appendFrame(proto::makeResult(id, boost::json::object{
+                                                     {"accepted", true},
+                                                     {"request", ack.request},
+                                                     {"width", ack.width},
+                                                     {"height", ack.height},
+                                                     {"frames", std::move(frames)},
+                                                     {"refused", std::move(refusals)}}),
                            outbound);
     } else if (name == proto::kMethodPreviewReleased) {
         // A notification from the consumer: it finished copying that slot

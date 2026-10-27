@@ -695,6 +695,160 @@ void testLayoutCacheServesTwoTargets() {
           "and the edit the walk evicted re-shapes when it comes back (LRU, not infinite)");
 }
 
+// --- a companion renderer, for a target that is not the show ------------
+//
+// Task 6.16b (review R16) gave the slide list its own compositor rather than
+// making one words layer serve thirty-one scenes between audience frames. A
+// second renderer is only a separation if it is one in BOTH directions, and
+// the two directions are different bugs: the list churning through a document
+// must not cost the show a text layout per pass (the audience paying for a
+// preview), and the list must not draw with the show's decoded pictures or
+// find its own in the show's cache (a preview holding 4K backdrops the show
+// has no reason to remember).
+//
+// So the fixture measures both counters, and then looks at the pixels: what
+// each target shows is the scene it was handed, not the one on air.
+void testACompanionIsSeparateFromTheShow() {
+    constexpr std::size_t kListImageBudget = 3u * 1024u * 1024u;
+
+    std::unique_ptr<SceneRenderer> show = createRenderer();
+    std::string error;
+    std::unique_ptr<SceneRenderer> list =
+        SceneRenderer::createCompanion(*show, kListImageBudget, &error);
+    if (!check(list != nullptr, "the list's companion renderer is created")) {
+        std::fprintf(stderr, "  %s\n", error.c_str());
+        return;
+    }
+    check(list->production(),
+          "and it composes the production picture: no demo decoration smuggled in by the "
+          "second constructor");
+
+    // The engines are ONE object. Faces, typefaces and ICU are megabytes of
+    // state that two renderers of the same document draw with identically, so
+    // a companion that built its own would be a memory leak with a comment
+    // about isolation.
+    check(&list->textEngine() == &show->textEngine(),
+          "the companion shares the primary's text engine rather than loading the fonts twice");
+
+    // Two caches, two ceilings, two sets of contents.
+    check(show->imageCache()->stats().budget ==
+              openshow::worker::SceneImageCache::kDecodedImageBudget,
+          "the show's renderer keeps the default decoded-image ceiling");
+    check(list->imageCache()->stats().budget == kListImageBudget,
+          "the list's renderer keeps the one it was handed: separate pools, and `status` can "
+          "tell them apart because the budgets differ");
+
+    const ActiveScene onAir = stage(kRed, "AUDIENCE");
+    show->setActiveScene(onAir, SceneTransitionKind::kCut);
+
+    auto buildFrame = [](const ActiveScene& content, double clock, std::uint64_t revision) {
+        SceneFrame frame;
+        frame.scene = content;
+        frame.fadeFrom = nullptr;
+        frame.mediaBlend = 1.0f;
+        frame.textBlend = 1.0f;
+        frame.timeSeconds = clock;
+        frame.wallClock = kFixedWall;
+        frame.revision = revision;
+        return frame;
+    };
+
+    // The band: eight slides of a document, none of them the one on air.
+    std::vector<SceneFrame> band;
+    for (int i = 0; i < 8; ++i) {
+        const ActiveScene slide = std::make_shared<openshow::scene::Scene>(
+            *stage(i % 2 ? kBlue : kGreen, ("ROW" + std::to_string(i)).c_str()));
+        band.push_back(buildFrame(slide, kAudienceStart, static_cast<std::uint64_t>(i) + 1));
+    }
+
+    Target panel(*show, kPanelWidth, kPanelHeight);
+    Target row(*list, 160, 90);
+
+    const SceneFrame audience = show->captureFrame(kAudienceStart, 7, kFixedWall);
+    panel.draw(audience);
+    row.draw(band[0]);
+    const std::uint64_t showBuilds = show->textLayoutBuilds();
+    check(showBuilds >= 1, "the show's own scene shaped its text");
+    check(list->textLayoutBuilds() >= 1,
+          "and the list's renderer shaped its own, on its own counter");
+
+    // The bug this exists to prevent: a scrolling list, twenty passes of
+    // eight rows, while the show holds one scene. Every one of those passes
+    // used to be a re-shape of the audience's word.
+    for (int pass = 0; pass < 20; ++pass) {
+        panel.draw(audience);
+        for (const SceneFrame& slide : band) {
+            row.draw(slide);
+        }
+    }
+    check(show->textLayoutBuilds() == showBuilds,
+          "160 list draws across 20 passes cost the SHOW no layout at all: the audience's "
+          "text stays laid out however much the document scrolls");
+    check(list->textLayoutBuilds() > showBuilds,
+          "and the list paid for its own (its counter, not the show's — a shared meter would "
+          "make the check above vacuous)");
+
+    // The companion's cache works too, so the flat counter above is a CACHE
+    // and not a stopped meter. Warmed first: the band above is eight rows in
+    // a four-slot layout cache, so ROW3 is one the walk evicted and its first
+    // draw after the churn is honest work.
+    row.draw(band[3]);
+    const std::uint64_t beforeRepeat = list->textLayoutBuilds();
+    for (int pass = 0; pass < 6; ++pass) {
+        row.draw(band[3]);
+    }
+    check(list->textLayoutBuilds() == beforeRepeat,
+          "the same row drawn again rebuilds nothing on the companion either");
+
+    // Non-vacuity, the show's direction: a real change on air is real work
+    // and is still charged to the show's own meter.
+    show->setActiveScene(stage(kGreen, "NEXT"), SceneTransitionKind::kCut);
+    const SceneFrame next = show->captureFrame(kAudienceStart + kFullFade, 8, kFixedWall);
+    panel.draw(next);
+    check(show->textLayoutBuilds() == showBuilds + 1,
+          "a new scene on air costs the show exactly one layout, companion or no companion");
+
+    // And the pixels: each target shows the scene it was handed. Ink is
+    // counted against each candidate background, so "the row shows the
+    // audience's red slide" and "the row shows its own green one" are
+    // different numbers rather than a judgement.
+    row.draw(band[2]);  // a green slide: ROW2
+    const int rowAgainstOwn = row.inkAgainst(kGreen, 8);
+    const int rowAgainstShow = row.inkAgainst(kRed, 8);
+    check(rowAgainstOwn < rowAgainstShow,
+          "a list row shows its OWN slide: the ink on it is the word on its own background, "
+          "not the audience's scene underneath it");
+    check(rowAgainstOwn < kPreviewInkFloor,
+          "and the row is mostly its own flat background at 160x90, not a second composition");
+    const int panelAgainstOwn = panel.inkAgainst(kGreen, 8);
+    check(rowAgainstOwn < panelAgainstOwn,
+          "the two targets are not showing one picture measured twice");
+
+    // A picture installed in the list's cache is the LIST's: the show must
+    // not find it, and vice versa. This is the claim the thumbnails rest on —
+    // thirty backdrops decoded for a preview do not become thirty entries the
+    // show's budget carries.
+    const auto makeFlat = [](std::uint32_t colour) {
+        sk_sp<SkSurface> surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(8, 8));
+        surface->getCanvas()->clear(colour);
+        return surface->makeImageSnapshot();
+    };
+    const std::string still = "/tmp/opencode/r13-companion-still.png";
+    list->imageCache()->install(still, makeFlat(0xFF204060));
+    check(list->imageCache()->has(still), "the list's cache holds the picture it was given");
+    check(!show->imageCache()->has(still),
+          "and the show's cache has never heard of it: one decoded backdrop for a row is not "
+          "a decoded backdrop for the panel");
+    show->imageCache()->install(still + ".show", makeFlat(0xFF604020));
+    check(!list->imageCache()->has(still + ".show"),
+          "the separation runs the other way as well");
+    list->imageCache()->install(still, nullptr);
+    check(!list->imageCache()->has(still) && show->imageCache()->has(still + ".show"),
+          "and recording a failure on one side forgets nothing on the other: the two caches "
+          "cannot be moved by each other's bookkeeping");
+    std::remove(still.c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -705,6 +859,7 @@ int main() {
     testFadeEndsWhenTheAudienceHasTheFrame();
     testRevisionTravelsWithTheFrame();
     testLayoutCacheServesTwoTargets();
+    testACompanionIsSeparateFromTheShow();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "scene_frame_tests: %d failure(s)\n", gFailures);

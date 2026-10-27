@@ -213,7 +213,7 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 11, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 12, "hello lists capabilities");
         {  // Task 5.5d's media visibility is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasMedia = std::any_of(
@@ -263,6 +263,18 @@ void testHello() {
                     return v.is_string() && v.as_string() == "preview.select.v1";
                 });
             check(hasSelect, "capabilities name preview.select.v1");
+        }
+        {  // Task 6.16b's slide-list target (R16): a frontend asks the worker
+            // to picture its list only when the worker says it can, because a
+            // worker without the method answers "method not found" and a
+            // client that never asked would read a thumbnail as the audience's
+            // own frame.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasThumbnails = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == "preview.thumbnail.v1";
+                });
+            check(hasThumbnails, "capabilities name preview.thumbnail.v1");
         }
     }
 

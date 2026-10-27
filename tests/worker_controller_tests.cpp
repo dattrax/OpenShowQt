@@ -121,6 +121,7 @@
 
 #include <QCoreApplication>
 #include <QString>
+#include <QVariant>
 
 #include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
@@ -319,12 +320,23 @@ private:
             // by the time this one reaches the wire.
             for (auto entry = fPendingFrames.begin(); entry != fPendingFrames.end();) {
                 if (entry->when <= flushBefore) {
-                    publishPreview(entry->target, entry->request, entry->revision, entry->legacy);
+                    // A held ROW stamps the generation accepted NOW unless it
+                    // was armed to keep its own: those two are the mid-draw
+                    // row and the slipped bookkeeping, respectively.
+                    const std::uint32_t stamp =
+                        entry->stampOwnRequest || entry->target != proto::kPreviewTargetThumbnail
+                            ? entry->request
+                            : static_cast<std::uint32_t>(fThumbnailAccepted);
+                    publishPreviewFrame(entry->target, entry->revision,
+                                        entry->width != 0 ? entry->width : kFrameWidth,
+                                        entry->height != 0 ? entry->height : kFrameHeight,
+                                        entry->legacy, stamp, entry->lieAboutGeometry);
                     entry = fPendingFrames.erase(entry);
                 } else {
                     ++entry;
                 }
             }
+            publishOwedThumbnails();  // the slide list's band, one row per wake
             // A resumed peer is a SLOW peer: it takes the backlog in slices with
             // a pause between them, so what the controller owes comes down over
             // seconds rather than in one go. The pace is the whole point of
@@ -383,7 +395,8 @@ private:
             if (fScenario == "preview") {
                 result["capabilities"] = boost::json::array{"preview.shm.v1",
                                                             "preview.stream-id.v1",
-                                                            "preview.select.v1"};
+                                                            "preview.select.v1",
+                                                            "preview.thumbnail.v1"};
             }
             sendResult(id, std::move(result));
             return;
@@ -449,6 +462,29 @@ private:
                                                       {"dropped", 0},
                                                       {"deferred", 0},
                                                       {"stale", fSelectionStale}}},
+                    // The slide list (task 6.16b). `active` goes false once for
+                    // a batch armed with FORGET — a worker that lost a band the
+                    // client believes it asked for, which the client must answer
+                    // by asking again — and `queued` is this peer's own debt, so
+                    // the fixture can see a replaced band stop being owed rather
+                    // than taking the client's word for it.
+                    {"thumbnail",
+                     boost::json::object{
+                         {"active", fThumbnailForgetLeft > 0 ? (fThumbnailForgetLeft -= 1, false)
+                                                             : fThumbnailActive},
+                         {"request", fThumbnailAccepted},
+                         {"width", fThumbnailWidth},
+                         {"height", fThumbnailHeight},
+                         {"queued", fThumbnailRows.size() + thumbnailRowsInFlight()},
+                         {"decodePending", 0},
+                         {"published", fThumbnailPublished},
+                         {"dropped", 0},
+                         {"deferred", 0},
+                         {"stale", fThumbnailStale},
+                         {"images", boost::json::object{{"budget", 12u * 1024u * 1024u},
+                                                        {"decodedBytes", 0},
+                                                        {"entries", 0},
+                                                        {"evictions", 0}}}}},
                 };
             }
             // Task 6.15a (review R15): a scripted transport whose state ONLY
@@ -456,6 +492,12 @@ private:
             // properties from this echo and nowhere else, so a control that
             // ran on local optimism — a Pause label flipped by the click —
             // cannot survive here.
+            if (fScenario == "preview") {
+                // ... and the account behind it is refreshed on every poll,
+                // because a fixture that is proving the client sent NOTHING has
+                // nothing else to wake this peer with (task 6.16b).
+                writeReport();
+            }
             if (fScenario == "media") {
                 // Task 6.15b: the sources array spans lifetimes, so it is
                 // built from what is actually up — the track's row appears
@@ -832,6 +874,201 @@ private:
             }
             return;
         }
+        if (method == proto::kMethodPreviewThumbnails) {
+            // Task 6.16b (review R16): the slide list's band. The peer is a
+            // producer of these rows in the same sense it is a producer of
+            // edit frames — real slots, real sequence numbers, one row per
+            // wake — and its refusals are the real session's, judged by the
+            // same shared helper, because the thing under test is the
+            // CLIENT's behaviour at the edges: what it asks for, what it
+            // believes, and what it refuses to paint.
+            fThumbnailOps.push_back(thumbnailAccount(
+                request.contains("params") && request.at("params").is_object()
+                    ? request.at("params").as_object()
+                    : boost::json::object{}));
+            writeReport();  // live: the fixture reads generations mid-scenario
+            if (!fStreamStarted) {
+                sendError(id, "fake: no preview stream is running: preview.start first");
+                return;
+            }
+            boost::json::object args;
+            if (request.contains("params") && request.at("params").is_object()) {
+                args = request.at("params").as_object();
+            }
+            const auto numberArg = [&args](const char* key) -> std::int64_t {
+                const auto entry = args.find(key);
+                return entry == args.end() || !entry->value().is_number()
+                           ? -1
+                           : entry->value().to_number<std::int64_t>();
+            };
+            const std::int64_t width = numberArg("width");
+            const std::int64_t height = numberArg("height");
+            const std::int64_t asked = numberArg("request");
+            const auto scenesEntry = args.find("scenes");
+            if (width < 0 || height < 0 || asked < 0 || scenesEntry == args.end() ||
+                !scenesEntry->value().is_array()) {
+                sendError(id,
+                          "fake: preview.thumbnails wants {scenes, width, height, request}");
+                return;
+            }
+            const boost::json::array& scenes = scenesEntry->value().as_array();
+            // The cap, then the extent, then the generation: three comparisons
+            // before anything is built, because an operator's scroll wheel
+            // fires this command and a bad ask must cost a comparison. None of
+            // them advances the accepted generation, so every refusal below can
+            // be followed by a legal ask using the same number — which is how
+            // the fixture knows nothing was reserved.
+            if (scenes.size() > proto::kMaxThumbnailBatch) {
+                sendError(id, "fake: preview.thumbnails takes at most " +
+                                  std::to_string(proto::kMaxThumbnailBatch) + " scenes, got " +
+                                  std::to_string(scenes.size()));
+                return;
+            }
+            if (!proto::thumbnailExtentFits(static_cast<std::uint32_t>(width),
+                                            static_cast<std::uint32_t>(height),
+                                            static_cast<std::uint32_t>(fSlotStride))) {
+                sendError(id, "fake: preview.thumbnails extent " + std::to_string(width) + "x" +
+                                  std::to_string(height) + " is outside 32..512 pixels, or does "
+                                  "not fit a " + std::to_string(fSlotStride) +
+                                  "-byte preview slot");
+                return;
+            }
+            if (static_cast<std::int32_t>(asked - static_cast<std::int64_t>(fThumbnailAccepted)) <=
+                0) {
+                sendError(id, "fake: preview.thumbnails request " + std::to_string(asked) +
+                                  " does not follow the accepted " +
+                                  std::to_string(fThumbnailAccepted));
+                return;
+            }
+            // A row the older band still owed when this one arrived. The real
+            // session counts one per superseded ask, in the same place.
+            if (!fThumbnailRows.empty() || thumbnailRowsInFlight() != 0) {
+                ++fThumbnailStale;
+            }
+            // Per-entry: a slide whose identity or content is unusable costs
+            // itself alone. Keys are echoed CLIPPED (R11's rule about putting a
+            // client's own text back on the wire).
+            boost::json::array frames;
+            boost::json::array refused;
+            std::vector<ThumbnailRow> rows;
+            for (const boost::json::value& item : scenes) {
+                std::string key;
+                std::string why;
+                if (!item.is_object()) {
+                    why = "the entry is not an object";
+                } else {
+                    const boost::json::object& entry = item.as_object();
+                    const auto keyEntry = entry.find("key");
+                    const auto sceneEntry = entry.find("scene");
+                    if (keyEntry == entry.end() || !keyEntry->value().is_string()) {
+                        why = "no key to identify the row by";
+                    } else {
+                        key = std::string(keyEntry->value().as_string());
+                    }
+                    if (why.empty() && key.empty()) {
+                        why = "an empty key is not an identity";
+                    }
+                    if (why.empty() && key.size() > proto::kMaxThumbnailKeyLength) {
+                        why = "key is " + std::to_string(key.size()) +
+                              " characters, over the " +
+                              std::to_string(proto::kMaxThumbnailKeyLength) + " limit";
+                    }
+                    if (why.empty() &&
+                        (sceneEntry == entry.end() || !sceneEntry->value().is_object())) {
+                        why = "no scene to draw";
+                    }
+                }
+                if (!why.empty()) {
+                    refused.push_back(
+                        boost::json::object{{"key", key.substr(0, 32)}, {"why", why}});
+                    continue;
+                }
+                if (++fThumbnailNextId == 0) {
+                    fThumbnailNextId = 1;  // zero means "no id", everywhere
+                }
+                frames.push_back(boost::json::object{
+                    {"key", key}, {"id", static_cast<std::int64_t>(fThumbnailNextId)}});
+                // Every id this producer ever handed out, in order: the fixture
+                // reads a row's colour back as (id, 200, 60), which is how
+                // "the picture under THIS key is the one the ack gave THIS
+                // slide" is checked rather than assumed.
+                fThumbnailIssued.push_back(boost::json::object{
+                    {"key", key}, {"id", static_cast<std::int64_t>(fThumbnailNextId)}});
+                ThumbnailRow row;
+                row.id = fThumbnailNextId;
+                row.width = static_cast<std::uint32_t>(width);
+                row.height = static_cast<std::uint32_t>(height);
+                // Markers, carried in the row's own key the way SLOW and
+                // FORGET ride a prepared scene's slideId: each arms a client
+                // gate that cannot be produced honestly any other way.
+                if (key.find("LIE") != std::string::npos) {
+                    row.lieAboutGeometry = true;
+                }
+                if (key.find("FORGET") != std::string::npos && !fThumbnailForgetArmed) {
+                    // ONCE, and the re-issue it provokes does not re-arm it: the
+                    // recovered band carries the same key, so arming per ask
+                    // would have the peer lose the list on every poll and the
+                    // client ask again forever.
+                    fThumbnailForgetArmed = true;
+                    fThumbnailForgetLeft = 1;  // the next status says the band is gone
+                }
+                const bool late = key.find("LATE") != std::string::npos;
+                const bool slipped = key.find("OLDSTAMP") != std::string::npos;
+                if (late || slipped) {
+                    // A draw that has already begun is not cancelled by a
+                    // newer band, exactly as in the session: the row lands
+                    // after its replacement has been acked. LATE stamps the
+                    // generation accepted THEN (the session reads its current
+                    // request at publish time); OLDSTAMP stamps one the client
+                    // has certainly moved past.
+                    fPendingFrames.push_back({std::chrono::steady_clock::now() +
+                                                  std::chrono::milliseconds(late ? 500 : 120),
+                                              proto::kPreviewTargetThumbnail,
+                                              slipped ? static_cast<std::uint32_t>(
+                                                  fThumbnailAccepted - 1)
+                                                      : static_cast<std::uint32_t>(asked),
+                                              fThumbnailNextId,
+                                              false,
+                                              row.width,
+                                              row.height,
+                                              row.lieAboutGeometry,
+                                              slipped});
+                } else {
+                    rows.push_back(row);
+                }
+            }
+            // REPLACE, which is the cancellation rule: whatever the older list
+            // owed stops being owed. An empty band is a stand-down, and a
+            // stand-down is a change, so it still consumed a generation.
+            fThumbnailRows = std::move(rows);
+            fThumbnailAccepted = static_cast<std::uint64_t>(asked);
+            fThumbnailWidth = static_cast<std::uint32_t>(width);
+            fThumbnailHeight = static_cast<std::uint32_t>(height);
+            // `active` is a REGISTRATION, not a debt: true from an accepted
+            // non-empty band until a stand-down, a restart, or a stream too
+            // small to hold it. The real session's field means exactly that,
+            // and the client's re-issue rule keys off it, so a peer that
+            // reported "active" as "still has rows to draw" makes a completed
+            // list look lost and the client asks again every single poll — the
+            // first run of this scenario re-asked one band four times, which is
+            // the spin this comment is here to keep nobody from writing again.
+            // `queued` is the debt, and it is reported separately.
+            fThumbnailActive = !frames.empty();
+            sendResult(id, boost::json::object{{"request", asked},
+                                               {"width", width},
+                                               {"height", height},
+                                               {"frames", std::move(frames)},
+                                               {"refused", std::move(refused)}});
+            writeReport();  // ... and the ids this ack handed out are live
+            if (fThumbnailActive) {
+                // The audience owes a frame beside the list's, as a live worker
+                // sends it whenever both targets are owed: two frames on one
+                // segment, one for each pane, is the arrival a consumer has to
+                // route.
+                publishPreview(proto::kPreviewTargetAudience, 0, 7, false);
+            }
+            return;
+        }
         if (method == proto::kMethodPreviewReleased) {
             ++fReleases;
             if (request.contains("params") && request.at("params").is_object()) {
@@ -904,6 +1141,18 @@ private:
             // client actually put on the wire), plus what the scripted
             // producer did with them and how many slot releases came back.
             {"selects", fSelects},
+            // Task 6.16b: every preview.thumbnails verbatim, plus what the
+            // scripted producer did with the band. The published count is what
+            // lets a fixture say "the frame reached the socket and the CLIENT
+            // threw it away" instead of assuming nobody sent one.
+            {"thumbnailOps", fThumbnailOps},
+            {"thumbnailIssued", fThumbnailIssued},
+            {"thumbnailPublished", fThumbnailPublished},
+            {"thumbnailStale", fThumbnailStale},
+            {"thumbnailAccepted", fThumbnailAccepted},
+            {"thumbnailQueued", fThumbnailRows.size() + thumbnailRowsInFlight()},
+            {"mirrorPublished", fMirrorPublished},
+            {"mirrorDropped", fMirrorDropped},
             {"releases", fReleases},
             {"previewDropped", fPreviewDropped},
             {"selectionPublished", fSelectionPublished},
@@ -931,8 +1180,15 @@ private:
     // scene that ask named" and "no edit frame ever reached the audience's
     // pane" are pixel tests rather than hopes. 8x8 keeps the segment at a
     // kilobyte; the seqlock, the ownership rule and the routing do not care.
-    static constexpr std::uint32_t kFrameWidth = 8;
-    static constexpr std::uint32_t kFrameHeight = 8;
+    // 256x144 rather than a token 8x8 for one reason: a thumbnail's pixels
+    // share these slots, and the box the protocol allows starts at 32x32, so a
+    // slot smaller than that could not carry a LEGAL row and the consumer's
+    // bounds rule could not be exercised at all. At this extent the mirror is
+    // 147 KB, a small row is 3.8 KB, and a whole band of mirror-sized rows is
+    // more than the client's picture budget — which is what the LRU leg below
+    // measures.
+    static constexpr std::uint32_t kFrameWidth = 256;
+    static constexpr std::uint32_t kFrameHeight = 144;
     static constexpr int kSlots = 3;
     static_assert(static_cast<int>(proto::kPreviewSlotCount) == kSlots,
                   "the scripted stream has the slot count the wire promises");
@@ -988,6 +1244,32 @@ private:
 
     void publishPreview(std::uint32_t target, std::uint32_t request, std::uint32_t revision,
                         bool legacyFields) {
+        publishPreviewFrame(target, revision, kFrameWidth, kFrameHeight, legacyFields, request,
+                            false);
+    }
+
+    // Writes one frame of `width` x `height` into a free slot and announces
+    // it, dropping it rather than waiting — the rule task 6.5 established for
+    // a consumer that stops releasing. Returns whether it reached the wire.
+    //
+    // The two arguments that exist for task 6.16b are the two a real producer
+    // can get wrong in a way a single-extent stream never could:
+    //
+    //   - `stampRequest`: a row whose DRAW started before a newer band was
+    //     accepted carries that newer generation, because the session reads
+    //     its current request at publish time; a producer whose bookkeeping
+    //     slipped carries the generation it was ASKED under instead. Both
+    //     states occur, and the client's two refusal gates — "not this
+    //     generation" and "not an id I was given" — are each the only thing
+    //     that catches one of them.
+    //   - `lieAboutGeometry`: the slot holds a perfectly good frame of one
+    //     size while the notification announces another. Nothing else in the
+    //     notification is inconsistent (its rows are packed and its payload
+    //     fits), so only the cross-check against the header the same sequence
+    //     stamps can stop a consumer from copying the wrong number of bytes.
+    bool publishPreviewFrame(std::uint32_t target, std::uint32_t revision, std::uint32_t width,
+                             std::uint32_t height, bool legacyFields, std::uint32_t stampRequest,
+                             bool lieAboutGeometry) {
         int slot = -1;
         for (int i = 0; i < kSlots; ++i) {
             if (!fSlotOwned[i]) {
@@ -995,46 +1277,74 @@ private:
                 break;
             }
         }
-        if (fSlotMap == nullptr || slot < 0) {
-            ++fPreviewDropped;  // the producer drops rather than waits
-            return;
+        const std::uint32_t headWidth = lieAboutGeometry ? width + 8u : width;
+        if (fSlotMap == nullptr || slot < 0 ||
+            proto::previewSlotStrideBytes(headWidth, height) > fSlotStride) {
+            // The producer drops rather than waits. Counted by WHOSE frame it
+            // was: a mirror frame dropped for want of a slot is what a live
+            // worker does at its own cadence, while a ROW that never made it
+            // means the consumer stopped releasing.
+            if (target == proto::kPreviewTargetThumbnail) {
+                ++fPreviewDropped;
+            } else {
+                ++fMirrorDropped;
+            }
+            return false;
         }
         std::uint8_t* base =
             fSlotMap + proto::previewSlotOffset(static_cast<std::uint32_t>(slot), fSlotStride);
         auto* header = reinterpret_cast<proto::PreviewSlotHeader*>(base);
         const std::uint64_t seq = fSlotSeq[slot] + 2;
         std::atomic_ref<std::uint64_t>(header->seq).store(seq - 1);  // odd: mid-write
-        header->width = kFrameWidth;
-        header->height = kFrameHeight;
-        header->rowBytes = kFrameWidth * 4;
+        header->width = headWidth;
+        header->height = height;
+        header->rowBytes = headWidth * 4;
         header->format = proto::kPreviewFourccRGBA8;
         header->revision = revision;
         header->target = target;
-        header->request = request;
+        header->request = stampRequest;
         header->publishedNs = 1000 + seq;
-        const bool edit = target == proto::kPreviewTargetSelection;
-        const auto red = static_cast<std::uint8_t>(edit ? (revision & 0xFFu) : 1u);
-        const auto green = static_cast<std::uint8_t>(edit ? 77u : 2u);
-        const auto blue = static_cast<std::uint8_t>(edit ? 155u : 3u);
-        for (int pixel = 0; pixel < static_cast<int>(kFrameWidth * kFrameHeight); ++pixel) {
-            std::uint8_t* out = base + 64 + pixel * 4;
-            out[0] = red;
-            out[1] = green;
-            out[2] = blue;
+        // A frame's colour IS its identity: the audience's is (1, 2, 3), an
+        // edit's is (revision, 77, 155) and a row's is (id, 200, 60), so
+        // "these are the pixels of the slide that ack named, in the pane that
+        // belongs to them" is a pixel test rather than a hope.
+        const auto paint = [&](std::uint8_t* out) {
+            if (target == proto::kPreviewTargetThumbnail) {
+                out[0] = static_cast<std::uint8_t>(revision & 0xFFu);
+                out[1] = 200;
+                out[2] = 60;
+            } else if (target == proto::kPreviewTargetSelection) {
+                out[0] = static_cast<std::uint8_t>(revision & 0xFFu);
+                out[1] = 77;
+                out[2] = 155;
+            } else {
+                out[0] = 1;
+                out[1] = 2;
+                out[2] = 3;
+            }
             out[3] = 255;
+        };
+        for (std::uint32_t pixel = 0; pixel < headWidth * height; ++pixel) {
+            paint(base + 64 + pixel * 4);
         }
         std::atomic_ref<std::uint64_t>(header->seq).store(seq);  // even: published
         fSlotSeq[slot] = seq;
         fSlotOwned[slot] = true;
-        if (edit) {
+        if (target == proto::kPreviewTargetSelection) {
             ++fSelectionPublished;
+        }
+        if (target == proto::kPreviewTargetThumbnail) {
+            ++fThumbnailPublished;
+        }
+        if (target == proto::kPreviewTargetAudience) {
+            ++fMirrorPublished;
         }
         boost::json::object params{
             {"slot", static_cast<std::int64_t>(slot)},
             {"seq", static_cast<std::int64_t>(seq)},
-            {"width", static_cast<std::int64_t>(kFrameWidth)},
-            {"height", static_cast<std::int64_t>(kFrameHeight)},
-            {"rowBytes", static_cast<std::int64_t>(kFrameWidth * 4)},
+            {"width", static_cast<std::int64_t>(width)},
+            {"height", static_cast<std::int64_t>(height)},
+            {"rowBytes", static_cast<std::int64_t>(width * 4)},
             {"revision", static_cast<std::int64_t>(revision)},
             {"publishedNs", static_cast<std::int64_t>(1000 + seq)},
             {"stream", fPreviewName}};
@@ -1042,12 +1352,92 @@ private:
         // that as the audience rather than as an edit.
         if (!legacyFields) {
             params["target"] = static_cast<std::int64_t>(target);
-            params["request"] = static_cast<std::int64_t>(request);
+            params["request"] = static_cast<std::int64_t>(stampRequest);
         }
         std::string wire;
         proto::appendFrame(
             proto::makeNotification(proto::kMethodPreviewReady, std::move(params)), &wire);
         send(wire);
+        return true;
+    }
+
+    // Draws what the accepted band still owes, one row per wake and no more
+    // than a free slot allows — the same shape as the session's render pass,
+    // so a client that stops releasing shows up as `previewDropped` in this
+    // peer's ledger instead of as a hang.
+    // One accepted (or refused) ask, recorded without its scenes: what a
+    // fixture needs is the generation, the extent, and the keys.
+    static boost::json::object thumbnailAccount(const boost::json::object& args) {
+        boost::json::array keys;
+        std::int64_t asked = 0;
+        const auto scenes = args.find("scenes");
+        if (scenes != args.end() && scenes->value().is_array()) {
+            for (const boost::json::value& item : scenes->value().as_array()) {
+                if (!item.is_object()) {
+                    continue;
+                }
+                const auto key = item.as_object().find("key");
+                const std::string clipped =
+                    key != item.as_object().end() && key->value().is_string()
+                        ? std::string(key->value().as_string()).substr(0, 32)
+                        : std::string();
+                keys.push_back(boost::json::value_from(clipped));
+            }
+            asked = static_cast<std::int64_t>(scenes->value().as_array().size());
+        }
+        const auto number = [&args](const char* name) -> std::int64_t {
+            const auto entry = args.find(name);
+            return entry == args.end() || !entry->value().is_number()
+                       ? -1
+                       : entry->value().to_number<std::int64_t>();
+        };
+        return boost::json::object{{"request", number("request")},
+                                   {"width", number("width")},
+                                   {"height", number("height")},
+                                   {"asked", asked},
+                                   {"keys", std::move(keys)}};
+    }
+
+    std::uint64_t thumbnailRowsInFlight() const {
+        std::uint64_t held = 0;
+        for (const PendingFrame& frame : fPendingFrames) {
+            if (frame.target == proto::kPreviewTargetThumbnail) {
+                ++held;
+            }
+        }
+        return held;
+    }
+
+    // A slot nobody holds, or -1. Claiming one is what a producer does before
+    // it draws; "there was no slot" is a reason to wait, not a dropped frame,
+    // and counting it as one would make this peer's `dropped` mean "the client
+    // is keeping up at its own speed", which is nothing at all.
+    int freeSlot() const {
+        for (int i = 0; i < kSlots; ++i) {
+            if (!fSlotOwned[i]) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    void publishOwedThumbnails() {
+        while (!fThumbnailRows.empty()) {
+            if (freeSlot() < 0) {
+                return;  // every slot is owned; the row stays OWED, not lost
+            }
+            const ThumbnailRow row = fThumbnailRows.front();
+            const bool published = publishPreviewFrame(
+                proto::kPreviewTargetThumbnail, row.id, row.width, row.height, false,
+                fThumbnailAccepted, row.lieAboutGeometry);
+            // A row that failed with a slot in hand can never succeed (its
+            // extent was bounds-checked against this very stride when the ask
+            // was accepted), so it is given up rather than retried forever.
+            fThumbnailRows.erase(fThumbnailRows.begin());
+            if (!published) {
+                return;
+            }
+        }
     }
 
     bool fStreamStarted = false;
@@ -1057,7 +1447,9 @@ private:
     int fSlotFd = -1;
     std::uint64_t fSlotSeq[kSlots] = {};
     bool fSlotOwned[kSlots] = {};
-    std::uint64_t fPreviewDropped = 0;
+    std::uint64_t fPreviewDropped = 0;  // ROWS lost to a full segment: must stay 0
+    std::uint64_t fMirrorDropped = 0;    // mirror frames the peer dropped at cadence
+    std::uint64_t fMirrorPublished = 0;  // ... and the frames it did publish, by target
     std::uint64_t fSelectionPublished = 0;
     std::uint64_t fSelectionStale = 0;
     std::uint64_t fReleases = 0;
@@ -1067,6 +1459,21 @@ private:
     bool fForgetUsed = false;
     int fForgetReportsLeft = 0;
     boost::json::array fSelects;
+    // Task 6.16b: the slide list's target, its ledger, and the counters the
+    // client mirrors. `fThumbnailNextId` is monotonic for the whole session —
+    // uniqueness only has to hold within one batch, and a producer that reused
+    // ids across bands could not tell a row from a replaced band apart.
+    boost::json::array fThumbnailOps;
+    boost::json::array fThumbnailIssued;
+    std::uint64_t fThumbnailAccepted = 0;
+    std::uint64_t fThumbnailPublished = 0;
+    std::uint64_t fThumbnailStale = 0;
+    std::uint32_t fThumbnailNextId = 0;
+    std::uint32_t fThumbnailWidth = 0;
+    std::uint32_t fThumbnailHeight = 0;
+    bool fThumbnailActive = false;
+    bool fThumbnailForgetArmed = false;
+    int fThumbnailForgetLeft = 0;
     std::map<std::int64_t, std::string> fSceneSlides;
     struct PendingFrame {
         std::chrono::steady_clock::time_point when;
@@ -1074,8 +1481,31 @@ private:
         std::uint32_t request;
         std::uint32_t revision;
         bool legacy;
+        // Task 6.16b: a held row's own size (0 = the stream's), whether its
+        // slot header should contradict its notification, and whether the
+        // generation it stamps is the one it was asked under rather than the
+        // one currently accepted.
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        bool lieAboutGeometry = false;
+        // true: publish with the `request` above verbatim, however old the
+        // peer's state has become since. That is the point of the case.
+        bool stampOwnRequest = false;
     };
     std::vector<PendingFrame> fPendingFrames;
+
+    // One owed row of the accepted band (task 6.16b). The real session keeps
+    // a queue of these and draws ONE per render pass, so the scripted peer
+    // does the same: a band arrives over several wakes, and a replacement
+    // throws the undrawn part of it away. Publishing thirty rows into three
+    // slots in one function call would only prove the peer is not a producer.
+    struct ThumbnailRow {
+        std::uint32_t id = 0;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        bool lieAboutGeometry = false;
+    };
+    std::vector<ThumbnailRow> fThumbnailRows;
 
     std::vector<std::string> fHeld;  // hold3: acks awaiting the burst
     std::vector<DelayedReply> fQueue;  // slow-first: acks awaiting their due
@@ -1148,6 +1578,17 @@ std::int64_t reportNumber(const boost::json::object& report, const char* key) {
         return -1;
     }
     return entry->value().to_number<std::int64_t>();
+}
+
+// How many entries a ledger array of the peer's holds. Absent or malformed is
+// -1, so a fixture that expects none asks for == 0 and cannot read garbage as
+// agreement.
+std::int64_t jsonSize(const boost::json::object& report, const char* key) {
+    const auto entry = report.find(key);
+    if (entry == report.end() || !entry->value().is_array()) {
+        return -1;
+    }
+    return static_cast<std::int64_t>(entry->value().as_array().size());
 }
 
 // The count the scripted peer recorded for one method. Absent from the report
@@ -1270,12 +1711,35 @@ std::string sceneForSelection(const char* slideId, const char* line, unsigned co
     return boost::json::serialize(scene::toJson(scene));
 }
 
+// --- slide-list rows (task 6.16b) ---------------------------------------
+//
+// What the UI hands `requestThumbnails` is one entry per visible slide: the
+// slide's own identity, and the compiled scene the worker should picture it
+// with. A row's key is the ONLY thing that ties a delivered frame back to a
+// row, so these fixtures give rows distinct keys and identical-looking scenes
+// wherever the point is that the key, and not the picture, is what routed it.
+
+QVariantMap listRow(const QString& key, const QString& sceneJson) {
+    return QVariantMap{{QStringLiteral("key"), key}, {QStringLiteral("scene"), sceneJson}};
+}
+
+QVariantList bandOf(const std::vector<std::string>& keys) {
+    QVariantList band;
+    for (const std::string& key : keys) {
+        band.push_back(listRow(QString::fromStdString(key),
+                               QString::fromStdString(sceneForSelection("R", "line", 0x101030u))));
+    }
+    return band;
+}
+
 // A report read ONCE, no retry: the preview fixture polls the ledger between
 // pumping its own event loop, and a helper that sleeps for a second waiting
 // for a file that does not exist yet stops the client from answering.
 boost::json::object readReportNow(const std::string& path) {
     if (std::FILE* file = std::fopen(path.c_str(), "rb")) {
-        char buffer[65536];
+        // Big enough for a slide-list ledger: a dozen asks of thirty keys
+        // each, which the 6.16b scenario writes before it reads.
+        char buffer[262144];
         const size_t count = std::fread(buffer, 1, sizeof(buffer) - 1, file);
         std::fclose(file);
         buffer[count] = '\0';
@@ -2755,6 +3219,392 @@ void scenarioSelectionPreview() {
     controller.shutdownNow();
 }
 
+// S15 (task 6.16b, review R16): the slide list on the CONSUMER's half of the
+// socket.
+//
+// The live fixture proves the worker draws a band of slides into the shared
+// stream, decodes into a pool of its own, and leaves the show alone. This
+// scenario is the other half — the client, which receives a THIRD kind of
+// frame on a stream it already had to route, and whose whole job is to be
+// certain which picture belongs to which row:
+//
+//   - identity: a row's pixels are the ones the ack gave THAT slide, in the
+//     cache under THAT key. The scripted producer paints (id, 200, 60) and
+//     keeps a ledger of the ids it issued, so this is measured, not hoped;
+//   - the three ways a frame must NOT be painted: it answers a generation the
+//     client has moved past (OLDSTAMP), it belongs to a band the client has
+//     replaced (LATE), or its header and its notification disagree about its
+//     size (LIE). Each needs a producer willing to make the bad frame, which
+//     is what those markers are for;
+//   - the client's own bounds, measured through public properties: an ask that
+//     cannot be honoured is refused before a byte is written, a band that is
+//     unchanged costs nothing, an edited slide loses its old picture the
+//     instant it is edited, and the picture cache stays under its byte ceiling
+//     while rows keep arriving at the top of it;
+//   - and the audience's pane, which is the reason any of this needs care: a
+//     row that entered the mirror or the edit canvas would be R16 again, in
+//     the opposite direction.
+void scenarioThumbnailPreview() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "preview", 1);
+    const std::string report = tempPath("thumb");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "rows: handshake with the scripted producer")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(controller.thumbnailSupported(),
+          "rows: preview.thumbnail.v1 is the whole negotiation for a worker-drawn list");
+    if (!check(waitUntil([&controller] { return controller.previewActive(); }),
+               "rows: the stream is mapped before a row is asked for")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(waitUntil([&controller] { return controller.previewFrames() >= 1; }),
+          "rows: the audience's mirror arrives without being asked");
+    check(controller.thumbnailFrames() == 0 && controller.thumbnailCachedBytes() == 0,
+          "rows: nothing is wanted, so the list holds no pictures and costs no bytes");
+
+    // A row's colour IS its id, and the producer's ledger says which id its
+    // ack gave which key.
+    const auto issuedId = [&report](const char* key) -> std::int64_t {
+        const boost::json::object body = readReportNow(report);
+        const auto entry = body.find("thumbnailIssued");
+        if (entry == body.end() || !entry->value().is_array()) {
+            return -1;
+        }
+        std::int64_t found = -1;
+        for (const auto& value : entry->value().as_array()) {
+            if (!value.is_object()) {
+                continue;
+            }
+            const boost::json::object& item = value.as_object();
+            const auto name = item.find("key");
+            const auto id = item.find("id");
+            if (name != item.end() && name->value().is_string() && id != item.end() &&
+                std::string(name->value().as_string()) == key) {
+                found = id->value().to_number<std::int64_t>();  // the newest one wins
+            }
+        }
+        return found;
+    };
+    const auto rowIsPainted = [&controller, &issuedId](const char* key) {
+        const std::int64_t id = issuedId(key);
+        return id > 0 &&
+               pixelsAre(controller.thumbnail(QString::fromLatin1(key)),
+                         static_cast<int>(id & 0xFF), 200, 60);
+    };
+
+    // --- three asks that must never reach the socket ----------------------
+    //
+    // The scroll wheel fires this command, so the cost of a bad ask is decided
+    // here rather than on the worker: the cap, the box and the slot, all three
+    // with the offending number in the operator's status line and no byte
+    // written. The peer's method count is what proves the second half.
+    {
+        std::vector<std::string> crowded;
+        for (int i = 0; i < 33; ++i) {
+            crowded.push_back("crowded-" + std::to_string(i));
+        }
+        controller.requestThumbnails(bandOf(crowded), 64, 36);
+        check(controller.statusText().contains(QStringLiteral("takes 32")),
+              "rows: a band of thirty-three is refused in the client, naming the cap");
+        controller.requestThumbnails(bandOf({"tiny"}), 16, 16);
+        check(controller.statusText().contains(QStringLiteral("16x16")) &&
+                  controller.statusText().contains(QStringLiteral("32..512")),
+              "rows: a 16x16 row is refused, and the refusal names the box it failed");
+        controller.requestThumbnails(bandOf({"wide"}), 512, 100);
+        const QString fit = controller.statusText();
+        check(fit.contains(QStringLiteral("512x100")) &&
+                  fit.contains(QStringLiteral("147520")),
+              "rows: a 512x100 row is refused because this stream's slots hold 147520 bytes");
+        check(waitUntil([&report] {
+                  const boost::json::object body = readReportNow(report);
+                  return !body.empty() && methodCount(body, "preview.thumbnails") == 0;
+              }),
+              "rows: all three were refused before a byte was written - the peer saw none");
+        check(controller.thumbnailFrames() == 0, "and none of them cost a picture either");
+    }
+
+    // --- a band, with one row the producer will not take ------------------
+    const QString sceneOne = QString::fromStdString(sceneForSelection("R", "one", 0x101030u));
+    const QString sceneTwo = QString::fromStdString(sceneForSelection("R", "two", 0x201010u));
+    QVariantList band;
+    band.push_back(listRow(QStringLiteral("row-one"), sceneOne));
+    band.push_back(listRow(QString::fromStdString(std::string(200, 'k')), sceneOne));
+    band.push_back(listRow(QStringLiteral("row-two"), sceneTwo));
+    controller.requestThumbnails(band, 64, 36);
+    if (!check(waitUntil([&rowIsPainted] {
+                   return rowIsPainted("row-one") && rowIsPainted("row-two");
+               }),
+               "rows: both good rows arrive, each in the colour of the id its OWN slide was "
+               "given")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(controller.thumbnail(QString::fromStdString(std::string(200, 'k'))).isNull(),
+          "rows: the 200-character key has no picture - a row the producer refused by name is a "
+          "row that keeps its text line, not a blank guess");
+    check(controller.statusText().contains(QStringLiteral("1 of 3 slides refused")),
+          "and the refusal is on the status line, counted, rather than silent");
+    check(pixelsAre(controller.previewImage(), 1, 2, 3),
+          "rows: the audience's pane is still the show's own picture");
+    check(controller.selectionFrames() == 0 && controller.selectionImage().isNull(),
+          "and no row ever entered the edit target: three targets, three panes");
+
+    // --- an unchanged band costs nothing ---------------------------------
+    {
+        const std::int64_t asksBefore = jsonSize(readReportNow(report), "thumbnailOps");
+        const qint64 bytesBefore = controller.thumbnailCachedBytes();
+        controller.requestThumbnails(band, 64, 36);
+        pumpEventsFor(600);
+        check(jsonSize(readReportNow(report), "thumbnailOps") == asksBefore,
+              "rows: asking again for the band the newest ask already carries costs no second "
+              "command - a scroll handler that fires twice is normal");
+        check(controller.thumbnailCachedBytes() == bytesBefore,
+              "and no further picture memory");
+    }
+
+    // --- an edited slide loses its old picture immediately ---------------
+    {
+        QVariantList edited;
+        edited.push_back(listRow(QStringLiteral("row-one"),
+                                 QString::fromStdString(
+                                     sceneForSelection("R", "one, edited", 0x302010u))));
+        edited.push_back(listRow(QStringLiteral("row-two"), sceneTwo));
+        controller.requestThumbnails(edited, 64, 36);
+        check(controller.thumbnail(QStringLiteral("row-one")).isNull(),
+              "rows: the instant a slide's text changes, its old picture is gone - a stale row "
+              "is a lie about the slide it is listed under");
+        check(!controller.thumbnail(QStringLiteral("row-two")).isNull(),
+              "while the row nobody edited keeps the picture it already had");
+        check(waitUntil([&rowIsPainted] { return rowIsPainted("row-one"); }),
+              "rows: and the edited slide comes back as a new render, under the new id");
+    }
+
+    // --- the row a replaced band was already drawing ---------------------
+    //
+    // The producer has begun this row's draw, so a newer band cannot take it
+    // back: it lands after the replacement has been acked, carrying the
+    // generation accepted at publish time. The client has no id for it any
+    // more, and painting it would put a slide the operator has scrolled away
+    // from under a row that is on screen.
+    controller.requestThumbnails(bandOf({"LATE-row"}), 64, 36);
+    if (!check(waitUntil([&report] {
+                   return reportNumber(readReportNow(report), "thumbnailQueued") >= 1;
+               }),
+               "rows: the producer is still drawing that row when the operator scrolls on")) {
+        controller.shutdownNow();
+        return;
+    }
+    controller.requestThumbnails(bandOf({"next-row"}), 64, 36);
+    if (!check(waitUntil([&rowIsPainted] { return rowIsPainted("next-row"); }),
+               "rows: the band the operator scrolled to arrives first")) {
+        controller.shutdownNow();
+        return;
+    }
+    {
+        const qint64 copiesWithNewest = controller.thumbnailFrames();
+        const std::int64_t publishedBefore =
+            reportNumber(readReportNow(report), "thumbnailPublished");
+        pumpEventsFor(900);  // the held row is due at +500 ms and is delivered
+        check(reportNumber(readReportNow(report), "thumbnailPublished") > publishedBefore,
+              "rows: the superseded row really did reach the socket, so the drop below is the "
+              "consumer's and not an untested producer");
+        check(controller.thumbnail(QStringLiteral("LATE-row")).isNull(),
+              "rows: a row of a replaced band is never painted");
+        check(controller.thumbnailFrames() == copiesWithNewest,
+              "and it is dropped before the copy - no picture, no bytes, no frame counted");
+        check(rowIsPainted("next-row"),
+              "and the row that survived the scroll still shows its own slide");
+        check(waitUntil([&controller] { return controller.thumbnailStale() >= 1; }),
+              "rows: the worker's superseded-draw counter mirrors into the property");
+    }
+
+    // --- a frame wearing somebody else's generation ---------------------
+    //
+    // The other gate, which the case above cannot exercise: this row IS on the
+    // list, its id IS in the map the ack installed, and the only thing wrong
+    // with the frame is that it answers an ask the client has moved past. A
+    // producer whose bookkeeping slipped by one generation is a producer that
+    // exists, and the picture would be a plausible one.
+    {
+        const qint64 copiesBefore = controller.thumbnailFrames();
+        const std::int64_t publishedBefore =
+            reportNumber(readReportNow(report), "thumbnailPublished");
+        controller.requestThumbnails(bandOf({"OLDSTAMP-row"}), 64, 36);
+        pumpEventsFor(700);
+        check(reportNumber(readReportNow(report), "thumbnailPublished") > publishedBefore,
+              "rows: the slipped frame reached the socket");
+        check(controller.thumbnail(QStringLiteral("OLDSTAMP-row")).isNull(),
+              "rows: a frame whose generation is not the accepted one is dropped even though "
+              "its id names a row on this list");
+        check(controller.thumbnailFrames() == copiesBefore,
+              "and nothing was copied for it");
+    }
+
+    // --- a frame whose header contradicts its notification ---------------
+    //
+    // The bytes in the slot are a perfectly good frame of one size and the
+    // notification announces another, self-consistent one that also fits. Only
+    // the cross-check against the header the same sequence stamps can stop the
+    // copy, and the difference is a row whose image is the wrong shape: too
+    // few bytes for a wide row, or reading past the frame for a tall one.
+    {
+        const qint64 copiesBefore = controller.thumbnailFrames();
+        const std::int64_t publishedBefore =
+            reportNumber(readReportNow(report), "thumbnailPublished");
+        controller.requestThumbnails(bandOf({"LIE-row"}), 64, 36);
+        const bool lied = waitUntil([&report, publishedBefore] {
+            return reportNumber(readReportNow(report), "thumbnailPublished") > publishedBefore;
+        });
+        if (!check(lied, "rows: the lying row is published")) {
+            controller.shutdownNow();
+            return;
+        }
+        pumpEventsFor(400);  // the client has had several turns to copy it
+        check(controller.thumbnail(QStringLiteral("LIE-row")).isNull(),
+              "rows: a frame whose header and notification disagree about its size is not "
+              "copied at all - the safe answer, because neither number is trustworthy");
+        check(controller.thumbnailFrames() == copiesBefore,
+              "and it is not counted as a picture the list received");
+    }
+
+    // --- the picture cache's ceiling, in bytes --------------------------
+    //
+    // Thirty-two rows at the stream's own extent are 4,718,592 bytes, over the
+    // client's ceiling, and the document that does this is an operator reading
+    // a long service. The bound has to be a number rather than a habit, so the
+    // ask is: every row arrives, the cache does not go over its ceiling, and
+    // what disappears is the top of the list rather than the rows being looked
+    // at.
+    {
+        std::vector<std::string> long1;
+        for (int i = 0; i < 32; ++i) {
+            long1.push_back("fill-" + std::to_string(i));
+        }
+        const qint64 copiesBefore = controller.thumbnailFrames();
+        constexpr std::int64_t kRowBytes = 256 * 144 * 4;
+        controller.requestThumbnails(bandOf(long1), 256, 144);
+        if (!check(waitUntil([&controller] {
+                       return !controller.thumbnail(QStringLiteral("fill-31")).isNull();
+                   },
+                   12000),
+                   "rows: the last row of a thirty-two row band at the stream's extent arrives")) {
+            controller.shutdownNow();
+            return;
+        }
+        check(controller.thumbnailFrames() == copiesBefore + 32,
+              "every one of the thirty-two was received - the cache is not a filter");
+        check(controller.thumbnailCachedBytes() <= 4 * 1024 * 1024,
+              "and the cache stayed under its 4 MiB ceiling while they arrived");
+        check(controller.thumbnailCachedBytes() > 4 * 1024 * 1024 - kRowBytes,
+              "with the ceiling, and not a halfway-full cache, doing the stopping");
+        check(controller.thumbnail(QStringLiteral("fill-0")).isNull(),
+              "the oldest rows are the ones that went...");
+        check(!controller.thumbnail(QStringLiteral("fill-31")).isNull(),
+              "...and the newest stayed: the bound is an LRU, not a trim");
+    }
+
+    // --- a worker that lost the band gets asked again -------------------
+    {
+        const std::int64_t asksBefore = jsonSize(readReportNow(report), "thumbnailOps");
+        controller.requestThumbnails(bandOf({"FORGET-row"}), 64, 36);
+        if (!check(waitUntil([&report, asksBefore] {
+                       return jsonSize(readReportNow(report), "thumbnailOps") == asksBefore + 2;
+                   },
+                   6000),
+                   "rows: a worker that reports the band gone is asked again, and the re-issued "
+                   "band is what the list ends up showing")) {
+            controller.shutdownNow();
+            return;
+        }
+        pumpEventsFor(1200);  // two polls' worth: a list that never settles would keep asking
+        check(jsonSize(readReportNow(report), "thumbnailOps") == asksBefore + 2,
+              "and the recovery asks exactly once - no command storm per poll");
+    }
+
+    // --- standing down --------------------------------------------------
+    {
+        controller.clearThumbnails();
+        check(controller.thumbnailCachedBytes() == 0 &&
+                  controller.thumbnail(QStringLiteral("fill-31")).isNull(),
+              "rows: a stand-down drops every picture it was holding - a list nobody is looking "
+              "at stops costing memory at once");
+        if (!check(waitUntil([&report] {
+                       const boost::json::object body = readReportNow(report);
+                       const std::int64_t asks = jsonSize(body, "thumbnailOps");
+                       if (asks <= 0) {
+                           return false;
+                       }
+                       const auto entry = body.find("thumbnailOps");
+                       const boost::json::object& last =
+                           entry->value().as_array()[static_cast<std::size_t>(asks - 1)]
+                               .as_object();
+                       const auto asked = last.find("asked");
+                       return asked != last.end() && asked->value().to_number<std::int64_t>() == 0;
+                   }),
+                   "rows: the stand-down reaches the worker as an empty band")) {
+            controller.shutdownNow();
+            return;
+        }
+        const std::int64_t asksAtRest = jsonSize(readReportNow(report), "thumbnailOps");
+        const qint64 copiesAtRest = controller.thumbnailFrames();
+        pumpEventsFor(900);
+        check(jsonSize(readReportNow(report), "thumbnailOps") == asksAtRest &&
+                  controller.thumbnailFrames() == copiesAtRest,
+              "and a closed list asks for nothing further: no re-issue storm for a target the "
+              "operator has left");
+    }
+
+    // --- the whole conversation, as one number --------------------------
+    {
+        const boost::json::object settled = readReportNow(report);
+        const auto entry = settled.find("thumbnailOps");
+        std::vector<std::int64_t> generations;
+        if (entry != settled.end() && entry->value().is_array()) {
+            for (const auto& value : entry->value().as_array()) {
+                const auto request = value.as_object().find("request");
+                generations.push_back(request->value().to_number<std::int64_t>());
+            }
+        }
+        bool advances = !generations.empty();
+        for (std::size_t i = 0; i < generations.size(); ++i) {
+            if (generations[i] != static_cast<std::int64_t>(i) + 1) {
+                advances = false;
+            }
+        }
+        check(advances,
+              "rows: the generation ledger is one strictly increasing ask per change, with no "
+              "replay and no gap - every refusal above reserved nothing, because none of them "
+              "reached the wire to be refused");
+        check(reportNumber(settled, "thumbnailStale") == 1,
+              "rows: exactly one draw was superseded in the whole conversation, and the counter "
+              "is derived rather than incremented per frame");
+        check(controller.thumbnailStale() == reportNumber(settled, "thumbnailStale"),
+              "and the property ended where the worker's counter ended");
+        check(reportNumber(settled, "previewDropped") == 0,
+              "rows: no ROW was ever lost for want of a slot - the consumer released every row "
+              "it was given, painted or not");
+        check(reportNumber(settled, "releases") ==
+                  reportNumber(settled, "thumbnailPublished") +
+                      reportNumber(settled, "selectionPublished") +
+                      reportNumber(settled, "mirrorPublished"),
+              "and every frame published on the stream, in any of its three targets, had its "
+              "ownership handed back: the dropped frames of this run are mirror frames the peer "
+              "chose not to wait for, which is the producer's own cadence and not a leak");
+        check(reportNumber(settled, "presents") == 0,
+              "rows: through a whole slide list, the peer saw no scene.present at all");
+    }
+    controller.shutdownNow();
+}
+
 int main(int argc, char* argv[]) {
     const char* scenario = std::getenv("OPENSHOW_FAKE_SCENARIO");
     if (scenario != nullptr) {
@@ -2792,6 +3642,7 @@ int main(int argc, char* argv[]) {
     scenarioAdoptedPaths();
     scenarioMediaTransport();
     scenarioSelectionPreview();
+    scenarioThumbnailPreview();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "worker_controller_tests: %d failure(s)\n", gFailures);

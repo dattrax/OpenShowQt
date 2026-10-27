@@ -1298,12 +1298,103 @@ Updated: 2026-10-27 (Europe/London).
   - Gates desktop **45/45** (210 s, one test added), headless **27/27**
     (48 s); both trees build without warnings; offscreen UI smoke silent and
     alive at its deadline.
-- Exact next action: **6.16b** per the PLAN.md ledger (review R16) — bounded
-  on-demand worker THUMBNAILS over the transport 6.16a just extended: thumbnail
-  requests carry scene and target identity, coalesce and cancel, and return
-  only composed preview pixels, with no audience mutation and no queue or
-  memory growth. The generation rule, the per-target cadence and the scripted
-  producer in S14 are the pieces to build on. R15 is closed on both halves;
+- **6.16b — the slide list draws from the worker, one row at a time (R16,
+  second half) — DONE.** `Main.qml` listed slides as `(index) + preview` text
+  lines laid out by Qt while the worker drew the audience something else, so
+  the operator read one renderer's idea of a slide beside another's. The list
+  now asks the worker to picture the visible band and paints what comes back,
+  with the text line kept underneath as the fallback it always was — legible
+  before the picture arrives, on a worker that cannot draw the list, and to a
+  screen reader either way.
+  - **A third target on the stream 6.16a versioned, not a third segment.**
+    `preview.thumbnails {scenes,width,height,request}` answers
+    `{request,width,height,frames[{key,id}],refused[{key,why}]}`; rows are
+    `kPreviewTargetThumbnail` frames whose `revision` is a worker-assigned
+    per-slide id from the ack and whose `request` is the batch generation;
+    capability `preview.thumbnail.v1`, minor 8→9, 12 capabilities. A batch
+    **replaces** the pending set wholesale — cancellation as one comparison,
+    because a scroll wheel fires this command — and an empty batch is a
+    stand-down that still consumes a generation. Bounds live in
+    `preview_wire.h` so the worker, the client and the scripted peer judge a
+    batch by one predicate.
+  - **A row's size is part of the frame.** A slot's payload was reserved for the
+    stream's own extent, so `PreviewStream::publish` takes an optional
+    `FrameExtent` and stamps `width/height/rowBytes` on every publish,
+    `bytesPerSlot()` is published, and the extent is re-checked at publish time
+    as well as at accept: a smaller `preview.start` that found a batch standing
+    would otherwise mean writing 921,600 bytes into a slot reserved for 230,400,
+    which is not a wrong picture but the worker's memory.
+  - **Isolation is the acceptance.** `SceneRenderer::createCompanion` gives the
+    list its own words-layer LRU and its own 12 MiB `SceneImageCache` while
+    **sharing** the `SceneTextEngine` — one font engine, two pools — and a
+    thumbnail scene never enters `fScenes`, the prepared store or the pin set.
+    Decodes run on the RPC thread, one file per 50 ms tick, lookahead 4 past the
+    draw head; the draw path never opens a file and a miss is the colour fill.
+    `SceneImageCache` gained `install()`, a per-instance budget honoured by
+    `evictLocked`, and `decodeAtMost()`, and `decodeImageFile` resamples
+    anything still over the box after `RasterFromBitmap` — the box is a
+    promise, not a preference — so a backdrop for a 160x90 row is ~57 KB
+    cached rather than 33 MiB. Nothing in the path calls `captureFrame`,
+    `commitFrame`, `setActiveScene` or the transport's apply, and the live
+    fixture measures the show's presented-frame counter, decoded pool and
+    mirror unmoved by a band of thirty.
+  - **The client mirrors the selection's pattern.** wanted/asked/acked state, an
+    id→key map that lives only as long as its ack, three refusal gates before a
+    byte is written (cap, box, this stream's slot), R11's per-entry rule applied
+    to a batch, dedupe on payload+extent, and a cache bounded twice — 64
+    entries and 4 MiB, whichever ceiling bites first. A frame is copied only if
+    it answers the accepted generation, names an id an accepted batch handed
+    out, and its slot header agrees with its notification about its size; an
+    edited slide loses its old picture the instant it is edited; a worker that
+    reports the band gone is re-asked exactly once. One row's arrival repaints
+    one item, not the list.
+  - **Four bugs, all found by fixtures or smoke.** `fillPreviewSlot` accepted a
+    `SceneRenderer*` and an `sk_sp<SkSurface>*` and drew with
+    `fScene`/`fPreviewSurface` anyway — rows came back the scene's FILL colour
+    and every row alternation reallocated the mirror's surface; `PreviewView::key`
+    was an accessor pair with no `Q_PROPERTY`, which compiles and takes the whole
+    QML module down at load; three `root.` references where the function and flag
+    live on the `showPage` Item, plus a `Qt.callLater` handed an undefined value;
+    and the scripted peer derived `active` from its remaining row debt, so a
+    finished list looked lost and the client re-asked one band four times a
+    second.
+  - **Tests.** Live slide-list phase (three rows are three slides by colour
+    identity; every refusal naming the number it failed; the show's pool
+    untouched while a backdrop row decodes to <=64 KiB in the list's own pool; a
+    20-row band replaced by 1 owing <=1; **leg 9**: a standing 480x480 band and a
+    smaller `preview.start` end stood down, undrawn, with a fresh 64x36 ask
+    landing at its own extent). S15 makes the scripted peer a real producer of
+    rows — monotonic ids, one row per wake, `LATE`/`OLDSTAMP`/`LIE`/`FORGET`
+    markers — so each of the three ways a frame must not be painted exists on
+    the wire and is shown dropped before the copy, with the 4 MiB cache measured
+    while 32 rows at the stream's extent arrive. New ctest `ui_loads` runs the
+    real shell offscreen and requires it to STAY UP and say nothing about loading,
+    with two negatives so the guard is not vacuous.
+  - **Mutations** m01–m20 plus m04a/m08a/m10a: **19/23 CAUGHT**, with blame on
+    the intended checks (the shipped `fillPreviewSlot` bug failed the backdrop's
+    colour identity, the un-resampled PNG failed the pool's byte measurement, the
+    removed cache ceilings failed the 4 MiB ceiling and the LRU order). m19 was
+    re-scored after fixing the driver: the protocol library had been left out of
+    the rebuild set, so run 3 scored it on a binary that had never been rebuilt,
+    and a mutant that cannot run is a driver lying rather than a fixture passing.
+    Disclosed: m04a/m08a/m10a are the redundant halves of pairs the battery does
+    test (the wire refuses the cap and the key before the session is reached; the
+    start path stands a batch down before the draw path can be owed); m20, the
+    client's id-map gate, is defence in depth — a frame whose id no accepted
+    batch named is copied and then refused by the store step for want of a key, so
+    nothing observable moves (what the gate bounds is per-frame copy work).
+  - Gates desktop **48/48** (228 s; `ui_loads` plus its two negatives added),
+    headless **27/27** (48.5 s); `preview_selection_tests` 14.3 s,
+    `worker_controller_tests` 47.1 s, `scene_image_cache_tests` 1.94 s,
+    `ui_loads` 8.03 s; both trees build clean apart from the pre-existing GCC
+    `-Wfree-nonheap-object` false positive at
+    `tests/background_media_tests.cpp:2294` (6.15b test code); offscreen UI
+    loads with the five pre-existing QML notices and no load error.
+- Exact next action: **6.17a** per the PLAN.md ledger (review R17) — close the
+  multiple-text-box authoring/storage/compiler gap using stable item ids: legacy
+  single-box files render identically, while multiple boxes create, edit, move,
+  resize and reorder with undo, save/reload and a correct worker preview; split
+  the slice before coding if it exceeds two days. R16 is closed on both halves;
   review completion does not mark any finding fixed, and no new implementation
   blocker was found.
 
@@ -3722,6 +3813,58 @@ of this work.
   development tool and nothing in the build references it.
 
 ## Decisions
+
+- (2026-10-27, task 6.16b) Four rules, one of them about how this repo tests.
+  **A shared helper that ignores what makes its callers different is worse than
+  two helpers**: `fillPreviewSlot` had been given the renderer and the surface
+  to draw with and used `fScene` and `fPreviewSurface` regardless, so the
+  slide list's rows came back the scene's fill colour (the show's image cache
+  had never heard of the backdrop the list had decoded) and every row
+  alternation reallocated the audience's mirror surface. Parameters that are
+  not used are not a style problem, they are a second, silent behaviour — and
+  the only thing that caught it was a fixture that asks whether the row's
+  pixels are the row's own backdrop.
+  **QML is not compiled, so run the binary**: `PreviewView::key` was an
+  accessor pair with no `Q_PROPERTY`, and three `root.` references pointed at
+  the Window rather than the `showPage` Item that owns the band's function and
+  flag. Both compile, both install, and both leave the operator an empty
+  window; the standing answer is the new `ui_loads` ctest, which requires the
+  real executable to stay up offscreen and to have said nothing about loading,
+  with negatives (a process that exits at once, and the actual output these
+  rows produced while they were broken) so the guard cannot go vacuous.
+  **A status field means what the client's recovery rule assumes it means**:
+  the scripted peer reported the thumbnail target's `active` as its remaining
+  row debt, and the client — which re-asks when the worker says the band is
+  gone while a list still stands — re-asked one completed band four times a
+  second. `active` is registration; `queued` is the debt; the first run of the
+  scenario is the comment in the peer now.
+  **A bound you do not enforce at the producer is a bound you do not have**:
+  `decodeAtMost` was satisfied by a decode that respected the box "where
+  possible", and PNGs that came back full-size sat in the pool at 33 MiB for a
+  160x90 row. `decodeImageFile` now resamples whatever is still over the box
+  after `RasterFromBitmap`, and the fixture measures the cached entry's bytes.
+  And on the battery: **when two guards protect one property, mutate the pair
+  and disclose the half**. The batch cap and the key limit are checked at the
+  wire and again in the session, and the extent is checked at accept and again
+  at publish; removing either half alone changes no observable, so m08 and m10
+  remove both (caught) while m08a, m10a and m04a are disclosed as equivalents
+  rather than counted as wins. Leg 9 of the live fixture exists for the same
+  reason: it stands a `480x480` band across a `320x180` `preview.start`, which
+  is the only input that makes the pair's absence anything other than a
+  status-field difference — with both guards gone the worker dies on the
+  oversized write, which is precisely what they are there to prevent.
+  Two more tallies belong with that rule rather than being smoothed over.
+  **m19 (the capability removed) first reported "survived" and was a harness
+  bug, not a result**: the protocol library had been left out of the battery's
+  rebuild set, so it scored a mutant against a binary that had never been
+  compiled; after fixing the driver and adding a preflight that checks every
+  suite entry's shape and that each named executable exists, the re-score was
+  CAUGHT. A mutant that cannot run is a driver lying. And **m20, the client's
+  id-map gate, is disclosed as equivalent rather than decorated**: a frame whose
+  id no accepted batch handed out is copied and then refused by the store step
+  for want of a key, so no observable moves — the gate bounds per-frame copy
+  work, which is real but not visible to a fixture, the same class of truth as
+  6.14b's pause-drop. Final: 19/23 caught, four disclosed.
 
 - (2026-10-27, task 6.16a) Three rules, plus an autopsy worth keeping.
   **Extend the transport you have before you add a parallel one**: the cheap

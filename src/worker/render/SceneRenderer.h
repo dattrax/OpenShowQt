@@ -94,12 +94,42 @@ public:
     SceneRenderer(const SceneRenderer&) = delete;
     SceneRenderer& operator=(const SceneRenderer&) = delete;
 
+    // A renderer for a SECOND target (task 6.16b): the same compositor with
+    // a decoded-image cache of a size of its own. See createCompanion().
+    explicit SceneRenderer(std::size_t imageBudget) : fImages(imageBudget) {}
+
     // Production is the default: background/images/words tabs on, aux off
     // (not part of the agreed use case) and clock off (the audience clock
     // is called up explicitly by the operator, R1). Passing a demo builder
     // opts into the development picture and re-enables the clock as the
     // live-frame indicator, exactly as the pre-6.1 development scene did.
     bool create(std::string* error, const DemoBuilder& demo = nullptr);
+
+    // The compositor for a second target (task 6.16b, review R16) — the
+    // slide list's thumbnails — built as a companion of a live renderer.
+    //
+    // It is a SEPARATE renderer rather than the same one drawing a different
+    // scene, for one specific reason: the words layer caches laid-out text
+    // in a handful of slots keyed on the scene. Alternating the audience's
+    // scene with a band of thirty other scenes evicts the audience's layout
+    // every pass and re-shapes it on the next, which is the show paying for
+    // a preview — exactly the cost this task must not add. Own slots, own
+    // budget, own decoded-image cache, and the audience's layout survives
+    // however much the list churns.
+    //
+    // What it SHARES is the text engine: that is fontconfig faces, typefaces
+    // and ICU, stateless with respect to layouts, and duplicating it would
+    // be megabytes of font data for a target that draws the same glyphs as
+    // the show. Layouts are built on the render thread, which is the only
+    // thread either renderer draws on, so sharing it needs no lock.
+    //
+    // `primary` must outlive the companion; the session's first renderer
+    // does. Returns nullptr with `error` set when the layers cannot be
+    // built (in practice: no usable typeface, which the primary already
+    // proved there is).
+    static std::unique_ptr<SceneRenderer> createCompanion(const SceneRenderer& primary,
+                                                          std::size_t imageBudget,
+                                                          std::string* error);
 
     // True when no decoration was built: no demo content exists and the
     // session composes the audience picture. The session uses this to
@@ -210,9 +240,16 @@ public:
     const SceneTextEngine& textEngine() const { return *fText; }
 
 private:
+    // The layer stack, built by create() (its own engine) and by
+    // createCompanion() (a borrowed one). Kept out of both so the two cannot
+    // drift apart on layer order or on the aux/clock defaults.
+    bool buildLayers(std::string* error, const DemoBuilder& demo);
+
     // Shared text services; the layer objects own the drawn content. The
-    // engine outlives the layers (declared before fLayers).
-    std::unique_ptr<SceneTextEngine> fText;
+    // engine outlives the layers (declared before fLayers): shared because a
+    // companion renderer borrows the primary's (see createCompanion), and
+    // the primary outlives it by construction.
+    std::shared_ptr<SceneTextEngine> fText;
     SceneImageCache fImages;     // persists background images across scenes
     // The words layer's layout-build counter (declared ahead of fLayers so
     // it outlives the layer that writes it).

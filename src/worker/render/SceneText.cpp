@@ -413,7 +413,18 @@ namespace {
 // (from the codec's encoded info, so a 20000x20000 PNG is refused on its
 // numbers rather than by an allocation that may or may not fail and, when
 // it succeeds, leaves the machine 1.6 GB poorer).
-sk_sp<SkImage> decodeImageFile(const std::string& path, std::string* error) {
+//
+// Task 6.16b added the optional cap. `maxW`/`maxH` of 0 mean "native";
+// otherwise the caller gets an image that FITS that box, no larger. The two
+// gates above still judge the file's declared numbers, so a 20000x20000 PNG
+// is still an incident and not a thumbnail. Getting inside the box is a
+// two-step: the codec is asked for the closest size it can produce natively
+// (cheap, and exact for JPEG), and anything still over the box afterwards —
+// which is every PNG, since PNG has no scaled mode — is resampled here. The
+// caller therefore never has to resize, and, more importantly, never has to
+// CACHE a picture larger than the one it asked for.
+sk_sp<SkImage> decodeImageFile(const std::string& path, std::string* error,
+                               std::uint32_t maxW = 0, std::uint32_t maxH = 0) {
     auto fail = [&](std::string message) -> sk_sp<SkImage> {
         if (error) {
             *error = std::move(message);
@@ -461,8 +472,27 @@ sk_sp<SkImage> decodeImageFile(const std::string& path, std::string* error) {
                     std::to_string(SceneImageCache::kMaxDecodedPixels / 1000000u) +
                     " megapixel limit");
     }
-    const SkImageInfo info = codec->getInfo().makeColorType(kN32_SkColorType)
+    const SkImageInfo full = codec->getInfo().makeColorType(kN32_SkColorType)
                                  .makeAlphaType(kPremul_SkAlphaType);
+    SkISize wanted = full.dimensions();
+    if (maxW > 0 && maxH > 0 &&
+        (wanted.width() > static_cast<int>(maxW) || wanted.height() > static_cast<int>(maxH))) {
+        // The codec's own suggestion for the nearest scale it can do
+        // natively, which is the cheap half of the box. It may still
+        // overshoot: a JPEG decodes at 1/2, 1/4, 1/8 and lands a step above
+        // the box, a PNG declines to scale at all. The resample below is what
+        // makes the box a promise rather than a preference, so taking the
+        // codec's offer here is purely about how much memory the decode has
+        // to touch on its way to that.
+        const float scale =
+            std::min(static_cast<float>(maxW) / static_cast<float>(wanted.width()),
+                     static_cast<float>(maxH) / static_cast<float>(wanted.height()));
+        const SkISize suggested = codec->getScaledDimensions(scale);
+        if (suggested.width() > 0 && suggested.height() > 0) {
+            wanted = suggested;
+        }
+    }
+    const SkImageInfo info = full.makeWH(wanted.width(), wanted.height());
     SkBitmap bitmap;
     if (!bitmap.tryAllocPixels(info)) {
         return fail("no pixels for a " + std::to_string(info.width()) + "x" +
@@ -472,10 +502,50 @@ sk_sp<SkImage> decodeImageFile(const std::string& path, std::string* error) {
     if (result != SkCodec::kSuccess) {
         return fail("image decode failed (SkCodec result " + std::to_string(result) + ")");
     }
+    sk_sp<SkImage> image = SkImages::RasterFromBitmap(bitmap);
+    if (image == nullptr) {
+        return fail("the decoded pixels would not become an image");
+    }
+    // THE SECOND HALF OF THE CAP, and the part a codec cannot give you.
+    // `getScaledDimensions` answers with the nearest scale the codec does
+    // natively — for a PNG that is its native size, because PNG has no
+    // scaled mode at all. A 1600x900 backdrop asked for as a 160x90 picture
+    // would then be CACHED at 5.8 MB, and a slide list's whole point is that
+    // thirty of those are held at once. So the box is enforced here rather
+    // than suggested: any decode that is still too big is resampled into
+    // raster pixels at the box's aspect, and that is what the caller keeps.
+    // The transient native decode is not wasted work the gates did not price:
+    // it is bounded by the same file-size, dimension and megapixel ceilings
+    // every other decode answers to, and it is freed on the way out.
+    if (maxW > 0 && maxH > 0 &&
+        (image->width() > static_cast<int>(maxW) || image->height() > static_cast<int>(maxH))) {
+        const float scale =
+            std::min(static_cast<float>(maxW) / static_cast<float>(image->width()),
+                     static_cast<float>(maxH) / static_cast<float>(image->height()));
+        const int boxW = std::max(1, static_cast<int>(image->width() * scale));
+        const int boxH = std::max(1, static_cast<int>(image->height() * scale));
+        const SkImageInfo small = full.makeWH(boxW, boxH);
+        sk_sp<SkSurface> surface = SkSurfaces::Raster(small);
+        if (surface == nullptr) {
+            // No resample, and the oversized picture must not be kept under a
+            // caller that asked for a bounded one: this is a failure, honestly
+            // reported, not a big entry that happens to work.
+            return fail("no pixels to scale a " + std::to_string(boxW) + "x" +
+                        std::to_string(boxH) + " image into");
+        }
+        surface->getCanvas()->clear(SK_ColorTRANSPARENT);
+        surface->getCanvas()->drawImageRect(image, SkRect::MakeIWH(boxW, boxH),
+                                            SkSamplingOptions(SkFilterMode::kLinear));
+        sk_sp<SkImage> scaled = surface->makeImageSnapshot();
+        if (scaled == nullptr) {
+            return fail("the scaled image could not be made");
+        }
+        image = std::move(scaled);
+    }
     if (error) {
         error->clear();
     }
-    return SkImages::RasterFromBitmap(bitmap);
+    return image;
 }
 
 // Decoded pixel bytes an entry accounts for: the N32 raster a load
@@ -491,6 +561,34 @@ std::size_t imageBytes(const sk_sp<SkImage>& image) {
 }
 
 }  // namespace
+
+sk_sp<SkImage> SceneImageCache::decodeAtMost(const std::string& path, std::uint32_t maxW,
+                                             std::uint32_t maxH, std::string* error) {
+    return decodeImageFile(path, error, maxW, maxH);
+}
+
+sk_sp<SkImage> SceneImageCache::install(const std::string& path, sk_sp<SkImage> image) {
+    // The loader's way in for pixels a lookup could not have produced (a
+    // scaled thumbnail decode). Accounting is the load's accounting — the
+    // bytes count against this cache's budget, a null is a remembered
+    // failure the draw path will not retry at frame rate — and the new
+    // entry is the one eviction is told to leave alone, so installing a
+    // picture that is about to be drawn cannot forget itself first.
+    const std::size_t bytes = imageBytes(image);
+    std::lock_guard<std::mutex> lock(fMutex);
+    const auto existing = fEntries.find(path);
+    if (existing != fEntries.end()) {
+        fBytes -= existing->second.bytes;
+        fEntries.erase(existing);
+    }
+    Entry& entry = fEntries[path];
+    entry.image = image;
+    entry.bytes = bytes;
+    entry.seen = ++fClock;
+    fBytes += bytes;
+    evictLocked(path);
+    return image;
+}
 
 sk_sp<SkImage> SceneImageCache::imageFor(const std::string& path) {
     // Pure lookup — the draw path's entry point (task 6.10, review R12).
@@ -625,6 +723,7 @@ SceneImageCache::Stats SceneImageCache::stats() const {
     out.entries = fEntries.size();
     out.pins = fPins;
     out.evictions = fEvictions;
+    out.budget = fBudget;
     return out;
 }
 
@@ -636,7 +735,7 @@ void SceneImageCache::evictLocked(std::string_view protect) {
     // mid-show. An entry still drawn elsewhere survives in its caller's
     // sk_sp regardless: eviction frees the CACHE's reference, not the
     // frame's.
-    while (fBytes > kDecodedImageBudget) {
+    while (fBytes > fBudget) {
         auto victim = fEntries.end();
         for (auto candidate = fEntries.begin(); candidate != fEntries.end(); ++candidate) {
             if (candidate->second.pins != 0 || candidate->first == protect ||

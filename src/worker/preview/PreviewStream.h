@@ -43,6 +43,12 @@ public:
     uint32_t width() const { return fWidth; }
     uint32_t height() const { return fHeight; }
     uint32_t rowBytes() const { return fWidth * 4; }
+    // One slot's whole stride (header + pixels). A frame whose size is NOT the
+    // stream's own — a thumbnail (task 6.16b) — has to be checked against this
+    // before a byte is written: the segment was reserved for the stream's
+    // geometry, so an extent one stream can publish another cannot, and
+    // preview.start can replace a stream while a batch stands.
+    uint32_t bytesPerSlot() const { return fBytesPerSlot; }
 
     // Producer: claim a slot the consumer has already released (or one
     // never written) and open its seqlock. Returns -1 when every slot is
@@ -62,8 +68,25 @@ public:
     // cannot tell them apart from bytes. Both are written inside the odd
     // seqlock window, so an even sequence is always a consistent
     // (target, request, pixels) triple.
+    //
+    // `extent` (task 6.16b) says how BIG this frame is. A thumbnail shares
+    // the segment without sharing its size, and the header's geometry is
+    // per-slot state, so it is stamped on EVERY publish rather than left at
+    // what create() wrote: a slot that held a 160x90 thumbnail and now holds
+    // the 640x360 mirror must not still claim to be 160 wide. The default is
+    // the stream's own geometry, which is what every frame that is not a
+    // thumbnail is. Rows are packed (rowBytes == width * 4), which is the
+    // one thing that lets a consumer copy a frame of any size with a single
+    // memcpy — and the reason the caller must read back with the frame's own
+    // stride, not the stream's.
+    struct FrameExtent {
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::uint32_t rowBytes = 0;
+    };
     std::uint64_t publish(int slot, std::uint32_t revision, std::uint32_t target,
-                          std::uint32_t request, std::uint64_t publishedNs);
+                          std::uint32_t request, std::uint64_t publishedNs,
+                          const FrameExtent* extent = nullptr);
 
     // A write failed mid-claim: close the seqlock with nothing changed.
     void abort(int slot);
