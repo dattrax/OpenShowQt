@@ -94,6 +94,12 @@ class DocumentController : public QObject {
     Q_PROPERTY(QVariantList styles READ styles NOTIFY documentsChanged)
     Q_PROPERTY(QVariantMap currentStyle READ currentStyle NOTIFY documentsChanged)
     Q_PROPERTY(bool currentStyleIsOverride READ currentStyleIsOverride NOTIFY documentsChanged)
+    // How the current slide's background picture fits the canvas: "cover"
+    // or "contain", "" with no slide (task 6.17c1). A document fact read
+    // through the style panel's combo; the combo also listens to navigation
+    // in QML, the same two-signal contract the style fields use.
+    Q_PROPERTY(QString currentBackgroundFit READ currentBackgroundFit
+               NOTIFY documentsChanged)
     // Edit-since-explicit-save, and the directory save()/load() use.
     Q_PROPERTY(bool dirty READ dirty NOTIFY stateChanged)
     Q_PROPERTY(QString serviceDirectory READ serviceDirectory CONSTANT)
@@ -122,6 +128,7 @@ public:
     QVariantList styles() const;
     QVariantMap currentStyle() const;
     bool currentStyleIsOverride() const;
+    QString currentBackgroundFit() const;
     QString currentPlaylistId() const {
         return QString::fromStdString(fCurrentPlaylistId);
     }
@@ -217,6 +224,10 @@ public:
     // Layering: an image behind the current slide's words; "" clears it
     // back to the style's background colour.
     Q_INVOKABLE bool setSlideBackground(const QString& assetId);
+    // How the current slide's background sits on the canvas (6.17c1): the
+    // two names the model spells, one history entry; a name the domain does
+    // not know is refused here naming itself, before any edit is recorded.
+    Q_INVOKABLE bool setSlideBackgroundFit(const QString& fit);
 
     // --- slide clipboard (task 4.5) ---
 
@@ -381,6 +392,10 @@ private:
         std::string notes;
         std::string styleId;
         std::string backgroundAssetId;
+        // The clip fits its background the way the source slide did
+        // (6.17c1) — the choice travels with the slide that authored it.
+        openshow::domain::BackgroundFit backgroundFit =
+            openshow::domain::BackgroundFit::Cover;
     };
     // Inserts a slide carrying the clip after the current position and
     // selects it. References the service no longer holds are dropped.

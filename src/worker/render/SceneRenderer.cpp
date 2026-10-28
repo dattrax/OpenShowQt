@@ -32,7 +32,7 @@ namespace {
 // asserts the diff of its toggle stays inside this (widened) region.
 constexpr SkRect kAuxBadge = SkRect::MakeLTRB(1560.0f, 40.0f, 1880.0f, 112.0f);
 
-// Bottom of the stack: the presented scene's colour fill and cover-fitted
+// Bottom of the stack: the presented scene's colour fill and fitted
 // media (still image task 3.2, video frames task 5.5). When a crossfade is
 // in flight the outgoing scene draws first, then the on-air scene
 // dissolves over it at the media blend — the whole background fading as

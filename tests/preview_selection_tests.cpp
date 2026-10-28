@@ -625,11 +625,12 @@ bool writePng(const std::string& path, const char* colour, int width, int height
 boost::json::object stillScene(const char* slideId, const std::string& path,
                                std::uint32_t fill) {
     return boost::json::object{
-        {"scene", 2},
+        {"scene", 3},
         {"showId", "select16"},
         {"slideId", slideId},
         {"backgroundColor", fill},
         {"background", boost::json::object{{"image", true},
+                                           {"fit", "cover"},
                                            {"assetId", std::string("still-") + slideId},
                                            {"assetPath", path}}},
         {"items", boost::json::array{}},
@@ -645,12 +646,12 @@ boost::json::object listEntry(const char* key, const boost::json::object& scene)
 // A solid-colour scene with one word.
 boost::json::object solidScene(const char* slideId, std::uint32_t color, const char* word) {
     return boost::json::object{
-        {"scene", 2},
+        {"scene", 3},
         {"showId", "select16"},
         {"slideId", slideId},
         {"backgroundColor", color},
         {"background",
-         boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
+         boost::json::object{{"image", false}, {"fit", "cover"}, {"assetId", ""}, {"assetPath", ""}}},
         {"items",
          boost::json::array{boost::json::object{{"kind", "text"}, {"lines", boost::json::array{word}},
                                                 {"color", 0xFFFFFFu},
@@ -1581,12 +1582,12 @@ void testForegroundImageOffAir(std::int64_t& nextId, int fd) {
                                                 {"height", 1080.0}});
         }
         return boost::json::object{
-            {"scene", 2},
+            {"scene", 3},
             {"showId", "select16"},
             {"slideId", withPicture ? "FG1" : "FG0"},
             {"backgroundColor", 0x000000u},
             {"background",
-             boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
+             boost::json::object{{"image", false}, {"fit", "cover"}, {"assetId", ""}, {"assetPath", ""}}},
             {"items", std::move(items)},
         };
     };

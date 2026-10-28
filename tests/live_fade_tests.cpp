@@ -324,12 +324,12 @@ std::pair<double, double> meanRedGreen() {
 boost::json::object solidScene(const char* slideId, std::uint32_t color,
                                const char* word) {
     return boost::json::object{
-        {"scene", 2},
+        {"scene", 3},
         {"showId", "live-fade"},
         {"slideId", slideId},
         {"backgroundColor", color},
         {"background",
-         boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
+         boost::json::object{{"image", false}, {"fit", "cover"}, {"assetId", ""}, {"assetPath", ""}}},
         {"items",
          boost::json::array{boost::json::object{{"kind", "text"}, {"lines", boost::json::array{word}},
                                                 {"color", 0xFFFFFFu},
@@ -399,11 +399,12 @@ bool writeSolidPng(const std::string& path, const char* rgbHex) {
 boost::json::object stillScene(const char* slideId, const std::string& path,
                                std::uint32_t fillColor) {
     return boost::json::object{
-        {"scene", 2},
+        {"scene", 3},
         {"showId", "live-fade"},
         {"slideId", slideId},
         {"backgroundColor", fillColor},
         {"background", boost::json::object{{"image", true},
+                                           {"fit", "cover"},
                                            {"assetId", std::string("still-") + slideId},
                                            {"assetPath", path}}},
         {"items", boost::json::array{}},
@@ -415,11 +416,11 @@ boost::json::object stillScene(const char* slideId, const std::string& path,
 // produced. Measured, not assumed.
 boost::json::object fillScene(std::uint32_t fillColor) {
     return boost::json::object{
-        {"scene", 2},
+        {"scene", 3},
         {"showId", "live-fade"},
         {"slideId", "PIC-FILL"},
         {"backgroundColor", fillColor},
-        {"background", boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
+        {"background", boost::json::object{{"image", false}, {"fit", "cover"}, {"assetId", ""}, {"assetPath", ""}}},
         {"items", boost::json::array{}},
     };
 }

@@ -213,7 +213,7 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 13, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 14, "hello lists capabilities");
         {  // Task 6.17b's scene 2 (kinded items) is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasImageItems = std::any_of(
@@ -221,6 +221,14 @@ void testHello() {
                     return v.is_string() && v.as_string() == "scene.image-items.v1";
                 });
             check(hasImageItems, "capabilities name scene.image-items.v1");
+        }
+        {  // Task 6.17c1's scene 3 (the background's fit) is named by one too.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasFit = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == "scene.background-fit.v1";
+                });
+            check(hasFit, "capabilities name scene.background-fit.v1");
         }
         {  // Task 5.5d's media visibility is named by a capability.
             const auto& caps = result.at("capabilities").as_array();

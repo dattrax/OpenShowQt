@@ -857,10 +857,18 @@ sk_sp<SkImage> backgroundPicture(const openshow::scene::Scene& scene, SceneImage
     return images->imageFor(scene.background.assetPath);
 }
 
-// Cover fit: scale to fill the authored canvas, centre, crop overflow.
-SkRect coverFitDest(const SkImage& image) {
-    const float scale = std::max(kSceneCanvasWidth / static_cast<float>(image.width()),
-                                 kSceneCanvasHeight / static_cast<float>(image.height()));
+// Where the background picture lands on the authored canvas, per the scene's
+// fit (task 6.17c1, review R17). COVER — the rule since 3.2 — scales to fill,
+// centres, and crops overflow (the caller's clip keeps the crop off a
+// portrait window's letterbox). CONTAIN scales to sit INSIDE the canvas,
+// centred on both axes, and the colour fill already drawn underneath shows
+// through the bars: a letterboxed picture, never a stretched or cropped one.
+SkRect fitDest(const SkImage& image, openshow::domain::BackgroundFit fit) {
+    const float scaleX = kSceneCanvasWidth / static_cast<float>(image.width());
+    const float scaleY = kSceneCanvasHeight / static_cast<float>(image.height());
+    const float scale = fit == openshow::domain::BackgroundFit::Contain
+                            ? std::min(scaleX, scaleY)
+                            : std::max(scaleX, scaleY);
     const float w = static_cast<float>(image.width()) * scale;
     const float h = static_cast<float>(image.height()) * scale;
     return SkRect::MakeLTRB((kSceneCanvasWidth - w) * 0.5f, (kSceneCanvasHeight - h) * 0.5f,
@@ -911,9 +919,24 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
         // shader: `picture over fill` evaluated per pixel, then drawn once at
         // the group alpha. Measured against a by-the-book isolated layer:
         // exact for an opaque picture (0/255 over the whole canvas), within
-        // rounding for a picture with per-pixel alpha (1/255), and one draw
-        // call instead of two.
-        const SkRect dest = coverFitDest(*image);
+        // rounding for a picture with per-pixel alpha (1/255). Cover needs
+        // the one draw; contain adds a bar fill (below) — still no layer,
+        // and the two regions never overlap.
+        const SkRect dest = fitDest(*image, scene.background.fit);
+        // CONTAIN adds a second region: outside the picture's dest rect the
+        // group is the fill ALONE (6.17c1). Drawing the Blend shader over the
+        // whole canvas would let the image's clamp tile the edge pixels into
+        // the bars — the same composite, split into its disjoint regions so
+        // each pixel still sees `picture over fill` (or plain fill) exactly
+        // once at the group alpha. The rects meet on the same SkRect, so the
+        // rasteriser splits them on one boundary with no seam and no overlap.
+        canvas->save();
+        canvas->clipRect(dest, SkClipOp::kDifference);
+        SkPaint barFill;
+        barFill.setColor(fill);
+        barFill.setAlpha(paint->getAlpha());
+        canvas->drawRect(canvasRect, barFill);
+        canvas->restore();
         // The image shader's local matrix maps the IMAGE'S OWN PIXELS into the
         // canvas' space (the same RectToRect the canvas itself builds for
         // drawImageRect), not the unit square. Getting this wrong is invisible
@@ -928,13 +951,14 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
             SkShaders::Image(image, SkTileMode::kClamp, SkTileMode::kClamp,
                              SkSamplingOptions(SkFilterMode::kLinear), &local)));
         group.setAlpha(paint->getAlpha());
-        canvas->drawRect(canvasRect, group);
+        canvas->drawRect(dest, group);
     } else {
         SkPaint fillPaint;
         fillPaint.setColor(fill);
         canvas->drawRect(canvasRect, fillPaint);
         canvas->drawImageRect(image, SkRect::MakeIWH(image->width(), image->height()),
-                              coverFitDest(*image), SkSamplingOptions(SkFilterMode::kLinear),
+                              fitDest(*image, scene.background.fit),
+                              SkSamplingOptions(SkFilterMode::kLinear),
                               nullptr, SkCanvas::kFast_SrcRectConstraint);
     }
     canvas->restore();

@@ -312,12 +312,12 @@ Sample sample(int fd, std::int64_t& nextId) {
 boost::json::object solidScene(const char* slideId, std::uint32_t color,
                                const char* word) {
     return boost::json::object{
-        {"scene", 2},
+        {"scene", 3},
         {"showId", "output-status"},
         {"slideId", slideId},
         {"backgroundColor", color},
         {"background",
-         boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
+         boost::json::object{{"image", false}, {"fit", "cover"}, {"assetId", ""}, {"assetPath", ""}}},
         {"items",
          boost::json::array{boost::json::object{{"kind", "text"}, {"lines", boost::json::array{word}},
                                                 {"color", 0xFFFFFFu},

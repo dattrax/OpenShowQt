@@ -1548,6 +1548,96 @@ void exerciseClipboard(const std::filesystem::path& root) {
           "with an empty clipboard paste says so");
 }
 
+// --- task 6.17c1 (review R17): the fit is an operator-editable, saved fact --
+
+void exerciseBackgroundFit(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    check(docs.currentBackgroundFit().isEmpty(),
+          "with no slide there is no fit to report");
+    check(!docs.setSlideBackgroundFit(QStringLiteral("cover")) &&
+              docs.status().contains(QStringLiteral("background fit")) &&
+              docs.status().contains(QStringLiteral("no current slide")),
+          "setting a fit with no slide refuses and names the page it missed");
+
+    docs.createSong(QStringLiteral("Fitted"));
+    docs.addSlide();
+    check(docs.currentBackgroundFit() == QStringLiteral("cover"),
+          "a new slide reports cover — the default every file before format 4 drew");
+    check(docs.setSlideBackgroundFit(QStringLiteral("contain")),
+          "the operator picks contain from the style panel's names");
+    check(docs.currentBackgroundFit() == QStringLiteral("contain"),
+          "the property follows the choice");
+    const QString slideId =
+        docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+    check(docs.slides().at(0).toMap().value(QStringLiteral("backgroundFit")).toString() ==
+              QStringLiteral("contain"),
+          "the slides() view carries the fit per row — the QML panel can show it");
+    check(compiledFor(docs, slideId).background.fit ==
+              openshow::domain::BackgroundFit::Contain,
+          "the compiled scene carries the slide's fit to the worker");
+
+    docs.undo();
+    check(docs.currentBackgroundFit() == QStringLiteral("cover"),
+          "one undo rolls the fit back");
+    docs.redo();
+    check(docs.currentBackgroundFit() == QStringLiteral("contain"),
+          "one redo brings it forward");
+
+    // The refusal discipline: the domain's name list is the only one the
+    // editor speaks, a refused name says itself on the status line, leaves
+    // the property where it stood, and — because it never reaches the edit
+    // seam — leaves no history entry behind.
+    check(!docs.setSlideBackgroundFit(QStringLiteral("blur")) &&
+              docs.status().contains(QStringLiteral("background fit")) &&
+              docs.status().contains(QStringLiteral("'blur'")),
+          "'blur' is refused HERE naming itself — until 6.17c2 draws it, the editor "
+          "cannot be talked into a fit this build would misrender");
+    check(docs.currentBackgroundFit() == QStringLiteral("contain"),
+          "the refused name changed nothing");
+    docs.undo();
+    check(docs.currentBackgroundFit() == QStringLiteral("cover"),
+          "and left no history entry: one undo still reverts the fit itself");
+    docs.redo();
+
+    // The file, not just the session: a save writes the choice (and by the
+    // 6.17b1 rule EVERY slide's fit), and a reopened controller reads it
+    // back and compiles it.
+    check(docs.save(), "the service saves");
+    {
+        std::ifstream manifest(root / "service" / "service.json");
+        const std::string text{std::istreambuf_iterator<char>(manifest),
+                               std::istreambuf_iterator<char>()};
+        check(text.find("\"format\":4") != std::string::npos &&
+                  text.find("\"fit\":\"contain\"") != std::string::npos,
+              "the manifest is format 4 and spells the slide's fit");
+    }
+    {
+        DocumentController reopened(nullptr, root);
+        check(reopened.currentBackgroundFit() == QStringLiteral("contain"),
+              "the reopened service answers with the fit it was saved with");
+        const QString reopenedId =
+            reopened.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+        check(compiledFor(reopened, reopenedId).background.fit ==
+                  openshow::domain::BackgroundFit::Contain,
+              "and its compiled scene carries it, so the audience gets the letterbox");
+    }
+
+    // The clipboard carries the fit the way it carries the box and the
+    // style: a pasted contain slide is a contain slide.
+    check(docs.copyCurrentSlide() && docs.pasteSlide(),
+          "copy and paste run on the fitted slide");
+    check(docs.slides().at(1).toMap().value(QStringLiteral("backgroundFit")).toString() ==
+              QStringLiteral("contain"),
+          "the pasted row carries the fit — the choice travels with the slide "
+          "that authored it");
+    check(compiledFor(docs, docs.slides().at(1).toMap().value(QStringLiteral("id")).toString())
+              .background.fit == openshow::domain::BackgroundFit::Contain,
+          "and the pasted slide compiles contained");
+    docs.addSlide();
+    check(docs.currentBackgroundFit() == QStringLiteral("cover"),
+          "a fresh slide is cover again: the clip does not leak into new slides");
+}
+
 // --- task 6.14a (review R14): autosave health is visible, quitting flushes -------
 
 // R14 measured three silent failures: the autosave tick's error was
@@ -1850,6 +1940,7 @@ int main(int argc, char* argv[]) {
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");
     exerciseClipboard(tempRoot / "clipboard");
+    exerciseBackgroundFit(tempRoot / "fit");
     exerciseImageItemSession(tempRoot / "mixeditem");
     exerciseImageAuthoring(tempRoot / "imageauthoring");
     exerciseAutosaveSurfacing(tempRoot / "surfacing");

@@ -77,7 +77,7 @@ namespace openshow::protocol {
 // always matches in practice; the capability is what a tool inspecting a
 // live worker reads to learn which scene format that worker draws.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 10;
+inline constexpr std::uint32_t kProtocolMinor = 11;
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without

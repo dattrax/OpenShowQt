@@ -1505,6 +1505,107 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         }
     }
 
+    // --- format 4: the fit is written on EVERY slide, older files mean
+    //     cover, and a file that lies about the fit is refused naming the
+    //     lie (task 6.17c1) ---
+    {
+        Documents fitted;
+        const Id show = fitted.createShow("Fitted", &error);
+        const Id slideA = fitted.appendSlide(show, &error);
+        const Id slideB = fitted.appendSlide(show, &error);
+        check(openshow::domain::backgroundFitName(openshow::domain::BackgroundFit::Cover) ==
+                      std::string("cover") &&
+                  openshow::domain::backgroundFitName(openshow::domain::BackgroundFit::Contain) ==
+                      std::string("contain"),
+              "the domain spells the two fits, and they are the only two spellings");
+        openshow::domain::BackgroundFit parsed = openshow::domain::BackgroundFit::Cover;
+        check(!openshow::domain::backgroundFitFromName("blur", &parsed) &&
+                  !openshow::domain::backgroundFitFromName("", &parsed),
+              "names outside the pair do not parse: 'blur' arrives in 6.17c2, "
+              "and until then a file claiming it must not be approximated");
+        check(fitted.findShow(show)->slides[0].backgroundFit == openshow::domain::BackgroundFit::Cover,
+              "a brand-new slide defaults to cover — what the worker has drawn since 3.2");
+        check(fitted.setSlideBackgroundFit(show, slideA, openshow::domain::BackgroundFit::Contain),
+              "a slide chooses contain — legal before any picture exists, because the "
+              "choice is the slide's standing answer, not the file's property");
+        check(fitted.findShow(show)->slides[1].backgroundFit == openshow::domain::BackgroundFit::Cover,
+              "and the other slide is untouched");
+        error.clear();
+        check(!fitted.setSlideBackgroundFit(show, "no-such-slide",
+                                            openshow::domain::BackgroundFit::Cover, &error) &&
+                  error.find("slide") != std::string::npos,
+              "a fit on an unknown slide is refused naming the id");
+
+        const fs::path fittedDir = tempRoot / "v4-fitted";
+        Documents back;
+        error.clear();
+        check(openshow::domain::saveService(fitted, fittedDir, &error) &&
+                  openshow::domain::loadService(&back, fittedDir, &error),
+              "a service of fitted slides saves and reloads");
+        check(back.findShow(show)->slides[0].backgroundFit == openshow::domain::BackgroundFit::Contain &&
+                  back.findShow(show)->slides[1].backgroundFit == openshow::domain::BackgroundFit::Cover,
+              "the choice survives the round trip, slide by slide");
+        check(sameService(fitted, back), "the whole fitted service compares field by field");
+        const std::string manifest = readFile(fittedDir / "service.json");
+        check(manifest.find("\"fit\":\"contain\"") != std::string::npos &&
+                  manifest.find("\"fit\":\"cover\"") != std::string::npos,
+              "both fits are written by name — cover included, because leaving the "
+              "default to inference is 6.17b1's rule for why a key is always written");
+        const fs::path refitted = tempRoot / "v4-refitted";
+        check(openshow::domain::saveService(back, refitted, &error) &&
+                  readFile(refitted / "service.json") == manifest,
+              "re-saving a fitted service writes a byte-identical manifest");
+
+        // The honest format-3 file: no "fit" key anywhere, and cover is not
+        // an inference but that file's own history — cover is the only fit
+        // the worker of that era could draw.
+        {
+            const fs::path legacy = tempRoot / "v3-unfit";
+            std::filesystem::create_directories(legacy);
+            writeFile(legacy / "service.json",
+                      std::string(R"({"format":3,"nextOrdinal":99,"shows":[{"id":"show1",)"
+                                  R"("name":"Unfit","slides":[{"id":"slide1","items":[)") +
+                          R"({"id":"text1","kind":"text","lines":["a"],"x":1,"y":1,)"
+                          R"("width":10,"height":10}]}]}],"styles":[],"assets":[],)"
+                          R"("playlists":[]})");
+            Documents old;
+            error.clear();
+            check(openshow::domain::loadService(&old, legacy, &error) &&
+                      old.findShow("show1")->slides[0].backgroundFit == openshow::domain::BackgroundFit::Cover,
+                  "a format-3 slide with no fit key loads as cover");
+            check(openshow::domain::saveService(old, tempRoot / "v3-promoted", &error) &&
+                      readFile(tempRoot / "v3-promoted" / "service.json")
+                          .find("\"fit\":\"cover\"") != std::string::npos,
+                  "and the re-save promotes it: the choice is now a fact in the file");
+        }
+
+        // The lies: an unknown name, a missing name in a format-4 slide, and
+        // a hand-bumped "fit" in a pre-4 file where the key does not exist.
+        const std::string tailFit = R"(]}],"styles":[],"assets":[],"playlists":[]})";
+        const std::string head4 = R"({"format":4,"nextOrdinal":99,"shows":[{"id":"show1",)"
+                                  R"("name":"Fitted","slides":[{"id":"slide1",)";
+        const std::string head3fit =
+            R"({"format":3,"nextOrdinal":99,"shows":[{"id":"show1",)"
+            R"("name":"Fitted","slides":[{"id":"slide1",)";
+        const std::string box4 =
+            R"("items":[{"id":"text1","kind":"text","lines":["a"],"x":1,"y":1,)"
+            R"("width":10,"height":10}],)";
+        refusesJson(head4 + box4 + R"("fit":"stretch"})" + tailFit,
+                    "not a fit this build can draw",
+                    "a fit name this build cannot draw is refused naming itself");
+        refusesJson(head4 + box4 + R"("fit":"Blur"})" + tailFit,
+                    "has fit 'Blur'",
+                    "and case is not forgiven: the name list is exact");
+        refusesJson(head4 + box4 + R"("backgroundAssetId":""})" + tailFit,
+                    "'fit' must be a string",
+                    "a format-4 slide with no fit is refused: the writer always "
+                    "writes it, so its absence is a hand-edit");
+        refusesJson(head3fit + box4 + R"("fit":"cover"})" + tailFit,
+                    "where that key",
+                    "a hand-bumped 'fit' in a format-3 file is refused rather than "
+                    "trusted — somebody else's build meant something by that key");
+    }
+
     // --- a slide with no boxes at all is a slide, not a corrupt file ---
     {
         Documents drained;

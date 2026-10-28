@@ -151,6 +151,9 @@ QVariantList DocumentController::slides() const {
         entry.insert(QStringLiteral("height"), box.height);
         entry.insert(QStringLiteral("backgroundAssetId"),
                      QString::fromStdString(slide.backgroundAssetId));
+        entry.insert(QStringLiteral("backgroundFit"),
+                     QString::fromLatin1(
+                         openshow::domain::backgroundFitName(slide.backgroundFit)));
         list.append(entry);
     }
     return list;
@@ -957,6 +960,42 @@ bool DocumentController::setSlideBackground(const QString& assetId) {
     return true;
 }
 
+QString DocumentController::currentBackgroundFit() const {
+    const openshow::domain::Slide* slide =
+        findCurrentSlide(fDocuments, fCurrentSongId, currentSlideId());
+    return slide == nullptr
+               ? QString()
+               : QString::fromLatin1(
+                     openshow::domain::backgroundFitName(slide->backgroundFit));
+}
+
+bool DocumentController::setSlideBackgroundFit(const QString& fit) {
+    flushText();
+    const openshow::domain::Id slideId = currentSlideId();
+    if (slideId.empty()) {
+        setStatus(QStringLiteral("background fit: no current slide"));
+        return false;
+    }
+    openshow::domain::BackgroundFit parsed;
+    // Refused before the model sees it: the enum cannot carry a lie, and a
+    // name the DOMAIN does not spell is not this editor's fit either — one
+    // name list, checked by the function that owns it (6.17b1's rule).
+    if (!openshow::domain::backgroundFitFromName(fit.toStdString(), &parsed)) {
+        setStatus(QStringLiteral("background fit: '%1' is not a fit this build draws")
+                      .arg(fit));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setSlideBackgroundFit(fCurrentSongId, slideId, parsed,
+                                                    &error);
+        })) {
+        setStatus(QStringLiteral("background fit: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
 // --- slide clipboard (task 4.5) ---------------------------------------------
 
 bool DocumentController::copyCurrentSlide() {
@@ -979,6 +1018,7 @@ bool DocumentController::copyCurrentSlide() {
         fClip.notes = slide.notes;
         fClip.styleId = slide.styleId;
         fClip.backgroundAssetId = slide.backgroundAssetId;
+        fClip.backgroundFit = slide.backgroundFit;
         emit stateChanged();  // canPaste
         return true;
     }
@@ -1059,6 +1099,13 @@ bool DocumentController::pasteClip(const SlideClip& clip) {
             }
             if (ok) {
                 ok = fDocuments.setSlideBackground(song, inserted, background, &error);
+            }
+            if (ok) {
+                // The clip's fit rides along (6.17c1): pasting a contained
+                // slide gets a contained slide, not one silently redrawn
+                // cropped.
+                ok = fDocuments.setSlideBackgroundFit(song, inserted, clip.backgroundFit,
+                                                      &error);
             }
             if (!ok) {
                 fDocuments.removeSlide(song, inserted, nullptr);

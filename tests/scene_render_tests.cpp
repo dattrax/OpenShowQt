@@ -863,6 +863,75 @@ void testImageBackgroundCover() {
     check(measureInk(tall).count == 0, "cover: portrait crop is uniformly the middle band");
 }
 
+/* --- task 6.17c1 (review R17): the contain fit letterboxes, and both
+ *     draw paths honour the scene's choice -------------------------------- */
+
+void testBackgroundFitContain() {
+    // Contain fit: the whole picture inside the authored canvas, centred on
+    // both axes, with the scene's colour fill showing in the bars. The wide
+    // fixture bars the top and bottom (scale 1), the tall one the sides;
+    // "exactly the fill" and "exactly the picture" are both measured, and
+    // the cover fixtures above already pin the other half of the switch.
+    std::string error;
+    if (!check(writeBandPng("scene-render-fit-wide.png", 1920, 540, true, &error),
+               "wide fit image written: " + error) ||
+        !check(writeBandPng("scene-render-fit-tall.png", 540, 1920, false, &error),
+               "tall fit image written: " + error)) {
+        return;
+    }
+    const SkColor red = SkColorSetRGB(235, 40, 40);
+    const SkColor green = SkColorSetRGB(40, 200, 40);
+    const SkColor blue = SkColorSetRGB(40, 40, 235);
+    const SkColor fill = SkColorSetRGB(0x10, 0x20, 0x30);
+
+    scene::Scene wide = bandImageScene("scene-render-fit-wide.png", {});
+    wide.background.fit = openshow::domain::BackgroundFit::Contain;
+    Frame wideFrame;
+    if (!check(renderFixture(wide, "fit-wide-contain", &wideFrame, &error),
+               "wide contained background rendered: " + error)) {
+        return;
+    }
+    // 1920x540 inside 1920x1080: full width, and bars of 270 canvas px — 135
+    // device px — above and below. The bar rows are exactly the fill...
+    check(closeTo(wideFrame.at(480, 2), fill), "contain: the very top row is the fill");
+    check(closeTo(wideFrame.at(480, 130), fill), "contain: the bar runs to just inside its edge");
+    check(closeTo(wideFrame.at(480, 536), fill), "contain: the very bottom row is the fill");
+    // ...and the picture row is exactly the picture, at the same x mapping
+    // cover used (scale 1 = full width): red | green | blue thirds.
+    check(closeTo(wideFrame.at(480, 142), green), "contain: the picture starts below the bar");
+    check(closeTo(wideFrame.at(50, 270), red), "contain: left third unchanged by the letterbox");
+    check(closeTo(wideFrame.at(480, 270), green), "contain: centre is the picture, not a bar");
+    check(closeTo(wideFrame.at(860, 270), blue), "contain: right third reaches its edge");
+
+    scene::Scene tall = bandImageScene("scene-render-fit-tall.png", {});
+    tall.background.fit = openshow::domain::BackgroundFit::Contain;
+    Frame tallFrame;
+    if (!check(renderFixture(tall, "fit-tall-contain", &tallFrame, &error),
+               "tall contained background rendered: " + error)) {
+        return;
+    }
+    // 540x1920 inside 1920x1080: full height, side bars of 808 canvas px —
+    // 404 device px — each side, and the three horizontal bands whole.
+    check(closeTo(tallFrame.at(2, 270), fill), "contain: the far left is a fill bar");
+    check(closeTo(tallFrame.at(398, 270), fill), "contain: the left bar runs to its edge");
+    check(closeTo(tallFrame.at(410, 270), green), "contain: the picture's middle band at x410");
+    check(closeTo(tallFrame.at(956, 270), fill), "contain: the far right is a fill bar");
+    check(closeTo(tallFrame.at(480, 4), red), "contain: the top band is whole, not cropped");
+    check(closeTo(tallFrame.at(480, 536), blue), "contain: the bottom band is whole too");
+
+    // Explicit cover is the unchanged rule, spelled out: the same wide
+    // picture with fit set to COVER by name leaves no bar anywhere.
+    scene::Scene wideCover = wide;
+    wideCover.background.fit = openshow::domain::BackgroundFit::Cover;
+    Frame coverFrame;
+    if (!check(renderFixture(wideCover, "fit-wide-cover", &coverFrame, &error),
+               "explicit-cover background rendered: " + error)) {
+        return;
+    }
+    check(!closeTo(coverFrame.at(480, 2), fill) && !closeTo(coverFrame.at(480, 536), fill),
+          "cover by name draws like cover by default: the crop fills top and bottom");
+}
+
 void testMissingBackgroundFile() {
     // The compiler's promise: file existence is the renderer's problem.
     // An unreadable assetPath degrades to the plain colour fill, words
@@ -1487,6 +1556,53 @@ void testImageCrossfadeBlend() {
     }
 }
 
+// The fade group path (R13's single-draw composite) must carry the scene's
+// fit too. The claim, stated so it cannot be vacuous: at any blend the frame
+// owes the per-pixel lerp of the two STEADY frames — the contained one
+// included. If the group quietly reverted to cover mid-fade, the bars that
+// are fill in the steady contain frame would be PICTURE during the fade, and
+// every bar pixel would fail the lerp by tens of units.
+void testBackgroundFitContainFade() {
+    std::string error;
+    if (!check(writeFlatPng("scene-render-fit-fade.png", SkColorSetRGB(224, 48, 48), &error),
+               "flat still for the contained fade written: " + error)) {
+        return;
+    }
+    const scene::Scene redFill = [] {
+        scene::Scene subject;
+        subject.showId = "show1";
+        subject.slideId = "fit-fade-from";
+        subject.background.color = 0xE03030u;
+        return subject;
+    }();
+    scene::Scene containStill = flatImageScene("scene-render-fit-fade.png", 0x28C828u);
+    containStill.slideId = "fit-fade-to";
+    containStill.background.fit = openshow::domain::BackgroundFit::Contain;
+    BlendCase half;
+    if (!renderBlendCase(redFill, containStill, 0.5f, "contain", &half, &error)) {
+        return;
+    }
+    const BlendError e = measureBlend(half, 6);
+    report("fill to contained still, blend 0.5", e);
+    check(e.overTolerance == 0,
+          "a contained picture fades as the group it steady-draws — bars stay fill "
+          "through the whole blend (" +
+              describe(e) + ")");
+    // And the geometry survives the shader: a 120x80 contain on the 1920x1080
+    // canvas scales to 1620x1080, so the device bar columns sit left of x 75
+    // and right of x 885 — sample one of each against the lerp of the steady
+    // frames' own bars, and the centre against the steady picture.
+    check(closeTo(half.mid.at(2, 270),
+                  blendExpected(half.from.at(2, 270), half.to.at(2, 270), half.alpha), 6),
+          "mid-fade: the bar column is the lerped FILL, not the cover crop's picture");
+    check(closeTo(half.mid.at(955, 270),
+                  blendExpected(half.from.at(955, 270), half.to.at(955, 270), half.alpha), 6),
+          "mid-fade: and so is the other bar");
+    check(closeTo(half.mid.at(480, 270),
+                  blendExpected(half.from.at(480, 270), half.to.at(480, 270), half.alpha), 6),
+          "mid-fade: the centre column is the lerped PICTURE");
+}
+
 void testTranslucentPictureBlend() {
     // A picture with per-pixel alpha is where a group differs most sharply
     // from two attenuated draws: the fill shows through the picture in the
@@ -1883,11 +1999,13 @@ int main() {
     testWireSceneRendersIdentically();
     testDemoSlidesRender();
     testImageBackgroundCover();
+    testBackgroundFitContain();
     testMissingBackgroundFile();
     testForegroundImageItems();
     testForegroundImageFade();
     testCrossfadeStages();
     testImageCrossfadeBlend();
+    testBackgroundFitContainFade();
     testTranslucentPictureBlend();
     testSameFrameEveryStageIsSteadyPicture();
     testTextFadeParity();

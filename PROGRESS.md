@@ -1720,12 +1720,66 @@ Updated: 2026-10-28 (Europe/London).
     positive at `tests/background_media_tests.cpp:2294`. One gate run took a
     single display-side failure that passed on rerun (11.80 s, consistent with
     `worker_rpc_limits`) and did not recur across two further full runs.
-- Exact next action: **6.17c** per the PLAN.md ledger (review R17) — represent
-  and render the agreed background gradient/fit choices: model, storage,
-  compiler and UI agree on supported fits, cover/contain/blur and gradient
-  fixtures, legacy defaults, and the composition budget honoured on screen;
-  split each fit into a leaf if necessary. R17's stack work is now closed
-  across model, file, wire, worker and editor.
+- **Task 6.17c1 DONE — the slide chooses how its picture fits; contain
+  letterboxes on screen (review R17, first leaf of the 6.17c split).**
+  `Slide::backgroundFit` (default COVER, the worker's rule since 3.2, so
+  every pre-4 file re-renders pixel-identical) is authored through
+  `Documents::setSlideBackgroundFit`, and the enum's ONE name pair
+  `backgroundFitName`/`backgroundFitFromName` lives in the DOMAIN — the
+  video-predicate pattern — so no layer grows a private list of what a fit
+  is called; `fill` is deliberately not in the set. `service.json` is
+  format **4** (`kServiceFormatLegacyUnfit = 3`): `"fit"` is written on
+  EVERY slide, cover included, byte-stability and format-3-promotion
+  pinned; formats 1/2/3 load as cover (their own history), an unknown name
+  is refused quoting itself, and a hand-bumped `"fit"` in a pre-4 file is
+  refused (`where that key does not exist`). `kSceneFormat` 2→**3** with
+  `background.fit` MANDATORY and no tolerance either direction — scene-1
+  AND scene-2 payloads are refused by the scene-3 reader — which is what
+  keeps the split honest: a worker that predates 6.17c2 cannot misdraw
+  `"blur"`, it rejects the scene naming it. Protocol minor 10→**11** +
+  `scene.background-fit.v1` (14 capabilities). The worker splits `fitDest`
+  by the scene's choice in BOTH paths — cover unchanged (the 3.2 fixtures
+  pass untouched), contain min-scale centred with the fill showing in the
+  bars — and the R13 fade group keeps its single composite per region:
+  bars via a clip-difference fill at the group alpha, the picture's rect
+  via the same `picture over fill` shader, disjoint so no pixel counts
+  twice and no render target enters the pass. The split was not free: the
+  shipped all-canvas shader had been clamping the picture's edge pixels
+  beyond its dest rect — invisible for three milestones because cover's
+  dest covers the canvas — measured **92/255** on the first contain fade
+  fixture and fixed to **0/255** over the whole frame; the cover-era cost
+  is unchanged (fade 36211 us/frame vs the two draws it replaced 42416 at
+  1920x1080, well under the 4x gate). Controller: `currentBackgroundFit` +
+  `setSlideBackgroundFit(QString)` refusing unspeakable names BEFORE the
+  edit seam (the no-history-entry claim is provable: one undo still
+  reverts the fit), `slides()` rows carry the fit, the clipboard carries
+  and pastes it, and the style panel gained the BACKGROUND FIT combo.
+  Raw-payload fixtures across seven desktop test files moved to scene 3 +
+  explicit `"fit"` as the wire tightened.
+  - **Mutations** m01–m18: **18/18 CAUGHT** (`/tmp/opencode/battery617c1.py`)
+    — default flipped, the name pair swapped, `blur` parsing quietly, the
+    writer leaving cover to inference, the writer lying (`cover` always),
+    both storage refusals deleted, the scene number un-bumped, a missing
+    wire fit defaulted, any wire name accepted, the compile dropping the
+    slide's choice, equality ignoring the fit, each `fitDest` scale
+    crossed, the fade group re-clamping the picture into the bars, the
+    controller's name-fallback, the paste dropping the fit, and the
+    capability unannounced. Disclosed blind: the combo's binding and
+    `stylePanel.sync()`'s fit line (chrome — `ui_loads` proves the combo
+    compiles and instantiates offscreen); the legacy format-1/2 defaulting
+    shares the pinned format-3 path; the bars/dest seam is measured, not
+    separately asserted (the whole-frame lerp scan would catch one).
+  - Gates desktop **48/48** (229.17 s), headless **27/27** (48.9 s); both
+    trees build clean apart from the accepted `-Wfree-nonheap-object`
+    false positive and the five whitelisted QML notices.
+- Exact next action: **6.17c2** per the PLAN.md ledger (review R17) — draw
+  the blur fit: `"blur"` widens the domain/storage/wire name set, and the
+  worker draws the reference rule (blurred cover backdrop under the
+  contained picture, reference blur 6 / opacity 0.3) within the composition
+  budget — backdrop computed once per image where the picture decodes, no
+  new render target in the composition pass (R13's rule stands), fade path
+  included, and the downscale-and-reuse approximation MEASURED against a
+  by-the-book full-res blur and recorded honestly.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -4142,6 +4196,49 @@ of this work.
   development tool and nothing in the build references it.
 
 ## Decisions
+
+- (2026-10-28, task 6.17c1) A fit belongs to the slide, the wire demands it,
+  and a name nobody can draw is refused rather than approximated.
+  **The choice lives on `Slide`, not on the asset.** The same picture under
+  two slides can crop on one and letterbox on the other — the reference
+  agrees (its fits are per-slide style), and an asset-side fit would make
+  importing one file a decision about every slide that ever shows it. A
+  slide with no picture still carries its answer, so picking contain before
+  the photo arrives is legal and survives; the worker reads the field only
+  when there is something to fit.
+  **`background.fit` is MANDATORY on the wire, and the format number moved
+  with it (2→3, no tolerance either direction).** The gentle version —
+  absent means cover — was rejected for the reason 6.17a/b rejected every
+  defaulting reader: a payload that omits a key forces the reader to guess
+  what the writer left out, and the guess becomes the audience's picture.
+  The service FILE defaults (formats 1/2/3 load as cover) are the opposite
+  case and were kept: those files are this build's own history, cover is
+  the only thing their era could draw, and their re-save promotes the
+  choice into a fact. The asymmetry is deliberate — a file you wrote is
+  history; a message someone is sending now either says what it means or
+  is refused.
+  **The refusal of unknown names is what makes the 6.17c SPLIT safe.** c2
+  will add `"blur"`; until it exists, a build that meets the name in a file
+  or a scene rejects it quoting the name (`not a fit this build can draw`).
+  Had c1 defaulted the unknown, an old worker would have silently drawn a
+  blur-requested slide as cover and the file's meaning would have depended
+  on which binary opened it — the definition of the lie this project
+  refuses everywhere else. The same rule at the controller (a refused name
+  never reaches the edit seam) buys a provable claim: one undo after a
+  refusal still reverts the last real fit, because a refusal pushed nothing.
+  **The fade group's fix cost 92/255, and the bug was three milestones
+  old.** R13's composite is one `picture over fill` shader; drawing it over
+  the whole canvas with the image's CLAMP tile mode extends the picture's
+  edge pixels past its dest rect. Cover's dest always contained the canvas,
+  so no fixture could see the clamp — until contain put bars outside it,
+  and the first contain fade measured 92/255 in the bar rows: clamp-fed
+  picture where the fill belongs. The fix keeps one composite per region
+  (bars: the fill at the group alpha through a clip-difference; picture:
+  the same shader on its rect, disjoint draws, no layer, no render target)
+  and measures 0/255 across the whole frame against the steady-frame lerp.
+  The general lesson is written where it can be found: a fixture that can
+  only sample inside the interesting geometry is a fixture that will never
+  see the geometry change.
 
 - (2026-10-28, task 6.17b2) The panel places; the model refuses; and the
   field that cannot hold the words is not shown.

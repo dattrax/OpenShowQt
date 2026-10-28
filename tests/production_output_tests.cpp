@@ -373,12 +373,12 @@ boost::json::object scenePayload(const char* slideId, std::uint32_t color,
                                             {"lineSpacing", 1.25}});
     }
     return boost::json::object{
-        {"scene", 2},
+        {"scene", 3},
         {"showId", "production-output"},
         {"slideId", slideId},
         {"backgroundColor", color},
         {"background",
-         boost::json::object{{"image", false}, {"assetId", ""}, {"assetPath", ""}}},
+         boost::json::object{{"image", false}, {"fit", "cover"}, {"assetId", ""}, {"assetPath", ""}}},
         {"items", std::move(items)},
     };
 }

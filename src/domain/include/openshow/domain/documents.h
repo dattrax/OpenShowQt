@@ -46,6 +46,33 @@ using Id = std::string;
 // the kind says which of the two content fields means anything.
 enum class ItemKind { Text, Image };
 
+// How the background picture sits on the canvas (task 6.17c1, review R17).
+// COVER — scale to fill, centre, crop — is what the worker has drawn since
+// 3.2 and remains the DEFAULT: a file written before this field existed
+// means exactly what it drew. CONTAIN scales the picture inside the canvas
+// and lets the colour fill show in the bars. The reference's `blur` fit
+// arrives as a third name in 6.17c2; `fill` (distorting stretch) is not in
+// the agreed set, and neither this enum nor any reader will grow it silently.
+enum class BackgroundFit { Cover, Contain };
+
+// The ONE spelling of the fits, shared by the service file and the scene
+// wire (the assetPathLooksLikeVideo pattern: two libraries that each parsed
+// their own copy of a name list is how a model and a compiler drift).
+inline const char* backgroundFitName(BackgroundFit fit) {
+    return fit == BackgroundFit::Contain ? "contain" : "cover";
+}
+inline bool backgroundFitFromName(const std::string& name, BackgroundFit* fit) {
+    if (name == "cover") {
+        *fit = BackgroundFit::Cover;
+        return true;
+    }
+    if (name == "contain") {
+        *fit = BackgroundFit::Contain;
+        return true;
+    }
+    return false;
+}
+
 // True when a file's NAME is one the media pipeline treats as video
 // (extension-based, case-insensitive — the same rule task 5.5 gave
 // backgrounds, moved here from the scene lib so the model can refuse a
@@ -137,6 +164,11 @@ struct Slide {
     Id styleId;
     // Background image asset; empty means no background.
     Id backgroundAssetId;
+    // How that picture sits on the canvas (6.17c1). The field belongs to the
+    // SLIDE because the background reference does; a slide with no picture
+    // still keeps its authored choice for when it gets one. Default COVER is
+    // what every pre-6.17c file drew, so loading one is not a re-render.
+    BackgroundFit backgroundFit = BackgroundFit::Cover;
 
     // The item the slide's single-text operations address (setSlideLines,
     // setSlideGeometry): the FIRST in draw order, which for every slide
@@ -355,6 +387,12 @@ public:
     // Points a slide's background at an asset; "" means no background.
     bool setSlideBackground(const Id& showId, const Id& slideId, const Id& assetId,
                             std::string* error = nullptr);
+    // How the slide's background picture fits the canvas (6.17c1). The
+    // choice is legal with or without a picture — it is the slide's standing
+    // answer, not a property of the file behind it — so the only refusal is
+    // the unknown slide.
+    bool setSlideBackgroundFit(const Id& showId, const Id& slideId, BackgroundFit fit,
+                               std::string* error = nullptr);
     const Asset* findAsset(const Id& assetId) const;
     std::vector<Id> assetIds() const;  // creation order
     // Retargets assets to the files that now own their bytes (task 6.12,

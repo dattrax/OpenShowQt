@@ -1777,6 +1777,11 @@ Window {
                         break
                     }
                 }
+                // The fit is the slide's, spelled by the model; an
+                // unresolvable value leaves the combo where it is rather
+                // than pretending to select a name that does not exist.
+                var fit = docs.currentBackgroundFit
+                fitCombo.currentIndex = fit === "contain" ? 1 : 0
             }
             Component.onCompleted: sync()
             Connections {
@@ -1957,6 +1962,28 @@ Window {
                         assetId = docs.assets[index - 1].id
                     }
                     if (!docs.setSlideBackground(assetId)) {
+                        stylePanel.sync()
+                    }
+                }
+            }
+
+            // Cover fills the frame and crops; contain keeps the whole
+            // picture and lets the fill show in the bars (6.17c1 — the
+            // choice the model stores and the worker honours, one undo
+            // step, refused names landing on the status line).
+            Text {
+                color: "#8f93a5"
+                font.pixelSize: 10
+                text: "BACKGROUND FIT"
+            }
+
+            ComboBox {
+                id: fitCombo
+                objectName: "backgroundFitCombo"
+                width: parent.width
+                model: ["Fill and crop (cover)", "Fit whole picture (contain)"]
+                onActivated: function (index) {
+                    if (!docs.setSlideBackgroundFit(index === 1 ? "contain" : "cover")) {
                         stylePanel.sync()
                     }
                 }

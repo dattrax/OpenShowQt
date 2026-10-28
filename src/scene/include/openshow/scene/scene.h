@@ -122,6 +122,13 @@ struct Background {
     bool isVideo = false;  // only meaningful when hasImage
     domain::Id assetId;
     std::string assetPath;
+    // How the picture (still or video frame) sits on the canvas (task
+    // 6.17c1, review R17) — compiled from the SLIDE, spelled by the domain's
+    // one name function, and REQUIRED on the wire: a background whose fit
+    // the reader has not validated must not draw. Cover is what every scene
+    // before this key existed drew, and what a slide that carries no picture
+    // will keep as its standing answer.
+    domain::BackgroundFit fit = domain::BackgroundFit::Cover;
 };
 
 // One item of a slide's draw stack, compiled for presentation (tasks
@@ -191,8 +198,9 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 
 // --- wire form ---------------------------------------------------------------
 
-// {"scene":2,"showId":...,"slideId":...,"backgroundColor":<int>,
-//  "background":{"image":bool,"video":bool,"assetId":...,"assetPath":...},
+// {"scene":3,"showId":...,"slideId":...,"backgroundColor":<int>,
+//  "background":{"image":bool,"video":bool,"fit":"cover"|"contain",
+//                "assetId":...,"assetPath":...},
 //  "items":[{"kind":"text","lines":[...],"color":<int>,"fontFamily":...,
 //            "fontSize":<num>,"x":<num>,"y":<num>,"width":<num>,
 //            "height":<num>,"align":"left"|"center"|"right",
@@ -202,7 +210,10 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 // Colours are packed 0xRRGGBB integers. Serialisation order is fixed.
 // "video" (task 5.5) is always written out, and true requires image:true.
 // Scene 2 (task 6.17b) names every item's "kind" and gives image items
-// the background's asset pair; there is no scene-1 tolerance in either
+// the background's asset pair; scene 3 (task 6.17c1) requires the
+// background's "fit" — the domain's name for how the picture sits on the
+// canvas, mandatory because a payload that leaves it out is a payload the
+// reader would have to guess. There is no cross-format tolerance in either
 // direction — frontend and worker ship together, and a payload whose
 // items mean something the reader has not validated must not draw.
 boost::json::value toJson(const Scene& scene);

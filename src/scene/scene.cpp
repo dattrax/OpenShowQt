@@ -13,7 +13,7 @@ namespace openshow::scene {
 
 namespace {
 
-constexpr int kSceneFormat = 2;
+constexpr int kSceneFormat = 3;
 
 void fail(std::string* error, const std::string& message) {
     if (error != nullptr) {
@@ -243,8 +243,11 @@ bool wantLineSpacing(const boost::json::object& obj, const char* key, double* ou
 }  // namespace
 
 bool operator==(const Background& a, const Background& b) {
+    // The fit is part of what the background IS on screen (6.17c1): a
+    // switch that only changes cover to contain is a new scene, not the
+    // same scene redrawn.
     return a.color == b.color && a.hasImage == b.hasImage && a.isVideo == b.isVideo &&
-           a.assetId == b.assetId && a.assetPath == b.assetPath;
+           a.fit == b.fit && a.assetId == b.assetId && a.assetPath == b.assetPath;
 }
 bool operator!=(const Background& a, const Background& b) { return !(a == b); }
 
@@ -430,6 +433,10 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         scene.items.push_back(std::move(item));
     }
 
+    // The fit belongs to the slide, not the picture: a slide with no
+    // background still answers the question for when it gets one, and the
+    // worker reads the field only when there is something to fit (6.17c1).
+    scene.background.fit = slide->backgroundFit;
     if (!slide->backgroundAssetId.empty()) {
         const domain::Asset* asset = documents.findAsset(slide->backgroundAssetId);
         if (asset == nullptr) {
@@ -469,6 +476,10 @@ boost::json::value toJson(const Scene& scene) {
     boost::json::object background;
     background.emplace("image", scene.background.hasImage);
     background.emplace("video", scene.background.isVideo);
+    // Always written, always the domain's spelling (6.17c1): the compiler
+    // and the reader share the one name function, so the two ends of the
+    // wire cannot each keep their own list of what a fit is called.
+    background.emplace("fit", domain::backgroundFitName(scene.background.fit));
     background.emplace("assetId", scene.background.assetId);
     background.emplace("assetPath", scene.background.assetPath);
     root.emplace("background", std::move(background));
@@ -547,13 +558,24 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         return false;
     }
     const boost::json::object& jsonBackground = background->as_object();
-    if (!noUnknownKeys(jsonBackground, {"image", "video", "assetId", "assetPath"},
+    if (!noUnknownKeys(jsonBackground, {"image", "video", "fit", "assetId", "assetPath"},
                        "'background'", error)) {
         return false;
     }
     if (!wantBool(jsonBackground, "image", &scene.background.hasImage, error) ||
         !wantString(jsonBackground, "assetId", &scene.background.assetId, kMaxIdChars,
                     error)) {
+        return false;
+    }
+    // The fit is MANDATORY in scene 3 (6.17c1) and its name set is closed:
+    // a name this worker does not know is a fit it cannot draw, and drawing
+    // it as cover would be the payload's lie becoming the audience's.
+    std::string fitName;
+    if (!wantString(jsonBackground, "fit", &fitName, kMaxIdChars, error)) {
+        return false;
+    }
+    if (!domain::backgroundFitFromName(fitName, &scene.background.fit)) {
+        fail(error, "scene: background fit '" + fitName + "' is not a fit this worker draws");
         return false;
     }
     // A media reference is checked WHOLE, before the hasImage clear below, and

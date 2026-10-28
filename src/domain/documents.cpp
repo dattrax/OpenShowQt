@@ -807,6 +807,26 @@ bool Documents::setSlideBackground(const Id& showId, const Id& slideId, const Id
     return true;
 }
 
+bool Documents::setSlideBackgroundFit(const Id& showId, const Id& slideId,
+                                      BackgroundFit fit, std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    const int index = findSlideIndex(*show, slideId);
+    if (index < 0) {
+        fail(error, idError("slide", slideId));
+        return false;
+    }
+    // The enum cannot carry a lie, and the choice means nothing or something
+    // depending only on whether a picture arrives later — so a fit is legal
+    // on a slide with no background, exactly as the background slot is legal
+    // before the asset exists.
+    show->slides[static_cast<size_t>(index)].backgroundFit = fit;
+    return true;
+}
+
 const Asset* Documents::findAsset(const Id& assetId) const {
     const auto found = std::find_if(fAssets.begin(), fAssets.end(),
                                     [&](const Asset& a) { return a.id == assetId; });

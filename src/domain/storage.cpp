@@ -40,16 +40,21 @@ namespace {
 // no longer say what it means in the format-1 shape. Format 3 (task 6.17b,
 // review R17) gives every item in that list a "kind": the stack is text and
 // pictures in one draw order, a picture names its asset by id, and a
-// format-2 box — words, always — is that item with kind "text". The reader
-// still loads 1 and 2 and migrates them (neither can hold a picture); the
-// writer only ever emits kServiceFormat, and a 3-file read by an older build
-// refuses the whole package rather than quietly drawing an image item as an
-// empty text box.
-constexpr unsigned long long kServiceFormat = 3;
-// The older versions this build reads: single-box slides (1), and a stack
-// whose every item was necessarily text (2).
+// format-2 box — words, always — is that item with kind "text". Format 4
+// (task 6.17c1, review R17) gives every SLIDE a "fit": how its background
+// picture sits on the canvas, where cover is what every earlier file drew.
+// The reader still loads 1, 2 and 3 and migrates them (none can hold a
+// picture in the stack, and all three drew their background cover); the
+// writer only ever emits kServiceFormat, and a 4-file read by an older build
+// refuses the whole package rather than quietly drawing a contained picture
+// cropped.
+constexpr unsigned long long kServiceFormat = 4;
+// The older versions this build reads: single-box slides (1), a stack whose
+// every item was necessarily text (2), and a kinded stack whose slides had
+// no fit choice yet — cover was the only thing the worker knew (3).
 constexpr unsigned long long kServiceFormatLegacyBoxes = 1;
 constexpr unsigned long long kServiceFormatLegacyTextOnly = 2;
+constexpr unsigned long long kServiceFormatLegacyUnfit = 3;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -506,6 +511,10 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             slideJson.emplace("notes", slide.notes);
             slideJson.emplace("styleId", slide.styleId);
             slideJson.emplace("backgroundAssetId", slide.backgroundAssetId);
+            // Fit on EVERY slide, cover included — 6.17b1's rule for the
+            // item kind: leaving the default to inference is how a future
+            // change silently redefines what an old file drew.
+            slideJson.emplace("fit", backgroundFitName(slide.backgroundFit));
             slides.push_back(std::move(slideJson));
         }
         entry.emplace("slides", std::move(slides));
@@ -579,16 +588,20 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     // plus x/y/width/height — is READ rather than rejected: it is what every
     // service on disk says until this build saves it again (task 6.17a).
     // Format 2 — a stack whose items are necessarily text — is read the same
-    // way, its items gaining kind "text" on the way in (task 6.17b). A
+    // way, its items gaining kind "text" on the way in (task 6.17b), and
+    // format 3 — a kinded stack whose slides all drew their background
+    // cover — gains fit "cover" the same way (task 6.17c1). A
     // future version is refused naming both numbers, because guessing at a
     // format means quietly dropping whatever the newer build's operator wrote.
     if (format != kServiceFormat && format != kServiceFormatLegacyBoxes &&
-        format != kServiceFormatLegacyTextOnly) {
+        format != kServiceFormatLegacyTextOnly && format != kServiceFormatLegacyUnfit) {
         fail(error, "service.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " + std::to_string(kServiceFormat) +
                         ", and formats " + std::to_string(kServiceFormatLegacyBoxes) +
-                        " and " + std::to_string(kServiceFormatLegacyTextOnly) +
-                        " with their text boxes migrated to a kinded list)");
+                        ", " + std::to_string(kServiceFormatLegacyTextOnly) +
+                        " and " + std::to_string(kServiceFormatLegacyUnfit) +
+                        " with their text boxes migrated to a kinded list and their"
+                        " backgrounds to cover)");
         return false;
     }
     const bool singleBoxFile = format == kServiceFormatLegacyBoxes;
@@ -791,6 +804,34 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                 !wantOptionalString(jsonSlide, "backgroundAssetId",
                                     &slide.backgroundAssetId, error)) {
                 return false;
+            }
+            // The fit (task 6.17c1): a format-4 slide names it, always one
+            // of the supported spellings — an old build's name is refused,
+            // never approximated, because "what the newer build drew" is a
+            // fact this renderer cannot know. A format-1/2/3 slide has no
+            // key and cover is the ONLY thing those files ever drew, so the
+            // default is not an inference but their own history. A "fit" in
+            // a pre-4 file means somebody else's build meant something by
+            // it (the format-2 "kind" rule, applied again).
+            if (format == kServiceFormat) {
+                std::string fitName;
+                if (!wantString(jsonSlide, "fit", &fitName, error)) {
+                    return false;
+                }
+                if (!backgroundFitFromName(fitName, &slide.backgroundFit)) {
+                    fail(error, "service.json: slide '" + slide.id + "' has fit '" +
+                                    fitName + "', not a fit this build can draw");
+                    return false;
+                }
+            } else {
+                if (jsonSlide.contains("fit")) {
+                    fail(error, "service.json: slide '" + slide.id +
+                                    "' carries \"fit\" in a format " +
+                                    std::to_string(format) + " file, where that key"
+                                    " does not exist");
+                    return false;
+                }
+                slide.backgroundFit = BackgroundFit::Cover;
             }
             for (const SlideItem& item : slide.items) {
                 if (!std::isfinite(item.x) || !std::isfinite(item.y) ||

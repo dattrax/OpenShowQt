@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -299,10 +300,11 @@ void exerciseWireRoundTrip(const Fixture& fx) {
         obj[key] = replacement;
         return boost::json::serialize(obj);
     };
-    // One past this build's scene 2 (task 6.17b moved the number with the
-    // item kinds; anchoring a "future" on the wrong side of that move is how
-    // a version check gets tested against a format someone else agreed to).
-    refuses(mutate("scene", 3), "unsupported scene format", "a future scene format refuses");
+    // One past this build's scene 3 (task 6.17c1 moved the number with the
+    // background's fit; anchoring a "future" on the wrong side of that move
+    // is how a version check gets tested against a format someone else
+    // agreed to).
+    refuses(mutate("scene", 4), "unsupported scene format", "a future scene format refuses");
     refuses(boost::json::serialize(7), "top level must be an object",
             "a bare number refuses");
     refuses(mutate("backgroundColor", 0x1000000), "outside 0xRRGGBB",
@@ -411,6 +413,98 @@ void exerciseWireRoundTrip(const Fixture& fx) {
         scene::Scene stillCopy = videoScene;
         stillCopy.background.isVideo = false;
         check(stillCopy != videoScene, "kind participates in background equality");
+    }
+}
+
+// The background's fit crosses the wire (task 6.17c1): the compile carries
+// the slide's choice, scene 3 REQUIRES the key, and a name this worker
+// cannot draw is refused naming itself. That refusal is what makes the
+// 6.17c split honest — when "blur" arrives in c2, a build that predates it
+// rejects the scene claiming it rather than quietly drawing a cover.
+void exerciseBackgroundFit() {
+    std::string error;
+    Documents docs;
+    const Id show = docs.createShow("Fitted");
+    const Id slide = docs.appendSlide(show);
+    const Id asset = docs.addAsset("plate.png", "/services/svc/assets/plate.png");
+    docs.setSlideBackground(show, slide, asset);
+    docs.setSlideLines(show, slide, {"Words over a plate"});
+
+    scene::Scene out;
+    check(scene::compileSlide(docs, show, slide, &out, &error) &&
+              out.background.fit == openshow::domain::BackgroundFit::Cover,
+          "a slide nobody fitted compiles to cover — the worker's oldest rule");
+    check(docs.setSlideBackgroundFit(show, slide,
+                                     openshow::domain::BackgroundFit::Contain),
+          "the model lets the slide choose contain");
+    check(scene::compileSlide(docs, show, slide, &out, &error) &&
+              out.background.fit == openshow::domain::BackgroundFit::Contain,
+          "the compile carries the slide's fit into the scene");
+    const Id videoSlide = docs.appendSlide(show);
+    const Id videoAsset = docs.addAsset("Loop.MP4", "/services/svc/assets/loop.mp4");
+    docs.setSlideBackground(show, videoSlide, videoAsset);
+    docs.setSlideBackgroundFit(show, videoSlide,
+                               openshow::domain::BackgroundFit::Contain);
+    check(scene::compileSlide(docs, show, videoSlide, &out, &error) &&
+              out.background.isVideo &&
+              out.background.fit == openshow::domain::BackgroundFit::Contain,
+          "a playing background carries the same fit — frames fit like stills");
+    check(scene::compileSlide(docs, show, slide, &out, &error),
+          "and the still is back for the wire work below");
+
+    // The wire: the domain's spelling is what lands in the payload.
+    const boost::json::object written = scene::toJson(out).as_object();
+    check(written.at("background").as_object().at("fit").as_string() == "contain",
+          "the payload spells the fit the way the domain spells it");
+    scene::Scene readBack;
+    check(scene::fromJson(boost::json::value(written), &readBack, &error) &&
+              readBack == out,
+          "a contained background survives the JSON round trip, scene equal");
+    check(boost::json::serialize(scene::toJson(readBack)) ==
+              boost::json::serialize(boost::json::value(written)),
+          "and re-serialises byte-equal");
+
+    // The fit is part of what the background IS: a cover-to-contain switch
+    // with the same picture and colour is a new scene, not a no-op.
+    scene::Scene cropped = out;
+    cropped.background.fit = openshow::domain::BackgroundFit::Cover;
+    check(cropped != out, "the fit participates in scene equality");
+
+    // The reader's discipline on the fit key.
+    const auto readRefusedFit = [&](const std::function<void(boost::json::object&)>& change,
+                                    const std::string& expectIn, const char* what) {
+        boost::json::object obj = scene::toJson(out).as_object();
+        change(obj["background"].as_object());
+        scene::Scene ignored;
+        std::string why;
+        const bool refused = !scene::fromJson(boost::json::value(obj), &ignored, &why);
+        if (!check(refused && why.find(expectIn) != std::string::npos, what)) {
+            std::fprintf(stderr, "   wanted \"%s\", read %s: %s\n", expectIn.c_str(),
+                         refused ? "said" : "ACCEPTED", why.c_str());
+        }
+    };
+    readRefusedFit([](boost::json::object& bg) { bg.erase("fit"); },
+                   "'fit' must be a string",
+                   "a scene-3 background with no fit is refused: the key is mandatory, "
+                   "and defaulting it is the guess the format number exists to prevent");
+    readRefusedFit([](boost::json::object& bg) { bg["fit"] = "blur"; },
+                   "is not a fit this worker draws",
+                   "'blur' is refused HERE naming itself — c2 has not shipped, and an "
+                   "old build meeting it must reject rather than approximate");
+    readRefusedFit([](boost::json::object& bg) { bg["fit"] = "stretch"; },
+                   "background fit 'stretch'",
+                   "and the refusal quotes the offending name");
+    readRefusedFit([](boost::json::object& bg) { bg["fit"] = true; },
+                   "'fit' must be a string", "a non-string fit is refused");
+    readRefusedFit([](boost::json::object& bg) { bg["fits"] = "cover"; },
+                   "has no field 'fits'",
+                   "the background's key set stays closed: the right key is now 'fit', "
+                   "and a near-miss is still a lie");
+    {  // contain lands on the video frame path too at the reader, and the
+       // cover-with-no-picture default is what clearedScene keeps.
+        scene::Scene cleared = scene::clearedScene();
+        check(cleared.background.fit == openshow::domain::BackgroundFit::Cover,
+              "the cleared scene's background carries cover like every era before it");
     }
 }
 
@@ -733,7 +827,7 @@ void exerciseImageWire(Fixture& fx) {
 
     // --- the wire: per-kind keys, and a round trip that changes nothing ---
     const boost::json::value written = scene::toJson(out);
-    check(written.at("scene").to_number<int>() == 2, "the payload says scene 2");
+    check(written.at("scene").to_number<int>() == 3, "the payload says scene 3");
     const boost::json::object& imageJson = written.at("items").as_array().at(2).as_object();
     check(imageJson.at("kind").as_string() == "image" &&
               imageJson.at("assetId").as_string() == fx.asset &&
@@ -812,7 +906,7 @@ void exerciseImageWire(Fixture& fx) {
         kindless.erase("kind");
         check(readRefused(withItems(boost::json::array{kindless})).find("'kind' must be a string") !=
                   std::string::npos,
-              "a scene-2 item with no kind is refused: defaulting it is the guess the "
+              "a scene-3 item with no kind is refused: defaulting it is the guess the "
               "format number exists to prevent");
     }
     {  // The picture's path goes through the background's whole-reference gate.
@@ -834,13 +928,19 @@ void exerciseImageWire(Fixture& fx) {
                   std::string::npos,
               "and the path budget applies to a foreground picture as it does to a background");
     }
-    {  // Scene 1 is not scene 2 in either direction.
-        boost::json::object old = scene::toJson(out).as_object();
-        old["scene"] = 1;
-        check(readRefused(boost::json::value(old)).find("unsupported scene format") !=
-                  std::string::npos,
-              "a scene-1 payload is refused by a scene-2 worker rather than drawn with "
-              "whatever kinds an older build meant");
+    {  // Scene 1 and scene 2 are not scene 3 in either direction (6.17c1:
+       // a scene-2 background carries no "fit", and a reader that defaulted
+       // one would be guessing at what the writer meant by leaving it out).
+        for (int oldFormat : {1, 2}) {
+            boost::json::object old = scene::toJson(out).as_object();
+            old["scene"] = oldFormat;
+            check(readRefused(boost::json::value(old)).find("unsupported scene format") !=
+                      std::string::npos,
+                  ("a scene-" + std::to_string(oldFormat) +
+                   " payload is refused by a scene-3 worker rather than drawn with "
+                   "whatever kinds or fits an older build meant")
+                      .c_str());
+        }
     }
 
     // The compiler's own video guard, reached the way an operator reaches it:
@@ -1069,6 +1169,7 @@ int main() {
     exerciseBudgets(fx);
     exerciseAssetReferences(fx);
     exerciseImageWire(fx);
+    exerciseBackgroundFit();
     exerciseMeasuredSizes(fx);
     exerciseClearedScene();
     exerciseDemoFixture();
