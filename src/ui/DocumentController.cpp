@@ -169,6 +169,34 @@ QString DocumentController::currentSlideText() const {
     return box == nullptr ? QString() : linesToText(box->lines);
 }
 
+QString DocumentController::currentBoxKind() const {
+    const openshow::domain::SlideItem* box = selectedBox();
+    if (box == nullptr) {
+        return QString();
+    }
+    return box->kind == openshow::domain::ItemKind::Image ? QStringLiteral("image")
+                                                          : QStringLiteral("text");
+}
+
+QVariantMap DocumentController::currentBoxAsset() const {
+    QVariantMap map;
+    const openshow::domain::SlideItem* box = selectedBox();
+    if (box == nullptr || box->kind != openshow::domain::ItemKind::Image) {
+        return map;
+    }
+    const openshow::domain::Asset* asset = fDocuments.findAsset(box->assetId);
+    if (asset == nullptr) {
+        // The model drops image items when their asset goes, so this is a
+        // file some other tool wrote; the inspector then says the picture
+        // has lost its file rather than naming a stranger.
+        return map;
+    }
+    map.insert(QStringLiteral("id"), QString::fromStdString(asset->id));
+    map.insert(QStringLiteral("name"), QString::fromStdString(asset->name));
+    map.insert(QStringLiteral("sourcePath"), QString::fromStdString(asset->sourcePath));
+    return map;
+}
+
 openshow::domain::Id DocumentController::currentSlideId() const {
     const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
     if (show == nullptr || fCurrentSlide < 0 ||
@@ -389,6 +417,17 @@ void DocumentController::commitPendingText() {
     const openshow::domain::SlideItem* box = selectedBox();
     if (box == nullptr) {
         return;  // the box the words were typed into is gone; nothing to write
+    }
+    if (box->kind == openshow::domain::ItemKind::Image) {
+        // Honest refusal (task 6.17b2): the model cannot hold words in a
+        // picture, and an edit() that silently returned false would drop
+        // the typed burst on the floor with no trace. The status line says
+        // where the words did NOT go. Reaching this needs a caller that
+        // types while a picture is selected — the inspector hides the
+        // field exactly on that selection, so this is the backstop, not the
+        // usual path.
+        setStatus(QStringLiteral("text: the selected box shows a picture, not words"));
+        return;
     }
     const openshow::domain::Id boxId = box->id;
     std::vector<std::string> lines = textToLines(fPendingText);
@@ -679,6 +718,48 @@ bool DocumentController::setTextBoxGeometry(double x, double y, double width, do
         setStatus(QStringLiteral("text box: %1").arg(QString::fromStdString(error)));
         return false;
     }
+    return true;
+}
+
+bool DocumentController::placeAssetOnSlide(const QString& assetId) {
+    flushText();
+    const openshow::domain::Id slideId = currentSlideId();
+    if (slideId.empty()) {
+        setStatus(QStringLiteral("place picture: no current slide"));
+        return false;
+    }
+    openshow::domain::SlideItem picture;
+    picture.kind = openshow::domain::ItemKind::Image;
+    picture.assetId = assetId.toStdString();
+    // A half-canvas box centred on the stage, not the lyric default: a new
+    // full-frame picture would sit exactly on the existing default box's
+    // outline and read as "nothing happened", while this one shows up as a
+    // visibly new box and still large enough to judge the picture in. The
+    // operator drags it where they want — the same geometry commit every
+    // other box gets.
+    picture.x = 480.0;
+    picture.y = 270.0;
+    picture.width = 960.0;
+    picture.height = 540.0;
+    std::string error;
+    openshow::domain::Id newId;
+    // The domain owns every content rule here (unknown asset, video, the
+    // shared eight-item ceiling), so the status line is its refusal, not a
+    // second opinion written at the panel that could drift from it.
+    if (!edit([&] {
+            newId = fDocuments.addItem(fCurrentSongId, slideId, picture, &error);
+            return !newId.empty();
+        })) {
+        setStatus(QStringLiteral("place picture: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    // Placed and selected: an operator drops a picture in order to place
+    // it, so the handles go to it immediately — and the inspector flips to
+    // its asset as the selection signal repaints it.
+    fCurrentBoxId = newId;
+    setStatus(QStringLiteral("picture placed on the slide"));
+    emit boxSelectionChanged();
+    emit slideTextChanged();
     return true;
 }
 

@@ -1,6 +1,6 @@
 # OpenShowQt progress and session handoff
 
-Updated: 2026-10-27 (Europe/London).
+Updated: 2026-10-28 (Europe/London).
 
 ## Current checkpoint
 
@@ -1671,15 +1671,61 @@ Updated: 2026-10-27 (Europe/London).
     `preview_selection_tests` 15.28 s; both trees
     build clean apart from the pre-existing GCC `-Wfree-nonheap-object` false
     positive at `tests/background_media_tests.cpp:2294` (6.15b test code).
-- Exact next action: **6.17b2** per the PLAN.md ledger (review R17) — the
-  operator's half of the picture item: the asset list places an asset on the
-  current slide as a new topmost item, and the selection machinery (outlines,
-  handles, Tab, nudge, reorder, delete, undo) treats the MIXED stack as one,
-  with text-only edits honestly refused on an image item (the model already
-  refuses them, and `currentSlideBoxes` already carries `kind` and `assetId`)
-  and the inspector showing the picture's asset instead of a text field. Then
-  6.17c (background gradient and supported fit modes). R17's stack work is
-  closed across model, file, wire, worker and — from 6.17b2 — the editor.
+- **Task 6.17b2 DONE — the operator places pictures; the stack stays one
+  (review R17, second half of the 6.17b split).** `DocumentController::
+  placeAssetOnSlide` is the drawer's door: the selected asset joins the current
+  slide as a TOPMOST image item and the selection goes with it — the picture
+  analogue of `addTextBox`, through `edit()`, so one undo removes one
+  placement. Every content rule stayed the DOMAIN's: `addItem` still owns the
+  unknown-asset, video and ceiling refusals and the status line quotes it, so
+  the panel cannot grow a second opinion that drifts from the model's. The
+  arriving box is a centred half-canvas (480,270,960,540) rather than the lyric
+  default: a full-frame picture coincides exactly with the default outline and
+  reads as "nothing happened".
+  - **The mixed stack is one, measured not assumed.** Outlines, handles,
+    `boxAt`, Tab, nudge, `setTextBoxGeometry`, Back/Forward, Delete and
+    undo/redo all resolve through `selectedBox()` and item ids — the 6.17a2
+    machinery was already kind-blind — and the fixture walks it: a picture
+    moves behind its verse and back, dies and rises through undo with the
+    selection following its id onto it at its own index, and navigation clears
+    it exactly as it clears a text selection. What placement adds to that
+    machinery's honesty is its own `flushText`: a burst still in the debounce
+    when a placement lands commits into the box it was TYPED into, instead of
+    the new selection carrying it onto the picture — where the refusal guard
+    would then honestly drop it, which is data loss with good manners.
+  - **Refusals out loud, and a field that isn't there.** `commitPendingText`
+    names a selected picture on the status line instead of swallowing the burst
+    into a `setItemLines` refusal nobody can see (measured against a fresh
+    save: the words reach neither box and `dirty` stays false). The QML
+    inspector hides the words field on an image selection — `currentBoxKind`
+    ("text"/"image", empty with no slide) and `currentBoxAsset` (an
+    `assets()`-shaped map) are the two new views it reads — so the usual path
+    never invites the refusal; the controller guard stays as the backstop for
+    every other caller.
+  - **Mutations** m01–m11: **11/11 CAUGHT**, each on the check named for it —
+    kind always text, kind answering with nothing selected, the asset map
+    emptied, the name row carrying the id, the swallowed refusal, a placement
+    without its flush, one arriving as text, one on the lyric default box, one
+    bypassing History, one that does not select, and the no-slide guard
+    deleted. Disclosed blind: the placement's two emits (headless reads are
+    live; they exist for the QML bindings, and QML chrome is the blind spot —
+    `ui_loads` proves the drawer button and `pictureInfo` compile and
+    instantiate offscreen but no harness drives them); `currentBoxAsset`'s
+    missing-asset fallback, unreachable through this controller since
+    `removeAsset` drops the items and `loadService` refuses dangling
+    references; and the QML visibility and double-click expressions themselves.
+  - Gates desktop **48/48** (228.2 s), headless **27/27** (48.9 s);
+    `document_controller_tests` 3.48 s, `ui_loads` 8.03 s; both trees build
+    clean apart from the pre-existing GCC `-Wfree-nonheap-object` false
+    positive at `tests/background_media_tests.cpp:2294`. One gate run took a
+    single display-side failure that passed on rerun (11.80 s, consistent with
+    `worker_rpc_limits`) and did not recur across two further full runs.
+- Exact next action: **6.17c** per the PLAN.md ledger (review R17) — represent
+  and render the agreed background gradient/fit choices: model, storage,
+  compiler and UI agree on supported fits, cover/contain/blur and gradient
+  fixtures, legacy defaults, and the composition budget honoured on screen;
+  split each fit into a leaf if necessary. R17's stack work is now closed
+  across model, file, wire, worker and editor.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -4097,6 +4143,37 @@ of this work.
 
 ## Decisions
 
+- (2026-10-28, task 6.17b2) The panel places; the model refuses; and the
+  field that cannot hold the words is not shown.
+  **Placement is `addTextBox` for pictures, and its refusals are borrowed,
+  not restated.** The temptation at a new door is a fresh validation layer —
+  check the asset exists, check it is not a video, check the count — written
+  at the controller. Every one of those is `addItem`'s rule already, owned
+  there since 6.17b1 with worded refusals, and a panel-side copy is a second
+  list that can drift from the first (the exact failure class that made
+  `assetPathLooksLikeVideo` one list last leaf). So `placeAssetOnSlide`
+  validates only what only it knows — that there IS a current slide — and
+  quotes the domain's own error for everything else. What it adds is the
+  flush it opens with: the one rule with no model-side equivalent, because
+  "whose words are still in the debounce" is session state. Without it a
+  placement silently converts a pending burst into a refused one — the
+  operator loses typed words to a guard that was correct about the picture
+  and irrelevant to the sentence they were writing.
+  **Honest refusal needs a reader.** The model has refused words on a picture
+  since 6.17b1, and the controller's `edit()` made that refusal INVISIBLE:
+  the burst vanished with no trace, which is the worst shape a correct
+  refusal can take. So `commitPendingText` names it on the status line — and
+  the QML does the kinder half, hiding the words field on an image selection
+  so the refusal is the backstop rather than the routine. The battery proved
+  the distinction matters: with the setStatus deleted, the old
+  `contains("picture")` check still passed on the placement's own success
+  status, and the check had to move to the guard's own phrase.
+  **A default box is a statement.** Placing a picture on the lyric default
+  (160,100,1600,880) puts its outline exactly over the text box's and the
+  canvas says "nothing new" — while a centred half-canvas arrives as a visibly
+  new box on the composition, large enough to judge the picture in, and the
+  drag the operator was always going to do is one gesture away. The number is
+  pinned by test so the next default is a decision, not a drift.
 - (2026-10-27, task 6.17b1) Kind is a fact, absence is a fact, and neither is
   allowed to be inferred.
   **A stack entry says what it is.** The cheap version of this leaf inferred the

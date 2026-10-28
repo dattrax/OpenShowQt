@@ -418,6 +418,18 @@ Rectangle {
                         drawer.selectedAssetId = ""
                     }
                 }
+
+                // Task 6.17b2: put the selected asset on the slide under
+                // edit as a new topmost picture — the picture's path from
+                // this drawer is what "New box" is for words. A refusal
+                // (no current slide, a video, the stack's ceiling) lands
+                // on the status line naming itself; the drawer stays put.
+                Button {
+                    objectName: "placeAssetButton"
+                    text: "Add to slide"
+                    enabled: drawer.selectedAssetId !== ""
+                    onClicked: docs.placeAssetOnSlide(drawer.selectedAssetId)
+                }
             }
 
             Rectangle {
@@ -476,7 +488,16 @@ Rectangle {
                             id: assetMouse
                             anchors.fill: parent
                             hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton
                             onClicked: drawer.selectedAssetId = assetRow.modelData.id
+                            // The shows tab's double-click rule, applied to
+                            // media (6.17b2): the second click both selects
+                            // the row and asks for it on the slide, so the
+                            // picture lands selected and draggable.
+                            onDoubleClicked: {
+                                drawer.selectedAssetId = assetRow.modelData.id
+                                docs.placeAssetOnSlide(assetRow.modelData.id)
+                            }
                         }
                     }
 

@@ -1332,9 +1332,58 @@ Window {
         // The editor writes into the debounced controller slot; the
         // binding is re-established (not just assigned) when navigation,
         // undo or a load changes the slide under the operator, so future
-        // changes keep flowing without breaking typing again.
+        // changes keep flowing without breaking typing again. Since
+        // 6.17b2 the selection may be a picture, which has no words to
+        // edit — offering an empty field for one invites a typing burst
+        // the model must refuse, so the dock shows the picture's asset
+        // instead, and the field returns the moment a text box is
+        // selected again.
+        Column {
+            id: pictureInfo
+            objectName: "pictureInfo"
+            anchors.top: slideListBox.bottom
+            anchors.topMargin: 10
+            anchors.bottom: navRow.top
+            anchors.bottomMargin: 10
+            anchors.left: parent.left
+            anchors.right: parent.right
+            visible: docs.currentBoxKind === "image"
+            spacing: 6
+
+            Text {
+                color: "#8f93a5"
+                font.pixelSize: 10
+                font.bold: true
+                text: "PICTURE"
+            }
+            Text {
+                objectName: "pictureAssetName"
+                width: parent.width
+                elide: Text.ElideMiddle
+                color: "#f0f0ff"
+                font.pixelSize: 14
+                text: docs.currentBoxAsset.name || "this picture has lost its asset"
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                color: "#8f93a5"
+                font.pixelSize: 11
+                text: docs.currentBoxAsset.sourcePath || " "
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                color: "#6a6f80"
+                font.pixelSize: 11
+                text: "drag on the canvas to place it \u00b7 Back/Forward reorder "
+                      + "\u00b7 Delete takes it off the slide"
+            }
+        }
+
         TextArea {
             id: lyricText
+            visible: docs.currentBoxKind !== "image"
             anchors.top: slideListBox.bottom
             anchors.topMargin: 10
             anchors.bottom: navRow.top

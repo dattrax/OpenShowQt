@@ -59,11 +59,22 @@ class DocumentController : public QObject {
     // -1 when the slide has no boxes. The canvas puts handles on this box
     // only; every box-scoped edit below lands on it.
     Q_PROPERTY(int currentBox READ currentBox NOTIFY boxSelectionChanged)
-    // The current slide's boxes in draw order: [{id, index, x, y, width,
-    // height}]. The canvas draws one outline per entry, so what the operator
-    // sees framed is every box the worker will paint, in the order it paints.
+    // The current slide's boxes in draw order: [{id, index, kind, assetId,
+    // x, y, width, height}]. The canvas draws one outline per entry, so what
+    // the operator sees framed is every box the worker will paint, in the
+    // order it paints — and the kind (task 6.17b) tells a picture's outline
+    // from a text box's without guessing from empty words.
     Q_PROPERTY(QVariantList currentSlideBoxes READ currentSlideBoxes
                NOTIFY documentsChanged)
+    // What kind of box the selection is on ("text", "image", or "" with
+    // nothing selected) and the asset an image box shows, in the same shape
+    // as an assets() row (empty map when the selection is a text box). The
+    // inspector reads these two to decide between the words field and the
+    // picture's name (task 6.17b2); navigation, undo and every stack edit
+    // re-emit the signal, so the field and the canvas outline always
+    // describe the same box.
+    Q_PROPERTY(QString currentBoxKind READ currentBoxKind NOTIFY boxSelectionChanged)
+    Q_PROPERTY(QVariantMap currentBoxAsset READ currentBoxAsset NOTIFY boxSelectionChanged)
     // Playlists (the reference's "projects"): [{id, name, entryCount}],
     // creation order; every session keeps at least one.
     Q_PROPERTY(QVariantList playlists READ playlists NOTIFY documentsChanged)
@@ -119,6 +130,8 @@ public:
     QString currentSlideText() const;
     int currentBox() const;
     QVariantList currentSlideBoxes() const;
+    QString currentBoxKind() const;
+    QVariantMap currentBoxAsset() const;
     bool dirty() const { return fDirty; }
     QString serviceDirectory() const {
         return QString::fromStdWString(fServiceDirectory.wstring());
@@ -138,7 +151,9 @@ public:
     Q_INVOKABLE bool addSlide();
     Q_INVOKABLE bool removeCurrentSlide();
     // Queues new text for the current slide; one history entry lands when
-    // typing pauses or the next operation runs.
+    // typing pauses or the next operation runs. When the selection is a
+    // picture the commit refuses out loud instead of swallowing the words
+    // into a model that cannot hold them (task 6.17b2).
     Q_INVOKABLE void setSlideText(const QString& text);
     // Resizes/moves the current slide's authored text box (task 4.3), in
     // 1920x1080 canvas units. One history entry per call, so a drag commits
@@ -172,6 +187,12 @@ public:
     // Geometry of the SELECTED box, in 1920x1080 canvas units: one history
     // entry per call, so a drag commits once on release.
     Q_INVOKABLE bool setTextBoxGeometry(double x, double y, double width, double height);
+    // The media drawer's placement command (task 6.17b2): put the asset on
+    // top of the current slide's stack as a new image item and SELECT it —
+    // the picture analogue of addTextBox, one history entry, and the model's
+    // kind discipline owns the refusals (unknown asset, video, the shared
+    // eight-item ceiling), which the status line names verbatim.
+    Q_INVOKABLE bool placeAssetOnSlide(const QString& assetId);
 
     // --- style panel (task 4.4) ---
 

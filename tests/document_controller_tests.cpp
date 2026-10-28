@@ -1227,6 +1227,201 @@ void exerciseImageItemSession(const std::filesystem::path& root) {
           "and the pasted slide carries the words with no picture item in it");
 }
 
+// --- authoring pictures from the panel (task 6.17b2) ------------------------
+
+// The other half of 6.17b: the controller surface the editor drives — the
+// drawer's placement command, the kind/asset views the inspector reads, and
+// the honest refusal where a text-only edit lands on a picture. Everything
+// the MIXED stack does after that (nudge, reorder, delete, undo, navigation)
+// is asserted here too, because the acceptance is that the stack is ONE: the
+// same commands, the same selection, for both kinds.
+void exerciseImageAuthoring(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong(QStringLiteral("Composer"));
+    docs.addSlide();
+    docs.selectSlide(0);
+    const QString slideId = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+    docs.setSlideText(QStringLiteral("Hello"));
+    docs.flushText();
+
+    // A still to place and a video that must be refused, written as files
+    // and imported the way the drawer's dialog hands them over.
+    { std::ofstream f(root / "plate.png"); f << "PNGBYTES"; }
+    { std::ofstream f(root / "reel.mov"); f << "MOVBYTES"; }
+    const QString pngPath = QString::fromStdWString((root / "plate.png").wstring());
+    const QString movPath = QString::fromStdWString((root / "reel.mov").wstring());
+    check(docs.importMediaFile(pngPath) && docs.importMediaFile(movPath) &&
+              docs.assets().size() == 2,
+          "a still and a video are imported for the drawer to place");
+    const QString plateId =
+        docs.assets().at(0).toMap().value(QStringLiteral("id")).toString();
+    const QString reelId =
+        docs.assets().at(1).toMap().value(QStringLiteral("id")).toString();
+
+    // What the inspector shows before any picture exists: a text selection,
+    // no asset, and no pictureInfo to be seen.
+    check(docs.currentBox() == 0 && docs.currentBoxKind() == QStringLiteral("text") &&
+              docs.currentBoxAsset().isEmpty(),
+          "a fresh slide selects its text box and the asset view is empty");
+
+    // --- place: on top, selected, half-canvas, and in the scene ----------
+    check(docs.placeAssetOnSlide(plateId), "the drawer can place the still on the slide");
+    QVariantList boxes = docs.currentSlideBoxes();
+    check(boxes.size() == 2 &&
+              boxes.at(1).toMap().value(QStringLiteral("kind")).toString() ==
+                  QStringLiteral("image"),
+          "the picture joins the TOP of the stack — it is what the audience sees "
+          "over the words, and the next Tab will reach it");
+    check(docs.currentBox() == 1 && docs.currentBoxKind() == QStringLiteral("image"),
+          "placed means selected: the handles go straight to the new picture");
+    check(docs.currentBoxAsset().value(QStringLiteral("id")).toString() == plateId &&
+              docs.currentBoxAsset().value(QStringLiteral("name")).toString() ==
+                  QStringLiteral("plate.png"),
+          "the inspector is handed the picture's asset — id and name — instead of a "
+          "text field's contents");
+    const QVariantMap placed = boxes.at(1).toMap();
+    check(placed.value(QStringLiteral("x")).toDouble() == 480.0 &&
+              placed.value(QStringLiteral("y")).toDouble() == 270.0 &&
+              placed.value(QStringLiteral("width")).toDouble() == 960.0 &&
+              placed.value(QStringLiteral("height")).toDouble() == 540.0,
+          "the picture arrives as a centred half-canvas box: visibly a new box, not a "
+          "full-frame outline coinciding with the default one");
+    const openshow::scene::Scene staged = compiledFor(docs, slideId);
+    check(staged.items.size() == 2 && staged.items[1].isImage &&
+              !staged.items[1].assetPath.empty() && staged.items[0].lines.size() == 1,
+          "and the slide compiles with the picture over the words for the worker to draw");
+
+    // --- one stack, one set of commands -----------------------------------
+    check(docs.setTextBoxGeometry(490, 280, 960, 540) &&
+              compiledFor(docs, slideId).items[1].x == 490.0,
+          "a nudge or a drag moves the picture through the same geometry commit a "
+          "text box gets");
+    check(docs.moveCurrentTextBox(0) && docs.currentBox() == 0 &&
+              docs.currentBoxKind() == QStringLiteral("image"),
+          "Back sends the picture BEHIND the words and the selection rides along — "
+          "reorder follows identity, not kind");
+    check(compiledFor(docs, slideId).items[0].isImage,
+          "the compiled stack really is re-ordered: the picture draws under the verse now");
+    check(docs.selectTextBox(1) && docs.currentBoxKind() == QStringLiteral("text") &&
+              docs.currentBoxAsset().isEmpty(),
+          "Tab reaches the text box above the picture, and the asset view empties");
+    check(docs.selectTextBox(0) && docs.currentBoxKind() == QStringLiteral("image"),
+          "Tab back onto the picture — the walk covers the stack in draw order "
+          "whatever the kind");
+    check(docs.removeCurrentTextBox() && docs.currentSlideBoxes().size() == 1,
+          "the same Delete rule takes the picture off the slide");
+
+    // --- undo and redo carry the picture and the selection ----------------
+    docs.undo();  // bring the delete back
+    check(docs.currentSlideBoxes().size() == 2 && docs.currentBox() == 0 &&
+              docs.currentBoxKind() == QStringLiteral("image"),
+          "undo restores the deleted picture and the selection follows its id back "
+          "onto it, index and all");
+    docs.redo();  // delete it again
+    check(docs.currentSlideBoxes().size() == 1 &&
+              docs.currentBoxKind() == QStringLiteral("text"),
+          "redo deletes it again and the selection that named the vanished picture "
+          "falls back to the words");
+    // Re-place for the remaining scenes; then prove placement itself is ONE
+    // history entry by undoing it and watching the slide drop back to words.
+    check(docs.placeAssetOnSlide(plateId), "the picture is placed a second time");
+    docs.undo();
+    check(docs.currentSlideBoxes().size() == 1 &&
+              docs.currentBox() == 0 &&
+              docs.currentBoxKind() == QStringLiteral("text"),
+          "one undo removes one placement, and the selection that named the vanished "
+          "picture falls back to the words exactly like a vanished text box would");
+    docs.redo();
+    check(docs.currentSlideBoxes().size() == 2 && docs.currentBox() == 1 &&
+              docs.currentBoxKind() == QStringLiteral("image"),
+          "redo brings the picture back still selected — its id survived in the "
+          "selection because the selection names identities");
+
+    // Navigation belongs to the slide, not the session: leaving and coming
+    // back resets the selection to the bottom of the mixed stack.
+    docs.addSlide();
+    docs.selectSlide(0);
+    check(docs.currentBox() == 0 && docs.currentBoxKind() == QStringLiteral("text"),
+          "navigating back to the mixed slide clears the picture selection with the slide");
+
+    // --- a text-only edit on a picture refuses OUT LOUD ---------------------
+    check(docs.save(), "a save draws the clean/dirty line the refusal is measured against");
+    check(docs.selectTextBox(1) && docs.currentBoxKind() == QStringLiteral("image"),
+          "the picture is selected again to be typed on");
+    const bool dirtyBefore = docs.dirty();
+    docs.setSlideText(QStringLiteral("words on a picture"));
+    docs.flushText();
+    const openshow::scene::Scene typed = compiledFor(docs, slideId);
+    check(docs.status().contains(QStringLiteral("shows a picture")),
+          "typing into a selected picture is refused on the status line, not "
+          "swallowed into a refused edit()");
+    check(typed.items[1].lines.empty() &&
+              typed.items[0].lines == std::vector<std::string>{"Hello"},
+          "the words went nowhere: not into the picture, not into the box under it");
+    check(!dirtyBefore && !docs.dirty(),
+          "and the refused typing burst dirties nothing — the deck is what the save left");
+
+    // A burst typed into the WORDS box, with the operator tabbing onto the
+    // picture before the debounce lands: the flush-first rule (6.17a2) owns
+    // it, so the words belong to the box they were typed into.
+    check(docs.selectTextBox(0) && docs.currentBoxKind() == QStringLiteral("text"),
+          "the words box is selected for fresh typing");
+    docs.setSlideText(QStringLiteral("Verse two"));
+    check(docs.selectTextBox(1) && docs.currentBoxKind() == QStringLiteral("image"),
+          "the operator tabs onto the picture mid-burst");
+    const openshow::scene::Scene flushed = compiledFor(docs, slideId);
+    check(flushed.items[0].lines == std::vector<std::string>{"Verse two"} &&
+              flushed.items[1].lines.empty(),
+          "the burst commits into the words box it was typed into — the selection "
+          "moving to a picture neither loses it nor relocates it");
+
+    // Placing a picture while a burst is still in the debounce: the flush a
+    // placement opens with is what keeps the words in the box they were
+    // typed into, instead of letting the new selection carry them onto the
+    // picture — where the guard would then honestly refuse them away.
+    check(docs.selectTextBox(0) && docs.currentBoxKind() == QStringLiteral("text"),
+          "the words box is selected for a burst that a placement will interrupt");
+    docs.setSlideText(QStringLiteral("Verse three"));
+    check(docs.placeAssetOnSlide(plateId), "a placement while typing is pending still lands");
+    const openshow::scene::Scene placedLate = compiledFor(docs, slideId);
+    check(placedLate.items.size() == 3 &&
+              placedLate.items[0].lines == std::vector<std::string>{"Verse three"} &&
+              placedLate.items[2].isImage && placedLate.items[2].lines.empty(),
+          "the pending words commit into the words box before the picture takes the "
+          "selection — a placement neither drops nor relocates them");
+
+    // --- the refusals the drawer will hit -----------------------------------
+    check(!docs.placeAssetOnSlide(reelId) &&
+              docs.status().contains(QStringLiteral("video")) &&
+              docs.currentSlideBoxes().size() == 3,
+          "a video cannot become a foreground picture, the status says why, and the "
+          "stack is untouched");
+    check(!docs.placeAssetOnSlide(QStringLiteral("asset999")) &&
+              docs.status().contains(QStringLiteral("unknown asset")),
+          "an unknown asset id is refused by name");
+    check(docs.currentBoxKind() == QStringLiteral("image") && docs.currentBox() == 2,
+          "a refused placement does not move the selection either");
+
+    // The ceiling is the stack's own: the remaining placements take the slide
+    // to its eight items, and the ninth of any kind lands on the status line.
+    for (int i = 0; i < 6 && docs.currentSlideBoxes().size() < 8; ++i) {
+        check(docs.placeAssetOnSlide(plateId), "another placement fits under the ceiling");
+    }
+    check(docs.currentSlideBoxes().size() == 8, "the mixed stack reached the scene's ceiling");
+    check(!docs.placeAssetOnSlide(plateId) &&
+              docs.status().contains(QStringLiteral("items a scene can carry")),
+          "a ninth picture is refused through the model's own ceiling rule — text and "
+          "pictures share one budget, so does this door");
+
+    // With nothing under the cursor there is nothing to place onto.
+    DocumentController bare(nullptr, root / "bare");
+    check(bare.currentBoxKind().isEmpty() && bare.currentBoxAsset().isEmpty(),
+          "with no slide there is no kind and no asset for the inspector to show");
+    check(!bare.placeAssetOnSlide(plateId) &&
+              bare.status().contains(QStringLiteral("no current slide")),
+          "with no current slide the drawer's button explains itself and records nothing");
+}
+
 void exerciseClipboard(const std::filesystem::path& root) {
     DocumentController docs(nullptr, root);
     docs.createSong(QStringLiteral("Copycat"));
@@ -1656,6 +1851,7 @@ int main(int argc, char* argv[]) {
     exerciseBoxAuthoring(tempRoot / "boxauthoring");
     exerciseClipboard(tempRoot / "clipboard");
     exerciseImageItemSession(tempRoot / "mixeditem");
+    exerciseImageAuthoring(tempRoot / "imageauthoring");
     exerciseAutosaveSurfacing(tempRoot / "surfacing");
     exerciseBackgroundPersistence(tempRoot / "background");
     std::filesystem::remove_all(tempRoot);
