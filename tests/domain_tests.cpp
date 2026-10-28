@@ -1516,13 +1516,18 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         check(openshow::domain::backgroundFitName(openshow::domain::BackgroundFit::Cover) ==
                       std::string("cover") &&
                   openshow::domain::backgroundFitName(openshow::domain::BackgroundFit::Contain) ==
-                      std::string("contain"),
-              "the domain spells the two fits, and they are the only two spellings");
+                      std::string("contain") &&
+                  openshow::domain::backgroundFitName(openshow::domain::BackgroundFit::Blur) ==
+                      std::string("blur"),
+              "the domain spells the three fits, and they are the only three spellings");
         openshow::domain::BackgroundFit parsed = openshow::domain::BackgroundFit::Cover;
-        check(!openshow::domain::backgroundFitFromName("blur", &parsed) &&
+        check(openshow::domain::backgroundFitFromName("blur", &parsed) &&
+                  parsed == openshow::domain::BackgroundFit::Blur,
+              "'blur' parses from 6.17c2 — the name joined the set, the wire did not move");
+        check(!openshow::domain::backgroundFitFromName("fill", &parsed) &&
                   !openshow::domain::backgroundFitFromName("", &parsed),
-              "names outside the pair do not parse: 'blur' arrives in 6.17c2, "
-              "and until then a file claiming it must not be approximated");
+              "names outside the set do not parse: 'fill' (the distorting stretch) "
+              "is not in the agreed set and no reader will grow it silently");
         check(fitted.findShow(show)->slides[0].backgroundFit == openshow::domain::BackgroundFit::Cover,
               "a brand-new slide defaults to cover — what the worker has drawn since 3.2");
         check(fitted.setSlideBackgroundFit(show, slideA, openshow::domain::BackgroundFit::Contain),
@@ -1530,6 +1535,13 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
               "choice is the slide's standing answer, not the file's property");
         check(fitted.findShow(show)->slides[1].backgroundFit == openshow::domain::BackgroundFit::Cover,
               "and the other slide is untouched");
+        check(fitted.setSlideBackgroundFit(show, slideB, openshow::domain::BackgroundFit::Blur),
+              "a slide chooses blur (6.17c2) — the domain stores the choice; whether a"
+              " video can carry it is the compile's and the editor's business");
+        check(fitted.findShow(show)->slides[1].backgroundFit == openshow::domain::BackgroundFit::Blur,
+              "blur is held, slide by slide like every other fit");
+        const Id slideC = fitted.appendSlide(show, &error);
+        (void)slideC;  // stays cover: the manifest must still spell the default by name
         error.clear();
         check(!fitted.setSlideBackgroundFit(show, "no-such-slide",
                                             openshow::domain::BackgroundFit::Cover, &error) &&
@@ -1543,13 +1555,14 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                   openshow::domain::loadService(&back, fittedDir, &error),
               "a service of fitted slides saves and reloads");
         check(back.findShow(show)->slides[0].backgroundFit == openshow::domain::BackgroundFit::Contain &&
-                  back.findShow(show)->slides[1].backgroundFit == openshow::domain::BackgroundFit::Cover,
+                  back.findShow(show)->slides[1].backgroundFit == openshow::domain::BackgroundFit::Blur,
               "the choice survives the round trip, slide by slide");
         check(sameService(fitted, back), "the whole fitted service compares field by field");
         const std::string manifest = readFile(fittedDir / "service.json");
         check(manifest.find("\"fit\":\"contain\"") != std::string::npos &&
+                  manifest.find("\"fit\":\"blur\"") != std::string::npos &&
                   manifest.find("\"fit\":\"cover\"") != std::string::npos,
-              "both fits are written by name — cover included, because leaving the "
+              "all three fits are written by name — cover included, because leaving the "
               "default to inference is 6.17b1's rule for why a key is always written");
         const fs::path refitted = tempRoot / "v4-refitted";
         check(openshow::domain::saveService(back, refitted, &error) &&

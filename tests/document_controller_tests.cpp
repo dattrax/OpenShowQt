@@ -1587,11 +1587,11 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
     // editor speaks, a refused name says itself on the status line, leaves
     // the property where it stood, and — because it never reaches the edit
     // seam — leaves no history entry behind.
-    check(!docs.setSlideBackgroundFit(QStringLiteral("blur")) &&
+    check(!docs.setSlideBackgroundFit(QStringLiteral("fill")) &&
               docs.status().contains(QStringLiteral("background fit")) &&
-              docs.status().contains(QStringLiteral("'blur'")),
-          "'blur' is refused HERE naming itself — until 6.17c2 draws it, the editor "
-          "cannot be talked into a fit this build would misrender");
+              docs.status().contains(QStringLiteral("'fill'")),
+          "'fill' is refused HERE naming itself — the distorting stretch is not in "
+          "the agreed set, and no reader will grow it silently");
     check(docs.currentBackgroundFit() == QStringLiteral("contain"),
           "the refused name changed nothing");
     docs.undo();
@@ -1636,6 +1636,66 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
     docs.addSlide();
     check(docs.currentBackgroundFit() == QStringLiteral("cover"),
           "a fresh slide is cover again: the clip does not leak into new slides");
+
+    // --- blur (task 6.17c2): accepted like every other fit on a slide a
+    //     blur can be built for, and refused on a VIDEO background before
+    //     the edit seam, naming itself ---
+    check(docs.setSlideBackgroundFit(QStringLiteral("blur")),
+          "the operator picks the blurred backdrop on a plain slide");
+    check(docs.currentBackgroundFit() == QStringLiteral("blur"),
+          "the property follows the choice");
+    const int blurRow = docs.slides().size() - 1;
+    check(docs.slides().at(blurRow).toMap().value(QStringLiteral("backgroundFit")).toString() ==
+              QStringLiteral("blur"),
+          "the slides() view carries blur per row — the combo can select it");
+    docs.undo();
+    check(docs.currentBackgroundFit() == QStringLiteral("cover"),
+          "blur is one undo step like every fit before it");
+    docs.redo();
+    check(docs.setSlideBackgroundFit(QStringLiteral("contain")),
+          "and blur slides move again — it is a stored value, not a trap");
+    // The video pairing: refused at the seam, not at present time. The
+    // refusal leaves the fit where it stood and leaves no history entry
+    // (the same discipline the unknown-name refusal is pinned with).
+    const QString videoPath = QString::fromStdWString((root / "loop-video.mp4").wstring());
+    check(docs.importMediaFile(videoPath) && docs.assets().size() == 1,
+          "a video file is registered for the background picker");
+    const QString videoAssetId =
+        docs.assets().front().toMap().value(QStringLiteral("id")).toString();
+    check(docs.setSlideBackground(videoAssetId), "the slide takes the video background");
+    check(!docs.setSlideBackgroundFit(QStringLiteral("blur")) &&
+              docs.status().contains(QStringLiteral("background fit")) &&
+              docs.status().contains(QStringLiteral("does not blur playing frames")),
+          "blur on a video background is refused at the seam, saying why");
+    check(docs.currentBackgroundFit() == QStringLiteral("contain"),
+          "the refused pairing changed nothing");
+    docs.undo();
+    check(docs.currentBackgroundFit() == QStringLiteral("contain") &&
+              docs.slides().at(blurRow).toMap().value(QStringLiteral("backgroundAssetId"))
+                  .toString() != videoAssetId,
+          "and the refusal left no history entry: one undo is still the video adoption");
+    check(docs.setSlideBackgroundFit(QStringLiteral("cover")),
+          "the video slide can still take the fits it can draw");
+    // Paste honours the pairing too: a blurred slide copied from elsewhere
+    // pastes blurred (the clip carries the fit), and adopting a video onto
+    // a blurred slide stays blurred in the model — it is the COMPILE that
+    // refuses it at present time, loudly, which the scene tests pin.
+    docs.addSlide();
+    const QString plainId =
+        docs.slides().at(docs.slides().size() - 1).toMap().value(QStringLiteral("id")).toString();
+    docs.selectSlide(docs.slides().size() - 1);
+    check(docs.currentBackgroundFit() == QStringLiteral("cover"),
+          "the presenter moves to a fresh cover slide");
+    check(docs.setSlideBackgroundFit(QStringLiteral("blur")) &&
+              docs.copyCurrentSlide() && docs.pasteSlide(),
+          "a blurred plain slide copies and pastes");
+    check(docs.slides().at(docs.slides().size() - 1)
+              .toMap()
+              .value(QStringLiteral("backgroundFit"))
+              .toString() == QStringLiteral("blur"),
+          "the pasted row carries blur — the choice travels with the slide");
+    check(compiledFor(docs, plainId).background.fit == openshow::domain::BackgroundFit::Blur,
+          "and a blurred still compiles blurred for the worker to backdrop");
 }
 
 // --- task 6.14a (review R14): autosave health is visible, quitting flushes -------

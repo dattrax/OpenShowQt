@@ -199,8 +199,8 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 // --- wire form ---------------------------------------------------------------
 
 // {"scene":3,"showId":...,"slideId":...,"backgroundColor":<int>,
-//  "background":{"image":bool,"video":bool,"fit":"cover"|"contain",
-//                "assetId":...,"assetPath":...},
+//  "background":{"image":bool,"video":bool,
+//                "fit":"cover"|"contain"|"blur","assetId":...,"assetPath":...},
 //  "items":[{"kind":"text","lines":[...],"color":<int>,"fontFamily":...,
 //            "fontSize":<num>,"x":<num>,"y":<num>,"width":<num>,
 //            "height":<num>,"align":"left"|"center"|"right",

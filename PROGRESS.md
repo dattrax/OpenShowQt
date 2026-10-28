@@ -1772,14 +1772,61 @@ Updated: 2026-10-28 (Europe/London).
   - Gates desktop **48/48** (229.17 s), headless **27/27** (48.9 s); both
     trees build clean apart from the accepted `-Wfree-nonheap-object`
     false positive and the five whitelisted QML notices.
-- Exact next action: **6.17c2** per the PLAN.md ledger (review R17) — draw
-  the blur fit: `"blur"` widens the domain/storage/wire name set, and the
-  worker draws the reference rule (blurred cover backdrop under the
-  contained picture, reference blur 6 / opacity 0.3) within the composition
-  budget — backdrop computed once per image where the picture decodes, no
-  new render target in the composition pass (R13's rule stands), fade path
-  included, and the downscale-and-reuse approximation MEASURED against a
-  by-the-book full-res blur and recorded honestly.
+- **Task 6.17c2 DONE — blur draws the reference's backdrop, built once per
+  image, faded as one group.** `"blur"` joined the domain's ONE name pair
+  and nothing else moved: service format stays 4, scene format stays 3, the
+  key stays `fit` — the closed-name refusals c1 shipped are exactly what
+  makes this widening honest (an old build rejects `"blur"`, it cannot
+  misdraw it), and `scene.background-fit-blur.v1` + minor **12** (15 caps,
+  pinned in both hello fixtures) is what a frontend checks before offering
+  it. Blur+video — the pairing the draw cannot honour — is refused at all
+  three gates that see both halves: the controller seam (before the edit
+  seam, no history entry: `this build does not blur playing frames`), the
+  compile, and the wire (a hand-built payload drawing contain while
+  claiming blur is a lie scene 3 refuses). The backdrop is derived image
+  data: `SceneImageCache::backdropFor` cover-fills with a 24 px overscan
+  (no darkened frame edge), blurs sigma 6 with the 0.3 baked into its
+  alpha, ONCE per image off-lock at the first blurred draw, memoised in the
+  entry, its bytes counted into the budget — eviction, invalidation and
+  install-over each subtract them, and it dies with its image. `fitDest`'s
+  test is now `Cover ? max : min` so blur's PICTURE contains. The fade
+  keeps R13's no-layer rule by nesting — bars `Blend(fill, backdrop)` over
+  the clip-difference, dest `Blend(picture, Blend(fill, backdrop))`.
+  Measured: backdrop build **83 ms** at 1920x1080 vs **20 ms** half-size,
+  worst-channel difference **3/255** on the banded fixture — full-res
+  ships because the build is paid at the slide change, not at 60 Hz, so
+  the approximation buys nothing the budget needs; all three fade fixtures
+  (fill→blur 0.5, self-fade 0.5, blue-fill→TRANSLUCENT blur 0.75) measure
+  **worst 0/255, 0 px over tolerance** across the whole frame.
+  - **Mutations** m01–m20: **20/20 CAUGHT** (`/tmp/opencode/battery617c2.py`)
+    — the three name functions, both video refusals, the capability,
+    sigma/alpha/overscan, the backdrop fetch, the steady draw, both fade
+    regions, the memo store, all three byte-accounting sites, both
+    controller-guard directions. Two honest mid-run findings: the literal
+    drop of the caller's blur→contain conversion is an EQUIVALENT mutant
+    (fitDest tests only Cover, so Blur already contained — disclosed as
+    SURVIVED on first run, m11 re-aimed to forcing COVER at the
+    conversion, which moves pixels and is caught); and the first-run m14
+    survival found a real gap — an opaque SrcOver picture ignores its dst
+    shader, so the fade's dest NESTING is only observable through a
+    TRANSLUCENT picture, now a pinned fixture (blend 0.75, where the
+    missing backdrop reads ~12/255). Disclosed blind: the QML combo's
+    third-entry binding and sync index (chrome; `ui_loads` proves it
+    instantiates), the minor bump itself (hello accepts any minor — the
+    capability is the enforceable gate), the worker's `video == nullptr`
+    guard (defence in depth behind the pinned wire refusal).
+  - Gates desktop **48/48** (231.73 s), headless **27/27** (50.75 s); both
+    trees build clean apart from the accepted `-Wfree-nonheap-object`
+    false positive and the five whitelisted QML notices.
+- Exact next action: **6.17c3** per the PLAN.md ledger (review R17) —
+  represent and render the background gradient: the flat colour becomes a
+  pair, the second colour (empty = today's flat fill, the pinned legacy
+  default) turning the fill into a linear top→bottom gradient under
+  whatever picture the slide carries — model + storage (key written per
+  the established rule, lies refused naming themselves) + compiler + wire
+  + worker (the gradient rides the SAME single-draw fade group shader
+  where the flat colour rides today) + the editor's colour fields;
+  gradient fixtures measure endpoints and midline.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -4197,6 +4244,49 @@ of this work.
 
 ## Decisions
 
+- (2026-10-28, task 6.17c2) Blur is an honest name widening, the backdrop
+  is derived image data, and the video pairing is refused at every gate
+  that can see it.
+  **No format number moved.** c1's closed-name refusals are the promise
+  that lets a name join later without ceremony: a build that does not know
+  `"blur"` REJECTS the file or payload naming it, so widening the set is
+  safe for it and additive for new builds. What a frontend must check is
+  not the format number (which lies about nothing here) but the
+  capability — `scene.background-fit-blur.v1` — before offering the combo
+  entry to a live worker.
+  **The backdrop lives inside the image's cache entry, not beside it.**
+  It is pixels derived from those bytes: its bytes join `fBytes` (evict,
+  invalidate and install-over each subtract what they added — a derived
+  image escaping the budget would make `stats()` a lie), it is memoised
+  per path, and it dies with the image. The build runs off-lock at the
+  first blurred draw: measured **83 ms** at 1920x1080, i.e. one frame's
+  work at the slide change, never in the frame loop — R12's "the draw
+  never decodes" generalises to "the draw never blurs". The downscale-
+  first approximation was MEASURED against the by-the-book build, as the
+  plan required: **20 ms vs 83 ms, worst-channel difference 3/255** on
+  the banded fixture — and the full-resolution build still ships, because
+  the speed was never the problem the composition budget had.
+  **Blur's alpha is baked into the backdrop (77 ≈ 0.3), not carried on a
+  paint.** Every path that draws one — steady, the fade group's two
+  regions, any companion renderer later — shows the reference's opacity
+  without remembering to set it, which is the same reasoning that bakes
+  the overscan into the geometry: a constant a caller must remember is a
+  constant a caller will forget.
+  **The video pairing is refused at three gates** — the editor's seam,
+  the compile, the wire — rather than once. A rule about the draw budget,
+  stated only at draw time, surfaces as a misdrawn frame; stated at every
+  gate that can see both halves, it surfaces as a sentence an operator
+  reads where they made the choice. The duplication is deliberate and the
+  tests pin each gate's own refusal, so no gate's absence can hide behind
+  another's.
+  **The fade nests its shaders instead of getting a layer** —
+  `Blend(picture, Blend(backdrop, fill))` — and c2's battery proved the
+  fixture lesson: an opaque `SrcOver` picture ignores its dst shader, so
+  the nesting is INVISIBLE to an opaque fixture at any blend (m14
+  survived a full run). The promise only exists through a translucent
+  picture, where the backdrop under it reads ~12/255 at blend 0.75 — the
+  fixture the mutant now dies against. Opacity in a fixture is a claim
+  about what the test can see.
 - (2026-10-28, task 6.17c1) A fit belongs to the slide, the wire demands it,
   and a name nobody can draw is refused rather than approximated.
   **The choice lives on `Slide`, not on the asset.** The same picture under

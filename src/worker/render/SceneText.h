@@ -207,10 +207,14 @@ public:
 
     struct Stats {
         std::size_t decodedBytes = 0;   // pixel bytes of the cached images
+                                        // (blur backdrops included)
         std::size_t entries = 0;        // cached paths, failures included
         std::size_t pins = 0;           // live pin references
         std::size_t evictions = 0;      // images forgotten to stay in budget
         std::size_t budget = 0;         // what evictLocked is holding the line at
+        std::size_t backdrops = 0;      // blur backdrops held (6.17c2)
+        std::size_t backdropComputations = 0;  // lifetime builds: ONE per
+                                               // image is the pinned rule
     };
 
     // Decode a file at MOST maxW x maxH pixels (task 6.16b). Skia is asked
@@ -240,6 +244,19 @@ public:
     // touches the disk, which is what keeps a cold file from being paid
     // for at 60 Hz.
     sk_sp<SkImage> imageFor(const std::string& path);
+
+    // The blur fit's backdrop (task 6.17c2, review R17): the picture
+    // cover-fitted to the authored canvas and blurred at the reference's
+    // strength, its alpha pre-baked at the reference's 0.3. Computed ONCE
+    // per image — the first blurred draw pays it, every later frame takes
+    // a map probe — because a per-frame blur is exactly what the
+    // composition budget refuses (R13's rule). The build runs off-lock on
+    // the drawing thread: one blurred frame at a slide change, never a
+    // blurred frame at 60 Hz. The bytes are accounted into the cache's
+    // total, so the budget keeps its whole promise, and a backdrop dies
+    // with its image (eviction or invalidation). Null answers for an
+    // uncached or failed path — the same degradation as the image itself.
+    sk_sp<SkImage> backdropFor(const std::string& path);
 
     // True when a lookup would find a picture (no LRU touch, no counting):
     // the session's broken-still report asks this on the apply path.
@@ -283,9 +300,11 @@ public:
 private:
     struct Entry {
         sk_sp<SkImage> image;      // null = a remembered failure (0 bytes)
+        sk_sp<SkImage> backdrop;   // blur fit's cached backdrop (6.17c2)
         unsigned pins = 0;
         std::uint64_t seen = 0;    // LRU clock: lowest evicts first
         std::size_t bytes = 0;     // pixel bytes, 0 for a failure
+        std::size_t backdropBytes = 0;  // the backdrop's bytes, in fBytes too
     };
 
     // Budget enforcement, on-lock: forget unpinned entries, least-recently
@@ -308,16 +327,21 @@ private:
     std::uint64_t fClock = 0;
     std::size_t fPins = 0;
     std::size_t fEvictions = 0;
+    std::size_t fBackdropComputations = 0;  // 6.17c2's once-per-image pin
 };
 
-// Draws a scene's background: the colour fill, and the cover-fitted
-// media on top when hasImage. Cover scales to fill the authored canvas
-// (the lyric default), centring and cropping the overflow; the paint's
-// alpha applies to the whole background for a fade — the background is
-// ONE group (picture over fill) and the alpha is that group's, so a fade
-// is the lerp the blend says it is (task 6.11b, review R13). Image load
-// failure leaves the colour fill standing alone. The caller's canvas
-// already carries the output-rule transform.
+// Draws a scene's background: the colour fill, and the fitted media on top
+// when hasImage (the fit is the scene's, task 6.17c1/c2, review R17). Cover
+// scales to fill the authored canvas (the lyric default), centring and
+// cropping the overflow; contain scales it inside, centred, the fill showing
+// in the bars; blur draws the CONTAIN-fitted picture over the cached
+// blurred-cover backdrop at the reference's 0.3 (the backdrop comes from
+// SceneImageCache::backdropFor — built once per image, never here). The
+// paint's alpha applies to the whole background for a fade — the background
+// is ONE group and the alpha is that group's, so a fade is the lerp the
+// blend says it is (task 6.11b, review R13). Image load failure leaves the
+// colour fill standing alone. The caller's canvas already carries the
+// output-rule transform.
 //
 // Task 5.5: a video background draws the frame the session's scheduler
 // offered via `video` (cover-fit like the image); no frame yet — or a

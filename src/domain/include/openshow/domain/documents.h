@@ -46,20 +46,33 @@ using Id = std::string;
 // the kind says which of the two content fields means anything.
 enum class ItemKind { Text, Image };
 
-// How the background picture sits on the canvas (task 6.17c1, review R17).
-// COVER — scale to fill, centre, crop — is what the worker has drawn since
-// 3.2 and remains the DEFAULT: a file written before this field existed
-// means exactly what it drew. CONTAIN scales the picture inside the canvas
-// and lets the colour fill show in the bars. The reference's `blur` fit
-// arrives as a third name in 6.17c2; `fill` (distorting stretch) is not in
-// the agreed set, and neither this enum nor any reader will grow it silently.
-enum class BackgroundFit { Cover, Contain };
+// How the background picture sits on the canvas (tasks 6.17c1/c2, review
+// R17). COVER — scale to fill, centre, crop — is what the worker has drawn
+// since 3.2 and remains the DEFAULT: a file written before this field
+// existed means exactly what it drew. CONTAIN scales the picture inside the
+// canvas and lets the colour fill show in the bars. BLUR is the reference's
+// rule (blur 6, opacity 0.3): the CONTAIN-fitted picture over a blurred
+// COVER backdrop of the same picture at 30% — the backdrop is computed once
+// per image where its bytes are cached, never per frame, and it is refused
+// (at the compile) for a VIDEO background, because playing frames cannot
+// pay a per-frame blur within the composition budget. `fill` (distorting
+// stretch) is not in the agreed set, and neither this enum nor any reader
+// will grow it silently.
+enum class BackgroundFit { Cover, Contain, Blur };
 
 // The ONE spelling of the fits, shared by the service file and the scene
 // wire (the assetPathLooksLikeVideo pattern: two libraries that each parsed
 // their own copy of a name list is how a model and a compiler drift).
 inline const char* backgroundFitName(BackgroundFit fit) {
-    return fit == BackgroundFit::Contain ? "contain" : "cover";
+    switch (fit) {
+        case BackgroundFit::Contain:
+            return "contain";
+        case BackgroundFit::Blur:
+            return "blur";
+        case BackgroundFit::Cover:
+            break;
+    }
+    return "cover";
 }
 inline bool backgroundFitFromName(const std::string& name, BackgroundFit* fit) {
     if (name == "cover") {
@@ -68,6 +81,10 @@ inline bool backgroundFitFromName(const std::string& name, BackgroundFit* fit) {
     }
     if (name == "contain") {
         *fit = BackgroundFit::Contain;
+        return true;
+    }
+    if (name == "blur") {
+        *fit = BackgroundFit::Blur;
         return true;
     }
     return false;

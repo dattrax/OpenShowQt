@@ -76,8 +76,22 @@ namespace openshow::protocol {
 // stack. The frontend launches the worker it ships with, so the pair
 // always matches in practice; the capability is what a tool inspecting a
 // live worker reads to learn which scene format that worker draws.
+// Minor 11 (task 6.17c1, review R17) moves the scene payload to format 3:
+// the background names its "fit", mandatory, and the accepted spellings
+// are the domain's, named by "scene.background-fit.v1". Again not
+// additive: a fit the reader has not validated is a fit it would have to
+// guess, so scene 2 payloads are refused by a scene 3 worker and the
+// reverse by the format number.
+// Minor 12 (task 6.17c2, review R17) widens the scene 3 fit name set with
+// "blur" — the reference's blurred-cover backdrop under the contained
+// picture — named by "scene.background-fit-blur.v1". The scene FORMAT does
+// not move (the key is the same key); what changed is which names a worker
+// draws. This is the honest half of the c-split: a worker without minor 12
+// REJECTS a scene claiming "blur" (the name set is closed on both ends),
+// it cannot misdraw it — so a frontend may only offer the blur choice to a
+// worker whose hello names the capability.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 11;
+inline constexpr std::uint32_t kProtocolMinor = 12;
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without

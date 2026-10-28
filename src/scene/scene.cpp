@@ -454,6 +454,20 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         // decoded still. Whether the file cooperates is reported by the
         // renderer (and degrades to the colour fill).
         scene.background.isVideo = assetPathIsVideo(asset->sourcePath);
+        // The blur fit's backdrop is built ONCE per image where the bytes
+        // are cached (6.17c2); playing frames change every frame, so a
+        // blurred video background is not a thing this composition budget
+        // honours — the compile says so at authoring/present time rather
+        // than letting the worker quietly draw something else (the cover
+        // or contain rules are, and blur's picture-over-backdrop maths are
+        // the reference's, all pinned in the render fixtures).
+        if (scene.background.isVideo &&
+            scene.background.fit == domain::BackgroundFit::Blur) {
+            fail(error, "slide '" + slideId + "' requests the blur background fit on a"
+                            " video ('" + asset->sourcePath +
+                            "'); this worker does not blur playing frames");
+            return false;
+        }
         scene.background.assetId = asset->id;
         scene.background.assetPath = asset->sourcePath;
     } else {
@@ -615,6 +629,15 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     }
     if (scene.background.isVideo && !scene.background.hasImage) {
         fail(error, "scene: background 'video' requires 'image'");
+        return false;
+    }
+    // The blur pairing is refused at the wire too (6.17c2), not only at the
+    // compile: the worker's draw degrades an unblurrable video to the
+    // contain picture, and a payload that names "blur" while being shown
+    // contain is the lie scene 3 exists to refuse. Same rule, stated by
+    // whoever can see both halves of it first.
+    if (scene.background.isVideo && scene.background.fit == domain::BackgroundFit::Blur) {
+        fail(error, "scene: the blur background fit does not apply to a video");
         return false;
     }
     if (!scene.background.hasImage) {

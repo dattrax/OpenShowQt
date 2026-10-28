@@ -985,6 +985,26 @@ bool DocumentController::setSlideBackgroundFit(const QString& fit) {
                       .arg(fit));
         return false;
     }
+    // Blur on a VIDEO background is refused here, at the seam, not only at
+    // the compile that happens when the slide goes to air (6.17c2): the
+    // operator who picks "blurred backdrop" on a video clip should hear
+    // "this build does not blur playing frames" from the editor, not watch
+    // the presenter fail. The name test above, the asset test here — the
+    // domain owns both rules, this is only where they are enforced early.
+    if (parsed == openshow::domain::BackgroundFit::Blur) {
+        const openshow::domain::Slide* slide =
+            findCurrentSlide(fDocuments, fCurrentSongId, slideId);
+        const openshow::domain::Asset* asset =
+            slide == nullptr || slide->backgroundAssetId.empty()
+                ? nullptr
+                : fDocuments.findAsset(slide->backgroundAssetId);
+        if (asset != nullptr && openshow::domain::assetPathLooksLikeVideo(asset->sourcePath)) {
+            setStatus(QStringLiteral(
+                "background fit: this build does not blur playing frames — "
+                "set an image background first"));
+            return false;
+        }
+    }
     std::string error;
     if (!edit([&] {
             return fDocuments.setSlideBackgroundFit(fCurrentSongId, slideId, parsed,

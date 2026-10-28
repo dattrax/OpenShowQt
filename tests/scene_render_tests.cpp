@@ -32,10 +32,13 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
 #include "include/core/SkData.h"
+#include "include/core/SkImage.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkRect.h"
+#include "include/core/SkSamplingOptions.h"
 #include "include/core/SkSurface.h"
+#include "include/effects/SkImageFilters.h"
 
 #include "openshow/domain/documents.h"
 #include "openshow/domain/storage.h"
@@ -1603,6 +1606,426 @@ void testBackgroundFitContainFade() {
           "mid-fade: the centre column is the lerped PICTURE");
 }
 
+/* --- task 6.17c2 (review R17): the blur fit — a blurred COVER backdrop of
+ *     the picture at the reference's 0.3 under the CONTAIN-fitted picture,
+ *     built once per image, faded as the group it steady-draws ------------ */
+
+// The reference's constants (docs/reference.md: "Media fit ... blur (blur
+// amount 6, opacity 0.3)"), mirrored in SceneText.cpp's makeBlurredBackdrop
+// — the fixture computes its expectation from the arithmetic, so a drift in
+// either shows as a failure rather than a shared misreading.
+constexpr std::uint8_t kTestBackdropAlpha = 77;  // round(0.3 * 255)
+
+SkColor blendOver(SkColor dst, SkColor src, std::uint8_t srcAlpha) {
+    const auto channel = [srcAlpha](int d, int s) {
+        return static_cast<uint8_t>((d * (255 - srcAlpha) + s * srcAlpha + 127) / 255);
+    };
+    return SkColorSetRGB(channel(SkColorGetR(dst), SkColorGetR(src)),
+                         channel(SkColorGetG(dst), SkColorGetG(src)),
+                         channel(SkColorGetB(dst), SkColorGetB(src)));
+}
+
+// A flat, WIDE (1920x540) picture: contain leaves 270-canvas-px bars, and
+// every backdrop pixel is one known colour, so the 0.3 composite is checkable
+// as arithmetic rather than as "blurrier than before". The TALL variant is
+// the same claim rotated: its bars are the sides, and on a portrait window
+// they reach the outside-canvas letterbox the clip must keep black.
+bool writeFlatRectPng(const std::string& path, int width, int height, SkColor color,
+                      std::string* error) {
+    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(width, height));
+    if (!surface) {
+        if (error) {
+            *error = "flat picture surface failed";
+        }
+        return false;
+    }
+    SkPaint paint;
+    paint.setColor(color);
+    surface->getCanvas()->drawRect(SkRect::MakeIWH(width, height), paint);
+    return worker::writePngRaster(surface.get(), path, error);
+}
+
+sk_sp<SkImage> decodeFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+    auto codec = SkCodec::MakeFromData(SkData::MakeWithCopy(bytes.data(), bytes.size()));
+    if (!codec) {
+        return nullptr;
+    }
+    const SkImageInfo info =
+        codec->getInfo().makeColorType(kN32_SkColorType).makeAlphaType(kPremul_SkAlphaType);
+    SkBitmap bitmap;
+    if (!bitmap.tryAllocPixels(info) ||
+        codec->getPixels(info, bitmap.getPixels(), bitmap.rowBytes()) != SkCodec::kSuccess) {
+        return nullptr;
+    }
+    return SkImages::RasterFromBitmap(bitmap);
+}
+
+// The backdrop by the book: the same construction as the worker's
+// makeBlurredBackdrop (cover dest with the 24 px overscan, sigma 6 in canvas
+// space, alpha baked at 77) — duplicated HERE on purpose: a measurement of
+// the rule that borrows the production code cannot catch the rule misread.
+sk_sp<SkImage> referenceBackdrop(const SkImage& source, float denominator = 1.0f,
+                                 int* buildMs = nullptr) {
+    const auto start = std::chrono::steady_clock::now();
+    const int w = std::max(1, static_cast<int>(worker::kSceneCanvasWidth / denominator));
+    const int h = std::max(1, static_cast<int>(worker::kSceneCanvasHeight / denominator));
+    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(w, h));
+    if (!surface) {
+        return nullptr;
+    }
+    const float scale =
+        std::max(worker::kSceneCanvasWidth / static_cast<float>(source.width()),
+                 worker::kSceneCanvasHeight / static_cast<float>(source.height()));
+    const float dw = static_cast<float>(source.width()) * scale / denominator;
+    const float dh = static_cast<float>(source.height()) * scale / denominator;
+    SkRect dest = SkRect::MakeLTRB((w - dw) * 0.5f, (h - dh) * 0.5f, (w + dw) * 0.5f,
+                                   (h + dh) * 0.5f);
+    dest.outset(24.0f / denominator, 24.0f / denominator);
+    SkCanvas* canvas = surface->getCanvas();
+    canvas->clear(SK_ColorTRANSPARENT);
+    SkPaint paint;
+    paint.setAlpha(77);
+    paint.setImageFilter(SkImageFilters::Blur(6.0f / denominator, 6.0f / denominator, nullptr));
+    canvas->drawImageRect(sk_ref_sp(&source),
+                          SkRect::MakeIWH(source.width(), source.height()), dest,
+                          SkSamplingOptions(SkFilterMode::kLinear), &paint,
+                          SkCanvas::kFast_SrcRectConstraint);
+    if (buildMs != nullptr) {
+        *buildMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - start)
+                                        .count());
+    }
+    return surface->makeImageSnapshot();
+}
+
+// Worst channel deviation between two backdrops, compared the way they are
+// DRAWN: composited over the scene's fill at canvas size, so a smaller
+// approximation is upsampled by the same draw that the audience's frame
+// would use, and the comparison is of opaque pixels rather than of alpha
+// hairlines. (Comparing raw extents instead is what reports 235/255 for a
+// picture that is one flat colour: mismatched readPixels extents are an
+// API failure, not a measurement.)
+int worstChannelDifference(const SkImage& full, const SkImage& approx, SkColor fill) {
+    const auto flatten = [fill](const SkImage& image) {
+        auto surface = SkSurfaces::Raster(
+            SkImageInfo::MakeN32Premul(static_cast<int>(worker::kSceneCanvasWidth),
+                                       static_cast<int>(worker::kSceneCanvasHeight)));
+        if (!surface) {
+            return SkBitmap{};
+        }
+        SkCanvas* canvas = surface->getCanvas();
+        canvas->clear(fill);
+        canvas->drawImageRect(sk_ref_sp(&image),
+                              SkRect::MakeIWH(image.width(), image.height()),
+                              SkRect::MakeWH(worker::kSceneCanvasWidth,
+                                             worker::kSceneCanvasHeight),
+                              SkSamplingOptions(SkFilterMode::kLinear), nullptr,
+                              SkCanvas::kFast_SrcRectConstraint);
+        SkBitmap bitmap;
+        if (!bitmap.tryAllocPixels(SkImageInfo::MakeN32Premul(surface->width(),
+                                                              surface->height())) ||
+            !surface->readPixels(SkImageInfo::MakeN32Premul(surface->width(),
+                                                            surface->height()),
+                                 bitmap.getPixels(), bitmap.rowBytes(), 0, 0)) {
+            return SkBitmap{};
+        }
+        return bitmap;
+    };
+    const SkBitmap a = flatten(full), b = flatten(approx);
+    if (a.empty() || b.empty()) {
+        return 255;
+    }
+    int worst = 0;
+    for (int y = 0; y < a.height(); ++y) {
+        for (int x = 0; x < a.width(); ++x) {
+            const SkColor ca = a.getColor(x, y), cb = b.getColor(x, y);
+            for (int ch = 0; ch < 3; ++ch) {
+                const int va = (ca >> (16 - 8 * ch)) & 0xFF, vb = (cb >> (16 - 8 * ch)) & 0xFF;
+                worst = std::max(worst, std::abs(va - vb));
+            }
+        }
+    }
+    return worst;
+}
+
+void testBackgroundFitBlurSteady() {
+    std::string error;
+    if (!check(writeFlatRectPng("scene-render-blur-wide.png", 1920, 540,
+                                SkColorSetRGB(224, 48, 48), &error) &&
+                   writeFlatRectPng("scene-render-blur-tall.png", 540, 1920,
+                                    SkColorSetRGB(224, 48, 48), &error) &&
+                   writeBandPng("scene-render-blur-bands.png", 1920, 540, true, &error),
+               "flat blur pictures written: " + error)) {
+        return;
+    }
+    const SkColor picture = SkColorSetRGB(224, 48, 48);
+    const SkColor fill = SkColorSetRGB(0x10, 0x20, 0x30);
+    const SkColor expectedBar = blendOver(fill, picture, kTestBackdropAlpha);
+    // The composite must MOVE the fill hard or this fixture proves nothing.
+    check(differs(expectedBar, fill, 40),
+          "a red picture at 0.3 over the dark fill is visibly not the fill");
+
+    scene::Scene blur = flatImageScene("scene-render-blur-wide.png", 0x102030u);
+    blur.slideId = "blur-steady";
+    blur.background.fit = openshow::domain::BackgroundFit::Blur;
+    Frame frame;
+    if (!check(renderFixture(blur, "blur-wide-steady", &frame, &error),
+               "blurred-backdrop background rendered: " + error)) {
+        return;
+    }
+    // The flat picture over a flat fill blurs to one flat colour, so the
+    // bars are arithmetic: cover-fit red at alpha 77 over the fill.
+    check(closeTo(frame.at(480, 2), expectedBar, 12),
+          "blur: the top bar is the fill under the 0.3 backdrop");
+    check(closeTo(frame.at(480, 130), expectedBar, 12), "blur: the bar runs to its edge");
+    check(closeTo(frame.at(480, 536), expectedBar, 12), "blur: the bottom bar is the backdrop");
+    // ...and the contained picture stays EXACTLY the picture — the blur is
+    // behind it, not over it.
+    check(closeTo(frame.at(480, 270), picture, 8),
+          "blur: the centre is the sharp picture, not the blur");
+    check(closeTo(frame.at(50, 270), picture, 8), "blur: and so is its left edge");
+    check(differs(frame.at(480, 100), frame.at(480, 270), 24),
+          "blur: bar and picture are visibly different regions");
+
+    // And the backdrop really is BLURRED, not just attenuated: a banded
+    // picture cover-fits to 2x with its red|green boundary landing at device
+    // x 156 (canvas 313), so a sharp backdrop would paint that pixel — and
+    // its bilinear half-pixel either side — as (nearly) pure band colour,
+    // while the reference's blur mixes the boundary across a dozen canvas
+    // pixels. The sampled pixel must be far from BOTH pure composites.
+    scene::Scene bands = flatImageScene("scene-render-blur-bands.png", 0x102030u);
+    bands.slideId = "blur-bands";
+    bands.background.fit = openshow::domain::BackgroundFit::Blur;
+    Frame bandFrame;
+    if (!check(renderFixture(bands, "blur-bands-steady", &bandFrame, &error),
+               "banded blurred-backdrop background rendered: " + error)) {
+        return;
+    }
+    const SkColor sharpRed = blendOver(fill, SkColorSetRGB(235, 40, 40), kTestBackdropAlpha);
+    const SkColor sharpGreen = blendOver(fill, SkColorSetRGB(40, 200, 40), kTestBackdropAlpha);
+    check(differs(bandFrame.at(156, 60), sharpRed, 16) &&
+              differs(bandFrame.at(156, 60), sharpGreen, 16),
+          "blur: the bar at the picture's band boundary is neither pure band — the sigma is real");
+
+    // A TALL picture on a portrait OUTPUT window: the side bars inside the
+    // authored canvas carry the blurred backdrop, and the letterbox outside
+    // the canvas stays the surface's black — the blur must not smear past
+    // the clip the cover fit was clipped to. A 540x960 snapshot makes the
+    // window's aspect differ from the authored canvas', which is when
+    // outside-canvas pixels exist at all.
+    scene::Scene tall = flatImageScene("scene-render-blur-tall.png", 0x102030u);
+    tall.slideId = "blur-tall";
+    tall.background.fit = openshow::domain::BackgroundFit::Blur;
+    worker::SnapshotOptions portrait;
+    portrait.words = false;
+    Frame portraitFrame;
+    const std::string portraitPath = "scene-render-blur-tall-portrait.png";
+    if (!check(worker::renderSceneSnapshot(tall, portraitPath, 540, 960, portrait, &error) &&
+                   loadPng(portraitPath, &portraitFrame, &error),
+               "blurred tall background on a portrait window rendered: " + error)) {
+        return;
+    }
+    // scale 0.28: the canvas occupies device y 328..632; its left column at
+    // the tall picture's contained-bar region samples the backdrop's
+    // red-dominated left edge — the same flat composite as the wide bars.
+    check(closeTo(portraitFrame.at(2, 480), expectedBar, 12),
+          "blur portrait: the in-canvas side bar is the fill under the 0.3 backdrop");
+    check(closeTo(portraitFrame.at(2, 2), SK_ColorBLACK, 4),
+          "blur portrait: outside the authored canvas stays black — the clip");
+    check(closeTo(portraitFrame.at(536, 956), SK_ColorBLACK, 4),
+          "blur portrait: and so is the far corner");
+
+    // An uncached picture cannot blur: blur degrades to exactly the contain
+    // draw, bars and all — the same cold-file behaviour R12 pinned, and it
+    // never touches the disk from the draw.
+    scene::Scene cold = blur;
+    cold.background.assetPath = "scene-render-blur-no-such-file.png";
+    Frame coldFrame;
+    if (!check(renderFixture(cold, "blur-cold", &coldFrame, &error),
+               "blur with an unreadable file rendered: " + error)) {
+        return;
+    }
+    check(closeTo(coldFrame.at(480, 2), fill),
+          "blur degrades to contain when the picture cannot be shown: plain fill bars");
+}
+
+void testBackgroundFitBlurCache() {
+    // The once-per-image rule R12's budget made a requirement: the first
+    // blurred draw pays the build, every later one takes a map probe, and
+    // the backdrop's bytes join the budget they cannot escape.
+    std::string error;
+    if (!check(writeBandPng("scene-render-blur-cache.png", 1920, 540, true, &error),
+               "blur cache fixture written: " + error)) {
+        return;
+    }
+    const std::string path = "scene-render-blur-cache.png";
+    worker::SceneImageCache cache;
+    check(cache.loadFor(path) != nullptr, "the blur cache decoded its picture");
+    const std::size_t afterImage = cache.stats().decodedBytes;
+    check(cache.stats().backdropComputations == 0 && cache.stats().backdrops == 0,
+          "nothing blurs until a blurred draw asks");
+
+    const sk_sp<SkImage> first = cache.backdropFor(path);
+    check(first != nullptr && first->width() == 1920 && first->height() == 1080,
+          "the backdrop is the authored canvas, cover-filled");
+    check(cache.stats().backdropComputations == 1, "the first blurred draw builds it once");
+    (void)cache.backdropFor(path);
+    (void)cache.backdropFor(path);
+    check(cache.stats().backdropComputations == 1,
+          "later blurred draws take the memo, not the blur");
+    check(cache.stats().backdrops == 1, "the held-backdrop count agrees");
+    check(cache.stats().decodedBytes == afterImage + 1920u * 1080u * 4u,
+          "the backdrop's bytes joined the budget — the promise now covers it");
+
+    cache.invalidate(path);
+    check(cache.stats().decodedBytes == 0,
+          "invalidation takes the backdrop's bytes with the image's");
+    check(cache.backdropFor(path) == nullptr,
+          "a dropped image has no backdrop to remember — it is not re-decoded here");
+
+    // A replaced image drops its derived backdrop too (the install path's
+    // half of the same accounting rule): the new entry's bytes are its own,
+    // not the old picture's plus an orphaned blur.
+    const sk_sp<SkImage> original = cache.loadFor(path);
+    check(original != nullptr && cache.backdropFor(path) != nullptr,
+          "the replacement stage loads a picture and blurs it once");
+    const std::size_t withBackdrop = cache.stats().decodedBytes;
+    const sk_sp<SkImage> smaller = decodeFile("scene-render-blur-tall.png");
+    check(smaller != nullptr, "the replacement picture decoded");
+    if (smaller != nullptr) {
+        cache.install(path, smaller);
+        const std::size_t replaced = cache.stats().decodedBytes;
+        check(replaced == static_cast<std::size_t>(smaller->width()) *
+                              static_cast<std::size_t>(smaller->height()) * 4u,
+              "installing over a blurred path counts ONLY the new picture — the "
+              "old backdrop's bytes left with it");
+        check(cache.stats().backdrops == 0, "and the stale backdrop is gone, not inherited");
+    }
+
+    // Budget eviction carries a backdrop's bytes with its image (the third
+    // half of the same accounting): a small cache whose budget fits exactly
+    // one picture plus one backdrop must land on the new picture's bytes
+    // alone after the blurred older entry is evicted — not on a total still
+    // holding what the cache itself forgot.
+    worker::SceneImageCache tight(540u * 1920u * 4u + 1920u * 1080u * 4u);
+    check(tight.loadFor("scene-render-blur-wide.png") != nullptr &&
+              tight.backdropFor("scene-render-blur-wide.png") != nullptr,
+          "the tight cache took a picture and its backdrop");
+    check(tight.loadFor("scene-render-blur-tall.png") != nullptr,
+          "and loaded the picture that forces eviction");
+    check(tight.stats().evictions == 1, "one entry went");
+    check(tight.stats().decodedBytes == 540u * 1920u * 4u,
+          "and the budget total forgot its backdrop with it — no orphaned bytes");
+    check(tight.stats().backdrops == 0, "the evicted backdrop is gone from the count too");
+
+    // The downscale-first approximation versus the by-the-book build,
+    // measured so the ledger records a decision, not a hunch.
+    const sk_sp<SkImage> source = decodeFile(path);
+    check(source != nullptr, "the approximation measure decoded its fixture");
+    if (source == nullptr) {
+        return;
+    }
+    int fullMs = 0, approxMs = 0;
+    const sk_sp<SkImage> full = referenceBackdrop(*source, 1.0f, &fullMs);
+    const sk_sp<SkImage> half = referenceBackdrop(*source, 2.0f, &approxMs);
+    check(full != nullptr && half != nullptr, "both backdrop variants built");
+    if (full == nullptr || half == nullptr) {
+        return;
+    }
+    const int worst =
+        worstChannelDifference(*full, *half, SkColorSetRGB(0x10, 0x20, 0x30));
+    std::printf("measured: blur backdrop build 1920x1080 %d ms; half-size approximation %d ms; "
+                "worst channel difference %d/255\n",
+                fullMs, approxMs, worst);
+    check(worst <= 64,
+          "the half-size backdrop approximates the full one within 64/255 (measured worst: " +
+              std::to_string(worst) + ") — recorded for the ledger");
+}
+
+void testBackgroundFitBlurFade() {
+    // The blur background is ONE group — backdrop and picture inside it —
+    // so a fade of it is the same per-pixel lerp every other background
+    // obeys (R13's rule, which the blurred group is no exception to). The
+    // bars mid-fade carry the lerped fill-plus-backdrop, not the fill
+    // alone: the 0.3 blurred cover is part of what the scene IS.
+    std::string error;
+    // The outgoing frame's solid colour is deliberately FAR from the
+    // incoming picture's red: if it matched, the dest-rect check would pass
+    // for a fade shader that forgot the backdrop underneath (the picture's
+    // own alpha-over-something lands on the same number). Blue keeps the
+    // lerp honest on every channel.
+    const scene::Scene blueFill = [] {
+        scene::Scene subject;
+        subject.showId = "show1";
+        subject.slideId = "blur-fade-from";
+        subject.background.color = 0x2030E0u;
+        return subject;
+    }();
+    scene::Scene blurStill = flatImageScene("scene-render-blur-wide.png", 0x102030u);
+    blurStill.slideId = "blur-fade-to";
+    blurStill.background.fit = openshow::domain::BackgroundFit::Blur;
+    BlendCase half;
+    if (!renderBlendCase(blueFill, blurStill, 0.5f, "blur", &half, &error)) {
+        return;
+    }
+    const BlendError e = measureBlend(half, 6);
+    report("fill to blurred-backdrop still, blend 0.5", e);
+    check(e.overTolerance == 0,
+          "a blurred background fades as the group it steady-draws (" + describe(e) + ")");
+    // And the mid frame really is the BLURRED group: its bar is the
+    // lerped backdrop-over-fill composite, measurably off the plain
+    // fill-to-fill lerp a degraded contain draw would produce.
+    const SkColor barWanted =
+        blendExpected(half.from.at(480, 60), half.to.at(480, 60), half.alpha);
+    const SkColor degraded =
+        blendExpected(half.from.at(480, 60), SkColorSetRGB(0x10, 0x20, 0x30), half.alpha);
+    check(closeTo(half.mid.at(480, 60), barWanted, 6) && differs(barWanted, degraded, 8),
+          "mid-fade: the bar is the lerped backdrop, not a contain frame's plain fill");
+    // The self-fade — the same blurred slide replacing itself across a
+    // lyric change — must not move a single pixel beyond rounding.
+    BlendCase itself;
+    if (renderBlendCase(blurStill, blurStill, 0.5f, "blur-itself", &itself, &error)) {
+        const BlendError e2 = measureBlend(itself, 6);
+        report("blurred still to itself, blend 0.5", e2);
+        check(e2.overTolerance == 0,
+              "a blurred slide fading to itself is the frame it already showed (" +
+                  describe(e2) + ")");
+    }
+    // The dest rect's NESTING — `picture over (backdrop over fill)` — is
+    // invisible through an opaque picture (SrcOver with an opaque src
+    // ignores its dst), so the promise needs R13's translucent fixture:
+    // through a picture at alpha 128 the backdrop shows ~50%, and a fade
+    // shader that forgot it under the picture reads the FILL there
+    // instead. At blend 0.75 the mid frame rides the group at 0.75, so
+    // the missing backdrop lands ~12/255 on the covered pixels (the
+    // difference peaks at 7.8 at blend 0.5 — which is why the opaque
+    // fixtures above cannot see this case at any blend).
+    if (!check(writeFlatPng("scene-render-blur-alpha.png", SkColorSetRGB(224, 48, 48),
+                            &error, 128),
+               "translucent blur still written: " + error)) {
+        return;
+    }
+    scene::Scene blurAlpha = flatImageScene("scene-render-blur-alpha.png", 0x102030u);
+    blurAlpha.slideId = "blur-fade-alpha";
+    blurAlpha.background.fit = openshow::domain::BackgroundFit::Blur;
+    BlendCase alphaHalf;
+    if (renderBlendCase(blueFill, blurAlpha, 0.75f, "blur-alpha", &alphaHalf, &error)) {
+        const BlendError e3 = measureBlend(alphaHalf, 5);
+        report("blue fill to translucent blurred still, blend 0.75", e3);
+        check(e3.overTolerance == 0,
+              "a translucent blurred picture fades over the backdrop that is really"
+              " under it — not over the bare fill (" + describe(e3) + ")");
+        // And the steady incoming frame proves the fixture is the
+        // translucent case: the fill and backdrop show through the
+        // picture (an opaque one would erase them).
+        check(differs(alphaHalf.to.at(480, 270), SkColorSetRGB(224, 48, 48), 8),
+              "the translucent blurred still really does let its stack through");
+    }
+}
+
 void testTranslucentPictureBlend() {
     // A picture with per-pixel alpha is where a group differs most sharply
     // from two attenuated draws: the fill shows through the picture in the
@@ -2000,12 +2423,15 @@ int main() {
     testDemoSlidesRender();
     testImageBackgroundCover();
     testBackgroundFitContain();
+    testBackgroundFitBlurSteady();
+    testBackgroundFitBlurCache();
     testMissingBackgroundFile();
     testForegroundImageItems();
     testForegroundImageFade();
     testCrossfadeStages();
     testImageCrossfadeBlend();
     testBackgroundFitContainFade();
+    testBackgroundFitBlurFade();
     testTranslucentPictureBlend();
     testSameFrameEveryStageIsSteadyPicture();
     testTextFadeParity();

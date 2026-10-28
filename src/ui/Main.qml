@@ -1781,7 +1781,7 @@ Window {
                 // unresolvable value leaves the combo where it is rather
                 // than pretending to select a name that does not exist.
                 var fit = docs.currentBackgroundFit
-                fitCombo.currentIndex = fit === "contain" ? 1 : 0
+                fitCombo.currentIndex = fit === "blur" ? 2 : (fit === "contain" ? 1 : 0)
             }
             Component.onCompleted: sync()
             Connections {
@@ -1970,7 +1970,10 @@ Window {
             // Cover fills the frame and crops; contain keeps the whole
             // picture and lets the fill show in the bars (6.17c1 — the
             // choice the model stores and the worker honours, one undo
-            // step, refused names landing on the status line).
+            // step, refused names landing on the status line); blur puts
+            // the contained picture over a blurred cover backdrop of
+            // itself at the reference's 0.3 (6.17c2 — refused on a video
+            // background, and the sync below snaps the combo back).
             Text {
                 color: "#8f93a5"
                 font.pixelSize: 10
@@ -1981,9 +1984,11 @@ Window {
                 id: fitCombo
                 objectName: "backgroundFitCombo"
                 width: parent.width
-                model: ["Fill and crop (cover)", "Fit whole picture (contain)"]
+                model: ["Fill and crop (cover)", "Fit whole picture (contain)",
+                        "Blurred backdrop (blur)"]
                 onActivated: function (index) {
-                    if (!docs.setSlideBackgroundFit(index === 1 ? "contain" : "cover")) {
+                    var name = index === 2 ? "blur" : (index === 1 ? "contain" : "cover")
+                    if (!docs.setSlideBackgroundFit(name)) {
                         stylePanel.sync()
                     }
                 }

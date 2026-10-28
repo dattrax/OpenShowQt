@@ -416,11 +416,12 @@ void exerciseWireRoundTrip(const Fixture& fx) {
     }
 }
 
-// The background's fit crosses the wire (task 6.17c1): the compile carries
-// the slide's choice, scene 3 REQUIRES the key, and a name this worker
-// cannot draw is refused naming itself. That refusal is what makes the
-// 6.17c split honest — when "blur" arrives in c2, a build that predates it
-// rejects the scene claiming it rather than quietly drawing a cover.
+// The background's fit crosses the wire (tasks 6.17c1/c2): the compile
+// carries the slide's choice, scene 3 REQUIRES the key, and a name this
+// worker cannot draw is refused naming itself. That refusal is what makes
+// the 6.17c split honest — c2 widened the set with "blur", and a build
+// that predates c2 rejects the scene claiming it rather than quietly
+// drawing a cover.
 void exerciseBackgroundFit() {
     std::string error;
     Documents docs;
@@ -470,6 +471,43 @@ void exerciseBackgroundFit() {
     cropped.background.fit = openshow::domain::BackgroundFit::Cover;
     check(cropped != out, "the fit participates in scene equality");
 
+    // Blur (task 6.17c2): the name joined the set, the format did not move.
+    // The compile carries it, the wire spells it, and the round trip keeps
+    // it — the same discipline contain was pinned with, one name wider.
+    check(docs.setSlideBackgroundFit(show, slide, openshow::domain::BackgroundFit::Blur),
+          "the model lets a still slide choose blur");
+    check(scene::compileSlide(docs, show, slide, &out, &error) &&
+              out.background.fit == openshow::domain::BackgroundFit::Blur,
+          "the compile carries blur into the scene");
+    const boost::json::object blurred = scene::toJson(out).as_object();
+    check(blurred.at("background").as_object().at("fit").as_string() == "blur",
+          "the payload spells blur the way the domain spells it");
+    scene::Scene blurredBack;
+    check(scene::fromJson(boost::json::value(blurred), &blurredBack, &error) &&
+              blurredBack == out,
+          "a blurred background survives the JSON round trip, scene equal");
+    // And the pairing the draw cannot honour is refused at BOTH gates: the
+    // compile sees the asset's kind, the wire sees the payload's — whichever
+    // a caller comes through, "blur" on a video never arrives as a quietly
+    // contained picture.
+    {
+        const Id blurVideoSlide = docs.appendSlide(show);
+        docs.setSlideBackground(show, blurVideoSlide, videoAsset);
+        docs.setSlideBackgroundFit(show, blurVideoSlide, openshow::domain::BackgroundFit::Blur);
+        scene::Scene ignored;
+        error.clear();
+        check(!scene::compileSlide(docs, show, blurVideoSlide, &ignored, &error) &&
+                  error.find("does not blur playing frames") != std::string::npos,
+              "the compile refuses blur on a video background, naming itself");
+        boost::json::object lie = blurred;
+        lie["background"].as_object()["video"] = true;
+        error.clear();
+        check(!scene::fromJson(boost::json::value(lie), &ignored, &error) &&
+                  error.find("does not apply to a video") != std::string::npos,
+              "and the wire refuses a hand-built video+blur payload — a scene that "
+              "draws contain while claiming blur is the lie scene 3 exists to refuse");
+    }
+
     // The reader's discipline on the fit key.
     const auto readRefusedFit = [&](const std::function<void(boost::json::object&)>& change,
                                     const std::string& expectIn, const char* what) {
@@ -487,10 +525,11 @@ void exerciseBackgroundFit() {
                    "'fit' must be a string",
                    "a scene-3 background with no fit is refused: the key is mandatory, "
                    "and defaulting it is the guess the format number exists to prevent");
-    readRefusedFit([](boost::json::object& bg) { bg["fit"] = "blur"; },
+    readRefusedFit([](boost::json::object& bg) { bg["fit"] = "blurred"; },
                    "is not a fit this worker draws",
-                   "'blur' is refused HERE naming itself — c2 has not shipped, and an "
-                   "old build meeting it must reject rather than approximate");
+                   "a name just outside the set is still refused naming itself — the "
+                   "set widened to include 'blur' in c2, and a build predating even "
+                   "that refuses 'blur' by the same rule this line pins");
     readRefusedFit([](boost::json::object& bg) { bg["fit"] = "stretch"; },
                    "background fit 'stretch'",
                    "and the refusal quotes the offending name");

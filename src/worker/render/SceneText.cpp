@@ -41,6 +41,7 @@
 #include "include/core/SkSurface.h"
 #include "include/core/SkTextBlob.h"
 #include "include/encode/SkPngEncoder.h"
+#include "include/effects/SkImageFilters.h"
 #include "include/ports/SkFontMgr_fontconfig.h"
 #include "include/ports/SkFontScanner_FreeType.h"
 #include "modules/skparagraph/include/FontCollection.h"
@@ -626,7 +627,10 @@ sk_sp<SkImage> SceneImageCache::install(const std::string& path, sk_sp<SkImage> 
     std::lock_guard<std::mutex> lock(fMutex);
     const auto existing = fEntries.find(path);
     if (existing != fEntries.end()) {
-        fBytes -= existing->second.bytes;
+        // Replacing an image drops its backdrop with it (6.17c2) — the
+        // derived blur belongs to the pixels it was built from, and both
+        // sets of bytes must leave the total they entered.
+        fBytes -= existing->second.bytes + existing->second.backdropBytes;
         fEntries.erase(existing);
     }
     Entry& entry = fEntries[path];
@@ -650,6 +654,103 @@ sk_sp<SkImage> SceneImageCache::imageFor(const std::string& path) {
     }
     existing->second.seen = ++fClock;
     return existing->second.image;
+}
+
+namespace {
+
+// The blur fit's constants (docs/reference.md: "Media fit ... blur (blur
+// amount 6, opacity 0.3)") — the radius is in the authored canvas's space,
+// and the alpha is BAKED into the backdrop so every path that draws one
+// (steady, fade group, thumbnail companion) shows the reference's 0.3
+// without any paint to remember.
+constexpr float kBlurSigma = 6.0f;
+constexpr std::uint8_t kBlurBackdropAlpha = 77;  // round(0.3 * 255)
+// The cover dest is overscanned by more than the blur kernel reaches
+// (~4 sigma): the backdrop is the audience's cover crop, never a darkened
+// frame — edge pixels must blur against more picture, not against the
+// surface's transparent black.
+constexpr float kBlurEdgeMargin = 24.0f;
+
+// The backdrop: the image cover-fitted to the authored canvas with that
+// overscan, blurred once at full canvas resolution, its alpha at the
+// reference's 0.3. Blur-then-downscale is the by-the-book order; the
+// downscale-first approximation (blur a quarter- or half-size copy and
+// reuse) is measured against this on fixtures in scene_render_tests, and
+// the ledger records what was chosen and why.
+sk_sp<SkImage> makeBlurredBackdrop(const SkImage& source) {
+    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(
+        SkISize::Make(static_cast<int>(kSceneCanvasWidth),
+                      static_cast<int>(kSceneCanvasHeight))));
+    if (!surface) {
+        return nullptr;
+    }
+    const float scaleX = kSceneCanvasWidth / static_cast<float>(source.width());
+    const float scaleY = kSceneCanvasHeight / static_cast<float>(source.height());
+    const float scale = std::max(scaleX, scaleY);
+    const float w = static_cast<float>(source.width()) * scale;
+    const float h = static_cast<float>(source.height()) * scale;
+    SkRect dest =
+        SkRect::MakeLTRB((kSceneCanvasWidth - w) * 0.5f,
+                         (kSceneCanvasHeight - h) * 0.5f,
+                         (kSceneCanvasWidth + w) * 0.5f,
+                         (kSceneCanvasHeight + h) * 0.5f);
+    dest.outset(kBlurEdgeMargin, kBlurEdgeMargin);
+    SkCanvas* canvas = surface->getCanvas();
+    canvas->clear(SK_ColorTRANSPARENT);
+    SkPaint paint;
+    paint.setAlpha(kBlurBackdropAlpha);
+    paint.setImageFilter(SkImageFilters::Blur(kBlurSigma, kBlurSigma, nullptr));
+    canvas->drawImageRect(sk_ref_sp(&source),
+                          SkRect::MakeIWH(source.width(), source.height()), dest,
+                          SkSamplingOptions(SkFilterMode::kLinear), &paint,
+                          SkCanvas::kFast_SrcRectConstraint);
+    return surface->makeImageSnapshot();
+}
+
+}  // namespace
+
+sk_sp<SkImage> SceneImageCache::backdropFor(const std::string& path) {
+    // One build per image, then a map probe (the rule 6.17c2 pins): the
+    // blurred frame is derived data, so it lives and dies with the image
+    // it came from, and its bytes count into the budget like the image's
+    // own. The build runs OFF the lock — the first blurred draw pays a
+    // blurred frame at the slide change; no lock is held across it, so the
+    // prefetch and lookup paths never wait on a blur.
+    sk_sp<SkImage> source;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        const auto existing = fEntries.find(path);
+        if (existing == fEntries.end() || existing->second.image == nullptr) {
+            return nullptr;  // uncached or remembered failure: same answer
+                             // the image itself gives, no backdrop to build
+        }
+        if (existing->second.backdrop != nullptr) {
+            existing->second.seen = ++fClock;
+            return existing->second.backdrop;
+        }
+        source = existing->second.image;
+    }
+    const sk_sp<SkImage> backdrop = makeBlurredBackdrop(*source);
+    if (backdrop == nullptr) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(fMutex);
+    const auto existing = fEntries.find(path);
+    if (existing == fEntries.end() || existing->second.image != source) {
+        // The entry vanished or was replaced mid-build. The caller still
+        // gets this frame's backdrop — a slide change must not lose its
+        // picture over a cache race — and a later draw rebuilds against
+        // whatever the cache holds now.
+        return backdrop;
+    }
+    existing->second.backdrop = backdrop;
+    existing->second.backdropBytes = static_cast<std::size_t>(backdrop->width()) *
+                                     static_cast<std::size_t>(backdrop->height()) * 4u;
+    existing->second.seen = ++fClock;
+    fBytes += existing->second.backdropBytes;
+    ++fBackdropComputations;
+    evictLocked(path);
+    return backdrop;
 }
 
 bool SceneImageCache::has(const std::string& path) {
@@ -759,7 +860,9 @@ void SceneImageCache::invalidate(const std::string& path) {
     if (existing == fEntries.end()) {
         return;
     }
-    fBytes -= existing->second.bytes;
+    // The backdrop goes with the image it was built from (6.17c2), and
+    // its bytes come out of the same total they went into.
+    fBytes -= existing->second.bytes + existing->second.backdropBytes;
     fPins -= existing->second.pins;
     fEntries.erase(existing);
 }
@@ -772,6 +875,12 @@ SceneImageCache::Stats SceneImageCache::stats() const {
     out.pins = fPins;
     out.evictions = fEvictions;
     out.budget = fBudget;
+    for (const auto& [path, entry] : fEntries) {
+        if (entry.backdrop != nullptr) {
+            ++out.backdrops;
+        }
+    }
+    out.backdropComputations = fBackdropComputations;
     return out;
 }
 
@@ -797,7 +906,10 @@ void SceneImageCache::evictLocked(std::string_view protect) {
         if (victim == fEntries.end()) {
             return;  // everything left is pinned, protected, or free
         }
-        fBytes -= victim->second.bytes;
+        // A backdrop's bytes live in fBytes too (6.17c2) — the budget is
+        // one promise about all decoded pixels held, and a derived image
+        // that escaped it would make stats() a lie.
+        fBytes -= victim->second.bytes + victim->second.backdropBytes;
         fEntries.erase(victim);
         ++fEvictions;
     }
@@ -864,11 +976,16 @@ sk_sp<SkImage> backgroundPicture(const openshow::scene::Scene& scene, SceneImage
 // centred on both axes, and the colour fill already drawn underneath shows
 // through the bars: a letterboxed picture, never a stretched or cropped one.
 SkRect fitDest(const SkImage& image, openshow::domain::BackgroundFit fit) {
+    // COVER is the max-scale branch, and it stays that way for BLUR: the
+    // blur fit's PICTURE is contained (6.17c2), so the caller picks the
+    // min scale itself (or asks for the backdrop, which cover-fits in
+    // makeBlurredBackdrop). Testing `== Contain` here would have handed
+    // blur a cover picture and no bars — which is to say, cover.
     const float scaleX = kSceneCanvasWidth / static_cast<float>(image.width());
     const float scaleY = kSceneCanvasHeight / static_cast<float>(image.height());
-    const float scale = fit == openshow::domain::BackgroundFit::Contain
-                            ? std::min(scaleX, scaleY)
-                            : std::max(scaleX, scaleY);
+    const float scale = fit == openshow::domain::BackgroundFit::Cover
+                            ? std::max(scaleX, scaleY)
+                            : std::min(scaleX, scaleY);
     const float w = static_cast<float>(image.width()) * scale;
     const float h = static_cast<float>(image.height()) * scale;
     return SkRect::MakeLTRB((kSceneCanvasWidth - w) * 0.5f, (kSceneCanvasHeight - h) * 0.5f,
@@ -884,8 +1001,28 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
     const SkColor fill =
         SkColorSetARGB(0xFF, (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF);
     const sk_sp<SkImage> image = backgroundPicture(scene, images, video);
+    const bool blurFit = scene.background.fit == openshow::domain::BackgroundFit::Blur;
+    // The blurred-cover backdrop, from the cache's memo (built once per
+    // image at its first blurred draw, never here per frame — a miss or a
+    // null images cache degrades to plain contain, the bars filled with
+    // the colour, exactly what a pre-6.17c2 build drew). A playing VIDEO
+    // never blurs — the compile refuses that pairing (scene.cpp), and the
+    // guard here keeps a hand-built scene honest too.
+    const sk_sp<SkImage> backdrop =
+        (blurFit && images != nullptr && video == nullptr)
+            ? images->backdropFor(scene.background.assetPath)
+            : nullptr;
     const bool fading = paint != nullptr && paint->getAlpha() < 255;
     const SkRect canvasRect = SkRect::MakeWH(kSceneCanvasWidth, kSceneCanvasHeight);
+    // Blur's PICTURE is the contain fit (6.17c2); fitDest's non-cover
+    // branch is contain, so blur takes it by not being Cover. Only
+    // computed with a picture in hand — the colour-only path below
+    // never fits anything.
+    const SkRect dest =
+        image != nullptr
+            ? fitDest(*image, blurFit ? openshow::domain::BackgroundFit::Contain
+                                      : scene.background.fit)
+            : canvasRect;
 
     canvas->save();
     // Clip so a portrait window's letterbox bars stay black (the cover-fit
@@ -922,20 +1059,35 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
         // rounding for a picture with per-pixel alpha (1/255). Cover needs
         // the one draw; contain adds a bar fill (below) — still no layer,
         // and the two regions never overlap.
-        const SkRect dest = fitDest(*image, scene.background.fit);
         // CONTAIN adds a second region: outside the picture's dest rect the
-        // group is the fill ALONE (6.17c1). Drawing the Blend shader over the
-        // whole canvas would let the image's clamp tile the edge pixels into
-        // the bars — the same composite, split into its disjoint regions so
-        // each pixel still sees `picture over fill` (or plain fill) exactly
-        // once at the group alpha. The rects meet on the same SkRect, so the
-        // rasteriser splits them on one boundary with no seam and no overlap.
+        // group is the fill ALONE (6.17c1). Drawing the Blend shader over
+        // the whole canvas would let the image's clamp tile the edge pixels
+        // into the bars.
+        // CONTAIN (and blur, whose picture is contain) adds a second
+        // region: outside the picture's dest rect the group is the fill —
+        // for blur, the fill under the backdrop's 0.3 blurred cover,
+        // which is the whole point of the fit — ALONE (6.17c1/c2).
+        // Drawing one whole-canvas shader would let a clamped image tile
+        // its edge pixels into the bars; the regions below are disjoint,
+        // meet on the same SkRect, and each pixel sees its own composite
+        // exactly once at the group alpha — with NO layer: the backdrop
+        // rides the SAME shader stack as the picture (Blend(picture,
+        // Blend(backdrop, fill))), so the dest rect never has to sample
+        // what a previous draw left on the canvas.
+        const sk_sp<SkShader> backdropShader =
+            backdrop != nullptr
+                ? SkShaders::Image(backdrop, SkTileMode::kClamp, SkTileMode::kClamp,
+                                   SkSamplingOptions(SkFilterMode::kLinear))
+                : nullptr;
         canvas->save();
         canvas->clipRect(dest, SkClipOp::kDifference);
-        SkPaint barFill;
-        barFill.setColor(fill);
-        barFill.setAlpha(paint->getAlpha());
-        canvas->drawRect(canvasRect, barFill);
+        SkPaint bars;
+        bars.setShader(backdropShader
+                           ? SkShaders::Blend(SkBlendMode::kSrcOver, SkShaders::Color(fill),
+                                              backdropShader)
+                           : SkShaders::Color(fill));
+        bars.setAlpha(paint->getAlpha());
+        canvas->drawRect(canvasRect, bars);
         canvas->restore();
         // The image shader's local matrix maps the IMAGE'S OWN PIXELS into the
         // canvas' space (the same RectToRect the canvas itself builds for
@@ -946,8 +1098,17 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
         const SkMatrix local =
             SkMatrix::RectToRectOrIdentity(SkRect::MakeIWH(image->width(), image->height()), dest);
         SkPaint group;
+        // Nesting: the dest rect's group is `picture over (backdrop over
+        // fill)` for blur — one Blend shader whose dst is itself the
+        // `backdrop over fill` Blend — or the plain `picture over fill`
+        // of 6.17c1 when there is no backdrop. Drawn once at the group
+        // alpha, so the fade stays the blend the compositor says it is.
+        sk_sp<SkShader> under =
+            backdropShader
+                ? SkShaders::Blend(SkBlendMode::kSrcOver, SkShaders::Color(fill), backdropShader)
+                : SkShaders::Color(fill);
         group.setShader(SkShaders::Blend(
-            SkBlendMode::kSrcOver, SkShaders::Color(fill),
+            SkBlendMode::kSrcOver, std::move(under),
             SkShaders::Image(image, SkTileMode::kClamp, SkTileMode::kClamp,
                              SkSamplingOptions(SkFilterMode::kLinear), &local)));
         group.setAlpha(paint->getAlpha());
@@ -956,8 +1117,13 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
         SkPaint fillPaint;
         fillPaint.setColor(fill);
         canvas->drawRect(canvasRect, fillPaint);
-        canvas->drawImageRect(image, SkRect::MakeIWH(image->width(), image->height()),
-                              fitDest(*image, scene.background.fit),
+        if (backdrop != nullptr) {
+            // The backdrop carries its own 0.3 alpha (baked), so a plain
+            // source-over draw onto the fill is the reference's stack;
+            // the group's fade alpha, if any, rode `paint` above.
+            canvas->drawImage(backdrop, 0.0f, 0.0f, SkSamplingOptions(SkFilterMode::kLinear));
+        }
+        canvas->drawImageRect(image, SkRect::MakeIWH(image->width(), image->height()), dest,
                               SkSamplingOptions(SkFilterMode::kLinear),
                               nullptr, SkCanvas::kFast_SrcRectConstraint);
     }
