@@ -14,6 +14,19 @@
  * It deliberately exposes no window, device or swapchain handles: if a
  * command cannot be expressed as a session operation, the seam grows
  * first (PLAN.md review rule).
+ *
+ * What the session does NOT own (task 6.18a): the scene truth. The prepared
+ * scenes, the output revision, the desired mask/destination/scene, what the
+ * current frame has staged and what the newest presented frame proved all
+ * belong to SceneStore (session/SceneStore.h), whose header states the rules
+ * and the thread contract. This object coordinates the loop with it: ask the
+ * store what is owed and for a snapshot, draw exactly that, then tell the
+ * store whether the panel took the frame. Two explicit thread rules make that
+ * safe — the store's decide/land/commit trio is called only from the
+ * thread running run(), and its command methods only from a handler thread
+ * holding the session mutex, so the lock order is session -> store and the
+ * store never calls back. There is exactly one mutable scene, and this file is
+ * no longer allowed a copy of any of its fields.
  */
 
 #pragma once
@@ -47,6 +60,7 @@
 #include "playback/VideoSeam.h"
 #include "render/Layer.h"
 #include "render/SceneRenderer.h"
+#include "session/SceneStore.h"
 
 namespace openshow::worker {
 
@@ -298,6 +312,12 @@ public:
     // submits. So waiting for status().revision >= the revision a
     // command was acknowledged with now means "a frame carrying it
     // reached the compositor", not "the worker noticed".
+    //
+    // Since task 6.18a those fields are not stored here at all: they are
+    // SceneStore's published set, copied into the returned snapshot by
+    // status(). A Status is therefore always derived from the one scene
+    // truth, and there is no mirror in the session that could be updated a
+    // frame early — which is precisely how R4 happened.
     struct Status {
         uint32_t layerMask = 0;
         uint64_t revision = 0;
@@ -493,11 +513,16 @@ public:
     // status.media.error is the durability path.
     bool takeMediaError(MediaError* out);
 
-    // --- scenes (task 2.4b) ---
+    // --- scenes (task 2.4b, store extracted in 6.18a) ---
 
-    // How many prepared scenes the store keeps: the oldest revision that
-    // is neither presented nor pending is evicted beyond this.
-    static constexpr std::size_t kMaxPreparedScenes = 16;
+    // How many prepared scenes the store keeps: beyond this the oldest revision
+    // that can no longer be put on air is evicted — the exemptions are the
+    // desired scene (its command is accepted, its frame has not run) and the
+    // landed one (the renderer is drawing it, a fade may still blend from it).
+    // The rule and the number belong to SceneStore; the session only names
+    // them, because a caller sizing a show against the store's capacity asks
+    // this object.
+    static constexpr std::size_t kMaxPreparedScenes = SceneStore::kMaxPrepared;
 
     // Keeps a compiled scene and reports the store revision that
     // presentScene accepts. Preparing changes nothing on screen, so no
@@ -628,24 +653,13 @@ public:
 
 private:
     // One immutable capture of the desired output state (task 6.4, the
-    // snapshot stage of the publication rule): taken under fMutex at the
-    // run loop's present decision, drawn exactly by frame(), and published
-    // by that frame's successful present. Commands arriving after the
-    // capture belong to the next snapshot — they can neither ride into
-    // this frame's pixels unnoticed nor borrow its status credit.
-    struct FrameSnapshot {
-        uint64_t revision = 0;
-        uint32_t mask = 0;
-        uint64_t scene = 0;  // scene-store id, 0 = nothing presented
-        SceneTransitionKind kind = SceneTransitionKind::kFade;
-        int monitor = -1;
-        // The scene's content, pinned at capture (one copy per scene id,
-        // cached in fCapturedScene). Without the pin a scene prepared
-        // after this capture could evict the snapshot's store entry before
-        // the frame applied it — the store race R4 hid behind the old
-        // apply-time read of fDesiredScene.
-        ActiveScene content;
-    };
+    // snapshot stage of the publication rule, owned by SceneStore since
+    // 6.18a): taken under the store's lock at the run loop's present
+    // decision, drawn exactly by frame(), and published by that frame's
+    // successful present. Commands arriving after the capture belong to the
+    // next snapshot — they can neither ride into this frame's pixels
+    // unnoticed nor borrow its status credit.
+    using FrameSnapshot = SceneStore::Snapshot;
 
     bool createSwapchain();
     // Presents exactly one frame, drawn from the staged snapshot. The
@@ -762,6 +776,13 @@ private:
     void syncScenePins();
     // Copies the cache's counters into fStatus.scene.images (on-lock).
     void mirrorImageStatsLocked();
+    // The panel a published destination names, read from the display snapshot
+    // GLFW refreshed on the render thread (task 6.18a: status() derives the
+    // name from the store's published monitor, so the name can never describe
+    // an index a later frame moved past). Empty while windowed — and also
+    // empty when a hotplug removed the panel that index named, which is the
+    // honest answer to "where is the output". On-lock (reads fDisplays).
+    std::string monitorNameLocked(int monitor) const;
     void teardownBackgroundTransport();
 
     // Background media visibility events (task 5.5d). Each updates
@@ -836,14 +857,14 @@ private:
     bool fDiagnostics = false;
     unsigned long long fFrames = 0;
     bool fLoggedVideoQuad = false;
-    uint32_t fAppliedMask = 0;
     std::chrono::steady_clock::time_point fStartTime;
 
-    // Dirty tracking for the event-driven loop (task 1.5e): presented* are
-    // render-thread copies compared against the guarded desired state; the
-    // run loop presents only when they diverge, a new video slot is due, or
-    // the window itself asks (close, resize).
-    uint64_t fPresentedRevision = 0;      // render thread
+    // Dirty tracking for the event-driven loop (task 1.5e): the run loop
+    // presents only when the store owes a frame, a new video slot is due, or
+    // the window itself asks (close, resize). Since task 6.18a the first half
+    // of that question is SceneStore's own (its published revision against the
+    // commands it has accepted), so the loop keeps only the reason that is
+    // about this object's GPU state.
     bool fNeedsPresent = false;           // render thread (swapchain recreated)
 
     // The frame this loop is drawing, and the last one the panel took
@@ -947,33 +968,22 @@ private:
     // describes, cleared by mediaStopped(). fMutex.
     std::string fExpectedAudioLoss;
 
-    // Guards fDesiredMask, fRevision and the fields of fStatus that the
-    // render thread refreshes (frames, extent, applied mask, revision).
+    // Guards the session-side state below and orders the calls the render
+    // thread makes into the components this session coordinates. It may NEST
+    // the store's lock (task 6.18a's rule: session -> store, never the
+    // reverse), and the store calls nothing back — which is what lets a command
+    // thread hold it briefly and keep the expensive part of its work (a decode,
+    // a media probe) outside both locks.
     mutable std::mutex fMutex;
-    uint32_t fDesiredMask = 0;
-    uint64_t fRevision = 0;
-    // Destination: desired is written by selectMonitor (any thread),
-    // applied by the render thread; the display snapshot is refreshed
-    // there too so GLFW is only ever queried from the render thread.
-    int fDesiredMonitor = -1;
-    int fAppliedMonitor = -1;
+    // The output's scene truth (task 6.18a): the bounded prepared store, the
+    // output revision, the desired mask/destination/scene, what the current
+    // frame has staged, and what the newest presented frame proved. Command
+    // threads change desired state; the render thread stages and commits. The
+    // display snapshot is refreshed on the render thread too, so GLFW is only
+    // ever queried there.
+    SceneStore fStore;
     std::vector<DisplayInfo> fDisplays;
     Status fStatus;
-
-    // Scene store (task 2.4b). Prepared scenes live here keyed by a
-    // monotonic revision counter; desired is written by presentScene
-    // (RPC thread) and applied by the render thread. All guarded by
-    // fMutex so status() can read them alongside the rest.
-    std::map<uint64_t, openshow::scene::Scene> fScenes;  // fMutex
-    uint64_t fNextSceneRevision = 1;                     // fMutex (0 never handed out)
-    uint64_t fDesiredScene = 0;                          // fMutex; 0 = nothing presented
-    SceneTransitionKind fDesiredTransition = SceneTransitionKind::kFade;  // fMutex (task 3.2)
-    uint64_t fAppliedScene = 0;                          // render thread, published under fMutex
-    // Snapshot capture cache (render thread, run() only): store entries are
-    // immutable per id and revisions are never reused, so the content copy
-    // a snapshot pins can be shared across every capture of one scene id.
-    uint64_t fCapturedSceneId = 0;
-    ActiveScene fCapturedScene;
 
     // Preview pipeline (task 1.4). Desired state is set from the RPC
     // thread and a generation counter drives creation/retirement on the

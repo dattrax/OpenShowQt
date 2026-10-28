@@ -186,22 +186,13 @@ bool OutputSession::open(const Options& options, std::string* error) {
 
     {
         std::lock_guard<std::mutex> lock(fMutex);
-        fDesiredMask = layerMaskOf(*fScene);
-        fAppliedMask = fDesiredMask;
-        fStatus.layerMask = fDesiredMask;
-        fStatus.revision = fRevision;
+        // The store starts knowing the renderer's own layer mask and the panel
+        // the window was mapped onto: desired, staged and proved are the same
+        // thing here, because nothing has been asked for yet (task 6.18a).
+        fStore.seed(layerMaskOf(*fScene), monitor);
         fStatus.deviceName = fVk->deviceName();
-        fDesiredMonitor = monitor;
-        fAppliedMonitor = monitor;
-        fStatus.monitor = monitor;
     }
     refreshDisplaySnapshot();
-    if (monitor >= 0) {
-        std::lock_guard<std::mutex> lock(fMutex);
-        if (monitor < static_cast<int>(fDisplays.size())) {
-            fStatus.monitorName = fDisplays[monitor].name;
-        }
-    }
     fDiagnostics = options.diagnostics;
     fBackgroundMedia = options.backgroundMedia;
 
@@ -304,15 +295,7 @@ bool OutputSession::setLayerEnabled(std::string_view name, bool enabled,
     }
     {
         std::lock_guard<std::mutex> lock(fMutex);
-        if (enabled) {
-            fDesiredMask |= layerBit(id);
-        } else {
-            fDesiredMask &= ~layerBit(id);
-        }
-        ++fRevision;
-        if (revisionOut) {
-            *revisionOut = fRevision;
-        }
+        fStore.setLayerBit(layerBit(id), enabled, revisionOut);
     }
     // The event-driven loop (task 1.5e) sleeps between frames: nudge it so
     // the change lands on the next vsync rather than never.
@@ -321,23 +304,22 @@ bool OutputSession::setLayerEnabled(std::string_view name, bool enabled,
 }
 
 bool OutputSession::selectMonitor(int index, uint64_t* revisionOut) {
-    // -1 is the windowed destination and always valid; a panel index must
-    // exist in the snapshot (which GLFW refreshed on the render thread).
-    if (index < -1 || index == kAutoSecondDisplay) {
+    // kAutoSecondDisplay is the --monitor option's encoding, never a
+    // destination: open() resolves it into a panel before this seam exists, so
+    // a command naming it gets the ordinary refusal.
+    if (index == kAutoSecondDisplay) {
         return false;
     }
+    bool accepted = false;
     {
         std::lock_guard<std::mutex> lock(fMutex);
-        if (index >= static_cast<int>(fDisplays.size())) {
-            return false;
-        }
-        if (index != fDesiredMonitor) {
-            fDesiredMonitor = index;
-            ++fRevision;
-        }
-        if (revisionOut) {
-            *revisionOut = fRevision;
-        }
+        // The range rule — -1 windowed, a panel index that exists in the
+        // snapshot GLFW refreshed — lives with the desired destination it
+        // validates against (task 6.18a).
+        accepted = fStore.selectMonitor(index, fDisplays.size(), revisionOut);
+    }
+    if (!accepted) {
+        return false;  // a refusal is not a reason to wake the frame loop
     }
     wakeRenderThread();
     return true;
@@ -352,23 +334,9 @@ bool OutputSession::prepareScene(const openshow::scene::Scene& scene,
                                  uint64_t* revisionOut) {
     {
         std::lock_guard<std::mutex> lock(fMutex);
-        const uint64_t revision = fNextSceneRevision++;
-        fScenes[revision] = scene;
-        // Bounded store: evict the oldest revision nobody can present
-        // again — a frontend that lost the revision number has to re-prepare
-        // anyway, and the audience's scene is never a victim.
-        while (fScenes.size() > kMaxPreparedScenes) {
-            const auto victim = std::find_if(fScenes.begin(), fScenes.end(),
-                                             [&](const auto& entry) {
-                                                 return entry.first != fDesiredScene &&
-                                                        entry.first != fAppliedScene;
-                                             });
-            if (victim == fScenes.end()) {
-                break;
-            }
-            fScenes.erase(victim);
-        }
-        fStatus.scene.prepared = fScenes.size();
+        // The store mints the id and bounds itself (task 6.18a): nothing here
+        // touches the output, so no revision moves and no frame is provoked.
+        const uint64_t revision = fStore.prepare(scene);
         if (revisionOut != nullptr) {
             *revisionOut = revision;
         }
@@ -460,25 +428,18 @@ bool OutputSession::presentScene(uint64_t prepared, uint64_t* revisionOut,
                                  SceneTransitionKind kind) {
     {
         std::lock_guard<std::mutex> lock(fMutex);
-        if (prepared == 0 || fScenes.find(prepared) == fScenes.end()) {
+        // One call, one truth (task 6.18a): the store refuses 0 and an id it
+        // does not hold, queues the ask as pending until a presented frame
+        // carries it, and says whether the desired scene moved. Re-presenting
+        // exactly what is confirmed on air starts no frame, so it queues
+        // nothing and re-pins nothing.
+        bool changed = false;
+        if (!fStore.present(prepared, kind, revisionOut, &changed)) {
             return false;
         }
-        // Queued state (task 6.4): pending names the accepted command
-        // until a presented frame carries its scene. Re-presenting exactly
-        // what is confirmed on air starts no frame, so it queues nothing.
-        const bool alreadyConfirmed = fStatus.scene.active == prepared &&
-                                      fDesiredScene == prepared &&
-                                      !fStatus.scene.transitioning;
-        fStatus.scene.pending = alreadyConfirmed ? 0 : prepared;
-        if (prepared != fDesiredScene) {
-            fDesiredScene = prepared;
-            fDesiredTransition = kind;  // travels with the change to the render thread
-            ++fRevision;
+        if (changed) {
             syncScenePins();  // task 6.10: the outgoing scene stays pinned while
                               // the fade draws it; the commit releases it
-        }
-        if (revisionOut != nullptr) {
-            *revisionOut = fRevision;
         }
     }
     wakeRenderThread();
@@ -606,25 +567,20 @@ bool OutputSession::selectPreviewScene(uint64_t revision, std::uint32_t request,
         return false;
     }
     ActiveScene content;
-    if (revision != 0) {
-        const auto entry = fScenes.find(revision);
-        if (entry == fScenes.end()) {
-            // The store is bounded, so this is the ordinary way to be wrong:
-            // the frontend named a revision that no longer exists (or never
-            // did). It must re-prepare rather than wait for imagery that is
-            // never coming.
-            if (error != nullptr) {
-                *error = "preview.select scene " + std::to_string(revision) +
-                         " is not in the prepared store";
-            }
-            return false;
+    if (revision != 0 && !fStore.pin(revision, &content)) {
+        // The store is bounded, so this is the ordinary way to be wrong: the
+        // frontend named a revision that no longer exists (or never did). It
+        // must re-prepare rather than wait for imagery that is never coming.
+        if (error != nullptr) {
+            *error = "preview.select scene " + std::to_string(revision) +
+                     " is not in the prepared store";
         }
-        // Pin the content here rather than looking the revision up again on
-        // the render thread: entries are immutable per revision, and the
-        // store may evict this one before the pass that draws it (R4's rule,
-        // applied to a target that has no present to pin it).
-        content = std::make_shared<const openshow::scene::Scene>(entry->second);
+        return false;
     }
+    // The pin comes from the store rather than a second lookup on the render
+    // thread: entries are immutable per revision, and the store may evict this
+    // one before the pass that draws it (R4's rule, applied to a target that
+    // has no present to pin it).
     fDesiredSelection.content = std::move(content);
     fDesiredSelection.revision = revision;
     fDesiredSelection.request = request;
@@ -1776,7 +1732,31 @@ void OutputSession::refreshDisplaySnapshot() {
 
 OutputSession::Status OutputSession::status() const {
     std::lock_guard<std::mutex> lock(fMutex);
-    return fStatus;
+    Status snapshot = fStatus;
+    // The store-owned fields (task 6.18a): revision, layerMask, monitor and
+    // scene.active/pending/transitioning/prepared do not live in fStatus at
+    // all — they are SceneStore's published set, copied in here so a caller's
+    // Status is always a reading of the one scene truth rather than a mirror
+    // that could be advanced a frame early. That mirror is what review R4
+    // found, and the finding cannot come back while there is nothing to
+    // publish into.
+    const SceneStore::Published published = fStore.published();
+    snapshot.revision = published.revision;
+    snapshot.layerMask = published.mask;
+    snapshot.monitor = published.monitor;
+    snapshot.monitorName = monitorNameLocked(published.monitor);
+    snapshot.scene.active = published.activeScene;
+    snapshot.scene.pending = published.pendingScene;
+    snapshot.scene.transitioning = published.transitioning;
+    snapshot.scene.prepared = published.prepared;
+    return snapshot;
+}
+
+std::string OutputSession::monitorNameLocked(int monitor) const {
+    if (monitor < 0 || monitor >= static_cast<int>(fDisplays.size())) {
+        return "";  // windowed, or a panel the last hotplug took away
+    }
+    return fDisplays[static_cast<std::size_t>(monitor)].name;
 }
 
 void OutputSession::requestStop() {
@@ -1791,11 +1771,12 @@ bool OutputSession::running() const {
 void OutputSession::applyPendingLayerChanges(const FrameSnapshot& snapshot) {
     // The snapshot is captured and drawn by this same thread: read it
     // directly, no second opinion from the guarded desired state (that
-    // read is what let a late command ride into an early frame). Staging
-    // fAppliedMask here is bookkeeping for the frame's commit; the status
-    // publication itself happens only after a successful present.
+    // read is what let a late command ride into an early frame). Staging the
+    // landed mask here is bookkeeping for the frame's commit; the status
+    // publication itself happens only after a successful present (task 6.4),
+    // and it is the store that holds both halves (task 6.18a).
     const uint32_t desired = snapshot.mask;
-    if (desired == fAppliedMask) {
+    if (desired == fStore.landedMask()) {
         return;
     }
     for (uint32_t i = 0; i < static_cast<uint32_t>(LayerId::kCount); ++i) {
@@ -1805,22 +1786,24 @@ void OutputSession::applyPendingLayerChanges(const FrameSnapshot& snapshot) {
             fScene->setLayerEnabled(id, want);
         }
     }
-    fAppliedMask = desired;
+    fStore.landMask(desired);
 }
 
 void OutputSession::applyPendingDisplayChange(const FrameSnapshot& snapshot) {
     const int desired = snapshot.monitor;
-    if (desired == fAppliedMonitor) {
+    if (desired == fStore.landedMonitor()) {
         return;
     }
     if (!fWindow->setMonitor(desired, 300)) {
         // The index vanished between validation and apply (hotplug): drop
-        // the request rather than retry a doomed one every frame.
-        std::lock_guard<std::mutex> lock(fMutex);
-        fDesiredMonitor = fAppliedMonitor;
+        // the request rather than retry a doomed one every frame. The store
+        // moves its desired destination back to where the presented frame
+        // says the window really is; the published destination never moved,
+        // because this frame never reached the panel.
+        fStore.abandonMonitor();
         return;
     }
-    fAppliedMonitor = desired;
+    fStore.landMonitor(desired);
     refreshDisplaySnapshot();
 
     // Rebuild the swapchain at the new panel; if the compositor's configure
@@ -1837,7 +1820,7 @@ void OutputSession::applyPendingDisplayChange(const FrameSnapshot& snapshot) {
 
 void OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
     const uint64_t desired = snapshot.scene;
-    if (desired == fAppliedScene) {
+    if (desired == fStore.landedScene()) {
         return;
     }
     // Fault injection (task 6.4): real applies take time — opening a
@@ -1852,12 +1835,12 @@ void OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
     if (faults().scenePresentFails > 0) {
         faults().armedPresents = faults().scenePresentFails;
     }
-    // Task 3.1: the applied scene is what the production layers draw. The
+    // Task 3.1: the landed scene is what the production layers draw. The
     // store may evict its entry later, so a copy shared with the
     // composition keeps the on-air scene alive as long as it is drawn —
     // here that copy is the snapshot's pin, so what is applied is exactly
     // what the run loop captured, whatever commands arrived since.
-    fAppliedScene = desired;
+    fStore.landScene(desired);
     // Task 5.5: the render thread keeps its own handle on the on-air scene
     // (the composition gets a copy) — the draw path and the background
     // transport both read the same thing from here.
@@ -1877,9 +1860,10 @@ void OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
 }
 
 void OutputSession::syncScenePins() {
-    // fMutex held. The cache lives in the renderer and its pin operations
-    // are map arithmetic under the cache's own lock — no disk, no waiting —
-    // so this is safe from both the RPC thread and the frame loop.
+    // fMutex held. The store's lock nests inside it (task 6.18a's order, and
+    // the store calls nothing back). The cache lives in the renderer and its
+    // pin operations are map arithmetic under the cache's own lock — no disk,
+    // no waiting — so this is safe from both the RPC thread and the frame loop.
     if (fScene == nullptr) {
         return;
     }
@@ -1891,9 +1875,10 @@ void OutputSession::syncScenePins() {
         return;
     }
     // The union of everything that can still be put on air, re-derived in
-    // full every time: the bounded store, the queued present, the applied
-    // scene, and the render thread's on-air copy (a fade still draws the
-    // scene it came from until the commit says the transition settled).
+    // full every time: the bounded store, walked directly (task 6.18a), plus
+    // the render thread's on-air copy — which covers a queued or landed
+    // revision the store has since evicted, and the scene a fade came from
+    // until the commit says the transition settled.
     // One reference per DISTINCT path — a shared background held by two
     // scenes is one asset, and the count that keeps it out of eviction is
     // one too. Deriving beats bookkeeping: an eviction in the store, a
@@ -1915,19 +1900,20 @@ void OutputSession::syncScenePins() {
             }
         }
     };
-    for (const auto& entry : fScenes) {
-        collect(entry.second);
-    }
+    // Every scene the store holds contributes (task 6.18a: the store itself is
+    // walked, so no content copy is made here), and so does the render thread's
+    // on-air copy.
+    fStore.forEachPrepared(collect);
     const auto pinned = [&](uint64_t revision) {
-        const auto found = fScenes.find(revision);
-        if (found != fScenes.end()) {
-            collect(found->second);
-        } else if (fRenderScene) {
+        // A revision the store still holds was collected above; one it has let
+        // go contributes through the on-air copy, which is the only reference
+        // left to it.
+        if (!fStore.holds(revision) && fRenderScene) {
             collect(*fRenderScene);  // store-evicted but still on air
         }
     };
-    pinned(fDesiredScene);
-    pinned(fAppliedScene);
+    pinned(fStore.desiredScene());
+    pinned(fStore.landedScene());
     if (fRenderScene) {
         collect(*fRenderScene);
     }
@@ -2445,8 +2431,8 @@ void OutputSession::publishPreviewFrame(const SceneFrame& frame, SkImage* video)
     // The tag is the FRAME's revision (task 6.11a), which is what makes it
     // honest both ways: after a present it is the revision this frame put on
     // the panel (task 6.4's rule), and on a republish it is the revision of
-    // the presented frame being redrawn. Reading the latest desired fRevision
-    // here would tag frames with scenes nobody had drawn yet.
+    // the presented frame being redrawn. Asking the store for its latest
+    // DESIRED revision here would tag frames with scenes nobody had drawn yet.
     const uint32_t revision = static_cast<uint32_t>(frame.revision);
     if (!stream) {
         return;
@@ -3165,9 +3151,6 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
         fVideoPresenter->onPresented(videoToken, videoDone);
     }
 
-    if (presentedFrame) {
-        fPresentedRevision = snapshot.revision;
-    }
     fNeedsPresent = false;
     // The crossfade animates frame by frame, but this loop only presents
     // on a reason — and the M3 demo caught it sleeping the moment a fade
@@ -3190,25 +3173,17 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
         // "playing" describe a frame that exists rather than an open() that
         // returned.
         refreshMediaStateLocked();
-        // The commit (task 6.4, review R4): applied state is published
-        // only from a frame that reached the compositor, and it describes
-        // exactly what that frame drew — the staged applied fields, all
-        // written by this frame's apply* calls, plus the snapshot's
-        // revision. Queued state (pending) is recomputed against the newest
-        // accepted command, so it settles only when the audience really
-        // has it; transitioning says the committed switch has not visually
-        // settled yet.
+        // The commit (task 6.4, review R4, handed to the store in 6.18a):
+        // published state moves only from a frame that reached the compositor,
+        // and only to describe what that frame drew — the landed fields this
+        // frame's apply* calls staged, plus the snapshot's revision. Queued
+        // state (pending) is recomputed against the newest accepted command, so
+        // it settles only when the audience really has it; transitioning says
+        // the committed switch has not visually settled yet. Nothing is written
+        // into fStatus here: status() reads the store's answer, so the frame is
+        // the only thing that can move what a caller sees.
         if (presentedFrame) {
-            fStatus.layerMask = fAppliedMask;
-            fStatus.monitor = fAppliedMonitor;
-            fStatus.monitorName =
-                fAppliedMonitor >= 0 && fAppliedMonitor < static_cast<int>(fDisplays.size())
-                    ? fDisplays[fAppliedMonitor].name
-                    : "";
-            fStatus.scene.active = fAppliedScene;
-            fStatus.scene.transitioning = fScene && fScene->transitionRunning();
-            fStatus.scene.pending = fDesiredScene == fAppliedScene ? 0 : fDesiredScene;
-            fStatus.revision = snapshot.revision;
+            fStore.commit(snapshot.revision, fScene && fScene->transitionRunning());
             // Task 6.10: once the fade has settled, the scene it faded
             // FROM is no longer drawn and its still stops being sacred
             // (unless the store still holds it, which the sync re-derives
@@ -3292,8 +3267,14 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
         auto wakeAt = hardDeadline;
         {
             std::lock_guard<std::mutex> lock(fMutex);
-            presentNow = fRevision != fPresentedRevision ||
-                         fDesiredMonitor != fAppliedMonitor ||
+            // What the output owes (task 6.18a): the store answers both of its
+            // questions — an accepted command newer than the newest presented
+            // frame, and a destination the window is not on yet — and hands
+            // back the snapshot that frame must draw in the same critical
+            // section, so the decision and the capture are one instant.
+            SceneStore::Decision decision;
+            fStore.decide(&decision);
+            presentNow = decision.commandsDue || decision.destinationDue ||
                          fDesiredPreview.generation != fAppliedPreviewGeneration ||
                          fNeedsPresent || fWindow->framebufferResized();
             // The revision this frame represents, captured in the same
@@ -3316,30 +3297,14 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
                                       fPendingVideo->deadlineSeconds - clock)));
                 }
             }
-            // The capture (task 6.4): taken in the same critical section as
-            // the decision — unconditionally, because housekeeping can add
-            // a present reason after the lock — so this snapshot is
-            // everything owed as of now and nothing that arrives later.
+            // The capture (task 6.4, taken by the store in 6.18a): it came from
+            // the same critical section as the decision above — unconditionally,
+            // because housekeeping can add a present reason after the lock — so
+            // this snapshot is everything owed as of now and nothing that
+            // arrives later, its scene content pinned from the store's entry.
             // frame() draws exactly it and its successful present credits
             // exactly its revision.
-            snapshot.revision = fRevision;
-            snapshot.mask = fDesiredMask;
-            snapshot.scene = fDesiredScene;
-            snapshot.kind = fDesiredTransition;
-            snapshot.monitor = fDesiredMonitor;
-            if (snapshot.scene != fCapturedSceneId) {
-                // Entries are immutable per id and fDesiredScene is
-                // eviction-exempt, so the lookup under this same lock is
-                // the one pin the snapshot needs (shared across all
-                // captures of one scene id).
-                const auto entry = fScenes.find(snapshot.scene);
-                fCapturedScene = entry != fScenes.end()
-                                     ? std::make_shared<const openshow::scene::Scene>(
-                                           entry->second)
-                                     : nullptr;
-                fCapturedSceneId = snapshot.scene;
-            }
-            snapshot.content = fCapturedScene;
+            snapshot = std::move(decision.snapshot);
             if (!presentNow && fStatus.preview.running) {
                 // Either preview target can owe a frame: the MIRROR when the
                 // audience's last presented frame has not reached the stream

@@ -44,9 +44,10 @@
 
 namespace openshow::worker {
 
-// How a presentation takes effect. FreeShow defaults every transition to
-// fade (docs/reference.md §7: text 500ms, media 800ms); a cut is "none".
-enum class SceneTransitionKind { kFade, kCut };
+// SceneTransitionKind lives in render/Layer.h with the scene types it travels
+// beside: the reveal is a property of the COMMAND, and the store that carries it
+// from the RPC thread to the frame that reveals it (task 6.18a) has no business
+// depending on Skia to name it.
 
 // The live crossfade: the state machine the audience's frame clock drives.
 // In steady state fFrom is null. It holds NO blend: the blends belong to a

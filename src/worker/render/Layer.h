@@ -44,6 +44,17 @@ namespace openshow::worker {
 // clear stands), a decorated development renderer shows its demo.
 using ActiveScene = std::shared_ptr<const openshow::scene::Scene>;
 
+// How a presentation takes effect. FreeShow defaults every transition to
+// fade (docs/reference.md §7: text 500ms, media 800ms); a cut is "none".
+//
+// It lives here rather than in the compositor because the choice belongs to
+// the COMMAND, not to the draw: the store carries it from the RPC thread to
+// the frame that reveals it (task 6.18a), and a component that owns scene
+// truth has no business depending on Skia to name which reveal the operator
+// asked for. SceneRenderer includes this header, so every existing user of
+// the enum still sees it in the same place.
+enum class SceneTransitionKind { kFade, kCut };
+
 // One composed frame, captured once and drawn read-only to every target
 // (task 6.11a, review R13).
 //

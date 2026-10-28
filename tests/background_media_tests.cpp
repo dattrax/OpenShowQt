@@ -813,9 +813,54 @@ void exerciseImageCacheBudgets(int fd, const std::string& dir) {
               "the media status is clean once the picture is back");
     }
 
+    // --- task 6.18a1: a prepare re-pins, and a released scene's pin must go ---
+    // Every churn above PRESENTED the scene it prepared, so the present's own
+    // pin sync would hide a prepare that forgot. Here the operator only
+    // prepares — R10 says that provokes no frame, so no frame commit can pin
+    // either — and prepares the SAME still twenty times under twenty slide ids.
+    // The store's held set is then ONE distinct path plus the exempt on-air
+    // scene, so a session that pins at prepare settles at a couple of pins and
+    // lets the sixteen paths it released be evicted. A prepare that forgot
+    // leaves the PREVIOUS sync's sixteen pins standing (nothing else releases a
+    // pin) and holds 31.6 MiB per path that no scene in the store names.
+    const std::string shared = dir + "/shared-pin.jpg";
+    {
+        std::error_code sharedEc;
+        std::filesystem::copy_file(still, shared,
+                                   std::filesystem::copy_options::overwrite_existing, sharedEc);
+        if (sharedEc) {
+            check(false, "the fixture could not stage the shared prepare-only still");
+            return;
+        }
+    }
+    for (int i = 0; i < 20; ++i) {
+        boost::json::value reply;
+        if (!call(fd, "scene.prepare",
+                  lyricScene("Quiet " + std::to_string(i), "quiet" + std::to_string(i), shared,
+                             false),
+                  &reply) ||
+            !reply.as_object().contains("result")) {
+            check(false, "a prepare-only scene was refused");
+            break;
+        }
+    }
+    const boost::json::object quietReport = imagesOf(status(fd));
+    std::printf("   prepare-only re-pins: %.0f entries, %.0f pins, %.0f evictions\n",
+                numberOf(quietReport, "entries"), numberOf(quietReport, "pins"),
+                numberOf(quietReport, "evictions"));
+    check(numberOf(quietReport, "pins") <= 4,
+          "twenty prepares of ONE path pin one path: the union is re-derived at prepare, "
+          "so the sixteen paths the store released stopped being pinned — a prepare that "
+          "did not pin leaves the previous sync's sixteen standing, which reads double "
+          "digits here");
+    check(numberOf(quietReport, "entries") <= 8,
+          "and the released paths leave the map under the byte budget: what remains is the "
+          "shared picture plus what the budget fits, not every path a stale pin named");
+
     for (int i = 0; i < kRounds + 12; ++i) {
         ::unlink((dir + "/churn-" + std::to_string(i) + ".jpg").c_str());
     }
+    ::unlink(shared.c_str());
     ::unlink(repair.c_str());
     ::unlink(still.c_str());
 }

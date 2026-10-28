@@ -1880,12 +1880,95 @@ Updated: 2026-10-28 (Europe/London).
   - Gates desktop **48/48** (231.84 s), headless **27/27** (51.37 s); both
     trees build clean apart from the accepted `-Wfree-nonheap-object`
     false positive and the five whitelisted QML notices.
-- Exact next action: **6.18a** per the PLAN.md ledger (review R1/R4/R5/R10/
-  R13) — extract `SceneStore`/command-state and `PreviewProducer` from
-  `OutputSession` now that their correctness fixes are in: the session
-  coordinates the loop and delegates to single owners with explicit thread
-  rules, regression gates unchanged, and no second mutable scene truth is
-  introduced by the split.
+- **Task 6.18a1 DONE — the output has one scene truth, and it is not in
+  `OutputSession`.** 6.18a is split per rule 2: the command/scene state and the
+  preview producer are two owners with two thread contracts and two test
+  surfaces — the store's rules are arithmetic about commands and frames,
+  provable headless in microseconds, the preview pipeline needs a live worker, a
+  mapped segment and a budget policy — so a1 took the half R4/R5/R10/R13 are
+  actually about. Thirteen members and one struct left the session
+  (`fScenes`, `fNextSceneRevision`, `fDesiredScene`, `fDesiredTransition`,
+  `fAppliedScene`, `fCapturedSceneId`, `fCapturedScene`, `fDesiredMask`,
+  `fRevision`, `fAppliedMask`, `fDesiredMonitor`, `fAppliedMonitor`,
+  `fPresentedRevision`, `struct FrameSnapshot`), and `FrameSnapshot` is now
+  `using FrameSnapshot = SceneStore::Snapshot` — a second type for the same
+  facts is how a second truth gets written. `src/worker/session/SceneStore.{h,cpp}`
+  sits behind `openshow-worker-session` (`openshow::worker_session`), which links
+  **only `openshow::scene`**: no window, no Vulkan, no Skia — which is exactly
+  what let the rules be pinned headless instead of only through a live worker.
+  Getting there moved `SceneTransitionKind` from `render/SceneRenderer.h` into
+  `render/Layer.h`: the reveal belongs to the COMMAND, and a component that owns
+  scene truth has no business depending on a GPU library to name it.
+  **Three states, never collapsed into one word** — DESIRED (what the newest
+  accepted command asked for), LANDED (what this frame staged with the renderer,
+  which the panel has not taken), PUBLISHED (what a presented frame proved).
+  `decide()` answers `commandsDue` AND `destinationDue` *and captures the
+  snapshot in the same critical section*; `landMask`/`landMonitor`/`landScene`
+  stage; `abandonMonitor()` moves the want back (a panel that vanished between
+  validation and apply is not a panel the window reached); `commit(drawnRevision,
+  transitioning)` is **the only function in the worker that moves published
+  state**. And `status()` has nothing left to publish into: revision, layerMask,
+  monitor, monitorName, `scene.active/pending/transitioning/prepared` are copied
+  out of `fStore.published()` into the returned Status, and the frame's commit
+  block writes nothing into `fStatus` — R4's mirror is deleted, not merely
+  ordered correctly. `prepare()` still moves no output revision and provokes no
+  frame (R10), with its decode outside BOTH locks; `present()` gained
+  `bool* changedOut` so image pins are re-derived only on a real change; the
+  monitor range rule moved next to the destination it validates while the
+  session refuses `kAutoSecondDisplay`, which is an option encoding and never a
+  panel. Lock order is session → store, the store calls nothing back, and the
+  decide/land/commit trio belongs to the thread running `run()`.
+  - **Fixtures**: new headless `scene_store_tests` — **143 checks**, 11
+    scenarios, **0.00 s**, no window and no display — covering fresh-store
+    honesty, who may be named (0, unknown ids, a refused pin handing back null
+    not stale content), the layer bits, the destination through validation,
+    staging and abandonment, the R4 contract (a failed present stages without
+    publishing and leaves the scene LANDED, which is what keeps the live
+    `OPENSHOW_FAULT_SCENE_PRESENT_FAILS` fixture counting exactly two),
+    `aFrameOfTheOldSceneDoesNotCreditTheNewOne` (B on air, C wanted, further
+    blends of B still report B with C owed), R13's reveal ownership, the cap's
+    exemptions, the walk, the pin outliving its entry, and the two threads
+    (4000×4000 iterations: 0 never minted, the cap holds, published revision
+    never moves backwards). `background_media_tests` grew a phase because a
+    survival found a real gap: it presented every scene it prepared, so the
+    present's pin sync hid a prepare that forgot — it now prepares **twenty
+    scenes of one path without presenting any** and requires `pins <= 4` /
+    `entries <= 8`, measured `6 entries, 2 pins, 50 evictions`.
+  - **Mutations** m01–m46 (m08 dropped, see below): **45/45 CAUGHT**
+    (`/tmp/opencode/battery618a1.py`, log `/tmp/opencode/battery618a1.log`) —
+    id minting and reuse, the cap, both exemptions, a prepare that moved the
+    output revision, both present refusals, `holds`/`pin`/the walk, the queue's
+    four rules, the bit swap and its revision, four monitor-range rules and the
+    de-dupe, `abandonMonitor` reversing the wrong half, all five commit fields,
+    both `land*` no-ops, `decide`'s two answers both ways, the capture's
+    cache/content/scene/kind, both seed halves, and seven session wirings.
+    Three honest mid-run findings: m22 survived until the store fixture read the
+    LANDED destination after an abandon (the debt and the published panel both
+    look right either way); m24/m26 survived every scenario that existed because
+    landed and desired are equal at the commit in all of them, which is why
+    `aFrameOfTheOldSceneDoesNotCreditTheNewOne` exists; and m45 survived because
+    the media fixture always presented what it prepared, hence the twenty
+    prepare-only scenes above. m08 was **dropped after it ran**: deleting
+    `preparedRevision == 0` cannot be caught — 0 is never a key, so the
+    neighbouring lookup refuses it for the same reason — and the enforceable
+    forms of that rule are m01 (mint id 0) and m09 (drop the lookup), both
+    caught. m41 mutates the refused submit's EARLY RETURN rather than the commit
+    block's `if (presentedFrame)` guard (the two are redundant, so the guard
+    alone is an equivalent mutant), and m43 mutates what the apply LANDS rather
+    than where it reads (at the top of the apply the snapshot and the store's
+    desired scene are the same instant). Disclosed blind: the store's mutex (no
+    TSan in the gate), `abandonMonitor`'s live path (no hotplug fixture), and the
+    `applyPendingLayerChanges` desired-vs-snapshot read (the layer apply precedes
+    the scene apply's injectable delay, so that mutant cannot be caught).
+  - Gates desktop **49/49** (232.46 s), headless **28/28** (51.17 s); both
+    trees build clean apart from the accepted `-Wfree-nonheap-object`
+    false positive and the five whitelisted QML notices.
+- Exact next action: **6.18a2** per the PLAN.md ledger (review R5/R11/R13) —
+  extract `PreviewProducer` from `OutputSession`: the preview stream's
+  lifecycle, the thumbnail queue/decode/eviction policy, the selection state and
+  the audience-budget policy get one owner with its own thread rules next to
+  `SceneStore`, the session keeps only the handoff (frame in, slot out),
+  regression gates unchanged, and no second owner of a frame's revision.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -4302,6 +4385,67 @@ of this work.
   development tool and nothing in the build references it.
 
 ## Decisions
+
+- (2026-10-28, task 6.18a1) The scene truth gets one owner, three states keep
+  three names, and a status that is derived cannot lie early.
+  **One mutable scene, and the session is no longer allowed a copy of any of its
+  fields.** R4, R5, R10 and R13 read like four findings, and they are: each one
+  was a shadow of `OutputSession` holding the same fact twice — a desired field
+  plus a `Status` mirror of it, a store plus a lookup three functions from the
+  eviction that emptied it, a lock that was also the session's lock. Reordering
+  the writes would have repaired the symptoms and kept the shape that produced
+  them, so the shape went: thirteen members and the frame-snapshot struct moved
+  into `SceneStore`, and `FrameSnapshot` became an alias of the store's own
+  `Snapshot` rather than a second type for the same facts, because a second type
+  is where a second truth starts.
+  **Desired, landed and published are three facts, not three names for one.**
+  Collapsing landed into published means a frame that failed its submit either
+  credits a scene nobody saw or re-applies next frame what the renderer was told
+  already — and the retry fixtures count exactly their failures because the
+  scene stays LANDED. Collapsing published into desired is R4's lie in its
+  second form: "the audience has C" while the panel still shows B, which no
+  scenario could catch until one was staged where the two genuinely differ (B on
+  air, C wanted, further blends of B — the fixture named
+  `aFrameOfTheOldSceneDoesNotCreditTheNewOne`). Keeping them apart is cheap
+  arithmetic; pretending otherwise needs a timing argument, and a test suite that
+  needs a timing argument is a flake with a story.
+  **A component that owns scene truth may not depend on Skia.** The store needed
+  `SceneTransitionKind`, which lived in `render/SceneRenderer.h`; the enum names
+  what a COMMAND asked for, so it moved to `render/Layer.h` beside the scene
+  types it travels with, and `openshow-worker-session` links only
+  `openshow::scene`. That is not tidiness: the link is what makes the rule
+  checkable by the linker instead of by review, and it is what let 143 checks
+  about commands and frames run headless in microseconds instead of existing
+  only as live-worker fixtures.
+  **Derived status beats maintained status.** `status()` copies the store's
+  published set into the returned `Status`; the frame's commit block writes
+  nothing into `fStatus`. The difference from "we publish in the right order
+  now" is that there is no field left to publish early, so R4 cannot come back
+  through carelessness — only through deleting the store.
+  **Lock order is part of the component's contract, written in the header.**
+  Session mutex may nest the store's, never the reverse; the store calls nothing
+  back and never blocks on a caller. That is what buys R10 structurally: a
+  command thread can hold the session briefly and do the expensive half of its
+  work — a decode, a media probe — outside both locks, instead of choosing
+  between blocking the operator and racing the render thread.
+  **A rule lives where its exception lives.** The monitor range check moved next
+  to the destination it validates; `kAutoSecondDisplay` stays refused in the
+  session because it is `--monitor`'s encoding and never a panel — a store that
+  accepted it would be accepting a question, not a destination. `present()` grew
+  `changedOut` for the same reason: whether anything MOVED is knowledge the
+  store has and the caller needs (task 6.10's pin re-derivation), and having the
+  caller re-compare the store's fields against a remembered copy is how a second
+  truth sneaks back in through the front door.
+  **A surviving mutant is a test gap until it is proven an equivalent mutant.**
+  Six of the first run's survivors split that way: three grew fixtures (the
+  landed destination after an abandon, the diverging commit, twenty prepares of
+  one path that present no scene), two were re-aimed at the half that actually
+  decides (the refused submit's early return rather than the commit's redundant
+  guard; what the apply LANDS rather than where it reads), and one was dropped
+  with its reason in the ledger: deleting `preparedRevision == 0` cannot be
+  caught, because 0 is never a key and the neighbouring lookup refuses it for the
+  same reason — so the enforceable forms of that rule are "0 is never minted" and
+  "the lookup decides", both mutated and both caught.
 
 - (2026-10-28, task 6.17c3) A second colour belongs to the style, the wire
   makes it the ONE optional key, and one shader factory owns every fill.

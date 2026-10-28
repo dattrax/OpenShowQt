@@ -22,6 +22,20 @@ if(OPENSHOW_LIBRT)
   target_link_libraries(openshow-worker-preview PUBLIC ${OPENSHOW_LIBRT})
 endif()
 
+# The output's scene truth (task 6.18a, review R1/R4/R5/R10/R13): the bounded
+# prepared store with the ids it mints, the output revision, and the desired /
+# landed / published halves of what the audience sees. A library so those rules
+# can be pinned headless against the real object rather than only through a live
+# worker. It needs no window, no Vulkan and no Skia — which is what moving
+# SceneTransitionKind into the layer header bought: a component that owns scene
+# truth has no business depending on a GPU library to name a reveal.
+add_library(openshow-worker-session STATIC
+  session/SceneStore.cpp
+)
+add_library(openshow::worker_session ALIAS openshow-worker-session)
+target_link_libraries(openshow-worker-session PUBLIC openshow::scene)
+target_include_directories(openshow-worker-session PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 # The outbound queue (task 6.8b, review R11) is header-only, and its rules —
 # which frames may be replaced, which may be dropped, when the queue says no —
 # are worth pinning headless against the real object rather than only through a
@@ -122,6 +136,7 @@ target_link_libraries(openshow-worker PRIVATE
   openshow::worker_playback
   openshow::worker_preview
   openshow::worker_render
+  openshow::worker_session
   PkgConfig::GLFW
   PkgConfig::PIPEWIRE
   PkgConfig::FFMPEG

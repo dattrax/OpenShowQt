@@ -62,6 +62,17 @@ add_executable(preview_stream_tests preview_stream_tests.cpp)
 target_link_libraries(preview_stream_tests PRIVATE openshow::worker_preview)
 add_test(NAME preview_stream_tests COMMAND preview_stream_tests)
 
+# Task 6.18a (reviews R1/R4/R5/R10/R13): the output's scene truth has one owner,
+# and its rules — 0 is never minted and an id is never reused, published state
+# moves only with a presented frame, a late command is still owed, eviction
+# spares what can still go on air, a pin outlives the entry, and the two threads
+# it serves cannot collapse desired/landed/published — are pinned headless
+# against the real SceneStore. The store needs no window and no Skia, which is
+# what makes this fixture possible at all.
+add_executable(scene_store_tests scene_store_tests.cpp)
+target_link_libraries(scene_store_tests PRIVATE openshow::worker_session)
+add_test(NAME scene_store_tests COMMAND scene_store_tests)
+
 # The worker runs as its own process and must never gain a Qt dependency.
 add_test(NAME worker_is_qt_free
   COMMAND ${CMAKE_COMMAND}
