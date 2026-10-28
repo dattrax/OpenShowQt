@@ -213,11 +213,14 @@ public:
     // consistently across slides".
     Q_INVOKABLE bool setShowDefaultStyle(const QString& styleId);
     // Edits one style in place — name, colours, font and typography — and
-    // every slide using it changes at once.
+    // every slide using it changes at once. backgroundGradient is the
+    // second colour of a gradient background or "" for flat (task 6.17c3):
+    // stating it is mandatory because leaving it out would mean silently
+    // flattening a gradient the operator authored.
     Q_INVOKABLE bool editStyle(const QString& styleId, const QString& name,
                                const QString& textColor, const QString& backgroundColor,
-                               const QString& fontFamily, double fontSize,
-                               const QString& align, double lineSpacing);
+                               const QString& backgroundGradient, const QString& fontFamily,
+                               double fontSize, const QString& align, double lineSpacing);
     // Creates a style wearing whatever the current slide draws now
     // (resolved style or built-in defaults) and overrides only that slide.
     Q_INVOKABLE bool createStyleFromCurrent(const QString& name);

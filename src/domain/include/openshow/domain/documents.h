@@ -221,6 +221,16 @@ struct Style {
     std::string name;
     std::string textColor;
     std::string backgroundColor;
+    // Second background colour (task 6.17c3, review R17). Empty — the
+    // default — paints the flat backgroundColor it always did. When set,
+    // the background is a vertical gradient from backgroundColor at the
+    // top to this colour at the bottom: OpenShow's reference editor makes
+    // backgrounds with exactly two colours and a downward axis, and the
+    // field belongs to the STYLE because that is where the background
+    // colour lives (unlike the fit, which followed the picture onto the
+    // slide). Same "#rgb"/"#rrggbb" form and same rule: the renderer
+    // refuses a string it cannot parse rather than approximating it.
+    std::string backgroundGradient;
     std::string fontFamily;
     double fontSize = 0.0;
     // Typography (task 4.4): horizontal alignment inside the slide's text
@@ -363,18 +373,22 @@ public:
 
     // --- styles ---
 
-    // Colours must be "#rgb" or "#rrggbb" (hex); fontSize must be
-    // finite and >= 0; align one of "left"/"center"/"right"; lineSpacing
-    // a finite line-box multiplier in 0.25..8. Returns the new style's
-    // Id, or "" on failure.
+    // Colours must be "#rgb" or "#rrggbb" (hex); backgroundGradient is
+    // that or empty for a flat background (6.17c3 — it is a whole new
+    // statement about the background, so every caller states it); fontSize
+    // must be finite and >= 0; align one of "left"/"center"/"right";
+    // lineSpacing a finite line-box multiplier in 0.25..8. Returns the new
+    // style's Id, or "" on failure.
     Id createStyle(const std::string& name, const std::string& textColor,
-                   const std::string& backgroundColor, const std::string& fontFamily,
+                   const std::string& backgroundColor,
+                   const std::string& backgroundGradient, const std::string& fontFamily,
                    double fontSize, const std::string& align, double lineSpacing,
                    std::string* error = nullptr);
     bool removeStyle(const Id& styleId, std::string* error = nullptr);
     bool renameStyle(const Id& styleId, const std::string& name, std::string* error = nullptr);
     bool updateStyle(const Id& styleId, const std::string& textColor,
-                     const std::string& backgroundColor, const std::string& fontFamily,
+                     const std::string& backgroundColor,
+                     const std::string& backgroundGradient, const std::string& fontFamily,
                      double fontSize, const std::string& align, double lineSpacing,
                      std::string* error = nullptr);
     // Points a show's default (and therefore its unstyled slides) at a

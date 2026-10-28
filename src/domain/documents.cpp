@@ -576,7 +576,8 @@ std::vector<Id> Documents::slidesInGroup(const Id& showId, const std::string& gr
 // --- styles ----------------------------------------------------------------
 
 Id Documents::createStyle(const std::string& name, const std::string& textColor,
-                          const std::string& backgroundColor, const std::string& fontFamily,
+                          const std::string& backgroundColor,
+                          const std::string& backgroundGradient, const std::string& fontFamily,
                           double fontSize, const std::string& align, double lineSpacing,
                           std::string* error) {
     const std::string clean = trimmed(name);
@@ -590,6 +591,14 @@ Id Documents::createStyle(const std::string& name, const std::string& textColor,
         }
         return {};
     }
+    // The gradient colour is optional, but when present it is exactly as
+    // unforgiving as the other two (6.17c3): the renderer has one parse
+    // for it and no fallback.
+    if (!backgroundGradient.empty() && !validColor(backgroundGradient, nullptr)) {
+        fail(error, "background gradient colour '" + backgroundGradient +
+                        "' is not #rgb or #rrggbb");
+        return {};
+    }
     if (!validTypography(fontSize, align, lineSpacing, error)) {
         return {};
     }
@@ -598,6 +607,7 @@ Id Documents::createStyle(const std::string& name, const std::string& textColor,
     style.name = clean;
     style.textColor = textColor;
     style.backgroundColor = backgroundColor;
+    style.backgroundGradient = backgroundGradient;
     style.fontFamily = fontFamily;
     style.fontSize = fontSize;
     style.align = align;
@@ -645,7 +655,8 @@ bool Documents::renameStyle(const Id& styleId, const std::string& name, std::str
 }
 
 bool Documents::updateStyle(const Id& styleId, const std::string& textColor,
-                            const std::string& backgroundColor, const std::string& fontFamily,
+                            const std::string& backgroundColor,
+                            const std::string& backgroundGradient, const std::string& fontFamily,
                             double fontSize, const std::string& align, double lineSpacing,
                             std::string* error) {
     Style* style = findStyle_mut(styleId);
@@ -659,11 +670,17 @@ bool Documents::updateStyle(const Id& styleId, const std::string& textColor,
         }
         return false;
     }
+    if (!backgroundGradient.empty() && !validColor(backgroundGradient, nullptr)) {
+        fail(error, "background gradient colour '" + backgroundGradient +
+                        "' is not #rgb or #rrggbb");
+        return false;
+    }
     if (!validTypography(fontSize, align, lineSpacing, error)) {
         return false;
     }
     style->textColor = textColor;
     style->backgroundColor = backgroundColor;
+    style->backgroundGradient = backgroundGradient;
     style->fontFamily = fontFamily;
     style->fontSize = fontSize;
     style->align = align;

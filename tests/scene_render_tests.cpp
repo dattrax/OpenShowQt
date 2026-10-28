@@ -2026,6 +2026,239 @@ void testBackgroundFitBlurFade() {
     }
 }
 
+/* --- task 6.17c3 (review R17): the background GRADIENT — the style's second
+   colour, painting the canvas from the first at the top to the second at the
+   bottom. Every fill is now a shader, so the fixtures measure the ramp where
+   each fill site draws it: the bare canvas, the contain letterbox, the blur
+   backdrop's bars, and a fade that must carry it as one group. --- */
+
+// The ramp by arithmetic, at a device row: with the 0.5 output scale the
+// pixel centre of device row y sits at authored y = 2y + 1, so the ramp's
+// t there is (2y+1)/1080 and its value is the BYTE-wise lerp — the ramp is
+// interpolated in gamma-encoded sRGB (Skia Interpolation::kSRGB), which is
+// what a browser does with the same two colours and is what pins the
+// midpoint to an exact number below.
+SkColor gradientAt(SkColor top, SkColor bottom, int deviceY) {
+    const int t = 2 * deviceY + 1;
+    const auto channel = [t](int a, int b) {
+        return static_cast<uint8_t>((a * (1080 - t) + b * t + 540) / 1080);
+    };
+    return SkColorSetARGB(0xFF, channel(SkColorGetR(top), SkColorGetR(bottom)),
+                          channel(SkColorGetG(top), SkColorGetG(bottom)),
+                          channel(SkColorGetB(top), SkColorGetB(bottom)));
+}
+
+void testBackgroundGradientFill() {
+    // A gradient with no picture: the whole canvas is the ramp. Endpoints,
+    // the exact encoded midpoint, one-colour rows and a monotonic column —
+    // plus the flat regression: the same scene with the second colour
+    // taken away is one colour again, edge to edge.
+    std::string error;
+    scene::Scene graded;
+    graded.showId = "show1";
+    graded.slideId = "grad-fill";
+    graded.background.color = 0x102030u;
+    graded.background.gradient = 0xE09040u;
+    graded.background.hasGradient = true;
+    Frame frame;
+    if (!check(renderFixture(graded, "gradient-fill", &frame, &error),
+               "graded background rendered: " + error)) {
+        return;
+    }
+    const SkColor top = SkColorSetRGB(0x10, 0x20, 0x30);
+    const SkColor bottom = SkColorSetRGB(0xE0, 0x90, 0x40);
+    check(closeTo(frame.at(480, 1), gradientAt(top, bottom, 1), 2),
+          "gradient: the first device row is the top colour");
+    check(closeTo(frame.at(480, 538), gradientAt(top, bottom, 538), 2),
+          "gradient: the last device row is the bottom colour");
+    // The midpoint spelled out in bytes, because "the shader interpolated
+    // something" is not the assertion — GAMMA-ENCODED sRGB is. A linear
+    // ramp would put the same pair's midpoint near 161 in the red channel;
+    // the encoded mean is 120. 41 units of daylight separate the two
+    // promises, so this line survives no future colour-management drift.
+    check(closeTo(frame.at(480, 270), SkColorSetRGB(0x78, 0x58, 0x38), 2),
+          "gradient: mid-canvas is the BYTE mean of the pair — the browser's ramp");
+    check(!differs(frame.at(2, 270), frame.at(958, 270)),
+          "gradient: one row is one colour — the axis is vertical");
+    const int rHigh = SkColorGetR(frame.at(480, 100));
+    const int rMid = SkColorGetR(frame.at(480, 270));
+    const int rLow = SkColorGetR(frame.at(480, 440));
+    check(rHigh < rMid && rMid < rLow,
+          "gradient: the ramp runs top-to-bottom (the bottom colour is the second"
+          " one), not the other way");
+    // Flat regression: strip the flag and the pre-6.17c3 draw returns.
+    scene::Scene flat = graded;
+    flat.background.hasGradient = false;
+    flat.slideId = "grad-flat";
+    Frame flatFrame;
+    if (check(renderFixture(flat, "gradient-flat", &flatFrame, &error),
+              "the same scene without the second colour renders: " + error)) {
+        check(closeTo(flatFrame.at(480, 1), top, 2) &&
+                  closeTo(flatFrame.at(480, 270), top, 2) &&
+                  closeTo(flatFrame.at(480, 538), top, 2),
+              "flat is still flat: no ramp leaked into the scene that never asked");
+    }
+}
+
+void testBackgroundGradientContain() {
+    // The letterboxed bars show the RAMP, not one colour: the wide banded
+    // picture contained in the canvas leaves top and bottom bars, and the
+    // bar at the top of the canvas must be the ramp's top while the bar at
+    // its bottom is the ramp's bottom. A flat fill cannot tell those two
+    // rows apart; the scene draws them two hundred units apart.
+    std::string error;
+    if (!check(writeBandPng("scene-render-gradient-fit.png", 1920, 540, true, &error),
+               "wide gradient-fit image written: " + error)) {
+        return;
+    }
+    scene::Scene graded = bandImageScene("scene-render-gradient-fit.png", {});
+    graded.slideId = "grad-contain";
+    graded.background.fit = openshow::domain::BackgroundFit::Contain;
+    graded.background.gradient = 0xE09040u;
+    graded.background.hasGradient = true;
+    Frame frame;
+    if (!check(renderFixture(graded, "gradient-contain", &frame, &error),
+               "contained gradient background rendered: " + error)) {
+        return;
+    }
+    const SkColor top = SkColorSetRGB(0x10, 0x20, 0x30);
+    const SkColor bottom = SkColorSetRGB(0xE0, 0x90, 0x40);
+    check(closeTo(frame.at(480, 2), gradientAt(top, bottom, 2), 2),
+          "contain+gradient: the top bar is the ramp's top");
+    check(closeTo(frame.at(480, 130), gradientAt(top, bottom, 130), 2),
+          "contain+gradient: and the ramp keeps grading down the bar");
+    check(closeTo(frame.at(480, 536), gradientAt(top, bottom, 536), 2),
+          "contain+gradient: the bottom bar is the ramp's bottom");
+    check(differs(frame.at(480, 2), frame.at(480, 536), 40),
+          "the two bars are visibly DIFFERENT — this is the claim a flat fill"
+          " could never make");
+    // Between them the picture is untouched: the same thirds cover and
+    // contain have always pinned, at the same mapping.
+    check(closeTo(frame.at(50, 270), SkColorSetRGB(235, 40, 40)),
+          "contain+gradient: the picture's left third is still the picture");
+    check(closeTo(frame.at(480, 270), SkColorSetRGB(40, 200, 40)),
+          "contain+gradient: and its centre is unaffected by what runs under it");
+}
+
+void testBackgroundGradientBlur() {
+    // Blur's bars are the ramp UNDER the 0.3 backdrop. The flat red picture
+    // blurs to one flat red, so every bar pixel is arithmetic again:
+    // blendOver(ramp(row), red, 77). If the bars' fill had stayed a flat
+    // colour, the top and bottom bars would agree and both checks below
+    // would fail together.
+    std::string error;
+    if (!check(writeFlatRectPng("scene-render-gradient-blur.png", 1920, 540,
+                                SkColorSetRGB(224, 48, 48), &error),
+               "flat blur picture written: " + error)) {
+        return;
+    }
+    scene::Scene graded = flatImageScene("scene-render-gradient-blur.png", 0x102030u);
+    graded.slideId = "grad-blur";
+    graded.background.fit = openshow::domain::BackgroundFit::Blur;
+    graded.background.gradient = 0xE09040u;
+    graded.background.hasGradient = true;
+    Frame frame;
+    if (!check(renderFixture(graded, "gradient-blur", &frame, &error),
+               "blurred graded background rendered: " + error)) {
+        return;
+    }
+    const SkColor top = SkColorSetRGB(0x10, 0x20, 0x30);
+    const SkColor bottom = SkColorSetRGB(0xE0, 0x90, 0x40);
+    const SkColor picture = SkColorSetRGB(224, 48, 48);
+    check(closeTo(frame.at(480, 2),
+                  blendOver(gradientAt(top, bottom, 2), picture, kTestBackdropAlpha), 12),
+          "blur+gradient: the top bar is the ramp's top under the 0.3 backdrop");
+    check(closeTo(frame.at(480, 536),
+                  blendOver(gradientAt(top, bottom, 536), picture, kTestBackdropAlpha), 12),
+          "blur+gradient: the bottom bar is the ramp's bottom under it");
+    check(differs(frame.at(480, 2), frame.at(480, 536), 24),
+          "blur+gradient: the backdrop does not blur the ramp OUT of the bars");
+    check(closeTo(frame.at(480, 270), picture, 8),
+          "blur+gradient: the contained picture stays exactly the picture");
+}
+
+void testBackgroundGradientFade() {
+    // The gradient rides the fade GROUP (the same R13 rule the flat fill,
+    // the contain letterbox and the blur backdrop each obey): a fade from
+    // a flat fill INTO a contained graded still must be the per-pixel lerp
+    // of the two steady frames across the WHOLE canvas — bars included,
+    // because the bars' fill is the same shader the steady draw uses. And
+    // a graded scene fading to ITSELF — the lyric change over one graded
+    // background — is the frame the audience already saw: no dip toward
+    // any flat colour.
+    std::string error;
+    // Self-contained, like every fixture here: the picture is written
+    // before it is used, whatever order main() runs the tests in.
+    if (!check(writeFlatRectPng("scene-render-gradient-blur.png", 1920, 540,
+                                SkColorSetRGB(224, 48, 48), &error),
+               "graded-fade picture written: " + error)) {
+        return;
+    }
+    const scene::Scene flatFill = [] {
+        scene::Scene subject;
+        subject.showId = "show1";
+        subject.slideId = "grad-fade-from";
+        subject.background.color = 0x2030E0u;  // far from both ramp ends
+        return subject;
+    }();
+    scene::Scene gradedStill = flatImageScene("scene-render-gradient-blur.png", 0x102030u);
+    gradedStill.slideId = "grad-fade-to";
+    gradedStill.background.fit = openshow::domain::BackgroundFit::Contain;
+    gradedStill.background.gradient = 0xE09040u;
+    gradedStill.background.hasGradient = true;
+    BlendCase half;
+    if (renderBlendCase(flatFill, gradedStill, 0.5f, "gradient", &half, &error)) {
+        const BlendError e = measureBlend(half, 6);
+        report("flat fill to contained graded still, blend 0.5", e);
+        check(e.overTolerance == 0,
+              "a graded background fades as the group it steady-draws (" + describe(e) + ")");
+        // The mid frame at a bar row rides the RAMP, not a flat fill: the
+        // top bar and the bottom bar of the mid frame are two different
+        // lerped colours, ~100 units apart. A fade path that pinned the
+        // bars to background.color would make them equal and fail here.
+        const SkColor topBar = half.mid.at(480, 60);
+        const SkColor bottomBar = half.mid.at(480, 480);
+        check(differs(topBar, bottomBar, 40),
+              "mid-fade: the bars keep the ramp (top lerp vs bottom lerp are"
+              " visibly different colours)");
+    }
+    BlendCase itself;
+    if (renderBlendCase(gradedStill, gradedStill, 0.5f, "gradient-itself", &itself, &error)) {
+        const BlendError e = measureBlend(itself, 6);
+        report("graded still to itself, blend 0.5", e);
+        check(e.overTolerance == 0,
+              "a graded slide fading to itself is the frame it already showed (" +
+                  describe(e) + ")");
+    }
+    // And the DEST rect's under-layer, where only a translucent picture can
+    // see it (c2's blur-alpha discipline, re-run for the ramp): the steady
+    // frame shows the gradient THROUGH the picture, so a fade path that
+    // pinned the dest's background to a flat colour lands tens of units off
+    // the self-fade here — the opaque fixtures above cannot see this case
+    // at any blend, SrcOver with an opaque src ignores its dst.
+    if (!check(writeFlatPng("scene-render-gradient-alpha.png", SkColorSetRGB(224, 48, 48),
+                            &error, 128),
+               "translucent graded still written: " + error)) {
+        return;
+    }
+    scene::Scene gradedAlpha =
+        flatImageScene("scene-render-gradient-alpha.png", 0x102030u);
+    gradedAlpha.slideId = "grad-fade-alpha";
+    gradedAlpha.background.fit = openshow::domain::BackgroundFit::Contain;
+    gradedAlpha.background.gradient = 0xE09040u;
+    gradedAlpha.background.hasGradient = true;
+    BlendCase alphaHalf;
+    if (renderBlendCase(gradedAlpha, gradedAlpha, 0.75f, "gradient-alpha", &alphaHalf, &error)) {
+        const BlendError e = measureBlend(alphaHalf, 5);
+        report("graded translucent still to itself, blend 0.75", e);
+        check(e.overTolerance == 0,
+              "the fade's dest rect carries the ramp UNDER the picture — the steady"
+              " frame shows it there, and the mid frame must agree (" + describe(e) + ")");
+        check(differs(alphaHalf.to.at(480, 270), SkColorSetRGB(224, 48, 48), 8),
+              "the translucent still really does let its graded stack through");
+    }
+}
+
 void testTranslucentPictureBlend() {
     // A picture with per-pixel alpha is where a group differs most sharply
     // from two attenuated draws: the fill shows through the picture in the
@@ -2432,6 +2665,10 @@ int main() {
     testImageCrossfadeBlend();
     testBackgroundFitContainFade();
     testBackgroundFitBlurFade();
+    testBackgroundGradientFill();
+    testBackgroundGradientContain();
+    testBackgroundGradientBlur();
+    testBackgroundGradientFade();
     testTranslucentPictureBlend();
     testSameFrameEveryStageIsSteadyPicture();
     testTextFadeParity();

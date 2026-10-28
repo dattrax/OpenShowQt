@@ -41,6 +41,7 @@
 #include "include/core/SkSurface.h"
 #include "include/core/SkTextBlob.h"
 #include "include/encode/SkPngEncoder.h"
+#include "include/effects/SkGradient.h"
 #include "include/effects/SkImageFilters.h"
 #include "include/ports/SkFontMgr_fontconfig.h"
 #include "include/ports/SkFontScanner_FreeType.h"
@@ -992,6 +993,35 @@ SkRect fitDest(const SkImage& image, openshow::domain::BackgroundFit fit) {
                             (kSceneCanvasWidth + w) * 0.5f, (kSceneCanvasHeight + h) * 0.5f);
 }
 
+// The background's FILL, as a shader (task 6.17c3, review R17): the flat
+// colour every background painted before a second one existed, or — when
+// the style named one — a vertical gradient from `fill` at the top of the
+// authored canvas to the scene's second colour at its bottom. The axis is
+// in canvas units and the shader rides the CTM, so a scaled output window
+// gets the same ramp, edge to edge. Interpolated in gamma-ENCODED sRGB:
+// that is what a browser drawing the same pair does, so the ramp's midpoint
+// is the mean of the two colours' bytes — a fact the render fixtures pin,
+// not a hope. One factory for every fill site below — the colour-only draw,
+// the fade's bars, the fade's dest under-layer, the steady draw — so a
+// gradient can never meet a flat fill in the middle of one composite, and
+// a flat scene draws the SkShaders::Color it always drew.
+sk_sp<SkShader> backgroundFillShader(const openshow::scene::Scene& scene, SkColor fill) {
+    if (!scene.background.hasGradient) {
+        return SkShaders::Color(fill);
+    }
+    const uint32_t bottom = scene.background.gradient;
+    const SkColor4f ends[2] = {
+        SkColor4f::FromColor(fill),
+        SkColor4f::FromColor(SkColorSetARGB(0xFF, (bottom >> 16) & 0xFF, (bottom >> 8) & 0xFF,
+                                            bottom & 0xFF))};
+    const SkPoint pts[2] = {{0.0f, 0.0f}, {0.0f, kSceneCanvasHeight}};
+    return SkShaders::LinearGradient(
+        pts,
+        SkGradient{SkGradient::Colors{SkSpan<const SkColor4f>(ends), SkTileMode::kClamp},
+                   SkGradient::Interpolation{SkGradient::Interpolation::InPremul::kNo,
+                                             SkGradient::Interpolation::ColorSpace::kSRGB}});
+}
+
 }  // namespace
 
 void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
@@ -1000,6 +1030,10 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
     const uint32_t color = scene.background.color;
     const SkColor fill =
         SkColorSetARGB(0xFF, (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF);
+    // One fill shader for every branch below (6.17c3): flat colour unless
+    // the style named a second one, and then the same gradient everywhere
+    // the fill appears — never one region flat beside another graded.
+    const sk_sp<SkShader> fillShader = backgroundFillShader(scene, fill);
     const sk_sp<SkImage> image = backgroundPicture(scene, images, video);
     const bool blurFit = scene.background.fit == openshow::domain::BackgroundFit::Blur;
     // The blurred-cover backdrop, from the cache's memo (built once per
@@ -1029,9 +1063,11 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
     // dest can overflow the authored canvas on one axis).
     canvas->clipRect(canvasRect);
     if (image == nullptr) {
-        // Colour only: the fill IS the background, so the blend rides it directly.
+        // Colour only: the fill IS the background, so the blend rides it
+        // directly — and since 6.17c3 the fill may be a gradient, which is
+        // exactly why this draw goes through a shader rather than a colour.
         SkPaint fillPaint;
-        fillPaint.setColor(fill);
+        fillPaint.setShader(fillShader);
         if (fading) {
             fillPaint.setAlpha(paint->getAlpha());
         }
@@ -1082,10 +1118,13 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
         canvas->save();
         canvas->clipRect(dest, SkClipOp::kDifference);
         SkPaint bars;
-        bars.setShader(backdropShader
-                           ? SkShaders::Blend(SkBlendMode::kSrcOver, SkShaders::Color(fill),
-                                              backdropShader)
-                           : SkShaders::Color(fill));
+        // The bars' background is the FILL SHADER — flat or gradient, never
+        // pinned to one (6.17c3): a letterboxed picture over a gradient
+        // shows the gradient in the bars, which is the whole reference
+        // behaviour the fixtures re-measure.
+        bars.setShader(backdropShader ? SkShaders::Blend(SkBlendMode::kSrcOver, fillShader,
+                                                         backdropShader)
+                                      : fillShader);
         bars.setAlpha(paint->getAlpha());
         canvas->drawRect(canvasRect, bars);
         canvas->restore();
@@ -1104,9 +1143,8 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
         // of 6.17c1 when there is no backdrop. Drawn once at the group
         // alpha, so the fade stays the blend the compositor says it is.
         sk_sp<SkShader> under =
-            backdropShader
-                ? SkShaders::Blend(SkBlendMode::kSrcOver, SkShaders::Color(fill), backdropShader)
-                : SkShaders::Color(fill);
+            backdropShader ? SkShaders::Blend(SkBlendMode::kSrcOver, fillShader, backdropShader)
+                           : fillShader;
         group.setShader(SkShaders::Blend(
             SkBlendMode::kSrcOver, std::move(under),
             SkShaders::Image(image, SkTileMode::kClamp, SkTileMode::kClamp,
@@ -1115,7 +1153,7 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
         canvas->drawRect(dest, group);
     } else {
         SkPaint fillPaint;
-        fillPaint.setColor(fill);
+        fillPaint.setShader(fillShader);
         canvas->drawRect(canvasRect, fillPaint);
         if (backdrop != nullptr) {
             // The backdrop carries its own 0.3 alpha (baked), so a plain

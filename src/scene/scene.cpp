@@ -245,9 +245,14 @@ bool wantLineSpacing(const boost::json::object& obj, const char* key, double* ou
 bool operator==(const Background& a, const Background& b) {
     // The fit is part of what the background IS on screen (6.17c1): a
     // switch that only changes cover to contain is a new scene, not the
-    // same scene redrawn.
+    // same scene redrawn. The gradient pair joins the same test (6.17c3):
+    // flat-to-gradient, and one gradient to another, are both new pictures
+    // — but the second colour only MEANS something when hasGradient says
+    // so, so the comparison gates on the flag exactly as the draw does.
     return a.color == b.color && a.hasImage == b.hasImage && a.isVideo == b.isVideo &&
-           a.fit == b.fit && a.assetId == b.assetId && a.assetPath == b.assetPath;
+           a.fit == b.fit && a.assetId == b.assetId && a.assetPath == b.assetPath &&
+           a.hasGradient == b.hasGradient &&
+           (a.hasGradient ? a.gradient : kBlack) == (b.hasGradient ? b.gradient : kBlack);
 }
 bool operator!=(const Background& a, const Background& b) { return !(a == b); }
 
@@ -365,6 +370,19 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
             fail(error, "style '" + style->id + "' background colour '" +
                             style->backgroundColor + "' is not #rgb or #rrggbb");
             return false;
+        }
+        // The gradient's second colour (task 6.17c3): empty is the whole
+        // answer — flat — and anything else must parse, by the same rule
+        // and in the same words as the two colours beside it. A style
+        // whose gradient the renderer cannot parse is refused at compile,
+        // before a single pixel of the show is promised to the audience.
+        if (!style->backgroundGradient.empty()) {
+            if (!parseColor(style->backgroundGradient, &scene.background.gradient)) {
+                fail(error, "style '" + style->id + "' background gradient '" +
+                                style->backgroundGradient + "' is not #rgb or #rrggbb");
+                return false;
+            }
+            scene.background.hasGradient = true;
         }
         fontFamily = style->fontFamily;
         fontSize = style->fontSize;
@@ -496,6 +514,12 @@ boost::json::value toJson(const Scene& scene) {
     background.emplace("fit", domain::backgroundFitName(scene.background.fit));
     background.emplace("assetId", scene.background.assetId);
     background.emplace("assetPath", scene.background.assetPath);
+    // Written ONLY when set (6.17c3): an absent "gradient" is the flat
+    // background every payload before this key drew, so a flat scene keeps
+    // the byte-identical wire form it has always had.
+    if (scene.background.hasGradient) {
+        background.emplace("gradient", static_cast<std::uint32_t>(scene.background.gradient));
+    }
     root.emplace("background", std::move(background));
 
     boost::json::array items;
@@ -572,7 +596,8 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         return false;
     }
     const boost::json::object& jsonBackground = background->as_object();
-    if (!noUnknownKeys(jsonBackground, {"image", "video", "fit", "assetId", "assetPath"},
+    if (!noUnknownKeys(jsonBackground,
+                       {"image", "video", "fit", "assetId", "assetPath", "gradient"},
                        "'background'", error)) {
         return false;
     }
@@ -639,6 +664,17 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     if (scene.background.isVideo && scene.background.fit == domain::BackgroundFit::Blur) {
         fail(error, "scene: the blur background fit does not apply to a video");
         return false;
+    }
+    // The gradient (task 6.17c3) is the one OPTIONAL background key, and
+    // its absence is a real answer, not a gap: flat is every payload that
+    // predates the key. When present it is a colour like any other — no
+    // pairing rules, the second colour sits under a picture and on a bare
+    // canvas alike.
+    if (field(jsonBackground, "gradient") != nullptr) {
+        if (!wantColor(jsonBackground, "gradient", &scene.background.gradient, error)) {
+            return false;
+        }
+        scene.background.hasGradient = true;
     }
     if (!scene.background.hasImage) {
         scene.background.assetId.clear();

@@ -213,7 +213,7 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 15, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 16, "hello lists capabilities");
         {  // Task 6.17b's scene 2 (kinded items) is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasImageItems = std::any_of(
@@ -239,6 +239,17 @@ void testHello() {
                            v.as_string() == "scene.background-fit-blur.v1";
                 });
             check(hasBlurFit, "capabilities name scene.background-fit-blur.v1");
+        }
+        {  // And 6.17c3's background gradient names its own: a frontend may
+           // only send a styled gradient to a worker whose hello carries
+           // this, because an older worker refuses the key outright.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasGradient = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() &&
+                           v.as_string() == "scene.background-gradient.v1";
+                });
+            check(hasGradient, "capabilities name scene.background-gradient.v1");
         }
         {  // Task 5.5d's media visibility is named by a capability.
             const auto& caps = result.at("capabilities").as_array();

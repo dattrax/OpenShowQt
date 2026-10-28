@@ -43,18 +43,23 @@ namespace {
 // format-2 box — words, always — is that item with kind "text". Format 4
 // (task 6.17c1, review R17) gives every SLIDE a "fit": how its background
 // picture sits on the canvas, where cover is what every earlier file drew.
-// The reader still loads 1, 2 and 3 and migrates them (none can hold a
-// picture in the stack, and all three drew their background cover); the
-// writer only ever emits kServiceFormat, and a 4-file read by an older build
-// refuses the whole package rather than quietly drawing a contained picture
-// cropped.
-constexpr unsigned long long kServiceFormat = 4;
+// Format 5 (task 6.17c3, review R17) gives every STYLE a
+// "backgroundGradient": the second colour of a gradient background, where
+// the empty string is the flat fill every earlier file drew. The reader
+// still loads 1, 2, 3 and 4 and migrates them (none can hold a gradient,
+// and all four drew their backgrounds flat); the writer only ever emits
+// kServiceFormat, and a 5-file read by an older build refuses the whole
+// package rather than quietly drawing a gradient flat.
+constexpr unsigned long long kServiceFormat = 5;
 // The older versions this build reads: single-box slides (1), a stack whose
-// every item was necessarily text (2), and a kinded stack whose slides had
-// no fit choice yet — cover was the only thing the worker knew (3).
+// every item was necessarily text (2), a kinded stack whose slides had no
+// fit choice yet — cover was the only thing the worker knew (3) — and a
+// fitted stack whose styles had no gradient yet — flat was the only thing
+// it knew (4).
 constexpr unsigned long long kServiceFormatLegacyBoxes = 1;
 constexpr unsigned long long kServiceFormatLegacyTextOnly = 2;
 constexpr unsigned long long kServiceFormatLegacyUnfit = 3;
+constexpr unsigned long long kServiceFormatLegacyFlat = 4;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -529,6 +534,10 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
         entry.emplace("name", style.name);
         entry.emplace("textColor", style.textColor);
         entry.emplace("backgroundColor", style.backgroundColor);
+        // The gradient colour always travels (6.17c3): the empty string IS
+        // the statement "flat", so a flat style saved by this build reads
+        // back flat instead of depending on an absent key.
+        entry.emplace("backgroundGradient", style.backgroundGradient);
         entry.emplace("fontFamily", style.fontFamily);
         entry.emplace("fontSize", style.fontSize);
         // Typography (task 4.4) always travels; the loader defaults it
@@ -590,18 +599,22 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     // Format 2 — a stack whose items are necessarily text — is read the same
     // way, its items gaining kind "text" on the way in (task 6.17b), and
     // format 3 — a kinded stack whose slides all drew their background
-    // cover — gains fit "cover" the same way (task 6.17c1). A
+    // cover — gains fit "cover" the same way (task 6.17c1), and format 4 —
+    // a fitted stack whose styles all drew a flat background — gains
+    // backgroundGradient "" the same way (task 6.17c3). A
     // future version is refused naming both numbers, because guessing at a
     // format means quietly dropping whatever the newer build's operator wrote.
     if (format != kServiceFormat && format != kServiceFormatLegacyBoxes &&
-        format != kServiceFormatLegacyTextOnly && format != kServiceFormatLegacyUnfit) {
+        format != kServiceFormatLegacyTextOnly && format != kServiceFormatLegacyUnfit &&
+        format != kServiceFormatLegacyFlat) {
         fail(error, "service.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " + std::to_string(kServiceFormat) +
                         ", and formats " + std::to_string(kServiceFormatLegacyBoxes) +
-                        ", " + std::to_string(kServiceFormatLegacyTextOnly) +
-                        " and " + std::to_string(kServiceFormatLegacyUnfit) +
-                        " with their text boxes migrated to a kinded list and their"
-                        " backgrounds to cover)");
+                        ", " + std::to_string(kServiceFormatLegacyTextOnly) + ", " +
+                        std::to_string(kServiceFormatLegacyUnfit) + " and " +
+                        std::to_string(kServiceFormatLegacyFlat) +
+                        " with their text boxes migrated to a kinded list, their"
+                        " backgrounds to cover and their styles to flat)");
         return false;
     }
     const bool singleBoxFile = format == kServiceFormatLegacyBoxes;
@@ -805,15 +818,18 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                                     &slide.backgroundAssetId, error)) {
                 return false;
             }
-            // The fit (task 6.17c1): a format-4 slide names it, always one
-            // of the supported spellings — an old build's name is refused,
-            // never approximated, because "what the newer build drew" is a
-            // fact this renderer cannot know. A format-1/2/3 slide has no
-            // key and cover is the ONLY thing those files ever drew, so the
-            // default is not an inference but their own history. A "fit" in
-            // a pre-4 file means somebody else's build meant something by
-            // it (the format-2 "kind" rule, applied again).
-            if (format == kServiceFormat) {
+            // The fit (task 6.17c1): a format-4-or-newer slide names it,
+            // always one of the supported spellings — an old build's name
+            // is refused, never approximated, because "what the newer
+            // build drew" is a fact this renderer cannot know. A
+            // format-1/2/3 slide has no key and cover is the ONLY thing
+            // those files ever drew, so the default is not an inference
+            // but their own history. A "fit" in a pre-4 file means
+            // somebody else's build meant something by it (the format-2
+            // "kind" rule, applied again). The test is against the format
+            // that INTRODUCED the key, not kServiceFormat: a format-5 file
+            // still carries the fit 4 added.
+            if (format >= kServiceFormatLegacyFlat) {
                 std::string fitName;
                 if (!wantString(jsonSlide, "fit", &fitName, error)) {
                     return false;
@@ -869,6 +885,28 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             !wantOptionalString(jsonStyle, "align", &style.align, error) ||
             !wantOptionalNumber(jsonStyle, "lineSpacing", &style.lineSpacing, error)) {
             return false;
+        }
+        // The gradient colour (task 6.17c3): a format-5 style names it,
+        // and "" is a real answer — flat. Its absence in a pre-5 file is
+        // not an inference but that file's own history: flat was the only
+        // background those builds could draw. A "backgroundGradient" in a
+        // pre-5 file means somebody else's build meant something by it
+        // (the format-2 "kind" rule, applied again), and the lie is
+        // refused naming the key. The string itself is not colour-checked
+        // here, exactly like backgroundColor one line up: a bad colour is
+        // the scene compile's to refuse, once, with the style named.
+        if (format == kServiceFormat) {
+            if (!wantString(jsonStyle, "backgroundGradient", &style.backgroundGradient, error)) {
+                return false;
+            }
+        } else {
+            if (jsonStyle.contains("backgroundGradient")) {
+                fail(error, "service.json: style '" + style.id +
+                                "' carries \"backgroundGradient\" in a format " +
+                                std::to_string(format) + " file, where that key"
+                                " does not exist");
+                return false;
+            }
         }
         // "align" arrived after the first services: wantOptionalString
         // blanks an absent key, and blank is how a pre-typography style

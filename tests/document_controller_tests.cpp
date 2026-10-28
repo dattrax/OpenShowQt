@@ -996,7 +996,7 @@ void exerciseStylePanel(const std::filesystem::path& root) {
           "the second slide follows the show default with no override of its own");
 
     check(docs.editStyle(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
-                         QStringLiteral("#101010"), QStringLiteral("DejaVu Serif"), 72.0,
+                         QStringLiteral("#101010"), QString(), QStringLiteral("DejaVu Serif"), 72.0,
                          QStringLiteral("left"), 1.5),
           "editing the style once is accepted");
     const openshow::scene::Scene a = compiledFor(docs, slideA);
@@ -1023,7 +1023,7 @@ void exerciseStylePanel(const std::filesystem::path& root) {
     check(!whisperId.isEmpty() && whisperId != chorusId && docs.currentStyleIsOverride(),
           "the fork overrides only this slide");
     check(docs.editStyle(whisperId, QStringLiteral("Whisper"), QStringLiteral("#00ff00"),
-                         QStringLiteral("#000000"), QString(), 0.0, QStringLiteral("right"),
+                         QStringLiteral("#000000"), QString(), QString(), 0.0, QStringLiteral("right"),
                          1.25),
           "the fork edits independently");
     check(compiledFor(docs, slideB).items[0].color == 0x00FF00u &&
@@ -1038,6 +1038,55 @@ void exerciseStylePanel(const std::filesystem::path& root) {
               compiledFor(docs, slideB).items[0].color == 0xFF0000u,
           "undoing the fork removes the extra style and hands the slide back");
 
+    // The background gradient (task 6.17c3): one edit adds the second
+    // colour, the panel's map and the compiled scene both carry it, undo
+    // flattens it, a non-colour is refused naming its role, and a save
+    // round trip keeps it.
+    check(docs.editStyle(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
+                         QStringLiteral("#101010"), QStringLiteral("#20c050"), QString(),
+                         72.0, QStringLiteral("left"), 1.5),
+          "a style gains a second background colour");
+    check(docs.currentStyle().value(QStringLiteral("backgroundGradient")).toString() ==
+              QStringLiteral("#20c050"),
+          "the currentStyle map carries it for the panel");
+    check(compiledFor(docs, slideA).background.hasGradient &&
+              compiledFor(docs, slideA).background.gradient == 0x20C050u &&
+              compiledFor(docs, slideA).background.color == 0x101010u,
+          "the compiled scene carries the pair: top colour, bottom colour");
+    docs.undo();  // the gradient edit back — the style is flat again
+    check(!compiledFor(docs, slideA).background.hasGradient &&
+              docs.currentStyle()
+                  .value(QStringLiteral("backgroundGradient"))
+                  .toString()
+                  .isEmpty(),
+          "undo flattens the background again, map included");
+    check(!docs.editStyle(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
+                          QStringLiteral("#101010"), QStringLiteral("dusk"), QString(), 72.0,
+                          QStringLiteral("left"), 1.5) &&
+              docs.status().contains(QStringLiteral("background gradient")),
+          "a non-colour gradient is refused on the status line, naming its role");
+    check(!compiledFor(docs, slideA).background.hasGradient,
+          "the refused edit left the flat background alone");
+    check(docs.editStyle(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
+                         QStringLiteral("#101010"), QStringLiteral("#20c050"), QString(),
+                         72.0, QStringLiteral("left"), 1.5),
+          "the gradient set again, so the save below carries it");
+    if (check(docs.save(), "saving a graded style succeeds")) {
+        DocumentController reloaded(nullptr, root);
+        check(reloaded.load() &&
+                  reloaded.currentStyle().value(QStringLiteral("backgroundGradient")).toString() ==
+                      QStringLiteral("#20c050"),
+              "a reload returns the gradient through the controller");
+    }
+    // And a fork of a graded slide starts WITH the gradient — "wear what
+    // the slide draws now" includes the second colour.
+    check(docs.createStyleFromCurrent(QStringLiteral("Shaded")),
+          "a slide wearing the graded style forks it");
+    check(docs.currentStyle().value(QStringLiteral("backgroundGradient")).toString() ==
+              QStringLiteral("#20c050"),
+          "createStyleFromCurrent snapshots the gradient too");
+    docs.undo();  // the fork (and its override) back
+
     // Explicitly point a slide at a style, then hand it back (empty id).
     check(docs.applyStyleToCurrentSlide(chorusId) && docs.currentStyleIsOverride(),
           "a slide can be pinned to a style by id");
@@ -1047,12 +1096,12 @@ void exerciseStylePanel(const std::filesystem::path& root) {
 
     // Refusals name themselves and leave everything alone.
     check(!docs.editStyle(QStringLiteral("style999"), QStringLiteral("Ghost"),
-                          QStringLiteral("#ffffff"), QStringLiteral("#000000"), QString(), 0.0,
+                          QStringLiteral("#ffffff"), QStringLiteral("#000000"), QString(), QString(), 0.0,
                           QStringLiteral("center"), 1.25) &&
               docs.status().contains(QStringLiteral("edit style")),
           "editing an unknown style is refused on the status line");
     check(!docs.editStyle(chorusId, QStringLiteral("   "), QStringLiteral("#ffffff"),
-                          QStringLiteral("#000000"), QString(), 0.0,
+                          QStringLiteral("#000000"), QString(), QString(), 0.0,
                           QStringLiteral("center"), 1.25),
           "a blank name is refused before anything is recorded");
     check(!docs.applyStyleToCurrentSlide(QStringLiteral("style999")) &&
@@ -1088,7 +1137,7 @@ void exerciseStylePanel(const std::filesystem::path& root) {
     check(!bare.createStyleFromCurrent(QStringLiteral("Orphan")) &&
               !bare.setSlideBackground(QString()) &&
               !bare.editStyle(QStringLiteral("style1"), QStringLiteral("x"),
-                              QStringLiteral("#fff"), QStringLiteral("#000"), QString(), 0.0,
+                              QStringLiteral("#fff"), QStringLiteral("#000"), QString(), QString(), 0.0,
                               QStringLiteral("center"), 1.25),
           "with no current slide the style panel has nothing to act on");
 }
@@ -1443,8 +1492,8 @@ void exerciseClipboard(const std::filesystem::path& root) {
           "the source slide gets a style of its own");
     const QString styleId = docs.currentStyle().value(QStringLiteral("id")).toString();
     check(docs.editStyle(styleId, QStringLiteral("Bright"), QStringLiteral("#ffd23f"),
-                         QStringLiteral("#101828"), QString(), 64.0, QStringLiteral("left"),
-                         1.5),
+                         QStringLiteral("#101828"), QString(), QString(), 64.0,
+                         QStringLiteral("left"), 1.5),
           "the style is edited into a distinctive look");
     const QString mediaPath = QString::fromStdWString((root / "backdrop.jpg").wstring());
     check(docs.importMediaFile(mediaPath) && docs.assets().size() == 1,
@@ -1607,9 +1656,9 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
         std::ifstream manifest(root / "service" / "service.json");
         const std::string text{std::istreambuf_iterator<char>(manifest),
                                std::istreambuf_iterator<char>()};
-        check(text.find("\"format\":4") != std::string::npos &&
+        check(text.find("\"format\":5") != std::string::npos &&
                   text.find("\"fit\":\"contain\"") != std::string::npos,
-              "the manifest is format 4 and spells the slide's fit");
+              "the manifest is this build's format (5 since 6.17c3) and spells the slide's fit");
     }
     {
         DocumentController reopened(nullptr, root);

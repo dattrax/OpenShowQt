@@ -90,8 +90,19 @@ namespace openshow::protocol {
 // REJECTS a scene claiming "blur" (the name set is closed on both ends),
 // it cannot misdraw it — so a frontend may only offer the blur choice to a
 // worker whose hello names the capability.
+// Minor 13 (task 6.17c3, review R17) adds the background GRADIENT: a scene
+// background may carry an optional "gradient" colour, the bottom of a
+// vertical fill from "backgroundColor", named by
+// "scene.background-gradient.v1". The scene FORMAT does not move — the
+// background object gains a key, not a meaning its reader would have to
+// guess. Absent is flat, which is every payload a pre-13 frontend ever
+// wrote; present can only be drawn by a worker that knows the key, and a
+// worker without minor 13 REJECTS such a payload outright because the
+// background's key set is closed — so the gradient is refused loudly, never
+// quietly flattened. A frontend may only send a styled gradient to a worker
+// whose hello names the capability.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 12;
+inline constexpr std::uint32_t kProtocolMinor = 13;
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without

@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <vector>
@@ -58,9 +60,10 @@ struct Fixture {
 Fixture buildFixture() {
     Fixture fx;
     const Id house =
-        fx.docs.createStyle("House", "#ffffff", "#202040", "DejaVu Serif", 64.0, "center",
+        fx.docs.createStyle("House", "#ffffff", "#202040", "", "DejaVu Serif", 64.0, "center",
                             kDefaultLineSpacing);
-    const Id loud = fx.docs.createStyle("Loud", "#ff0", "#000", "Impact", 96.0, "right", 1.5);
+    const Id loud =
+        fx.docs.createStyle("Loud", "#ff0", "#000", "", "Impact", 96.0, "right", 1.5);
     fx.asset = fx.docs.addAsset("stage loop.jpg", "/services/svc/assets/asset-loop.jpg");
     fx.videoAsset =
         fx.docs.addAsset("Stage Loop.MP4", "/services/svc/assets/asset-loop.mp4");
@@ -256,7 +259,7 @@ void exerciseImmutability(Fixture& fx) {
 
     // Edit the model every way a live session would.
     fx.docs.setSlideLines(fx.show, fx.defaulted, {"Replaced"});
-    fx.docs.createStyle("Newer", "#123456", "#000000", "Newer Font", 12.0, "center",
+    fx.docs.createStyle("Newer", "#123456", "#000000", "", "Newer Font", 12.0, "center",
                         kDefaultLineSpacing);
 
     check(compiled == before, "an already compiled scene does not follow later edits");
@@ -544,6 +547,136 @@ void exerciseBackgroundFit() {
         scene::Scene cleared = scene::clearedScene();
         check(cleared.background.fit == openshow::domain::BackgroundFit::Cover,
               "the cleared scene's background carries cover like every era before it");
+    }
+}
+
+void exerciseBackgroundGradient() {
+    // Task 6.17c3 (review R17): the style's second background colour, from
+    // the model through the wire to the reader's discipline on the key.
+    std::string error;
+    Documents docs;
+    const Id show = docs.createShow("Graded");
+    const Id slide = docs.appendSlide(show);
+    const Id style = docs.createStyle("Sunset", "#ffffff", "#301020", "#c05020",
+                                      "DejaVu Serif", 64.0, "center",
+                                      openshow::domain::kDefaultLineSpacing, &error);
+    check(!style.empty() && docs.setSlideStyle(show, slide, style),
+          "a slide follows a style with a second colour");
+    scene::Scene out;
+    check(scene::compileSlide(docs, show, slide, &out, &error) &&
+              out.background.hasGradient && out.background.gradient == 0xC05020u &&
+              out.background.color == 0x301020u,
+          "the compile carries the pair: top colour, bottom colour, flag set");
+    // The empty string is FLAT, not "a gradient to nothing": the flag
+    // stays down, so every pre-6.17c3 style compiles to the byte-exact
+    // scene it compiled to before the field existed.
+    const Id plain = docs.createStyle("Plain", "#ffffff", "#000000", "", "DejaVu Serif",
+                                      64.0, "center", openshow::domain::kDefaultLineSpacing,
+                                      &error);
+    const Id plainSlide = docs.appendSlide(show);
+    check(!plain.empty() && docs.setSlideStyle(show, plainSlide, plain),
+          "a second slide follows a style with no second colour");
+    scene::Scene flatStyleOut;
+    check(scene::compileSlide(docs, show, plainSlide, &flatStyleOut, &error) &&
+              !flatStyleOut.background.hasGradient,
+          "the empty style string compiles with the flag DOWN — not a ramp to black");
+
+    // The wire writes the key when — and only when — there is a gradient.
+    const boost::json::object written = scene::toJson(out).as_object();
+    check(written.at("background").as_object().at("gradient").as_uint64() == 0xC05020u,
+          "the payload carries the second colour");
+    scene::Scene readBack;
+    check(scene::fromJson(boost::json::value(written), &readBack, &error) && readBack == out,
+          "a graded background survives the JSON round trip, scene equal");
+    check(boost::json::serialize(scene::toJson(readBack)) ==
+              boost::json::serialize(boost::json::value(written)),
+          "and re-serialises byte-equal");
+
+    scene::Scene flat = out;
+    flat.background.hasGradient = false;
+    check(!scene::toJson(flat).as_object().at("background").as_object().contains("gradient"),
+          "a flat background writes no gradient key — the pre-6.17c3 wire, byte for byte");
+    boost::json::object absent = written;
+    absent["background"].as_object().erase("gradient");
+    scene::Scene flatRead;
+    check(scene::fromJson(boost::json::value(absent), &flatRead, &error) &&
+              !flatRead.background.hasGradient && flatRead.background.color == 0x301020u,
+          "an absent key reads flat: every payload written before this key drew flat, "
+          "so absence is the payload's own history, not a guess");
+    check(flatRead != out, "flat under a gradient is a new picture, not the same one");
+
+    // Equality: the second colour MEANS something exactly when the flag
+    // says so — two unflagged junk values draw identically and cannot be
+    // allowed to force a re-present.
+    scene::Scene second = out;
+    second.background.gradient = 0x20C050u;
+    check(second != out, "a different second colour is a different scene");
+    scene::Scene junkA = flat;
+    junkA.background.gradient = 0x123456u;
+    scene::Scene junkB = flat;
+    junkB.background.gradient = 0x654321u;
+    check(junkA == junkB,
+          "a gradient value behind hasGradient=false draws nothing, so two junk "
+          "values are one picture — equality gates on the flag as the draw does");
+
+    // The reader's discipline on the key: optional, but whatever it is
+    // when present must be a colour, and a near-miss name is still unknown.
+    const auto readRefusedGradient = [&](const std::function<void(boost::json::object&)>& change,
+                                         const std::string& expectIn, const char* what) {
+        boost::json::object obj = scene::toJson(out).as_object();
+        change(obj["background"].as_object());
+        scene::Scene ignored;
+        std::string why;
+        const bool refused = !scene::fromJson(boost::json::value(obj), &ignored, &why);
+        if (!check(refused && why.find(expectIn) != std::string::npos, what)) {
+            std::fprintf(stderr, "   wanted \"%s\", read %s: %s\n", expectIn.c_str(),
+                         refused ? "said" : "ACCEPTED", why.c_str());
+        }
+    };
+    readRefusedGradient([](boost::json::object& bg) { bg["gradient"] = "0xc05020"; },
+                        "'gradient' must be a packed 0xRRGGBB integer",
+                        "a string gradient colour is refused — the wire speaks ints");
+    readRefusedGradient([](boost::json::object& bg) { bg["gradient"] = 0x1000000; },
+                        "'gradient' is outside 0xRRGGBB",
+                        "and an int outside the packed range is refused too");
+    readRefusedGradient([](boost::json::object& bg) { bg["gradient"] = -1; },
+                        "'gradient' is outside 0xRRGGBB",
+                        "a negative colour is outside the range, not a colour");
+    readRefusedGradient([](boost::json::object& bg) { bg["backgroundGradient"] = 0xC05020u; },
+                        "has no field 'backgroundGradient'",
+                        "the background's key set stays closed: the near-miss name is "
+                        "a lie, and this build refuses it by name");
+
+    // The chain the domain does NOT police: a stored service may hold a
+    // colour string the compile cannot parse (storage never validates
+    // colours — the compile refuses once, naming the style). Reach it the
+    // way an operator would: a hand-edited file on disk.
+    {
+        namespace fs = std::filesystem;
+        const fs::path dir = fs::temp_directory_path() / "openshow-scene-gradient-lie";
+        fs::create_directories(dir);
+        {
+            std::ofstream file(dir / "service.json");
+            file << R"({"format":5,"nextOrdinal":99,"shows":[{"id":"show1","name":"Lie",)"
+                 R"("slides":[{"id":"slide1","items":[)"
+                 R"({"id":"text1","kind":"text","lines":["a"],"x":1,"y":1,)"
+                 R"("width":10,"height":10}],"fit":"cover","styleId":"style1"}]}],)"
+                 R"("styles":[{"id":"style1","name":"Dusk","textColor":"#ffffff",)"
+                 R"("backgroundColor":"#000000","backgroundGradient":"dusk",)"
+                 R"("fontFamily":"","fontSize":64}],)"
+                 R"("assets":[],"playlists":[]})";
+        }
+        Documents loaded;
+        check(openshow::domain::loadService(&loaded, dir, &error),
+              "a format-5 file whose gradient is a word LOADS — colour-checking a "
+              "file is not storage's job, exactly as backgroundColor never was");
+        scene::Scene ignored;
+        error.clear();
+        check(!scene::compileSlide(loaded, "show1", "slide1", &ignored, &error) &&
+                  error.find("background gradient 'dusk'") != std::string::npos,
+              "and the compile refuses it naming the style and the word — the one "
+              "gate, before a pixel of the show is promised to the audience");
+        fs::remove_all(dir);
     }
 }
 
@@ -1209,6 +1342,7 @@ int main() {
     exerciseAssetReferences(fx);
     exerciseImageWire(fx);
     exerciseBackgroundFit();
+    exerciseBackgroundGradient();
     exerciseMeasuredSizes(fx);
     exerciseClearedScene();
     exerciseDemoFixture();

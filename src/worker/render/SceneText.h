@@ -330,8 +330,10 @@ private:
     std::size_t fBackdropComputations = 0;  // 6.17c2's once-per-image pin
 };
 
-// Draws a scene's background: the colour fill, and the fitted media on top
-// when hasImage (the fit is the scene's, task 6.17c1/c2, review R17). Cover
+// Draws a scene's background: the colour fill — flat, or a vertical
+// gradient to background.gradient when hasGradient (task 6.17c3, review
+// R17) — and the fitted media on top when hasImage (the fit is the scene's,
+// task 6.17c1/c2, review R17). Cover
 // scales to fill the authored canvas (the lyric default), centring and
 // cropping the overflow; contain scales it inside, centred, the fill showing
 // in the bars; blur draws the CONTAIN-fitted picture over the cached

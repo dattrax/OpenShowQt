@@ -118,6 +118,14 @@ inline constexpr double kDefaultBoxHeight = 880.0;
 // problem (and the renderer's reported error, task 5.5).
 struct Background {
     Color color = kBlack;
+    // Second colour of a gradient background (task 6.17c3, review R17):
+    // the canvas fills from `color` at the top to `gradient` at the bottom
+    // when hasGradient, and paints flat `color` when it does not. The pair
+    // arrives from the STYLE; the empty style string compiles to
+    // hasGradient=false, so every scene a pre-6.17c3 file describes draws
+    // exactly what it always drew.
+    Color gradient = kBlack;
+    bool hasGradient = false;
     bool hasImage = false;
     bool isVideo = false;  // only meaningful when hasImage
     domain::Id assetId;
@@ -200,7 +208,8 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 
 // {"scene":3,"showId":...,"slideId":...,"backgroundColor":<int>,
 //  "background":{"image":bool,"video":bool,
-//                "fit":"cover"|"contain"|"blur","assetId":...,"assetPath":...},
+//                "fit":"cover"|"contain"|"blur","assetId":...,"assetPath":...,
+//                "gradient":<int>},
 //  "items":[{"kind":"text","lines":[...],"color":<int>,"fontFamily":...,
 //            "fontSize":<num>,"x":<num>,"y":<num>,"width":<num>,
 //            "height":<num>,"align":"left"|"center"|"right",
@@ -216,6 +225,14 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 // reader would have to guess. There is no cross-format tolerance in either
 // direction — frontend and worker ship together, and a payload whose
 // items mean something the reader has not validated must not draw.
+// "gradient" (task 6.17c3, review R17) is the exception that proves the
+// rule rather than breaking it: written only when the style names a second
+// background colour, and absent means flat — the payload's own history, not
+// a guess. It moves no format number; it is protocol MINOR 13's addition,
+// named by "scene.background-gradient.v1". The closed key set is what makes
+// that safe in the other direction: a worker older than minor 13 refuses a
+// payload carrying "gradient" by name, so a gradient is loudly refused,
+// never quietly drawn flat.
 boost::json::value toJson(const Scene& scene);
 
 // Strict reader for the above; see the header for the contract. Fails

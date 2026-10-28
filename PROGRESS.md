@@ -1818,15 +1818,74 @@ Updated: 2026-10-28 (Europe/London).
   - Gates desktop **48/48** (231.73 s), headless **27/27** (50.75 s); both
     trees build clean apart from the accepted `-Wfree-nonheap-object`
     false positive and the five whitelisted QML notices.
-- Exact next action: **6.17c3** per the PLAN.md ledger (review R17) —
-  represent and render the background gradient: the flat colour becomes a
-  pair, the second colour (empty = today's flat fill, the pinned legacy
-  default) turning the fill into a linear top→bottom gradient under
-  whatever picture the slide carries — model + storage (key written per
-  the established rule, lies refused naming themselves) + compiler + wire
-  + worker (the gradient rides the SAME single-draw fade group shader
-  where the flat colour rides today) + the editor's colour fields;
-  gradient fixtures measure endpoints and midline.
+- **Task 6.17c3 DONE — the background is a pair, and every fill is one
+  shader.** `Style::backgroundGradient` (`""` = flat, what every file ever
+  written drew) lives on the STYLE because `backgroundColor` always did —
+  the fit went onto the slide for the same reason a choice belongs to the
+  thing it describes. `createStyle`/`updateStyle` took the parameter with
+  NO default, so the compiler makes every caller state it rather than let
+  a rebuild flatten a gradient someone authored; a bad colour is refused
+  naming its role (`background gradient colour 'dusk' is not #rgb or
+  #rrggbb`). Service format **4→5**: the writer emplaces the key on every
+  style, flat included — `""` IS the statement, so re-saves are byte-stable
+  and a format-4 re-save PROMOTES its flat rather than trusting an absent
+  key; formats 1–4 read flat (their own history), a format-5 style missing
+  the key is refused (the writer always writes it, so absence is a
+  hand-edit), and a hand-bumped key in a pre-5 file is refused naming the
+  format where it does not exist. The colour is not validated at read,
+  exactly as `backgroundColor` never was — the compile refuses once, naming
+  the style. Moving the format number exposed a latent branch: the slide's
+  `fit` test was `format == kServiceFormat`, which would have begun
+  refusing format-4 files for a key they legitimately carry, so it is
+  `format >= kServiceFormatLegacyFlat` now (m18 pins it). The wire keeps
+  **scene format 3** and `"gradient"` is its ONE optional background key —
+  written only when set, so a flat payload stays byte-identical to what
+  this build wrote yesterday, and a worker older than minor **13** refuses
+  a payload carrying it BY NAME rather than drawing it flat;
+  `scene.background-gradient.v1` (16 caps, both hello pins) is the check
+  before sending one. Equality gates the second colour on the flag: flat
+  under a gradient is a new picture, two unflagged junk values are one.
+  The worker has ONE fill now — `backgroundFillShader()`, a colour or a
+  `LinearGradient` (0,0)→(0,1080) riding the CTM — replacing the colour-only
+  draw, the fade's letterbox bars, the fade's dest under-layer and the
+  steady fill, so a gradient can never meet a flat fill mid-composite. It
+  interpolates in gamma-ENCODED sRGB, the browser's rule: for
+  `#102030`→`#E09040` the midline is the byte mean R120/G88/B56, where a
+  linear-light ramp gives R165/G107/B57 — 45 units of red between the two
+  promises, so the midpoint fixture pins a doctrine, not a hope.
+  Measured: bare-canvas endpoints and the exact `#785838` midline, one row
+  = one colour, a monotonic column, and the flat regression; contain's bars
+  grade (top vs bottom differ >40, the picture's thirds unmoved); blur's
+  bars are `blendOver(ramp(row), red, 77)` to the channel with the ramp
+  still visible under the backdrop; the three fades (flat→contained graded
+  0.5, graded→itself 0.5, TRANSLUCENT graded→itself 0.75 — c2's lesson, an
+  opaque SrcOver picture hides its dst shader) all measure **worst 1/255,
+  0 px over tolerance**. `editStyle` states the colour, `currentStyle()`
+  carries it, `createStyleFromCurrent` forks it with the slide, and the
+  panel grew `styleBackGradientField`; the edit canvas and thumbnails show
+  the ramp through the worker's own preview, so no second renderer joined
+  them (demo.cpp stays flat — its fixtures pin shipped pixels).
+  - **Mutations** m01–m22: **22/22 CAUGHT** (`/tmp/opencode/battery617c3.py`)
+    — the flat guard, both axis mutants, linear-light interpolation, all
+    three flat-fill-pinning sites, three wire mutants (key when flat, key
+    mandatory, key set forgetting it), three compile/equality mutants, the
+    capability, four storage mutants (writer omits, pre-5 trusted, format-5
+    defaultable, fit branch regressed), both domain refusals, both
+    controller seams. Disclosed blind: the minor 12→13 bump itself (hello
+    accepts any minor — the capability IS the enforceable gate), the QML
+    field and its `sync()` binding (chrome; `ui_loads` proves it
+    instantiates, and the data it reads/writes is mutated at the
+    controller), and `wantString`/`wantColor`'s discipline on the new key
+    (unchanged helpers, pinned by every older key they read).
+  - Gates desktop **48/48** (231.84 s), headless **27/27** (51.37 s); both
+    trees build clean apart from the accepted `-Wfree-nonheap-object`
+    false positive and the five whitelisted QML notices.
+- Exact next action: **6.18a** per the PLAN.md ledger (review R1/R4/R5/R10/
+  R13) — extract `SceneStore`/command-state and `PreviewProducer` from
+  `OutputSession` now that their correctness fixes are in: the session
+  coordinates the loop and delegates to single owners with explicit thread
+  rules, regression gates unchanged, and no second mutable scene truth is
+  introduced by the split.
 
 ## Historical M1 checkpoint (superseded by the current checkpoint above)
 
@@ -4243,6 +4302,67 @@ of this work.
   development tool and nothing in the build references it.
 
 ## Decisions
+
+- (2026-10-28, task 6.17c3) A second colour belongs to the style, the wire
+  makes it the ONE optional key, and one shader factory owns every fill.
+  **The gradient is a STYLE field, not a slide field.** `backgroundColor`
+  has lived on the style since the first service file, so the colour that
+  grades from it lives beside it; the fit went the other way in 6.17c1
+  because a fit describes how a PICTURE sits, and the picture is the
+  slide's. Two related choices sitting in two places is only defensible
+  when each sits with the thing it describes, and the tests say so out
+  loud. `createStyle`/`updateStyle` gained the parameter WITHOUT a default
+  for the same reason the fit's setter never got a convenience overload:
+  a default would let a caller say nothing, and saying nothing about a
+  gradient means flattening one.
+  **The writer always writes the key; the reader never defaults a lie.**
+  `""` is not an absent value, it is the answer "flat", so format 5 emplaces
+  it on every style — re-saves are byte-stable and a format-4 file's
+  re-save PROMOTES its flat into the text instead of leaving the meaning of
+  the background to whatever the reader guesses. The two lies are refused
+  naming themselves: a format-5 style with no key (the writer always writes
+  it, so its absence is a hand-edit) and a key hand-bumped into a pre-5
+  file (somebody else's build meant something by it — the format-2 `"kind"`
+  rule again). What the reader does NOT do is colour-check the string:
+  `backgroundColor` beside it never was, and a service that refused
+  unparseable colours at read time would be a second, drift-prone parser.
+  The compile owns that refusal once, naming the style.
+  **`"gradient"` is the wire's one optional key, and the closed key set is
+  what makes optionality honest.** Every other scene key is mandatory
+  because a payload that leaves it out would leave the reader guessing at
+  content the audience must see. This one is absent-or-present because
+  ABSENCE has a history: every payload written before the key drew flat,
+  so reading absent as flat is a fact about the bytes, not an inference.
+  The other direction is covered by the set staying CLOSED — a worker
+  older than minor 13 rejects a payload carrying `gradient` by name rather
+  than painting the operator's gradient flat. That asymmetry (additive for
+  a new reader, loudly refusing for an old one) is why the scene format did
+  not move and only the capability tells a frontend when it may send one.
+  **One factory, five sites, one ramp.** `backgroundFillShader()` returns
+  the flat `SkShaders::Color` a flat scene always drew or one vertical
+  `LinearGradient`, and it replaced the colour-only draw, the fade's
+  letterbox bars, the fade's dest under-layer and the steady fill behind a
+  picture. Fill sites are where a composition feature goes to become
+  inconsistent: a bar filled with `background.color` beside a canvas
+  showing a ramp is the bug the fixtures exist to catch (m05/m06/m07 are
+  exactly those three, all caught). Same reasoning as the axis in authored
+  canvas units riding the CTM: the ramp belongs to the slide, not to the
+  window's pixel height.
+  **The ramp interpolates gamma-ENCODED sRGB — the browser's rule — and the
+  fixture pins it in bytes.** `SkGradient::Interpolation::ColorSpace::kSRGB`
+  makes the midline the byte mean of the pair, which is what a browser
+  drawing the same two colours produces; linear-light would put the same
+  pair's midpoint at R165/G107 against the encoded mean's R120/G88, 45
+  units of red of daylight. Choosing an interpolation because it matches
+  the reference's look is a doctrine; a midpoint spelled out as `#785838`
+  with a 2-unit tolerance is what makes it enforceable, and m04 (switching
+  to `kSRGBLinear`) dies on it.
+  **Equality gates the second colour on its flag.** `flat.gradient = 0x123456`
+  and `flat.gradient = 0x654321` draw the same canvas, so treating them as
+  different scenes would make the worker re-present a picture nobody can
+  distinguish; `hasGradient` is what means something, exactly as it is at
+  the draw. Flat-under-gradient is the opposite case and also asserted:
+  that is a new picture.
 
 - (2026-10-28, task 6.17c2) Blur is an honest name widening, the backdrop
   is derived image data, and the video pairing is refused at every gate

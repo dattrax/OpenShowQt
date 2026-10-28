@@ -1710,6 +1710,9 @@ Window {
                 const name = fieldStyleName.text.trim() || "Style"
                 const colour = fieldTextColor.text.trim()
                 const back = fieldBackColour.text.trim()
+                // "" is a real answer here, not a missing value: it is how
+                // the operator says the background stays flat (6.17c3).
+                const gradient = fieldBackGradient.text.trim()
                 const family = fieldFontFamily.text.trim()
                 const spacingValue = Number.isFinite(spacing) ? spacing : 1.25
                 const sizeValue = Number.isFinite(size) && size >= 0 ? size : 0
@@ -1721,14 +1724,14 @@ Window {
                     // The creation took the built-in look; carry the
                     // operator's values onto it, undoing the creation too
                     // if the domain refuses them.
-                    if (!docs.editStyle(targetId(), name, colour, back, family,
+                    if (!docs.editStyle(targetId(), name, colour, back, gradient, family,
                                         sizeValue, align, spacingValue)) {
                         docs.undo()
                         stylePanel.sync()
                     }
                     return
                 }
-                if (!docs.editStyle(targetId(), name, colour, back, family,
+                if (!docs.editStyle(targetId(), name, colour, back, gradient, family,
                                     sizeValue, align, spacingValue)) {
                     stylePanel.sync()
                 }
@@ -1742,6 +1745,11 @@ Window {
                 })
                 fieldBackColour.text = Qt.binding(function () {
                     return docs.currentStyle.backgroundColor || "#000000"
+                })
+                // Flat shows empty, not a colour: the field IS the "" that
+                // commit passes back (6.17c3).
+                fieldBackGradient.text = Qt.binding(function () {
+                    return docs.currentStyle.backgroundGradient || ""
                 })
                 fieldFontFamily.text = Qt.binding(function () {
                     return docs.currentStyle.fontFamily || ""
@@ -1874,6 +1882,26 @@ Window {
                         width: 116
                         onEditingFinished: stylePanel.commit()
                     }
+                }
+            }
+
+            // The background's second colour (task 6.17c3): empty keeps
+            // the flat fill above; a #rgb paints the gradient's bottom.
+            // Its own full-width row — the two colour fields above fill
+            // the panel between them.
+            Column {
+                spacing: 2
+                width: stylePanel.width
+                Text {
+                    color: "#8f93a5"
+                    font.pixelSize: 10
+                    text: "BACKGROUND GRADIENT (EMPTY = FLAT)"
+                }
+                PanelField {
+                    id: fieldBackGradient
+                    objectName: "styleBackGradientField"
+                    width: parent.width
+                    onEditingFinished: stylePanel.commit()
                 }
             }
 

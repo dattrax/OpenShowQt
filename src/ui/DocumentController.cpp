@@ -824,6 +824,9 @@ QVariantMap DocumentController::currentStyle() const {
     map.insert(QStringLiteral("textColor"), QString::fromStdString(style->textColor));
     map.insert(QStringLiteral("backgroundColor"),
                QString::fromStdString(style->backgroundColor));
+    // "" means flat, and the UI's field shows itself empty for it (6.17c3).
+    map.insert(QStringLiteral("backgroundGradient"),
+               QString::fromStdString(style->backgroundGradient));
     map.insert(QStringLiteral("fontFamily"), QString::fromStdString(style->fontFamily));
     map.insert(QStringLiteral("fontSize"), style->fontSize);
     map.insert(QStringLiteral("align"), QString::fromStdString(style->align));
@@ -874,6 +877,7 @@ bool DocumentController::setShowDefaultStyle(const QString& styleId) {
 
 bool DocumentController::editStyle(const QString& styleId, const QString& name,
                                    const QString& textColor, const QString& backgroundColor,
+                                   const QString& backgroundGradient,
                                    const QString& fontFamily, double fontSize,
                                    const QString& align, double lineSpacing) {
     flushText();
@@ -887,7 +891,9 @@ bool DocumentController::editStyle(const QString& styleId, const QString& name,
             // Appearance first: it is the part the renderer cannot honour
             // a lie about, and its refusal must leave the name alone too.
             if (!fDocuments.updateStyle(styleId.toStdString(), textColor.toStdString(),
-                                        backgroundColor.toStdString(), fontFamily.toStdString(),
+                                        backgroundColor.toStdString(),
+                                        backgroundGradient.toStdString(),
+                                        fontFamily.toStdString(),
                                         fontSize, align.toStdString(), lineSpacing, &error)) {
                 return false;
             }
@@ -916,6 +922,10 @@ bool DocumentController::createStyleFromCurrent(const QString& name) {
     const openshow::domain::Style* base = fDocuments.styleForSlide(fCurrentSongId, slideId);
     const std::string text = base != nullptr ? base->textColor : "#ffffff";
     const std::string background = base != nullptr ? base->backgroundColor : "#000000";
+    // A style made from a gradient slide starts WITH the gradient: "wear
+    // whatever the current slide draws now" includes its second colour
+    // (task 6.17c3), and a built-in default has never had one.
+    const std::string gradient = base != nullptr ? base->backgroundGradient : "";
     const std::string family = base != nullptr ? base->fontFamily : "";
     const double size = base != nullptr ? base->fontSize : 0.0;
     const std::string alignment = base != nullptr ? base->align : "center";
@@ -924,8 +934,8 @@ bool DocumentController::createStyleFromCurrent(const QString& name) {
     std::string error;
     openshow::domain::Id created;
     if (!edit([&] {
-            created = fDocuments.createStyle(name.toStdString(), text, background, family,
-                                             size, alignment, spacing, &error);
+            created = fDocuments.createStyle(name.toStdString(), text, background, gradient,
+                                             family, size, alignment, spacing, &error);
             if (created.empty()) {
                 return false;
             }

@@ -537,19 +537,19 @@ void exerciseStyles() {
     const Id show = docs.createShow("Deck", &error);
     const Id slide = docs.appendSlide(show, &error);
 
-    const Id style = docs.createStyle("House", "#ffffff", "#202040", "DejaVu Serif", 64.0,
+    const Id style = docs.createStyle("House", "#ffffff", "#202040", "", "DejaVu Serif", 64.0,
                                       "center", kDefaultLineSpacing, &error);
     check(!style.empty(), "createStyle returns an id");
-    check(docs.createStyle("Bad", "#12g456", "#000000", "x", 10, "center",
+    check(docs.createStyle("Bad", "#12g456", "#000000", "", "x", 10, "center",
                            kDefaultLineSpacing, &error)
                   .empty() &&
               !error.empty(),
           "a non-hex text colour is refused");
-    check(docs.createStyle("Bad", "#fff", "white", "x", 10, "center", kDefaultLineSpacing,
+    check(docs.createStyle("Bad", "#fff", "white", "", "x", 10, "center", kDefaultLineSpacing,
                            &error)
                   .empty(),
           "a named background colour is refused too");
-    check(docs.createStyle("Bad", "#fff", "#fff", "x", -1, "center", kDefaultLineSpacing,
+    check(docs.createStyle("Bad", "#fff", "#fff", "", "x", -1, "center", kDefaultLineSpacing,
                            &error)
                   .empty(),
           "a negative font size is refused");
@@ -558,7 +558,7 @@ void exerciseStyles() {
               docs.styleForSlide(show, slide) != nullptr &&
               docs.styleForSlide(show, slide)->id == style,
           "the show default style resolves for unstyled slides");
-    const Id other = docs.createStyle("Loud", "#ffff00", "#000000", "Impact", 96.0, "center",
+    const Id other = docs.createStyle("Loud", "#ffff00", "#000000", "", "Impact", 96.0, "center",
                                       kDefaultLineSpacing, &error);
     check(docs.setSlideStyle(show, slide, other, &error) &&
               docs.styleForSlide(show, slide)->id == other,
@@ -569,21 +569,54 @@ void exerciseStyles() {
     check(!docs.setSlideStyle(show, slide, "style999", &error),
           "an unknown override id is refused");
 
-    check(docs.updateStyle(other, "#ff0000", "#000", "Arial", 0.0, "left", 2.0, &error) &&
+    check(docs.updateStyle(other, "#ff0000", "#000", "", "Arial", 0.0, "left", 2.0, &error) &&
               docs.findStyle(other)->textColor == "#ff0000" &&
               docs.findStyle(other)->backgroundColor == "#000" &&
               docs.findStyle(other)->fontSize == 0.0 &&
               docs.findStyle(other)->align == "left" &&
               docs.findStyle(other)->lineSpacing == 2.0,
           "updateStyle replaces the appearance and typography (0 size = renderer default)");
-    check(!docs.updateStyle(other, "#ff0000", "#000", "Arial", 0.0, "middle",
+    check(!docs.updateStyle(other, "#ff0000", "#000", "", "Arial", 0.0, "middle",
                             kDefaultLineSpacing, &error),
           "an alignment outside left/center/right is refused");
-    check(!docs.updateStyle(other, "#ff0000", "#000", "Arial", 0.0, "center", 0.0, &error) &&
-              !docs.updateStyle(other, "#ff0000", "#000", "Arial", 0.0, "center", 99.0, &error),
+    check(!docs.updateStyle(other, "#ff0000", "#000", "", "Arial", 0.0, "center", 0.0, &error) &&
+              !docs.updateStyle(other, "#ff0000", "#000", "", "Arial", 0.0, "center", 99.0, &error),
           "line spacing outside 0.25..8 is refused");
     check(docs.renameStyle(other, "Louder", &error) && docs.findStyle(other)->name == "Louder",
           "styles rename");
+
+    // The gradient's second colour (task 6.17c3): "" is a real answer —
+    // flat, what every style before the field was — any colour is legal,
+    // and a non-colour is refused naming the ROLE, not just "colour", so
+    // an operator staring at the text field knows which one to fix.
+    const Id sunset = docs.createStyle("Sunset", "#ffffff", "#301020", "#c05020",
+                                       "DejaVu Serif", 64.0, "center", kDefaultLineSpacing,
+                                       &error);
+    check(!sunset.empty() && docs.findStyle(sunset)->backgroundGradient == "#c05020",
+          "a style can name a second background colour");
+    check(docs.findStyle(style)->backgroundGradient.empty(),
+          "a style that names none stays flat");
+    error.clear();
+    check(docs.createStyle("Bad", "#fff", "#000", "dusk", "x", 10, "center",
+                           kDefaultLineSpacing, &error)
+                  .empty() &&
+              error.find("background gradient") != std::string::npos,
+          "a named gradient colour is refused naming its role");
+    check(docs.updateStyle(sunset, "#ffffff", "#301020", "#20c050", "DejaVu Serif", 64.0,
+                           "center", kDefaultLineSpacing, &error) &&
+              docs.findStyle(sunset)->backgroundGradient == "#20c050",
+          "updateStyle replaces the gradient too");
+    check(docs.updateStyle(sunset, "#ffffff", "#301020", "", "DejaVu Serif", 64.0, "center",
+                           kDefaultLineSpacing, &error) &&
+              docs.findStyle(sunset)->backgroundGradient.empty(),
+          "and the empty string paints it flat again");
+    error.clear();
+    check(!docs.updateStyle(sunset, "#ffffff", "#301020", "noon", "DejaVu Serif", 64.0,
+                            "center", kDefaultLineSpacing, &error) &&
+              error.find("background gradient") != std::string::npos,
+          "an update naming a non-colour is refused naming its role");
+    check(docs.findStyle(sunset)->backgroundGradient.empty(),
+          "the refused update left the flat answer alone");
 
     check(docs.setSlideStyle(show, slide, other, &error) &&
               docs.setShowDefaultStyle(show, other, &error),
@@ -594,7 +627,9 @@ void exerciseStyles() {
           "removing a style clears every reference to it");
     check(docs.styleForSlide(show, slide) == nullptr,
           "a show whose default was cleared resolves to no style");
-    check(docs.styleIds() == std::vector<Id>({style}), "styleIds reflects removal");
+    // Sunset was only ever a value-holder, never a reference — removal
+    // clears `other` and leaves the rest in creation order.
+    check(docs.styleIds() == std::vector<Id>({style, sunset}), "styleIds reflects removal");
 }
 
 void exercisePlaylists() {
@@ -699,9 +734,9 @@ bool replaceOnce(std::string& text, const std::string& from, const std::string& 
 // sections, and one background asset whose file lives outside the
 // package (created at assetSource).
 void buildSampleService(Documents* docs, const fs::path& assetSource) {
-    const Id house = docs->createStyle("House", "#ffffff", "#202040", "DejaVu Serif", 64.0,
+    const Id house = docs->createStyle("House", "#ffffff", "#202040", "", "DejaVu Serif", 64.0,
                                        "center", kDefaultLineSpacing);
-    const Id loud = docs->createStyle("Loud", "#ffff00", "#000000", "Impact", 96.0, "center",
+    const Id loud = docs->createStyle("Loud", "#ffff00", "#000000", "", "Impact", 96.0, "center",
                                       kDefaultLineSpacing);
     const Id asset = docs->addAsset("stage loop.jpg", assetSource.string());
 
@@ -780,6 +815,7 @@ bool sameService(const Documents& a, const Documents& b) {
         const Style* xb = b.findStyle(styleId);
         if (xa == nullptr || xb == nullptr || xa->name != xb->name ||
             xa->textColor != xb->textColor || xa->backgroundColor != xb->backgroundColor ||
+            xa->backgroundGradient != xb->backgroundGradient ||
             xa->fontFamily != xb->fontFamily || xa->fontSize != xb->fontSize ||
             xa->align != xb->align || xa->lineSpacing != xb->lineSpacing) {
             return false;
@@ -938,7 +974,7 @@ void exercisePersistence(const fs::path& tempRoot) {
     // cannot honour is refused naming its style ---
     {
         Documents typed;
-        const Id sharp = typed.createStyle("Sharp", "#ff8800", "#000000", "DejaVu Sans", 88.0,
+        const Id sharp = typed.createStyle("Sharp", "#ff8800", "#000000", "", "DejaVu Sans", 88.0,
                                            "right", 1.75, &error);
         check(!sharp.empty(), "createStyle accepts typography");
         const fs::path typeset = tempRoot / "typeset";
@@ -1633,6 +1669,84 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                   openshow::domain::loadService(&back, package, &error) &&
                   back.findShow(show)->slides[0].items.empty(),
               "a slide with no text boxes round-trips as a slide with no text boxes");
+    }
+
+    // --- format 5 (task 6.17c3): every style carries a
+    //     "backgroundGradient", older files mean flat, and a hand-bumped
+    //     key in one is refused naming itself ---
+    {
+        Documents graded;
+        const Id show = graded.createShow("Graded", &error);
+        const Id sunset = graded.createStyle("Sunset", "#ffffff", "#301020", "#c05020",
+                                             "DejaVu Serif", 64.0, "center",
+                                             kDefaultLineSpacing, &error);
+        const Id plain = graded.createStyle("Plain", "#ffffff", "#000000", "", "DejaVu Serif",
+                                            64.0, "center", kDefaultLineSpacing, &error);
+        check(!sunset.empty() && !plain.empty() && graded.setShowDefaultStyle(show, sunset),
+              "a graded style and a flat one are created");
+        const fs::path gradedDir = tempRoot / "v5-graded";
+        Documents back;
+        error.clear();
+        check(openshow::domain::saveService(graded, gradedDir, &error) &&
+                  openshow::domain::loadService(&back, gradedDir, &error),
+              "a service of graded styles saves and reloads");
+        check(back.findStyle(sunset)->backgroundGradient == "#c05020" &&
+                  back.findStyle(plain)->backgroundGradient.empty(),
+              "the second colour survives the round trip, flat stays flat");
+        check(sameService(graded, back), "the whole graded service compares field by field");
+        const std::string manifest = readFile(gradedDir / "service.json");
+        check(manifest.find("\"backgroundGradient\":\"#c05020\"") != std::string::npos &&
+                  manifest.find("\"backgroundGradient\":\"\"") != std::string::npos,
+              "the gradient AND the flat are both written by name — leaving the "
+              "default to an absent key is the rule this project refuses");
+        check(manifest.find("\"format\":5") != std::string::npos,
+              "the manifest says format 5");
+        check(openshow::domain::saveService(back, tempRoot / "v5-regraded", &error) &&
+                  readFile(tempRoot / "v5-regraded" / "service.json") == manifest,
+              "re-saving a graded service writes a byte-identical manifest");
+
+        // The honest pre-5 file: the key appears nowhere, and flat is not
+        // an inference but that file's own history — a gradient was the
+        // one background those builds could not draw.
+        const std::string styleOld =
+            R"({"id":"style1","name":"Old","textColor":"#ffffff","backgroundColor":"#000000",)"
+            R"("fontFamily":"","fontSize":64})";
+        for (unsigned long long era : {1ull, 2ull, 3ull, 4ull}) {
+            const std::string head =
+                R"({"format":)" + std::to_string(era) +
+                R"(,"nextOrdinal":99,"shows":[],"styles":[)";
+            const std::string file = head + styleOld + R"(],"assets":[],"playlists":[]})";
+            const fs::path dir = tempRoot / ("v" + std::to_string(era) + "-ungraded");
+            std::filesystem::create_directories(dir);
+            writeFile(dir / "service.json", file);
+            Documents old;
+            error.clear();
+            if (check(openshow::domain::loadService(&old, dir, &error),
+                      "a pre-5 style with no gradient key loads")) {
+                check(old.findStyle("style1")->backgroundGradient.empty(),
+                      "and reads flat — the only background that era drew");
+            }
+        }
+
+        // The lies: a format-5 style with no key (the writer always writes
+        // it, so its absence is a hand-edit), and a key hand-bumped into a
+        // pre-5 file where it does not exist.
+        const std::string styleNoKey =
+            R"({"id":"style1","name":"Kept","textColor":"#ffffff","backgroundColor":"#000000",)"
+            R"("fontFamily":"","fontSize":64})";
+        refusesJson(R"({"format":5,"nextOrdinal":99,"shows":[],"styles":[)" + styleNoKey +
+                        R"(],"assets":[],"playlists":[]})",
+                    "'backgroundGradient' must be a string",
+                    "a format-5 style with no gradient key is refused: the writer "
+                    "always writes it, so its absence is a hand-edit");
+        const std::string styleLied =
+            R"({"id":"style1","name":"Lied","textColor":"#ffffff","backgroundColor":"#000000",)"
+            R"("backgroundGradient":"#0000ff","fontFamily":"","fontSize":64})";
+        refusesJson(R"({"format":4,"nextOrdinal":99,"shows":[],"styles":[)" + styleLied +
+                        R"(],"assets":[],"playlists":[]})",
+                    "where that key",
+                    "a hand-bumped 'backgroundGradient' in a format-4 file is refused "
+                    "rather than trusted — somebody else's build meant something by it");
     }
 }
 
