@@ -18,9 +18,13 @@
  *    output.status.media.error, the worker keeps serving, and presenting
  *    a good background clears the error and resumes playing.
  *
- *  - Preload (5.5c): a big still decodes during scene.prepare (the RPC
- *    thread pays it; the re-prepare is a cache hit), and presenting a
- *    preloaded slide reaches the air within 100 ms at p95.
+ *  - Preload (5.5c): a big still decodes during scene.prepare and the
+ *    re-prepare is a cache hit; presenting a preloaded slide reaches the
+ *    air within 100 ms at p95. Since 6.9a (review R10) the decode runs on
+ *    the prepare executor, not the RPC thread, and its ack is deferred to
+ *    the completion — the offload scenario interleaves status/displays/
+ *    ping/release probes with four cold prepares and requires the probes
+ *    to keep answering, by id, while the executor reads.
  *
  *  - "A seek means what the audience gets" (6.7d, review R19): a scheduled
  *    burst, a backward seek after the clip looped, and a seek issued while the
@@ -326,6 +330,196 @@ bool fileExists(const std::string& path) {
     return ::stat(path.c_str(), &info) == 0;
 }
 
+bool generate(const std::string& command);  // the fixture's quiet runner, below
+
+// --- task 6.9a (review R10): prepare's file work off the RPC thread ---------
+//
+// The acceptance sentence: "slow prepare does not delay status/clear/
+// releases/shutdown". The lifecycle of the work itself — exactly-once
+// completion, superseded jobs retiring, stop() draining — is pinned in
+// prepare_executor_tests; this is the live half. Four COLD copies of the
+// big still are fired as scene.prepare requests without waiting for their
+// acks: they fill the prepare executor (one running, three waiting — the
+// cap), so each ack is deferred until that copy's 4K decode completes.
+// While the executor reads, the test interleaves cheap commands (status,
+// displays, ping, and preview.released named as a request, the protocol's
+// release path). Before 6.9a the RPC thread itself decoded, so every one
+// of those probes waited behind a cold file; now each must answer while
+// scene.preparing still reports the work owed, and every reply correlates
+// to its request by id out of a single read loop (the rule 6.3a made the
+// protocol's, exercised here on genuinely out-of-order answers).
+void exercisePrepareOffload(int fd, const std::string& bigStill) {
+    // The image cache is keyed by path, so copies are real decodes rather
+    // than hits of whatever ran before.
+    std::vector<std::string> cold;
+    for (int i = 0; i < 4; ++i) {
+        const std::string copy = "/tmp/openshow-6-9a-" + std::to_string(getpid()) + "-" +
+                                 std::to_string(i) + ".jpg";
+        if (generate("cp '" + bigStill + "' '" + copy + "'")) {
+            cold.push_back(copy);
+        }
+    }
+    if (cold.size() != 4) {
+        std::fprintf(stderr, "   skipped the prepare-offload scenario (copy failed)\n");
+        return;
+    }
+
+    struct Probe {
+        std::int64_t id;
+        std::chrono::steady_clock::time_point sent;
+    };
+    std::vector<std::int64_t> prepares;   // ids whose deferred ack is owed
+    std::vector<Probe> probes;            // ids answered on the RPC thread
+    auto sendOnly = [&](const char* method, boost::json::object params) -> std::int64_t {
+        const std::int64_t id = gNextId++;
+        std::string wire;
+        proto::appendFrame(proto::makeRequest(id, method, std::move(params)), &wire);
+        if (::send(fd, wire.data(), wire.size(), MSG_NOSIGNAL) < 0) {
+            return 0;
+        }
+        return id;
+    };
+
+    for (size_t i = 0; i < cold.size(); ++i) {
+        const std::int64_t id =
+            sendOnly("scene.prepare", lyricScene("R10 offload " + std::to_string(i),
+                                                 "r10a" + std::to_string(i), cold[i], false));
+        if (id == 0) {
+            check(false, "the cold prepares could be written");
+            return;
+        }
+        prepares.push_back(id);
+    }
+    // The probes ride the same stream right behind them. preview.released
+    // names no live stream, so it frees nothing — what matters here is
+    // that the loop still READS and ANSWERS this kind of traffic while
+    // decodes run, at the same promptness as the plain commands.
+    auto probe = [&](const char* method, boost::json::object params) {
+        const std::int64_t id = sendOnly(method, std::move(params));
+        if (id != 0) {
+            probes.push_back({id, std::chrono::steady_clock::now()});
+        }
+    };
+    probe("output.status", {});
+    sleepMs(5);
+    probe("output.displays", {});
+    sleepMs(5);
+    probe("preview.released",
+          {{"stream", "offload-scenario-none"}, {"slot", 0}, {"seq", 1}});
+    sleepMs(5);
+    probe("ping", {});
+    sleepMs(5);
+    probe("output.status", {});
+    sleepMs(5);
+    probe("output.status", {});
+    if (probes.size() != 6) {
+        check(false, "the interleaved probes could be written");
+        return;
+    }
+
+    // One read loop, both kinds of answer. A reply belongs to the request
+    // its id names — never to arrival order.
+    double worstRttMs = 0.0;
+    std::size_t probesWhileWork = 0;  // probe replies that arrived BEFORE the last ack
+    std::size_t statusNamingWork = 0;  // probe replies whose scene.preparing said >= 1
+    std::size_t acked = 0;
+    std::size_t revisionsOk = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while ((!probes.empty() || acked < prepares.size()) &&
+           std::chrono::steady_clock::now() < deadline) {
+        pollfd pfd{fd, POLLIN, 0};
+        const int ready = ::poll(&pfd, 1, 50);
+        if (ready < 0 && errno != EINTR) {
+            break;
+        }
+        if (ready > 0) {
+            char buffer[64 * 1024];
+            const ssize_t got = ::recv(fd, buffer, sizeof(buffer), 0);
+            if (got <= 0) {
+                break;
+            }
+            gDecoder.feed(std::string_view(buffer, static_cast<size_t>(got)));
+        }
+        boost::json::value message;
+        std::string decodeError;
+        while (gDecoder.next(&message, &decodeError)) {
+            if (!message.is_object()) {
+                continue;
+            }
+            if (message.as_object().contains("method")) {
+                routeNotification(message);
+                continue;
+            }
+            for (auto it = probes.begin(); it != probes.end(); ++it) {
+                if (!messageHasId(message, it->id)) {
+                    continue;
+                }
+                const double rtt =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - it->sent)
+                        .count();
+                worstRttMs = std::max(worstRttMs, rtt);
+                if (acked < prepares.size()) {
+                    ++probesWhileWork;
+                }
+                if (message.as_object().contains("result") &&
+                    message.at("result").is_object() &&
+                    message.at("result").as_object().contains("scene") &&
+                    message.at("result").as_object().at("scene").is_object()) {
+                    const boost::json::object& sceneState =
+                        message.at("result").as_object().at("scene").as_object();
+                    if (numberOf(sceneState, "preparing") >= 1.0) {
+                        ++statusNamingWork;
+                    }
+                }
+                probes.erase(it);
+                break;
+            }
+            for (const std::int64_t id : prepares) {
+                if (messageHasId(message, id)) {
+                    ++acked;
+                    if (message.as_object().contains("result") &&
+                        numberOf(message.at("result").as_object(), "revision") > 0.0) {
+                        ++revisionsOk;
+                    }
+                    break;
+                }
+            }
+        }
+        if (gDecoder.failed()) {
+            break;
+        }
+    }
+    for (const std::string& copy : cold) {
+        ::unlink(copy.c_str());
+    }
+
+    check(acked == prepares.size(), "every cold prepare was acknowledged by its id");
+    check(revisionsOk == prepares.size(),
+          "every deferred ack carried a real store revision");
+    check(probes.empty(), "every interleaved command was answered");
+    check(probesWhileWork >= 3,
+          "commands were answered while prepare file work was outstanding");
+    check(statusNamingWork >= 1,
+          "a status reply named the owed prepare work (scene.preparing)");
+    std::fprintf(stderr, "prepare-offload worst probe RTT %.1f ms\n", worstRttMs);
+    check(worstRttMs < 250.0, "no command was delayed by a cold decode (250 ms bound)");
+
+    // "Readiness explicit": once the last ack has travelled, the executor
+    // owes nothing, and status says so.
+    bool settled = false;
+    for (int attempt = 0; attempt < 100 && !settled; ++attempt) {
+        const boost::json::object snap = status(fd);
+        if (snap.contains("scene") && snap.at("scene").is_object()) {
+            settled = numberOf(snap.at("scene").as_object(), "preparing") == 0.0;
+        }
+        if (!settled) {
+            sleepMs(10);
+        }
+    }
+    check(settled, "scene.preparing drains to zero after the last ack");
+}
+
 void exerciseBackgroundMedia(int fd, const std::string& videoA,
                              const std::string& videoB, const std::string& missing,
                              const std::string& corrupt, const std::string& bigStill) {
@@ -516,6 +710,16 @@ void exerciseBackgroundMedia(int fd, const std::string& videoA,
     // --- preload: the big still decodes during prepare; presenting a
     // prepared slide is prompt (the 100 ms p95 target) ---
     if (!bigStill.empty()) {
+        // First, while the still's path is still cold: the 6.9a offload
+        // scenario uses its own cold copies, and its acks and probes are
+        // fully drained before anything below reuses the plain call()
+        // helper.
+        exercisePrepareOffload(fd, bigStill);
+        // The cache evidence starts here: status' mirror of the cache
+        // counters as of the last pin sync.
+        const boost::json::object before = imagesOf(status(fd));
+        const double hits0 = numberOf(before, "preloadHits");
+        const double bytes0 = numberOf(before, "decodedBytes");
         const auto prepStart = std::chrono::steady_clock::now();
         boost::json::value prepReply;
         const bool prepared = call(fd, "scene.prepare",
@@ -526,19 +730,38 @@ void exerciseBackgroundMedia(int fd, const std::string& videoA,
             std::chrono::duration<double>(std::chrono::steady_clock::now() - prepStart)
                 .count();
         check(prepared, "the still-background scene prepares");
-        // Re-prepare the same path: the image cache answers instantly.
-        const auto secondStart = std::chrono::steady_clock::now();
-        boost::json::value secondReply;
-        const bool preparedAgain = call(fd, "scene.prepare",
-                                        lyricScene("Huge still cached", "vp2", bigStill,
-                                                   false),
-                                        &secondReply) &&
-                                   secondReply.as_object().contains("result");
-        const double secondSeconds =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - secondStart)
-                .count();
-        check(preparedAgain && secondSeconds < prepSeconds,
-              "the second prepare of the same image is a cache hit");
+        // Re-prepare the same path twice. Ack latency cannot distinguish a
+        // hit from a decode — both cross one 50 ms poll tick of deferred
+        // drain, and a 4K testsrc JPEG decodes faster than that tick — so
+        // the assertion is the worker's own counter instead of the wall.
+        // One sync of lag is structural (a prepare mirrors the cache at its
+        // START, before its preload runs): P2's hit reaches status through
+        // P3's sync, so the expected reading is hits0+1, plus one more only
+        // if a frame commit mirrored P3's own hit.
+        bool preparedAgain = true;
+        for (int retry = 0; retry < 2; ++retry) {
+            boost::json::value secondReply;
+            preparedAgain = call(fd, "scene.prepare",
+                                 lyricScene("Huge still cached", "vp2c" +
+                                                                      std::to_string(retry),
+                                            bigStill, false),
+                                 &secondReply) &&
+                            secondReply.as_object().contains("result");
+            if (!preparedAgain) {
+                break;
+            }
+        }
+        const boost::json::object after = imagesOf(status(fd));
+        const double hitsAfter = numberOf(after, "preloadHits");
+        const double bytesAfter = numberOf(after, "decodedBytes");
+        std::fprintf(stderr,
+                     "prepare acks: cold %.1f ms; preloadHits %.0f -> %.0f; decoded "
+                     "%.0f -> %.0f bytes\n",
+                     prepSeconds * 1000.0, hits0, hitsAfter, bytes0, bytesAfter);
+        check(preparedAgain, "the cached re-prepares are acknowledged");
+        check(bytesAfter > bytes0, "the cold prepare put real pixels in the cache");
+        check(hitsAfter >= hits0 + 1 && hitsAfter <= hits0 + 2,
+              "the second prepare of the same image is a cache hit (preloadHits)");
 
         // p95 of present -> on air over repeated prepared slides.
         std::vector<double> latencies;

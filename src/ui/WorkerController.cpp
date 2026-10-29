@@ -314,6 +314,14 @@ void WorkerController::handleReply(const boost::json::object& message) {
             fThumbnailAwaitAck = false;
             fThumbnailAskedPayload.clear();
         }
+        if (pending.selectionRequest != 0) {
+            // Task 6.9a's refusal is the same shape: an off-air prepare the
+            // worker would not schedule was never MADE, so the dedupe that
+            // remembers the asked payload must forget it — otherwise
+            // re-selecting this very slide would silently do nothing, and
+            // the canvas would wait forever on a frame nobody is coming.
+            fSelectionAskedJson.clear();
+        }
         const boost::json::object& reported = error->value().as_object();
         const auto text = reported.find("message");
         setStatus(QStringLiteral("worker error (%1): %2")

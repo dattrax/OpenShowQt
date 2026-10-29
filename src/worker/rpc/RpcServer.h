@@ -88,6 +88,31 @@ private:
     // the socket's path.
     void collectNotifications(std::vector<QueuedFrame>* outbound);
 
+    // Deferred replies (task 6.9a, review R10): a scene.prepare whose file
+    // work went to the prepare executor is answered from the executor
+    // thread, and this thread is the only one holding the socket. The
+    // executor pushes finished replies here; the serve loop moves them
+    // into the outbound queue as request answers (never coalesced, never
+    // dropped). A push writes one byte into the self-pipe below so the
+    // serve loop stops waiting on its own — a completion travels within
+    // milliseconds of readiness, not at the mercy of the poll tick. That
+    // is not politeness: the budget the preview draws arm themselves is
+    // timed in seconds, and a 50 ms hold of the frontend's NEXT command
+    // was enough to move a live selection ask behind one of those
+    // deferrals (6.16a's supersede scenario proved it). They may still
+    // pass a later request's reply on the wire — ids correlate, ordering
+    // was never promised (task 6.3a).
+    std::mutex fDeferredMutex;
+    std::vector<boost::json::value> fDeferredFrames;
+    void collectDeferred(std::vector<QueuedFrame>* outbound);
+
+    // The self-wake for the deferred queue: [0] rides the serve loop's
+    // poll beside the connection, [1] is what a completion writes. Both
+    // nonblocking and close-on-exec; both are closed under fDeferredMutex
+    // by stop(), which is what lets a late executor completion write an
+    // already-retired number harmlessly rather than into a recycled fd.
+    int fWakeFds[2] = {-1, -1};
+
     OutputSession& fSession;
     Options fOptions;
     int fListenFd = -1;

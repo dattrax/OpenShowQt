@@ -211,6 +211,10 @@ public:
         std::size_t entries = 0;        // cached paths, failures included
         std::size_t pins = 0;           // live pin references
         std::size_t evictions = 0;      // images forgotten to stay in budget
+        std::size_t preloadHits = 0;    // lifetime refreshFor calls that found
+                                        // a decoded success already cached —
+                                        // the proof a re-prepare skipped the
+                                        // disk (task 6.9a's live check)
         std::size_t budget = 0;         // what evictLocked is holding the line at
         std::size_t backdrops = 0;      // blur backdrops held (6.17c2)
         std::size_t backdropComputations = 0;  // lifetime builds: ONE per
@@ -327,6 +331,7 @@ private:
     std::uint64_t fClock = 0;
     std::size_t fPins = 0;
     std::size_t fEvictions = 0;
+    std::size_t fPreloadHits = 0;  // refreshFor early returns (6.9a evidence)
     std::size_t fBackdropComputations = 0;  // 6.17c2's once-per-image pin
 };
 

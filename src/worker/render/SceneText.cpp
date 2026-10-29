@@ -779,6 +779,10 @@ sk_sp<SkImage> SceneImageCache::refreshFor(const std::string& path, std::string*
         std::lock_guard<std::mutex> lock(fMutex);
         const auto existing = fEntries.find(path);
         if (existing != fEntries.end() && existing->second.image != nullptr) {
+            // The hit, counted (task 6.9a): a re-prepare that lands here
+            // proved the still was already decoded, which no ack latency
+            // on the wire can say — the counter is the worker's own word.
+            ++fPreloadHits;
             if (error) {
                 error->clear();
             }
@@ -875,6 +879,7 @@ SceneImageCache::Stats SceneImageCache::stats() const {
     out.entries = fEntries.size();
     out.pins = fPins;
     out.evictions = fEvictions;
+    out.preloadHits = fPreloadHits;
     out.budget = fBudget;
     for (const auto& [path, entry] : fEntries) {
         if (entry.backdrop != nullptr) {

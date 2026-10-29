@@ -73,10 +73,55 @@ add_executable(scene_store_tests scene_store_tests.cpp)
 target_link_libraries(scene_store_tests PRIVATE openshow::worker_session)
 add_test(NAME scene_store_tests COMMAND scene_store_tests)
 
-# The worker runs as its own process and must never gain a Qt dependency.
+# Task 6.18a2: the preview stream's owner, pinned headless — the geometry
+# limits, both generation gates (modulo 2^32), the pin-at-accept against the
+# real store, the thumbnail caps/coalescing/lookahead against real PNGs, the
+# shm lifecycle, and the run loop's sleep answer. No pixels and no Vulkan:
+# the live preview fixtures own the GPU paths; this owns what the producer
+# decides before it draws. Skips (77) without a usable typeface, which is
+# what the list's companion renderer needs.
+add_executable(preview_producer_tests preview_producer_tests.cpp)
+target_link_libraries(preview_producer_tests PRIVATE
+  openshow::worker_preview_producer
+  openshow::worker_session
+)
+add_test(NAME preview_producer_tests COMMAND preview_producer_tests)
+set_tests_properties(preview_producer_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+# The audience-side media's owner (task 6.18b, review R6/R10/R15): the
+# transport's rules pinned against the real object — the still-fault
+# reporting and its dedup, the probe-before-accept refusals, the commandability
+# gates, the scheduled-op grammar and the bounded seam slots with their
+# deadline gate. No pixels and no decode: the live background_media fixtures
+# own the real bring-up; this owns everything the transport decides without
+# one, so no display and no fonts are needed.
+add_executable(background_transport_tests background_transport_tests.cpp)
+target_link_libraries(background_transport_tests PRIVATE
+  openshow::worker_session_transport
+)
+add_test(NAME background_transport_tests COMMAND background_transport_tests)
+set_tests_properties(background_transport_tests PROPERTIES TIMEOUT 120)
+
+# Task 6.9a: the prepare executor's lifecycle contract — nonblocking
+# submission, exactly-once completion, explicit capacity refusal, waiting-job
+# cancellation, and stop() retiring everything — pinned with injectable work.
+add_executable(prepare_executor_tests prepare_executor_tests.cpp)
+target_link_libraries(prepare_executor_tests PRIVATE
+  openshow::worker_session_prepare
+)
+add_test(NAME prepare_executor_tests COMMAND prepare_executor_tests)
+set_tests_properties(prepare_executor_tests PROPERTIES TIMEOUT 120)
+
+# The worker runs as its own process and must never gain a Qt dependency —
+# nor may the dev harness (task 6.18b2), which links the same modules.
 add_test(NAME worker_is_qt_free
   COMMAND ${CMAKE_COMMAND}
           -DTARGET=$<TARGET_FILE:openshow-worker>
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoQt.cmake
+)
+add_test(NAME worker_dev_is_qt_free
+  COMMAND ${CMAKE_COMMAND}
+          -DTARGET=$<TARGET_FILE:openshow-worker-dev>
           -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoQt.cmake
 )
 
@@ -227,22 +272,23 @@ endif()
 # Runs the Qt-free worker with no display and no audio session.
 add_test(NAME worker_check_deps COMMAND openshow-worker --check-deps)
 
-# The task 1.1 scene composed on the CPU with no display, window or Vulkan.
+# The task 1.1 scene composed on the CPU with no display, window or Vulkan
+# (task 6.18b2: the dev harness owns these drivers now).
 add_test(NAME render_scene_snapshot
-  COMMAND openshow-worker --snapshot ${CMAKE_CURRENT_BINARY_DIR}/test-scene.png
+  COMMAND openshow-worker-dev --snapshot ${CMAKE_CURRENT_BINARY_DIR}/test-scene.png
 )
 
 # The output layer model (PLAN.md): disabled layers dispatch nothing to Skia
 # and enabled ones paint only inside their region. CPU only.
 add_test(NAME render_layer_composition
-  COMMAND openshow-worker --check-layers
+  COMMAND openshow-worker-dev --check-layers
 )
 
 # Task 3.2 transitions: the fade's media (800ms) and text (500ms) tracks,
 # completion, cut, and cut-cancels-fade, timed from drawn frames through
 # the production layers. CPU only.
 add_test(NAME render_scene_transition
-  COMMAND openshow-worker --check-transition
+  COMMAND openshow-worker-dev --check-transition
 )
 
 # Task 6.1a (review R1): the production compositor profile — uniform black
@@ -250,7 +296,7 @@ add_test(NAME render_scene_transition
 # to the proven demo path, and the demo picture intact when asked for.
 # CPU only.
 add_test(NAME render_production_compositor
-  COMMAND openshow-worker --check-production
+  COMMAND openshow-worker-dev --check-production
 )
 
 # Task 3.1 scene typography: production layout (wrap, centring, fallback,
@@ -353,7 +399,7 @@ set_tests_properties(background_media_tests PROPERTIES LABELS display TIMEOUT 42
 # presents anything, burns more than 5% CPU over the window, or ignores a
 # layer toggle. Needs a display like the rpc scenario.
 add_test(NAME render_idle_check
-  COMMAND openshow-worker --render-test --idle-check)
+  COMMAND openshow-worker-dev --render-test --idle-check)
 set_tests_properties(render_idle_check PROPERTIES LABELS display TIMEOUT 60)
 
 # The M3 checkpoint demo caught the event-driven loop sleeping through a

@@ -1,7 +1,8 @@
 # Architecture and implementation audit
 
-Audited 2026-10-29 against `1b54bdb` plus the SceneStore sharing change described
-below. This is a source audit of completed tasks, with current test results in
+Audited 2026-10-29 against `1b54bdb` plus the SceneStore sharing change and the
+6.18a2 `PreviewProducer` extraction described below. This is a source audit of
+completed tasks, with current test results in
 [PROGRESS.md](../PROGRESS.md). [PLAN.md](../PLAN.md) defines the intended design;
 the [M6 review](M6-code-review.md) records the original findings, whose source
 line numbers and descriptions are historical.
@@ -18,30 +19,37 @@ flowchart LR
     WC <-->|JSON-RPC control and scene metadata| RPC[Worker RpcServer]
     RPC --> OS[OutputSession]
     OS --> SS[SceneStore]
+    OS --> PP[PreviewProducer]
+    OS --> BT[BackgroundTransport]
     OS --> SR[SceneRenderer]
     OS --> AV[PlaybackPipeline and AvPlayer]
     OS --> GPU[GLFW / Vulkan / swapchain]
     SR --> GPU
-    OS --> SHM[Shared-memory composed previews]
+    PP --> SHM[Shared-memory composed previews]
     SHM --> WC
 ```
 
 These boxes are responsibilities, not all separate classes. Preview production
-and background transport still live inside OutputSession; RPC, preview consumption
-and supervision still share WorkerController. Their extraction is pending.
+graduated into `PreviewProducer` (task 6.18a2) and the background media into
+`BackgroundTransport` (task 6.18b1), both beside `SceneStore`, and task 6.18b2
+moved the bench/diagnostic drivers into their own `openshow-worker-dev`
+executable. RPC, preview consumption and supervision still share
+WorkerController; their extraction is pending.
 
 | Boundary | Implementation and evidence | Assessment |
 |---|---|---|
 | Editable documents and history | `src/domain/{documents,history,storage}.cpp`; Qt adapters in `src/ui/DocumentController.cpp`; `domain_tests`, `document_controller_tests` | Matches. The frontend owns editable state and package writes; history has one observed Documents and bounded snapshots. |
 | Immutable render scenes | `src/scene/{scene,demo}.cpp`, `scene_tests` | Matches. Compilation resolves styles, geometry, item order and asset paths; the worker validates scene JSON. The scene library currently depends on domain types/compiler code, but neither uses Qt or GPU APIs. |
 | Process separation | `src/worker/CMakeLists.txt`, `worker_is_qt_free`, headless preset | Matches. GLFW/Vulkan/Skia/FFmpeg/PipeWire stay in the worker. Qt Quick, process supervision and document adapters stay in the frontend. |
-| RPC | `src/protocol`, `src/worker/rpc/{RpcServer.cpp,OutboundQueue.h}`, `src/ui/WorkerController.cpp`; protocol/limits/transport/controller tests | Matches the bounded metadata transport. Worker socket writes are nonblocking; preparation inside dispatch can still block the RPC loop. |
+| RPC | `src/protocol`, `src/worker/rpc/{RpcServer.cpp,OutboundQueue.h}`, `src/ui/WorkerController.cpp`; protocol/limits/transport/controller tests; prepare-time file work in `session/PrepareExecutor.{h,cpp}` | Matches the bounded metadata transport. Worker socket writes are nonblocking; since 6.9a dispatch schedules still decodes and media probes onto the bounded prepare executor and answers each request from its completion (self-piped wake, ids correlate), so a cold file delays no other command. |
+| Media transport | `src/worker/session/BackgroundTransport.{h,cpp}` over `playback/{PlaybackPipeline,AvPlayer}`; `background_transport_tests` plus the live `background_media_tests` | Matches since **6.18b1** (2026-10-29). The transport owns the background pipeline and its feeder, the standalone track and its swap, the video seam's two bounded slots and their leases, the newest-wins intent slots, the typed faults and the media status mirror; R6's quiesce boundary and the render-thread-owns-the-transport rule are stated in its header. The session keeps the loop's wake gate and the frame's present/lease calls, delegates the RPC verbs, and reads the mirror in `status()`. |
+
 | Requested versus presented state | `src/worker/session/SceneStore.{h,cpp}`, `scene_store_tests`, `output_status_tests` | Matches. Decide captures commands together; landed state is distinct from published state. OutputSession reports the store's published state after successful presentation. |
 | Composition and text | `src/worker/render/{SceneRenderer,SceneText,Layer}.{h,cpp}`; scene/frame/Unicode/pixel tests | Matches the shared worker text renderer, public Skia/ICU integration and direct audience composition. Layer-control semantics have the discrepancy below. |
 | Video and audio ownership | `src/worker/{media,playback}`, `src/worker/render/YuvGpu.cpp`; GPU/decode/queue/control/mix/sync tests | Matches bounded queues, displayed-image leases, generation checks and independent audio controls. Transport lifecycle still blocks the render thread during changes. |
-| Previews | `src/worker/preview/PreviewStream.cpp`, OutputSession preview methods, WorkerController consumer; ownership/selection/budget tests | Matches shared memory and exact stream/sequence release. Output and audience mirror use the same captured frame; edit selection and thumbnails deliberately render separate scenes. Readback is synchronous. |
+| Previews | `src/worker/session/PreviewProducer.{h,cpp}` over `src/worker/preview/PreviewStream.cpp`; WorkerController consumer; `preview_producer_tests` plus ownership/selection/budget tests | Matches. The producer owns the stream lifecycle, target arbitration, generation gates, thumbnail queue and budget policy; the session hands in frames and wakes the loop. Shared memory with exact stream/sequence release; output and audience mirror use the same captured frame; edit selection and thumbnails deliberately render separate scenes. Readback is synchronous. |
 | Persistence | `src/domain/storage.cpp`, `src/ui/AutosaveScheduler.cpp`; domain/controller tests | Matches durable staged package writes, asset adoption and coalesced background autosave. Explicit save/load and decision waits remain synchronous. |
-| Demo isolation and dependencies | `render/TestScene.cpp`, `cmake/OpenShowSkia.cmake`, `scripts/build-skia.sh`; production/pixel/public-API guards | Production starts black and uses SceneRenderer without a demo builder. Demo/diagnostic drivers still link into the worker executable. Skia is a pinned submodule with public application includes and compatible ICU. |
+| Demo isolation and dependencies | `render/TestScene.cpp`, `cmake/OpenShowSkia.cmake`, `scripts/build-skia.sh`; production/pixel/public-API guards | Production starts black and uses SceneRenderer without a demo builder. Since 6.18b2 the demo scene and the diagnostic drivers compile only into `openshow-worker-dev`; the product binary cannot reach them. Skia is a pinned submodule with public application includes and compatible ICU. |
 
 ## Open differences from the plan
 
@@ -50,14 +58,13 @@ proves and must be closed or explicitly accepted before M6/M7 acceptance.
 
 | Difference observed in source | Consequence | Follow-up |
 |---|---|---|
-| `RpcServer::handle()` calls `OutputSession::prepareScene()` synchronously; `preloadScene()` decodes stills and probes media on that thread. | Slow storage can delay status, clear, releases and shutdown. Bounded socket writes alone do not make dispatch responsive. | **6.9a**, still TODO despite later completed tasks. |
 | Scene apply starts/stops transports on the render loop; `SceneItemsLayer::layoutFor()` shapes on cache miss during draw. `drawSceneBackground()` calls `SceneImageCache::backdropFor()`, which builds a missing blur backdrop synchronously. | Cold go, audio pre-roll, teardown and the first blur draw can miss frame deadlines. The historical statement that the first blur build is outside the frame loop is incorrect; only the cache mutex is released. | **6.9b** must include text and blur prewarming alongside media readiness. |
 | Production `ImageLayer::draw()` returns when a scene is active. `SceneItemsLayer` draws both text and foreground images in authored order under `LayerId::kWords`. | The `images` toggle does not hide authored images; `words` hides both. Splitting the item stack by type would also change overlap order. | **6.20** must resolve mixed-item ordering versus independent image/word controls with explicit behavior and regression coverage. This audit preserves current pixels. |
 | `DocumentController::save()` waits for autosave quiescence and calls `saveServiceAndAdopt()` inline; load and quit also drain synchronously. | 6.14b proves background **autosave**, not that all persistence is off the UI thread. | **6.19b** save coordination; **6.20** records remaining responsiveness limits. |
-| Preview rendering/readback runs on the render thread after output; its budget defers future attempts after an overrun. | It bounds average preview work and drops owned slots, but cannot prevent one expensive readback delaying the next audience frame. | **6.18a2** preserves the policy; **6.9b/7.2/7.4** measure worst-frame impact. |
+| Preview rendering/readback runs on the render thread after output; its budget defers future attempts after an overrun (now inside `PreviewProducer::fillPreviewSlot`). | It bounds average preview work and drops owned slots, but cannot prevent one expensive readback delaying the next audience frame. | Extraction done (**6.18a2**, 2026-10-29) without changing the policy; **6.9b/7.2/7.4** measure worst-frame impact. |
 | SceneImageCache retains pinned resources even above its 192 MiB eviction budget. | The budget bounds evictable decoded data, not total process/GPU memory; pinned excess is reported. | **7.2/7.4** resource accounting and service soak. Do not describe it as a hard total-memory cap. |
 | Missing foreground image errors are logged in `preloadScene()`; the acknowledged media error lane remains background/transport focused. | A missing foreground box can disappear without an operator-facing per-item error. | **6.20** failure-reporting closure (R18); keep a focused task if further implementation is needed. |
-| PreviewProducer files/tests exist untracked, but neither worker CMake nor OutputSession uses that class. Other extraction targets remain combined. | The planned responsibility boundaries are partly implemented. File presence does not satisfy an extraction. | **6.18a2**, **6.18b**, **6.19a/b**. |
+| The 6.18a2 extraction landed 2026-10-29: `PreviewProducer` is built (`openshow-worker-preview-producer`), used by OutputSession through a thin delegating seam, and pinned headless by `preview_producer_tests`. The 6.18b1 extraction landed the same day: `BackgroundTransport` (`openshow-worker-session-transport`) owns the background media and its status mirror. The 6.18b2 split landed the same day: the bench/diagnostic drivers and `render/TestScene.cpp` moved out of worker main into the `openshow-worker-dev` executable, leaving the product binary socket-mode only. What remains combined is the frontend/worker controller splits. | The remaining planned responsibility boundaries are unfinished. | **6.19a/b**. |
 | Stable display identity, destination-removal disabling and complete restart/device recovery are not complete. | Historical display tests and successful launch/shutdown do not establish M7 failure recovery. | **7.1a–c**, physical Wayland/X11 and projector acceptance. |
 
 ## Contracts to retain during optimization
@@ -76,9 +83,21 @@ proves and must be closed or explicitly accepted before M6/M7 acceptance.
   outbound queue and 64 frontend in-flight requests. Original assets, decoded
   media and audio buffers never travel in RPC. Composed preview pixels use
   shared memory; ready/release messages carry metadata.
+- Prepare-time file work (task 6.9a) runs on `PrepareExecutor`: one worker
+  thread, at most `kMaxQueued` accepted jobs including the running one,
+  cooperative cancellation checked between images, completion fired exactly
+  once per accepted job, and `stop()` retiring everything before anything
+  the work touches is torn down. The store revision is synchronous truth;
+  the `scene.prepare` ack is deferred to the completion and may pass later
+  replies — ids correlate (6.3a). The session takes the executor's mutex
+  only leaf-side (`queued()`); the executor takes none of the session's.
 - The live preview transport uses three slots, normally 640×360 at up to
   15 fps when content changes; never overwrite an unreleased slot. Selected
   scenes and thumbnail batches have their own bounded requests and identity.
+  `PreviewProducer` owns that stream and its targets (task 6.18a2): frames in,
+  slots out — it composes, captures and credits no frame of its own. The
+  session takes the producer's mutex after its own, the producer never wakes
+  GLFW, and its `pin`/wake calls belong to the caller.
 - Native audio decoding feeds bounded rings; the mixer feeds one PipeWire
   stream per AvPlayer. Background-video and standalone transports have
   independent lifetimes, so production can own two AvPlayers/streams. This

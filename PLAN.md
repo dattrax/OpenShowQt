@@ -29,7 +29,9 @@ estimate is historical; re-estimate remaining work before productization.
   SkParagraph with real ICU text support, FFmpeg decode/conversion/resampling.
 - **Scheduling:** decoding, RPC and rendering have separate execution contexts.
   Files, decode, IPC and preview consumers must not block presentation or audio
-  callbacks. This is still a target: **6.9a/b remain TODO**.
+  callbacks. Prepare-time file work left the RPC loop for the bounded prepare
+  executor (6.9a); transport start/pre-roll/retirement waits remain a target:
+  **6.9b is TODO**.
 - **RPC:** length-prefixed JSON-RPC 2.0 on Unix-domain sockets; Qt local sockets
   in the frontend and a raw socket/poll loop in the worker. Version/capability
   negotiation, request IDs, structured errors and acknowledged revisions. Traffic
@@ -98,9 +100,12 @@ remain **7.3**. Do not use old machine paths as current dependency configuration
 ## Task, pause and Git rules
 
 1. Work in milestone/dependency order. Preserve recorded DONE checkpoints;
-   later work does not waive earlier open tasks. **6.9a/b are outstanding**;
-   the previously recorded next extraction is **6.18a2** and already has untracked
-   preparation. Finish/check that boundary without claiming scheduling completion.
+   later work does not waive earlier open tasks. **6.9b is outstanding**;
+   the recorded extractions 6.18a1 and 6.18a2 are DONE (the earlier "untracked
+   preparation" note is closed out: 6.18a2 was implemented, wired and tested
+   2026-10-29); 6.18b is split in the ledger (6.18b1 transport extraction and
+   6.18b2 the dev-driver split, both DONE 2026-10-29). Finish/check boundaries without
+   claiming scheduling completion.
 2. Aim for half a day to two days per leaf; split larger tasks before starting.
    A parent is DONE only when every child passes its acceptance.
 3. Use TODO, IN PROGRESS, BLOCKED and DONE. Separate authored work, passing tests
@@ -218,7 +223,7 @@ Checkpoint: `M4: complete core operator workspace and editor`.
 |---|---|---|---|
 | 5.1 | DONE | Production bounded decode/presentation pipeline | `playback_queue_tests` |
 | 5.1a | DONE | PlaybackPipeline owns decode, upload and paced submission | CPU and GPU paths share the production pipeline |
-| 5.1b | DONE | AV benchmark drives PlaybackPipeline | Historical live preview-enabled benchmark; diagnostics extraction remains 6.18b |
+| 5.1b | DONE | AV benchmark drives PlaybackPipeline | Historical live preview-enabled benchmark; diagnostics extraction landed with 6.18b2 |
 | 5.1c | DONE | Queue-bound and parked-stop regression fixtures | `playback_queue_tests` |
 | 5.2 | DONE | Production video playback controls | `playback_control_tests`; seek mapping corrected in 6.7d |
 | 5.2a | DONE | Decode-thread seek flush and pacing-generation drain | `playback_control_tests` |
@@ -233,10 +238,10 @@ Checkpoint: `M4: complete core operator workspace and editor`.
 | 5.4b | DONE | Audio seek flush, rebase and acknowledgement seam | `av_sync_tests`; failures/generation pairing refined in 6.7d |
 | 5.4c | DONE | AvPlayer pre-roll, lifecycle and clock fallback | `av_sync_tests`; restartability refined in 6.7a/b |
 | 5.4d | DONE | Clock, feeder and complete transport regressions | `av_sync_tests`; thirty-minute hardware gate remains M7 |
-| 5.5 | DONE | Prepared assets, continuous video backgrounds and failures | `background_media_tests`; scheduling limits remain 6.9a/b |
+| 5.5 | DONE | Prepared assets, continuous video backgrounds and failures | `background_media_tests`; transport-side scheduling limits remain 6.9b |
 | 5.5a | DONE | Video background identity in compiled scenes | `scene_tests` |
 | 5.5b | DONE | Production background transport and lyric continuity | `background_media_tests` |
-| 5.5c | DONE | Prepare-time still decode and video probe | `background_media_tests`; currently synchronous on RPC thread (6.9a) |
+| 5.5c | DONE | Prepare-time still decode and video probe | `background_media_tests`; since 6.9a off the RPC thread on the prepare executor, ack deferred to readiness |
 | 5.5d | DONE | Sticky acknowledged media errors and notifications | `background_media_tests`, `protocol_tests` |
 | 5.5e | DONE | Live continuity, media-swap and preload acceptance | Historical p95 18.7 ms; fresh target-machine gates remain M7 |
 
@@ -268,7 +273,7 @@ references in historical logs/source mean 7.1–7.4. M6 remains incomplete.
 | 6.7d | DONE | Paired seek generations, failure reports and shared deadlines | `playback_control_tests`, `av_sync_tests`, `background_media_tests`; R19 |
 | 6.8a | DONE | Encoded-size, scene/reference and JSON-RPC envelope limits | `protocol_tests`, `scene_tests`, `worker_rpc_limits`; R11 |
 | 6.8b | DONE | Bounded nonblocking RPC writers and stall handling | `outbound_queue_tests`, `worker_rpc_transport`, `worker_controller_tests`; R11 |
-| 6.9a | TODO | Move file decode/probe preparation off the single RPC loop into a bounded cancellable executor | Slow prepare does not delay status/clear/releases/shutdown; readiness/error/cancellation are explicit; disconnect/superseded work retires without growth. R10 |
+| 6.9a | DONE | Move file decode/probe preparation off the single RPC loop into a bounded cancellable executor | `prepare_executor_tests` (exactly-once/capacity/cancel/stop contract), `background_media_tests` (live: status/displays/release/shutdown-class probes answered during four cold 4K prepares, `scene.preparing` evidence, `preloadHits` cache proof); `PrepareExecutor` joins `SceneStore`/`PreviewProducer`/`BackgroundTransport` as session-owned leaves. R10 |
 | 6.9b | TODO | Prepare bounded media/text/blur resources before go; move transport start/pre-roll/retirement waits off the render loop, preserving Ganesh ownership | Slow video open/audio pre-roll/old teardown cannot freeze active output; ready still and video changes meet p95 100 ms measured at the frame boundary; superseded primed transports are bounded. R10 |
 | 6.10 | DONE | Budgeted image cache, input limits, pins and retry | `scene_image_cache_tests`, `background_media_tests`; pinned excess reported, not evicted; R12 |
 | 6.11a | DONE | One immutable audience frame; previews cannot advance fades | `scene_frame_tests`, `preview_budget_tests`; synchronous readback remains; R13 |
@@ -290,8 +295,9 @@ references in historical logs/source mean 7.1–7.4. M6 remains incomplete.
 | 6.17c2 | DONE | Cached blur-fit still backdrop; refuse blur on video | `scene_image_cache_tests`, `scene_render_tests`; cold build still in draw path; R17 |
 | 6.17c3 | DONE | Vertical background gradient through model/storage/render/editor | Domain/scene/controller/pixel regressions; gamma-encoded sRGB interpolation; R17 |
 | 6.18a1 | DONE | SceneStore owns prepared scenes and desired/landed/published state | `scene_store_tests`, `output_status_tests`; immutable sharing optimized 2026-10-29; R1/R4/R5/R10/R13 |
-| 6.18a2 | TODO | Extract `PreviewProducer` from `OutputSession` (second half of 6.18a) | The preview stream's lifecycle, the thumbnail queue/decode/eviction policy, the selection state and the audience-budget policy get one owner with its own thread rules, next to `SceneStore`; the session keeps only the handoff (frame in, slot out). Regression gates unchanged, no second owner of a frame's revision. R5/R11/R13 |
-| 6.18b | TODO | Extract background transport lifecycle from OutputSession and move bench/diagnostic drivers out of worker main | Narrow renderer/transport handoff with bounded prepared resources; session no longer owns transport internals; production and bench exercise the same runtime. R6/R10/R15 |
+| 6.18a2 | DONE | Extract `PreviewProducer` from `OutputSession` (second half of 6.18a) | Stream lifecycle, selection state, thumbnail queue/decode policy and the audience-budget policy now have one owner beside `SceneStore`; the session keeps the handoff (frames in, slots out) and the wake. `preview_producer_tests` (headless) plus unchanged live gates `preview_stream/ownership/selection/budget_tests`, `worker_rpc_lifecycle`, `production_output_tests`; 29/29 headless and 50/50 desktop 2026-10-29. R5/R11/R13 |
+| 6.18b1 | DONE | Extract the background transport from `OutputSession` into `BackgroundTransport` (first half of 6.18b) | Background pipeline + audio feeder, standalone track and its swap, the video seam's bounded slots and their leases, the intent slots, the typed faults and the whole media status mirror now have one owner (`session/BackgroundTransport.h` states the R6 quiesce rule and the threading); the session keeps the loop's handoffs (`submissionWake`, `takeDueVideo`, `applyBackground` in, started-out) and the delegating RPC/bench verbs, `status()` reads the transport's mirror, and production and bench drive the same object. `background_transport_tests` (headless) plus unchanged live gates `background_media_tests`, `production_output_tests`, `worker_rpc_lifecycle`; 30/30 headless and 50/50 desktop 2026-10-29. R6/R10/R15 |
+| 6.18b2 | DONE | Move the bench/diagnostic drivers out of worker main into a dedicated dev target | `openshow-worker-dev` (`dev/main.cpp` + `render/TestScene.cpp`, compiled with the same `OutputSession.cpp`/output sources as the product binary) now owns `--render-test`/`--idle-check`, `--snapshot`/`--scene-file`, `--check-layers`/`--check-transition`/`--check-production`, `--pw-check`, `--av-bench` and `--list-monitors`; the product `openshow-worker` is socket mode only (`--socket` plus `--monitor`/`--seconds`/`--vulkan-validation` and `--version`/`--check-deps`, the latter one shared body in `DependencyReport.h`), and the demo scene and pixel checks are no longer reachable from it. The five CLI-mode gates (`render_scene_snapshot`, `render_layer_composition`, `render_scene_transition`, `render_production_compositor`, `render_idle_check`) run the dev binary; `worker_check_deps` still proves the product binary; `worker_dev_is_qt_free` guards the new one beside `worker_is_qt_free`. 31/31 headless and 52/52 desktop 2026-10-29. R10 |
 | 6.19a | TODO | Split frontend supervisor, RpcClient, PreviewConsumer and acknowledged output model behind the QML facade; split worker connection and method/status codecs | Extract one component per change; preserve request/ownership regressions; shared typed operation/codec definitions prevent UI/server drift. R3/R5/R11 |
 | 6.19b | TODO | Split DocumentController session/save/list adapters and Main.qml pages/inspectors/output/shortcut components | One document/history owner; explicit component properties/signals; controller, keyboard and UI capture checks retain behaviour. Avoid moving logic between files without a responsibility boundary |
 | 6.20 | TODO | Close the review against real production boundaries and reconcile M0–M5 completion claims | Every R1–R19 has passing regression evidence or an explicit M7 gate; public-Skia check, bounded RPC traffic audit, desktop/headless gates and a production author→preview→go→clear→restore→media-swap proof; reconcile layer controls, one-vs-two audio streams and foreground error reporting; record skips honestly |

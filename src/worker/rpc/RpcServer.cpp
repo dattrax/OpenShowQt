@@ -282,6 +282,7 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                                              {"transitioning",
                                                               status.scene.transitioning},
                                                              {"prepared", status.scene.prepared},
+                                                             {"preparing", status.scene.preparing},
                                                              // The decoded-still cache (task 6.10,
                                                              // review R12): what the worker holds
                                                              // in CPU picture memory, what of it
@@ -295,7 +296,15 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                                                    status.scene.images.entries},
                                                                   {"pins", status.scene.images.pins},
                                                                   {"evictions",
-                                                                   status.scene.images.evictions}}}}},
+                                                                   status.scene.images.evictions},
+                                                                  // preloadHits (task 6.9a): the
+                                                                  // worker's own word that a
+                                                                  // re-prepare found the still
+                                                                  // already decoded, which no ack
+                                                                  // latency on the wire can say.
+                                                                  {"preloadHits",
+                                                                   status.scene.images
+                                                                       .preloadHits}}}}},
                                // Background media (task 5.5d): the video
                                // transport's live state; error is sticky
                                // until a successful open replaces it.
@@ -400,6 +409,15 @@ bool RpcServer::start(std::string* error) {
         }
         return false;
     }
+    // The deferred-reply self-wake (task 6.9a). Nonblocking so a full
+    // pipe is a no-op rather than a parked executor thread, and
+    // close-on-exec so a forked helper never inherits the socket's wake.
+    if (::pipe2(fWakeFds, O_CLOEXEC | O_NONBLOCK) != 0) {
+        if (error) {
+            *error = "could not create the deferred-reply wake pipe";
+        }
+        return false;
+    }
     fRunning = true;
     fThread = std::thread(&RpcServer::run, this);
     return true;
@@ -424,6 +442,20 @@ void RpcServer::stop() {
     }
     if (fThread.joinable()) {
         fThread.join();
+    }
+    // The wake pipe goes last and under the deferred lock: an executor
+    // completion that lands after the join writes whatever number the
+    // members now hold — a live fd nobody reads (harmless, the frames go
+    // nowhere) or -1 (an EBADF nobody sees) — but never a recycled fd
+    // number, which is the race the lock actually buys (task 6.9a).
+    {
+        std::lock_guard<std::mutex> lock(fDeferredMutex);
+        for (int& fd : fWakeFds) {
+            if (fd >= 0) {
+                close(fd);
+                fd = -1;
+            }
+        }
     }
     // The thread is gone: it either closed the connection itself, under the
     // mutex and before clearing the member, or never accepted one. There is
@@ -501,9 +533,16 @@ void RpcServer::serve(int connectionFd) {
     auto lastProgress = std::chrono::steady_clock::now();
 
     while (fRunning) {
-        pollfd pending{connectionFd, POLLIN | POLLRDHUP, 0};
+        // The connection and the self-wake share the poll (task 6.9a): a
+        // deferred reply arriving from the executor thread must not sit in
+        // the deferred bag until the tick expires, because the tick is 50 ms
+        // of the FRONTEND'S clock — see fWakeFds.
+        pollfd watched[2] = {
+            pollfd{connectionFd, POLLIN | POLLRDHUP, 0},
+            pollfd{fWakeFds[0], POLLIN, 0},
+        };
         if (!outbound.empty()) {
-            pending.events |= POLLOUT;
+            watched[0].events |= POLLOUT;
         }
         // The tick stays short whatever the queue is doing: it bounds how long
         // stop() and a notification can wait, and it is what makes the write
@@ -518,12 +557,20 @@ void RpcServer::serve(int connectionFd) {
                 std::max<int64_t>(0, std::min<int64_t>(kPollTimeoutMs,
                                                        (kWriteDeadline - since).count())));
         }
-        const int ready = ::poll(&pending, 1, timeoutMs);
+        const int ready = ::poll(watched, 2, timeoutMs);
         if (ready < 0) {
             if (errno == EINTR) {
                 continue;
             }
             return;
+        }
+        if (watched[1].revents & POLLIN) {
+            // Empty the self-wake: it is level-triggered, and a byte left
+            // behind is a poll that never sleeps again. Whatever the byte
+            // was waking the loop for is collected below this iteration.
+            char drain[64];
+            while (::read(fWakeFds[0], drain, sizeof(drain)) > 0) {
+            }
         }
         // Try the queue on EVERY tick, not only when poll reports POLLOUT. That
         // is not a workaround for a kernel quirk: POLLOUT is the promise that the
@@ -555,6 +602,7 @@ void RpcServer::serve(int connectionFd) {
         fSession.pumpThumbnailDecode();
         std::vector<QueuedFrame> notifications;
         collectNotifications(&notifications);
+        collectDeferred(&notifications);  // prepare acks from the executor thread (6.9a)
         for (QueuedFrame& note : notifications) {
             outbound.push(note.key, std::move(note.bytes));
         }
@@ -578,8 +626,9 @@ void RpcServer::serve(int connectionFd) {
         if (ready == 0) {
             continue;
         }
-        if ((pending.revents & (POLLIN | POLLRDHUP | POLLHUP | POLLERR | POLLNVAL)) == 0) {
-            continue;  // nothing but POLLOUT, and that has been handled above
+        if ((watched[0].revents & (POLLIN | POLLRDHUP | POLLHUP | POLLERR | POLLNVAL)) == 0) {
+            continue;  // nothing but POLLOUT (and the wake, already drained),
+                       // and both have been handled above
         }
         const ssize_t count = ::recv(connectionFd, buffer, sizeof(buffer), 0);
         if (count == 0) {
@@ -814,16 +863,45 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
                 outbound);
             return true;
         }
+        // Task 6.9a (review R10): the store answer is immediate, the file
+        // work is not. The revision is registered now (the pins too); the
+        // ack itself travels when the executor finishes this prepare's
+        // decodes and probe, so the loop goes on answering status, clear,
+        // releases and shutdown while a cold file is being read. A refusal
+        // to schedule (closing, or kMaxQueued prepares already waiting) is
+        // answered here, explicitly.
         std::uint64_t revision = 0;
-        if (!fSession.prepareScene(scene, &revision)) {
+        const bool scheduled = fSession.prepareScene(
+            scene, static_cast<std::uint64_t>(id),
+            [this, id](std::uint64_t readyRevision, bool cancelled) {
+                boost::json::value frame =
+                    cancelled
+                        ? proto::makeError(id, proto::kInternalError,
+                                           "scene.prepare was retired before its file work ran")
+                        : proto::makeResult(id, boost::json::object{
+                                                    {"revision", readyRevision}});
+                std::lock_guard<std::mutex> lock(fDeferredMutex);
+                fDeferredFrames.push_back(std::move(frame));
+                // The byte that shortens the serve loop's poll. A full pipe
+                // means a wake is ALREADY pending, so EAGAIN is success too;
+                // the fd is read under this same lock by stop(), which is
+                // what keeps a late completion off a recycled descriptor.
+                if (fWakeFds[1] >= 0) {
+                    const char signal = 1;
+                    (void)::write(fWakeFds[1], &signal, 1);
+                }
+            },
+            &revision);
+        if (!scheduled) {
             proto::appendFrame(
-                proto::makeError(id, proto::kInternalError, "scene.prepare failed"),
+                proto::makeError(id, proto::kInternalError,
+                                 "scene.prepare could not schedule its file work"),
                 outbound);
             return true;
         }
-        // The store revision names this scene for scene.present.
-        proto::appendFrame(
-            proto::makeResult(id, boost::json::object{{"revision", revision}}), outbound);
+        // The ack answers from the executor thread (or, with no background
+        // media, fired inline before this returned): nothing more to write
+        // for this request on this thread.
     } else if (name == "scene.present") {
         if (!given.is_object()) {
             proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
@@ -1366,6 +1444,27 @@ void RpcServer::collectNotifications(std::vector<QueuedFrame>* outbound) {
                                                             {"message", mediaError.message}}),
                 &frame)) {
             outbound->push_back(QueuedFrame{"media.error", std::move(frame)});
+        }
+    }
+}
+
+void RpcServer::collectDeferred(std::vector<QueuedFrame>* outbound) {
+    // Task 6.9a: swaps the whole bag out under the lock so the executor
+    // thread's next completion never waits on this one, and pushes each
+    // frame with an EMPTY key: a deferred reply is a request answer, so
+    // the queue's newest-wins rules must never coalesce or drop it.
+    std::vector<boost::json::value> frames;
+    {
+        std::lock_guard<std::mutex> lock(fDeferredMutex);
+        if (fDeferredFrames.empty()) {
+            return;
+        }
+        frames.swap(fDeferredFrames);
+    }
+    for (boost::json::value& frame : frames) {
+        std::string bytes;
+        if (proto::appendFrame(std::move(frame), &bytes)) {
+            outbound->push_back(QueuedFrame{std::string(), std::move(bytes)});
         }
     }
 }

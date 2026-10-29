@@ -1,9 +1,21 @@
+# Task 6.18b2: the production worker and the dev harness drive the same
+# OutputSession, so both compile the same session/output sources. What is
+# production-only is main.cpp's socket mode and rpc/RpcServer.cpp; what is
+# dev-only is the driver main and the demo scene / pixel checks it calls
+# (render/TestScene.cpp). The product binary no longer carries them.
 add_executable(openshow-worker
   main.cpp
   output/OutputWindow.cpp
   output/Swapchain.cpp
-  render/TestScene.cpp
   rpc/RpcServer.cpp
+  session/OutputSession.cpp
+)
+
+add_executable(openshow-worker-dev
+  dev/main.cpp
+  output/OutputWindow.cpp
+  output/Swapchain.cpp
+  render/TestScene.cpp
   session/OutputSession.cpp
 )
 
@@ -35,6 +47,52 @@ add_library(openshow-worker-session STATIC
 add_library(openshow::worker_session ALIAS openshow-worker-session)
 target_link_libraries(openshow-worker-session PUBLIC openshow::scene)
 target_include_directories(openshow-worker-session PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# The audience-side media (task 6.18b, review R6/R10/R15): the background
+# transport (the same PlaybackPipeline + AvPlayer pair --av-bench drives), the
+# standalone track and its swap, the video seam's bounded slots and their
+# leases, the newest-wins intent slots and the whole media status mirror. A
+# library so those rules can be pinned headless against the real object rather
+# than only through a live worker; it travels with playback — and so with the
+# GPU-upload types — but not with a window or the compositor.
+add_library(openshow-worker-session-transport STATIC
+  session/BackgroundTransport.cpp
+)
+add_library(openshow::worker_session_transport ALIAS openshow-worker-session-transport)
+target_link_libraries(openshow-worker-session-transport PUBLIC
+  openshow::worker_playback
+  openshow::scene
+  PkgConfig::GLFW
+)
+target_include_directories(openshow-worker-session-transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# The prepare-time file work (task 6.9a, review R10): one bounded,
+# cancellable worker thread for the still decodes and media probes a
+# scene.prepare schedules, so the single RPC thread never parks inside a
+# cold decode. A library so the exactly-once/cancellation/capacity rules
+# can be pinned headless with injectable work, without a session or a disk.
+add_library(openshow-worker-session-prepare STATIC
+  session/PrepareExecutor.cpp
+)
+add_library(openshow::worker_session_prepare ALIAS openshow-worker-session-prepare)
+target_include_directories(openshow-worker-session-prepare PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# The preview stream's owner (task 6.18a2): the lifecycle of the shm segment,
+# the three targets' one-frame-per-pass arbitration, the selection and batch
+# generation gates, the audience's cost policy and the thumbnail queue with
+# its command-thread decoder. A library so those rules can be pinned headless
+# against the real object — it needs no window and no Vulkan, but it draws, so
+# unlike SceneStore it does travel with Skia and the compositor.
+add_library(openshow-worker-preview-producer STATIC
+  session/PreviewProducer.cpp
+)
+add_library(openshow::worker_preview_producer ALIAS openshow-worker-preview-producer)
+target_link_libraries(openshow-worker-preview-producer PUBLIC
+  openshow::worker_preview
+  openshow::worker_render
+  openshow::protocol
+)
+target_include_directories(openshow-worker-preview-producer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # The outbound queue (task 6.8b, review R11) is header-only, and its rules —
 # which frames may be replaced, which may be dropped, when the queue says no —
@@ -125,8 +183,9 @@ target_link_libraries(openshow-worker-playback PUBLIC
 )
 target_include_directories(openshow-worker-playback PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-# The worker must stay free of Qt. tests/CheckNoQt.cmake enforces this.
-target_link_libraries(openshow-worker PRIVATE
+# The worker must stay free of Qt. tests/CheckNoQt.cmake enforces this for
+# both binaries.
+set(OPENSHOW_WORKER_LIBS
   openshow::domain
   openshow::protocol
   openshow::scene
@@ -135,8 +194,11 @@ target_link_libraries(openshow-worker PRIVATE
   openshow::worker_media
   openshow::worker_playback
   openshow::worker_preview
+  openshow::worker_preview_producer
   openshow::worker_render
   openshow::worker_session
+  openshow::worker_session_prepare
+  openshow::worker_session_transport
   PkgConfig::GLFW
   PkgConfig::PIPEWIRE
   PkgConfig::FFMPEG
@@ -144,6 +206,11 @@ target_link_libraries(openshow-worker PRIVATE
   PkgConfig::HARFBUZZ
   vk-bootstrap::vk-bootstrap
 )
+target_link_libraries(openshow-worker PRIVATE ${OPENSHOW_WORKER_LIBS})
 target_include_directories(openshow-worker PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(openshow-worker-dev PRIVATE ${OPENSHOW_WORKER_LIBS})
+target_include_directories(openshow-worker-dev PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
 )

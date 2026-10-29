@@ -168,15 +168,19 @@ The resulting executables are:
 
 ```sh
 ./build/src/worker/openshow-worker --check-deps
+./build/src/worker/openshow-worker-dev --check-deps
 ./build/src/ui/openshow-ui
 ```
 
-The frontend starts the matching worker automatically. The desktop test suite
-includes output-window checks and needs a graphical session. For a brief
-standalone rendering check on monitor 0:
+The frontend starts the matching worker automatically. The desktop test
+suite includes output-window checks and needs a graphical session. The
+development harness `openshow-worker-dev` carries the standalone drivers
+(`--render-test`, `--snapshot`, `--check-*`, `--pw-check`, `--av-bench`,
+`--list-monitors`); the product `openshow-worker` only serves the frontend
+over `--socket`. For a brief standalone rendering check on monitor 0:
 
 ```sh
-./build/src/worker/openshow-worker --render-test --monitor 0 --seconds 5
+./build/src/worker/openshow-worker-dev --render-test --monitor 0 --seconds 5
 ```
 
 ### Headless: worker and shared libraries, without Qt
@@ -245,7 +249,7 @@ YUV), or device layouts fail explicitly. To permit a copying compatibility
 fallback during initial setup:
 
 ```sh
-build/src/worker/openshow-worker --av-bench /path/to/video.mp4 --allow-video-copy
+build/src/worker/openshow-worker-dev --av-bench /path/to/video.mp4 --allow-video-copy
 ```
 
 This reopens the file using VA-API downloads when available, or software

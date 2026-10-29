@@ -15,18 +15,25 @@
  * command cannot be expressed as a session operation, the seam grows
  * first (PLAN.md review rule).
  *
- * What the session does NOT own (task 6.18a): the scene truth. The prepared
- * scenes, the output revision, the desired mask/destination/scene, what the
- * current frame has staged and what the newest presented frame proved all
- * belong to SceneStore (session/SceneStore.h), whose header states the rules
- * and the thread contract. This object coordinates the loop with it: ask the
- * store what is owed and for a snapshot, draw exactly that, then tell the
- * store whether the panel took the frame. Two explicit thread rules make that
+ * What the session does NOT own (tasks 6.18a/6.18a2): the scene truth and
+ * the operator's picture. The prepared scenes, the output revision, the
+ * desired mask/destination/scene, what the current frame has staged and what
+ * the newest presented frame proved all belong to SceneStore
+ * (session/SceneStore.h); the preview stream's lifecycle, the three targets'
+ * cadence and the audience's timing budget, the editor's selection state, the
+ * thumbnail queue and its decode policy, and the ready notifications all
+ * belong to PreviewProducer (session/PreviewProducer.h), whose headers state
+ * the rules and the thread contracts. This object coordinates the loop with
+ * them: ask the store what is owed and for a snapshot, draw exactly that,
+ * tell the store whether the panel took the frame, and hand the producer the
+ * frame it drew (frames in, slots out). Two explicit thread rules make that
  * safe — the store's decide/land/commit trio is called only from the
  * thread running run(), and its command methods only from a handler thread
  * holding the session mutex, so the lock order is session -> store and the
- * store never calls back. There is exactly one mutable scene, and this file is
- * no longer allowed a copy of any of its fields.
+ * store never calls back. The producer follows the same order and is called
+ * under the same lock, with the documented exceptions its own header names.
+ * There is exactly one mutable scene and one preview owner, and this file is
+ * no longer allowed a copy of any of their fields.
  */
 
 #pragma once
@@ -49,25 +56,32 @@
 #include "include/core/SkSurface.h"
 #include "include/gpu/ganesh/GrDirectContext.h"
 
-#include "openshow/protocol/preview_wire.h"
 #include "openshow/scene/scene.h"
 
 #include "output/OutputWindow.h"
 #include "output/Swapchain.h"
 #include "output/VulkanContext.h"
-#include "playback/AvPlayer.h"
-#include "playback/PlaybackPipeline.h"
 #include "playback/VideoSeam.h"
 #include "render/Layer.h"
 #include "render/SceneRenderer.h"
+#include "session/BackgroundTransport.h"
+#include "session/PreviewProducer.h"
+#include "session/PrepareExecutor.h"
 #include "session/SceneStore.h"
 
 namespace openshow::worker {
 
-class PreviewStream;
-
 class OutputSession {
 public:
+    // The preview types the RPC seam answers with (task 6.18a2): they are
+    // PreviewProducer's now. The aliases keep the session as the object a
+    // caller asks, without the session holding any of the state.
+    using PreviewInfo = PreviewProducer::PreviewInfo;
+    using PreviewReady = PreviewProducer::PreviewReady;
+    using PreviewStatus = PreviewProducer::PreviewStatus;
+    using ThumbnailEntry = PreviewProducer::ThumbnailEntry;
+    using ThumbnailAck = PreviewProducer::ThumbnailAck;
+
     // Options::monitor values. -1 stays windowed, >=0 is that monitor;
     // kAutoSecondDisplay is the FreeShow autoPosition rule: land on the
     // second panel when the machine has one, so the operator's screen
@@ -111,77 +125,9 @@ public:
         int refreshHz = 0;
     };
 
-    // Live preview state as the render thread applies it. running only
-    // turns true once the shm segment exists; error explains a failed
-    // start (and then running stays false). published/dropped let the
-    // frontend show the load behaviour honestly.
-    struct PreviewStatus {
-        bool running = false;
-        std::string name;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        uint32_t fps = 0;
-        uint64_t published = 0;
-        uint64_t dropped = 0;
-        // Task 6.11a (review R13): the audience's timing budget. A preview
-        // frame that cost more than the audience can spare defers the next
-        // one instead of repeating on every frame; `deferred` counts the
-        // publish attempts that stood down, and `worstMs` is the most
-        // expensive preview frame since the stream started — what the
-        // preview is charging the output, on the wire.
-        uint64_t deferred = 0;
-        double worstMs = 0.0;
-        std::string error;
-        // The editor's off-air target (task 6.16a, review R16): a prepared
-        // scene the audience is NOT shown, rendered into the same stream so
-        // the edit canvas can show the worker's own picture. `active` says a
-        // selection is registered (whatever the render thread has managed to
-        // draw since); revision/request name the request it answers, and the
-        // counters are the same three questions as the mirror's — what
-        // reached the socket, what the consumer's slots blocked, and what a
-        // newer request superseded before it could be published.
-        struct Selection {
-            bool active = false;
-            uint64_t revision = 0;
-            std::uint32_t request = 0;
-            uint64_t published = 0;
-            uint64_t dropped = 0;
-            uint64_t deferred = 0;
-            uint64_t stale = 0;
-        } selection;
-        // The slide list's target (task 6.16b, review R16): a BATCH of
-        // scenes the store has never held, drawn small on demand. `active`
-        // says a batch stands (its request and extent are the accepted
-        // ones); `queued` counts the slides not yet drawn, and
-        // `decodePending` the ones waiting on a background decode that runs
-        // on the command thread — the pair is what distinguishes "the
-        // worker is working through the list" from "the worker is idle with
-        // a list it will never draw". published/dropped/deferred/stale are
-        // the same three questions as the other two targets, plus the
-        // superseded-batch count.
-        struct Thumbnails {
-            bool active = false;
-            std::uint32_t request = 0;
-            std::uint32_t width = 0;
-            std::uint32_t height = 0;
-            uint64_t queued = 0;
-            uint64_t decodePending = 0;
-            uint64_t published = 0;
-            uint64_t dropped = 0;
-            uint64_t deferred = 0;
-            uint64_t stale = 0;
-            // The LIST's decoded-picture cache, on the wire next to the
-            // show's own (status.scene.images): the evidence that a scrolled
-            // list plateaus instead of growing, and that its bytes are not
-            // the audience's. `budget` is the ceiling this cache holds the
-            // line at — a different number from the renderer's default is
-            // what proves the two caches are really two.
-            uint64_t decodedBytes = 0;
-            uint64_t entries = 0;
-            uint64_t evictions = 0;
-            uint64_t budget = 0;
-        } thumbnails;
-    };
+    // Live preview state (task 1.4; the owner since 6.18a2 is
+    // PreviewProducer — see PreviewStatus above). The Status snapshot below
+    // embeds the producer's answer; the session keeps no mirror of it.
 
     // Live scene-store state (task 2.4b). Prepared scenes are kept by
     // the store revision prepareScene returns; revision 0 is never
@@ -203,6 +149,9 @@ public:
         uint64_t pending = 0;       // accepted present not yet presented (0 = none)
         bool transitioning = false; // that presented frame was mid-crossfade
         uint64_t prepared = 0;      // how many scenes the store holds
+        // Task 6.9a: prepares whose file work the executor still owes —
+        // readiness a status poller can watch when the ack itself matters.
+        uint64_t preparing = 0;
         // The decoded-still cache (task 6.10, review R12), mirrored in at
         // every pin sync and frame commit: an operator sizing a show must
         // be able to ask how much CPU picture memory the worker holds,
@@ -214,89 +163,25 @@ public:
             uint64_t entries = 0;
             uint64_t pins = 0;
             uint64_t evictions = 0;
+            // Lifetime preload hits (task 6.9a): times a prepare found the
+            // still already decoded. With the ack deferred to the executor,
+            // wall-clock timing cannot tell a re-decode from a hit — this
+            // counter is the worker's own word that the disk was skipped.
+            uint64_t preloadHits = 0;
         } images;
     };
 
-    // Background media visibility (task 5.5d). playing says the session
-    // has a live transport for the on-air background; error carries the
-    // last failure for that asset and STAYS set until the same background
-    // opens successfully — the frontend polls, and an operator must be
-    // able to see what broke after the fact, not only in the moment.
-    // Every fresh failure additionally rides the media.error
-    // notification (immediacy), so status and push together close the
-    // gap between polls.
-    struct MediaStatus {
-        bool playing = false;
-        std::string path;
-        std::string error;
-        // The audio lane (task 6.7c, review R18): "none", "silent",
-        // "no-output", "degraded", "paused" or "live" — why the audience
-        // hears what it hears. Refreshed with the transport's other state
-        // each frame, so a sink that activates (or dies) after the present
-        // is visible without another present.
-        std::string audio = "none";
-        // Loop-continuous media position in seconds, refreshed by the
-        // render thread each frame while a video background plays; -1
-        // otherwise. It is the proof of the continuity rule: a lyric
-        // change over the same background shows position climbing
-        // THROUGH the change — a transport that reopened would restart
-        // near zero.
-        double position = -1.0;
-        // Media transport (task 6.15a, review R15): what the transport is
-        // supposed to do and what it holds, so an operator command is
-        // confirmed by status the way scenes and layers already are.
-        // loop is the live rewind intent (true until EOF decides);
-        // duration is the probe's clip length (-1 when no transport or
-        // the container does not say); sources lists the REGISTERED
-        // audio identities with their mixer echo — a source this
-        // transport never had is absent rather than falsely listed.
-        bool loop = false;
-        double duration = -1.0;
-        // True between a successful transport bring-up and its teardown.
-        // The controls need this rather than the path: "path" stays set
-        // with a sticky error so message and asset stay paired (5.5d's
-        // rule), which would leave a dead transport looking commandable.
-        bool live = false;
-        struct Source {
-            std::string name;  // "video" | "standalone"
-            double gain = 1.0;
-            bool muted = false;
-        };
-        std::vector<Source> sources;
-        // The INDEPENDENT production track (task 6.15b, review R15). Its
-        // own block rather than fields folded into the background's,
-        // because it has its own lifetime: the background's fields above
-        // keep describing the on-air video transport (and stay idle when
-        // there is none), and this describes the track the operator
-        // selected with media.standalone — which keeps playing through
-        // every scene change. live is the commandability mirror again
-        // (player up); error is sticky and names this block's own path,
-        // so the 5.5d pairing rule holds inside the block without the
-        // two transports ever crossing each other's reports.
-        struct Standalone {
-            bool live = false;
-            std::string path;
-            bool playing = false;
-            double position = -1.0;
-            double duration = -1.0;
-            std::string error;
-            std::string audio = "none";  // the lane names, as above
-            // How many times the source has rewound at its end. Not
-            // decoration: this transport loops by design, and the sink
-            // clock keeps pacing whether or not the feeder is still
-            // feeding — a bed that stopped at its EOF would keep reporting
-            // "live" while the audience heard silence. The wrap count is
-            // what distinguishes a bed that rewound from one that ran out.
-            std::uint64_t loops = 0;
-        } standalone;
-    };
-
-    // One recorded background-media failure, carried by the media.error
-    // notification (task 5.5d).
-    struct MediaError {
-        std::string path;
-        std::string message;
-    };
+    // Background media visibility (task 5.5d) and the media.error
+    // notification payload (task 5.5d): the wire shapes. Since task 6.18b
+    // they are BackgroundTransport's types (session/BackgroundTransport.h
+    // documents every field and the rules that fill them); the aliases keep
+    // the session as the object a caller asks, without the session holding
+    // any of the state.
+    using MediaStatus = openshow::worker::MediaStatus;
+    using MediaError = openshow::worker::MediaError;
+    // The two audio identities the operator addresses (task 6.15a): the
+    // transport's type, aliased for the same reason as the two above.
+    using AudioSource = openshow::worker::AudioSource;
 
     // Snapshot of output state, safe to take from any thread.
     //
@@ -337,37 +222,6 @@ public:
         MediaStatus media;
     };
 
-    // --- preview (task 1.4) ---
-
-    // What preview.start reports: where the frames will live and how the
-    // segment is laid out (openshow/protocol/preview_wire.h). The segment
-    // itself is created by the render thread on its next frame, so wait
-    // for the first preview.ready notification (or status().preview
-    // .running) before mapping.
-    struct PreviewInfo {
-        std::string name;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        uint32_t slotCount = 0;
-        uint32_t bytesPerSlot = 0;
-    };
-
-    // One queued preview.ready notification (drained by the RPC thread).
-    struct PreviewReady {
-        uint32_t slot = 0;
-        uint64_t seq = 0;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        uint32_t rowBytes = 0;
-        uint32_t revision = 0;
-        // Which target and which request these pixels answer (task 6.16a):
-        // the consumer needs both before it copies anything, because "the
-        // newest frame of slot 2" no longer says whose picture it is.
-        uint32_t target = 0;
-        uint32_t request = 0;
-        uint64_t publishedNs = 0;
-        std::string stream;  // segment name this frame belongs to (task 6.5)
-    };
 
     OutputSession() = default;
     ~OutputSession();
@@ -404,103 +258,52 @@ public:
     // change is included in.
     bool selectMonitor(int index, uint64_t* revisionOut);
 
-    // Enables the preview pipeline (task 1.4): the same scene, drawn to
-    // a GPU offscreen surface at the requested size, is read back into
-    // rotating shm slots at the requested cadence. Callable from any
-    // thread; the segment and the surface are built by the render thread
-    // on its next frame. Calling it again replaces the stream under a new
-    // name. Geometry limits keep a preview a preview, not a second output.
+    // --- preview (task 1.4; owner since 6.18a2 is PreviewProducer) ---
+    //
+    // The session keeps this seam because it is the object the RPC handlers
+    // act on and the object that wakes the frame loop; the lifecycle,
+    // generation gates, cadence, budget, queue and counters all answer to
+    // the producer, whose header states each rule. A preview command that
+    // lands (and a pump that settles anything) wakes the render thread.
+
+    // Enables the preview pipeline (geometry limits keep a preview a
+    // preview, not a second output); the segment is built by the render
+    // thread on its next frame. Calling it again replaces the stream under
+    // a new name.
     bool startPreview(uint32_t width, uint32_t height, uint32_t fps,
                       PreviewInfo* info, std::string* error);
     void stopPreview();
 
-    // The editor's off-air render (task 6.16a, review R16). `revision` is a
-    // scene in the prepared store; the render thread draws THAT scene into
-    // the preview stream — no present, no setActiveScene, no captureFrame,
-    // so the audience's scene, playback and crossfades are untouched by the
-    // act of looking at an edit. Revision 0 stands the target down and the
-    // stream goes back to mirroring the audience alone.
-    //
-    // `request` is the frontend's own generation for the ask, and it must
-    // come strictly after the last accepted one (modulo 2^32, so a frontend
-    // that has been open for four billion edits still advances). That rule
-    // is what makes stale imagery impossible rather than unlikely: a replay
-    // of an old ask — a queued frame, a retry of a request the worker
-    // already answered — cannot resurrect a picture of a scene the operator
-    // left behind, and every frame the stream carries names the generation
-    // it answers, so a consumer that has asked again since drops what it
-    // receives. Callable from any thread; like the stream itself, the
-    // render thread applies it on its next pass.
+    // The editor's off-air render (task 6.16a, review R16): draws a
+    // prepared scene into the stream without touching the audience's scene,
+    // playback or crossfades. Revision 0 stands the target down; `request`
+    // must come strictly after the accepted generation.
     bool selectPreviewScene(uint64_t revision, std::uint32_t request,
                             std::string* error);
 
     // --- thumbnails (task 6.16b, review R16) ---
 
-    // One slide of a thumbnail batch. `key` is the FRONTEND's name for the
-    // slide (a slide id, in practice): the worker never interprets it, it
-    // only refuses an empty or absurd one and hands it back in the ack
-    // beside the id that names the entry on the wire. `scene` is a compiled
-    // scene — the same payload scene.prepare takes, and it goes nowhere near
-    // the store: no revision, no pin, nothing anyone could present.
-    struct ThumbnailEntry {
-        std::string key;
-        openshow::scene::Scene scene;
-    };
-
-    // What the worker made of a batch. `accepted` pairs each entry's key
-    // with the id its frames will carry (the slot header's `revision`), and
-    // `refused` names the entries it will not draw and why — a scene that
-    // does not compile costs that slide its picture, not the whole band.
-    struct ThumbnailAck {
-        std::uint32_t request = 0;
-        std::uint32_t width = 0;
-        std::uint32_t height = 0;
-        std::vector<std::pair<std::string, std::uint32_t>> accepted;
-        std::vector<std::pair<std::string, std::string>> refused;
-    };
-
-    // Replaces the pending thumbnail batch with this one, at `width` x
-    // `height`, and answers with the per-slide ids. Replacement is the
-    // coalescing rule and the cancellation rule at once: whatever was queued
-    // for an older list is gone, so a band the operator has scrolled past
-    // costs nothing further, and the newest ask is the only debt.
-    //
-    // Refused, in the order the operator can act on it: no preview stream
-    // running; an extent outside the agreed box or too big for a slot
-    // (thumbnailExtentFits); a batch over kMaxThumbnailBatch; a key over
-    // kMaxThumbnailKeyLength; a request that does not come strictly after the
-    // accepted one, named on both sides (the rule preview.select follows —
-    // a replayed ask must not resurrect pictures of a list nobody is
-    // looking at). An empty batch with a new request stands the target down.
+    // Replaces the pending thumbnail batch at `width` x `height`;
+    // replacement is the coalescing and cancellation rule at once, and the
+    // refusals (stream, extent, batch cap, key rules, generation gate) are
+    // the producer's. An empty batch with a new request stands the target
+    // down.
     bool requestThumbnails(const std::vector<ThumbnailEntry>& batch, uint32_t width,
                            uint32_t height, std::uint32_t request, ThumbnailAck* ack,
                            std::string* error);
 
-    // Decodes at most ONE thumbnail background, on the CALLER's thread (the
-    // RPC loop, which wakes periodically). The rule that keeps the render
-    // thread clean (task 6.10) is that a draw never opens a file, so the
-    // pictures a thumbnail needs have to be decoded somewhere else, and the
-    // command thread is the only one with nothing frame-shaped to protect.
-    // One per wake is the bound: a show's socket answers commands in the
-    // gaps between decodes rather than after all thirty of them. Jobs whose
-    // scene has no still, or whose picture is already cached, are settled on
-    // the spot — the one thing this call never does twice is open a file.
-    // Returns true when it settled at least one job (so a caller can keep
-    // going while there is nothing else to do).
+    // Settles at most one thumbnail decode on the CALLER's thread (the RPC
+    // loop) — the draw never opens a file (task 6.10's rule). Returns true
+    // when it settled at least one job; the caller's wake follows.
     bool pumpThumbnailDecode();
 
-    // The consumer finished copying slot@seq of the named stream; the
-    // slot becomes claimable again. Proof of ownership (task 6.5, review
-    // R5): the release must name the stream that is currently live —
-    // releases for a retired or unknown stream, an unknown slot or a
-    // sequence that is not exactly the slot's published one are ignored.
+    // The consumer finished copying slot@seq of the named stream; releases
+    // for a retired or unknown stream, an unknown slot or a sequence that
+    // is not exactly the slot's published one are ignored (task 6.5, R5).
     void releasePreviewSlot(uint32_t slot, uint64_t seq, const std::string& stream);
 
-    // Pops one queued preview.ready notification (RPC thread). At most
-    // one is queued per slot: if the RPC side lags, the newest frame for
-    // that slot is all that matters. Ready notifications left queued for
-    // a retired stream are dropped, never sent: the socket must not
-    // describe slots of a segment the consumer no longer has (task 6.5).
+    // Pops one queued preview.ready notification (RPC thread); stale-
+    // stream notifications are dropped, never sent (task 6.5).
     bool takePreviewReady(PreviewReady* out);
 
     // --- background media (task 5.5d) ---
@@ -528,12 +331,30 @@ public:
     // presentScene accepts. Preparing changes nothing on screen, so no
     // output revision moves and no frame is provoked; the count visible
     // in status().scene.prepared does.
-    bool prepareScene(const openshow::scene::Scene& scene, uint64_t* revisionOut);
-    // Task 5.5 preload, run from prepareScene's RPC thread (never the
-    // render thread): decodes the background still into the image cache
+    //
+    // Task 6.9a (review R10): the store + pin answer is synchronous — the
+    // revision is immediate truth — but the file work it schedules (still
+    // decodes, the video probe) runs on the prepare executor, so a cold
+    // file never parks the RPC thread. onReady fires exactly once per
+    // accepted prepare: from the executor thread with the revision, or
+    // cancelled=true when the work was retired (stop) — the job's reply
+    // belongs to its caller either way. Returns false — with NO onReady to
+    // follow — when the store refused, or the executor was stopping or at
+    // capacity; the caller answers that request explicitly. jobId is the
+    // RPC request id, opaque here, so a superseded job can be retired by
+    // name. Without background media (benches) there is nothing to
+    // schedule: the completion fires inline before this returns.
+    bool prepareScene(const openshow::scene::Scene& scene, uint64_t jobId,
+                      std::function<void(uint64_t revision, bool cancelled)> onReady,
+                      uint64_t* revisionOut);
+    // Task 5.5 preload, off the render thread always and since 6.9a off the
+    // RPC thread too: decodes the background still into the image cache
     // and probes a background video, so the file's cost and its failures
-    // surface while the OLD scene is still on air.
-    void preloadScene(const openshow::scene::Scene& scene);
+    // surface while the OLD scene is still on air. `cancelled` is the
+    // executor's cooperative flag (nullptr = run to completion); it is
+    // checked between files, the natural unit.
+    void preloadScene(const openshow::scene::Scene& scene,
+                      const std::atomic<bool>* cancelled);
 
     // Names a prepared revision as the output's scene. The switch lands
     // on the render thread's next frame, like layer toggles, and
@@ -573,43 +394,28 @@ public:
     // render thread.
     void submitVideo(VideoSubmission submission);
 
-    // --- background transport control (task 6.7d, review R19) ---
+    // --- background transport control (task 6.7d review R19, 6.15a/b
+    // review R15; BackgroundTransport is the owner since 6.18b) ---
     //
-    // The seam 6.15a will drive from RPC. It exists now because R19's seek
-    // semantics are session semantics: the position the operator asked for,
-    // the pixels the audience gets and the deadline they arrive on are one
-    // story, and a seek the media refused has to be reported rather than
-    // silently kept.
-    //
-    // Any thread: the intent is handed to the render loop, which applies it.
-    // That is the transport's own discipline — AvPlayer's fan-out walks the
-    // attached-pipeline list, and only the thread that swaps transports may
-    // touch it. A refusal (the audio could not jump) is not answerable at
-    // this call; it surfaces as the typed media fault, and the position the
-    // transport keeps reporting is the one the audience actually has.
+    // These forward the operator's intent to the transport's newest-wins
+    // slots; the render loop applies it, because AvPlayer's fan-out walks
+    // the attached-pipeline list and only the thread that swaps transports
+    // may touch it. A refusal (the audio could not jump) is not answerable
+    // at this call — it surfaces as the typed media fault, and the position
+    // the transport keeps reporting is the one the audience actually has.
+    // gain and mute DO answer up front: naming a source this transport
+    // never registered is a refusal the caller hears immediately.
+    // mediaTransportLive() guards the commands that need a transport at
+    // all; the rules are stated in full in session/BackgroundTransport.h.
     void requestMediaSeek(double seconds);
     void requestMediaPause();
     void requestMediaPlay();
-
-    // Task 6.15a (review R15) completes the operator's surface on the
-    // same discipline: the intent is handed to the transport's thread,
-    // newest-wins, and output.status.media is the acknowledgement.
-    //   loop  — live; the value AT the end-of-file decides rewind versus
-    //           the final-frame hold (the hold itself is the seam's
-    //           existing last-drawn-frame rule, so this is not a restart).
-    //   gain / mute — per registered source, through the mixer's
-    //           clickless ramp. These answer up front: naming a source
-    //           this transport never registered is a refusal the caller
-    //           hears immediately, not an op that dies unheard on the
-    //           render thread. mediaTransportLive() guards the commands
-    //           that need a transport at all.
-    enum class AudioSource { kVideo, kStandalone };
     void requestMediaLoop(bool enabled);
     bool requestMediaGain(AudioSource source, double gain, std::string* error = nullptr);
     bool requestMediaMute(AudioSource source, bool muted, std::string* error = nullptr);
     // Any thread: a background video transport is up (between a
     // successful bring-up and the teardown).
-    bool mediaTransportLive() const { return fMediaTransportLive.load(); }
+    bool mediaTransportLive() const { return fTransport.mediaTransportLive(); }
     // Whether this transport registered that audio identity (embedded
     // audio present and decodable), independent of whether the sink is
     // audible — the gain belongs to the mixer either way.
@@ -617,34 +423,25 @@ public:
 
     // --- standalone production track (task 6.15b, review R15) ---
     //
-    // The independent audio track's selection seam. Callable from the RPC
-    // thread like the gain/mute requests: the path is PROBED here (the
-    // same probe scene.prepare runs, file I/O under no lock), so "nothing
-    // readable at that path" is a refused request that changes nothing —
-    // the old track, if any, keeps playing untouched. Accepted paths ride
-    // to the render thread's swap (newest selection wins, like every
-    // pending slot here) and output.status.media.standalone answers.
-    // "" is a removal, not a probe candidate: it always accepts, and the
-    // swap takes the track down.
+    // The independent audio track's selection seam, forwarded to the
+    // transport: the path is PROBED before the request is accepted (file
+    // I/O under no lock), so "nothing readable at that path" changes
+    // nothing — the old track, if any, keeps playing. "" is a removal and
+    // always accepts. Accepted paths ride to the render thread's swap and
+    // output.status.media.standalone answers.
     bool requestStandaloneAudio(const std::string& path, std::string* error);
     // Any thread: the standalone transport is up (between a swap that
     // started it and one that stopped it, or teardown).
-    bool standaloneLive() const { return fStandaloneLive.load(); }
+    bool standaloneLive() const { return fTransport.standaloneLive(); }
 
     // Device handles a bench needs beside the session (task 1.5e): the YUV
     // upload ring lives outside the session but shares its device, and the
-    // seam to build it is this narrow view rather than the objects. The
-    // context may only be touched from the render thread (no thread-safety
-    // guarantee at this Skia revision); the Vulkan handles are safe to use
-    // from an upload thread. Valid between open() and close().
-    struct GpuHandles {
-        VkDevice device = VK_NULL_HANDLE;
-        VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-        uint32_t graphicsQueueIndex = 0;
-        uint32_t uploadQueueIndex = 0;
-        VkQueue uploadQueue = VK_NULL_HANDLE;
-        GrDirectContext* context = nullptr;
-    };
+    // seam to build it is this narrow view rather than the objects (the
+    // struct is BackgroundTransport's since 6.18b, which is where the
+    // bring-up consumes it). The context may only be touched from the
+    // render thread (no thread-safety guarantee at this Skia revision); the
+    // Vulkan handles are safe to use from an upload thread. Valid between
+    // open() and close().
     GpuHandles gpuHandles() const;
 
     Status status() const;
@@ -672,81 +469,13 @@ private:
     void applyPendingLayerChanges(const FrameSnapshot& snapshot);
     void applyPendingDisplayChange(const FrameSnapshot& snapshot);
     void applyPendingSceneChange(const FrameSnapshot& snapshot);
-    void applyPreviewState();
-    // Tags the published frame with the revision of the snapshot it drew
-    // (frame()), or of the last presented frame when the run loop
-    // republishes without presenting (task 6.4: tags name drawn content,
-    // never merely desired state).
-    // Publishes ONE captured frame to the preview stream (task 6.11a): the
-    // caller hands it the frame the audience drew (a presenting frame) or
-    // was last shown (a republish), and this function never composes a frame
-    // of its own. The revision tag travels inside the frame.
-    void publishPreviewFrame(const SceneFrame& frame, SkImage* video);
-    // The other target of the same stream (task 6.16a, review R16): draws
-    // the accepted off-air selection and publishes it with the generation it
-    // answers. Returns true only when a frame reached the stream — a pass
-    // that owed nothing, or stood down for the audience, draws the mirror
-    // instead, and the ask stays owed until it lands.
-    bool publishSelectionFrame(SkImage* video);
-    // The list's target of the same stream (task 6.16b): draws the head of
-    // the batch whose background has been decoded, at the batch's own extent,
-    // and publishes it with the batch generation and the slide's id. Returns
-    // true only when a frame reached the stream; the slide is popped when it
-    // does, so one accepted slide is one picture and a draw that stood down
-    // or was superseded leaves it queued for the next pass.
-    bool publishThumbnailFrame(SkImage* video);
-    // One accepted slide of the pending batch. Declared here (ahead of the
-    // methods that hand one out) and used only through fThumbnailQueue: the
-    // scene is a transient the store has never held, `decoded` says its
-    // background has been settled by the command thread — decoded, failed,
-    // or not needed — and `id` is the name its frames carry.
-    struct ThumbnailJob {
-        std::string key;
-        std::uint32_t id = 0;
-        ActiveScene content;
-        // Everything this thumbnail must decode before it can draw (task
-        // 6.16b's still background first, then the stack's foreground
-        // stills in draw order — task 6.17b), deduplicated and non-empty.
-        std::vector<std::string> imagePaths;
-        // Per-path settle flag (decoded, failed, or found in the cache):
-        // the job owes its picture once every path has been settled.
-        std::vector<bool> pathSettled;
-        bool decoded = false;
-    };
-
-    // The batch's head, under the same lock both the pump and the draw use:
-    // non-null only when a slide stands and its background has been settled
-    // (decoded, failed, or not needed). The run loop's horizon asks this and
-    // the publish asks it, so the loop cannot spin on a slide whose codec
-    // nobody has run yet.
-    ThumbnailJob* thumbnailHeadLocked();
-    // The batch's own two counters, re-derived from the queue wherever the
-    // queue or its decode flags change: `queued` is what the worker still
-    // owes a picture of, `decodePending` the part of that waiting on a codec.
-    // Both are reported rather than inferred by a frontend because the pair
-    // is the difference between "working through the list" and "idle with a
-    // list it will never draw".
-    void syncThumbnailCountersLocked();
-    // The one place the render thread decides which preview target draws
-    // (task 6.16a): both share the stream, its cadence and the audience's
-    // budget, so a pass publishes at most one frame and the other target
-    // stays owed. Called with the frame this pass put on the panel (or the
-    // last presented one when it presented nothing) and the video the
-    // audience's transport is showing.
-    void drawPreviewTarget(const SceneFrame& audienceFrame, SkImage* video);
-    // What one draw-and-readback did to the stream (task 6.16a). Every
-    // target shares this body, so the audience's cost policy — the reason a
-    // preview exists without owning the frame it is drawn out of — is one
-    // implementation rather than three that drift. `renderer` and `surface`
-    // travel together (task 6.16b): a thumbnail is drawn by the companion
-    // compositor into a surface of the batch's own size, and a single shared
-    // surface holder would reallocate the audience's surface on every pass
-    // that alternated a 640x360 mirror with a 160x90 thumbnail.
-    enum class PreviewFill { kFilled, kNoSurface, kReadbackFailed };
-    PreviewFill fillPreviewSlot(const SceneFrame& frame, const SkImage* sceneVideo,
-                                const SkImage* overlayVideo, PreviewStream& stream,
-                                int slot, uint32_t width, uint32_t height,
-                                SceneRenderer* renderer, sk_sp<SkSurface>* surface);
+    // The one preview handoff the loop makes (task 6.18a2): wraps the frame
+    // this pass put on the panel (or the last presented one when it presented
+    // nothing) with the video the audience's transport is showing, the
+    // session's frame count, its clock and its on-air scene, and hands them
+    // to PreviewProducer::drawTargets. Lifecycle, target choice, cadence,
+    // budget and publication all live there.
+    PreviewProducer::DrawInput previewHandoff(const SceneFrame& frame, SkImage* video) const;
     void refreshDisplaySnapshot();
 
     // Wakes the thread blocked in run()'s glfwWaitEventsTimeout. Safe from
@@ -754,16 +483,6 @@ private:
     // is its portable equivalent of writing an eventfd).
     void wakeRenderThread();
 
-    // Background media transport (task 5.5). Both run on the render thread
-    // only, and OUTSIDE frame()'s graphics queue lock (the run loop applies
-    // scene changes before the lock is taken): the swap's join() waits on
-    // pipeline threads that may be blocked acquiring that lock. Apply
-    // compares the scene's background against the identity the transport
-    // currently serves — unchanged means untouched (the M3 continuity rule:
-    // a lyric change must not disturb a playing background video) — and
-    // anything else tears the transport down before opening the replacement
-    // through the same PlaybackPipeline + AvPlayer pair the bench drives.
-    void applyBackgroundTransport(const openshow::scene::Background& wanted);
     // Task 6.10 (review R12): the pins that make the image cache's byte
     // budget safe. Every still background the session could still put on
     // air — any scene in the bounded store, plus the desired/applied
@@ -783,69 +502,15 @@ private:
     // empty when a hotplug removed the panel that index named, which is the
     // honest answer to "where is the output". On-lock (reads fDisplays).
     std::string monitorNameLocked(int monitor) const;
-    void teardownBackgroundTransport();
 
-    // Background media visibility events (task 5.5d). Each updates
-    // fStatus.media under fMutex; mediaFailed additionally fills the
-    // pending notification slot the RPC thread sends as media.error.
-    // mediaPlaying is the success path: it clears the sticky error.
-    //
-    // Task 6.7c (review R18) types the failure. Every report names the
-    // class of fault it is (a still that will not decode, the video
-    // transport, the audible lane), and recovery clears only the fault of
-    // its own class and asset — the audio returning must not hide an image
-    // that is still missing. The *Locked variants are for callers that
-    // already hold fMutex (the frame's status refresh reconciles the
-    // transport's own report there, every frame).
-    //
-    // kSync (task 6.7d, review R19) is a transport whose parts disagree:
-    // an operator seek the audio refused leaves the picture at the target
-    // and the sound where it was. The lane cannot say this — the audio is
-    // healthy, just elsewhere — so the lane reconcile must not clear it
-    // either, which is why it is its own class.
-    enum class MediaFault { kImage, kVideo, kAudio, kSync };
-
-    void mediaPlaying(const openshow::scene::Background& background);
-    void mediaStopped();
+    // Background media fault reporting (task 5.5d, typed in 6.7c review
+    // R18) — thin forwarders to BackgroundTransport, the media's owner
+    // (6.18b): the preload's probe reports through them (a file it cannot
+    // read is NAMED before the audience ever sees the colour fill, and a
+    // file put back is the recovery that clears the error). The fault
+    // classes and the deduplication rules are BackgroundTransport's.
     void mediaFailed(MediaFault fault, const std::string& path, const std::string& message);
-    void mediaFailedLocked(MediaFault fault, const std::string& path, const std::string& message);
-    // Clears the sticky error when (and only when) it is this class of
-    // fault for this asset: the honest shape of "recovered".
     void mediaFaultCleared(MediaFault fault, const std::string& path);
-    void mediaFaultClearedLocked(MediaFault fault, const std::string& path);
-    // The frame-time reconciliation of the transport's report with what
-    // status claims (task 6.7c): position, audio lane, a decode that died
-    // after opening, and an end-of-file the transport should not have
-    // reached. Caller holds fMutex.
-    void refreshMediaStateLocked();
-
-    // The lane to publish: the transport's own, unless this asset's audio
-    // loss is something only the session knows (a stream no decoder can
-    // handle never becomes a source, so AvPlayer's lane says "none").
-    AvPlayer::AudioLane mediaLaneLocked() const;
-
-    // Standalone track machinery (task 6.15b). swapStandalonePendingLocked
-    // applies the newest probed selection — stop the old player, start the
-    // new one ("" is the removal), and move live/mask/status with it;
-    // called by applyTransportOps before the ops, so a selection and a
-    // gain in the same pass land in order. refreshStandaloneMediaLocked
-    // samples the player into status.media.standalone (position, lane,
-    // the lane-fault sticky) and rebuilds the cross-transport sources
-    // list. standaloneFailedLocked names the track's own path in the
-    // sticky error and the pushed notification — deduplicated on the
-    // message, exactly the background's rule. Caller holds fMutex.
-    void swapStandalonePendingLocked();
-    void refreshStandaloneMediaLocked();
-    void standaloneFailedLocked(const std::string& message);
-    // Rebuilds status.media.sources from BOTH transports' registrations:
-    // "video" when the background transport registered its embedded lane,
-    // "standalone" when the standalone player is up. The mixer's answer
-    // spans lifetimes — tearing the background down keeps the track's
-    // row (and its echoed gain/mute), which is what the operator sees.
-    void rebuildMediaSourcesLocked();
-
-    // Seconds against the installed video clock; caller holds fMutex.
-    double videoClockSecondsLocked(std::chrono::steady_clock::time_point now) const;
 
     std::unique_ptr<OutputWindow> fWindow;
     std::unique_ptr<VulkanContext> fVk;
@@ -877,96 +542,8 @@ private:
     SceneFrame fComposedFrame;            // render thread
     SceneFrame fPresentedFrame;           // render thread
 
-    // Video seam state (task 1.5e).
-    // fVideoPresenter (task 6.6b, review R6): the render thread writes it
-    // only when no pacing thread can read it — before run(), after a
-    // teardown's requestStop+join, or around a start() whose failure means
-    // no thread was ever spawned. submitVideo() (the producer's thread)
-    // reads it unsynchronised, and thread creation/join are what order
-    // those accesses; nothing else may change it while a transport runs.
-    VideoPresenter* fVideoPresenter = nullptr;
-    std::function<double()> fVideoClock;                   // fMutex
-    std::optional<VideoSubmission> fPendingVideo;          // fMutex
-    std::optional<VideoSubmission> fDrawnVideo;            // render thread
-    // Transport control handed to the render loop (task 6.7d). Newest-wins:
-    // one intent at a time, applied by the loop's next pass, so a burst of
-    // operator requests cannot queue behind each other and move the audience
-    // somewhere nobody asked for.
-    enum TransportOp { kOpNone, kOpSeek, kOpPause, kOpPlay };
-    std::atomic<int> fPendingTransportOp{kOpNone};         // any thread
-    std::atomic<double> fPendingSeekSeconds{0.0};          // any thread
-    // Mode and per-source control intents beside the momentary ops above
-    // (task 6.15a, review R15): each a newest-wins slot, applied by the
-    // same render-thread pass. Loop matters AT the end of the clip, so
-    // it is a stored mode, not an instant; gain and mute address
-    // independent sources and ride beside a pending seek without
-    // consuming it.
-    std::atomic<int> fPendingLoop{-1};                     // -1 none, 0 off, 1 on; any thread
-    std::atomic<int> fPendingGainSource{-1};               // identity or -1; any thread
-    std::atomic<double> fPendingGain{0.0};                 // meaningful while source >= 0
-    std::atomic<int> fPendingMuteSource{-1};               // identity or -1; any thread
-    std::atomic<int> fPendingMute{0};                      // 0/1 while source >= 0
-    // What the RPC thread may ask for, mirrored by the render thread at
-    // bring-up and teardown (fBackground itself stays render-thread-only).
-    std::atomic<bool> fMediaTransportLive{false};          // any thread
-    std::atomic<int> fMediaSourceMask{0};                  // bit0 video, bit1 standalone
-    // Test-only schedule (see OPENSHOW_TEST_TRANSPORT_OPS at the transport's
-    // open): a timed script applied by the same render-thread seam, so the
-    // scenarios R19 names run through the real transport rather than a
-    // stand-in. Empty in production, where the variable is unset.
-    struct ScheduledOp {
-        int atMs = 0;
-        int kind = kOpNone;
-        double seconds = 0.0;
-    };
-    std::vector<ScheduledOp> fScheduledOps;                // render thread
-    size_t fScheduledCursor = 0;                           // render thread
-    std::chrono::steady_clock::time_point fScheduledStart{};
-    // Applies the pending intent and any due scheduled op. Render thread.
-    void applyTransportOps();
-    // One op on the transport (render thread): pause, play, or a seek whose
-    // refusal becomes the typed sync fault.
-    void applyTransportOp(int op, double seconds);
-    // Parses the test schedule (see fScheduledOps). Private to the class so
-    // it can name the type; reports and skips malformed entries.
-    static std::vector<ScheduledOp> parseScheduledOps(const std::string& spec);
-    std::chrono::steady_clock::time_point fRunStart;       // render thread
-
-    // Background media transport (task 5.5, render thread; declared after
-    // fContext/fVk so their destruction order frees the pipeline's device
-    // objects before the context they live on). The applied scene copy is
-    // what the draw path consults to decide whether the offered video
-    // frame belongs to the background layer.
-    AvPlayer fAudio;
-    std::unique_ptr<PlaybackPipeline> fBackground;
-    openshow::scene::Background fAppliedBackground;        // identity in service
-    // Standalone production audio (task 6.15b, review R15). A SEPARATE
-    // AvPlayer, not the background's second mixer input: the background
-    // transport is torn down and rebuilt every time the scene's background
-    // identity changes, and a track riding it would restart at exactly the
-    // moment R15 says it must not. The player lives between a swap that
-    // started it and the next swap (or teardown); its sink is its own
-    // stream and PipeWire mixes the two audience-side, which is the honest
-    // shape — the session has no business folding two lifetimes into one
-    // graph just because one component could. The pending swap is the
-    // newest selection the RPC thread probed; the render thread applies it
-    // on the transport's own thread, where the background swap also runs.
-    AvPlayer fStandalonePlayer;
-    std::mutex fStandaloneSwapMutex;                       // guards fStandaloneSwap
-    std::optional<std::string> fStandaloneSwap;            // path to apply ("" = remove)
-    std::atomic<bool> fStandaloneLive{false};              // any thread (the swap writes)
-    std::string fStandalonePath;                           // render thread; "" = none
     ActiveScene fRenderScene;                              // = the composition's scene
     bool fBackgroundMedia = false;                         // from Options
-    std::optional<MediaError> fPendingMediaError;          // fMutex; media.error push
-    // Which fault the sticky fStatus.media.error describes, and the asset it
-    // describes (task 6.7c, review R18): recovery has to know which report
-    // it is allowed to erase. fMutex.
-    std::optional<std::pair<MediaFault, std::string>> fMediaFault;
-    // Why the ON-AIR background's audio cannot be heard, when the transport
-    // itself has no idea (task 6.7c, review R18). Set for the identity it
-    // describes, cleared by mediaStopped(). fMutex.
-    std::string fExpectedAudioLoss;
 
     // Guards the session-side state below and orders the calls the render
     // thread makes into the components this session coordinates. It may NEST
@@ -985,92 +562,43 @@ private:
     std::vector<DisplayInfo> fDisplays;
     Status fStatus;
 
-    // Preview pipeline (task 1.4). Desired state is set from the RPC
-    // thread and a generation counter drives creation/retirement on the
-    // render thread. The stream is shared_ptr'd because the RPC thread
-    // may hold it while answering a release exactly as the render thread
-    // retires it: destruction then defers to the last reference.
-    struct PreviewDesired {
-        bool enabled = false;
-        uint32_t width = 640;
-        uint32_t height = 360;
-        uint32_t fps = 15;
-        std::string name;  // shm object name when enabled
-        uint64_t generation = 0;
-    };
-    PreviewDesired fDesiredPreview;            // fMutex
-    uint32_t fPreviewRequestCounter = 0;       // fMutex, names the segments
-    uint64_t fAppliedPreviewGeneration = 0;    // render thread
-    std::shared_ptr<PreviewStream> fPreviewStream;  // fMutex
-    sk_sp<SkSurface> fPreviewSurface;          // render thread only
-    std::optional<PreviewReady> fPendingReady[protocol::kPreviewSlotCount];  // fMutex
-    std::chrono::steady_clock::time_point fLastPreview;  // render thread
-    // Audience timing budget (task 6.11a, review R13): no preview attempt
-    // before this instant, set when one cost more than the audience can lend.
-    std::chrono::steady_clock::time_point fPreviewDeferredUntil;  // render thread
-    // Content gate (task 1.5e): the preview republishes only when the
-    // presented frame changed since the last publish.
-    unsigned long long fPreviewPublishedFrames = 0;  // render thread
-    // The editor's off-air target (task 6.16a, review R16). The accepted
-    // scene is PINNED AT ACCEPT — a content copy of the store entry, exactly
-    // as a frame snapshot pins its present — because the store may evict the
-    // revision while the render thread works, and an edit vanishing halfway
-    // to the panel is the same race R4 found for presents.
-    struct SelectionDesired {
-        ActiveScene content;  // null: no selection, the stream mirrors alone
-        uint64_t revision = 0;
-        std::uint32_t request = 0;      // the accepted generation
-        std::uint32_t generation = 0;   // bumped per accepted change (the wake)
-    };
-    SelectionDesired fDesiredSelection;  // fMutex
-    // The generation the last SUCCESSFUL selection publish satisfied: a
-    // dropped or budget-deferred attempt leaves the ask owed, so one accepted
-    // request yields exactly one frame rather than a second stream. Written
-    // under fMutex, which is also where the run loop reads it to decide
-    // whether a preview wake is due.
-    std::uint32_t fAppliedSelectionGeneration = 0;
-    // The two targets share the stream's cadence and the audience's budget
-    // but keep their own last attempt, so neither can starve the other: a
-    // pass draws whichever of the owed targets has gone longest (this is the
-    // evidence for that choice).
-    std::chrono::steady_clock::time_point fLastSelection;  // render thread
+    // The prepare-time file work (task 6.9a, review R10): still decodes and
+    // the video probe leave the RPC thread for this bounded, cancellable
+    // worker. It is started by open() only in socket mode (fBackgroundMedia)
+    // and stopped at the very top of close(), so when stop() returns no
+    // completion can fire again and nothing this work touches — the image
+    // cache, the transport's fault lane — is torn down under it.
+    PrepareExecutor fPrepares;
 
-    // The list's batch (task 6.16b, review R16). One pending set, replaced
-    // wholesale per accepted request: the queue IS the coalescing, so a
-    // slide the operator has scrolled past stops being owed the moment a
-    // newer band arrives, and its memory goes with it. Bounded by
-    // kMaxThumbnailBatch, and every entry is a compiled scene the store has
-    // never held — no revision, no pin, nothing presentable — so a scrolled
-    // list cannot grow the show's picture memory or its 16-entry store.
-    std::vector<ThumbnailJob> fThumbnailQueue;  // fMutex
-    // The accepted batch generation, following preview.select's rule
-    // (strictly after, modulo 2^32). Distinct from the selection's own
-    // counter: two targets ask independently and neither can advance the
-    // other's.
-    std::uint32_t fThumbnailRequest = 0;        // fMutex
-    // Per-slide ids, handed out per accepted entry and named in each frame's
-    // `revision`. Non-zero: 0 means "no id", the same convention every other
-    // identity in this session uses.
-    std::uint32_t fThumbnailIdCounter = 0;      // fMutex
-    std::uint32_t fThumbnailWidth = 0;          // fMutex, the accepted extent
-    std::uint32_t fThumbnailHeight = 0;         // fMutex
-    // The companion compositor (task 6.16b): built on the command thread at
-    // the first batch (font setup belongs nowhere near a frame) and
-    // published under fMutex, which is also what makes the render thread's
-    // read of it safe. Shared text engine, own layout cache, own decoded
-    // images at a small budget. Null until the first ask.
-    //
-    // Shared rather than unique because the render thread draws with it: the
-    // command thread may drop it (an extent change discards its decode cache)
-    // while a thumbnail publish is in flight, and a raw pointer across that
-    // moment is a use-after-free with a codec in the middle. The publish
-    // takes its own reference under the lock and the last one out destroys.
-    std::shared_ptr<SceneRenderer> fThumbnailScene;  // fMutex
-    // The batch's own surface: the mirror's fPreviewSurface is the stream's
-    // size, and a target of a different size needs its own or the two
-    // thrash one allocation per pass.
-    sk_sp<SkSurface> fThumbnailSurface;              // render thread only
-    std::chrono::steady_clock::time_point fLastThumbnail;  // render thread
+    // The operator's picture (task 1.4; owner since 6.18a2 is
+    // PreviewProducer): the stream's lifecycle and generation rule, the
+    // three targets' cadence and the audience's timing budget, the editor's
+    // selection, the thumbnail queue and its decode policy, the slot
+    // ownership proof and the ready notifications. The session wakes it
+    // into existence with applyStreamState() at the top of a frame and
+    // hands it the frame the audience drew with drawTargets() after the
+    // present — frames in, slots out; the session holds no preview state
+    // of its own to fall out of step with. Its header owns the thread
+    // contract; the lock order is session -> producer, never the reverse.
+    // Declared after the GPU members so destruction releases its surfaces
+    // before the context they live on (close() releases them explicitly
+    // first).
+    PreviewProducer fPreview;
+
+    // The audience-side media (tasks 5.5–6.15b; owner since task 6.18b is
+    // BackgroundTransport): the background transport and its audio feeder,
+    // the standalone track, the video seam's slots and their leases, the
+    // intent slots, the typed fault table and the whole media status mirror.
+    // The loop drives it on its own thread (the ops pass, the scene-change
+    // swap ahead of the queue lock, the frame-commit and housekeep
+    // refreshes), the command verbs forward straight to it, and status()
+    // copies its mirror — the session holds no media state of its own to
+    // fall out of step with. The lock order is session -> transport, never
+    // the reverse, and nothing in it calls back. Declared after the GPU
+    // members, and close() (and its destructor) shut it down first, so the
+    // pipeline's device objects are released before the context they live
+    // on — the same rule that ordered it inside the session before.
+    BackgroundTransport fTransport;
 };
 
 }  // namespace openshow::worker
