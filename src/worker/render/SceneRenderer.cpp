@@ -200,17 +200,11 @@ private:
         std::uint64_t used = 0;  // the layout clock at its last hit
     };
 
-    // Four slots, least-recently-used. Two covered every frame of a fade
-    // when the audience was the only target; task 6.16a added a second one,
-    // and its scene is a COPY of a store entry pinned per accepted ask — a
-    // distinct pointer from the on-air scene even when the operator is
-    // looking at the slide already on air. A two-slot cache alternates
-    // between the targets and rebuilds both layouts on every pass, which is
-    // text shaping paid twice per frame for a preview that is supposed to
-    // cost the audience a quarter of one. Four holds the audience pair plus
-    // the edit and the one before it, so switching selection costs one
-    // rebuild and an idle show with a steady edit costs none (the fixture
-    // counts builds through fLayoutBuilds to prove exactly that).
+    // Four slots, least-recently-used: the audience's fade pair plus the
+    // selected edit scene and its predecessor. SceneStore shares one immutable
+    // instance per prepared revision, so selecting the on-air revision reuses
+    // its layout too. Switching selection costs one rebuild; a steady show
+    // and edit cost none (counted through fLayoutBuilds in the fixtures).
     static constexpr int kLayoutSlots = 4;
 
     // Returns the layout for `scene`, (re)building a slot when none holds

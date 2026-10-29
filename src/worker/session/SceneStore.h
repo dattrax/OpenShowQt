@@ -37,13 +37,14 @@
  *    unaffected.
  *
  * Thread rules: every method takes the store's own mutex, so a command thread
- * and the render thread may call concurrently. The capture cache and the
- * staged/landed fields are written only by the thread the session designates
+ * and the render thread may call concurrently. The staged/landed fields are
+ * written only by the thread the session designates
  * as the render thread (decide() and the land/commit pair); the command
  * methods are called from whatever thread the RPC server is on. The session
  * calls these methods while holding its own session mutex, so the lock order
- * is session mutex -> store mutex, never the reverse: the store calls nothing
- * back and never blocks on a caller, which is what lets a command thread hold
+ * is session mutex -> store mutex, never the reverse. The visitor passed to
+ * forEachPrepared() must not re-enter the store or acquire the session mutex.
+ * Command methods never call caller code, which lets a command thread hold
  * the store cheaply while the session's heavier work (decoding, transport
  * setup) happens OUTSIDE both locks, the way R10 asks for.
  */
@@ -80,9 +81,8 @@ public:
         uint64_t scene = 0;  // store id, 0 = nothing presented
         SceneTransitionKind kind = SceneTransitionKind::kFade;
         int monitor = -1;
-        // The scene's content, pinned at capture (one copy per scene id,
-        // cached here so capturing the same scene a thousand frames in a row
-        // allocates once). Without the pin a prepare after this capture could
+        // The scene's immutable content, shared with the store and previews.
+        // Without the pin a prepare after this capture could
         // evict the snapshot's entry before the frame applied it — the store
         // race R4 hid behind an apply-time read of the desired scene.
         ActiveScene content;
@@ -133,10 +133,11 @@ public:
     bool holds(uint64_t revision) const;
     // Shares the content of a held revision out (*out is null when it is not
     // held). A caller that intends to DRAW the revision takes a pin: entries
-    // are immutable per id, so the copy is the same content the store has, and
+    // are immutable per id, so it shares the content the store has, and
     // it outlives any later eviction of this id.
     bool pin(uint64_t revision, ActiveScene* out) const;
     // Hands every held scene to `visit`, oldest id first, under the store lock.
+    // The visitor must not re-enter this store or acquire the session mutex.
     // For a caller that must derive something from the whole held set (the
     // image-pin union, task 6.10) rather than look one id up.
     using SceneVisitor = std::function<void(const openshow::scene::Scene&)>;
@@ -214,7 +215,7 @@ private:
     // The bounded store and the id counter. 0 is skipped forever: it is the
     // sentinel for "nothing" in every report, so a minted id must never be 0
     // and, once handed out, must never describe a different scene.
-    std::map<uint64_t, openshow::scene::Scene> fScenes;
+    std::map<uint64_t, ActiveScene> fScenes;
     uint64_t fNextSceneId = 1;
 
     // Desired: what the newest accepted command asked for.
@@ -231,12 +232,6 @@ private:
 
     // Published: what a presented frame proved.
     Published fPublished;
-
-    // Snapshot capture cache (render thread, via decide() only): entries are
-    // immutable per id and the desired id is eviction-exempt, so the content
-    // copy one capture pins can be shared across every capture of that id.
-    uint64_t fCapturedSceneId = 0;
-    ActiveScene fCapturedScene;
 };
 
 }  // namespace openshow::worker

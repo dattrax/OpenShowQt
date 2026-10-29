@@ -1,5 +1,10 @@
 # M6 code and architecture review
 
+Historical baseline review. Many findings below have since been fixed; use
+[PLAN.md](../PLAN.md#m6--code-review-remediation-and-architecture) for current
+task status and the [2026-10-29 architecture audit](architecture.md) for current
+boundaries and unresolved differences. Original observations/evidence follow.
+
 Reviewed: 2026-10-25 (Europe/London). Baseline: `1f44b7e` plus the existing
 six-line transport-clock log change in `OutputSession.cpp`. That working change
 was preserved. This review changes documentation only; the fixes below are TODO.

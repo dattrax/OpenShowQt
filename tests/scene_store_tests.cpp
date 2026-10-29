@@ -449,10 +449,20 @@ void walkVisitsExactlyWhatIsHeld() {
     check(ascending, "walk: oldest id first");
 }
 
-// --- a pinned copy outlives the store's memory of it ------------------------
+// --- a pinned instance outlives the store's memory of it --------------------
 void pinnedContentOutlivesEviction() {
     SceneStore store;
-    const std::uint64_t a = store.prepare(makeScene("a"));
+    auto source = makeScene("a");
+    const std::uint64_t a = store.prepare(source);
+    source.items.front().lines = {"edited after prepare"};
+    ActiveScene preview;
+    ActiveScene repeatedPreview;
+    check(store.pin(a, &preview) && store.pin(a, &repeatedPreview),
+          "pin: the prepared revision is available to previews");
+    check(preview && *preview == makeScene("a"),
+          "prepare: later source edits cannot change stored content");
+    check(preview && preview == repeatedPreview,
+          "pin: repeated preview selections share one immutable instance");
     store.present(a, SceneTransitionKind::kFade, nullptr, nullptr);
 
     SceneStore::Decision first;
@@ -460,7 +470,12 @@ void pinnedContentOutlivesEviction() {
     SceneStore::Decision second;
     store.decide(&second);
     check(first.snapshot.content.get() == second.snapshot.content.get(),
-          "capture: repeated captures of one scene id share one content copy");
+          "capture: repeated captures of one scene id share one instance");
+    check(first.snapshot.content == preview,
+          "capture: output and selected preview share scene and layout identity");
+    store.forEachPrepared([&](const openshow::scene::Scene& scene) {
+        check(&scene == preview.get(), "walk: visits the same immutable stored instance");
+    });
     check(first.snapshot.content.use_count() >= 3, "capture: the pin is a real shared reference");
 
     // Move on, then churn the store past its cap so entry `a` is evicted for

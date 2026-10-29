@@ -40,7 +40,7 @@ public:
     // text-only model: a whole service is a few kilobytes.
     static constexpr std::size_t kMaxDepth = 128;
 
-    // History must outlive its Documents (it holds a pointer, and
+    // Documents must outlive its History (it holds a pointer, and
     // snapshots are independent copies).
     explicit History(Documents* documents);
 

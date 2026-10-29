@@ -14,9 +14,12 @@
 namespace openshow::worker {
 
 uint64_t SceneStore::prepare(const openshow::scene::Scene& scene) {
+    // Copy once at the ownership boundary, before taking the store lock.
+    // All later pins and frame snapshots share this immutable instance.
+    auto content = std::make_shared<const openshow::scene::Scene>(scene);
     std::lock_guard<std::mutex> lock(fMutex);
     const uint64_t id = fNextSceneId++;
-    fScenes[id] = scene;
+    fScenes.emplace(id, std::move(content));
     // Bounded store: evict the oldest revision nobody can present again. The
     // desired id is exempt because its command has been accepted and the frame
     // that reveals it has not run yet; the landed id is exempt because it is
@@ -55,11 +58,8 @@ bool SceneStore::pin(uint64_t revision, ActiveScene* out) const {
         }
         return false;
     }
-    // A copy of the entry, shared with whoever asks: entries are immutable per
-    // id, so this is the same content, and it survives this store letting the
-    // id go.
     if (out != nullptr) {
-        *out = std::make_shared<const openshow::scene::Scene>(entry->second);
+        *out = entry->second;
     }
     return true;
 }
@@ -67,7 +67,7 @@ bool SceneStore::pin(uint64_t revision, ActiveScene* out) const {
 void SceneStore::forEachPrepared(const SceneVisitor& visit) const {
     std::lock_guard<std::mutex> lock(fMutex);
     for (const auto& entry : fScenes) {
-        visit(entry.second);
+        visit(*entry.second);
     }
 }
 
@@ -149,17 +149,8 @@ void SceneStore::decide(Decision* out) {
     out->snapshot.scene = fDesiredScene;
     out->snapshot.kind = fDesiredKind;
     out->snapshot.monitor = fDesiredMonitor;
-    if (out->snapshot.scene != fCapturedSceneId) {
-        // Entries are immutable per id and the desired id is eviction-exempt,
-        // so the lookup under this same lock is the one pin the snapshot needs
-        // (shared across all captures of one scene id).
-        const auto entry = fScenes.find(out->snapshot.scene);
-        fCapturedScene = entry != fScenes.end()
-                             ? std::make_shared<const openshow::scene::Scene>(entry->second)
-                             : nullptr;
-        fCapturedSceneId = out->snapshot.scene;
-    }
-    out->snapshot.content = fCapturedScene;
+    const auto entry = fScenes.find(out->snapshot.scene);
+    out->snapshot.content = entry != fScenes.end() ? entry->second : nullptr;
 }
 
 void SceneStore::seed(uint32_t mask, int monitor) {
