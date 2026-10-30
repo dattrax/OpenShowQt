@@ -318,7 +318,7 @@ Checkpoint: `M6: close code review and graduate production architecture`.
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
 | 6.21a | DONE | Keep drawn text layouts alive across concurrent preparation | Layout-cache slots hold shared handles; a draw retains what it paints through eviction, same-key replacement and a concurrent prepare churn (`scene_render_tests`); F1 |
-| 6.21b | TODO | Adopt foreground-image paths in every retained scene payload | Recovered foreground image survives save, scratch deletion, clear/restore and in-flight prepare; F2 |
+| 6.21b | DONE | Adopt foreground-image paths in every retained scene payload | Adoption rewrites every path-bearing item as well as the background; the scripted-peer fixture drives present→adopt→clear-all→restore twice, once with the adoption landing mid-prepare, asserting per-prepare item paths (`worker_controller_tests`); F2. Real-worker adoption coverage joins the 6.21g journey |
 | 6.21c | TODO | Finish off-render media startup, pre-roll and retirement | Slow audio startup and old-transport retirement cannot stall audience frames; retain GPU thread ownership; F3 |
 | 6.21d | TODO | Move thumbnail file decoding off the RPC thread | Cold thumbnail decode leaves status, release, commands and shutdown responsive; F5 |
 | 6.21e | TODO | Clear gradient backgrounds and report their live state correctly | Black-to-colour gradient enables clear; clearing yields uniform black with correct flags; F4 |

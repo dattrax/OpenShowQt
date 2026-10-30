@@ -172,10 +172,13 @@ void PresentationModel::adoptAssetPaths(const QVariantMap& pathMap) {
     if (pathMap.isEmpty()) {
         return;
     }
-    // One payload's rewrite: the new JSON when background.assetPath named a
-    // path this save moved, empty for anything else — an unreadable payload
-    // or one that does not name the file is left exactly as it was, because
-    // there is nothing here that was made stale by the move.
+    // One payload's rewrite: the new JSON when ANY assetPath this save moved
+    // appears in it — the background's pair since 6.12, and since 6.21b
+    // (review F2) the `assetPath` of every image ITEM too, because a
+    // foreground picture is just as much the operator's file as a background
+    // one. Empty for anything else — an unreadable payload or one that does
+    // not name the file is left exactly as it was, because there is nothing
+    // here that was made stale by the move.
     const auto rewrite = [&pathMap](const QString& sceneJson) {
         if (sceneJson.isEmpty()) {
             return QString();
@@ -185,19 +188,34 @@ void PresentationModel::adoptAssetPaths(const QVariantMap& pathMap) {
         if (parseError || !parsed.is_object()) {
             return QString();
         }
+        bool changed = false;
+        const auto repoint = [&pathMap, &changed](boost::json::object& holder) {
+            const auto path = holder.find("assetPath");
+            if (path == holder.end() || !path->value().is_string()) {
+                return;
+            }
+            const QString oldPath = QString::fromStdString(std::string(path->value().as_string()));
+            if (!pathMap.contains(oldPath)) {
+                return;
+            }
+            path->value() = pathMap.value(oldPath).toString().toStdString();
+            changed = true;
+        };
         const auto background = parsed.as_object().find("background");
-        if (background == parsed.as_object().end() || !background->value().is_object()) {
+        if (background != parsed.as_object().end() && background->value().is_object()) {
+            repoint(background->value().as_object());
+        }
+        const auto items = parsed.as_object().find("items");
+        if (items != parsed.as_object().end() && items->value().is_array()) {
+            for (auto& element : items->value().as_array()) {
+                if (element.is_object()) {
+                    repoint(element.as_object());
+                }
+            }
+        }
+        if (!changed) {
             return QString();
         }
-        const auto path = background->value().as_object().find("assetPath");
-        if (path == background->value().as_object().end() || !path->value().is_string()) {
-            return QString();
-        }
-        const QString oldPath = QString::fromStdString(std::string(path->value().as_string()));
-        if (!pathMap.contains(oldPath)) {
-            return QString();
-        }
-        path->value() = pathMap.value(oldPath).toString().toStdString();
         return QString::fromStdString(boost::json::serialize(parsed));
     };
 

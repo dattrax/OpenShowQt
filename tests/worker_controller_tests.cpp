@@ -556,6 +556,27 @@ private:
                 if (slide != params.end() && slide->value().is_string()) {
                     slideId = std::string(slide->value().as_string());
                 }
+                // Task 6.21b (review F2): and every PATH-BEARING ITEM. A
+                // foreground picture is the operator's file just as much as
+                // a background one, so the adoption fixture asserts over
+                // these too — space-joined, in stack order, per prepare.
+                std::string itemPaths;
+                const auto items = params.find("items");
+                if (items != params.end() && items->value().is_array()) {
+                    for (const auto& element : items->value().as_array()) {
+                        if (!element.is_object()) {
+                            continue;
+                        }
+                        const auto path = element.as_object().find("assetPath");
+                        if (path != element.as_object().end() && path->value().is_string()) {
+                            if (!itemPaths.empty()) {
+                                itemPaths += " ";
+                            }
+                            itemPaths += std::string(path->value().as_string());
+                        }
+                    }
+                }
+                fItemPaths.push_back(std::move(itemPaths));
             }
             fAssetPaths.push_back(std::move(assetPath));
             if (fScenario == "die-first-prepare" && fPrepares == 1) {
@@ -1118,6 +1139,10 @@ private:
         for (const std::string& assetPath : fAssetPaths) {
             assetPaths.emplace_back(assetPath);
         }
+        boost::json::array foregroundPaths;
+        for (const std::string& itemPath : fItemPaths) {
+            foregroundPaths.emplace_back(itemPath);
+        }
         boost::json::object methods;
         std::int64_t total = 0;
         for (const auto& counted : fMethodCounts) {
@@ -1131,6 +1156,7 @@ private:
             {"unknown", fUnknown},
             {"presented", std::move(presented)},
             {"assetPaths", std::move(assetPaths)},
+            {"foregroundPaths", std::move(foregroundPaths)},
             {"methods", std::move(methods)},
             {"requests", total},
             {"bytesReceived", fBytesReceived},
@@ -1511,6 +1537,7 @@ private:
     std::vector<DelayedReply> fQueue;  // slow-first: acks awaiting their due
     std::vector<int> fPresented;       // revisions the controller went to
     std::vector<std::string> fAssetPaths;  // each prepare's background file (task 6.12)
+    std::vector<std::string> fItemPaths;   // and its path-bearing items, space-joined (task 6.21b)
     // Task 6.15a (review R15): the scripted transport's state and the
     // verbatim ledger of the media.* commands that moved it. The peer starts
     // as a live, playing, looping 6 s clip with one registered audio source.
@@ -1699,6 +1726,20 @@ std::string sceneStill(const char* slideId, const std::string& assetPath) {
     scene.background.hasImage = true;
     scene.background.assetId = std::string("asset-") + slideId;
     scene.background.assetPath = assetPath;
+    return boost::json::serialize(scene::toJson(scene));
+}
+
+// Task 6.21b (review F2): a text line PLUS a foreground picture item — the
+// payload shape the background-only adoption fixtures never sent. The peer's
+// per-prepare item ledger asserts on these paths.
+std::string sceneForeground(const char* slideId, const std::string& assetPath) {
+    scene::Scene scene = authoredScene({"FG SCENE"}, 0xFFFFFFu);
+    scene.slideId = slideId;
+    scene::SceneItem picture;
+    picture.isImage = true;
+    picture.assetId = std::string("asset-") + slideId;
+    picture.assetPath = assetPath;
+    scene.items.push_back(std::move(picture));
     return boost::json::serialize(scene::toJson(scene));
 }
 
@@ -2772,6 +2813,130 @@ void scenarioAdoptedPaths() {
     }
 }
 
+// Task 6.21b (review F2): adoption must rewrite the ITEMS too, not just the
+// background. The S12 journey again — but with a foreground picture, the
+// shape no background-only fixture ever sent: present text plus image,
+// adopt the old path, clear ALL (the retained snapshot is the
+// foreground-bearing payload), restore. Round two adopts WHILE the picture's
+// own prepare is still in flight, so the rewrite proven is the one against
+// the ask the transport holds and everything derived from it — mirror,
+// desired content, clear snapshot, restore — not merely against a settled
+// payload. The peer's per-prepare item ledger is the evidence: no prepare
+// after an adoption names the deleted path, and both restores come back
+// wearing the service path.
+void scenarioAdoptedForeground() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
+    const std::string report = tempPath("adoptfg");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "adoptfg: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    // The review's own filenames: a recovered autosave file the save moved
+    // into the package.
+    const QString oldPath = QStringLiteral("/old/autosave/assets/picture.png");
+    const QString newPath = QStringLiteral("/package/assets/picture.png");
+
+    // Round one: the settled adoption — the go's prepare has acked, so the
+    // re-prepare the adoption owes is the only new traffic.
+    controller.presentSceneJson(
+        QString::fromStdString(sceneForeground("FG-A", oldPath.toStdString())));
+    if (!check(waitUntil([&controller] {
+                   return controller.sceneActive() == 1 && controller.scenePending() == 0;
+               }),
+               "adoptfg: the foreground scene naming the original path is on air")) {
+        controller.shutdownNow();
+        return;
+    }
+    controller.adoptAssetPaths({{oldPath, newPath}});
+    check(waitUntil([&controller] {
+              return controller.scenePrepared() == 2 && controller.scenePending() == 0;
+          }),
+          "adoptfg: the owed scene was re-prepared with the service path");
+    check(controller.sceneActive() == 1,
+          "adoptfg: the re-prepare was not a go - the audience never moved");
+
+    // Clear-all retains the FOREGROUND payload and restore re-prepares it:
+    // the snapshot is exactly the thing the adoption had to rewrite.
+    controller.clearAll();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 3 && controller.scenePending() == 0;
+          }),
+          "adoptfg: the clear-all presented over the adopted payload");
+    controller.restoreOutput();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 4 && controller.scenePending() == 0;
+          }),
+          "adoptfg: the restore brought the adopted foreground back");
+
+    // Round two: the adoption lands while the picture's own prepare is
+    // still in flight — no event loop spins between the present and the
+    // adoption — so what the rewrite catches is the ask on the transport
+    // and every payload derived from it after the ack.
+    controller.presentSceneJson(
+        QString::fromStdString(sceneForeground("FG-B", oldPath.toStdString())));
+    controller.adoptAssetPaths({{oldPath, newPath}});
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 5 && controller.scenePending() == 0;
+          }),
+          "adoptfg: the in-flight round settled with the scene on air");
+    controller.clearAll();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 7 && controller.scenePending() == 0;
+          }),
+          "adoptfg: the in-flight round's clear-all presented");
+    controller.restoreOutput();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 8 && controller.scenePending() == 0;
+          }),
+          "adoptfg: the in-flight round's restore names the service path too");
+
+    controller.shutdownNow();
+    const boost::json::object counts = readReport(report);
+
+    // The item ledger, entry per prepare in order. The two original goes
+    // necessarily named the operator's file — it was on the wire before the
+    // adoption existed — and nothing after an adoption may name it again.
+    // The adoption's re-prepares and both restores name the service path;
+    // the clear-alls name no file at all.
+    std::vector<std::string> itemPaths;
+    if (const auto entry = counts.find("foregroundPaths");
+        entry != counts.end() && entry->value().is_array()) {
+        for (const auto& value : entry->value().as_array()) {
+            if (value.is_string()) {
+                itemPaths.push_back(std::string(value.as_string()));
+            }
+        }
+    }
+    std::string joined;
+    for (const std::string& path : itemPaths) {
+        joined += (joined.empty() ? "" : " | ") + path;
+    }
+    const std::string o = oldPath.toStdString();
+    const std::string n = newPath.toStdString();
+    const std::vector<std::string> want{o, n, "", n, o, n, "", n};
+    bool ledgerOk = itemPaths.size() == want.size();
+    for (std::size_t i = 0; ledgerOk && i < want.size(); ++i) {
+        ledgerOk = itemPaths[i] == want[i];
+    }
+    check(ledgerOk,
+          ("adoptfg: every prepare carried the item path it should - the deleted path never "
+           "named again, both restores service paths (got [" +
+           joined + "])")
+              .c_str());
+    check(reportNumber(counts, "presents") == 6,
+          "adoptfg: six presents - two goes, two clear-alls, two restores; the adoptions "
+          "themselves added none");
+}
+
 }  // namespace
 
 // S13 (the R15 UI half): the media properties bind to WORKER status, never
@@ -3640,6 +3805,7 @@ int main(int argc, char* argv[]) {
     scenarioWriteStallIsRefusedBoundedAndClosed();
     scenarioStalledThenResumingPeerKeepsItsSession();
     scenarioAdoptedPaths();
+    scenarioAdoptedForeground();
     scenarioMediaTransport();
     scenarioSelectionPreview();
     scenarioThumbnailPreview();

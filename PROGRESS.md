@@ -18,13 +18,22 @@ concurrent prepare-vs-draw churn in `scene_render_tests` (exact pixel
 equality per frame). F1's R16 row is closed in
 [architecture.md](docs/architecture.md).
 
+**6.21b is DONE**: `adoptAssetPaths()` rewrites every path-bearing scene
+item, not just `background.assetPath`, across the revision mirror,
+in-flight prepares, desired content and the restore snapshot. The scripted
+peer now keeps a per-prepare item-path ledger, and the new
+`worker_controller_tests` scenario drives present→adopt→clear-all→restore
+twice — once adopting while the go's prepare is still in flight — asserting
+the deleted path is never named again and both restores carry the service
+path. F2's R7 row is closed; the real-worker adoption run belongs to 6.21g.
+
 ## Remaining 6.21 gaps
 
-F2 (foreground-image adoption), F3 (audio startup/pre-roll and transport
-retirement on the render thread), F5 (cold thumbnail decode on the RPC
-thread), F4 (gradient clears), F6 (foreground-error visibility) and F7 (real
-frontend journey fixture). The review holds source locations, reproduced
-evidence and required regressions for each.
+F3 (audio startup/pre-roll and transport retirement on the render thread),
+F5 (cold thumbnail decode on the RPC thread), F4 (gradient clears),
+F6 (foreground-error visibility) and F7 (real frontend journey fixture).
+The review holds source locations, reproduced evidence and required
+regressions for each.
 
 ## Verification
 
@@ -32,8 +41,8 @@ evidence and required regressions for each.
 |---|---|
 | `cmake --build --preset headless -j 2` | PASS |
 | `cmake --build --preset desktop -j 2` | PASS |
-| `ctest --preset desktop` with local-session access | 54/54 PASS, 247.75 s; all 13 display-labelled checks, 137.43 sec*proc |
-| `ctest --preset headless` | 32/32 PASS, 51.85 s; sandboxed, live PipeWire subscenarios internally skipped |
+| `ctest --preset desktop` with local-session access | 54/54 PASS, 251.55 s; all 13 display-labelled checks, 137.26 sec*proc |
+| `ctest --preset headless` | 32/32 PASS, 51.65 s; sandboxed, live PipeWire subscenarios internally skipped |
 | `scene_render_tests` standalone | PASS 3× in each build tree (churn fixture included) |
 
 The successful desktop run used RADV on the AMD Radeon 890M. Do not run both
@@ -42,10 +51,11 @@ PID-named temporary directory, and desktop needs local-session access.
 
 ## Next action
 
-**6.21b**: `PresentationModel::adoptAssetPaths()` must rewrite foreground
-image paths in items, not just `background.assetPath`. Drive the real model:
-present text + foreground image → adopt old path → clear all → restore,
-including adoption during an in-flight prepare, asserting the service paths
-reach the prepare/restore payloads. Then 6.21c (split it before starting if
-it exceeds a day), 6.21d–g. M7.1a–c recovery, 7.2 budgets, 7.3 packaging and
-7.4 hardware rehearsal remain TODO.
+**6.21c** (F3): move the audio start probe/feeder-open/PipeWire negotiation
+and pre-roll, and the old transport's stop/join/close, off the render thread
+(sites: `OutputSession.cpp:884`, `BackgroundTransport.cpp:1048/1066/1186`
+and the standalone swap at 580–606), keeping GPU attach/destroy and explicit
+quiescence on the render thread; fixture observes audience frame gaps under
+slow audio open and slow retirement. Split it before starting if it exceeds
+a day. Then 6.21d–g. M7.1a–c recovery, 7.2 budgets, 7.3 packaging and 7.4
+hardware rehearsal remain TODO.
