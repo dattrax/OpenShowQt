@@ -620,9 +620,9 @@ bool OutputSession::requestThumbnails(const std::vector<ThumbnailEntry>& batch,
 }
 
 bool OutputSession::pumpThumbnailDecode() {
-    // One decode per call happens on this (RPC) thread, outside both the
-    // producer lock and the session lock. True means a job settled: a head
-    // that just became ready is owed a frame.
+    // Advances (never waits on) the thumbnail decode lane, outside both the
+    // producer lock and the session lock. True means a decode finished and
+    // settled here: a head that just became ready is owed a frame.
     const bool settled = fPreview.pumpThumbnailDecode();
     if (settled) {
         wakeRenderThread();

@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "include/core/SkBitmap.h"
@@ -397,6 +398,24 @@ void lookaheadAndDecodes(SceneRenderer* audience) {
     std::string error;
     PreviewProducer::ThumbnailAck ack;
 
+    // The lane (task 6.21d, review F5): a pump call hands ONE file to the
+    // decode thread or collects a finished one, and never waits. Settling
+    // therefore spans two calls; the helper pumps until a settle so the
+    // assertions stay about what the lane settles, not about how many
+    // collects the thread needed.
+    const auto pumpDecodeSettled = [](PreviewProducer& pumpTarget,
+                                      int timeoutMs = 5000) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (pumpTarget.pumpThumbnailDecode()) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return false;
+    };
+
     const std::string dir = "/tmp/opencode/preview-producer-tests";
     ::mkdir(dir.c_str(), 0755);
     std::vector<std::string> pngs;
@@ -432,11 +451,11 @@ void lookaheadAndDecodes(SceneRenderer* audience) {
 
     bool fourDecoded = true;
     for (int i = 0; i < 4 && fourDecoded; ++i) {
-        fourDecoded = producer.pumpThumbnailDecode();
+        fourDecoded = pumpDecodeSettled(producer);
     }
-    check(fourDecoded, "each of the first four pumps decodes exactly one");
+    check(fourDecoded, "each of the first four files goes through the lane, one at a time");
     check(producer.status().thumbnails.decodePending == 2, "four decodes leave a debt of two");
-    check(!producer.pumpThumbnailDecode(),
+    check(!producer.pumpThumbnailDecode() && !producer.pumpThumbnailDecode(),
           "the fifth pump stands down: the lookahead is a bound, not a suggestion");
     check(producer.status().thumbnails.decodePending == 2, "standing down decodes nothing");
 
@@ -468,7 +487,7 @@ void lookaheadAndDecodes(SceneRenderer* audience) {
     missing.scene = makeImageScene("gone", dir + "/does-not-exist.png");
     check(producer.requestThumbnails({missing}, 64, 64, 3, &ack, &error),
           "a slide with a missing file is still accepted");
-    check(producer.pumpThumbnailDecode(), "the failed decode settles the slide");
+    check(pumpDecodeSettled(producer), "the failed decode settles the slide");
     check(producer.status().thumbnails.decodePending == 0,
           "a failed picture is settled, not pending");
 }

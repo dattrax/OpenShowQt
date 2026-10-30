@@ -65,6 +65,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -73,6 +74,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "include/core/SkRefCnt.h"
@@ -207,18 +209,19 @@ public:
                            uint32_t height, std::uint32_t request, ThumbnailAck* ack,
                            std::string* error);
 
-    // Decodes at most ONE thumbnail background, on the CALLER's thread
-    // (the RPC loop, which wakes periodically). The rule that keeps the
-    // render thread clean (task 6.10) is that a draw never opens a file,
-    // so the pictures a thumbnail needs have to be decoded somewhere else,
-    // and the command thread is the only one with nothing frame-shaped to
-    // protect. One per wake is the bound: a show's socket answers commands
-    // in the gaps between decodes rather than after all thirty of them.
-    // Jobs whose scene has no still, or whose picture is already cached,
-    // are settled on the spot — the one thing this call never does twice
-    // is open a file. Returns true when it settled at least one job (so
-    // the caller wakes the render thread and can keep going while there is
-    // nothing else to do).
+    // Advances the thumbnail decode lane, on the CALLER's thread (the RPC
+    // loop, which wakes periodically). The rule that keeps the render thread
+    // clean (task 6.10) is that a draw never opens a file, so the pictures a
+    // thumbnail needs have to be decoded somewhere else — and since 6.21d
+    // (review F5) even the command thread does not read the file inline:
+    // one call at most HANDS one path to the lane (a single worker thread,
+    // the bound this feature keeps), collects a finished decode and settles
+    // it, and never waits. Settled-without-codec work (nothing to decode, or
+    // already cached) still completes on the spot. Returns true when a call
+    // settled at least one job (so the caller wakes the render thread); a
+    // lane mid-file answers false and the caller keeps serving commands —
+    // the whole point, since one slow cold file used to hold status,
+    // release, present and shutdown for its every millisecond.
     bool pumpThumbnailDecode();
 
     // The consumer finished copying slot@seq of the named stream; the slot
@@ -295,7 +298,7 @@ public:
         // says a batch stands (its request and extent are the accepted
         // ones); `queued` counts the slides not yet drawn, and
         // `decodePending` the ones waiting on a background decode that runs
-        // on the command thread — the pair is what distinguishes "the
+        // on the thumbnail lane — the pair is what distinguishes "the
         // worker is working through the list" from "the worker is idle with
         // a list it will never draw". published/dropped/deferred/stale are
         // the same three questions as the other two targets, plus the
@@ -530,6 +533,25 @@ private:
     std::uint32_t fThumbnailIdCounter = 0;  // fMutex
     std::uint32_t fThumbnailWidth = 0;      // fMutex, the accepted extent
     std::uint32_t fThumbnailHeight = 0;     // fMutex
+
+    // The decode lane (task 6.21d, review F5). ONE worker thread, at most
+    // one file in flight: the pump hands it a path, never waits, and the
+    // NEXT pump call publishes the finished picture (install + settle by
+    // path, under fMutex — the same tail the inline decode had, and just as
+    // tolerant of a batch replaced mid-file). The struct is command-thread
+    // state — only pumpThumbnailDecode() and the destructor touch the
+    // unique_ptr — and the worker writes ONLY its own fields before raising
+    // `done` (release), so the publishing read is ordered. No producer lock
+    // is held across the file: that is the whole finding. Shutdown joins
+    // the lane (a decode is bounded by the file), publishing nothing.
+    struct ThumbnailDecodeLane {
+        std::string path;             // the file this lane reads (command thread)
+        sk_sp<SkImage> image;         // the worker's answer; null on failure
+        std::string error;            // and what the codec said, if anything
+        std::atomic<bool> done{false};
+        std::thread worker;
+    };
+    std::unique_ptr<ThumbnailDecodeLane> fThumbnailDecode;  // command thread
 
     // The companion compositor (task 6.16b): built on the command thread
     // at the first batch (font setup belongs nowhere near a frame) and

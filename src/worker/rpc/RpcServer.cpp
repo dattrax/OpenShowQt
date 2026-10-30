@@ -329,14 +329,17 @@ void RpcServer::serve(int connectionFd) {
         // Collecting is not writing — no session lock is held anywhere near the
         // socket, which is the other half of what R11 asked for.
         //
-        // One thumbnail background per tick (task 6.16b, review R16). The
-        // rule that keeps a frame clean is that a draw never opens a file
-        // (task 6.10), so the pictures a slide list needs are decoded HERE,
-        // on the thread with nothing frame-shaped to protect — and ONE per
-        // tick, because this is also the thread that answers the operator's
-        // present. A band of thirty backdrops decodes over thirty ticks: the
-        // list fills in over a second and a half while every command is
-        // answered inside the tick it arrived in. With no batch queued this
+        // Advance the thumbnail lane once per tick (task 6.16b, review R16;
+        // moved off this thread's file time by 6.21d, review F5). The rule
+        // that keeps a frame clean is that a draw never opens a file (task
+        // 6.10), so the pictures a slide list needs are decoded outside the
+        // render thread — and since F5 the command thread does not read one
+        // either: THIS tick collects a finished decode or hands the next
+        // path to the lane, and keeps answering the operator meanwhile.
+        // One file in flight, so a band of thirty backdrops still fills the
+        // list over thirty ticks while every command is answered inside the
+        // tick it arrived in — plus the tick a slow file takes to finish,
+        // which is nobody's block any more. With no batch queued this
         // returns after one locked check of an empty vector.
         fSession.pumpThumbnailDecode();
         std::vector<QueuedFrame> notifications;

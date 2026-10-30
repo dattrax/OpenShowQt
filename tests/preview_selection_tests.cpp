@@ -89,6 +89,10 @@ const std::string gSocket =
 // asks so the first is definitely mid-flight when the second arrives.
 constexpr int kFaultPreviewMs = 250;
 constexpr int kAskLeadMs = 80;
+// Task 6.21d (review F5): the armed cost of one cold THUMBNAIL file, and
+// the substring that names the fixture's files as its subject.
+constexpr int kFaultThumbnailDecodeMs = 600;
+constexpr const char* kThumbnailFaultMatch = "slow-thumb";
 
 // Scene colours: far apart in one channel each, so "which scene are these
 // pixels" is a mean, not a comparison against a reference image.
@@ -96,12 +100,22 @@ constexpr std::uint32_t kRed = 0xFF0000u;
 constexpr std::uint32_t kGreen = 0x00FF00u;
 constexpr std::uint32_t kBlue = 0x0000FFu;
 
-pid_t spawnWorker(bool armFault) {
+enum WorkerFault {
+    kNoFault,
+    kPreviewDraw,      // one preview draw costs real milliseconds (6.11a)
+    kThumbnailDecode,  // one cold thumbnail file does (task 6.21d, review F5)
+};
+
+pid_t spawnWorker(int fault) {
     const pid_t pid = fork();
     if (pid == 0) {
-        if (armFault) {
+        if (fault == kPreviewDraw) {
             ::setenv("OPENSHOW_FAULT_PREVIEW_MS", std::to_string(kFaultPreviewMs).c_str(),
                      1);
+        } else if (fault == kThumbnailDecode) {
+            ::setenv("OPENSHOW_FAULT_THUMBNAIL_DECODE_MS",
+                     std::to_string(kFaultThumbnailDecodeMs).c_str(), 1);
+            ::setenv("OPENSHOW_FAULT_THUMBNAIL_DECODE_MATCH", kThumbnailFaultMatch, 1);
         }
         execl(gWorkerBinary.c_str(), "openshow-worker", "--socket", gSocket.c_str(),
               "--monitor", "-1", static_cast<char*>(nullptr));
@@ -1758,6 +1772,138 @@ void testSupersededDrawIsDestroyed(std::int64_t& nextId, int fd, std::uint64_t g
     check(fieldValue(selection, "request") == 2, "the accepted generation is the newer ask");
 }
 
+// Task 6.21d (review F5): the cold thumbnail file no longer reads itself on
+// the RPC pump. The scenario arms a 600 ms decode cost on files matching
+// kThumbnailFaultMatch and watches the boundary the operator feels: through
+// the whole scripted read, status and release keep answering (the old pump
+// decoded the file inline — every command waited its full cost); the batch
+// mirror honestly says the decode is owed while the lane reads; the picture
+// still arrives, decoded from the file and not from the fill behind it; and
+// a shutdown issued mid-file is answered, drains the lane, and exits clean
+// inside the file's own bound.
+void testThumbnailDecodeOffLoop(std::int64_t& nextId, int fd, pid_t worker) {
+    const std::string dir = "/tmp/opencode/preview-thumbnail-fault-" +
+                            std::to_string(static_cast<long>(::getpid()));
+    ::mkdir(dir.c_str(), 0755);
+    const std::string slowOne = dir + "/slow-thumb-one.png";
+    const std::string slowTwo = dir + "/slow-thumb-two.png";
+    if (!check(writePng(slowOne, "0x30E0F0", 1200, 675),
+               "a 1200x675 PNG is staged as the slow thumbnail") ||
+        !check(writePng(slowTwo, "0xF030E0", 1200, 675), "and a second for the mid-file exit")) {
+        return;
+    }
+    boost::json::value reply;
+
+    // One accepted slow row. The tick that reads the ask also hands the
+    // file to the lane, so the window below starts with the read running.
+    const ThumbnailAck slow =
+        askThumbnails(fd, nextId,
+                      boost::json::array{listEntry("slow-row", stillScene("T1", slowOne, kRed))},
+                      160, 90, 1);
+    if (!check(slow.ok && slow.accepted.size() == 1,
+               ("the slow row is accepted: " + slow.error).c_str())) {
+        return;
+    }
+
+    double worstStatusMs = 0.0;
+    double worstReleaseMs = 0.0;
+    std::uint64_t samples = 0;
+    std::uint64_t pendingSamples = 0;
+    const auto window = std::chrono::steady_clock::now();
+    while (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - window)
+               .count() < kFaultThumbnailDecodeMs - 120) {
+        const auto sent = std::chrono::steady_clock::now();
+        const boost::json::object result = status(fd, nextId);
+        worstStatusMs =
+            std::max(worstStatusMs,
+                     std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - sent)
+                         .count());
+        std::uint64_t pending = 0;
+        const auto preview = result.find("preview");
+        if (preview != result.end() && preview->value().is_object()) {
+            const auto thumb = preview->value().as_object().find("thumbnail");
+            if (thumb != preview->value().as_object().end() && thumb->value().is_object()) {
+                pending = fieldValue(thumb->value().as_object(), "decodePending");
+            }
+        }
+        ++samples;
+        pendingSamples += pending >= 1 ? 1 : 0;
+        // A release the producer will drop (it names no live frame) is
+        // still a command the pump must reach and answer — that is the
+        // half of the finding the status probe cannot see.
+        const auto releaseSent = std::chrono::steady_clock::now();
+        const bool released =
+            call(fd, nextId++, proto::kMethodPreviewReleased,
+                 boost::json::object{{"slot", 0},
+                                     {"seq", 999999},
+                                     {"stream", "thumbnail-fault-probe"}},
+                 &reply) &&
+            reply.as_object().contains("result");
+        worstReleaseMs =
+            std::max(worstReleaseMs,
+                     std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - releaseSent)
+                         .count());
+        if (!released) {
+            check(false, "a release during the decode was not answered at all");
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
+    std::fprintf(stderr,
+                 "6.21d: through a %d ms cold thumbnail decode the RPC answered status in <= "
+                 "%.1f ms and release in <= %.1f ms (%llu samples, decode owed in %llu)\n",
+                 kFaultThumbnailDecodeMs, worstStatusMs, worstReleaseMs,
+                 static_cast<unsigned long long>(samples),
+                 static_cast<unsigned long long>(pendingSamples));
+    check(worstStatusMs < 100.0,
+          "status kept answering while the cold thumbnail read its file");
+    check(worstReleaseMs < 100.0, "release commands kept being answered through it too");
+    check(samples >= 3 && pendingSamples == samples,
+          "the decode really was in flight through the whole window");
+
+    // The lane finishes and the row arrives — with the PNG's pixels, which
+    // only the decode can put there (a cache miss would show the red fill).
+    Delivery row;
+    if (check(waitForThumbnail(fd, 1, acceptedId(slow, "slow-row"), 4000, &row),
+              "the slow row arrives once the lane has finished its file")) {
+        const std::string seen = "r" + std::to_string(static_cast<int>(row.red)) + " g" +
+                                 std::to_string(static_cast<int>(row.green)) + " b" +
+                                 std::to_string(static_cast<int>(row.blue));
+        check(row.green > 150.0 && row.blue > 150.0 && row.red < 120.0,
+              ("the row shows its decoded BACKDROP, not the fill: measured " + seen).c_str());
+    }
+    check(fieldValue(thumbnailStatus(fd, nextId), "decodePending") == 0,
+          "the decode debt closes when the lane publishes");
+
+    // And the exit path with a file mid-read: ask the second slow row, then
+    // shutdown immediately — the answer must come, bounded by the file, and
+    // the process must take its decode lane with it cleanly.
+    const ThumbnailAck second =
+        askThumbnails(fd, nextId,
+                      boost::json::array{listEntry("slow-two", stillScene("T2", slowTwo, kRed))},
+                      160, 90, 2);
+    if (!check(second.ok && second.accepted.size() == 1,
+               ("the second slow row is accepted: " + second.error).c_str())) {
+        return;
+    }
+    const auto shutdownSent = std::chrono::steady_clock::now();
+    const bool acked =
+        call(fd, nextId++, "shutdown", {}, &reply) && reply.as_object().contains("result");
+    const double shutdownMs = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - shutdownSent)
+                                  .count();
+    int waitStatus = 0;
+    waitpid(worker, &waitStatus, 0);
+    std::fprintf(stderr, "6.21d: shutdown mid-decode answered in %.0f ms, exit clean=%d\n",
+                 shutdownMs, WIFEXITED(waitStatus) && WEXITSTATUS(waitStatus) == 0 ? 1 : 0);
+    check(acked, "shutdown is answered although a thumbnail file is mid-read");
+    check(WIFEXITED(waitStatus) && WEXITSTATUS(waitStatus) == 0,
+          "the worker drains the decode lane and exits clean");
+    check(shutdownMs < 4000.0, "draining the lane is bounded by the file, not stuck");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -1769,7 +1915,7 @@ int main(int argc, char* argv[]) {
     // Phase one: the ordinary worker.
     // ------------------------------------------------------------------
     ::unlink(gSocket.c_str());
-    pid_t worker = spawnWorker(false);
+    pid_t worker = spawnWorker(kNoFault);
     int fd = connectRetry();
     if (!check(fd >= 0, "connected to a worker")) {
         kill(worker, SIGKILL);
@@ -1863,7 +2009,7 @@ int main(int argc, char* argv[]) {
     // the superseded frame is made to exist.
     // ------------------------------------------------------------------
     ::unlink(gSocket.c_str());
-    worker = spawnWorker(true);
+    worker = spawnWorker(kPreviewDraw);
     fd = connectRetry();
     if (!check(fd >= 0, "connected to a worker with an expensive preview draw armed")) {
         kill(worker, SIGKILL);
@@ -1892,6 +2038,62 @@ int main(int argc, char* argv[]) {
     waitForPreviewQuiet(nextId, fd);
     testSupersededDrawIsDestroyed(nextId, fd, armedGreen, armedBlue);
 
+    close(fd);
+    kill(worker, SIGKILL);
+    waitpid(worker, nullptr, 0);
+    ::unlink(gSocket.c_str());
+    // The consumer lets go of this segment too (phase three maps a new
+    // worker's): a stale mapping would answer the next phase's frames with
+    // these bytes.
+    if (gConsumer.map != nullptr) {
+        ::munmap(gConsumer.map, gConsumer.slotStride * gConsumer.slotCount + 64);
+        gConsumer.map = nullptr;
+    }
+    if (gConsumer.fd >= 0) {
+        ::close(gConsumer.fd);
+        gConsumer.fd = -1;
+    }
+    gConsumer.name.clear();
+    gConsumer.delivered.clear();
+
+    // ------------------------------------------------------------------
+    // Phase three (task 6.21d, review F5): the worker with one cold
+    // thumbnail file made deliberately slow, which is how the RPC pump's
+    // freedom is proven. The scenario owns the shutdown and the reap.
+    // ------------------------------------------------------------------
+    ::unlink(gSocket.c_str());
+    worker = spawnWorker(kThumbnailDecode);
+    fd = connectRetry();
+    if (!check(fd >= 0, "connected to a worker with a slow thumbnail decode armed")) {
+        kill(worker, SIGKILL);
+        waitpid(worker, nullptr, 0);
+        if (gFailures != 0) {
+            std::fprintf(stderr, "preview_selection_tests: %d failure(s)\n", gFailures);
+            return 1;
+        }
+        std::printf("ok: an off-air edit is drawn by the worker into the same stream, one frame "
+                    "per accepted request, and a superseded one is destroyed rather than shown\n");
+        return 0;
+    }
+    nextId = 1;
+    if (!call(fd, nextId++, "hello", proto::helloParams("select16-test", 0, 1), &reply) ||
+        !reply.as_object().contains("result")) {
+        check(false, "handshake with the slow-thumbnail worker");
+    } else if (check(call(fd, nextId++, "preview.start",
+                          boost::json::object{{"width", 640}, {"height", 360}, {"fps", 60}},
+                          &reply) &&
+                         reply.as_object().contains("result"),
+                     "preview.start succeeded on the slow-thumbnail worker")) {
+        const boost::json::object& result = reply.at("result").as_object();
+        gConsumer.name = std::string(result.at("name").as_string());
+        gConsumer.slotCount = result.at("slotCount").to_number<std::uint64_t>();
+        gConsumer.slotStride = result.at("bytesPerSlot").to_number<std::uint64_t>();
+    }
+    gConsumer.delivered.clear();
+    testThumbnailDecodeOffLoop(nextId, fd, worker);
+    // The scenario shuts the worker down and reaps it when it gets that far;
+    // these are the fallback for an early return, both tolerating a child
+    // that is already gone.
     close(fd);
     kill(worker, SIGKILL);
     waitpid(worker, nullptr, 0);

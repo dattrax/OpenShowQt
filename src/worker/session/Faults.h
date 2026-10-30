@@ -49,6 +49,14 @@ struct Faults {
     // SLOW open, not against a guess.
     int videoOpenDelayMs = 0;     // OPENSHOW_FAULT_VIDEO_OPEN_MS
     std::string videoOpenMatch;   // OPENSHOW_FAULT_VIDEO_OPEN_MATCH (path substring)
+    // Task 6.21d (review F5): a cold THUMBNAIL decode that really takes
+    // milliseconds, so the fixture proves the RPC pump answers status,
+    // release and shutdown WHILE the file is being read, not after a
+    // decode that happens to be quick on this machine. Named by path
+    // substring like the video-open knob: the slow file is the subject,
+    // every other picture is the yardstick.
+    int thumbnailDecodeDelayMs = 0;  // OPENSHOW_FAULT_THUMBNAIL_DECODE_MS
+    std::string thumbnailDecodeMatch;  // OPENSHOW_FAULT_THUMBNAIL_DECODE_MATCH
     Faults() {
         const auto read = [](const char* name) {
             const char* value = std::getenv(name);
@@ -63,12 +71,22 @@ struct Faults {
         if (const char* match = std::getenv("OPENSHOW_FAULT_VIDEO_OPEN_MATCH")) {
             videoOpenMatch = match;
         }
+        thumbnailDecodeDelayMs = read("OPENSHOW_FAULT_THUMBNAIL_DECODE_MS");
+        if (const char* match = std::getenv("OPENSHOW_FAULT_THUMBNAIL_DECODE_MATCH")) {
+            thumbnailDecodeMatch = match;
+        }
     }
 
     // True when THIS video's bring-up owes the injected wait.
     bool delaysVideoOpen(const std::string& path) const {
         return videoOpenDelayMs > 0 && !videoOpenMatch.empty() &&
                path.find(videoOpenMatch) != std::string::npos;
+    }
+
+    // True when THIS thumbnail's decode owes the injected wait (task 6.21d).
+    bool delaysThumbnailDecode(const std::string& path) const {
+        return thumbnailDecodeDelayMs > 0 && !thumbnailDecodeMatch.empty() &&
+               path.find(thumbnailDecodeMatch) != std::string::npos;
     }
 };
 

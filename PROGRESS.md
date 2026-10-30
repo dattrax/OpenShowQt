@@ -41,14 +41,27 @@ drains both lanes. Measured through the wire: present→air 4.5 ms against a
 start, audience frame gap ≤ 26 ms and status answered ≤ 0.6 ms throughout
 (`background_media_tests`: `exerciseSlowRetirement`,
 `exerciseStandaloneSwapOffLoop`, fault knob `OPENSHOW_FAULT_PACING_EXIT_MS
-/_MATCH`). R10's retirement half is closed in [architecture.md](docs/architecture.md).
+/_MATCH`).
+
+**6.21d is DONE** (F5): the RPC pump no longer reads thumbnail files.
+`pumpThumbnailDecode()` collects a finished decode (install + settle by
+path, the old inline tail) or hands the next path to a one-deep lane thread
+and returns — completion publishes on the next tick (the loop heartbeats at
+50 ms); one file in flight keeps the memory/lookahead story unchanged, and
+the destructor joins the lane. Measured through the wire against a 600 ms
+scripted cold decode (`OPENSHOW_FAULT_THUMBNAIL_DECODE_MS/_MATCH`): status
+and release answered ≤ 0.6 ms in 16/16 samples with `decodePending` honestly
+set, the decoded backdrop pixels verified in the slot, and a shutdown issued
+mid-read answered immediately with a clean drained exit
+(`preview_selection_tests` phase three; `preview_producer_tests` adapted
+with a pump-until-settled helper). R10 is fully closed in
+[architecture.md](docs/architecture.md).
 
 ## Remaining 6.21 gaps
 
-F5 (6.21d, cold thumbnail decode on the RPC thread), F4 (6.21e, gradient
-clears), F6 (6.21f, foreground-error visibility) and F7 (6.21g, real
-frontend journey fixture). The review holds source locations, reproduced
-evidence and required regressions for each.
+F4 (6.21e, gradient clears), F6 (6.21f, foreground-error visibility) and
+F7 (6.21g, real frontend journey fixture). The review holds source
+locations, reproduced evidence and required regressions for each.
 
 ## Verification
 
@@ -56,9 +69,9 @@ evidence and required regressions for each.
 |---|---|
 | `cmake --build --preset headless -j 2` | PASS |
 | `cmake --build --preset desktop -j 2` | PASS |
-| `ctest --preset desktop` with local-session access | 54/54 PASS, 257.14 s; all 13 display-labelled checks, 142.94 sec*proc |
-| `ctest --preset headless` | 32/32 PASS, 51.84 s; sandboxed, live PipeWire subscenarios internally skipped |
-| `scene_render_tests` standalone | PASS 3× in each build tree (churn fixture included) |
+| `ctest --preset desktop` with local-session access | 54/54 PASS, 258.84 s; all 13 display-labelled checks, 144.77 sec*proc |
+| `ctest --preset headless` | 32/32 PASS, 51.57 s; sandboxed, live PipeWire subscenarios internally skipped |
+| `preview_selection_tests` standalone | PASS in both trees; 6.21d scenario measured RPC ≤ 0.6 ms through a 600 ms decode, shutdown mid-read clean |
 | `background_media_tests` standalone | PASS; 6.21c2 scenarios measured present→air 4.5 ms (exit 700 ms), swap ack 1.6 ms, worst audience gap 26 ms, RPC ≤ 0.6 ms |
 
 The successful desktop run used RADV on the AMD Radeon 890M. Do not run both
@@ -67,9 +80,7 @@ PID-named temporary directory, and desktop needs local-session access.
 
 ## Next action
 
-**6.21d** (F5): cold thumbnail decode leaves the RPC pump responsive —
-`RpcServer::serve()` (`src/worker/rpc/RpcServer.cpp` ~341) still decodes
-cold thumbnails inline (`src/worker/session/PreviewProducer.cpp` ~461/~542);
-move it onto a bounded executor with generation-aware completion and add a
-responsiveness fixture. Then 6.21e–g. M7.1a–c recovery, 7.2 budgets, 7.3
-packaging and 7.4 hardware rehearsal remain TODO.
+**6.21e** (F4): `dropBackground()` (`src/ui/SceneEdit.cpp`) must clear
+`background.gradient` too, and `sceneContent()` must count it — with
+fixtures on final pixels and acked button state. Then 6.21f–g. M7.1a–c
+recovery, 7.2 budgets, 7.3 packaging and 7.4 hardware rehearsal remain TODO.

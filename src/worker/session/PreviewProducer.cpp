@@ -69,6 +69,15 @@ constexpr std::size_t kThumbnailDecodeLookahead = 4;
 }  // namespace
 
 PreviewProducer::~PreviewProducer() {
+    // The thumbnail lane goes first (task 6.21d): its decode is bounded by
+    // the file, the session must not die with a reader still in flight,
+    // and nothing publishes after this point — the picture would have
+    // nowhere to go. The worker only ever touched its own struct, so
+    // joining here races nothing.
+    if (fThumbnailDecode) {
+        fThumbnailDecode->worker.join();
+        fThumbnailDecode.reset();
+    }
     // The stream unlink belongs here too, not only in shutdown(): a caller
     // that drops a producer without closing it must not leak the shm segment.
     // (A live consumer's slot ownership still defers the actual unlink to
@@ -458,13 +467,84 @@ PreviewProducer::ThumbnailJob* PreviewProducer::thumbnailHeadLocked() {
     return head.decoded ? &head : nullptr;
 }
 
+namespace {
+
+// One thumbnail file read (task 6.21d): the scaled decode, plus the
+// scripted cost when this path is the fixture's subject. Runs on the
+// decode lane, holding no producer lock — the picture it returns is
+// installed by the command thread's next pump, never here.
+sk_sp<SkImage> decodeThumbnailFile(const std::string& path, uint32_t width,
+                                   uint32_t height, std::string* error) {
+    sk_sp<SkImage> image = SceneImageCache::decodeAtMost(path, width, height, error);
+    if (faults().delaysThumbnailDecode(path)) {
+        std::fprintf(stderr, "openshow-worker: scripted slow thumbnail decode: %d ms for %s\n",
+                     faults().thumbnailDecodeDelayMs, path.c_str());
+        for (int elapsed = 0; elapsed < faults().thumbnailDecodeDelayMs; elapsed += 20) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(
+                std::min(20, faults().thumbnailDecodeDelayMs - elapsed)));
+        }
+    }
+    return image;
+}
+
+}  // namespace
+
 bool PreviewProducer::pumpThumbnailDecode() {
-    // Settled with no codec involved (nothing to decode, or already in the
-    // cache) is free, so a whole band of lyric slides is marked in one
-    // call. A real file is not free, and exactly ONE is decoded per call:
-    // this thread answers the operator's commands, and thirty 4K backdrops
-    // decoded back to back is thirty chances to delay a present the
-    // audience is waiting on. The loop wakes periodically anyway.
+    // 6.21d (review F5): this call never reads a file. It COLLECTS a
+    // finished lane decode (install + settle, the tail the inline decode
+    // always had) or HANDS the lane the next path, and returns either way
+    // — the command thread that answers the operator's present must not be
+    // the thread a cold 4K backdrop keeps busy, not even for one file.
+    // One lane, one file in flight: the bound that used to be "one decode
+    // per wake" is now "one decode per lane", which is the same memory
+    // story (the lookahead still measures finished jobs) with the wait
+    // removed from the pump.
+    if (fThumbnailDecode) {
+        if (!fThumbnailDecode->done.load(std::memory_order_acquire)) {
+            return false;  // the file is still being read; nothing else opens
+        }
+        const std::string path = std::move(fThumbnailDecode->path);
+        sk_sp<SkImage> image = std::move(fThumbnailDecode->image);
+        fThumbnailDecode->worker.join();  // done means it returned; this reaps
+        fThumbnailDecode.reset();
+        {
+            std::lock_guard<std::mutex> lock(fMutex);
+            if (fThumbnailScene != nullptr) {
+                // Installs (or remembers the failure) into the LIST's cache and
+                // nothing else: the audience's pinned budget is not a place a
+                // thumbnail's pixels ever go.
+                fThumbnailScene->imageCache()->install(path, image);
+            }
+            // Settle by path, not by position: the batch may have been replaced
+            // while the codec ran, and a new band that wants the same picture
+            // finds it already installed (the next pump settles it for free),
+            // while one that no longer names it has lost nothing. A job only
+            // becomes drawn-ready when its LAST path settled — a slide with a
+            // background and a foreground picture shows both or is not owed a
+            // frame yet (task 6.17b).
+            for (ThumbnailJob& job : fThumbnailQueue) {
+                if (job.decoded) {
+                    continue;
+                }
+                bool complete = true;
+                for (std::size_t i = 0; i < job.imagePaths.size(); ++i) {
+                    if (!job.pathSettled[i]) {
+                        if (job.imagePaths[i] == path) {
+                            job.pathSettled[i] = true;
+                        } else {
+                            complete = false;
+                        }
+                    }
+                }
+                job.decoded = complete;
+            }
+            syncThumbnailCountersLocked();
+        }
+        return true;
+    }
+
+    // No lane running: settle what needs no codec (free, so a whole band of
+    // lyric slides is marked in one call) and find the first path that does.
     std::string path;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -517,10 +597,10 @@ bool PreviewProducer::pumpThumbnailDecode() {
                 path = job.imagePaths[i];
                 width = fThumbnailWidth;
                 height = fThumbnailHeight;
-                break;  // exactly one decode per pump call
+                break;  // exactly one path handed to the lane
             }
             if (!path.empty()) {
-                break;  // the decode happens outside the lock
+                break;  // the lane takes it outside the lock
             }
             if (allSettled(job)) {
                 job.decoded = true;
@@ -534,46 +614,17 @@ bool PreviewProducer::pumpThumbnailDecode() {
         return settled;
     }
 
-    // Outside the lock, and outside the render thread. Scaled: a backdrop
+    // Outside the lock, and off the command thread. Scaled: a backdrop
     // for a 160x90 thumbnail must not cost a 33 MiB allocation on the way,
     // which is the memory growth this task's acceptance names.
-    std::string decodeError;
-    const sk_sp<SkImage> image =
-        SceneImageCache::decodeAtMost(path, width, height, &decodeError);
-    {
-        std::lock_guard<std::mutex> lock(fMutex);
-        if (fThumbnailScene != nullptr) {
-            // Installs (or remembers the failure) into the LIST's cache and
-            // nothing else: the audience's pinned budget is not a place a
-            // thumbnail's pixels ever go.
-            fThumbnailScene->imageCache()->install(path, image);
-        }
-        // Settle by path, not by position: the batch may have been replaced
-        // while the codec ran, and a new band that wants the same picture
-        // finds it already installed (the next pump settles it for free),
-        // while one that no longer names it has lost nothing. A job only
-        // becomes drawn-ready when its LAST path settled — a slide with a
-        // background and a foreground picture shows both or is not owed a
-        // frame yet (task 6.17b).
-        for (ThumbnailJob& job : fThumbnailQueue) {
-            if (job.decoded) {
-                continue;
-            }
-            bool complete = true;
-            for (std::size_t i = 0; i < job.imagePaths.size(); ++i) {
-                if (!job.pathSettled[i]) {
-                    if (job.imagePaths[i] == path) {
-                        job.pathSettled[i] = true;
-                    } else {
-                        complete = false;
-                    }
-                }
-            }
-            job.decoded = complete;
-        }
-        syncThumbnailCountersLocked();
-    }
-    return true;
+    fThumbnailDecode = std::make_unique<ThumbnailDecodeLane>();
+    fThumbnailDecode->path = path;
+    ThumbnailDecodeLane* lane = fThumbnailDecode.get();
+    lane->worker = std::thread([lane, path, width, height] {
+        lane->image = decodeThumbnailFile(path, width, height, &lane->error);
+        lane->done.store(true, std::memory_order_release);
+    });
+    return settled;
 }
 
 // --- slot ownership and notifications (task 6.5, review R5) ---
