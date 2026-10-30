@@ -5,8 +5,9 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.19b8**, the settings page — the leaf that
-completes the 6.19b split (6.19b7's `EditPage` at `f6752b0`,
+The committed checkpoint is task **6.20a**, the R1–R19 evidence matrix
+(6.19b8's `SettingsPage` at `88cb050`, completing the 6.19b split,
+6.19b7's `EditPage` at `f6752b0`,
 6.19b6's `ShowPage` at `8722b9e`, 6.19b5's `PlaylistPanel` at `cfc782c`,
 6.19b4's `OutputPanel` at `5446a6e`,
 6.19b3's `ShortcutMap` at `337626e`,
@@ -190,18 +191,30 @@ times, the real blocks needed them zero times — the window's remaining
 ownership is placement, the facts only its `activeFocusItem` can answer, and
 presenting.
 
-**Next implementation task: 6.20a** — the R1–R19 evidence matrix in
-`docs/architecture.md`: every finding with its remediation tasks, its named
-fixtures, the preset that runs them, and where a current green run evidences
-it; work M6 deliberately left open gets its explicit M7 gate, and a finding
-the matrix finds bare is recorded bare. The ledger line was split first under
-the one-day rule into five leaves: **6.20a** the matrix, **6.20b** the
-public-Skia re-check and the RPC/media audit table updated to the enforced
-bounds, **6.20c** the production
-author→preview→go→clear→restore→media-swap proof on a real `--socket` worker,
-**6.20d** the three named differences (layer controls, one-vs-two audio
-streams, foreground error reporting) resolved as decisions not prose, and
-**6.20e** the recorded M6 closure with its honest skip list.
+**Task 6.20a is committed.** `docs/architecture.md` gained
+"Review closure: R1–R19 evidence matrix": one row per finding, naming its
+remediation tasks, the fixtures that pin it with the preset that actually
+registers each (**H** = in the 32-test headless inventory, **D** =
+desktop-build only, **D✦** = display-labelled), and its open remainder. The
+mechanics were verified, not assumed: the two preset inventories were listed
+directly (`ctest -N` for each, the single-digit alignment in that output
+cost an undercount the first pass) and every fixture in the matrix exists in
+its stated inventory; both trees were unchanged when the leaf's gates ran, so
+the green run the matrix cites is the same code it describes. What the matrix
+found bare it recorded bare rather than absorbed: per-item foreground-image
+reporting and the two architectural wordings to 6.20d, the reliability set to
+M7.1a–c exactly as the review mapped it, the accounting and budget items to
+M7.2, and the cheat-sheet alignment to what it is — verified by reading both
+files, no automated keyboard test existing. The table's foot names the
+completion rule's three remaining running obligations at their leaves:
+6.20b, 6.20c, 6.20d.
+
+**Next implementation task: 6.20b** — complete the public-Skia check and the
+bounded-RPC traffic audit: re-read `CheckNoSkiaPrivate` and its negative
+against the current tree, and update the review's RPC/media transfer table
+from review-time claims to the frame/message/budget bounds
+`worker_rpc_limits` and `rpc_limits_tests` actually assert, with the numbers
+stated.
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -289,7 +302,8 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19b8**. Tasks **6.19b7** (`f6752b0`),
+The working tree carries task **6.20a**. Tasks **6.19b8** (`88cb050`),
+**6.19b7** (`f6752b0`),
 **6.19b6** (`8722b9e`),
 **6.19b5** (`cfc782c`),
 **6.19b4** (`5446a6e`),
@@ -674,6 +688,25 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.20a:
+
+- `cmake --build --preset desktop -j 2` and `--preset headless -j 2`: both
+  "no work to do" — the leaf changes `docs/` and the ledger only, so the
+  green runs below are gates over exactly the code the matrix describes.
+- `ctest --preset headless`: **32/32 PASS**, 51.5 s.
+- `ctest --preset desktop`: **53/53 PASS**, 245.7 s, all 12 display-labelled
+  tests (135.1 sec*proc).
+- The preset memberships the matrix's H/D/D✦ marks claim were verified from
+  `ctest --preset headless -N` (32 registered) and `ctest --preset desktop
+  -N` (53 registered) plus `ctest -L display -N` (12), not from memory; the
+  first extraction pass undercounted because ctest pads single-digit test
+  numbers with an extra space, and the corrected inventories are what the
+  matrix marks come from.
+- No test, source or CMake file was touched; every claim in a matrix row
+  names a fixture that exists in the stated inventory and passed this run,
+  or states its open remainder (6.20b/6.20d, M7.1a–c, M7.2, or the honest
+  read-by-hand note for the cheat sheet).
+
 Verification after 6.19b8:
 
 - `cmake --build --preset headless -j 2` ("no work to do" — no UI in that
@@ -920,7 +953,8 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.20a**, the R1–R19 evidence matrix; then **6.20b–e** — the Skia/RPC audit,
-the production end-to-end proof, the three reconciliations, and the recorded
-closure. They are the last open lines of M6; do not claim M6 closure until
-all five resolve and the remaining gates pass.
+**6.20b**, the public-Skia guard re-read and the review's RPC/media audit
+table updated to the enforced bounds; then **6.20c–e** — the production
+end-to-end proof, the three reconciliations, and the recorded closure. They
+are the last open lines of M6; do not claim M6 closure until all four resolve
+and the remaining gates pass.
