@@ -190,13 +190,18 @@ times, the real blocks needed them zero times — the window's remaining
 ownership is placement, the facts only its `activeFocusItem` can answer, and
 presenting.
 
-**Next implementation task: 6.20** — close the review against real production
-boundaries and reconcile the M0–M5 completion claims: every R1–R19 with
-passing regression evidence or an explicit M7 gate; the public-Skia check, the
-bounded-RPC-traffic audit, the desktop/headless gates, and a production
-author→preview→go→clear→restore→media-swap proof; reconciling the layer
-controls, one-vs-two audio streams and foreground error reporting; recording
-skips honestly. This is the last open ledger line of M6.
+**Next implementation task: 6.20a** — the R1–R19 evidence matrix in
+`docs/architecture.md`: every finding with its remediation tasks, its named
+fixtures, the preset that runs them, and where a current green run evidences
+it; work M6 deliberately left open gets its explicit M7 gate, and a finding
+the matrix finds bare is recorded bare. The ledger line was split first under
+the one-day rule into five leaves: **6.20a** the matrix, **6.20b** the
+public-Skia re-check and the RPC/media audit table updated to the enforced
+bounds, **6.20c** the production
+author→preview→go→clear→restore→media-swap proof on a real `--socket` worker,
+**6.20d** the three named differences (layer controls, one-vs-two audio
+streams, foreground error reporting) resolved as decisions not prose, and
+**6.20e** the recorded M6 closure with its honest skip list.
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -915,8 +920,7 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.20**, closing the review against real production boundaries — R1–R19 each
-with passing regression evidence or an explicit M7 gate, the layer-controls,
-one-vs-two audio streams and foreground error reporting reconciled, the
-proofs run, skips recorded honestly. It is the last open line of M6; do not
-claim M6 closure until 6.20 resolves those and the remaining gates pass.
+**6.20a**, the R1–R19 evidence matrix; then **6.20b–e** — the Skia/RPC audit,
+the production end-to-end proof, the three reconciliations, and the recorded
+closure. They are the last open lines of M6; do not claim M6 closure until
+all five resolve and the remaining gates pass.
