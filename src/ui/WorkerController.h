@@ -1,15 +1,16 @@
 /*
  * WorkerController: the frontend's session half of the worker conversation —
- * the QML facade that owns the process (task 1.2 supervision), the acknowledged
- * output model behind the status properties, and the preview consumer that
- * paints what the audience and the editor are shown.
+ * the QML facade that owns the process (task 1.2 supervision) and the
+ * acknowledged output model behind the status properties.
  *
  * It spawns openshow-worker --socket PATH and runs the JSON-RPC handshake
  * through RpcClient, which owns the socket, the framing and the rule that a
  * reply belongs to the request its id names. This class decides what an answer
  * MEANS: which revision is on air, which clear a control derives from, which
- * picture the canvas is owed. The same session operations the UI calls are what
- * the RPC exposes: layer toggles now, scenes later.
+ * picture the canvas is owed — and hands the pictures themselves to
+ * PreviewConsumer, which owns the stream they travel in. The same session
+ * operations the UI calls are what the RPC exposes: layer toggles now, scenes
+ * later.
  *
  * Lifecycle per PLAN.md: the worker lives only while connected. Closing
  * the UI sends "shutdown"; a worker that dies or hangs anyway is
@@ -29,9 +30,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
-#include <string>
 
-#include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
 #include "openshow/scene/demo.h"
 
@@ -39,6 +38,8 @@
 #include "SceneEdit.h"
 
 namespace openshow::ui {
+
+class PreviewConsumer;
 
 class WorkerController : public QObject {
     Q_OBJECT
@@ -258,28 +259,32 @@ public:
 
     qint64 demoSlideCount() const;
 
+    // The pictures (task 6.19a2): every one of these is PreviewConsumer's
+    // answer about its own copies and gates, re-exported for the views, which
+    // bind to the session rather than to the parts of it.
+    //
     // The copied frame for PreviewView (UI thread only).
-    const QImage& previewImage() const { return fPreviewImage; }
-    bool previewActive() const { return fMap != nullptr; }
-    qint64 previewFrames() const { return fPreviewFrames; }
-    qint64 previewDropped() const { return fPreviewDropped; }
-    QString previewError() const { return fPreviewError; }
+    const QImage& previewImage() const;
+    bool previewActive() const;
+    qint64 previewFrames() const;
+    qint64 previewDropped() const;
+    QString previewError() const;
     // The off-air edit frame (task 6.16a): the same transport, the same
     // seqlock copy, a different target. Empty until the worker has drawn the
     // slide under edit — callers paint the document's own placeholder then.
-    const QImage& selectionImage() const { return fSelectionImage; }
-    bool selectionReady() const { return !fSelectionImage.isNull(); }
-    qint64 selectionFrames() const { return fSelectionFrames; }
-    qint64 selectionStale() const { return fSelectionStale; }
-    bool selectionSupported() const { return fSelectionCapable; }
+    const QImage& selectionImage() const;
+    bool selectionReady() const;
+    qint64 selectionFrames() const;
+    qint64 selectionStale() const;
+    bool selectionSupported() const;
     // The list's pictures (task 6.16b). Keyed lookup, no assembly: the bytes
     // are the worker's, copied under the same seqlock as every other target,
     // and a key the cache has not received yet simply has no image — the
     // caller shows its text line until the worker's version arrives.
-    bool thumbnailSupported() const { return fThumbnailCapable; }
-    qint64 thumbnailFrames() const { return fThumbnailFrames; }
-    qint64 thumbnailStale() const { return fThumbnailStale; }
-    qint64 thumbnailCachedBytes() const { return fThumbnailBytes; }
+    bool thumbnailSupported() const;
+    qint64 thumbnailFrames() const;
+    qint64 thumbnailStale() const;
+    qint64 thumbnailCachedBytes() const;
     QImage thumbnail(const QString& key) const;
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
@@ -321,40 +326,16 @@ private slots:
     void pollStatus();
 
 private:
-    // What the sender of a request needed its reply to remember (task 6.3a,
-    // review R3). RpcClient owns the record this lives in — so the answer can
-    // only reach the request that asked — but never looks inside it. A prepare
-    // carries its own payload and, when it began as a go, the intent to present
-    // the revision the worker hands back; an off-air or slide-list ask carries
-    // the generation it sent, which is the only order in which a stale replay
-    // cannot resurrect work the operator has left.
-    struct Ask {
-        QString prepareJson;       // scene.prepare: the payload to mirror
-        bool autoPresent = false;  // present the acked revision (a "go")
-        // Set on a prepare issued for the editor's off-air target (task
-        // 6.16a): the ack answers it with preview.select naming the new
-        // revision and THIS generation, which is the only order in which a
-        // stale replay cannot resurrect an edit the operator has left.
-        std::uint32_t selectionRequest = 0;
-        // Set on a preview.thumbnails request: its reply carries the per-slide
-        // ids (task 6.16b), and only THIS request's reply may install them —
-        // an older ack arriving late would otherwise map a frame of a
-        // superseded band onto a row that is on screen.
-        std::uint32_t thumbnailRequest = 0;
-    };
-
     // Both forwards to the transport, kept so the session speaks the protocol in
     // the same terms everywhere: a request owes an answer and gets an id, a
     // notification owes nothing. A refused send is 0 (or simply absent) with the
     // reason already in the status line, which is RpcClient's answer, not a
     // failure of the call site. The optional intent is what the sender wants its
-    // reply to find (see Ask); a request that was refused carries nothing,
-    // because it never became one.
+    // reply to find (SceneAsk.h is the one this session sends); a request that
+    // was refused carries nothing, because it never became one.
     std::int64_t sendRequest(const char* method, boost::json::object params,
                              std::shared_ptr<void> intent = nullptr);
     void sendNotification(const char* method, boost::json::object params);
-    void openPreviewSegment(const std::string& name, std::uint64_t bytesPerSlot);
-    void closePreviewSegment();
     void setStatus(const QString& text);
     // The prepare/present chain the public calls share; unlike
     // presentSceneJson it does not touch the restore slot, so the clear
@@ -438,110 +419,11 @@ private:
     // regress the audience off a newer one.
     std::int64_t fLatestGoId = 0;
 
-    // Preview consumer state (UI thread only): the read-only mapping of
-    // the worker's shm segment and the frame last copied out of it.
-    std::uint8_t* fMap = nullptr;
-    int fMapFd = -1;
-    std::uint64_t fMapBytes = 0;
-    std::uint64_t fPreviewSlotStride = 0;
-    std::uint64_t fPreviewSlotCount = 0;
-    // The start answer names a segment the render thread has not
-    // necessarily created yet; it is mapped on the first ready.
-    std::string fPendingPreviewName;
-    QImage fPreviewImage;
-    qint64 fPreviewFrames = 0;
-    qint64 fPreviewDropped = 0;
-    QString fPreviewError;
-    // The editor's off-air target (task 6.16a, review R16), same stream and
-    // same copy rules as the mirror.
-    //
-    // fSelectionRequest is this client's own generation counter: one counter,
-    // advanced on every ask the socket actually carries. The worker accepts a
-    // strictly later one and refuses the rest, so a reply that arrives after
-    // the operator moved on, a retried request, or a queued frame from before
-    // a stream restart cannot put an old scene back on screen.
-    // fSelectionImageRequest records WHICH ask the picture being shown
-    // answers: a frame for anything else is released like any other and
-    // dropped rather than painted under today's handles.
-    std::uint32_t fSelectionRequest = 0;
-    std::uint32_t fSelectionImageRequest = 0;
-    // The payload the newest ask carried, and the one the UI wants shown.
-    // The first dedupes a debounced editor that has not really changed; the
-    // second survives a stream restart, which resets the worker's generation
-    // domain and needs the ask made again from scratch.
-    QString fSelectionAskedJson;
-    QString fSelectionWantedJson;
-    QImage fSelectionImage;
-    qint64 fSelectionFrames = 0;
-    qint64 fSelectionStale = 0;  // the worker's counter, mirrored from status
-    bool fSelectionCapable = false;
-
-    // The batch's own send (task 6.16b): serialize what the UI wants, advance
-    // this client's generation, and record what the socket carried. Split from
-    // requestThumbnails() because three places need it — a row entering the
-    // band, a stream that came up without the ask it was owed, and the
-    // stand-down, which is the same message with an empty scenes array.
-    void sendThumbnailBatch(const QString& scenesPayload, qint64 width, qint64 height);
-    // One picture in the byte-bounded LRU (arrival is the recency), and one
-    // out of it. A slide the worker has never rendered has no entry at all,
-    // which is what its row's text line is for.
-    void storeThumbnail(const QString& key, QImage image);
-    void dropThumbnailPicture(const QString& key);
-    void clearThumbnailPictures();
-
-    // The slide list's target (task 6.16b, review R16): one batch of transient
-    // scenes, one ask at a time, one byte-bounded picture cache.
-    //
-    // fThumbnailRequest is this client's own generation counter for the
-    // batch (independent of the edit target's: the two ask separately and
-    // neither may advance the other's), and fThumbnailAcked is the newest one
-    // the worker said yes to. A frame is only painted when its `request` is
-    // that accepted generation AND its id is one the ack named for a slide
-    // this client still lists — so a picture of a band that has been scrolled
-    // away cannot land under a visible row.
-    std::uint32_t fThumbnailRequest = 0;
-    std::uint32_t fThumbnailAcked = 0;
-    bool fThumbnailAwaitAck = false;
-    bool fThumbnailCapable = false;
-    // What the UI wants shown (the serialized "scenes" array plus its extent)
-    // and what the socket last carried, deduplicated: the list re-asks when a
-    // row actually enters or leaves the band, and an unchanged band is not
-    // re-rendered because a handler fired twice. The wanted copy survives a
-    // stream restart, which is where the ask has to be made again from
-    // scratch — the same reason the edit target keeps its own two strings.
-    QString fThumbnailWantedPayload;
-    qint64 fThumbnailWantedWidth = 0;
-    qint64 fThumbnailWantedHeight = 0;
-    QString fThumbnailAskedPayload;
-    qint64 fThumbnailAskedWidth = 0;
-    qint64 fThumbnailAskedHeight = 0;
-    // The worker's id for each slide of the accepted batch, and the reverse:
-    // the key a copied frame's id belongs to. Both live only as long as the
-    // batch that named them.
-    QHash<QString, std::uint32_t> fThumbnailIds;
-    QHash<std::uint32_t, QString> fThumbnailKeys;
-    // The scene text each accepted slide was asked with, kept for exactly as
-    // long as the ask: a copied picture records what it was rendered FROM, so
-    // the next time that slide is listed with different words its old picture
-    // is recognised as stale and dropped instead of shown.
-    QHash<QString, QString> fThumbnailAskedScenes;
-    // The pictures, LRU by arrival and bounded TWICE: by count and by decoded
-    // bytes. A slide list is as long as a document, and "keep every picture we
-    // were ever sent" is precisely the growth this task must not have.
-    struct ThumbnailPicture {
-        QImage image;
-        // The scene text this picture was rendered from, so re-asking for a
-        // slide whose content changed drops the old picture instead of
-        // showing it under a new one.
-        QString sourceJson;
-    };
-    QHash<QString, ThumbnailPicture> fThumbnailCache;
-    QStringList fThumbnailOrder;  // front = least recently received
-    qint64 fThumbnailBytes = 0;
-    qint64 fThumbnailFrames = 0;
-    qint64 fThumbnailStale = 0;  // the worker's counter, mirrored from status
-    static constexpr std::size_t kThumbnailCacheEntries = 64;
-    static constexpr qint64 kThumbnailCacheBytes = 4 * 1024 * 1024;
+    // The pictures (task 6.19a2): the shm stream, the frames copied out of it,
+    // and the rules about which of them this client is still owed. Created with
+    // the session and its child, so it outlives nothing the session can be
+    // asked about; the QML getters above are its answers.
+    PreviewConsumer* fPreview = nullptr;
     bool fMediaPlaying = false;
     QString fMediaError;
     // The lane as the worker last reported it (task 6.7c); "none" is also

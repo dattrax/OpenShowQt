@@ -5,13 +5,14 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.9b** at `d83469e` (SceneStore's one scene
-truth at `1b54bdb`, the `PreviewProducer`/`BackgroundTransport`/dev-binary
-extractions and the bounded prepare executor in the two commits before it). The R10
-scheduling pair is now closed: prepare-time file work left the RPC dispatch loop
-on 2026-10-29 (**6.9a**) and a prepared scene's media, text and blur readiness
-left the render loop on 2026-10-30 (**6.9b**). The authoritative task/status
-ledger is
+The committed checkpoint is task **6.19a2**, the frontend `PreviewConsumer`
+(6.19a1's `RpcClient` at `001588e`, 6.9b's prepared-scene prewarm at `d83469e`,
+SceneStore's one scene truth at `1b54bdb`, and the `PreviewProducer`,
+`BackgroundTransport` and dev-binary extractions plus the bounded prepare
+executor in the commits before those). The R10 scheduling pair is now closed:
+prepare-time file work left the RPC dispatch loop on 2026-10-29 (**6.9a**) and a
+prepared scene's media, text and blur readiness left the render loop on
+2026-10-30 (**6.9b**). The authoritative task/status ledger is
 [PLAN.md](PLAN.md#m6--code-review-remediation-and-architecture).
 Productization, recovery, packaging and full hardware acceptance remain M7.
 
@@ -29,20 +30,34 @@ audience's layouts — and a blur background's backdrop. `status().scene.images`
 gained the trio `drawDecodes`/`drawBackdrops`/`layoutBuilds`: what the frame loop
 still had to build for itself.
 
-**Task 6.19a1 is implemented and commit-ready (uncommitted).** The frontend's
-transport has left `WorkerController`: `src/ui/RpcClient.{h,cpp}` owns the
-`QLocalSocket`, the shared framing, the ledger of requests the worker owes, the
-size/backlog/in-flight refusals and the 2 s no-byte write deadline, and it
-interprets nothing — a reply comes back with the method its request was sent
-under, the connection generation it was written on and the sender's own intent
-record, so R3's correlation rule now lives in exactly one class and a new
-protocol method cannot drift from it. `WorkerController` keeps the process, the
-handshake and poll rhythm, the acknowledged output model and the preview
-pictures, and tells the transport when to stop reaching for the worker.
-**Next implementation task: 6.19a2** — the frontend `PreviewConsumer`, the first
-of the three remaining 6.19a leaves (6.19a3 is the acknowledged output model,
-6.19a4 the worker's connection loop versus its method/status codecs), then
-**6.19b**. This handoff does not mark 6.20 complete.
+**Task 6.19a1 is committed** (`001588e`). The frontend's transport left
+`WorkerController`: `src/ui/RpcClient.{h,cpp}` owns the `QLocalSocket`, the
+shared framing, the ledger of requests the worker owes, the size/backlog/
+in-flight refusals and the 2 s no-byte write deadline, and it interprets nothing
+— a reply comes back with the method its request was sent under, the connection
+generation it was written on and the sender's own intent record, so R3's
+correlation rule now lives in exactly one class and a new protocol method cannot
+drift from it.
+
+**Task 6.19a2 is committed.** The frontend's pictures have left
+`WorkerController`: `src/ui/PreviewConsumer.{h,cpp}` owns the
+shm segment `preview.start` names (mapping it on the first ready, retiring it
+when the stream does), the audience mirror, the editor's off-air target and the
+slide list's thumbnails — both generation counters, the asked/wanted dedupe, the
+byte-bounded LRU and the status-poll stand-downs that re-issue an ask the worker
+no longer holds. It reaches the worker through three callbacks its host injects
+(request, notification, and the same 6.8a scene-budget predicate a present is
+checked against, so the rule still has one owner) and interprets no reply beyond
+its own methods, the `preview.ready` frame and the `preview` block of
+`output.status`. The `scene.prepare` intent both preview asks ride on is now the
+shared `SceneAsk.h` record the session and the consumer both name, which is what
+keeps a prepare ack from answering the wrong feature. `WorkerController` keeps
+the process, the handshake, the poll rhythm and the acknowledged output model,
+and re-exports the picture properties unchanged for QML.
+**Next implementation task: 6.19a3** — the acknowledged output model
+(scene-revision mirror, latest-go rule, clear derivation and the restore
+snapshot), then **6.19a4** (the worker's connection loop versus its method and
+status codecs) and **6.19b**. This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
 
@@ -123,11 +138,38 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19a1**, commit-ready (the user controls
-commits). Tasks **6.18a2**, **6.18b1**, **6.18b2** and **6.9a** are committed at
+The working tree carries task **6.19a2**. Tasks **6.19a1** (`001588e`),
+**6.18a2**, **6.18b1**, **6.18b2** and **6.9a** are committed at
 `0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
 in their commit messages:
 
+- `src/ui/PreviewConsumer.{h,cpp}` + `src/ui/SceneAsk.h` (6.19a2) — the
+  frontend's pictures' new owner, inside `openshow-ui-core`: the read-only
+  mapping of the shm segment `preview.start` names (opened on the first
+  `preview.ready` that proves it exists, retired when the worker says the stream
+  stopped, when a new stream starts, and when the connection or the process
+  goes), the audience mirror frame, the editor's off-air target and the slide
+  list's band — each with its own generation counter, its asked/wanted dedupe
+  and the frame gate that releases a slot rather than painting a superseded
+  picture — plus the byte-bounded thumbnail LRU (count AND bytes, with a
+  picture dropped when its slide's scene text changes) and the two status-poll
+  stand-down rules that re-issue an ask the worker no longer holds. It reaches
+  the worker through three injected callbacks — request, notification, and the
+  same `sceneIsSendable` budget a present passes — so the 6.8a rule keeps one
+  owner and the list, the canvas and the go button cannot disagree about what
+  the worker will take; and it interprets no reply except its own methods'
+  (`preview.start`, `preview.thumbnails`, the `preview.select` prepare ack) plus
+  the `preview.ready` notification and the `preview` block of `output.status`.
+  `ScenePrepareAsk` (in `SceneAsk.h`) is the intent record both preview asks
+  decorate on a `scene.prepare` and the one the session's mirror write and go
+  intent read: it left `WorkerController`'s private `Ask` so the two classes
+  name the same record rather than two lookalikes — which is what keeps a late
+  ack from answering the wrong feature. `WorkerController` keeps the process,
+  the handshake and poll rhythm, the acknowledged output model and the QML
+  surface; its preview getters forward, its `previewChanged` and
+  `thumbnailReady` signals are the consumer's forwarded, and its scene-budget
+  check is the predicate the consumer calls. `WorkerController.cpp` lost 565
+  lines and `WorkerController.h` 118 more, with no behaviour changed.
 - `src/ui/RpcClient.{h,cpp}` (6.19a1) — the frontend transport's new owner,
   inside `openshow-ui-core`: the `QLocalSocket` and its XDG_RUNTIME_DIR path,
   the shared `openshow::protocol` decoder, the connect-retry clock, the ledger
@@ -139,9 +181,10 @@ in their commit messages:
   the process-exit path both report it. It reads no result: `WorkerController`
   answers `replyReceived` by the recorded method, which is R3's rule in one
   place. `WorkerController` lost ~180 lines and no behaviour, and the
-  `PendingRequest` table it keyed by id is now `Ask`, an object the request
+  `PendingRequest` table it keyed by id is now an intent record the request
   carries home — so a decoration made after a send and the reply that finds it
-  are the same record.
+  are the same record (6.19a2 moved that record out to `SceneAsk.h`, where the
+  session and the preview consumer both name it).
 - `src/worker/session/BackgroundTransport.{h,cpp}` — the media's new owner
   (`openshow-worker-session-transport`): background pipeline + audio feeder,
   the standalone track and its swap, the video seam's two bounded slots and
@@ -286,9 +329,32 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.19a2:
+
+- `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS, no
+  warnings in either tree (the headless preset builds no UI, so the new component
+  is compiled and exercised by the desktop preset alone).
+- `ctest --preset desktop`: **53/53 PASS**, 246.0 s, all 12 display-labelled
+  tests (135.9 sec*proc of them). `worker_controller_tests` (46.7 s) is again the
+  acceptance, and again it was not touched: its preview and thumbnail scenarios
+  drive the real `WorkerController`, which now delegates every one of them — the
+  off-air ask that rides a `scene.prepare` and answers only the newest
+  generation, the refused-prepare dedupe reset, the band that re-issues itself
+  when the peer's status says it is not showing what it was asked for, and the
+  byte-bounded cache. The live `preview_selection_tests` (15.5 s),
+  `preview_ownership_tests` (3.7 s) and `preview_budget_tests` (3.7 s) pass
+  against an unchanged worker, with `preview_stream_tests` still pinning the
+  segment's own framing: producer and consumer still agree about stream
+  identity, slot release and the budget's stand-down. `ui_loads` (8.0 s) and
+  `document_present_tests` prove the QML surface — every preview property, both
+  picture getters and `requestThumbnails` — is unchanged.
+- `ctest --preset headless`: **32/32 PASS**, 51.6 s.
+- No new test was added and no assertion was edited, and no protocol message
+  changed: `SceneAsk.h` names the intent record the frontend already sent, and
+  the worker cannot tell which of its two classes assembled a request.
+
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19a2**, the frontend `PreviewConsumer` out of `WorkerController`; then
-**6.19a3** (the acknowledged output model) and **6.19a4** (the worker's
-connection loop versus its method/status codecs), then **6.19b**, then **6.20**'s
-recorded architecture differences. Do not claim M6 closure until 6.20 resolves
-those and the remaining gates pass.
+**6.19a3**, the acknowledged output model out of `WorkerController`; then
+**6.19a4** (the worker's connection loop versus its method/status codecs),
+then **6.19b**, then **6.20**'s recorded architecture differences. Do not claim
+M6 closure until 6.20 resolves those and the remaining gates pass.

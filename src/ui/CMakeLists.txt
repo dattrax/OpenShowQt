@@ -8,7 +8,11 @@ qt_policy(SET QTP0001 NEW)
 # supervisor's tests stay display-free as well. RpcClient (task 6.19a1) is
 # the transport half of that conversation and lives here with it: the
 # fixtures assert through the controller either way, and a component the UI
-# cannot run without is not worth a target of its own.
+# cannot run without is not worth a target of its own. PreviewConsumer
+# (task 6.19a2) is the picture half of the same conversation — the shm
+# mapping and the three targets drawn into it — so it shares the target for
+# the same reason: its fixtures read the same controller, and the boundary
+# that matters is the one between its files, not between build outputs.
 add_library(openshow-ui-core STATIC
   AppSettings.cpp
   AppSettings.h
@@ -18,8 +22,11 @@ add_library(openshow-ui-core STATIC
   DocumentController.h
   LibrarySearch.cpp
   LibrarySearch.h
+  PreviewConsumer.cpp
+  PreviewConsumer.h
   RpcClient.cpp
   RpcClient.h
+  SceneAsk.h
   SceneEdit.cpp
   SceneEdit.h
   WorkerController.cpp
