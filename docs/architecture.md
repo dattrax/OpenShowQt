@@ -7,6 +7,13 @@ completed tasks, with current test results in
 the [M6 review](M6-code-review.md) records the original findings, whose source
 line numbers and descriptions are historical.
 
+Current qualification (2026-10-30): the [post-M6 conformance review](reviews/M6-conformance-2026-10-30.md)
+found additional layout-lifetime, asset-adoption, scheduling, gradient-clear,
+foreground-UI and journey-coverage gaps. The 6.20e closure below records historical
+evidence; full conformance also requires **6.21a–g** in PLAN.md. Where the older
+narrative calls prepared startup complete, F3 limits that claim to the video file
+half: audio startup/pre-roll and old-transport joins still run on rendering.
+
 ## Ownership and dependencies
 
 ```mermaid
@@ -122,7 +129,7 @@ evidence or an explicit M7 gate, and that "the new behavioural regressions
 pass". This matrix is that accounting. A row is evidenced when its named
 fixtures exist in the ctest inventory of the stated preset and pass its
 recorded gate; the current green run is the closing gate recorded for
-**6.20d** in [PROGRESS.md](PROGRESS.md), whose desktop run covers all 54
+**6.20d** in [PROGRESS.md](../PROGRESS.md), whose desktop run covers all 54
 tests including all 13 display-labelled ones, and whose headless run covers
 all 32 — every fixture named below passed in it. Preset marks: **H** runs in the headless
 inventory (and therefore in both), **D** is desktop-build only without a
@@ -139,18 +146,18 @@ bare. The matrix reports; it does not paper.
 | **R4** status acknowledged state before a frame presented it | 6.4; 6.18a1 | `output_status_tests` (D✦: applied fields credit only the successfully presented frame; command injected during apply; acquire/present failure injected), `scene_store_tests` (H: desired/landed/published distinct) | none |
 | **R5** preview release did not prove ownership | 6.5; 6.18a2, 6.19a2 | `preview_stream_tests` (H: exact published-sequence acceptance, stale/future/odd rejected), `preview_producer_tests` (H), `preview_ownership_tests` (D✦: stop/start with outstanding frames, delayed releases, consumer-owned slot never changed) | none |
 | **R6** a held video token outlived its ownership | 6.6a–b; 6.18b1 | `background_media_tests` (D✦: paused/final frame redrawn while decoder attempts reuse; quiesce-before-replacement), `background_transport_tests` (H), `gpu_decode_tests`/`playback_queue_tests` (H: displayed-frame lease, generation check) | none |
-| **R7** saving recovered media deleted the active source paths | 6.12; 6.19b1 | `document_controller_tests` (D: recover→save→present→edit→undo/redo→save with the original source removed — the review's probe sequence as a regression), `domain_tests` (H: durable package-owned adoption) | none |
+| **R7** saving recovered media deleted the active source paths | 6.12; 6.19b1 | `document_controller_tests` (D: recover→save→present→edit→undo/redo→save with the original source removed — the review's probe sequence as a regression), `domain_tests` (H: durable package-owned adoption) | Foreground-image paths in retained frontend scenes are still omitted by adoption; **6.21b / F2**. Background-only evidence remains valid. |
 | **R8** save atomicity protected only the manifest | 6.13a–b | `domain_tests` (H: staged content-addressed assets, commit after durable bytes, fault-injected copy/commit against an existing package, ID validation and symlink-aware containment) | recorded scope: complete bytes guaranteed; strict version rollback not promised |
 | **R9** private Skia dependencies and an ICU impersonation | 6.2a–c; guard re-read 6.20b | `skia_public_api_guard` + `skia_public_api_guard_negative` (H: `CheckNoSkiaPrivate` over the production sources, the negative proving the guard can fail), `unicode_text_tests` (H: combining marks, emoji sequences, CJK wrapping, mixed direction), `gpu_yuv_tests`/`gpu_decode_tests` (H: independently specified conversion expectations) | standing practice, not a gap: public APIs still require controlled upgrades, no ABI guarantee. The 6.20b re-read confirmed the directory-scoped glob covers every module added since 6.2a and closed one real gap: Skia's root is an exported include directory, so `<src/...>` resolved at compile time while the guard matched only quoted includes — it now refuses both forms, and the negative fixture trips on both |
-| **R10** preparation blocked RPC and presentation | 6.9a–b; 6.18b2 | `prepare_executor_tests` (H: exactly-once, capacity, cancel, stop contract), `background_media_tests` (D✦: status/displays/release answered during four cold 4K prepares), `render_idle_check` (D✦), `worker_rpc_lifecycle` (D✦) | none |
+| **R10** preparation blocked RPC and presentation | 6.9a–b; 6.18b2 | `prepare_executor_tests` (H: exactly-once, capacity, cancel, stop contract), `background_media_tests` (D✦: status/displays/release answered during four cold 4K prepares), `render_idle_check` (D✦), `worker_rpc_lifecycle` (D✦) | Audio startup/pre-roll and transport retirement still block rendering; cold thumbnail decode still blocks RPC. **6.21c/d / F3/F5** qualify the earlier closure. |
 | **R11** control transport limits were incomplete | 6.8a–b; 6.19a1, 6.19a4; audit table updated 6.20b; deadline measurement fixed 6.20c | `protocol_tests`/`scene_tests` (H: encoded-size, per-method budgets, envelope validation), `outbound_queue_tests` (H: bounded writer), `worker_rpc_limits` (D✦), `worker_rpc_transport` (D✦: slow-peer disconnect, no lock held against rendering), `worker_controller_tests` (D: in-flight bound, 2 s no-byte deadline), `production_journey_tests` (D✦: a long quiet frontend survives — the deadline runs from the debt, not from the last write) | none — the review's audit table now states the enforced numbers (1 MiB both directions, depth 8, scene budgets, outbound queue, echo clip, thumbnail bounds) rather than review-time claims |
 | **R12** decoded-image memory grew for the worker's lifetime | 6.10 | `scene_image_cache_tests` (H: byte-accounted eviction, budget-exceeding sequence, missing→repaired same-path recovery), `background_media_tests` (D✦: pins across live transitions) | pinned resources above the eviction budget are reported, not evicted — open-difference row above; measurable budgets are **M7.2** |
 | **R13** preview mutated live transitions; fades were not a lerp | 6.11a–b | `scene_frame_tests` (H: one immutable audience frame), `preview_budget_tests` (D✦: previews cannot advance fades), `live_fade_tests` (D✦), `scene_render_tests` + `render_layer_guard`/`_negative` (H: image→image and same-image pixel composites, no intermediate targets) | synchronous GPU readback remains in the render loop, bounded by the deferred-after-overrun budget — open-difference row above; cost measurement is **M7.2** |
 | **R14** recovery writes blocked the UI and errors were discarded | 6.14a–b; 6.19b1 | `document_controller_tests` (D: coalescing scheduler, decision epochs an older write cannot outrun, refusals surfaced with the crash net kept, close-during-debounce flush), `domain_tests` (H: reusable unchanged-asset copies) | explicit save/load and decision drains remain synchronous by recorded decision — open-difference row above |
 | **R15** promised features existed only below the production boundary | 6.15a–b; 6.18b1 (production and bench drive the same object); audio-contract decision 6.20d | `playback_control_tests` (H: play/pause/seek/loop, per-source gain/mute as typed protocol), `background_media_tests` (D✦: standalone track lifetime independent of slide/video replacement; final frame and loop-off), `worker_rpc_lifecycle` (D✦: the verbs on the real socket), `ui_loads` (D) | none — the two production streams are the recorded contract (6.20d), their audible pairing on hardware is **7.4** acceptance |
-| **R16** editor imagery and thumbnails did not follow the planned renderer | 6.16a–b; 6.19a2 | `preview_selection_tests` (D✦: selected unpublished scene and bounded thumbnail batches over the shm transport, audience untouched), `worker_controller_tests` (D), `ui_loads` (D: band-drawn rows) | none |
-| **R17** authoring was narrower than the plan | 6.17a1–c3; 6.19b2/b3/b7/b8; images/words toggle resolved 6.20d | `document_controller_tests` (D: multi-box model, one selection resolution, geometry, ordering, images), `scene_edit_tests` (D: compile path), `scene_render_tests` (H: mixed text/image draw order, the words/images kind filter over the one stack, fits, gradient), `ui_loads` (D: canvas and inspector; the key table's one-owner-per-key rule verified live by its unchanged notice set) | none for the toggle — resolved code-to-contract in 6.20d (the two bits filter the authored stack by kind, omission never reordering; pinned by `testWordsImagesFilterTheStack`); the cheat-sheet/key-table alignment is verified by reading both files — no automated keyboard test exists (recorded in the honest skip list) |
-| **R18** remaining failure handling was visibly incomplete | 6.7c (typed decoder/feeder/sink/background failure state); per-item foreground lane 6.20d | `media_tests`/`av_sync_tests`/`playback_control_tests` (H: failures carried as typed state, not claimed-on-air), `background_transport_tests` (H), `output_status_tests` (D✦: S3 — a broken stack picture named per asset path in `output.status`, updating not duplicating across attempts, cleared by the repair without un-counting, media lane untouched) | per-item foreground reporting is closed (6.20d: capped `scene.foregroundErrors` + monotonic `foregroundFailureEvents`); restart reset, device-loss classification and ignored Vulkan/Skia returns, unbounded acquire/fence waits → **M7.1a–c** exactly as the review mapped them; onPresented/redraw accounting and signed A/V drift → **M7.2** |
+| **R16** editor imagery and thumbnails did not follow the planned renderer | 6.16a–b; 6.19a2 | `preview_selection_tests` (D✦: selected unpublished scene and bounded thumbnail batches over the shm transport, audience untouched), `worker_controller_tests` (D), `ui_loads` (D: band-drawn rows) | Concurrent prepared-layout replacement can invalidate the audience draw reference: **6.21a / F1**. Companion-cache isolation alone does not protect it. |
+| **R17** authoring was narrower than the plan | 6.17a1–c3; 6.19b2/b3/b7/b8; images/words toggle resolved 6.20d | `document_controller_tests` (D: multi-box model, one selection resolution, geometry, ordering, images), `scene_edit_tests` (D: compile path), `scene_render_tests` (H: mixed text/image draw order, the words/images kind filter over the one stack, fits, gradient), `ui_loads` (D: canvas and inspector; the key table's one-owner-per-key rule verified live by its unchanged notice set) | Gradient-background clearing/live flags remain incorrect: **6.21e / F4**. Keyboard automation remains absent; kind-filter pixel coverage remains valid. |
+| **R18** remaining failure handling was visibly incomplete | 6.7c (typed decoder/feeder/sink/background failure state); per-item foreground lane 6.20d | `media_tests`/`av_sync_tests`/`playback_control_tests` (H: failures carried as typed state, not claimed-on-air), `background_transport_tests` (H), `output_status_tests` (D✦: S3 — a broken stack picture named per asset path in `output.status`, updating not duplicating across attempts, cleared by the repair without un-counting, media lane untouched) | Foreground errors exist on the wire but are ignored by the frontend: **6.21f / F6**. Restart/device-loss/bounded GPU waits remain **7.1a–c**; redraw/drift accounting remains **7.2**. |
 | **R19** seek acknowledgements and frame deadlines disagreed | 6.7d | `playback_control_tests` (H: generation paired with the target actually applied), `av_sync_tests` (H: failed audio seeks not acknowledged), `playback_queue_tests` (H), `background_media_tests` (D✦: rapid, backward-after-loop and paused seeks through the real session with the shared deadline mapping) | none |
 
 The completion rule's running obligations sit with their own leaves: the
@@ -188,7 +195,7 @@ this milestone actually shows.
 - **The new behavioural regressions pass.** Every R1–R19 finding above has
   its named fixtures, and every one of them sits in the stated preset's
   inventory and ran green in the final gate.
-- **The direct-private-Skia guard passes.** `render_layer_guard` and its
+- **The direct-private-Skia guard passes.** `skia_public_api_guard` and its
   negative twin match both include spellings — quoted and angle-bracket,
   the gap 6.20b found and closed — and both run in the headless suite the
   final gate is.
@@ -248,8 +255,8 @@ owner in M7.
 
 ## Open differences from the plan
 
-These do not reopen every historical milestone. They limit what its DONE status
-proves and must be closed or explicitly accepted before M6/M7 acceptance.
+These limit what historical DONE statuses prove. The review linked above adds
+6.21 corrective work; the rows below retain the original decisions and evidence.
 
 | Difference observed in source | Consequence | Follow-up |
 |---|---|---|

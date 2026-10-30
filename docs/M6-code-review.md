@@ -1,6 +1,7 @@
 # M6 code and architecture review
 
-Historical baseline review. Many findings below have since been fixed; use
+Historical baseline review. The [post-M6 conformance review](reviews/M6-conformance-2026-10-30.md)
+records additional findings against 6.20e. Many findings below have since been fixed; use
 [PLAN.md](../PLAN.md#m6--code-review-remediation-and-architecture) for current
 task status and the [2026-10-29 architecture audit](architecture.md) for current
 boundaries and unresolved differences. Original observations/evidence follow.
