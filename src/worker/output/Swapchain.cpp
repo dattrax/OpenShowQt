@@ -13,6 +13,7 @@
 #include "include/gpu/ganesh/vk/GrVkBackendSurface.h"
 #include "include/gpu/ganesh/vk/GrVkTypes.h"
 #include "include/gpu/vk/VulkanMutableTextureState.h"
+#include "output/VulkanQueueGuard.h"
 
 namespace openshow::worker {
 
@@ -208,6 +209,12 @@ bool Swapchain::create(const CreateInfo& info) {
 }
 
 void Swapchain::destroy() {
+    // The same ordering as every other teardown on this device (task 6.22b,
+    // review A2): vkDeviceWaitIdle needs the device's queues externally
+    // synchronised, and a resize can reap the swapchain while a video
+    // producer is inside its guarded commit. frame() already holds this
+    // recursive guard, so the presenting path is unchanged.
+    const std::lock_guard queueLock(graphicsQueueMutex());
     if (fDevice != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(fDevice);
     }

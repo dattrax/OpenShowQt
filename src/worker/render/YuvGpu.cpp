@@ -865,6 +865,17 @@ void GpuYuvUploader::destroy() {
         fSync.reset();
         return;
     }
+    // Reclamation is a queue operation (task 6.22b, review A2). The device
+    // wait below is only legal if every ordinary queue of this device is
+    // externally synchronised around it (installed vk.xml: vkDeviceWaitIdle's
+    // implicitexternsyncparams), and 6.21c2 made that sharing real: the
+    // retirement lane lets a retired producer's successor commit while this
+    // close runs, and a shutdown reap runs on the command thread with the
+    // frame loop still drawing. commitSlot takes this same guard around its
+    // submit, so a teardown that skipped it overlapped a device-idle with a
+    // submission. The wait is still a whole-device one — its timeout and
+    // device-loss behaviour belongs to M7.1b — but it is now an ORDERED one.
+    const std::lock_guard queueLock(graphicsQueueMutex());
     // Wrappers first (Skia must still have its context to forget them),
     // then everything at rest, then the raw objects.
     if (fSlots) {

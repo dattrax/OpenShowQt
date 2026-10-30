@@ -15,6 +15,7 @@
 
 #include "include/gpu/vk/VulkanBackendContext.h"
 #include "output/VulkanMemoryAdapter.h"
+#include "output/VulkanQueueGuard.h"
 
 namespace openshow::worker {
 
@@ -352,6 +353,11 @@ bool VulkanContext::createDevice() {
 }
 
 void VulkanContext::destroy() {
+    // Device teardown is the largest reclamation of them all, so it takes the
+    // same guard as the queue users it must not overlap (task 6.22b, review
+    // A2). Production reaches it after the transports are gone; the guard is
+    // what makes that order a rule rather than an assumption.
+    const std::lock_guard queueLock(graphicsQueueMutex());
     if (fDevice != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(fDevice);
     }

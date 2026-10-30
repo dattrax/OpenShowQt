@@ -2,6 +2,7 @@
 // borrowed YCbCr texture. Readback and reference CPU decoding are test-only.
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -413,6 +414,91 @@ bool seekWithSlotsHeld(VulkanContext& vk, GrDirectContext* gr) {
     source.close();
     return ok;
 }
+
+/* Task 6.22b (review A2): a retired transport's GPU teardown shares the
+   device with whoever runs next. vkDeviceWaitIdle's implicit external
+   synchronization covers EVERY ordinary queue of the device, so reclamation
+   has to take the guard a commit takes — and 6.21c2 made the overlap real:
+   the retirement lane lets a successor upload while the retired pipeline is
+   closed, and a shutdown reap runs on the command thread while the frame loop
+   still draws. */
+
+// The ordering itself, pinned without a race to lose: hold the queue guard the
+// way a frame holds it, start a reclamation, and show it waits.
+bool reclamationWaitsBehindTheQueueGuard(VulkanContext& vk, GrDirectContext* gr) {
+    GpuYuvUploader retired;
+    std::string error;
+    if (!create(retired, vk, gr, 128, 96, FrameFormat::kNV12, error)) return false;
+    std::atomic<bool> closed{false};
+    openshow::worker::graphicsQueueMutex().lock();
+    std::thread reclaimer([&retired, &closed] {
+        retired.destroy();
+        closed.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const bool waitsForTheGuard = !closed.load();
+    openshow::worker::graphicsQueueMutex().unlock();
+    reclaimer.join();
+    bool ok = check(waitsForTheGuard,
+                    "retired GPU reclamation waits behind the queue's own guard");
+    ok &= check(closed.load(), "and completes as soon as the guard is released");
+    return ok;
+}
+
+// The shape the retirement lane actually creates: one producer committing
+// frames on one uploader while an uploader on the same device is reclaimed,
+// over and over, with the producer none the worse for it.
+bool overlappingRetirementKeepsTheSuccessorUp(VulkanContext& vk, GrDirectContext* gr) {
+    GpuYuvUploader retired;
+    VideoFrameSource source;
+    std::string error;
+    if (!source.open("direct-fixtures/h264.mp4", &error) ||
+        !create(retired, vk, gr, source.frameWidth(), source.frameHeight(), source.ringFormat(),
+                error) ||
+        !source.createRing(4, &retired, &error) || !source.startDecode(true, &error)) {
+        return false;
+    }
+    // Drain as an audience would, between passes: the producer is COMMITTING
+    // when each reclaim lands, rather than parked on a full ring.
+    int reclaimed = 0;
+    int drained = 0;
+    bool promptly = true;
+    for (int round = 0; round < 12; ++round) {
+        VideoFrame frame;
+        if (source.ring().poll(&frame, std::chrono::milliseconds(200))) {
+            source.ring().release(frame.slot);
+            ++drained;
+        }
+        const auto start = std::chrono::steady_clock::now();
+        GpuYuvUploader successor;
+        if (!create(successor, vk, gr, source.frameWidth(), source.frameHeight(),
+                    source.ringFormat(), error)) {
+            break;
+        }
+        successor.destroy();  // the device wait, beside a live producer
+        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) {
+            promptly = false;
+        }
+        ++reclaimed;
+    }
+    const uint64_t produced = source.stats().framesProduced;
+    source.requestStop();
+    source.join();
+    bool ok = check(reclaimed == 12,
+                    "twelve reclamation passes ran beside a producer submitting on one device");
+    ok &= check(promptly, "each reclaim cleared the queue's guard within two seconds");
+    if (drained == 0) {
+        std::fprintf(stderr, "reclaim fixture saw framesProduced=%llu\n",
+                     static_cast<unsigned long long>(produced));
+    }
+    ok &= check(drained > 0,
+                "the producer was still committing while its device was being reclaimed");
+    ok &= check(source.stats().fatalError.empty(),
+                "the overlapped retirement left the producer with no error");
+    source.close();
+    retired.destroy();
+    return ok;
+}
 }
 int main(int argc, char** argv) {
     if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) return 77;
@@ -447,6 +533,8 @@ int main(int argc, char** argv) {
     ok &= blockedStop(vk, gr.get());
     ok &= seekWithSlotsHeld(vk, gr.get());
     ok &= formatChange(vk, gr.get());
+    ok &= reclamationWaitsBehindTheQueueGuard(vk, gr.get());
+    ok &= overlappingRetirementKeepsTheSuccessorUp(vk, gr.get());
     ok &= decode(vk, gr.get(), "direct-fixtures/h264.mp4", false);
     ok &= decode(vk, gr.get(), "direct-fixtures/hevc.mp4", true);
     VideoFrameSource unsupported;
