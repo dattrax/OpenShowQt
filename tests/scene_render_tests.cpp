@@ -1350,6 +1350,118 @@ void testForegroundImageFade() {
           "the fill outside the box is unaffected by the fading item");
 }
 
+/* --- task 6.20d (review R17): the two toggles filter the ONE stack ------ */
+
+// The resolution of the images-layer difference, in pixels: the operator's
+// `words` and `images` toggles each control their own kind inside the
+// authored item stack — words off leaves the authored pictures standing,
+// images off leaves the words standing — and a stack OMITS, it never
+// reorders, so hiding the picture reveals the words at exactly the pixels
+// they held before, not at pixels a re-stacked layout would have chosen.
+void testWordsImagesFilterTheStack() {
+    std::string error;
+    const std::string plate = "scene-render-kind-toggle.png";  // flat magenta
+    const SkColor magenta = SkColorSetRGB(220, 40, 200);
+    const SkColor fill = SkColorSetRGB(0x30, 0x30, 0xE0);
+    if (!check(writeFlatPng(plate, magenta, &error), "kind-toggle plate written: " + error)) {
+        return;
+    }
+    scene::SceneItem words;
+    words.lines = {"STAND"};
+    words.color = 0xFFFFFFu;
+    words.fontSize = 300.0;
+    words.x = 200.0;
+    words.y = 250.0;
+    words.width = 1520.0;
+    words.height = 560.0;
+    scene::SceneItem picture;
+    picture.isImage = true;
+    picture.assetId = "asset-kind";
+    picture.assetPath = plate;
+    picture.x = 100.0;
+    picture.y = 100.0;
+    picture.width = 600.0;
+    picture.height = 900.0;
+    scene::Scene subject;
+    subject.showId = "show1";
+    subject.slideId = "kind1";
+    subject.background.color = 0x3030E0u;
+    // Authored order: words first, picture over them. The overlap is the
+    // whole question: with both up the picture hides part of the word, and
+    // each toggle alone must change ONLY its own kind's pixels.
+    subject.items = {words, picture};
+
+    // Device geometry at the 0.5 output rule: the plate covers device
+    // (50,50)-(350,500); the glyph block of STAND sits mid-box around
+    // device x ~240..715, so its left flank hides behind the plate.
+    const auto whiteIn = [](const Frame& frame, int left, int top, int right, int bottom) {
+        int count = 0;
+        for (int y = top; y <= bottom && y < frame.height; ++y) {
+            for (int x = left; x <= right && x < frame.width; ++x) {
+                const SkColor pixel = frame.at(x, y);
+                if (SkColorGetR(pixel) > 200 && SkColorGetG(pixel) > 200 &&
+                    SkColorGetB(pixel) > 200) {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    };
+
+    Frame both;
+    if (!check(renderFixture(subject, "kind-both", &both, &error),
+               "the both-kinds frame rendered: " + error)) {
+        return;
+    }
+    check(closeTo(both.at(120, 260), magenta),
+          "both up: the authored picture draws over the words");
+    const int wordsRight = whiteIn(both, 420, 120, 940, 420);
+    check(wordsRight > 200, "both up: the words draw where no picture covers them");
+    check(whiteIn(both, 60, 120, 345, 420) == 0,
+          "both up: no glyph leaks through the picture the operator stacked there");
+
+    worker::SnapshotOptions imagesOff;
+    imagesOff.images = false;
+    Frame picsGone;
+    if (!check(renderFixture(subject, "kind-images-off", imagesOff, &picsGone, &error),
+               "the images-off frame rendered: " + error)) {
+        return;
+    }
+    check(!closeTo(picsGone.at(120, 260), magenta),
+          "images off: the authored picture is gone from the audience");
+    check(closeTo(picsGone.at(120, 260), fill),
+          "and where it stood, the scene's own fill shows — omission, not replacement");
+    check(whiteIn(picsGone, 60, 120, 345, 420) > 200,
+          "images off reveals the words the picture was covering, at the pixels they always "
+          "held — the stack filtered by kind does not move what remains");
+    check(std::abs(whiteIn(picsGone, 420, 120, 940, 420) - wordsRight) <= 4,
+          "and the uncovered half of the word is the same pixels as the both-up frame, glyph "
+          "for glyph");
+
+    worker::SnapshotOptions wordsOff;
+    wordsOff.words = false;
+    Frame textGone;
+    if (!check(renderFixture(subject, "kind-words-off", wordsOff, &textGone, &error),
+               "the words-off frame rendered: " + error)) {
+        return;
+    }
+    check(closeTo(textGone.at(120, 260), magenta),
+          "words off: the authored picture keeps standing — the toggle that hides words "
+          "stopped hiding pictures with them");
+    check(whiteIn(textGone, 60, 120, 940, 420) == 0, "words off: and not one glyph remains");
+
+    worker::SnapshotOptions stackOff;
+    stackOff.words = false;
+    stackOff.images = false;
+    Frame nothing;
+    if (!check(renderFixture(subject, "kind-both-off", stackOff, &nothing, &error),
+               "the both-off frame rendered: " + error)) {
+        return;
+    }
+    check(measureInk(nothing).count == 0,
+          "either bit alone keeps the stack dispatched; both down is the only way off");
+}
+
 // The rule the acceptance names, stated without reference to how anything is
 // drawn: compositing a background at blend `t` means the group — that scene's
 // fill with its picture OVER it — at that alpha. Every steady frame below is
@@ -2674,6 +2786,7 @@ int main() {
     testTextFadeParity();
     testFadeCostMeasured();
     testSceneLayerToggles();
+    testWordsImagesFilterTheStack();
 
     if (failures == 0) {
         std::printf("scene_render_tests: all fixtures passed\n");

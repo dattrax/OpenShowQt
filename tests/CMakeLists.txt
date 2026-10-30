@@ -445,7 +445,7 @@ add_executable(output_status_tests output_status_tests.cpp)
 target_link_libraries(output_status_tests PRIVATE openshow::protocol)
 add_test(NAME output_status_tests
   COMMAND output_status_tests $<TARGET_FILE:openshow-worker>)
-set_tests_properties(output_status_tests PROPERTIES LABELS display TIMEOUT 120)
+set_tests_properties(output_status_tests PROPERTIES LABELS display TIMEOUT 150)
 
 # Task 6.5 (review R5): live preview ownership over the socket — ready
 # names its stream, releases must echo it, and odd, future, duplicate,

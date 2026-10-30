@@ -199,6 +199,19 @@ boost::json::object statusParams(const OutputSession::Status& status) {
                                        {"entries", preview.thumbnails.entries},
                                        {"evictions", preview.thumbnails.evictions},
                                        {"budget", preview.thumbnails.budget}}}};
+    // Per-item foreground failures (task 6.20d, review R18): the stack
+    // pictures the operator composed but the worker could not decode, named
+    // per asset path with the last attempt's reason (clipped to the echo
+    // budget, the rule every string leaving the worker honours), plus the
+    // lifetime attempt count behind the capped list. This is the media
+    // lane's per-item honesty, beside — never inside — the lane it was
+    // deliberately kept out of.
+    boost::json::array foregroundErrors;
+    for (const auto& failure : status.scene.foregroundFailures) {
+        foregroundErrors.push_back(boost::json::object{{"path", failure.path},
+                                                       {"error",
+                                                        proto::clippedForEcho(failure.error)}});
+    }
     return boost::json::object{{"device", status.deviceName},
                                {"width", status.width},
                                {"height", status.height},
@@ -266,7 +279,11 @@ boost::json::object statusParams(const OutputSession::Status& status) {
                                                                         .drawBackdrops},
                                                                    {"layoutBuilds",
                                                                     status.scene.images
-                                                                        .layoutBuilds}}}}},
+                                                                        .layoutBuilds}}},
+                                                              {"foregroundErrors",
+                                                               foregroundErrors},
+                                                              {"foregroundFailureEvents",
+                                                               status.scene.foregroundFailureEvents}}},
                                 // Background media (task 5.5d): the video
                                 // transport's live state; error is sticky
                                 // until a successful open replaces it.

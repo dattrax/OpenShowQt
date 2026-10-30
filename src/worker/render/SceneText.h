@@ -196,8 +196,15 @@ public:
     // composition pass keeps no intermediate render target (task 6.11b,
     // review R13); a fading image item takes the same alpha on its own
     // paint. A null `images` draws only the text items.
-    void drawLayout(SkCanvas* canvas, const SceneLayout& layout,                    const SkPaint* paint = nullptr,
-                    SceneImageCache* images = nullptr) const;
+    //
+    // `textItems=false` is the mirror half of the same switch (task 6.20d):
+    // the words toggle drawn off, the stack's IMAGE entries still draw, in
+    // the same authored order, with the same fade alpha. The two switches
+    // exist so the operator's `words` and `images` toggles filter one
+    // authored stack by kind — a stack omits, it never reorders.
+    void drawLayout(SkCanvas* canvas, const SceneLayout& layout,
+                    const SkPaint* paint = nullptr,
+                    SceneImageCache* images = nullptr, bool textItems = true) const;
 
 private:
     sk_sp<SkFontMgr> fFontMgr;
@@ -451,6 +458,10 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
 struct SnapshotOptions {
     bool background = true;
     bool words = true;
+    // The authored stack's picture kind (task 6.20d): the same gate the
+    // `images` layer toggle carries in production. words and images filter
+    // one stack independently — either one standing keeps the stack drawn.
+    bool images = true;
     // Crossfade: when fadeFrom is set, the background composites fadeFrom
     // under scene at mediaBlend and the text dissolves fadeFrom over
     // scene at textBlend (0 = entirely fadeFrom, 1 = entirely scene) —

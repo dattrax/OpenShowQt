@@ -169,27 +169,47 @@ public:
 
     LayerId id() const override { return LayerId::kWords; }
 
+    // Task 6.20d (review R17): the stack answers to BOTH operator toggles.
+    // `words` and `images` filter KINDS out of one authored stack rather
+    // than splitting it into two z-planes — omission, never reordering — so
+    // the overlap the operator authored survives every combination. The
+    // development decoration's photo (the kImages layer itself) still
+    // stands down the moment a presentation is on air; in production the
+    // authored pictures are what the `images` toggle has always promised to
+    // hide, and now it does.
+    uint32_t dispatchGate() const override {
+        return layerBit(LayerId::kWords) | layerBit(LayerId::kImages);
+    }
+
     void draw(const FrameContext& ctx) override {
         const SceneFrame& frame = *ctx.frame;
+        // The two kind switches, read off the frame's context (R13: content
+        // arrives here and nowhere else). Both-up is the plain case, and it
+        // draws EXACTLY what this layer drew before this task existed.
+        const bool showWords = (ctx.layerMask & layerBit(LayerId::kWords)) != 0;
+        const bool showPictures = (ctx.layerMask & layerBit(LayerId::kImages)) != 0;
+        SceneImageCache* pics = showPictures ? fImages : nullptr;
         if (frame.scene) {
             const bool fading = frame.fadeFrom != nullptr;
             if (fading) {
                 const SceneTextEngine::SceneLayout& from = layoutFor(frame.fadeFrom);
                 SkPaint fade;
                 fade.setAlpha(static_cast<uint8_t>((1.0f - frame.textBlend) * 255.0f + 0.5f));
-                fEngine->drawLayout(ctx.canvas, from, &fade, fImages);
+                fEngine->drawLayout(ctx.canvas, from, &fade, pics, showWords);
             }
             const SceneTextEngine::SceneLayout& current = layoutFor(frame.scene);
             if (fading) {
                 SkPaint fade;
                 fade.setAlpha(static_cast<uint8_t>(frame.textBlend * 255.0f + 0.5f));
-                fEngine->drawLayout(ctx.canvas, current, &fade, fImages);
+                fEngine->drawLayout(ctx.canvas, current, &fade, pics, showWords);
             } else {
-                fEngine->drawLayout(ctx.canvas, current, nullptr, fImages);
+                fEngine->drawLayout(ctx.canvas, current, nullptr, pics, showWords);
             }
             return;
         }
-        if (fDemo->titlePaint) {
+        if (fDemo->titlePaint && showWords) {
+            // The demo title is words content; the `images` bit alone does
+            // not put it on screen.
             fDemo->titlePaint(ctx.canvas);
         }
     }
@@ -455,7 +475,8 @@ void SceneRenderer::draw(const SceneFrame& frame, SkCanvas* canvas, int widthPx,
     // this call only reads (task 6.11a): the second, third and hundredth
     // target of a frame draw the picture the audience was owed, and leave
     // the renderer's own state exactly as they found it.
-    const FrameContext ctx{canvas, &frame, statusLine.c_str(), backgroundVideo};
+    const FrameContext ctx{canvas, &frame, statusLine.c_str(), backgroundVideo,
+                           fLayers.enabledMask()};
     fLayers.draw(ctx);
 }
 

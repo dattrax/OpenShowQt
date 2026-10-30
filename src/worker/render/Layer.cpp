@@ -64,8 +64,13 @@ bool LayerStack::applyOverride(std::string_view name, bool enabled) {
 
 void LayerStack::draw(const FrameContext& ctx) const {
     for (const std::unique_ptr<RenderLayer>& layer : fLayers) {
-        if ((fEnabledMask & layerBit(layer->id())) == 0) {
-            // Functionally off: nothing is dispatched to Skia at all.
+        if ((fEnabledMask & layer->dispatchGate()) == 0) {
+            // Functionally off: nothing is dispatched to Skia at all. Since
+            // task 6.20d the test is against the layer's own GATE — normally
+            // its own bit, but the item stack answers to words-or-images so
+            // that two operator toggles can filter one authored stack by
+            // kind. The mask the gated layer reads is ctx.layerMask, which
+            // the renderer fills from this same stack.
             continue;
         }
         layer->draw(ctx);

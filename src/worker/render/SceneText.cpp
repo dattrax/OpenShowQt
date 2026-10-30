@@ -452,7 +452,8 @@ private:
 }  // namespace
 
 void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
-                                 const SkPaint* paint, SceneImageCache* images) const {
+                                 const SkPaint* paint, SceneImageCache* images,
+                                 bool textItems) const {
     // Centred: the paragraph aligns its lines inside boxWidth, and the block
     // sits at the box's vertical middle.
     const auto centerY = [](const LaidOutItem& item) {
@@ -489,7 +490,7 @@ void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
         for (const auto& item : layout.items) {
             if (item.isImage) {
                 drawImageItem(item, 255);
-            } else if (item.paragraph && item.hasText) {
+            } else if (textItems && item.paragraph && item.hasText) {
                 item.paragraph->paint(canvas, item.boxX, centerY(item));
             }
         }
@@ -499,7 +500,7 @@ void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
     for (const auto& item : layout.items) {
         if (item.isImage) {
             drawImageItem(item, paint->getAlpha());
-        } else if (item.paragraph && item.hasText) {
+        } else if (textItems && item.paragraph && item.hasText) {
             item.paragraph->paint(&painter, item.boxX, centerY(item));
         }
     }
@@ -1332,8 +1333,11 @@ bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string&
                       (static_cast<float>(height) - kSceneCanvasHeight * scale) * 0.5f);
     canvas->scale(scale, scale);
 
-    // The two layers, dispatched like the LayerStack would (a disabled one
-    // draws nothing at all), each honouring its own crossfade track.
+    // The two dispatches, mirroring the LayerStack exactly (task 6.20d): a
+    // background off draws nothing, and the item stack is dispatched by
+    // words-OR-images and filtered by kind — words off leaves the authored
+    // pictures standing, images off leaves the words standing, each in its
+    // authored place. Each dispatch honours its own crossfade track.
     SceneImageCache images;
     // Task 6.10 (review R12): imageFor() never hits the disk, so this
     // snapshot entry point — the dev CLI's --snapshot and the render
@@ -1369,20 +1373,25 @@ bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string&
         }
         drawSceneBackground(canvas, scene, &images, fading ? &fade : nullptr);
     }
-    if (options.words) {
+    if (options.words || options.images) {
+        // The two kind switches, exactly as production's item stack reads
+        // them off the layer mask (task 6.20d): a null cache stands the
+        // pictures down, textItems=false stands the words down, and the
+        // surviving kind keeps its authored position and fade alpha.
+        SceneImageCache* pics = options.images ? &images : nullptr;
         const bool fading = options.fadeFrom != nullptr && options.textBlend < 1.0f;
         if (fading) {
             const SceneTextEngine::SceneLayout fromLayout = engine.layoutScene(*options.fadeFrom);
             SkPaint fade;
             fade.setAlpha(static_cast<uint8_t>((1.0f - options.textBlend) * 255.0f + 0.5f));
-            engine.drawLayout(canvas, fromLayout, &fade, &images);
+            engine.drawLayout(canvas, fromLayout, &fade, pics, options.words);
         }
         const SceneTextEngine::SceneLayout layout = engine.layoutScene(scene);
         SkPaint fade;
         if (fading) {
             fade.setAlpha(static_cast<uint8_t>(options.textBlend * 255.0f + 0.5f));
         }
-        engine.drawLayout(canvas, layout, fading ? &fade : nullptr, &images);
+        engine.drawLayout(canvas, layout, fading ? &fade : nullptr, pics, options.words);
     }
     return writePngRaster(surface.get(), path, error);
 }

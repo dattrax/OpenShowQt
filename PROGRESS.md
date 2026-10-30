@@ -266,15 +266,52 @@ The fixture prints its honest environment skips: Wayland session, silent
 journey (pipewire-0 present, unused — the one-vs-two audio-stream question is
 6.20d's), RADV indistinguishable from llvmpipe here (M7.4).
 
-**Next implementation task: 6.20d** — resolve the three named differences as
-decisions, not prose: the `images` layer toggling only development decoration
-while production foreground images ride the words stack under mixed z order;
-the contract's one-software-mixed-stream wording against the two shipped
-transports; and the missing-foreground-image failure logged but not reported
-per item the way the acknowledged media lane reports. Each becomes code-to-
-contract or contract-with-reasoning plus an explicit M7 gate, naming which;
-if any one turns out to be a slice over a day, it splits again before it
-starts.
+**Task 6.20d is committed.** The three named differences are decisions now,
+each recorded as the kind it actually was. Two went **code-to-contract**.
+The images/words difference became a KIND filter over the one authored item
+stack: `SceneItemsLayer::dispatchGate()` answers to words-OR-images, and the
+two bits filter the stack's entries separately (`FrameContext.layerMask`
+carries the mask per R13's content rule, `drawLayout`'s new `textItems`
+switch is the mirror of the null-cache picture switch, and the CPU snapshot
+path mirrors the gate through `SnapshotOptions.images`). The rule the code
+now commits to: a stack omits, it never reorders — images off reveals the
+words a picture was covering at exactly the pixels they always held, words
+off leaves the authored pictures standing, and either bit alone keeps the
+stack dispatched. `testWordsImagesFilterTheStack` proves all four frames in
+pixels, including the ≤4-pixel identity of the uncovered glyph halves across
+toggle states; the existing `testSceneLayerToggles` expectations survived
+untouched because those scenes' stacks are text-only. The per-item
+foreground-reporting difference became a status lane: `preloadScene`'s
+failures now fill `scene.foregroundErrors` (path + last attempt's reason
+clipped to the echo budget, capped at eight) beside a monotonic
+`foregroundFailureEvents` — chosen monotonic like `presentFailures` so a
+capped list beside a running count says "more happened" without a second set
+to drift — and entries clear when a later prepare's `refreshFor` decodes the
+path again, so the operator's repair undoes the report without a restart.
+The acknowledged media lane deliberately stays background-only: a stack
+picture's decode error must not evict the transport's truth from
+`media.error`, which is what S3 of `output_status_tests` asserts while it
+walks broken→named→deduped-on-retry→repaired→cleared with the events never
+un-counted. One went **contract-with-reasoning**: the two shipped PipeWire
+streams are the accepted audio design — independent lifecycles are what let
+the standalone track survive background swaps, each lane keeps its own clock
+and its 6.7c typed fault domain, and PipeWire itself is the system mixer the
+streams meet in — so no code moved, PLAN's audio bullet and the architecture
+invariant now say the decision and its reasoning, and what it still owes is
+hardware evidence (both streams audible, relative latency acceptable) at
+**7.4**. The matrix rows for R2/R15/R17/R18 lost their 6.20d remainders, the
+two open-differences rows closed with their semantics rules, and the whole
+scope held inside one day, so the no-slice-over-a-day rule needed no
+re-split.
+
+**Next implementation task: 6.20e** — record the M6 closure and its honest
+skips: the review's completion rule discharged in writing with the final
+desktop/headless gate numbers, every skipped or environment-limited check
+listed at the point it was skipped (live PipeWire, RADV versus llvmpipe,
+hardware timing, projector placement, service soak), PLAN's M6 ledger and
+header and this handoff brought to the status the evidence supports, and no
+milestone claim stating more than the recorded runs prove. It is the last
+open line of M6.
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -362,7 +399,8 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree is clean at task **6.20c**. Tasks
+The working tree carries task **6.20d**. Tasks
+**6.20c** (`09bc8c5`),
 **6.20b** (`d12c594`),
 **6.20a** (`ebb282d`),
 **6.19b8** (`88cb050`),
@@ -751,6 +789,32 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.20d:
+
+- `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS —
+  the kind filter touches the composition path both presets compile, and the
+  foreground lane touches the worker RPC encoders both presets ship.
+- The new headless expectation ran standalone three times in the headless
+  tree: `scene_render_tests` exit 0 every time (9.8 s inside the suite; the
+  fixture skips 77 on a machine with no usable fonts, as the whole file
+  already did). All four frames — both kinds up, images off, words off, both
+  off — pass, including the identity claim: the uncovered half of the word
+  measures within 4 pixels of the same region in the both-up frame, so the
+  toggle revealed the hidden glyphs without moving the visible ones.
+- The new live lane ran standalone twice: `output_status_tests` exit 0 both
+  times (4.4 s inside the suite), with the worker's own stderr showing the
+  two failed `foreground image` preloads and the repaired third prepare. The
+  scenario's TIMEOUT went 120→150 s to make room for its extra worker cycle.
+- `ctest --preset desktop`: **54/54 PASS**, 247.9 s, all 13 display-labelled
+  tests (137.8 sec*proc) — S3 green inside the suite; the preset inventory
+  is unchanged because both new coverages live inside existing executables.
+- `ctest --preset headless`: **32/32 PASS**, 51.2 s.
+- What this leaf's evidence does NOT establish, stated where the decisions
+  say it: the two-stream audio design has no device-side proof on this
+  machine — both-streams-audible and relative latency are **7.4** hardware
+  acceptance, and the audio decision moved no code precisely so no code
+  claim would need it.
+
 Verification after 6.20c:
 
 - `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS —
@@ -1067,8 +1131,8 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.20d**, resolving the images-layer z order, the one-mixed-stream contract
-against the two shipped transports, and per-item foreground error reporting —
-as decisions, not prose; then **6.20e**, the recorded closure. They
-are the last open lines of M6; do not claim M6 closure until both
-resolve and the remaining gates pass.
+**6.20e**, the recorded M6 closure — final gate numbers, the honest skip
+list at the points checks were skipped or environment-limited, and PLAN /
+this handoff wording brought to exactly what the evidence proves. It is the
+last open line of M6; do not claim M6 closure until it is recorded and the
+final gates pass.

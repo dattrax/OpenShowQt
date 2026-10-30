@@ -176,6 +176,33 @@ public:
             uint64_t drawBackdrops = 0;
             uint64_t layoutBuilds = 0;
         } images;
+        // Per-item foreground-picture failures (task 6.20d, review R18).
+        // The media lane is background-only by recorded design: its error
+        // names what the audience's TRANSPORT is showing, and a stack
+        // picture's decode error must not evict that truth with a file
+        // nobody is playing. What the finding named was the other half: an
+        // authored picture that cannot decode was honest ON SCREEN (its box
+        // shows what is under it) but invisible to anything ASKING — it
+        // existed only in the worker's stderr. This is the asking half: one
+        // entry per asset path whose most recent prepare attempt failed,
+        // carrying that attempt's reason, so "which picture is missing" is
+        // a question output.status answers. Entries clear when a later
+        // prepare decodes the same path again — the same repair edge the
+        // media lane gives its own assets (refreshFor re-reads a remembered
+        // failure), and for the same reason: the operator's fix must be
+        // able to undo the report without a restart. The LIST is capped
+        // (a show with more broken paths than this is reporting an
+        // incident, not a list); foregroundFailureEvents is the lifetime
+        // count of failed attempts — monotonic, like presentFailures — so a
+        // capped list beside it says "more happened than is shown" without
+        // a second set to keep in step.
+        struct ForegroundFailure {
+            std::string path;
+            std::string error;
+        };
+        static constexpr size_t kMaxReportedForegroundFailures = 8;
+        std::vector<ForegroundFailure> foregroundFailures;
+        uint64_t foregroundFailureEvents = 0;
     };
 
     // Background media visibility (task 5.5d) and the media.error
@@ -362,6 +389,16 @@ public:
     // checked between files, the natural unit.
     void preloadScene(const openshow::scene::Scene& scene,
                       const std::atomic<bool>* cancelled);
+
+    // Task 6.20d (review R18): the per-item foreground lane behind
+    // SceneStatus::foregroundFailures — one upsert per failed prepare
+    // attempt (deduped by path, message updated), one removal per same-path
+    // success. The executor thread runs every prepare, so both take fMutex
+    // for the length of a vector scan; the prepare's own file work is
+    // orders of magnitude longer, and status() reads the same lock it
+    // already reads for every other field.
+    void foregroundImageFailed(const std::string& path, const std::string& message);
+    void foregroundImageRecovered(const std::string& path);
     // Task 6.9b: the text and blur half of a prepare — the costs the
     // frame loop used to pay AT the switch. Shapes the scene into the
     // production renderer's OWN layout cache and builds its blur backdrop

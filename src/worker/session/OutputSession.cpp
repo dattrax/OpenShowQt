@@ -370,6 +370,13 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
         if (fScene->imageCache()->refreshFor(item.assetPath, &error) == nullptr) {
             std::fprintf(stderr, "openshow-worker: foreground image %s: %s\n",
                          item.assetPath.c_str(), error.c_str());
+            // Task 6.20d (review R18): the log line above always named the
+            // failure; this is the half that lets the FRONTEND name it —
+            // status.scene.foregroundErrors, per asset path, until a later
+            // prepare decodes that path again.
+            foregroundImageFailed(item.assetPath, error);
+        } else {
+            foregroundImageRecovered(item.assetPath);
         }
     }
     const openshow::scene::Background& background = scene.background;
@@ -437,6 +444,42 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
     // has the previous background until this one's transport opens, and the
     // report of what is on air belongs to that transport (mediaPlaying),
     // not to a probe of something not yet shown.
+}
+
+void OutputSession::foregroundImageFailed(const std::string& path, const std::string& message) {
+    // Task 6.20d (review R18): the per-item lane behind
+    // SceneStatus::foregroundFailures. The attempt count is every failure;
+    // the LIST is the current set — an already-listed path keeps its slot
+    // and takes the newest reason (a re-prepare of the same broken file
+    // updates the story rather than adding a second entry), and once the
+    // list is full a NEW path is counted but not shown, which
+    // foregroundFailureEvents keeps visible rather than silent.
+    std::lock_guard<std::mutex> lock(fMutex);
+    ++fStatus.scene.foregroundFailureEvents;
+    for (SceneStatus::ForegroundFailure& entry : fStatus.scene.foregroundFailures) {
+        if (entry.path == path) {
+            entry.error = message;
+            return;
+        }
+    }
+    if (fStatus.scene.foregroundFailures.size() <
+        SceneStatus::kMaxReportedForegroundFailures) {
+        fStatus.scene.foregroundFailures.push_back(SceneStatus::ForegroundFailure{path, message});
+    }
+}
+
+void OutputSession::foregroundImageRecovered(const std::string& path) {
+    // The repair edge, identical in kind to the media lane's: a file that
+    // was missing and has been put back clears its report at the next
+    // prepare that decodes it. No event is un-counted — the events are
+    // history; this list is now.
+    std::lock_guard<std::mutex> lock(fMutex);
+    std::vector<SceneStatus::ForegroundFailure>& list = fStatus.scene.foregroundFailures;
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [&path](const SceneStatus::ForegroundFailure& entry) {
+                                  return entry.path == path;
+                              }),
+               list.end());
 }
 
 void OutputSession::prewarmScene(

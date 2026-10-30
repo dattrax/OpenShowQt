@@ -113,12 +113,29 @@ struct FrameContext {
     // whoever offered the frame decides everything else about it (timing,
     // lifetime), the layers only sample it.
     const SkImage* backgroundVideo = nullptr;
+    // The layer enable mask exactly as the stack holds it (task 6.20d). A
+    // layer whose own bit gates its dispatch never needs this; the ONE
+    // exception is the authored item stack, which the `words` and `images`
+    // bits gate TOGETHER — words off leaves the authored pictures standing,
+    // images off leaves the words standing — so that layer reads both bits
+    // from here instead of from the stack it lives in, keeping R13's rule
+    // that a layer's content arrives through this context and nowhere else.
+    // The all-ones default is every toggle up: a context built without the
+    // stack (a dev path drawing one layer by hand) draws everything.
+    uint32_t layerMask = ~0u;
 };
 
 class RenderLayer {
 public:
     virtual ~RenderLayer() = default;
     virtual LayerId id() const = 0;
+    // The bits whose UP state dispatches this layer (task 6.20d). Default:
+    // its own bit, the rule every layer has always had. The item stack
+    // overrides it to answer to two, because one authored stack carries
+    // both kinds of item and the operator's two toggles filter KINDS out of
+    // it — omission, never reordering, so the authored overlap of whatever
+    // remains is untouched.
+    virtual uint32_t dispatchGate() const { return layerBit(id()); }
     // Draws into ctx.canvas. Implementations must not create offscreen
     // surfaces; transparency goes straight into the paint.
     virtual void draw(const FrameContext& ctx) = 0;
@@ -133,6 +150,10 @@ public:
 
     void setEnabled(LayerId id, bool enabled);
     bool isEnabled(LayerId id) const;
+
+    // The live mask, for the one dispatch that consults more than its own
+    // bit (see RenderLayer::dispatchGate).
+    uint32_t enabledMask() const { return fEnabledMask; }
 
     // Development/RPC-facing name toggle; returns false for unknown names.
     bool applyOverride(std::string_view name, bool enabled);

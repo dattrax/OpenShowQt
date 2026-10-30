@@ -24,6 +24,18 @@
  *   (the old code tagged it revC). C then lands normally, transitioning
  *   distinct from confirmed.
  *
+ *   S3 the foreground lane (task 6.20d, review R18). An authored stack
+ *   picture whose file is missing was always honest ON SCREEN — the frame
+ *   shows what is under it — but invisible to anything ASKING: the failure
+ *   lived only in the worker's stderr. Now output.status names it: one
+ *   scene.foregroundErrors entry per asset path carrying the last attempt's
+ *   reason, beside a monotonic foregroundFailureEvents count. A re-prepare
+ *   of the same broken path UPDATES the entry rather than duplicating it
+ *   (and counts the attempt); putting the file back and preparing again
+ *   CLEARS the entry without un-counting history; and the media lane stays
+ *   background-only throughout — the stack picture's trouble never enters
+ *   media.error, which is the truth of what the transport is showing.
+ *
  * Needs a display (the worker opens its output window): desktop preset,
  * label display.
  */
@@ -46,6 +58,7 @@
 #include <poll.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -307,6 +320,44 @@ Sample sample(int fd, std::int64_t& nextId) {
     return out;
 }
 
+// One output.status reading of the foreground lane (task 6.20d): the capped
+// per-path list, the lifetime attempt counter beside it, and the media
+// lane's error — which a foreground failure must never be able to write.
+struct ForegroundReading {
+    bool ok = false;
+    std::uint64_t events = 0;
+    std::vector<std::pair<std::string, std::string>> entries;  // path -> reason
+    std::string mediaError;
+};
+
+ForegroundReading foregroundReading(int fd, std::int64_t& nextId) {
+    ForegroundReading out;
+    boost::json::value reply;
+    if (!call(fd, nextId++, "output.status", {}, &reply) ||
+        !reply.as_object().contains("result")) {
+        return out;
+    }
+    const boost::json::object& result = reply.at("result").as_object();
+    const boost::json::object& scene = result.at("scene").as_object();
+    const auto events = scene.find("foregroundFailureEvents");
+    const auto errors = scene.find("foregroundErrors");
+    if (events == scene.end() || errors == scene.end() || !errors->value().is_array()) {
+        return out;
+    }
+    out.events = numberValue(events->value());
+    for (const auto& entry : errors->value().as_array()) {
+        const boost::json::object& item = entry.as_object();
+        out.entries.emplace_back(std::string(item.at("path").as_string()),
+                                 std::string(item.at("error").as_string()));
+    }
+    const boost::json::object& media = result.at("media").as_object();
+    if (media.at("error").is_string()) {
+        out.mediaError = std::string(media.at("error").as_string());
+    }
+    out.ok = true;
+    return out;
+}
+
 // A solid-colour scene with one word — scenes differ only in hue and
 // word, so mean channel brightness is a robust content claim.
 boost::json::object solidScene(const char* slideId, std::uint32_t color,
@@ -330,6 +381,32 @@ boost::json::object solidScene(const char* slideId, std::uint32_t color,
                                                 {"align", "center"},
                                                 {"lineSpacing", 1.25}}}},
     };
+}
+
+// A solid PNG through ffmpeg, as in the live media fixtures: the repair
+// half of S3 needs the file to really appear, and a byte blob is not a
+// picture the worker's decoder will accept anyway.
+bool writePng(const std::string& path, const char* colour, int width, int height) {
+    const std::string command =
+        "ffmpeg -v error -y -f lavfi -i color=c=" + std::string(colour) + ":s=" +
+        std::to_string(width) + "x" + std::to_string(height) + ":r=1 -frames:v 1 '" + path +
+        "' >/dev/null 2>&1";
+    return std::system(command.c_str()) == 0 && ::access(path.c_str(), R_OK) == 0;
+}
+
+// The solid scene plus ONE authored foreground picture — the kind the
+// slide editor stacks beside the verses (task 6.17b). The path is the
+// subject of S3; it need not exist when the scene is prepared.
+boost::json::object sceneWithPicture(const char* slideId, const std::string& picturePath) {
+    boost::json::object scene = solidScene(slideId, 0x102030u, "PICTURE");
+    scene["items"].as_array().push_back(boost::json::object{{"kind", "image"},
+                                                            {"assetId", "late-asset"},
+                                                            {"assetPath", picturePath},
+                                                            {"x", 100.0},
+                                                            {"y", 100.0},
+                                                            {"width", 600.0},
+                                                            {"height", 400.0}});
+    return scene;
 }
 
 std::uint64_t prepare(int fd, std::int64_t& nextId, const boost::json::object& scene) {
@@ -591,6 +668,116 @@ void scenarioCommandDuringApply() {
     shutdownWorker(fd, worker);
 }
 
+// ---------------------------------------------------------------------
+// S3: the foreground lane (task 6.20d, review R18). A stack picture the
+// worker cannot decode is named per asset path in output.status, updates
+// rather than duplicates across attempts, and is cleared by the
+// operator's repair — while the media lane keeps its own counsel.
+// ---------------------------------------------------------------------
+void scenarioForegroundFailures() {
+    gSocket = "/tmp/openshow-status-s3-" + std::to_string(getpid()) + ".sock";
+    ::unlink(gSocket.c_str());
+    const std::string dir =
+        "/tmp/opencode/openshow-status-s3-" + std::to_string(static_cast<long>(::getpid()));
+    ::mkdir("/tmp/opencode", 0755);
+    ::mkdir(dir.c_str(), 0755);
+    const std::string missing = dir + "/late-picture.png";
+    ::remove(missing.c_str());  // the episode starts genuinely broken
+    const pid_t worker = spawnWorker({});
+    const int fd = connectRetry();
+    if (!check(fd >= 0, "S3: connected to a live worker")) {
+        kill(worker, SIGKILL);
+        waitpid(worker, nullptr, 0);
+        return;
+    }
+    gNextId = 1;
+    handshake(fd, gNextId);
+
+    const ForegroundReading idle = foregroundReading(fd, gNextId);
+    if (!check(idle.ok, "S3: the foreground lane is readable from the first status")) {
+        shutdownWorker(fd, worker);
+        return;
+    }
+    check(idle.entries.empty() && idle.events == 0,
+          "S3: nothing is reported before anything was prepared");
+
+    // The prepare is ACKNOWLEDGED although the picture cannot decode: a
+    // missing stack picture degrades the frame (the box shows what is
+    // under it — the draw rule since 6.10), it does not refuse the scene.
+    // What the worker owes instead is the truth where anything can ASK.
+    const std::uint64_t broken = prepare(fd, gNextId, sceneWithPicture("P1", missing));
+    if (!check(broken != 0, "S3: preparing the scene with the missing picture is acknowledged")) {
+        shutdownWorker(fd, worker);
+        return;
+    }
+    ForegroundReading reported = idle;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+    while (std::chrono::steady_clock::now() < deadline) {
+        reported = foregroundReading(fd, gNextId);
+        if (reported.ok && reported.events >= 1 && !reported.entries.empty()) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    if (check(reported.ok && reported.entries.size() == 1,
+              "S3: exactly one failure is reported for the one broken path")) {
+        check(reported.entries.front().first == missing,
+              "S3: the report names the asset path that could not decode");
+        check(!reported.entries.front().second.empty(),
+              "S3: the report carries the attempt's reason, not just a name");
+    }
+    check(reported.events == 1, "S3: the failed attempt is counted once");
+    check(reported.mediaError.empty(),
+          "S3: the media lane stays background-only — a stack picture's trouble is not its error");
+
+    // Re-prepare the same still-broken path: the counter counts the second
+    // attempt, the list UPDATES its one entry — a status that grew a line
+    // per retry would punish the operator for asking.
+    const std::uint64_t again = prepare(fd, gNextId, sceneWithPicture("P1", missing));
+    if (!check(again != 0 && again != broken,
+               "S3: the second prepare of the broken scene is acknowledged as its own")) {
+        shutdownWorker(fd, worker);
+        return;
+    }
+    ForegroundReading repeated = reported;
+    const auto repeatDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+    while (std::chrono::steady_clock::now() < repeatDeadline) {
+        repeated = foregroundReading(fd, gNextId);
+        if (repeated.ok && repeated.events >= 2) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    check(repeated.ok && repeated.events == 2 && repeated.entries.size() == 1 &&
+              repeated.entries.front().first == missing,
+          "S3: the repeat failure updates the one entry and counts the second attempt");
+
+    // The repair edge: put the file back and prepare again. refreshFor
+    // re-reads a remembered failure, so the operator's fix lands WITHOUT
+    // a restart; the entry clears, while the events stay where history
+    // left them — the list is now, the counter is then.
+    if (check(writePng(missing, "red", 240, 160), "S3: the missing picture is put back")) {
+        const std::uint64_t repaired = prepare(fd, gNextId, sceneWithPicture("P1", missing));
+        if (check(repaired != 0, "S3: the prepare after the repair is acknowledged")) {
+            ForegroundReading cleared = repeated;
+            const auto clearDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+            while (std::chrono::steady_clock::now() < clearDeadline) {
+                cleared = foregroundReading(fd, gNextId);
+                if (cleared.ok && cleared.entries.empty()) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            check(cleared.ok && cleared.entries.empty(),
+                  "S3: the repair clears the report — the fix undoes it without a restart");
+            check(cleared.events >= 2,
+                  "S3: and no failure event is un-counted: history and now stay distinct");
+        }
+    }
+
+    shutdownWorker(fd, worker);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -601,6 +788,8 @@ int main(int argc, char* argv[]) {
     scenarioPresentFailure();
     gDecoder.reset();
     scenarioCommandDuringApply();
+    gDecoder.reset();
+    scenarioForegroundFailures();
 
     if (gFailures > 0) {
         return 1;
