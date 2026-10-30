@@ -17,7 +17,10 @@ qt_policy(SET QTP0001 NEW)
 # conversation — the revision mirror, the pending logical presentation and the
 # restore point behind the scene properties — and shares the target for the
 # same reason: worker_controller_tests asserts the go/clear/restore promises
-# through the controller either way.
+# through the controller either way. DocumentPersistence (task 6.19b1) is the
+# durability half of the document session and joins for the same reason again:
+# document_controller_tests pins the scratch, the decision protocol and the
+# survivor wording through DocumentController, which is what the QML binds.
 add_library(openshow-ui-core STATIC
   AppSettings.cpp
   AppSettings.h
@@ -25,6 +28,8 @@ add_library(openshow-ui-core STATIC
   AutosaveScheduler.h
   DocumentController.cpp
   DocumentController.h
+  DocumentPersistence.cpp
+  DocumentPersistence.h
   LibrarySearch.cpp
   LibrarySearch.h
   PresentationModel.cpp

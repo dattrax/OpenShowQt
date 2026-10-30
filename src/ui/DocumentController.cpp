@@ -48,37 +48,18 @@ DocumentController::DocumentController(QObject* parent, std::filesystem::path ba
         baseDirectory = std::filesystem::path(
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation).toStdString());
     }
-    fServiceDirectory = baseDirectory / "service";
-    fScheduler = std::make_unique<AutosaveScheduler>(baseDirectory / "autosave");
+    // Durability is the adapter's (task 6.19b1); the one thing it needs back is
+    // the line the operator reads, and that stays this class's property.
+    fPersistence = new DocumentPersistence(
+        DocumentPersistence::Sink{[this](const QString& text) { setStatus(text); }},
+        baseDirectory, this);
     fHistory = std::make_unique<openshow::domain::History>(&fDocuments);
-
-    // Task 6.14b (review R14): durability is acknowledged on THIS thread,
-    // wherever the write ran.
-    connect(fScheduler.get(), &AutosaveScheduler::tickCompleted, this,
-            &DocumentController::onAutosaveCompleted);
 
     // Task 2.3's startup rule: autosave data, when present, is newer than
     // the saved service and wins; a missing service simply begins empty.
-    std::string error;
-    if (openshow::domain::Autosave::exists(fScheduler->directory())) {
-        if (fScheduler->recover(&fDocuments, &error)) {
-            fDirty = true;  // there is unsaved work — that is why we recovered
-            fStatus = QStringLiteral("recovered unsaved changes from autosave");
-        } else {
-            fStatus = QStringLiteral("autosave recovery failed: %1; starting empty")
-                          .arg(QString::fromStdString(error));
-        }
-    } else if (!fServiceDirectory.empty()) {
-        if (openshow::domain::Autosave::exists(fServiceDirectory)) {
-            // Not the autosave package, so a real save is waiting.
-            if (openshow::domain::loadService(&fDocuments, fServiceDirectory, &error)) {
-                fStatus = QStringLiteral("loaded %1")
-                              .arg(QString::fromStdWString(fServiceDirectory.wstring()));
-            } else {
-                fStatus = QStringLiteral("load failed: %1").arg(QString::fromStdString(error));
-            }
-        }
-    }
+    const DocumentPersistence::Startup startup = fPersistence->open(&fDocuments);
+    fDirty = startup.recoveredUnsaved;
+    fStatus = startup.status;
 
     // Adopt whatever the load produced for navigation. No baseline tick:
     // a tick with a virgin Autosave always writes, and an autosave package
@@ -228,98 +209,39 @@ void DocumentController::setStatus(const QString& text) {
     emit stateChanged();
 }
 
-void DocumentController::surfaceAutosaveResult(const std::string& tickError, const char* what,
-                                               bool deferStatus) {
-    if (!tickError.empty()) {
-        fAutosaveStale = true;
-        const QString message =
-            QStringLiteral("autosave refused after %1: %2 - unsaved work is NOT on disk")
-                .arg(QString::fromLatin1(what), QString::fromStdString(tickError));
-        if (!deferStatus) {
-            // The background ack has no caller that will overwrite the
-            // line afterwards — it is already the last word.
-            setStatus(message);
-            return;
-        }
-        // Deferred, so the refusal is the LAST word: edit callers set
-        // their own status synchronously after edit() returns. The flag
-        // check is the race guard — if the scratch caught up before this
-        // timer ran, the stale warning must not land.
-        QTimer::singleShot(0, this, [this, message] {
-            if (fAutosaveStale) {
-                setStatus(message);
-            }
-        });
-        return;
-    }
-    if (fAutosaveStale) {
-        // A successful tick means the scratch on disk matches the model
-        // again: either this call wrote it, or the fingerprint proves the
-        // model never drifted past the last good write.
-        fAutosaveStale = false;
-        setStatus(QStringLiteral("autosave recovered - the scratch on disk is current again"));
-    }
-}
+// --- durability (the adapter is task 6.19b1) ---------------------------------
+//
+// Every one of these forwards: the scratch, its executor, the decision protocol
+// and the wording of a refusal or a survivor are DocumentPersistence's. What
+// stays here is only the call each of the controller's own operations makes on
+// the way out of a committed change, and the two decision points (save, load)
+// where a durability answer changes what the controller owns.
 
 void DocumentController::autosaveNow(const char* what) {
-    if (fScheduler->active()) {
-        // Task 6.14b (review R14): the UI thread's whole job is the
-        // snapshot copy — cheap, immutable, and the executor keeps only
-        // the newest. The result reports back through
-        // onAutosaveCompleted when the write is durable (or refused).
-        fScheduler->submit(fDocuments, what, fDecisionEpoch);
-        return;
-    }
-    std::string tickError;
-    fScheduler->tickInline(fDocuments, &tickError);
-    surfaceAutosaveResult(tickError, what);
-}
-
-void DocumentController::onAutosaveCompleted(const QString& what, const QString& error) {
-    // No caller writes the status after this slot, so the refusal lands
-    // immediately (the deferral exists only for the inline edit path).
-    surfaceAutosaveResult(error.toStdString(), what.toLatin1().constData(), false);
-}
-
-void DocumentController::quiesceForDecision() {
-    ++fDecisionEpoch;
-    fScheduler->pauseForDecision(fDecisionEpoch);
-}
-
-void DocumentController::resumeAutosave() {
-    fScheduler->resume(fDecisionEpoch);
-}
-
-bool DocumentController::clearAutosave(std::string* error) {
-    return fScheduler->clearNow(error);
+    fPersistence->autosave(fDocuments, what);
 }
 
 void DocumentController::startBackgroundPersistence() {
-    fScheduler->start();
+    fPersistence->start();
 }
 
 void DocumentController::awaitPersistence() {
-    if (fScheduler->active()) {
-        fScheduler->awaitIdle();
-        QCoreApplication::processEvents();  // land the queued acknowledgements
-    }
+    fPersistence->awaitIdleAndDeliver();
 }
 
 void DocumentController::prepareForQuit() {
     flushText();
     // The shutdown promise is durable, not queued: whatever the flush
     // committed must be on disk before the process is gone.
-    if (fScheduler->active()) {
-        fScheduler->awaitIdle();
-    }
+    fPersistence->awaitDurable();
 }
 
 qulonglong DocumentController::autosaveWrites() const {
-    return static_cast<qulonglong>(fScheduler->writes());
+    return fPersistence->writes();
 }
 
 qulonglong DocumentController::autosaveCoalesced() const {
-    return static_cast<qulonglong>(fScheduler->coalesced());
+    return fPersistence->coalesced();
 }
 
 bool DocumentController::createSong(const QString& name) {
@@ -1470,52 +1392,30 @@ QString DocumentController::sceneJsonForSlide(const QString& slideId) {
 
 bool DocumentController::save() {
     flushText();
-    // Decision protocol (task 6.14b, review R14): before this save is
-    // even attempted, the executor is quiesced — queued autosaves are
-    // dropped, an in-flight write finishes, and the epoch vetoes anything
-    // stamped older. So the scratch clear below can never race an older
-    // autosave into resurrecting what this save supersedes.
-    quiesceForDecision();
-    std::string error;
-    std::vector<openshow::domain::AssetRebind> rebinds;
-    if (!openshow::domain::saveServiceAndAdopt(fDocuments, fServiceDirectory, &rebinds,
-                                               &error)) {
-        resumeAutosave();
-        setStatus(QStringLiteral("save failed: %1").arg(QString::fromStdString(error)));
+    // The durability half is one call (task 6.19b1): quiesce, write, remove the
+    // scratch this supersedes, reopen, and say what happened. What a save does to
+    // the model this class owns is the part that stays here.
+    DocumentPersistence::SaveAttempt attempt = fPersistence->saveToService(&fDocuments);
+    if (!attempt.saved) {
+        setStatus(attempt.status);
         return false;
     }
     // The model now names the package's own copies. The history snapshots
-    // have to hear it too (task 6.12, review R7): the next lines delete the
+    // have to hear it too (task 6.12, review R7): the next lines deleted the
     // autosave tree, which may be exactly where a pre-save snapshot points,
     // and an undo must not hand the model back a path to a directory that
     // no longer exists — that undo looks fine until the following present,
-    // save or autosave tick tries to read the file.
-    fHistory->adoptAssets(rebinds);
-    // The service now holds everything the autosave was protecting. No
-    // re-tick after clear: clear() resets the fingerprint, so a tick would
-    // immediately write a package claiming unsaved work that does not
-    // exist. The next real edit re-creates the autosave.
+    // save or autosave tick tries to read the file. (The removal ran inside
+    // the adapter, before this rewrite, with nothing in between able to read
+    // a snapshot: the state that matters is the one save() returns with.)
+    fHistory->adoptAssets(attempt.rebinds);
     fDirty = false;
-    std::string clearError;
-    if (!clearAutosave(&clearError)) {
-        // The save COMMITTED; what failed is deleting the scratch the
-        // save made stale. A later startup would recover what it holds as
-        // if it were unsaved work — R14's silent resurrection — so the
-        // survivor must be named, not swallowed.
-        setStatus(QStringLiteral("saved %1, but the stale autosave could NOT be removed (%2); "
-                                 "a later start may recover work this save already replaced")
-                      .arg(QString::fromStdWString(fServiceDirectory.wstring()),
-                           QString::fromStdString(clearError)));
-    } else {
-        setStatus(QStringLiteral("saved %1")
-                      .arg(QString::fromStdWString(fServiceDirectory.wstring())));
-    }
-    resumeAutosave();
-    if (!rebinds.empty()) {
+    setStatus(attempt.status);
+    if (!attempt.rebinds.empty()) {
         // Downstream caches of compiled scenes (the worker controller's
         // payload mirror) must stop naming the paths these files came from.
         QVariantMap adopted;
-        for (const openshow::domain::AssetRebind& rebind : rebinds) {
+        for (const openshow::domain::AssetRebind& rebind : attempt.rebinds) {
             adopted.insert(QString::fromStdString(rebind.from),
                            QString::fromStdString(rebind.to));
         }
@@ -1527,40 +1427,24 @@ bool DocumentController::save() {
 
 bool DocumentController::load() {
     flushText();
-    // Same decision protocol as save() (task 6.14b): this load DISCARDS
-    // local work, and no autosave older than that decision may survive
-    // — queued, in flight, or acknowledged.
-    quiesceForDecision();
-    openshow::domain::Documents reloaded;
-    std::string error;
-    if (!openshow::domain::loadService(&reloaded, fServiceDirectory, &error)) {
-        resumeAutosave();
-        setStatus(QStringLiteral("load failed: %1").arg(QString::fromStdString(error)));
+    // One call for the durability and the decision it carries (task 6.19b1):
+    // this load DISCARDS local work, so the executor is quiesced and the trail
+    // the discarded edits left is removed, with any survivor reported in the
+    // same words. The documents arrive separately, and only now does the
+    // session give up what it had.
+    DocumentPersistence::LoadAttempt attempt = fPersistence->loadFromService();
+    if (!attempt.loaded) {
+        setStatus(attempt.status);
         return false;
     }
-    fDocuments = std::move(reloaded);
+    fDocuments = std::move(attempt.documents);
     fHistory->clear();
     fDirty = false;
     const std::vector<openshow::domain::Id> ids = fDocuments.showIds();
     fCurrentSongId = ids.empty() ? openshow::domain::Id{} : ids.front();
     fCurrentSlide = 0;
     seedDefaultPlaylist();
-    // Discarding local changes must also discard their autosave trail —
-    // otherwise the next startup would recover the edits just thrown away.
-    std::string clearError;
-    if (!clearAutosave(&clearError)) {
-        // Same contract as save() (task 6.14a, R14): the load itself
-        // succeeded; the undeleted scratch is a resurrection risk and is
-        // reported, never silently kept.
-        setStatus(QStringLiteral("loaded %1, but the stale autosave could NOT be removed (%2); "
-                                 "a later start may recover work this load just discarded")
-                      .arg(QString::fromStdWString(fServiceDirectory.wstring()),
-                           QString::fromStdString(clearError)));
-    } else {
-        setStatus(QStringLiteral("loaded %1")
-                      .arg(QString::fromStdWString(fServiceDirectory.wstring())));
-    }
-    resumeAutosave();
+    setStatus(attempt.status);
     fCurrentBoxId.clear();  // a fresh file is a fresh selection
     emit documentsChanged();
     emit navigationChanged();

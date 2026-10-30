@@ -17,6 +17,13 @@
  * pauses or before any other operation runs — a snapshot per character
  * would exhaust the undo stack and mean nothing to an operator.
  *
+ * Since task 6.19b1 the bytes are not its concern: DocumentPersistence owns
+ * the scratch, the executor, the decision protocol around an explicit save or
+ * load and everything the operator is told about durability. The controller
+ * stays the one owner of the documents and their history — it decides what a
+ * decision does to the model (which paths history's snapshots name, where
+ * navigation lands, whether the session is dirty) and asks for the write.
+ *
  * Qt Core only — no GUI — so the headless fixtures drive the very class
  * the panel binds to. All of it lives on the UI thread.
  */
@@ -38,7 +45,7 @@
 #include "openshow/domain/history.h"
 #include "openshow/domain/storage.h"
 
-#include "AutosaveScheduler.h"
+#include "DocumentPersistence.h"
 
 namespace openshow::ui {
 
@@ -141,7 +148,7 @@ public:
     QVariantMap currentBoxAsset() const;
     bool dirty() const { return fDirty; }
     QString serviceDirectory() const {
-        return QString::fromStdWString(fServiceDirectory.wstring());
+        return QString::fromStdWString(fPersistence->serviceDirectory().wstring());
     }
     bool canUndo() const { return fHistory->canUndo(); }
     bool canRedo() const { return fHistory->canRedo(); }
@@ -286,8 +293,13 @@ public:
     // buttons); "" on failure.
     Q_INVOKABLE QString sceneJsonForSlide(const QString& slideId);
 
-    // --- persistence ---
+    // --- persistence (the durability itself is DocumentPersistence's) ---
 
+    // Both run the decision protocol: the executor is quiesced, the write or
+    // discard happens, the scratch that decision made stale is removed with
+    // its survivor reported, and autosave reopens. What the controller adds is
+    // what a decision does to the model it owns: which paths history's
+    // snapshots name, where navigation lands, and that the session is clean.
     Q_INVOKABLE bool save();
     Q_INVOKABLE bool load();
     Q_INVOKABLE void undo();
@@ -339,9 +351,6 @@ signals:
 
 private slots:
     void commitPendingText();
-    // Durability acknowledgements from the executor, delivered on this
-    // (the UI) thread and reported like inline tick results.
-    void onAutosaveCompleted(const QString& what, const QString& error);
 
 private:
     bool edit(const std::function<bool()>& mutation);  // history-wrapped edit
@@ -351,27 +360,11 @@ private:
     // what keeps the highlighted box and the edited box identical.
     const openshow::domain::SlideItem* selectedBox() const;
     void setStatus(const QString& text);
-    // Task 6.14a (review R14): report the outcome of an autosave tick. A
-    // refusal means the crash net has a hole NOW and must not be discarded
-    // — but it lands DEFERRED, because every edit caller sets its own
-    // status line synchronously after edit() returns and last write wins.
-    // The flag suppresses a queued refusal the moment the scratch is
-    // current again (and says so).
-    void surfaceAutosaveResult(const std::string& tickError, const char* what,
-                               bool deferStatus = true);
-    // The autosave edge of a committed change: inline when the executor
-    // is dormant (tests), coalesced and off-thread once started
-    // (task 6.14b). `what` names the event for the status line.
+    // The autosave edge of a committed change, handed to the persistence
+    // adapter: inline while its executor is dormant (tests), coalesced and
+    // off-thread once started (task 6.14b). `what` names the event for the
+    // status line, which the adapter writes through this class.
     void autosaveNow(const char* what);
-    // The decision protocol around save()/load(): quiesce drops queued
-    // autosaves and waits out any in-flight write, and raises the epoch
-    // so stale jobs and acknowledgements are vetoed; resume reopens the
-    // autosave path for the next edit.
-    void quiesceForDecision();
-    void resumeAutosave();
-    // Scratch removal — only valid between quiesceForDecision() and
-    // resumeAutosave(), where the caller owns the scratch alone.
-    bool clearAutosave(std::string* error);
     QString compileSlideJson(const openshow::domain::Id& slideId) const;
     // The current slide's id, or "" when navigation points nowhere.
     openshow::domain::Id currentSlideId() const;
@@ -406,8 +399,11 @@ private:
 
     openshow::domain::Documents fDocuments;
     std::unique_ptr<openshow::domain::History> fHistory;
-    std::filesystem::path fServiceDirectory;
-    std::unique_ptr<AutosaveScheduler> fScheduler;
+    // Durability (task 6.19b1): the scratch, its executor, the decision
+    // protocol and the status line it writes. It is a child QObject, given the
+    // base directory, and reads this class's documents only through the calls
+    // above.
+    DocumentPersistence* fPersistence = nullptr;
     openshow::domain::Id fCurrentSongId;
     openshow::domain::Id fCurrentPlaylistId;
     int fCurrentSlide = 0;
@@ -421,10 +417,6 @@ private:
 
     bool fDirty = false;
     QString fStatus;
-    bool fAutosaveStale = false;  // scratch behind the model: task 6.14a
-    // Decision counter (task 6.14b): bumped before every save/discard;
-    // autosave work stamped below it is history and must not run or ack.
-    std::uint64_t fDecisionEpoch = 0;
 };
 
 }  // namespace openshow::ui

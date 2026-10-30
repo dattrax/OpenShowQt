@@ -5,8 +5,9 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.19a4**, the worker `RpcMethods` split
-that completes 6.19a (6.19a3's `PresentationModel` at `c00d025`,
+The committed checkpoint is task **6.19b1**, the frontend `DocumentPersistence`
+(6.19a4's worker `RpcMethods` split at `7cd5edf`, which completed 6.19a,
+6.19a3's `PresentationModel` at `c00d025`,
 6.19a2's `PreviewConsumer` at `a4cb9e2`, 6.19a1's `RpcClient` at `001588e`,
 6.9b's prepared-scene prewarm at `d83469e`, SceneStore's one scene truth at
 `1b54bdb`, and the `PreviewProducer`,
@@ -86,10 +87,30 @@ an injected sink, so the executor thread never learns a socket exists. Names
 and shapes stayed in `openshow/protocol`, so the split added no vocabulary for
 frontend and server to drift over, and `RpcServer.cpp` is 909 lines shorter.
 
-**Next implementation task: 6.19b1** — the save/autosave adapter out of
-`DocumentController`, the first of eight single-component leaves (6.19b1
-`DocumentPersistence`, 6.19b2 `DocumentViews`, then `Main.qml`'s `ShortcutMap`,
-`OutputPanel`, `PlaylistPanel`, `ShowPage`, `EditPage` and `SettingsPage`).
+**Task 6.19b1 is committed.** Durability has left `DocumentController`:
+`src/ui/DocumentPersistence.{h,cpp}` owns the `AutosaveScheduler` and its
+thread, the task 2.3 startup rule (a scratch is newer than the saved service and
+so wins, and recovering one is why the session starts dirty), the refusal
+surfacing that keeps the crash net while landing the warning deferred so it is
+the last word the operator reads, the decision-epoch protocol that gives a save
+or a load the scratch alone, the removal of the scratch a decision superseded
+with the survivor wording that silent resurrection would cost, the quit-edge
+durable wait and the executor counters. It holds no documents and no history: a
+save takes the documents by pointer because the domain's adopt step retargets
+each asset at the package's copy, and hands the rebinds back so the controller
+can tell `History` — the state that matters is the one `save()` returns with, in
+which no snapshot names a deleted path (R7); a load returns separate documents
+for the controller to move into its own when it is ready to give up what it had.
+The controller keeps the documents, the history, navigation and the dirty flag,
+and its whole persistence surface — `save`, `load`, `startBackgroundPersistence`,
+`awaitPersistence`, `prepareForQuit`, `autosaveWrites`, `autosaveCoalesced`,
+`serviceDirectory` — is unchanged, which is why no test was edited.
+
+**Next implementation task: 6.19b2** — the list projections out of
+`DocumentController` into `DocumentViews`, the second of the eight
+single-component leaves 6.19b was split into (`DocumentPersistence` has landed;
+`DocumentViews`, then `Main.qml`'s `ShortcutMap`, `OutputPanel`, `PlaylistPanel`,
+`ShowPage`, `EditPage` and `SettingsPage` remain).
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -127,14 +148,16 @@ audience composition match the intended design. Important open differences:
 - **6.20:** standalone and video use independent AvPlayers/PipeWire streams,
   differing from the plan's one software-mixed output stream. Explicitly accept
   that design or implement the shared sink before closing the review.
-- **6.19b1/6.20:** background autosave is asynchronous; explicit save/load and
-  decision/quit drains remain synchronous. Missing foreground-image failures
+- **6.20:** background autosave is asynchronous; explicit save/load and
+  decision/quit drains remain synchronous (**6.19b1** gave that coordination one
+  owner, `DocumentPersistence`, and deliberately did not move the write off the
+  UI thread). Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19b1–b8:** the remaining ownership extractions are unfinished
+- **6.18b, 6.19b2–b8:** the remaining ownership extractions are unfinished
   (6.18a2's `PreviewProducer`, 6.18b1's `BackgroundTransport` and 6.19a2's
-  `PreviewConsumer` landed; 6.19a1's `RpcClient`, 6.19a3's
-  `PresentationModel` and 6.19a4's `RpcMethods` landed 2026-10-30, closing
-  6.19a).
+  `PreviewConsumer` landed; 6.19a1's `RpcClient`, 6.19a3's `PresentationModel`
+  and 6.19a4's `RpcMethods` landed 2026-10-30, closing 6.19a, and 6.19b1's
+  `DocumentPersistence` landed the same day).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
   physical-display acceptance remain open. Pinned cache excess is reported,
   not a hard bound on total process memory.
@@ -173,12 +196,34 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19a4**. Tasks **6.19a3** (`c00d025`),
+The working tree carries task **6.19b1**. Tasks **6.19a4** (`7cd5edf`, with the
+6.19b split plan at `5aeeebc`),
+**6.19a3** (`c00d025`),
 **6.19a2** (`a4cb9e2`), **6.19a1** (`001588e`),
 **6.18a2**, **6.18b1**, **6.18b2** and **6.9a** are committed at
 `0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
 in their commit messages:
 
+- `src/ui/DocumentPersistence.{h,cpp}` (6.19b1) — the document session's
+  durability, now one owner inside `openshow-ui-core`: the `AutosaveScheduler`
+  as its child (so the executor's thread is retired with it), the task 2.3
+  startup rule (`open()`: scratch wins over the saved service, and a recovered
+  scratch is the reason the session starts dirty), the autosave edge (inline
+  while dormant, submitted with the decision epoch once started), the deferred
+  refusal surfacing with the `fAutosaveStale` race guard and the
+  "current again" line, the decision protocol (`quiesce` raises the epoch and
+  waits the executor out; `resume` reopens the path), the two decision points
+  (`saveToService` writes and adopts and reports a survivor in the same words
+  the controller used to write; `loadFromService` returns separate documents so
+  the caller gives up what it had only on success), the quit-edge durable wait
+  and the writes/coalesced counters. Its `Sink` is the host's status line and
+  nothing else, so durability has an opinion the operator reads and no property
+  of its own to bind. `DocumentController` keeps the documents, the history,
+  navigation and the dirty flag: `save()` hands the rebinds to
+  `History::adoptAssets` and emits `assetsAdopted` (R7), `load()` moves the
+  documents in, clears history and re-anchors navigation, and `autosaveNow` is a
+  one-line forward. 116 `.cpp` lines and 8 of header left the controller; every
+  public persistence name and both survivor status texts are byte-identical.
 - `src/worker/rpc/RpcMethods.{h,cpp}` (6.19a4) — the worker's method table and
   status/notification encoders, the fourth and last component of 6.19a.
   `MethodTable::dispatch(envelope, outbound)` answers everything the agreed
@@ -413,6 +458,32 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.19b1:
+
+- `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS, no
+  warnings in either tree (the headless preset builds no UI, so the new
+  component is compiled and exercised by the desktop preset alone).
+- `ctest --preset desktop`: **53/53 PASS**, 245.9 s, all 12 display-labelled
+  tests (135.7 sec*proc of them). `document_controller_tests` (3.5 s) is the
+  acceptance, and it was not touched: its durability fixtures drive the real
+  `DocumentController` through the new seam — the recovery-over-service startup
+  ("recovery brings back the unsaved slide", recovered work is dirty), the task
+  6.12 adopt scenario where a recovered asset names a file inside the scratch
+  tree and the save rebinds it, the inline tick's refusal landing DEFERRED and
+  being suppressed when the scratch catches up before any event loop ran (with
+  the "current again" line when it genuinely catches up), the `aboutToQuit`
+  flush, the coalescing counts (`autosaveWrites` between 1 and 5 against
+  `autosaveCoalesced` at 20 or more), the epoch veto ("the sleeping write never
+  landed - a stale autosave cannot resurrect"), and both survivor status texts
+  for a scratch a committed decision could not remove. `document_present_tests`
+  (1.0 s) and `ui_loads` (8.0 s) prove the QML surface — every persistence
+  invokable and the `serviceDirectory` property, which now reads through the
+  adapter — is unchanged.
+- `ctest --preset headless`: **32/32 PASS**, 51.7 s.
+- No new test was added and no assertion was edited, and no file format
+  changed: a package written before this change loads after it, because the
+  domain calls are the same ones in the same order inside the adapter.
+
 Verification after 6.19a4:
 
 - `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS, no
@@ -485,8 +556,8 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19b1**, the save/autosave adapter out of `DocumentController`; then
-**6.19b2** (the list projections), **6.19b3–b8** (`Main.qml`'s shortcut map,
-output panel, playlist panel, show page, edit page and settings page), then
-**6.20**'s recorded architecture differences. Do not claim
-M6 closure until 6.20 resolves those and the remaining gates pass.
+**6.19b2**, the list projections out of `DocumentController` into
+`DocumentViews`; then **6.19b3–b8** (`Main.qml`'s shortcut map, output panel,
+playlist panel, show page, edit page and settings page), then **6.20**'s
+recorded architecture differences. Do not claim M6 closure until 6.20 resolves
+those and the remaining gates pass.
