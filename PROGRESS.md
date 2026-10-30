@@ -86,8 +86,10 @@ an injected sink, so the executor thread never learns a socket exists. Names
 and shapes stayed in `openshow/protocol`, so the split added no vocabulary for
 frontend and server to drift over, and `RpcServer.cpp` is 909 lines shorter.
 
-**Next implementation task: 6.19b** — the `DocumentController` session/save/list
-adapters and the `Main.qml` pages, inspectors, output and shortcut components.
+**Next implementation task: 6.19b1** — the save/autosave adapter out of
+`DocumentController`, the first of eight single-component leaves (6.19b1
+`DocumentPersistence`, 6.19b2 `DocumentViews`, then `Main.qml`'s `ShortcutMap`,
+`OutputPanel`, `PlaylistPanel`, `ShowPage`, `EditPage` and `SettingsPage`).
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -125,10 +127,10 @@ audience composition match the intended design. Important open differences:
 - **6.20:** standalone and video use independent AvPlayers/PipeWire streams,
   differing from the plan's one software-mixed output stream. Explicitly accept
   that design or implement the shared sink before closing the review.
-- **6.19b/6.20:** background autosave is asynchronous; explicit save/load and
+- **6.19b1/6.20:** background autosave is asynchronous; explicit save/load and
   decision/quit drains remain synchronous. Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19b:** the remaining ownership extractions are unfinished
+- **6.18b, 6.19b1–b8:** the remaining ownership extractions are unfinished
   (6.18a2's `PreviewProducer`, 6.18b1's `BackgroundTransport` and 6.19a2's
   `PreviewConsumer` landed; 6.19a1's `RpcClient`, 6.19a3's
   `PresentationModel` and 6.19a4's `RpcMethods` landed 2026-10-30, closing
@@ -483,7 +485,8 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19b**, the `DocumentController` session/save/list adapters and the
-`Main.qml` pages, inspectors, output and shortcut components; then
+**6.19b1**, the save/autosave adapter out of `DocumentController`; then
+**6.19b2** (the list projections), **6.19b3–b8** (`Main.qml`'s shortcut map,
+output panel, playlist panel, show page, edit page and settings page), then
 **6.20**'s recorded architecture differences. Do not claim
 M6 closure until 6.20 resolves those and the remaining gates pass.
