@@ -46,6 +46,7 @@
 #include "openshow/domain/storage.h"
 
 #include "DocumentPersistence.h"
+#include "DocumentViews.h"
 
 namespace openshow::ui {
 
@@ -354,10 +355,15 @@ private slots:
 
 private:
     bool edit(const std::function<bool()>& mutation);  // history-wrapped edit
+    // The navigation as a value, for the row projections (task 6.19b2). The
+    // ids live here and nowhere else; DocumentViews reads them through this
+    // cursor and never stores one.
+    DocumentViews::Cursor viewCursor() const;
     // The current slide's SELECTED box under the fallback rule of the
     // currentBox property docs; nullptr with no slide or no boxes. Display
-    // and every box-scoped op resolve through this one function, which is
-    // what keeps the highlighted box and the edited box identical.
+    // and every box-scoped op resolve through this one function — which
+    // forwards to DocumentViews::selectedBox, the single resolution — which
+    // is what keeps the highlighted box and the edited box identical.
     const openshow::domain::SlideItem* selectedBox() const;
     void setStatus(const QString& text);
     // The autosave edge of a committed change, handed to the persistence
@@ -398,6 +404,11 @@ private:
     bool pasteClip(const SlideClip& clip);
 
     openshow::domain::Documents fDocuments;
+    // Row shapes (task 6.19b2): a stateless reader over the documents
+    // beside them, so the property getters below forward to the one place
+    // that spells a row. Declared after fDocuments because it holds a
+    // reference to it.
+    DocumentViews fViews;
     std::unique_ptr<openshow::domain::History> fHistory;
     // Durability (task 6.19b1): the scratch, its executor, the decision
     // protocol and the status line it writes. It is a child QObject, given the

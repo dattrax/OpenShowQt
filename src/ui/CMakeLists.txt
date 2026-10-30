@@ -21,6 +21,10 @@ qt_policy(SET QTP0001 NEW)
 # durability half of the document session and joins for the same reason again:
 # document_controller_tests pins the scratch, the decision protocol and the
 # survivor wording through DocumentController, which is what the QML binds.
+# DocumentViews (task 6.19b2) is the row-shape half of the same session and
+# joins for the same reason once more: the fixtures pin the rows through the
+# controller's properties, and the boundary that keeps the views honest is
+# the one in its header, not a second build target.
 add_library(openshow-ui-core STATIC
   AppSettings.cpp
   AppSettings.h
@@ -30,6 +34,8 @@ add_library(openshow-ui-core STATIC
   DocumentController.h
   DocumentPersistence.cpp
   DocumentPersistence.h
+  DocumentViews.cpp
+  DocumentViews.h
   LibrarySearch.cpp
   LibrarySearch.h
   PresentationModel.cpp

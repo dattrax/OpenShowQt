@@ -5,8 +5,9 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.19b1**, the frontend `DocumentPersistence`
-(6.19a4's worker `RpcMethods` split at `7cd5edf`, which completed 6.19a,
+The committed checkpoint is task **6.19b2**, the frontend `DocumentViews`
+(6.19b1's `DocumentPersistence` at `7050a2d`,
+6.19a4's worker `RpcMethods` split at `7cd5edf`, which completed 6.19a,
 6.19a3's `PresentationModel` at `c00d025`,
 6.19a2's `PreviewConsumer` at `a4cb9e2`, 6.19a1's `RpcClient` at `001588e`,
 6.9b's prepared-scene prewarm at `d83469e`, SceneStore's one scene truth at
@@ -106,11 +107,32 @@ and its whole persistence surface — `save`, `load`, `startBackgroundPersistenc
 `awaitPersistence`, `prepareForQuit`, `autosaveWrites`, `autosaveCoalesced`,
 `serviceDirectory` — is unchanged, which is why no test was edited.
 
-**Next implementation task: 6.19b2** — the list projections out of
-`DocumentController` into `DocumentViews`, the second of the eight
-single-component leaves 6.19b was split into (`DocumentPersistence` has landed;
-`DocumentViews`, then `Main.qml`'s `ShortcutMap`, `OutputPanel`, `PlaylistPanel`,
-`ShowPage`, `EditPage` and `SettingsPage` remain).
+**Task 6.19b2 is committed.** The row shapes have left `DocumentController`:
+`src/ui/DocumentViews.{h,cpp}` spells what the operator's lists read — the
+song rows, a song's slide rows (first-line preview, the first box's geometry,
+background asset and fit), the current slide's box rows, the style list and the
+current slide's resolved style with its gradient, the playlists and their
+entries with each referenced show resolved, the media registry, the drawer's
+search projection, and the selected box's text, kind and asset. It is a pure
+reader: a const reference to the controller's documents, no state, no signals,
+no cache, so a row cannot be one edit behind the model. Where a shape depends
+on WHERE the operator is, the navigation arrives as a `Cursor` value the
+controller builds from the ids it owns — the views cannot hold a stale position
+because they hold no position at all. `selectedBox()` is the single resolution
+of the selection with its fallback to the bottom of the stack, and the
+controller's own box-scoped edits resolve through that same call, which is what
+keeps R17's "the box wearing the handles is the box the inspector edits" a
+property of the code; `linesAsText` is the one conversion the inspector's text
+and the debounce comparison both read, so they cannot disagree. The controller
+keeps the documents, the navigation and every mutation, and all of its property
+getters forward — no QML binding, row key or fallback changed, which is why no
+test was edited. `DocumentController.cpp` is 261 lines shorter.
+
+**Next implementation task: 6.19b3** — the window's keyboard shortcuts out of
+`Main.qml` into `ShortcutMap.qml`, the third of the eight
+single-component leaves 6.19b was split into (`DocumentPersistence` and
+`DocumentViews` have landed; `Main.qml`'s `ShortcutMap`, `OutputPanel`,
+`PlaylistPanel`, `ShowPage`, `EditPage` and `SettingsPage` remain).
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -153,11 +175,11 @@ audience composition match the intended design. Important open differences:
   owner, `DocumentPersistence`, and deliberately did not move the write off the
   UI thread). Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19b2–b8:** the remaining ownership extractions are unfinished
+- **6.18b, 6.19b3–b8:** the remaining ownership extractions are unfinished
   (6.18a2's `PreviewProducer`, 6.18b1's `BackgroundTransport` and 6.19a2's
   `PreviewConsumer` landed; 6.19a1's `RpcClient`, 6.19a3's `PresentationModel`
   and 6.19a4's `RpcMethods` landed 2026-10-30, closing 6.19a, and 6.19b1's
-  `DocumentPersistence` landed the same day).
+  `DocumentPersistence` and 6.19b2's `DocumentViews` landed the same day).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
   physical-display acceptance remain open. Pinned cache excess is reported,
   not a hard bound on total process memory.
@@ -196,7 +218,8 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19b1**. Tasks **6.19a4** (`7cd5edf`, with the
+The working tree carries task **6.19b2**. Tasks **6.19b1** (`7050a2d`),
+**6.19a4** (`7cd5edf`, with the
 6.19b split plan at `5aeeebc`),
 **6.19a3** (`c00d025`),
 **6.19a2** (`a4cb9e2`), **6.19a1** (`001588e`),
@@ -204,6 +227,26 @@ The working tree carries task **6.19b1**. Tasks **6.19a4** (`7cd5edf`, with the
 `0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
 in their commit messages:
 
+- `src/ui/DocumentViews.{h,cpp}` (6.19b2) — the row shapes the operator's
+  lists read, now one author inside `openshow-ui-core`: song rows, slide rows
+  (first-line preview, first-box geometry, background asset and fit), the
+  current slide's box rows, the style list and the resolved style with its
+  gradient, playlists and entries with each referenced show resolved (or `?`
+  and 0), the media registry, the drawer's search projection, and the selected
+  box's text/kind/asset. The class is a stateless reader over a const
+  `Documents` reference — nothing to fall behind, nothing to invalidate — and
+  the navigation it needs arrives as a `Cursor` value the controller builds
+  (`viewCursor()`), never stored. `selectedBox()` moved with the one fallback
+  rule intact (named box by id, else bottom of the stack, else nothing), and
+  the controller's private `selectedBox()`, every box-scoped edit and the
+  canvas-facing rows all resolve through it, so R17's identity between the
+  highlighted and edited box stays structural. `linesAsText` is the single
+  `'\n'`-joined reading of a box's lines: `boxText()` uses it and
+  `commitPendingText` compares the debounce draft against the same conversion.
+  `findSlide` replaced the controller's file-local `findCurrentSlide` (its
+  blur-on-video edit check and the style reads all call it); `textToLines`
+  stayed with the edits. Every getter on the controller forwards; 261 lines
+  left the `.cpp`.
 - `src/ui/DocumentPersistence.{h,cpp}` (6.19b1) — the document session's
   durability, now one owner inside `openshow-ui-core`: the `AutosaveScheduler`
   as its child (so the executor's thread is retired with it), the task 2.3
@@ -458,6 +501,30 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.19b2:
+
+- `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS, no
+  warnings in either tree (as with 6.19b1, the headless preset builds no UI,
+  so the new component is compiled and exercised by the desktop preset alone).
+- `ctest --preset desktop`: **53/53 PASS**, 245.2 s, all 12 display-labelled
+  tests (134.8 sec*proc of them). Nothing was edited, because an unchanged
+  test is the whole acceptance of an extraction: `document_controller_tests`
+  (3.7 s) pins the rows through the controller's properties — the slide rows'
+  first-box preview and geometry, `currentSlideBoxes` with kinds and asset
+  ids, box selection following identity across delete and undo, the
+  resolved-style map and its override flag, playlist entry rows with a
+  dangling show reading `?`/0, and the debounce comparison against
+  `currentSlideText` — while `library_search_tests` (0.01 s) pins the
+  normalisation the moved `searchShows` projection still runs through,
+  `workspace_panels_tests` and `scene_edit_tests` stay green,
+  `document_present_tests` (0.9 s) shows the compile-and-present path still
+  resolves the same current slide, and `ui_loads` (8.0 s) loads the real
+  shell with every row-binding unchanged and exactly the five known notices.
+- `ctest --preset headless`: **32/32 PASS**, 51.4 s.
+- No new test was added and no assertion was edited, and no row gained, lost
+  or renamed a key: the bodies came across verbatim, so the QML cannot tell
+  which file built the map it is binding.
+
 Verification after 6.19b1:
 
 - `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS, no
@@ -556,8 +623,8 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19b2**, the list projections out of `DocumentController` into
-`DocumentViews`; then **6.19b3–b8** (`Main.qml`'s shortcut map, output panel,
-playlist panel, show page, edit page and settings page), then **6.20**'s
-recorded architecture differences. Do not claim M6 closure until 6.20 resolves
+**6.19b3**, the window's keyboard shortcuts out of `Main.qml` into
+`ShortcutMap.qml`; then **6.19b4–b8** (`Main.qml`'s output panel, playlist
+panel, show page, edit page and settings page), then **6.20**'s recorded
+architecture differences. Do not claim M6 closure until 6.20 resolves
 those and the remaining gates pass.
