@@ -5,8 +5,9 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.19a3**, the frontend `PresentationModel`
-(6.19a2's `PreviewConsumer` at `a4cb9e2`, 6.19a1's `RpcClient` at `001588e`,
+The committed checkpoint is task **6.19a4**, the worker `RpcMethods` split
+that completes 6.19a (6.19a3's `PresentationModel` at `c00d025`,
+6.19a2's `PreviewConsumer` at `a4cb9e2`, 6.19a1's `RpcClient` at `001588e`,
 6.9b's prepared-scene prewarm at `d83469e`, SceneStore's one scene truth at
 `1b54bdb`, and the `PreviewProducer`,
 `BackgroundTransport` and dev-binary extractions plus the bounded prepare
@@ -70,9 +71,24 @@ rule), the visit over in-flight prepares and the status line — and interprets
 nothing but the prepare ack, the `scene` block of `output.status` and a
 refusal's in-flight marker. `WorkerController`'s six scene properties, its go,
 clear, restore and adopt invokables forward; the QML surface is byte-identical.
-**Next implementation task: 6.19a4** — the worker's connection loop versus its
-method and status codecs, then **6.19b**. This handoff does not mark 6.20
-complete.
+
+**Task 6.19a4 is committed**, which closes 6.19a. On the worker side
+`src/worker/rpc/RpcMethods.{h,cpp}` now holds what a request MEANS — every
+method's argument decoding in the width the value is carried in, its refusal
+texts, its result encode and the session call it names — together with the four
+encoders that describe session state on the wire (`output.status`,
+`output.displays`, `preview.ready`, `media.error`). `RpcServer` is the
+connection: accept, framed read, the `hello` gate, the bounded coalescing queue
+and its progress-measured write deadline, the drain, the deferred-answer bag
+with its self-wake and the shutdown. The table cannot end a session and the
+connection decodes no method; `scene.prepare`'s deferred ack comes back through
+an injected sink, so the executor thread never learns a socket exists. Names
+and shapes stayed in `openshow/protocol`, so the split added no vocabulary for
+frontend and server to drift over, and `RpcServer.cpp` is 909 lines shorter.
+
+**Next implementation task: 6.19b** — the `DocumentController` session/save/list
+adapters and the `Main.qml` pages, inspectors, output and shortcut components.
+This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
 
@@ -112,10 +128,11 @@ audience composition match the intended design. Important open differences:
 - **6.19b/6.20:** background autosave is asynchronous; explicit save/load and
   decision/quit drains remain synchronous. Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19a3–a4/b:** the remaining ownership extractions are unfinished
+- **6.18b, 6.19b:** the remaining ownership extractions are unfinished
   (6.18a2's `PreviewProducer`, 6.18b1's `BackgroundTransport` and 6.19a2's
-  `PreviewConsumer` landed; 6.19a1's `RpcClient` and 6.19a3's
-  `PresentationModel` landed 2026-10-30).
+  `PreviewConsumer` landed; 6.19a1's `RpcClient`, 6.19a3's
+  `PresentationModel` and 6.19a4's `RpcMethods` landed 2026-10-30, closing
+  6.19a).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
   physical-display acceptance remain open. Pinned cache excess is reported,
   not a hard bound on total process memory.
@@ -154,11 +171,30 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19a3**. Tasks **6.19a2** (`a4cb9e2`),
-**6.19a1** (`001588e`),
+The working tree carries task **6.19a4**. Tasks **6.19a3** (`c00d025`),
+**6.19a2** (`a4cb9e2`), **6.19a1** (`001588e`),
 **6.18a2**, **6.18b1**, **6.18b2** and **6.9a** are committed at
 `0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
 in their commit messages:
+
+- `src/worker/rpc/RpcMethods.{h,cpp}` (6.19a4) — the worker's method table and
+  status/notification encoders, the fourth and last component of 6.19a.
+  `MethodTable::dispatch(envelope, outbound)` answers everything the agreed
+  protocol names after the connection's own gates: `ping`, `output.status`/
+  `output.displays`/`output.select`, `layer.setEnabled`, `scene.prepare`/
+  `scene.present`, the four `preview.*` methods, the six `media.*` commands and
+  `shutdown` — each with the R11 rules intact (numbers read in their own width,
+  ranges checked before any narrowing, the thumbnail batch capped before a
+  single entry is parsed, refused keys clipped only on the way back out). The
+  encoders (`statusResult`, `displaysResult`, `previewReadyParams`,
+  `mediaErrorParams`) are pure functions over session snapshots, so the status
+  lock is never held near the socket. The table holds no socket: `scene.prepare`
+  hands its executor-thread ack to the `DeferredSink` its host injected, which
+  is `RpcServer::submitDeferred` — the same mutex-guarded bag push and self-wake
+  byte the inline lambda performed before the move. `RpcServer` keeps the
+  envelope gate, the notification policy, the `hello` handshake, `run`/`serve`,
+  `drainToSocket`, the deferred collection and `stop()`, and is the only thing
+  that may end a connection; 576 lines where it had 1485.
 
 - `src/ui/PresentationModel.{h,cpp}` (6.19a3) — the acknowledged output model's
   new owner, inside `openshow-ui-core`: the mirror of every prepare payload the
@@ -375,6 +411,29 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.19a4:
+
+- `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS, no
+  warnings in either tree; both link the same `openshow-worker` binary the
+  live gates drive.
+- `ctest --preset desktop`: **53/53 PASS**, 246.5 s, all 12 display-labelled
+  tests (136.4 sec*proc of them). The RPC acceptance was not touched:
+  `worker_rpc_lifecycle` (5.6 s) drives hello-gating, refusal and shutdown
+  through the real binary; `worker_rpc_transport` (13.6 s) still pins the
+  write-deadline behaviour — a trickle reader keeps its session, a peer that
+  takes nothing is dropped with the backlog in the log; `worker_rpc_limits`
+  (12.1 s) still gets the same argument refusals — every number in its own
+  width, the thumbnail cap answered before any parse, unknown methods refused
+  by name; `output_status_tests` (3.7 s) decodes the encoder's full field
+  list. The preview and media suites (`preview_selection/ownership/budget/
+  stream`, `background_media_tests`, `audio_mix_tests`) pass against the
+  re-routed handlers unchanged — the `preview.ready` params and the media acks
+  are byte-identical because the encoders moved verbatim.
+- `ctest --preset headless`: **32/32 PASS**, 51.6 s.
+- No new test was added and no assertion was edited, and no protocol message,
+  error text or result shape changed: the frontend cannot tell which of the
+  worker's two classes answered it.
+
 Verification after 6.19a3:
 
 - `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS, no
@@ -424,6 +483,7 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19a4**, the worker's connection loop versus its method and status codecs;
-then **6.19b**, then **6.20**'s recorded architecture differences. Do not claim
+**6.19b**, the `DocumentController` session/save/list adapters and the
+`Main.qml` pages, inspectors, output and shortcut components; then
+**6.20**'s recorded architecture differences. Do not claim
 M6 closure until 6.20 resolves those and the remaining gates pass.

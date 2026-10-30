@@ -8,6 +8,16 @@
  * besides --render-test: every command is answered by a session operation,
  * never by reaching into scene internals (PLAN.md graduation rule).
  *
+ * Since task 6.19a4 the connection and the meaning of a request are
+ * separate owners. This class is the connection: bind, accept, framed read,
+ * the hello gate that decides when the protocol is agreed, the bounded
+ * outbound queue with its write deadline, the drain, the notification and
+ * deferred-reply collection, and the shutdown. MethodTable (rpc/RpcMethods.h)
+ * is the meaning: it decodes each method's arguments, calls the session
+ * operation it names and encodes the answer or refusal. The split is exact
+ * because one rule each side keeps: only this class can end a connection,
+ * and only the table decides what a request does.
+ *
  * Nothing here waits for the frontend (task 6.8b, review R11). The socket is
  * O_NONBLOCK and everything owed to it goes through a bounded, coalescing
  * outbound queue that the loop drains when the socket says POLLOUT, so a peer
@@ -26,6 +36,7 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -36,6 +47,7 @@
 namespace openshow::worker {
 
 class OutputSession;
+class MethodTable;
 
 class RpcServer {
 public:
@@ -77,7 +89,10 @@ private:
 
     void run();
     void serve(int connectionFd);
-    // Handles one decoded message; returns false to drop the connection.
+    // Handles one decoded message: the envelope gate, the notification policy
+    // and the hello handshake are the connection's own, and everything the
+    // protocol agrees on afterwards is routed to fMethods. Returns false to
+    // drop the connection — the only decision the table cannot make.
     bool handle(const boost::json::value& message, bool handshakeDone,
                 bool* handshakeNow, std::string* outbound);
     // Drains the notifications the session is holding — queued by the render
@@ -102,8 +117,15 @@ private:
     // deferrals (6.16a's supersede scenario proved it). They may still
     // pass a later request's reply on the wire — ids correlate, ordering
     // was never promised (task 6.3a).
+    //
+    // submitDeferred is the sink the method table was built with: a prepare
+    // completion lands here on the executor thread, exactly as the inline
+    // lambda used to arrive on this same mutex before task 6.19a4 moved the
+    // handler out. The wake-byte write stays under the lock for the reason
+    // stop() documents below.
     std::mutex fDeferredMutex;
     std::vector<boost::json::value> fDeferredFrames;
+    void submitDeferred(boost::json::value frame);
     void collectDeferred(std::vector<QueuedFrame>* outbound);
 
     // The self-wake for the deferred queue: [0] rides the serve loop's
@@ -115,6 +137,11 @@ private:
 
     OutputSession& fSession;
     Options fOptions;
+    // What a request means (task 6.19a4): the method table and the session
+    // calls behind it. Built with the deferred-answer sink so a prepare
+    // completion travels back through this connection's bag and self-wake —
+    // the table never learns that a socket exists.
+    std::unique_ptr<MethodTable> fMethods;
     int fListenFd = -1;
     // The accepted descriptor belongs to the serving thread and only that
     // thread closes it. stop() may wake it with shutdown(), but only while

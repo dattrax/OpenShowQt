@@ -1,12 +1,14 @@
 # Task 6.18b2: the production worker and the dev harness drive the same
 # OutputSession, so both compile the same session/output sources. What is
-# production-only is main.cpp's socket mode and rpc/RpcServer.cpp; what is
-# dev-only is the driver main and the demo scene / pixel checks it calls
+# production-only is main.cpp's socket mode and the rpc pair (RpcServer's
+# connection loop and RpcMethods' method table); what is dev-only is the
+# driver main and the demo scene / pixel checks it calls
 # (render/TestScene.cpp). The product binary no longer carries them.
 add_executable(openshow-worker
   main.cpp
   output/OutputWindow.cpp
   output/Swapchain.cpp
+  rpc/RpcMethods.cpp
   rpc/RpcServer.cpp
   session/OutputSession.cpp
 )
