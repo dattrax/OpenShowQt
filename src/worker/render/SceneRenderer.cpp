@@ -191,19 +191,26 @@ public:
         SceneImageCache* pics = showPictures ? fImages : nullptr;
         if (frame.scene) {
             const bool fading = frame.fadeFrom != nullptr;
+            // 6.21a (review F1): the layouts are HELD as shared handles for
+            // as long as this draw needs them. A prepare on the executor can
+            // replace either scene's slot or evict it for a fifth scene at
+            // any moment; that releases only the cache's own reference, and
+            // these two handles keep the bytes we are drawing alive until
+            // this function returns.
+            std::shared_ptr<const SceneTextEngine::SceneLayout> from;
             if (fading) {
-                const SceneTextEngine::SceneLayout& from = layoutFor(frame.fadeFrom);
+                from = layoutFor(frame.fadeFrom);
                 SkPaint fade;
                 fade.setAlpha(static_cast<uint8_t>((1.0f - frame.textBlend) * 255.0f + 0.5f));
-                fEngine->drawLayout(ctx.canvas, from, &fade, pics, showWords);
+                fEngine->drawLayout(ctx.canvas, *from, &fade, pics, showWords);
             }
-            const SceneTextEngine::SceneLayout& current = layoutFor(frame.scene);
+            std::shared_ptr<const SceneTextEngine::SceneLayout> current = layoutFor(frame.scene);
             if (fading) {
                 SkPaint fade;
                 fade.setAlpha(static_cast<uint8_t>(frame.textBlend * 255.0f + 0.5f));
-                fEngine->drawLayout(ctx.canvas, current, &fade, pics, showWords);
+                fEngine->drawLayout(ctx.canvas, *current, &fade, pics, showWords);
             } else {
-                fEngine->drawLayout(ctx.canvas, current, nullptr, pics, showWords);
+                fEngine->drawLayout(ctx.canvas, *current, nullptr, pics, showWords);
             }
             return;
         }
@@ -219,19 +226,21 @@ private:
     // HERE — on the render thread — because a draw must never fail for want
     // of cached work. The prepare path exists to make this branch rare
     // (task 6.9b); fLayoutBuilds counts the ones that still cost the frame
-    // boundary, which is what the fixtures assert on. The reference stays
-    // valid while drawing: a frame asks for at most its own two scenes, and
-    // the cache evicts only a fifth.
-    const SceneTextEngine::SceneLayout& layoutFor(const ActiveScene& scene) {
-        if (const SceneTextEngine::SceneLayout* hit = fLayouts->find(scene.get())) {
-            return *hit;
+    // boundary, which is what the fixtures assert on. The handle is RETAINED
+    // (task 6.21a, review F1): it keeps the layout's bytes alive for the
+    // whole draw even if a concurrent prepare replaces the slot or a fifth
+    // scene evicts it — the draw and the cache each hold their own reference.
+    std::shared_ptr<const SceneTextEngine::SceneLayout> layoutFor(const ActiveScene& scene) {
+        std::shared_ptr<const SceneTextEngine::SceneLayout> hit = fLayouts->find(scene.get());
+        if (hit) {
+            return hit;
         }
         fLayoutBuilds->fetch_add(1, std::memory_order_relaxed);
         const openshow::scene::Scene* key = scene.get();
-        // What this frame draws is the STORED bytes, and put() hands back
-        // where they landed: no second build, no second search, and no
-        // reference to anything the frame does not own.
-        return *fLayouts->put(scene, key, fLayouts->build(*scene));
+        // What this frame draws is the STORED bytes, and put() hands back a
+        // retained handle to them: no second build, no second search, and no
+        // dependency on the slot surviving the draw.
+        return fLayouts->put(scene, key, fLayouts->build(*scene));
     }
 
     const DemoDecoration* fDemo;  // development title, if decorated

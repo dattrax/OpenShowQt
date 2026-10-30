@@ -145,17 +145,26 @@ public:
     // image cache builds a blur outside its own.
     class LayoutCache {
     public:
-        // The reference stays valid while the cache holds the slot: the
-        // draw path uses it inside one frame, and no call rebuilds a
-        // scene the caller is drawing.
-        const SceneLayout* find(const openshow::scene::Scene* scene) const;
+        // The returned layout is RETAINED (task 6.21a, review F1): the handle
+        // keeps the layout's bytes alive for as long as any consumer holds it,
+        // even after the cache replaces the slot or evicts it for a fifth
+        // scene. The draw path takes one handle per layout it draws and holds
+        // it across the draw; the cache's side of the rule is that replacing
+        // or evicting a slot releases only the cache's OWN reference. Before
+        // this, find()/put() handed out a pointer into a mutable slot that a
+        // prepare on another thread could rewrite mid-draw.
+        std::shared_ptr<const SceneLayout> find(const openshow::scene::Scene* scene) const;
         SceneLayout build(const openshow::scene::Scene& scene) const;
-        // Returns WHERE the layout landed, so a draw that missed builds once
-        // and draws the stored bytes: the slot it wrote is the LRU victim,
-        // and the four-slot contract means the scenes one frame asks for (its
-        // own and its fade's) cannot push each other out.
-        const SceneLayout* put(const std::shared_ptr<const openshow::scene::Scene>& shared,
-                               const openshow::scene::Scene* scene, SceneLayout layout) const;
+        // Stores the layout and hands back a retained handle to the stored
+        // bytes. Which slot it lands in (replace-in-place or the LRU victim)
+        // is the cache's business; the caller's contract is the handle. The
+        // four-slot contract still means the scenes one frame asks for (its
+        // own and its fade's) cannot push each other out of the CACHE — and
+        // even when a prepare's churn does, a frame mid-draw holds what it
+        // is drawing.
+        std::shared_ptr<const SceneLayout> put(
+            const std::shared_ptr<const openshow::scene::Scene>& shared,
+            const openshow::scene::Scene* scene, SceneLayout layout) const;
 
     private:
         friend class SceneTextEngine;
@@ -163,7 +172,7 @@ public:
         struct Slot {
             std::shared_ptr<const openshow::scene::Scene> shared;
             const openshow::scene::Scene* scene = nullptr;
-            SceneLayout layout;
+            std::shared_ptr<const SceneLayout> layout;
             std::uint64_t used = 0;
         };
 

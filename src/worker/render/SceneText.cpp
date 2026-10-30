@@ -160,14 +160,15 @@ bool SceneTextEngine::create(std::string* error) {
  * predecessor, LRU — switching selection costs one rebuild, a steady
  * show and edit cost none.
  */
-const SceneTextEngine::SceneLayout* SceneTextEngine::LayoutCache::find(
+std::shared_ptr<const SceneTextEngine::SceneLayout> SceneTextEngine::LayoutCache::find(
     const openshow::scene::Scene* scene) const {
     const std::lock_guard<std::mutex> lock(fMutex);
     const std::uint64_t now = ++fClock;
     for (auto& slot : fSlots) {
         if (slot.scene == scene) {
             slot.used = now;
-            return &slot.layout;
+            return slot.layout;  // a copy of the handle: caller and cache now
+                                 // both keep the bytes (6.21a, review F1)
         }
     }
     return nullptr;
@@ -178,7 +179,7 @@ SceneTextEngine::SceneLayout SceneTextEngine::LayoutCache::build(
     return fEngine->layoutScene(scene);  // const shaping, no lock: any thread
 }
 
-const SceneTextEngine::SceneLayout* SceneTextEngine::LayoutCache::put(
+std::shared_ptr<const SceneTextEngine::SceneLayout> SceneTextEngine::LayoutCache::put(
     const std::shared_ptr<const openshow::scene::Scene>& shared,
     const openshow::scene::Scene* scene, SceneLayout layout) const {
     const std::lock_guard<std::mutex> lock(fMutex);
@@ -186,23 +187,29 @@ const SceneTextEngine::SceneLayout* SceneTextEngine::LayoutCache::put(
     Slot* victim = &fSlots[0];
     for (auto& slot : fSlots) {
         if (slot.scene == scene) {
-            slot.layout = std::move(layout);  // replace, keep identity
+            // Replace, keep identity — and swap in a FRESH handle so a
+            // consumer still drawing the previous bytes holds them
+            // untouched until its draw returns (6.21a, review F1).
+            slot.layout = std::make_shared<const SceneLayout>(std::move(layout));
             slot.shared = shared;
             slot.used = now;
-            return &slot.layout;
+            return slot.layout;
         }
         if (slot.used < victim->used) {
             victim = &slot;
         }
     }
-    // Retiring the evicted slot's pin is the whole memory rule: the cache
+    // Retiring the evicted slot's pins is the whole memory rule: the cache
     // holds at most four scenes' paragraphs, and a scene alive only here
-    // dies when a fifth arrives.
+    // dies when a fifth arrives. "Dies" means when its LAST holder lets go
+    // — a frame mid-draw is a holder, so eviction releases the cache's
+    // reference and nothing further (the layout outlives this function for
+    // whoever is still drawing it).
     victim->shared = shared;
     victim->scene = scene;
-    victim->layout = std::move(layout);
+    victim->layout = std::make_shared<const SceneLayout>(std::move(layout));
     victim->used = now;
-    return &victim->layout;
+    return victim->layout;
 }
 
 namespace {

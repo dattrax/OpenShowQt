@@ -317,7 +317,7 @@ Checkpoint: `M6: close code review and graduate production architecture`.
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| 6.21a | TODO | Keep drawn text layouts alive across concurrent preparation | Held layouts survive cache churn/replacement; concurrent prepare/draw regression; F1 |
+| 6.21a | DONE | Keep drawn text layouts alive across concurrent preparation | Layout-cache slots hold shared handles; a draw retains what it paints through eviction, same-key replacement and a concurrent prepare churn (`scene_render_tests`); F1 |
 | 6.21b | TODO | Adopt foreground-image paths in every retained scene payload | Recovered foreground image survives save, scratch deletion, clear/restore and in-flight prepare; F2 |
 | 6.21c | TODO | Finish off-render media startup, pre-roll and retirement | Slow audio startup and old-transport retirement cannot stall audience frames; retain GPU thread ownership; F3 |
 | 6.21d | TODO | Move thumbnail file decoding off the RPC thread | Cold thumbnail decode leaves status, release, commands and shutdown responsive; F5 |

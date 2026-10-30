@@ -1,60 +1,51 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-10-30 (Europe/London). Reviewed code: `0e64f0b` (6.20e).
+Updated: 2026-10-30 (Europe/London). Reviewed code: `0e64f0b` (6.20e) plus the
+6.21 follow-ups landing on top.
 
 ## Current checkpoint
 
 M0–M5 and the recorded M6 closure through 6.20e remain historical DONE
-checkpoints. The fresh [conformance review](docs/reviews/M6-conformance-2026-10-30.md)
-found seven remaining gaps, now tracked as **6.21a–g** in [PLAN.md](PLAN.md).
-Complete those follow-ups before claiming full M6 conformance or moving to M7.
+checkpoints. The [conformance review](docs/reviews/M6-conformance-2026-10-30.md)
+tracked seven remaining gaps as **6.21a–g** in [PLAN.md](PLAN.md); complete
+them all before claiming full M6 conformance or moving to M7.
 
-## Review summary
+**6.21a is DONE**: the layout cache now hands out retained handles
+(`shared_ptr<const SceneLayout>`), replacing or evicting a slot releases only
+the cache's own reference, and `SceneItemsLayer` holds what it draws across
+the whole frame. The regression drives eviction, same-key replacement and a
+concurrent prepare-vs-draw churn in `scene_render_tests` (exact pixel
+equality per frame). F1's R16 row is closed in
+[architecture.md](docs/architecture.md).
 
-Three P1 issues: concurrent layout replacement can invalidate a draw; foreground
-image paths escape saved-scene adoption; audio startup/pre-roll and transport
-retirement still block rendering. Four P2 gaps concern gradient clears, thumbnail
-RPC blocking, foreground-error visibility and the real-frontend journey fixture.
-The review contains source locations, reproduced evidence and required regressions.
+## Remaining 6.21 gaps
+
+F2 (foreground-image adoption), F3 (audio startup/pre-roll and transport
+retirement on the render thread), F5 (cold thumbnail decode on the RPC
+thread), F4 (gradient clears), F6 (foreground-error visibility) and F7 (real
+frontend journey fixture). The review holds source locations, reproduced
+evidence and required regressions for each.
 
 ## Verification
 
 | Check | Result |
 |---|---|
-| `cmake --build --preset headless -j 2` | PASS; no work to do |
-| `cmake --build --preset desktop -j 2` | PASS; no work to do |
-| `ctest --preset headless` | 32/32 PASS, 47.92 s; sandboxed, live PipeWire subscenarios internally skipped |
-| `ctest --preset desktop` with local-session access | 54/54 PASS, 248.13 s; all 13 display-labelled checks, 137.54 sec*proc |
-| Standalone production-library probes | Reproduced layout-reference replacement, stale foreground adoption/restore paths and retained gradient after background clear |
-| Documentation checks | Existing task IDs/statuses preserved; archive snapshots exact; local links and `git diff --check` verified |
+| `cmake --build --preset headless -j 2` | PASS |
+| `cmake --build --preset desktop -j 2` | PASS |
+| `ctest --preset desktop` with local-session access | 54/54 PASS, 247.75 s; all 13 display-labelled checks, 137.43 sec*proc |
+| `ctest --preset headless` | 32/32 PASS, 51.85 s; sandboxed, live PipeWire subscenarios internally skipped |
+| `scene_render_tests` standalone | PASS 3× in each build tree (churn fixture included) |
 
-The successful desktop run used RADV on the AMD Radeon 890M; its live audio
-restart/sink scenarios ran. This does not establish audible two-stream pairing,
-projector placement/hotplug, Wayland/X11 physical acceptance or the long M7 soaks.
-The journey remains silent and bypasses WorkerController (review F7).
-
-The initial sandboxed desktop attempt failed 15 checks: local socket/session
-restrictions affected controller/display fixtures, and concurrent headless/desktop
-runs collided in the image-cache fixture's PID-named temporary directory. The
-subsequent desktop run, after headless finished and with local-session access,
-passed all 54 unchanged tests. Do not run both presets concurrently in sandboxes
-that share temporary storage and reuse process IDs.
-
-## Documentation and retained evidence
-
-PLAN.md now holds brief deliverable/acceptance rows, corrected layer/audio status
-and the 6.21 follow-ups. Its rule 8 limits future task updates to 2–4 lines;
-implementation narratives and detailed measurements belong outside the plan.
-This handoff replaces the long completed log. Exact pre-review snapshots of both
-files are in [history](docs/history/README.md); architecture documentation links
-the new findings and qualifies the older closure claims. Production code and
-existing tests were not changed.
+The successful desktop run used RADV on the AMD Radeon 890M. Do not run both
+ctest presets concurrently: they collide in the image-cache fixture's
+PID-named temporary directory, and desktop needs local-session access.
 
 ## Next action
 
-Inspect Git status and the review, then start **6.21a**: retain layouts across
-cache replacement and add a concurrent prepare/draw regression. Follow with
-6.21b/c and the remaining 6.21 tasks; split large scheduling work before starting.
-M7.1a–c recovery, 7.2 budgets, 7.3 packaging and 7.4 hardware rehearsal remain TODO.
-
-Suggested documentation commit: `docs: review M6 conformance and condense task handoff`.
+**6.21b**: `PresentationModel::adoptAssetPaths()` must rewrite foreground
+image paths in items, not just `background.assetPath`. Drive the real model:
+present text + foreground image → adopt old path → clear all → restore,
+including adoption during an in-flight prepare, asserting the service paths
+reach the prepare/restore payloads. Then 6.21c (split it before starting if
+it exceeds a day), 6.21d–g. M7.1a–c recovery, 7.2 budgets, 7.3 packaging and
+7.4 hardware rehearsal remain TODO.

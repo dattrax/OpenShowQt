@@ -16,13 +16,16 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <functional>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
@@ -2743,6 +2746,130 @@ void testFadeCostMeasured() {
           "background fade within 4x of a settled background frame");
 }
 
+// Task 6.21a (review F1): a layout the cache hands out is RETAINED. Until
+// now find()/put() handed back a pointer INTO a mutable slot, so a prepare
+// on another thread — or the next fifth scene — could overwrite the bytes a
+// frame was still painting. Three phases pin the new contract:
+//   1. a held handle survives eviction by four newer scenes and still paints
+//      its baseline pixels;
+//   2. a same-key replacement swaps what the CACHE answers while the holder
+//      keeps drawing the bytes it was given;
+//   3. a churn thread playing the prepare executor replaces and evicts slots
+//      continuously while the drawing thread — the frame loop — looks the
+//      on-air scene up, builds on a miss and draws what it was handed.
+// The draw comparisons are exact: the same layout bytes through the same
+// raster canvas are deterministic, so anything other than equality means the
+// bytes under the draw changed — the defect itself.
+void testHeldLayoutSurvivesCacheChurn() {
+    worker::SceneTextEngine engine;
+    std::string error;
+    if (!engine.create(&error)) {
+        check(false, "engine created for retention assertions: " + error);
+        return;
+    }
+    std::unique_ptr<worker::SceneTextEngine::LayoutCache> cache =
+        worker::SceneTextEngine::newLayoutCache(engine);
+
+    const auto onAir =
+        std::make_shared<scene::Scene>(singleItemScene({"HELD LAYOUT", "survive every churn"}, 72.0));
+
+    // Draw one layout through the same words path a frame uses and return
+    // its pixels: the background fill plus the paragraph, nothing else.
+    auto paint = [&](const worker::SceneTextEngine::SceneLayout& layout) {
+        auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(kWidth, kHeight));
+        SkCanvas* canvas = surface->getCanvas();
+        canvas->clear(0xFF102030);
+        engine.drawLayout(canvas, layout);
+        std::vector<uint32_t> pixels(static_cast<size_t>(kWidth) * kHeight);
+        const bool read = surface->readPixels(SkImageInfo::MakeN32Premul(kWidth, kHeight),
+                                              pixels.data(), sizeof(uint32_t) * kWidth, 0, 0);
+        check(read, "painted frame read back");
+        return pixels;
+    };
+
+    std::shared_ptr<const worker::SceneTextEngine::SceneLayout> held =
+        cache->put(onAir, onAir.get(), cache->build(*onAir));
+    if (!check(held != nullptr, "put() hands back a retained handle")) {
+        return;
+    }
+    const std::vector<uint32_t> baseline = paint(*held);
+
+    // Phase 1 — eviction: four new scenes push the four slots' LRU onto the
+    // on-air scene's, exactly the fifth-scene case the old comment claimed
+    // a draw was safe under.
+    for (int i = 0; i < 4; ++i) {
+        auto other = std::make_shared<scene::Scene>(singleItemScene({"CHURN " + std::to_string(i)}, 60.0));
+        cache->put(other, other.get(), cache->build(*other));
+    }
+    check(cache->find(onAir.get()) == nullptr, "the evicted scene is gone from the cache");
+    check(paint(*held) == baseline, "the held layout still paints its baseline after eviction");
+
+    // Phase 2 — same-key replacement, the probe's scenario: new bytes arrive
+    // for the pointer being drawn. The cache swaps its slot to a FRESH object
+    // (the probe's aliased layout is exactly what a holder must not see).
+    const auto replacement =
+        std::make_shared<scene::Scene>(singleItemScene({"REPLACED BY A PREPARE"}, 140.0));
+    std::shared_ptr<const worker::SceneTextEngine::SceneLayout> fresh =
+        cache->put(onAir, onAir.get(), cache->build(*replacement));
+    check(fresh != held, "a replacement stores a new layout object, not an in-place rewrite");
+    check(paint(*fresh) != baseline, "the cache answers with the replacement's pixels");
+    check(paint(*held) == baseline, "the holder still paints its baseline through a replacement");
+
+    // Clear the planted replacement out of the cache before phase 3, so the
+    // frame loop below only ever finds bytes IT stored under the on-air key.
+    for (int i = 0; i < 4; ++i) {
+        auto other = std::make_shared<scene::Scene>(
+            singleItemScene({"RESET " + std::to_string(i)}, 64.0));
+        cache->put(other, other.get(), cache->build(*other));
+    }
+    check(cache->find(onAir.get()) == nullptr, "the planted replacement left the cache");
+
+    // Phase 3 — concurrent prepare versus draw. The churn thread is the
+    // prepare executor: real builds, continuous puts, evicting whatever slot
+    // the LRU names — including the one the frame last drew from. The main
+    // thread is the frame loop, and every one of its frames must be the
+    // baseline picture. Before 6.21a this is the race that tore the drawn
+    // layout; a single differing frame here is that race observed.
+    std::atomic<bool> stop{false};
+    std::thread churn([&cache, &stop] {
+        std::vector<std::shared_ptr<const scene::Scene>> batch;
+        for (int i = 0; i < 8; ++i) {
+            batch.push_back(std::make_shared<scene::Scene>(
+                singleItemScene({"PREPARE " + std::to_string(i)}, 48.0 + i)));
+        }
+        while (!stop.load(std::memory_order_relaxed)) {
+            for (const auto& prepared : batch) {
+                cache->put(prepared, prepared.get(), cache->build(*prepared));
+            }
+        }
+    });
+    bool stable = true;
+    int misses = 0;
+    constexpr int kFrames = 120;
+    for (int i = 0; i < kFrames; ++i) {
+        std::shared_ptr<const worker::SceneTextEngine::SceneLayout> layout =
+            cache->find(onAir.get());
+        if (!layout) {
+            ++misses;
+            layout = cache->put(onAir, onAir.get(), cache->build(*onAir));
+        }
+        if (paint(*layout) != baseline) {
+            stable = false;
+        }
+    }
+    stop.store(true, std::memory_order_relaxed);
+    churn.join();
+    check(misses > 0, "the churn really evicted the frame's scene mid-run");
+    check(stable, "every frame drawn against the churn paints the baseline");
+
+    // And the cache is still a cache afterwards: the on-air scene re-enters
+    // normally and answers a fresh lookup with baseline pixels.
+    std::shared_ptr<const worker::SceneTextEngine::SceneLayout> again =
+        cache->put(onAir, onAir.get(), cache->build(*onAir));
+    check(cache->find(onAir.get()) != nullptr, "the scene re-enters the cache after the churn");
+    check(paint(*again) == baseline, "the rebuilt layout paints the baseline");
+}
+
 }  // namespace
 
 int main() {
@@ -2787,6 +2914,7 @@ int main() {
     testFadeCostMeasured();
     testSceneLayerToggles();
     testWordsImagesFilterTheStack();
+    testHeldLayoutSurvivesCacheChurn();
 
     if (failures == 0) {
         std::printf("scene_render_tests: all fixtures passed\n");
