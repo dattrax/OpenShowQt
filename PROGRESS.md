@@ -5,8 +5,9 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.19b3**, the window `ShortcutMap`
-(6.19b2's `DocumentViews` at `eaf5586`, 6.19b1's `DocumentPersistence` at `7050a2d`,
+The committed checkpoint is task **6.19b4**, the right-dock `OutputPanel`
+(6.19b3's `ShortcutMap` at `337626e`, 6.19b2's `DocumentViews` at `eaf5586`,
+6.19b1's `DocumentPersistence` at `7050a2d`,
 6.19a4's worker `RpcMethods` split at `7cd5edf`, which completed 6.19a,
 6.19a3's `PresentationModel` at `c00d025`,
 6.19a2's `PreviewConsumer` at `a4cb9e2`, 6.19a1's `RpcClient` at `001588e`,
@@ -146,12 +147,31 @@ drop the key entirely, so the R17 rule that each key has exactly one live
 owner is now something one file can be read to check. `Main.qml` is 240 lines
 shorter.
 
-**Next implementation task: 6.19b4** — the right dock (the preview and the
-output tools) out of `Main.qml` into `OutputPanel.qml`, the fourth of the eight
-single-component leaves 6.19b was split into (`DocumentPersistence` and
-`DocumentViews` have landed; `ShortcutMap` has landed; `Main.qml`'s
-`OutputPanel`, `PlaylistPanel`, `ShowPage`, `EditPage` and `SettingsPage`
-remain).
+**Task 6.19b4 is committed.** The right dock has left `Main.qml`:
+`src/ui/OutputPanel.qml` is the `SidePanel` and everything inside it — the
+shared-memory preview and its stats line, the monitor picker bound to the
+worker's applied display, the layer toggles, the demo-scene row, the
+per-layer clears with the Clear-all/Restore toggle gated on the worker's
+acknowledged live flags, the media transport and mixer rows with their
+at-rest-only slider re-application (a 500 ms poll must not yank a drag), the
+standalone track row, and the device/frame/revision readout with its guarded
+display-name lookup. What split wrote as "explicit properties for what the
+window owns" turned out to be no properties at all: the dock reads only the
+`worker` and `panels` context properties — unlike the shortcut map it has no
+window state to ask for and emits no signals — so the window keeps exactly
+what is genuinely its own: the anchors placing the dock between top bar and
+drawer, and the `rightDock` id the two centre pages anchor their right edges
+to. The window's private inline `PanelField`/`PanelButton` (task 4.4) became
+module files so the extracted panels carry the same look without borrowing a
+window declaration. `Main.qml` is 367 lines shorter; the live notice set is
+the same five, both `Flow` complaints now naming `OutputPanel.qml`.
+
+**Next implementation task: 6.19b5** — the left dock (the playlists row and
+the running order with its drag, drop and reorder gestures) out of `Main.qml`
+into `PlaylistPanel.qml`, the fifth of the eight
+single-component leaves 6.19b was split into (`DocumentPersistence`,
+`DocumentViews`, `ShortcutMap` and `OutputPanel` have landed; `Main.qml`'s
+`PlaylistPanel`, `ShowPage`, `EditPage` and `SettingsPage` remain).
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -194,12 +214,12 @@ audience composition match the intended design. Important open differences:
   owner, `DocumentPersistence`, and deliberately did not move the write off the
   UI thread). Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19b4–b8:** the remaining ownership extractions are unfinished
+- **6.18b, 6.19b5–b8:** the remaining ownership extractions are unfinished
   (6.18a2's `PreviewProducer`, 6.18b1's `BackgroundTransport` and 6.19a2's
   `PreviewConsumer` landed; 6.19a1's `RpcClient`, 6.19a3's `PresentationModel`
   and 6.19a4's `RpcMethods` landed 2026-10-30, closing 6.19a, and 6.19b1's
-  `DocumentPersistence`, 6.19b2's `DocumentViews` and 6.19b3's `ShortcutMap`
-landed the same day).
+  `DocumentPersistence`, 6.19b2's `DocumentViews`, 6.19b3's `ShortcutMap` and
+6.19b4's `OutputPanel` landed the same day).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
   physical-display acceptance remain open. Pinned cache excess is reported,
   not a hard bound on total process memory.
@@ -238,7 +258,8 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19b3**. Tasks **6.19b2** (`eaf5586`),
+The working tree carries task **6.19b4**. Tasks **6.19b3** (`337626e`),
+**6.19b2** (`eaf5586`),
 **6.19b1** (`7050a2d`),
 **6.19a4** (`7cd5edf`, with the
 6.19b split plan at `5aeeebc`),
@@ -248,6 +269,22 @@ The working tree carries task **6.19b3**. Tasks **6.19b2** (`eaf5586`),
 `0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
 in their commit messages:
 
+- `src/ui/OutputPanel.qml` + `PanelField.qml` + `PanelButton.qml` (6.19b4) —
+  the right dock as one component: the `SidePanel` root reading
+  `panels.rightWidth` and answering its own drag/click the way
+  `LibraryDrawer` does, with the preview canvas (`PreviewView`, off-air
+  placeholder and all), the stats line, the monitor picker bound to
+  `worker.currentMonitor` so it shows where the output actually is until a
+  switch confirms, the five layer checkboxes, the demo-scene row, the
+  per-layer clears and the Restore toggle — each `enabled` straight off the
+  acknowledged live flags, never a click — the transport column whose
+  sliders re-apply status only while the thumb is at rest, the mixer rows
+  across both transports, the standalone track row and the guarded
+  device/frame/revision line. The dock reads no window state, so it takes no
+  properties and emits no signals (the split's row guessed at follow-state
+  and page; the real block never needed them); the window keeps the anchors
+  and the `rightDock` id the centre pages use. The 4.4 inline components
+  moved to module files verbatim — 367 lines left `Main.qml`.
 - `src/ui/ShortcutMap.qml` (6.19b3) — the window's entire key table as one
   component: 49 `Shortcut` objects, each keeping the exact `sequence` and
   `enabled` expression it had in `Main.qml`, with the four composite gates
@@ -540,6 +577,27 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.19b4:
+
+- `cmake --build --preset headless -j 2` ("no work to do" — the preset builds
+  no UI) and `--preset desktop -j 2`: PASS, no warnings.
+- `ctest --preset desktop`: **53/53 PASS**, 245.8 s, all 12 display-labelled
+  tests (135.3 sec*proc of them), first run. `ui_loads` (8.0 s) is the
+  acceptance and was not touched; the live notice set was re-verified by
+  hand beside it — the shell stays up and prints exactly the same five
+  notices, with the two `Flow` anchor complaints now naming
+  `OutputPanel.qml:120/210` where they live, which also proves the moved
+  dock instantiated rather than silently failing to load. `ui_links_qt`,
+  both `ui_loads_guard_*` negatives, `document_present_tests` and
+  `workspace_panels_tests` are unchanged.
+- `ctest --preset headless`: **32/32 PASS**, 51.6 s.
+- No test was edited. The honest limit repeats from 6.19b3: nothing drives
+  these widgets automatically (the display-labelled worker tests prove the
+  commands they send, not the buttons), so the guarantee here is that every
+  binding moved as literal text, and what a missed rename would do is fail
+  `ui_loads` with an `is undefined` line — which is precisely the pattern
+  the guard bans.
+
 Verification after 6.19b3:
 
 - `cmake --build --preset desktop -j 2`: PASS, no warnings (the headless
@@ -689,8 +747,8 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19b4**, the right dock (preview and output tools) out of `Main.qml` into
-`OutputPanel.qml`; then **6.19b5–b8** (`Main.qml`'s playlist panel, show
-page, edit page and settings page), then **6.20**'s recorded architecture
-differences. Do not claim M6 closure until 6.20 resolves those and the
-remaining gates pass.
+**6.19b5**, the left dock (playlists row and running order) out of `Main.qml`
+into `PlaylistPanel.qml`; then **6.19b6–b8** (`Main.qml`'s show page, edit
+page and settings page), then **6.20**'s recorded architecture differences.
+Do not claim M6 closure until 6.20 resolves those and the remaining gates
+pass.
