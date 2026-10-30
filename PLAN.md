@@ -4,7 +4,8 @@ Accepted 2026-10-21; reviewed and condensed 2026-10-30.
 Current checkpoint and verification: [PROGRESS.md](PROGRESS.md).
 Current code boundaries and open differences: [docs/architecture.md](docs/architecture.md).
 Detailed completed-task evidence: [history](docs/history/README.md).
-Post-M6 conformance review: [findings and follow-ups](docs/reviews/M6-conformance-2026-10-30.md).
+Post-M6 conformance review: [original findings](docs/reviews/M6-conformance-2026-10-30.md).
+Current architecture review: [6.21 follow-up](docs/reviews/M6-architecture-follow-up-2026-10-30.md).
 
 ## Goal and reference
 
@@ -30,7 +31,7 @@ estimate is historical; re-estimate remaining work before productization.
   SkParagraph with real ICU text support, FFmpeg decode/conversion/resampling.
 - **Scheduling:** decoding, RPC and rendering have separate execution contexts.
   Files, decode, IPC and preview consumers must not block presentation or audio
-  callbacks. The scheduling gaps from the post-M6 review (6.21c/d) are closed.
+  callbacks. Remaining handoff and scheduling gaps are tracked in 6.22.
 - **RPC:** length-prefixed JSON-RPC 2.0 on Unix-domain sockets; Qt local sockets
   in the frontend and a raw socket/poll loop in the worker. Version/capability
   negotiation, request IDs, structured errors and acknowledged revisions. Traffic
@@ -98,7 +99,7 @@ remain **7.3**. Do not use old machine paths as current dependency configuration
 
 1. Work in milestone/dependency order. Preserve recorded DONE checkpoints;
    later reviews add focused follow-up tasks rather than rewriting earlier evidence.
-   Complete the post-M6 conformance follow-ups (6.21) before advancing to M7.
+   Complete the current architecture follow-ups (6.22) before advancing to M7.
 2. Aim for half a day to two days per leaf; split larger tasks before starting.
    A parent is DONE only when every child passes its acceptance.
 3. Use TODO, IN PROGRESS, BLOCKED and DONE. Separate authored work, passing tests
@@ -243,12 +244,10 @@ Checkpoint: `M5: integrate synchronized video and audio playback`.
 ### M6 — Code review remediation and architecture
 
 The [original review](docs/M6-code-review.md) introduced R1–R19; productization
-moved to M7. The recorded M6 closure is 6.20e (2026-10-30). The fresh
-[conformance review](docs/reviews/M6-conformance-2026-10-30.md) found additional
-gaps; **6.21a–g are all DONE (2026-10-30)** — the DONE checkpoints stand and the
-follow-up evidence closes the review's seven findings (its surviving named limit,
-keyboard automation, was already a recorded skip). Historical 6.1–6.4 reliability
-references mean 7.1–7.4.
+moved to M7. Recorded completion through 6.20e and 6.21a–g remains historical DONE.
+The [architecture re-review](docs/reviews/M6-architecture-follow-up-2026-10-30.md)
+at `8402e69` identifies seven remaining gaps. Complete 6.22 before claiming full
+conformance. Historical 6.1–6.4 reliability references mean 7.1–7.4.
 
 | ID | Status | Focused work | Acceptance / review finding |
 |---|---|---|---|
@@ -319,14 +318,29 @@ Checkpoint: `M6: close code review and graduate production architecture`.
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| 6.21a | DONE | Keep drawn text layouts alive across concurrent preparation | Layout-cache slots hold shared handles; a draw retains what it paints through eviction, same-key replacement and a concurrent prepare churn (`scene_render_tests`); F1 |
-| 6.21b | DONE | Adopt foreground-image paths in every retained scene payload | Adoption rewrites every path-bearing item as well as the background; the scripted-peer fixture drives present→adopt→clear-all→restore twice, once with the adoption landing mid-prepare, asserting per-prepare item paths (`worker_controller_tests`); F2. Real-worker adoption coverage joined the 6.21g journey (`frontend_journey_tests`) |
-| 6.21c1 | DONE | Stage prepared audio readiness off the render thread | `primeAudio` stages a held player (probe answer, feeders, sink negotiation, pre-roll) beside the file prime; `applyBackground` adopts and releases it (measured 6.4 ms present→air against a 700 ms scripted bring-up, audience gap stayed 50 ms, lane live — `background_media_tests`); F3 (1/2) |
-| 6.21c2 | DONE | Retire old transports off the render thread | Teardown requests the producer's stop and hands pipeline and audio player to a one-deep retirement lane; the atomic presenter's generation filter lets the successor's frames start before the old thread returns, with GPU close and reap staying on the render thread strictly after the join. The standalone swap claims its instance in microseconds and stages the new bring-up (held) on a lane until a later pass publishes it. Measured through the wire: present→air 4.5 ms and a bed-swap ack of 1.6 ms against 700 ms scripted exit/bring-up, audience frame gap ≤ 26 ms, status answered ≤ 0.6 ms throughout (`background_media_tests`); F3 (2/2) |
-| 6.21d | DONE | Move thumbnail file decoding off the RPC thread | The RPC pump never reads a thumbnail file: it collects a finished decode or hands the next path to a one-deep lane thread and returns (completion publishes on the next tick; shutdown joins the lane). Measured through the wire against a 600 ms scripted cold decode: status and release answered ≤ 0.6 ms in 16/16 samples with the debt honestly reported, decoded backdrop pixels verified, shutdown mid-read answered and drained clean (`preview_selection_tests`, `preview_producer_tests`); F5 |
-| 6.21e | DONE | Clear gradient backgrounds and report their live state correctly | `dropBackground()` erases the optional `background.gradient` (absence is the flat answer the codec defines) and `sceneContent()` counts the key as a live background. Both shapes pinned: wire fixtures for black-to-colour and image-plus-gradient (`scene_edit_tests`), the acked indicator lit for a ramp with the scripted peer's per-prepare ledger proving the cleared payload names no gradient (`worker_controller_tests` S16), and the live audience sampled #F87C00 at the floor through a black-top ramp, #000000 at both ends after the clear with the words still drawn (`production_journey_tests`); F4 |
-| 6.21f | DONE | Surface foreground-image failures in the operator UI | `PresentationModel` reads `scene.foregroundErrors`/`foregroundFailureEvents` (entry-checked, capped at the worker's bound, cleared with the connection), `WorkerController` re-exports both as `sceneChanged` properties, and `OutputPanel.qml` shows "picture not drawn: ‹path› — ‹reason›" with the more-count and event tally in its own amber line. Pinned by `worker_controller_tests` S17 (scripted peer scenario "foreground"): the transport lane faults throughout and is unchanged the whole time; a failed picture projects path+reason verbatim without failing the go; a second path extends list and count distinctly; the notice clears on an acknowledged repair while the monotonic event count stays counted; the shell still loads with the new binding (`ui_loads`); F6 |
-| 6.21g | DONE | Exercise the production frontend in the live journey fixture | `frontend_journey_tests` (D✦) drives the real `WorkerController`/`PresentationModel` against a supervised real worker: go paints plate+picture+words in the consumer's own frame, the gradient acknowledges and samples ramp-to-floor, per-layer clears compose to uniform black, the restore re-prepares across the 16-deep store pruning (one revision past the 18th filler proves the stretch landed), both renamed plates are adopted without moving the audience and drawn again from the new paths, and a real missing-picture fault reaches `foregroundErrors` with its reason and leaves it on the repair; `production_journey_tests` stays as the raw-protocol coverage; F7 |
+| 6.21a | DONE | Keep drawn layouts alive across concurrent preparation | Retained layout handles; cache-churn regression; F1 lifetime fixed, shared shaping safety in 6.22a |
+| 6.21b | DONE | Adopt foreground paths in all retained scene payloads | Controller adoption fixtures and real-worker journey; F2 |
+| 6.21c1 | DONE | Stage held audio readiness before presentation | Slow-start background-media fixture; F3 readiness half |
+| 6.21c2 | DONE | Move video joins to bounded retirement; stage standalone starts | Single-switch timing fixtures; remaining safety/overlap/state gaps in 6.22b–f |
+| 6.21d | DONE | Decode thumbnail files off the RPC thread | Slow-decode responsiveness fixtures; stale-result compatibility in 6.22g; F5 |
+| 6.21e | DONE | Clear gradient backgrounds and report their live state | Scene-edit/controller and live pixel fixtures; F4 |
+| 6.21f | DONE | Show acknowledged foreground-picture failures in the UI | Controller projection/repair and shell-load fixtures; F6 |
+| 6.21g | DONE | Exercise the real frontend against a supervised worker | `frontend_journey_tests`: presentation, clears, restore, adoption and repair; F7 |
+
+### M6 follow-up — Architecture re-review (6.22)
+
+Source findings A1–A7 and future verification are in the linked current review;
+no runtime verification was performed in this review pass.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| 6.22a | TODO | Give mutable text-shaping resources safe thread ownership | Concurrent cold font-family/style resolution without shared-cache races; A1 |
+| 6.22b | TODO | Synchronize retired GPU reclamation with successor uploads | Queue operations and resource completion remain ordered during overlapped retirement; A2 |
+| 6.22c | TODO | Deactivate outgoing audio before waiting for video retirement | No old background audio after swap/clear while retaining clock lifetime; A3 |
+| 6.22d | TODO | Defer/coalesce swaps when retirement capacity is occupied | A→B→C and A→B→clear remain responsive during a delayed A retirement; A4 |
+| 6.22e | TODO | Remove remaining media probes, seek waits and standalone joins from RPC/rendering | Separate slow-probe, seek and stop coverage; split this work before implementation; A5 |
+| 6.22f | TODO | Publish standalone ownership and pending/live status together | Status and command availability agree throughout slow replacement; A6 |
+| 6.22g | TODO | Validate thumbnail completion generation and decode extent | Extent changes and stream restart reject incompatible in-flight results; A7 |
 
 ### M7 — Productization, reliability and installable alpha
 

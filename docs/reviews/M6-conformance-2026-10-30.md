@@ -1,5 +1,8 @@
 # Post-M6 conformance review
 
+Historical findings at 6.20e. For the re-review after their implementation, see
+[the 6.21 architecture follow-up](M6-architecture-follow-up-2026-10-30.md).
+
 Reviewed 2026-10-30 (Europe/London), against clean commit `0e64f0b` (6.20e).
 This review changes documentation only. Historical DONE tasks and their test
 evidence remain recorded; new corrective work is tracked as **6.21a–g** in
