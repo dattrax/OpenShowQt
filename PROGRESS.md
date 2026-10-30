@@ -5,8 +5,9 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.19b7**, the edit page
-(6.19b6's `ShowPage` at `8722b9e`, 6.19b5's `PlaylistPanel` at `cfc782c`,
+The committed checkpoint is task **6.19b8**, the settings page — the leaf that
+completes the 6.19b split (6.19b7's `EditPage` at `f6752b0`,
+6.19b6's `ShowPage` at `8722b9e`, 6.19b5's `PlaylistPanel` at `cfc782c`,
 6.19b4's `OutputPanel` at `5446a6e`,
 6.19b3's `ShortcutMap` at `337626e`,
 6.19b2's `DocumentViews` at `eaf5586`,
@@ -169,33 +170,33 @@ module files so the extracted panels carry the same look without borrowing a
 window declaration. `Main.qml` is 367 lines shorter; the live notice set is
 the same five, both `Flow` complaints now naming `OutputPanel.qml`.
 
-**Task 6.19b7 is committed.** The edit page has left `Main.qml`:
-`src/ui/EditPage.qml` is the `EditCanvas` stage with its outlines, handles and
-gestures, the 6.16a debounced ask for the worker's picture of the slide under
-edit (payload compiled at the tick, target stood down when the page is not
-visible), the X/Y/W/H fields that commit all four on focus-out and snap back
-as a unit on a refusal, the stack commands whose enabled state reads the
-session's selection, and the whole style panel — combo, fork/default/follow
-buttons, colours, the empty-means-flat gradient field, typography, background
-asset and fit. The fourth honest correction to the split's rows: geometry and
-stack edits address `docs` directly, and the nudge/step executors travelled
-WITH the canvas rather than staying behind as signals — only the canvas
-tracks the live rectangle a nudge commits from, so a
-`nudgeRequested(dx,dy)` split across the file boundary would have cut through
-the middle of that rule. The page's contract with the key map is one alias and
-two functions: `boxSelected` (the flag the two Escape owners hand off on; the
-deselect lands through it), `nudgeBox()` and `stepBox()`. R17's one selection
-resolution is untouched — the box wearing the handles is still the box the
-fields, arrows and inspector edit. `Main.qml` is 612 lines shorter (389
-remain: placement, the focus facts, the executors — and the settings page, the
-last inline block); the live notice set is still the same five.
+**Task 6.19b8 is committed, and with it the 6.19b split is complete.** The
+settings page has left `Main.qml`: `src/ui/SettingsPage.qml` carries the two
+persisted toggles over `appSettings` (number-keys presenting, F11 fullscreen),
+the fifteen-row shortcut cheat sheet, and the service rows — version with the
+worker's status, the service directory, the autosave explanation. The row's
+specific requirement was that the cheat sheet state the keys
+`ShortcutMap.qml` now owns: every entry was checked against the map (all
+fifteen match their owners and sequences), the page header now names the
+mirror duty in both directions, and `ShortcutMap.qml` gained the matching
+pointer — which shifted its three live multi-sequence notices from lines
+92/289/304 to 96/293/308: the same three notices, still the whole extra
+output. No properties, no signals — everything it reads is a context property,
+like the two docks before it, the fifth time the split's rows overestimated
+what the window genuinely owns. `Main.qml` is 255
+lines: placement, which page is up, the focus facts, and the executors the key
+map's intents land on. Where the split guessed at properties and signals five
+times, the real blocks needed them zero times — the window's remaining
+ownership is placement, the facts only its `activeFocusItem` can answer, and
+presenting.
 
-**Next implementation task: 6.19b8** — the settings page (the persisted
-number-keys/F11 toggles, the shortcut cheat sheet, the service rows) out of
-`Main.qml` into `SettingsPage.qml`, the last of the eight
-single-component leaves 6.19b was split into (`DocumentPersistence`,
-`DocumentViews`, `ShortcutMap`, `OutputPanel`, `PlaylistPanel`, `ShowPage` and
-`EditPage` have landed; `Main.qml`'s `SettingsPage` remains).
+**Next implementation task: 6.20** — close the review against real production
+boundaries and reconcile the M0–M5 completion claims: every R1–R19 with
+passing regression evidence or an explicit M7 gate; the public-Skia check, the
+bounded-RPC-traffic audit, the desktop/headless gates, and a production
+author→preview→go→clear→restore→media-swap proof; reconciling the layer
+controls, one-vs-two audio streams and foreground error reporting; recording
+skips honestly. This is the last open ledger line of M6.
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -238,13 +239,13 @@ audience composition match the intended design. Important open differences:
   owner, `DocumentPersistence`, and deliberately did not move the write off the
   UI thread). Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19b8:** the remaining ownership extraction is unfinished
-  (6.18a2's `PreviewProducer`, 6.18b1's `BackgroundTransport` and 6.19a2's
-  `PreviewConsumer` landed; 6.19a1's `RpcClient`, 6.19a3's `PresentationModel`
-  and 6.19a4's `RpcMethods` landed 2026-10-30, closing 6.19a, and 6.19b1's
-  `DocumentPersistence`, 6.19b2's `DocumentViews`, 6.19b3's `ShortcutMap`,
-6.19b4's `OutputPanel`, 6.19b5's `PlaylistPanel`, 6.19b6's `ShowPage` and
-6.19b7's `EditPage` landed the same day).
+- **6.18b, 6.19:** the ownership extractions are complete — the ledger has no
+  components left to extract (6.18a2's `PreviewProducer`, 6.18b1's
+  `BackgroundTransport` and 6.19a2's `PreviewConsumer` landed; 6.19a1's
+  `RpcClient`, 6.19a3's `PresentationModel` and 6.19a4's `RpcMethods` landed
+  2026-10-30, closing 6.19a; and all eight leaves of 6.19b landed the same
+  day: `DocumentPersistence`, `DocumentViews`, `ShortcutMap`, `OutputPanel`,
+  `PlaylistPanel`, `ShowPage`, `EditPage` and `SettingsPage`).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
   physical-display acceptance remain open. Pinned cache excess is reported,
   not a hard bound on total process memory.
@@ -283,7 +284,8 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19b7**. Tasks **6.19b6** (`8722b9e`),
+The working tree carries task **6.19b8**. Tasks **6.19b7** (`f6752b0`),
+**6.19b6** (`8722b9e`),
 **6.19b5** (`cfc782c`),
 **6.19b4** (`5446a6e`),
 **6.19b3** (`337626e`),
@@ -297,6 +299,18 @@ The working tree carries task **6.19b7**. Tasks **6.19b6** (`8722b9e`),
 `0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
 in their commit messages:
 
+- `src/ui/SettingsPage.qml` (6.19b8) — the settings page as one component:
+  the PRESENTER block (the number-keys toggle over
+  `appSettings.numberKeysPresent`, the "presenter keys always work" line), the
+  WINDOW block (the fullscreen toggle — the same persisted flag F11 flips and
+  the window's `visibility` binds), the SHORTCUTS Repeater (fifteen rows,
+  verbatim, each checked against the owner in `ShortcutMap.qml` before the
+  move), and the SERVICE rows (`applicationVersion` with the worker's status,
+  `docs.serviceDirectory`, the autosave-vs-Ctrl+S explanation). Its header and
+  `ShortcutMap.qml`'s now point at each other: the map is where a key changes,
+  the sheet is the promise the operator was given. 134 lines left `Main.qml`,
+  which is 255 lines of composition: five page/dock instances anchored, the
+  key map wired, the executors beside them.
 - `src/ui/EditPage.qml` (6.19b7) — the edit page as one component: the
   `EditCanvas` child with the page's anchors reaching from its right/bottom
   edges inward (stage above the fields, style panel to its right), the
@@ -655,6 +669,24 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.19b8:
+
+- `cmake --build --preset headless -j 2` ("no work to do" — no UI in that
+  preset) and `--preset desktop -j 2`: PASS, no warnings.
+- `ctest --preset desktop`: **53/53 PASS**, 245.1 s, all 12 display-labelled
+  tests (135.0 sec*proc), first run. `ui_loads` (8.0 s) is the acceptance,
+  untouched, and the live notice set was read by hand: still exactly five —
+  the two `Flow` complaints unchanged at `OutputPanel.qml:120/210`, and the
+  three multi-sequence `StandardKey` bindings now at `ShortcutMap.qml:96/293/308`,
+  a shift of four lines from 92/289/304 caused solely by the cross-reference
+  comment this leaf added to that file's header. `ui_links_qt` and
+  `workspace_panels_tests` unchanged.
+- `ctest --preset headless`: **32/32 PASS**, 51.7 s.
+- No test was edited. The cheat sheet moved as literal text; its alignment
+  with the key table was verified by reading both files, not by an automated
+  test — the standing Qt-side limit (no automated keyboard test) that 6.20's
+  record must carry honestly.
+
 Verification after 6.19b7:
 
 - `cmake --build --preset headless -j 2` ("no work to do" — no UI in that
@@ -883,7 +915,8 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19b8**, the settings page (the persisted number-keys/F11 toggles, the
-shortcut cheat sheet, the service rows) out of `Main.qml` into
-`SettingsPage.qml`; then **6.20**'s recorded architecture differences. Do not
+**6.20**, closing the review against real production boundaries — R1–R19 each
+with passing regression evidence or an explicit M7 gate, the layer-controls,
+one-vs-two audio streams and foreground error reporting reconciled, the
+proofs run, skips recorded honestly. It is the last open line of M6; do not
 claim M6 closure until 6.20 resolves those and the remaining gates pass.

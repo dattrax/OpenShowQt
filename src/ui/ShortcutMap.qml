@@ -30,6 +30,10 @@ import QtQuick
  *   0..9                      presenter number keys, opt-in (4.5)
  *   Undo/Redo/Save/Ctrl+C/X/V the document keys (4.5)
  *   F11                       fullscreen, remembered (4.5)
+ *
+ * The operator-facing mirror of this table is the cheat sheet on the
+ * settings page (SettingsPage.qml); a key changed here is a promise
+ * changed there, and the two are read side by side.
  */
 Item {
     id: shortcutMap
