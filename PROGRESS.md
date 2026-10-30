@@ -5,8 +5,9 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.20a**, the R1–R19 evidence matrix
-(6.19b8's `SettingsPage` at `88cb050`, completing the 6.19b split,
+The committed checkpoint is task **6.20b**, the Skia-guard re-read and the
+RPC/media audit update (6.20a's evidence matrix at `ebb282d`,
+6.19b8's `SettingsPage` at `88cb050`, completing the 6.19b split,
 6.19b7's `EditPage` at `f6752b0`,
 6.19b6's `ShowPage` at `8722b9e`, 6.19b5's `PlaylistPanel` at `cfc782c`,
 6.19b4's `OutputPanel` at `5446a6e`,
@@ -209,12 +210,38 @@ files, no automated keyboard test existing. The table's foot names the
 completion rule's three remaining running obligations at their leaves:
 6.20b, 6.20c, 6.20d.
 
-**Next implementation task: 6.20b** — complete the public-Skia check and the
-bounded-RPC traffic audit: re-read `CheckNoSkiaPrivate` and its negative
-against the current tree, and update the review's RPC/media transfer table
-from review-time claims to the frame/message/budget bounds
-`worker_rpc_limits` and `rpc_limits_tests` actually assert, with the numbers
-stated.
+**Task 6.20b is committed.** The public-Skia re-read found a real gap:
+`CheckNoSkiaPrivate` matched only quoted includes, but
+`cmake/OpenShowSkia.cmake` exports the Skia *root* itself (the modules'
+public headers are reached as `<modules/<m>/include/...>`), so
+`#include <src/core/SkYUVMath.h>` resolved at compile time while the guard
+smiled. The regex now refuses `src/`, `include/private/` and
+`modules/<m>/src/` in both quote styles, and the negative fixture grew
+`violation_angle.cpp` so the guard stays proven to fail on both forms
+(manually confirmed: positive green over the 144 scanned files, negative
+flags both and exits 1). Everything else the re-read checked held: the glob
+is directory-scoped so every module added since 6.2a is covered without a
+file list, the exemption list is empty, and the exported paths 6.2a narrowed
+are still narrowed. The review's RPC/media audit table now carries the
+enforced numbers under a dated revision marker, with the review-time claims
+left visible above it: 1 MiB in both directions with the sender refusing
+locally, depth 8 against the measured legitimate 5, the scene budgets
+8/256/1024/16 KiB/64 KiB/512 and the `data:` refusal, method 64 B / echo
+160 B, the 1 MiB / 1024-frame outbound queue, in-flight 64, preview
+negotiation 64..1920 × 48..1080 @ 1..60, and the separately bounded
+on-demand targets. The still-true findings stay stated: no media-byte or
+data-URI method on the wire, and the surviving render-thread readback limit
+remains an open-differences row with its measurement at M7.2. One naming
+correction recorded in the ledger row: the split's `rpc_limits_tests` does
+not exist — the fixtures are `protocol_tests`, `scene_tests`,
+`outbound_queue_tests` and the live `worker_rpc_limits`/`worker_rpc_transport`.
+
+**Next implementation task: 6.20c** — the production
+author→preview→go→clear→restore→media-swap proof: one display-labelled
+fixture driving a real `--socket` worker end to end, authoring through the
+same `DocumentController` the panels bind and asserting each hand-off
+through worker status and the preview stream, with environment limits
+printed as honest skips in its own output.
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -302,7 +329,8 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.20a**. Tasks **6.19b8** (`88cb050`),
+The working tree carries task **6.20b**. Tasks **6.20a** (`ebb282d`),
+**6.19b8** (`88cb050`),
 **6.19b7** (`f6752b0`),
 **6.19b6** (`8722b9e`),
 **6.19b5** (`cfc782c`),
@@ -688,6 +716,27 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.20b:
+
+- `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS
+  (the desktop tree rebuilt against the changed `tests/CMakeLists.txt`; the
+  headless tree needed no compilation — the guard is a script its ctest
+  entry reads at run time, so the headless run below exercised the
+  strengthened regex).
+- `ctest --preset headless`: **32/32 PASS**, 51.4 s — including
+  `skia_public_api_guard` with its new both-forms regex.
+- `ctest --preset desktop`: **53/53 PASS**, 246.5 s, all 12 display-labelled
+  tests (135.7 sec*proc).
+- The guard pair run in isolation (0.28 s): positive green; negative exits 1
+  naming **both** fixtures (`violation.cpp` quoted, `violation_angle.cpp`
+  angle-bracket) — the strengthening is proven to have teeth, not just to
+  pass. The manual invocation also counted the scan: 144 files under `src`
+  and `tests` outside `fixtures/`.
+- No behaviour test was edited; `protocol_tests`, `scene_tests`,
+  `outbound_queue_tests`, `worker_rpc_limits` and `worker_rpc_transport`
+  passed unchanged, which is the audit-table rewrite's acceptance — every
+  number the table now prints is one those fixtures enforce.
+
 Verification after 6.20a:
 
 - `cmake --build --preset desktop -j 2` and `--preset headless -j 2`: both
@@ -953,8 +1002,7 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.20b**, the public-Skia guard re-read and the review's RPC/media audit
-table updated to the enforced bounds; then **6.20c–e** — the production
-end-to-end proof, the three reconciliations, and the recorded closure. They
-are the last open lines of M6; do not claim M6 closure until all four resolve
-and the remaining gates pass.
+**6.20c**, the production author→preview→go→clear→restore→media-swap proof;
+then **6.20d–e** — the three reconciliations and the recorded closure. They
+are the last open lines of M6; do not claim M6 closure until all three
+resolve and the remaining gates pass.

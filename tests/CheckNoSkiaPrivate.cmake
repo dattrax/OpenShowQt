@@ -1,8 +1,12 @@
 # Fails when any .cpp/.h under SRC_DIRS includes a Skia private or src tree
-# header (task 6.2a, review R9): "include/private/...", "src/..." or
-# "modules/<m>/src/...". Public module headers (modules/<m>/include/...)
-# are allowed. Exemptions are repository-relative file names, each one owed
-# by a task. Usage:
+# header (task 6.2a, review R9; angle-bracket form closed by task 6.20b):
+# "src/...", "include/private/..." or "modules/<m>/src/..." in either quote
+# style. Angle brackets matter here because cmake/OpenShowSkia.cmake exports
+# ${SKIA_ROOT} itself — the modules' public headers are reached as
+# <modules/<m>/include/...> — so <src/...> resolves at compile time and only
+# a check like this one refuses it. Public module headers
+# (modules/<m>/include/...) are allowed. Exemptions are repository-relative
+# file names, each one owed by a task. Usage:
 #   cmake -DROOT=/path/to/repo -DSRC_DIRS="src;tests" -P CheckNoSkiaPrivate.cmake
 
 if(NOT ROOT OR NOT SRC_DIRS)
@@ -36,7 +40,7 @@ foreach(dir ${srcDirs})
     set(lineno 0)
     foreach(line ${lines})
       math(EXPR lineno "${lineno} + 1")
-      if(line MATCHES "^#[ \t]*include[ \t]*\"(src/|include/private/|modules/[^/\"]+/src/)")
+      if(line MATCHES "^#[ \t]*include[ \t]*[<\"](src/|include/private/|modules/[^/>\"]+/src/)")
         string(APPEND violations "\n  ${source}:${lineno}: ${line}")
       endif()
     endforeach()

@@ -422,14 +422,22 @@ through the actual session rather than only a collecting SubmitFn.
 
 ## RPC and media transfer audit
 
+> **Updated 2026-10-30 (task 6.20b).** The route inventory below was the
+> review-time observation; its payload column now states what the shipped
+> code enforces, from `src/protocol` (shared by both sides),
+> `src/scene/scene.h`, `src/worker/rpc/{OutboundQueue,RpcMethods}.cpp` and
+> `src/ui/RpcClient.cpp`. The original claims ("size is currently
+> insufficiently bounded", "string/output bounds need enforcement") were
+> true at `1f44b7e` and are what 6.8a–b closed.
+
 | Route | Current payload | Pixels/media bytes? |
 |---|---|---|
 | UI→worker `hello`, `ping`, `shutdown` | Version, client name, request ID | No |
 | UI→worker output/layer controls | Display index, layer name, boolean | No |
-| UI→worker `scene.prepare` | Text, resolved style/geometry, IDs, local asset path, kind | No; size is currently insufficiently bounded |
+| UI→worker `scene.prepare` | Text, resolved style/geometry, IDs, local asset path, kind | No. Bounded both ways: every frame carries `kMaxMessageBytes` = 1 MiB, enforced at send (`appendFrame` refuses locally, the connection stays up) and at receive (`Decoder::next`); nesting ≤ `kMaxParseDepth` = 8 (a `scene.prepare` counts 5); application budgets before enqueue — ≤ 8 items/slide, ≤ 256 lines/layer, ≤ 1024 chars/line, ≤ 16 KiB/layer, ≤ 64 KiB/scene, IDs/asset paths ≤ 512 chars, scheme-looking refs (`data:` included) refused as asset paths. The largest every-budget scene measures 39% of the 1 MiB frame (`scene_tests` pins it) |
 | UI→worker `scene.present` | Prepared revision, optional transition kind | No |
-| UI→worker preview controls/releases | Geometry/fps or slot/sequence | No |
-| Worker→UI results/status/displays/errors | Small control/state metadata, paths, errors | No; string/output bounds need enforcement |
+| UI→worker preview controls/releases | Geometry/fps or slot/sequence | No. `preview.start` integers validated before narrowing; ≤ 64 in-flight requests per connection on the UI side |
+| Worker→UI results/status/displays/errors | Small control/state metadata, paths, errors | No. Same 1 MiB send budget; method names ≤ 64 bytes; any echoed client text clipped to `kMaxEchoedTextBytes` = 160 at a UTF-8 boundary, so the "this key is too long" reply cannot itself be too long; per-frontend outbound queue `kMaxQueuedBytes` = 1 MiB / `kMaxQueuedFrames` = 1024 with nonblocking writes and a stall deadline |
 | Worker→UI `preview.ready` | Slot, sequence, dimensions, stride, revision, timestamp | No |
 | Worker→UI shared-memory segment | Three composed/downscaled RGBA preview slots | **Yes: authorized preview renders only** |
 | Worker internal decode/upload/mix | FFmpeg frames, Vulkan images, F32 audio | Stays inside worker; not RPC or UI transport |
@@ -438,15 +446,25 @@ There is no RPC media-upload method, base64 image/video serializer, or frontend
 decoded-media sender in this codebase. `QImage` receives **rendered preview** bytes
 after mmap, which is appropriate. Import/save copies media files on disk; this
 is the frontend-owned persistence operation, not a decoded-bitmap API transfer.
+6.20b re-confirmed the finding against the method table (`RpcMethods.cpp`):
+the wire vocabulary is control metadata, paths and the shared-memory
+handshake, and no method accepts media bytes or a data URI.
 
-The API currently permits up to 1920×1080@60 previews even though the UI requests
-640×360@15. Keep the normal negotiated budget small; bound any higher quality
-on-demand target and rate explicitly. At the default size a frame is 921,600
-bytes, about 13.2 MiB/s at 15 fps, outside JSON. The current slots/notifications
-are bounded, but synchronous GPU readback happens in the render loop
-(`OutputSession.cpp:917`), so previews can delay subsequent audience frames even
-though they run after the current present. M6.9/M6.16 must preserve audience
-priority, measure that cost and drop/defer preview work under pressure.
+The negotiated stream is bounded explicitly (6.8a/6.11a): `preview.start`
+accepts width 64..1920, height 48..1080, fps 1..60, with the geometry
+validated before any mmap or slot arithmetic (R5's rule); the UI asks for
+640×360@15, and at that size a frame is 921,600 bytes, about 13.2 MiB/s,
+outside JSON. The on-demand targets are bounded separately and cannot exceed
+the negotiated slot: `preview.select` carries no geometry at all (it renders
+the prepared scene into the same stream, pinned through the cache), and
+`preview.thumbnails` accepts at most 32 entries with ≤ 128-byte keys at
+32..512 px per side, each extent re-checked against the slot
+(`thumbnailExtentFits`). Synchronous GPU readback still happens on the render
+thread after the present, now inside `PreviewProducer::fillPreviewSlot` with
+a budget that defers later attempts after an overrun; that limit, its cost
+measurement and the audience-priority numbers belong to the open-differences
+row in [architecture.md](architecture.md) and to **M7.2**, not to this
+table's silence.
 
 ## Decomposition targets
 

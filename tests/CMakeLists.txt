@@ -136,8 +136,9 @@ add_test(NAME skia_public_api_guard
           -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoSkiaPrivate.cmake
 )
 
-# Inverted, with a fixture that does include a private header, so the
-# guard above is proven not to scan nothing.
+# Inverted, with fixtures that DO include private headers — the quoted form
+# and, since 6.20b, the angle-bracket form — so the guard above is proven
+# not to scan nothing, and not to match only one quote style.
 add_test(NAME skia_public_api_guard_negative
   COMMAND ${CMAKE_COMMAND}
           -DROOT=${CMAKE_CURRENT_SOURCE_DIR}/fixtures
