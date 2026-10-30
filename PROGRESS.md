@@ -51,11 +51,21 @@ PID-named temporary directory, and desktop needs local-session access.
 
 ## Next action
 
-**6.21c** (F3): move the audio start probe/feeder-open/PipeWire negotiation
-and pre-roll, and the old transport's stop/join/close, off the render thread
-(sites: `OutputSession.cpp:884`, `BackgroundTransport.cpp:1048/1066/1186`
-and the standalone swap at 580–606), keeping GPU attach/destroy and explicit
-quiescence on the render thread; fixture observes audience frame gaps under
-slow audio open and slow retirement. Split it before starting if it exceeds
-a day. Then 6.21d–g. M7.1a–c recovery, 7.2 budgets, 7.3 packaging and 7.4
-hardware rehearsal remain TODO.
+**6.21c** (F3) is split before starting (plan rule 2 — the retirement half
+needs a handoff protocol that preserves R6's quiesce boundary, which puts
+the whole leaf past a day):
+
+- **6.21c1** — staged audio readiness: the prepare executor builds a
+  pre-started (held) `AvPlayer` for the primed path — probe answer, feeders,
+  sink negotiation, pre-roll — and `applyBackground()` adopts it at the land
+  instead of probing and starting on the render thread. GPU attach stays on
+  the render thread. Fixture: scripted slow audio start with audience frame
+  gaps observed across a primed present.
+- **6.21c2** — retirement: old pipeline stop/join and audio close move off
+  the frame tick behind an explicit handoff; `close()` (GPU destruction)
+  stays on the render thread; the standalone swap at
+  `BackgroundTransport.cpp:580–606` stops doing synchronous stop/start under
+  the transport mutex. Slow-retirement and status-responsiveness fixtures.
+
+Then 6.21d–g. M7.1a–c recovery, 7.2 budgets, 7.3 packaging and 7.4 hardware
+rehearsal remain TODO.
