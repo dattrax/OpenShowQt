@@ -243,10 +243,12 @@ Checkpoint: `M5: integrate synchronized video and audio playback`.
 ### M6 — Code review remediation and architecture
 
 The [original review](docs/M6-code-review.md) introduced R1–R19; productization
-moved to M7. The recorded M6 closure is 6.20e (2026-10-30). A fresh
+moved to M7. The recorded M6 closure is 6.20e (2026-10-30). The fresh
 [conformance review](docs/reviews/M6-conformance-2026-10-30.md) found additional
-gaps: preserve those DONE checkpoints and complete 6.21 before claiming full M6
-conformance. Historical 6.1–6.4 reliability references mean 7.1–7.4.
+gaps; **6.21a–g are all DONE (2026-10-30)** — the DONE checkpoints stand and the
+follow-up evidence closes the review's seven findings (its surviving named limit,
+keyboard automation, was already a recorded skip). Historical 6.1–6.4 reliability
+references mean 7.1–7.4.
 
 | ID | Status | Focused work | Acceptance / review finding |
 |---|---|---|---|
@@ -318,13 +320,13 @@ Checkpoint: `M6: close code review and graduate production architecture`.
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
 | 6.21a | DONE | Keep drawn text layouts alive across concurrent preparation | Layout-cache slots hold shared handles; a draw retains what it paints through eviction, same-key replacement and a concurrent prepare churn (`scene_render_tests`); F1 |
-| 6.21b | DONE | Adopt foreground-image paths in every retained scene payload | Adoption rewrites every path-bearing item as well as the background; the scripted-peer fixture drives present→adopt→clear-all→restore twice, once with the adoption landing mid-prepare, asserting per-prepare item paths (`worker_controller_tests`); F2. Real-worker adoption coverage joins the 6.21g journey |
+| 6.21b | DONE | Adopt foreground-image paths in every retained scene payload | Adoption rewrites every path-bearing item as well as the background; the scripted-peer fixture drives present→adopt→clear-all→restore twice, once with the adoption landing mid-prepare, asserting per-prepare item paths (`worker_controller_tests`); F2. Real-worker adoption coverage joined the 6.21g journey (`frontend_journey_tests`) |
 | 6.21c1 | DONE | Stage prepared audio readiness off the render thread | `primeAudio` stages a held player (probe answer, feeders, sink negotiation, pre-roll) beside the file prime; `applyBackground` adopts and releases it (measured 6.4 ms present→air against a 700 ms scripted bring-up, audience gap stayed 50 ms, lane live — `background_media_tests`); F3 (1/2) |
 | 6.21c2 | DONE | Retire old transports off the render thread | Teardown requests the producer's stop and hands pipeline and audio player to a one-deep retirement lane; the atomic presenter's generation filter lets the successor's frames start before the old thread returns, with GPU close and reap staying on the render thread strictly after the join. The standalone swap claims its instance in microseconds and stages the new bring-up (held) on a lane until a later pass publishes it. Measured through the wire: present→air 4.5 ms and a bed-swap ack of 1.6 ms against 700 ms scripted exit/bring-up, audience frame gap ≤ 26 ms, status answered ≤ 0.6 ms throughout (`background_media_tests`); F3 (2/2) |
 | 6.21d | DONE | Move thumbnail file decoding off the RPC thread | The RPC pump never reads a thumbnail file: it collects a finished decode or hands the next path to a one-deep lane thread and returns (completion publishes on the next tick; shutdown joins the lane). Measured through the wire against a 600 ms scripted cold decode: status and release answered ≤ 0.6 ms in 16/16 samples with the debt honestly reported, decoded backdrop pixels verified, shutdown mid-read answered and drained clean (`preview_selection_tests`, `preview_producer_tests`); F5 |
 | 6.21e | DONE | Clear gradient backgrounds and report their live state correctly | `dropBackground()` erases the optional `background.gradient` (absence is the flat answer the codec defines) and `sceneContent()` counts the key as a live background. Both shapes pinned: wire fixtures for black-to-colour and image-plus-gradient (`scene_edit_tests`), the acked indicator lit for a ramp with the scripted peer's per-prepare ledger proving the cleared payload names no gradient (`worker_controller_tests` S16), and the live audience sampled #F87C00 at the floor through a black-top ramp, #000000 at both ends after the clear with the words still drawn (`production_journey_tests`); F4 |
 | 6.21f | DONE | Surface foreground-image failures in the operator UI | `PresentationModel` reads `scene.foregroundErrors`/`foregroundFailureEvents` (entry-checked, capped at the worker's bound, cleared with the connection), `WorkerController` re-exports both as `sceneChanged` properties, and `OutputPanel.qml` shows "picture not drawn: ‹path› — ‹reason›" with the more-count and event tally in its own amber line. Pinned by `worker_controller_tests` S17 (scripted peer scenario "foreground"): the transport lane faults throughout and is unchanged the whole time; a failed picture projects path+reason verbatim without failing the go; a second path extends list and count distinctly; the notice clears on an acknowledged repair while the monotonic event count stays counted; the shell still loads with the new binding (`ui_loads`); F6 |
-| 6.21g | TODO | Exercise the production frontend in the live journey fixture | Real WorkerController go/clear/restore and asset adoption against a real worker, with pixel/status assertions; F7 |
+| 6.21g | DONE | Exercise the production frontend in the live journey fixture | `frontend_journey_tests` (D✦) drives the real `WorkerController`/`PresentationModel` against a supervised real worker: go paints plate+picture+words in the consumer's own frame, the gradient acknowledges and samples ramp-to-floor, per-layer clears compose to uniform black, the restore re-prepares across the 16-deep store pruning (one revision past the 18th filler proves the stretch landed), both renamed plates are adopted without moving the audience and drawn again from the new paths, and a real missing-picture fault reaches `foregroundErrors` with its reason and leaves it on the repair; `production_journey_tests` stays as the raw-protocol coverage; F7 |
 
 ### M7 — Productization, reliability and installable alpha
 

@@ -9,11 +9,14 @@ line numbers and descriptions are historical.
 
 Current qualification (2026-10-30): the [post-M6 conformance review](reviews/M6-conformance-2026-10-30.md)
 found additional layout-lifetime, asset-adoption, scheduling, gradient-clear,
-foreground-UI and journey-coverage gaps; **6.21a–e** have closed the first five
-in turn, and **6.21f–g** remain before full conformance. Where the older
-narrative calls prepared startup complete, **6.21c1–c2** have made that true of
-both halves: a prepared clip's audio bring-up runs on the prepare executor and
-an old transport's death on the retirement lane, neither on the frame tick.
+foreground-UI and journey-coverage gaps; **6.21a–g** have closed all seven (F7's
+journey coverage landed as `frontend_journey_tests`, the production controller's
+own night against a real worker). The review's remaining named limit is keyboard
+automation, already a recorded skip; full M6 conformance is now what the evidence
+shows. Where the older narrative calls prepared startup complete, **6.21c1–c2**
+have made that true of both halves: a prepared clip's audio bring-up runs on the
+prepare executor and an old transport's death on the retirement lane, neither on
+the frame tick.
 
 ## Ownership and dependencies
 
@@ -147,7 +150,7 @@ bare. The matrix reports; it does not paper.
 | **R4** status acknowledged state before a frame presented it | 6.4; 6.18a1 | `output_status_tests` (D✦: applied fields credit only the successfully presented frame; command injected during apply; acquire/present failure injected), `scene_store_tests` (H: desired/landed/published distinct) | none |
 | **R5** preview release did not prove ownership | 6.5; 6.18a2, 6.19a2 | `preview_stream_tests` (H: exact published-sequence acceptance, stale/future/odd rejected), `preview_producer_tests` (H), `preview_ownership_tests` (D✦: stop/start with outstanding frames, delayed releases, consumer-owned slot never changed) | none |
 | **R6** a held video token outlived its ownership | 6.6a–b; 6.18b1; 6.21c2 (retirement re-expression) | `background_media_tests` (D✦: paused/final frame redrawn while decoder attempts reuse; quiesce-before-replacement; slow-exit retirement keeps frames clean across the overlap), `background_transport_tests` (H), `gpu_decode_tests`/`playback_queue_tests` (H: displayed-frame lease, generation check) | none |
-| **R7** saving recovered media deleted the active source paths | 6.12; 6.19b1; 6.21b | `document_controller_tests` (D: recover→save→present→edit→undo/redo→save with the original source removed — the review's probe sequence as a regression), `domain_tests` (H: durable package-owned adoption), `worker_controller_tests` (D: a foreground image adopted settled and mid-prepare, its per-prepare item paths asserted through clear-all/restore) | Closed by **6.21b / F2**: adoption rewrites every path-bearing scene item, not just the background, across mirror, in-flight prepares, desired content and restore snapshot. Real-worker adoption coverage joins the 6.21g journey. |
+| **R7** saving recovered media deleted the active source paths | 6.12; 6.19b1; 6.21b; real-worker adoption 6.21g | `document_controller_tests` (D: recover→save→present→edit→undo/redo→save with the original source removed — the review's probe sequence as a regression), `domain_tests` (H: durable package-owned adoption), `worker_controller_tests` (D: a foreground image adopted settled and mid-prepare, its per-prepare item paths asserted through clear-all/restore), `frontend_journey_tests` (D✦: both plates renamed on disk, adopted without moving the audience, and the later restore draws both pictures from the new paths with the old names gone and no foreground fault) | Closed by **6.21b / F2**: adoption rewrites every path-bearing scene item, not just the background, across mirror, in-flight prepares, desired content and restore snapshot. Real-worker adoption coverage landed with **6.21g**. |
 | **R8** save atomicity protected only the manifest | 6.13a–b | `domain_tests` (H: staged content-addressed assets, commit after durable bytes, fault-injected copy/commit against an existing package, ID validation and symlink-aware containment) | recorded scope: complete bytes guaranteed; strict version rollback not promised |
 | **R9** private Skia dependencies and an ICU impersonation | 6.2a–c; guard re-read 6.20b | `skia_public_api_guard` + `skia_public_api_guard_negative` (H: `CheckNoSkiaPrivate` over the production sources, the negative proving the guard can fail), `unicode_text_tests` (H: combining marks, emoji sequences, CJK wrapping, mixed direction), `gpu_yuv_tests`/`gpu_decode_tests` (H: independently specified conversion expectations) | standing practice, not a gap: public APIs still require controlled upgrades, no ABI guarantee. The 6.20b re-read confirmed the directory-scoped glob covers every module added since 6.2a and closed one real gap: Skia's root is an exported include directory, so `<src/...>` resolved at compile time while the guard matched only quoted includes — it now refuses both forms, and the negative fixture trips on both |
 | **R10** preparation blocked RPC and presentation | 6.9a–b; 6.18b2; 6.21c1–c2; 6.21d | `prepare_executor_tests` (H: exactly-once, capacity, cancel, stop contract), `background_media_tests` (D✦: status/displays/release answered during four cold 4K prepares; slow-retirement present→air 4.5 ms and bed-swap ack 1.6 ms against 700 ms scripted waits, audience gap ≤ 26 ms), `preview_selection_tests` (D✦: status and release ≤ 0.6 ms through a 600 ms scripted cold thumbnail decode, shutdown mid-read drained), `render_idle_check` (D✦), `worker_rpc_lifecycle` (D✦) | none — old-transport retirement and the standalone swap left the frame tick and the transport lock with **6.21c2**, and cold thumbnail decode left the RPC pump with **6.21d**. |
@@ -172,7 +175,17 @@ preview pixels; it also pinned the two revision counters — mirror frames
 carry the present ack's output revision, `scene.active` and selection frames
 the prepared revision — and its first green run required fixing the worker's
 write deadline, which dropped an idle-but-healthy frontend by the first frame
-owed after 2 s of quiet). The three named architectural differences were
+owed after 2 s of quiet). **6.21g** added the night the review said was missing:
+`frontend_journey_tests` runs the show through `WorkerController` and
+`PresentationModel` themselves over a supervised real worker — the gradient
+acknowledged, per-layer clears composed against the pixels, the restore
+re-preparing across the store's 16-deep pruning (one id past the 18th bare
+filler, so a remembered revision cannot be what returned), both renamed plates
+adopted without moving the audience and drawn again from the new paths, and a
+real missing-picture fault reaching `foregroundErrors` with its reason and
+leaving it on the repair — so the frontend's own decisions, not a hand-written
+socket stand-in, carry the journey evidence (`production_journey_tests` remains
+the raw-protocol coverage). The three named architectural differences were
 recorded as decisions in **6.20d**: the `words`/`images` toggles became a
 kind filter over the one authored stack (code-to-contract, pinned by
 `testWordsImagesFilterTheStack`), the two PipeWire streams became the
