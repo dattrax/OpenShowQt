@@ -5,8 +5,9 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.19b5**, the left-dock `PlaylistPanel`
-(6.19b4's `OutputPanel` at `5446a6e`, 6.19b3's `ShortcutMap` at `337626e`,
+The committed checkpoint is task **6.19b6**, the show page
+(6.19b5's `PlaylistPanel` at `cfc782c`, 6.19b4's `OutputPanel` at `5446a6e`,
+6.19b3's `ShortcutMap` at `337626e`,
 6.19b2's `DocumentViews` at `eaf5586`,
 6.19b1's `DocumentPersistence` at `7050a2d`,
 6.19a4's worker `RpcMethods` split at `7cd5edf`, which completed 6.19a,
@@ -167,25 +168,29 @@ module files so the extracted panels carry the same look without borrowing a
 window declaration. `Main.qml` is 367 lines shorter; the live notice set is
 the same five, both `Flow` complaints now naming `OutputPanel.qml`.
 
-**Task 6.19b5 is committed.** The left dock has left `Main.qml`:
-`src/ui/PlaylistPanel.qml` carries the playlist chips (current highlighted,
-`+` chip for a new one), the running-order rows with their section prefix,
-resolved show names and current-song highlight, the ▲/▼/✕ handles, the row
-drag whose mimeData names the entry, the DropArea that rounds a pointer to
-the nearest 30px row gap and shifts the after-the-move index for a row
-travelling downwards, the reference's empty "Nothing here", and the status
-line — the unsaved marker, the controller's status text, the service
-directory — all addressing `docs` and rendering the 6.19b2 projection rows.
-The second honest correction to the split's row after b4: the asked-for
-insert/remove/move/select signals have no window-side owner to signal to, so
-there are none, and the window keeps the anchors and the `leftDock` id.
-`Main.qml` is 270 lines shorter; the live notice set is still the same five.
+**Task 6.19b6 is committed.** The show page has left `Main.qml`:
+`src/ui/ShowPage.qml` carries the Add/Remove actions and the slide counter,
+the 6.16b band logic whole — current ±5, the one-ask latch that waits for the
+handshake without re-asking on every preview frame, the re-ask on navigation,
+document and text changes — the rows that put the worker's own picture beside
+the legible text line, the Undo/Redo/Save/Load row, Prev/Next/Present with the
+follow checkbox, the picture panel that replaces the field when the selection
+is a picture, and the lyric editor with its binding-re-establishing
+`Connections`. The third honest correction to the split's rows: select, step
+and text intents have no window-side owner — every gesture addresses `docs`
+and the debounced write lives behind the controller's own seam — and follow
+mode, task 3.3's `following`, turned out to be read and written by nothing
+outside the block, so it travelled with its only consumer. One signal leaves
+the page: `presentRequested()`, because `presentCurrentSlide()` is genuinely
+the window's — the keyboard executors run it too. `Main.qml` is 314 lines
+shorter (1001 remain); the live notice set is still the same five.
 
-**Next implementation task: 6.19b6** — the show page (slide list and lyric
-editor) out of `Main.qml` into `ShowPage.qml`, the sixth of the eight
+**Next implementation task: 6.19b7** — the edit page (the 16:9 stage over
+`EditCanvas`, the box fields and the stack commands) out of `Main.qml` into
+`EditPage.qml`, the seventh of the eight
 single-component leaves 6.19b was split into (`DocumentPersistence`,
-`DocumentViews`, `ShortcutMap`, `OutputPanel` and `PlaylistPanel` have
-landed; `Main.qml`'s `ShowPage`, `EditPage` and `SettingsPage` remain).
+`DocumentViews`, `ShortcutMap`, `OutputPanel`, `PlaylistPanel` and `ShowPage`
+have landed; `Main.qml`'s `EditPage` and `SettingsPage` remain).
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -228,12 +233,13 @@ audience composition match the intended design. Important open differences:
   owner, `DocumentPersistence`, and deliberately did not move the write off the
   UI thread). Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19b6–b8:** the remaining ownership extractions are unfinished
+- **6.18b, 6.19b7–b8:** the remaining ownership extractions are unfinished
   (6.18a2's `PreviewProducer`, 6.18b1's `BackgroundTransport` and 6.19a2's
   `PreviewConsumer` landed; 6.19a1's `RpcClient`, 6.19a3's `PresentationModel`
   and 6.19a4's `RpcMethods` landed 2026-10-30, closing 6.19a, and 6.19b1's
   `DocumentPersistence`, 6.19b2's `DocumentViews`, 6.19b3's `ShortcutMap`,
-6.19b4's `OutputPanel` and 6.19b5's `PlaylistPanel` landed the same day).
+6.19b4's `OutputPanel`, 6.19b5's `PlaylistPanel` and 6.19b6's `ShowPage`
+landed the same day).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
   physical-display acceptance remain open. Pinned cache excess is reported,
   not a hard bound on total process memory.
@@ -272,7 +278,8 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19b5**. Tasks **6.19b4** (`5446a6e`),
+The working tree carries task **6.19b6**. Tasks **6.19b5** (`cfc782c`),
+**6.19b4** (`5446a6e`),
 **6.19b3** (`337626e`),
 **6.19b2** (`eaf5586`),
 **6.19b1** (`7050a2d`),
@@ -284,6 +291,23 @@ The working tree carries task **6.19b5**. Tasks **6.19b4** (`5446a6e`),
 `0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
 in their commit messages:
 
+- `src/ui/ShowPage.qml` (6.19b6) — the show page as one component: the
+  slide-actions row (`docs.addSlide`/`removeCurrentSlide`, the "slide n of m"
+  counter), the 6.16b thumbnail band kept whole (`requestSlideBand()` with the
+  ±5 window and the 32-cap reasoning, the `bandAskedFor` latch behind the one
+  post-handshake ask, the three `docs` triggers and the `Component.onCompleted`
+  first ask), the slide rows (worker `PreviewView` picture plus the legible
+  line, the 46 px only when the picture shows, the highlight and click that
+  selects and, when following, asks to present), the history row, the
+  navigation row with Present arming follow, the `pictureInfo` column (both
+  objectNames moved with it) and the lyric `TextArea` whose
+  `onSlideTextChanged` re-establishes the `docs.currentSlideText` binding
+  rather than assigning it. `following` moved from the window to the page —
+  nothing outside the block ever read it, and with the follow checkbox local
+  the Present/click/step logic reads its own state — so the page's only window
+  contract is `presentRequested()` handled by the shared
+  `presentCurrentSlide()`; placement, `visible: root.page === "show"` and the
+  four dock/topbar anchors stay at the call site. 314 lines left `Main.qml`.
 - `src/ui/PlaylistPanel.qml` (6.19b5) — the left dock as one component: the
   horizontal chip ListView over `docs.playlists` (current chip in --secondary,
   click to select, `+` chip styled as a chip because the Controls Button
@@ -605,6 +629,26 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.19b6:
+
+- `cmake --build --preset headless -j 2` ("no work to do" — no UI in that
+  preset) and `--preset desktop -j 2`: PASS, no warnings.
+- `ctest --preset desktop`: **53/53 PASS**, 246.3 s, all 12 display-labelled
+  tests (136.1 sec*proc), first run. `ui_loads` (8.0 s) is the acceptance and
+  was not touched; the live notice set was again read by hand — the same five,
+  and the show page emits none of its own, which is what it printed from
+  inside the window too (a page that failed to load would exit the shell early
+  and fail the guard). `document_controller_tests` (3.5 s) still pins the
+  seams this page calls: the debounced `setSlideText` round-trip against
+  `currentSlideText`, and the `selectSlide`/`stepSlide` navigation the rows
+  and Prev/Next drive; `document_present_tests` (0.9 s) covers the
+  compile-and-present the `presentRequested()` handler performs.
+- `ctest --preset headless`: **32/32 PASS**, 51.8 s.
+- No test was edited; every binding — band arithmetic, latch, the
+  binding-re-establishing `Connections` — moved as literal text, and
+  `following` changed owner only in the sense that it moved with its last
+  remaining reader and writer.
+
 Verification after 6.19b5:
 
 - `cmake --build --preset headless -j 2` ("no work to do" — no UI in that
@@ -791,7 +835,8 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19b6**, the show page (slide list and lyric editor) out of `Main.qml`
-into `ShowPage.qml`; then **6.19b7–b8** (`Main.qml`'s edit page and settings
-page), then **6.20**'s recorded architecture differences. Do not claim M6
-closure until 6.20 resolves those and the remaining gates pass.
+**6.19b7**, the edit page (the 16:9 stage over `EditCanvas`, the box fields
+and the stack commands) out of `Main.qml` into `EditPage.qml`; then
+**6.19b8** (`Main.qml`'s settings page), then **6.20**'s recorded architecture
+differences. Do not claim M6 closure until 6.20 resolves those and the
+remaining gates pass.

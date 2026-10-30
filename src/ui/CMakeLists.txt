@@ -80,7 +80,7 @@ qt_add_qml_module(openshow-ui
   URI OpenShow
   VERSION 1.0
   QML_FILES Main.qml TopBar.qml SidePanel.qml LibraryDrawer.qml EditCanvas.qml
-            ShortcutMap.qml OutputPanel.qml PlaylistPanel.qml
+            ShortcutMap.qml OutputPanel.qml PlaylistPanel.qml ShowPage.qml
             PanelField.qml PanelButton.qml
   SOURCES PreviewView.h PreviewView.cpp
 )
