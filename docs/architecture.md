@@ -121,10 +121,10 @@ The review's completion rule says every finding must have passing regression
 evidence or an explicit M7 gate, and that "the new behavioural regressions
 pass". This matrix is that accounting. A row is evidenced when its named
 fixtures exist in the ctest inventory of the stated preset and pass its
-recorded gate; the current green run is the one recorded for **6.20c** in
-[PROGRESS.md](PROGRESS.md), whose desktop run covers all 54 tests including
-all 13 display-labelled ones, and whose headless run covers all 32 — every
-fixture named below passed in it. Preset marks: **H** runs in the headless
+recorded gate; the current green run is the closing gate recorded for
+**6.20d** in [PROGRESS.md](PROGRESS.md), whose desktop run covers all 54
+tests including all 13 display-labelled ones, and whose headless run covers
+all 32 — every fixture named below passed in it. Preset marks: **H** runs in the headless
 inventory (and therefore in both), **D** is desktop-build only without a
 display label, **D✦** is desktop-build and display-labelled. Where M6
 deliberately left work, the row carries the explicit M7 reference from the
@@ -171,9 +171,80 @@ kind filter over the one authored stack (code-to-contract, pinned by
 accepted audio contract with the reasoning and a **7.4** device gate
 (contract-with-reasoning), and per-item foreground failures became an
 `output.status` lane beside the media lane rather than inside it
-(code-to-contract, pinned by `output_status_tests` S3). What remains for M6
-closure is **6.20e**: the recorded closure itself — final gates and an
-honest skip list whose wording matches this matrix.
+(code-to-contract, pinned by `output_status_tests` S3). The closure itself —
+final gates and this matrix's honest skips — was recorded in **6.20e** under
+"M6 closure: the completion rule in writing" below.
+
+## M6 closure: the completion rule in writing (task 6.20e)
+
+The review's completion rule says M6 closes when "the new behavioural
+regressions pass, the direct-private-Skia guard passes, API traffic is
+measured, and the old gates remain green with skipped hardware checks
+recorded honestly." Here is each clause against the run that proves it, and
+then the checks no run here made — named at the point they were skipped, so
+nothing has to be chased through scattered notes to find the edge of what
+this milestone actually shows.
+
+- **The new behavioural regressions pass.** Every R1–R19 finding above has
+  its named fixtures, and every one of them sits in the stated preset's
+  inventory and ran green in the final gate.
+- **The direct-private-Skia guard passes.** `render_layer_guard` and its
+  negative twin match both include spellings — quoted and angle-bracket,
+  the gap 6.20b found and closed — and both run in the headless suite the
+  final gate is.
+- **API traffic is measured.** The audit table in
+  [M6-code-review.md](M6-code-review.md) carries the enforced numbers
+  rather than review-time claims: 1 MiB both directions, depth 8, the
+  per-method scene budgets, the per-frontend outbound queue (1 MiB / 1024
+  frames, nonblocking writes), the 160-byte echo clip, the thumbnail
+  bounds; the stall deadline runs from when the queue starts owing bytes,
+  not the last byte that moved (6.20c).
+- **The old gates remain green.** Recorded for task 6.20d at `2fb3131`:
+  desktop **54/54** (247.9 s, all 13 display-labelled tests, 137.8
+  sec*proc), headless **32/32** (51.2 s), both trees building clean. Task
+  6.20e changes prose only, so those runs describe the closing tree.
+
+### Recorded skips
+
+What this milestone's evidence did not attempt, each named at the point it
+was skipped. Nothing in the matrix's rows or the four clauses above claims
+these:
+
+- **Audible playback.** The production journey (6.20c) runs a deliberately
+  silent show — text and stills only; `pipewire-0` is present and unused —
+  and the audio decision (6.20d) moved contract wording rather than code
+  precisely because its open claim, two simultaneous streams audible on
+  hardware at acceptable relative latency, is a device claim. Owed by
+  **7.4**.
+- **Target-GPU versus software-rasterizer distinction.** The journey's own
+  output records that this machine's RADV device (AMD Radeon 890M) is not
+  told apart from llvmpipe by any check the M6 suite has. Timing evidence
+  on the target GPU is owed by **7.4**.
+- **Projector placement, DPI and stacking; physical second displays on
+  Wayland and X11; unplug/replug.** The display-labelled fixtures drive a
+  real worker window (GLFW on Wayland here) and assert composition and
+  hand-offs — never geometry on hardware. Owned by **7.1c** and **7.4**.
+- **Long-run gates.** The thirty-minute A/V continuity, ten-minute deadline
+  and one-hour mixed-service runs are not in the recorded 247.9 seconds;
+  historical M5-era numbers stay historical, exactly as their ledger rows
+  already say. Fresh runs are **7.4**.
+- **Keyboard coverage.** The cheat-sheet/`ShortcutMap.qml` alignment was
+  verified by reading both files against each other (6.19b3, re-checked by
+  the unchanged live notice set in `ui_loads`); no automated keyboard test
+  exists that could operate them. Recorded bare in the R17 row.
+- **Restart and device-loss behaviour.** Worker supervision and restart
+  reset, destination-removal disabling, device-loss classification and
+  bounded acquire/fence waits are owned by **M7.1a–c** exactly as the
+  review mapped them; no M6 fixture pretends to cover them.
+- **Accounting and cost budgets.** Redraw/onPresented accounting, signed
+  A/V drift, the pinned image cache's excess above its eviction budget and
+  one synchronous GPU readback's worst-frame cost are counted where the
+  counters exist, but no measured budget bounds them. Owned by **7.2**.
+
+With the four clauses matched to the recorded runs and every skip named at
+its point, the review's completion rule is discharged: **M6 is closed** for
+what those runs prove, and everything they do not prove has a numbered
+owner in M7.
 
 ## Open differences from the plan
 

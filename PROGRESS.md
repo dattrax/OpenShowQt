@@ -4,9 +4,17 @@ Updated: 2026-10-30 (Europe/London).
 
 ## Current checkpoint
 
-**M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.20b**, the Skia-guard re-read and the
-RPC/media audit update (6.20a's evidence matrix at `ebb282d`,
+**M0–M5 are historical implementation checkpoints; M6 closed on 2026-10-30
+at task 6.20e**, the recorded closure: the review's completion rule
+discharged in writing in
+[docs/architecture.md](docs/architecture.md) ("M6 closure: the completion
+rule in writing"), its honest skips named at their points, and the closing
+gates desktop 54/54 / headless 32/32 recorded at 6.20d. The committed
+checkpoint is task **6.20e**, with 6.20d's three named decisions at
+`2fb3131`, 6.20c's production journey (and the write-deadline fix it found)
+at `09bc8c5`, 6.20b's Skia-guard re-read and
+audit update at `d12c594`, 6.20a's evidence matrix at
+`ebb282d`,
 6.19b8's `SettingsPage` at `88cb050`, completing the 6.19b split,
 6.19b7's `EditPage` at `f6752b0`,
 6.19b6's `ShowPage` at `8722b9e`, 6.19b5's `PlaylistPanel` at `cfc782c`,
@@ -20,7 +28,7 @@ RPC/media audit update (6.20a's evidence matrix at `ebb282d`,
 6.9b's prepared-scene prewarm at `d83469e`, SceneStore's one scene truth at
 `1b54bdb`, and the `PreviewProducer`,
 `BackgroundTransport` and dev-binary extractions plus the bounded prepare
-executor in the commits before those). The R10 scheduling pair is now closed:
+executor in the commits before those. The R10 scheduling pair is now closed:
 prepare-time file work left the RPC dispatch loop on 2026-10-29 (**6.9a**) and a
 prepared scene's media, text and blur readiness left the render loop on
 2026-10-30 (**6.9b**). The authoritative task/status ledger is
@@ -304,15 +312,35 @@ two open-differences rows closed with their semantics rules, and the whole
 scope held inside one day, so the no-slice-over-a-day rule needed no
 re-split.
 
-**Next implementation task: 6.20e** — record the M6 closure and its honest
-skips: the review's completion rule discharged in writing with the final
-desktop/headless gate numbers, every skipped or environment-limited check
-listed at the point it was skipped (live PipeWire, RADV versus llvmpipe,
-hardware timing, projector placement, service soak), PLAN's M6 ledger and
-header and this handoff brought to the status the evidence supports, and no
-milestone claim stating more than the recorded runs prove. It is the last
-open line of M6.
-This handoff does not mark 6.20 complete.
+**Task 6.20e is committed.** The closure is now a written thing rather than
+an accumulating feeling: `docs/architecture.md` gained "M6 closure: the
+completion rule in writing," which takes the review's four closing clauses
+and sets each against the run that satisfies it — the behavioural
+regressions (the matrix's fixtures, all in their stated presets, all green
+in the closing gate), the private-Skia guard (both include spellings,
+headless), the measured API numbers (the audit table's enforced figures,
+including the deadline's 6.20c semantics), and the old gates (desktop
+54/54 at 247.9 s with all 13 display tests, headless 32/32 at 51.2 s, the
+6.20d gate at `2fb3131`; this leaf moves only prose, so those runs describe
+the closing tree). The honest skip list is the other half of the record and
+it is deliberately boring: audible pairing, target-GPU distinction,
+projector and hotplug geometry, the long-run gates, keyboard automation,
+restart/device-loss recovery and the unbounded accounting budgets, each
+named at the point its check was skipped and each pointing at the numbered
+M7 task that owes it. PLAN's M6 header now says closed, its ledger says
+closed, and this file says the same — and nowhere among them does a
+milestone claim state more than a recorded run establishes, which is the
+one rule the review ended with and the one this closure can be audited
+against line by line.
+
+**Next implementation task: M7.1a** — worker supervision and bounded
+restart/shutdown, with decoder, request, timer, preview and acknowledged
+state reset per connection, until kill/disconnect/hang/restart tests
+preserve editable documents, clear stale UI imagery and state, and start
+uniformly black with an explicit presentation required to go live. The M7
+table in PLAN.md is the ledger now; the R-numbers' mapped remainder
+(7.1a–c, 7.2, 7.4) starts there.
+This handoff closes milestone 6.
 
 ## Completed capabilities
 
@@ -399,7 +427,8 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.20d**. Tasks
+The working tree is clean at task **6.20e**, M6's closing leaf. Tasks
+**6.20d** (`2fb3131`),
 **6.20c** (`09bc8c5`),
 **6.20b** (`d12c594`),
 **6.20a** (`ebb282d`),
@@ -789,6 +818,24 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.20e:
+
+- This leaf changed no code, no CMake and no fixture — its diff is
+  PLAN.md, PROGRESS.md and docs/architecture.md alone (verified against
+  `2fb3131` after commit). The closing gates are therefore the ones
+  recorded for 6.20d at that commit: desktop **54/54** (247.9 s, all 13
+  display-labelled tests, 137.8 sec*proc), headless **32/32** (51.2 s),
+  both trees build clean — and the claim made is an identity, not a
+  re-run: the tested tree at this commit is exactly the tree those runs
+  verified.
+- The closure's self-consistency was checked, not assumed: every fixture
+  named in the R1–R19 matrix exists in the stated preset's `ctest -N`
+  inventory (the 6.20a discipline, re-run because the matrix changed in
+  6.20d), each completion-rule clause points at a recorded run rather than
+  an intention, and the recorded-skip list matches what the fixtures
+  themselves print as environment notes (Wayland session, silent journey,
+  RADV indistinguishable here) plus the open obligations M7 already owns.
+
 Verification after 6.20d:
 
 - `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS —
@@ -1130,9 +1177,10 @@ Verification after 6.19a2:
   changed: `SceneAsk.h` names the intent record the frontend already sent, and
   the worker cannot tell which of its two classes assembled a request.
 
-Resume by inspecting Git status, then take the next open ledger line:
-**6.20e**, the recorded M6 closure — final gate numbers, the honest skip
-list at the points checks were skipped or environment-limited, and PLAN /
-this handoff wording brought to exactly what the evidence proves. It is the
-last open line of M6; do not claim M6 closure until it is recorded and the
-final gates pass.
+Resume by inspecting Git status, then open the M7 table in PLAN.md:
+**7.1a**, worker supervision and bounded restart/shutdown with per-
+connection reset of decoder, requests, timers, previews and acknowledged
+state, is the first open ledger line. Milestone 6 is closed at the status
+its recorded gates and the closure section in docs/architecture.md
+establish — do not restate that claim past what those runs prove, and let
+the closure's skip list be the map of what M7 still owes.
