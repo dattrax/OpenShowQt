@@ -2870,6 +2870,230 @@ void testHeldLayoutSurvivesCacheChurn() {
     check(paint(*again) == baseline, "the rebuilt layout paints the baseline");
 }
 
+/* --- task 6.22a (review A1): the OTHER cross-thread half of shaping. F1 was
+   the layout's lifetime; what sat behind it is mutable, in two halves:
+
+   (a) resolution. Every ParagraphBuilder takes a FontCollection, and
+       skparagraph resolves family names through that collection's UNLOCKED
+       face-cache hash table (pinned modules/skparagraph/src/FontCollection.cpp:
+       a lookup and an insert with no mutex). Prewarm (prepare executor),
+       draw-path misses (frame loop) and thumbnail companions all shaped
+       through the engine's ONE collection — concurrent cold family resolution
+       was a data race inside Skia. The collection now belongs to its
+       threading context and the engine shares only what is thread-safe by
+       construction: its SkFontMgr, typefaces and Unicode.
+
+   (b) paint. A laid-out Paragraph is not immutable either: paint() completes
+       each line's text blobs on first use (pinned modules/skparagraph/src/
+       TextLine.cpp: buildTextBlob appends to fTextBlobCache), so one handle
+       may CROSS threads but must not be painted BY two at once. Production
+       keeps that by ownership — a renderer has exactly one painter, its frame
+       loop, and a thumbnail companion is a renderer of its own (R16) — and
+       this fixture keeps the same rule: threads share the engine and the
+       cache, and each paints only bytes nobody else is painting.
+
+   Proofs: ownership is per-thread and stable; six cold shaping contexts build
+   and paint concurrently, complete and inked; the prewarm hand-off (shape on
+   the prepare role, paint on the frame role) paints ink on every frame and
+   matches a locally built frame; and two cold collections resolving the same
+   payload paint identical pixels. --- */
+void testConcurrentShapingOwnership() {
+    worker::SceneTextEngine engine;
+    std::string error;
+    if (!engine.create(&error)) {
+        check(false, "engine created for shaping-ownership assertions: " + error);
+        return;
+    }
+
+    // --- the ownership contract itself --------------------------------------
+    const sk_sp<skia::textlayout::FontCollection> mainCollection = engine.fontCollection();
+    check(engine.fontCollection().get() == mainCollection.get(),
+          "the same thread is handed the same FontCollection every time");
+    sk_sp<skia::textlayout::FontCollection> sibling;
+    std::thread([&engine, &sibling] { sibling = engine.fontCollection(); }).join();
+    check(sibling != nullptr && sibling.get() != mainCollection.get(),
+          "a different threading context gets its OWN mutable collection");
+
+    // Each fresh thread's collection is cold from birth, and every round names
+    // a DIFFERENT real family: every builder runs A1's lookup/insert sequence,
+    // there is no warm path to hide behind.
+    const std::vector<std::string> families{"Carlito", "Caladea", "Cantarell", "Comfortaa",
+                                            "DejaVu Sans", "Liberation Sans"};
+    const auto sceneUsing = [&families](int index) {
+        scene::Scene subject;
+        subject.background.color = 0x102030u;
+        for (int f = 0; f < 3; ++f) {
+            scene::SceneItem item;
+            item.lines = {"Family " + std::to_string(index) + " row " + std::to_string(f),
+                          "glyphs ( ) 1 2 3 — fi fl"};
+            item.fontFamily = families[static_cast<size_t>((index + f) % families.size())];
+            item.fontSize = 64.0;
+            item.y = 120.0 + f * 300.0;
+            subject.items.push_back(std::move(item));
+        }
+        return subject;
+    };
+    std::unique_ptr<worker::SceneTextEngine::LayoutCache> cache =
+        worker::SceneTextEngine::newLayoutCache(engine);
+
+    // One round's draw: authored units onto a 640x360 raster, restored after
+    // (a canvas that kept scaling would compound into invisibility).
+    const auto paint = [&engine](SkSurface* surface,
+                                 const worker::SceneTextEngine::SceneLayout& layout) {
+        surface->getCanvas()->clear(0xFF102030);
+        {
+            const SkAutoCanvasRestore mapping(surface->getCanvas(), true);
+            surface->getCanvas()->scale(640.0f / worker::kSceneCanvasWidth,
+                                        360.0f / worker::kSceneCanvasHeight);
+            engine.drawLayout(surface->getCanvas(), layout);
+        }
+        std::vector<uint32_t> pixels(640 * 360);
+        if (!surface->readPixels(SkImageInfo::MakeN32Premul(640, 360), pixels.data(),
+                                 sizeof(uint32_t) * 640, 0, 0)) {
+            return std::vector<uint32_t>{};
+        }
+        return pixels;
+    };
+    const auto hasInk = [](const std::vector<uint32_t>& pixels) {
+        for (const uint32_t pixel : pixels) {
+            if ((pixel & 0x00FFFFFFu) != 0x102030u) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // --- concurrent cold shaping: six contexts, one engine, own paint --------
+    constexpr int kThreads = 6;
+    constexpr int kRounds = 40;
+    std::atomic<int> validBuilds{0};
+    std::atomic<int> drawnWithInk{0};
+    std::atomic<int> identityBroken{0};
+    std::vector<std::atomic<const void*>> observed(kThreads);
+    std::vector<std::thread> workers;
+    for (int t = 0; t < kThreads; ++t) {
+        workers.emplace_back([&engine, &cache, &sceneUsing, t, &validBuilds, &drawnWithInk,
+                              &identityBroken, &observed, &paint, &hasInk] {
+            const sk_sp<skia::textlayout::FontCollection> mine = engine.fontCollection();
+            observed[t].store(mine.get(), std::memory_order_relaxed);
+            auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(640, 360));
+            for (int round = 0; round < kRounds; ++round) {
+                if (engine.fontCollection().get() != mine.get()) {
+                    identityBroken.fetch_add(1, std::memory_order_relaxed);
+                }
+                // Shaped here, painted here: the thread shares the engine's
+                // font manager and the cache's lock, never a Paragraph.
+                const scene::Scene own = sceneUsing(t * 100 + round);
+                const std::shared_ptr<const worker::SceneTextEngine::SceneLayout> handle =
+                    std::make_shared<const worker::SceneTextEngine::SceneLayout>(
+                        cache->build(own));
+                bool valid = !handle->items.empty();
+                for (const auto& item : handle->items) {
+                    valid = valid && item.hasText && item.height > 0.0f && item.lineCount > 0;
+                }
+                if (valid) {
+                    validBuilds.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (hasInk(paint(surface.get(), *handle))) {
+                    drawnWithInk.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    check(identityBroken.load() == 0, "a thread's FontCollection never changes underneath it");
+    std::vector<const void*> pointers;
+    for (const auto& slot : observed) {
+        pointers.push_back(slot.load(std::memory_order_relaxed));
+    }
+    std::sort(pointers.begin(), pointers.end());
+    check(std::unique(pointers.begin(), pointers.end()) == pointers.end(),
+          "every concurrent shaping context ran on its own collection");
+    check(validBuilds.load() == kThreads * kRounds,
+          "every concurrently built layout is complete — no torn resolution");
+    check(drawnWithInk.load() == kThreads * kRounds,
+          "every concurrent draw put ink down (no worker shaped into nothing)");
+
+    // --- the hand-off production actually makes ------------------------------
+    // Task 6.9b's shape of the sharing: the prepare role shapes into the four
+    // slots, the frame role finds and paints. They share the cache (and the
+    // engine's font manager); they never share a Paragraph being painted —
+    // the frame role is the only painter here, exactly as the frame loop is
+    // the only painter of its renderer.
+    std::vector<std::shared_ptr<const scene::Scene>> onAir;
+    for (int i = 0; i < 3; ++i) {
+        onAir.push_back(std::make_shared<scene::Scene>(sceneUsing(7000 + i)));
+    }
+    std::atomic<bool> stop{false};
+    std::atomic<int> prepares{0};
+    std::thread preparer([&cache, &onAir, &stop, &prepares] {
+        while (!stop.load(std::memory_order_relaxed)) {
+            for (const auto& scene : onAir) {
+                cache->put(scene, scene.get(), cache->build(*scene));
+                prepares.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    });
+    auto frameSurface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(640, 360));
+    int frames = 0;
+    int inkedFrames = 0;
+    std::vector<uint32_t> handedOff;
+    const scene::Scene* handedFrom = nullptr;
+    for (int frame = 0; frame < 240; ++frame) {
+        const auto& scene = onAir[static_cast<size_t>(frame) % onAir.size()];
+        std::shared_ptr<const worker::SceneTextEngine::SceneLayout> layout =
+            cache->find(scene.get());
+        const bool shapedElsewhere = layout != nullptr;  // the preparer built this one
+        if (!layout) {
+            layout = cache->put(scene, scene.get(), cache->build(*scene));
+        }
+        ++frames;
+        const std::vector<uint32_t> pixels = paint(frameSurface.get(), *layout);
+        if (hasInk(pixels)) {
+            ++inkedFrames;
+        }
+        if (shapedElsewhere && handedOff.empty()) {
+            handedOff = pixels;
+            handedFrom = scene.get();
+        }
+    }
+    stop.store(true, std::memory_order_relaxed);
+    preparer.join();
+    check(prepares.load() > 0, "the prepare role really rebuilt while this thread drew");
+    check(inkedFrames == frames,
+          "every frame painted from a shaped-elsewhere handle put ink down");
+
+    // And "shaped elsewhere" is not "shaped differently": the same scene,
+    // built here in this thread's own collection, paints these same pixels.
+    std::vector<uint32_t> local;
+    if (handedFrom != nullptr) {
+        local = paint(frameSurface.get(), cache->build(*handedFrom));
+    }
+    check(!handedOff.empty() && local == handedOff,
+          "a layout shaped on the prepare role paints the frame role's own pixels");
+
+    // --- cross-collection determinism ----------------------------------------
+    // The SAME payload shaped on two threads — two cold collections resolving
+    // the same families through the same font manager — must paint the same
+    // pixels, or "share layouts, own resolution" is not a free contract.
+    const scene::Scene twin = sceneUsing(4242);
+    std::vector<uint32_t> twinFirst;
+    std::vector<uint32_t> twinSecond;
+    const auto shapeAndPaint = [&engine, &twin, &paint](std::vector<uint32_t>* out) {
+        std::thread([&engine, &twin, out, &paint] {
+            const worker::SceneTextEngine::SceneLayout layout = engine.layoutScene(twin);
+            auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(640, 360));
+            *out = paint(surface.get(), layout);
+        }).join();
+    };
+    shapeAndPaint(&twinFirst);
+    shapeAndPaint(&twinSecond);
+    check(!twinFirst.empty() && twinFirst == twinSecond,
+          "the same scene shaped by two cold collections paints identical pixels");
+}
+
 }  // namespace
 
 int main() {
@@ -2915,6 +3139,7 @@ int main() {
     testSceneLayerToggles();
     testWordsImagesFilterTheStack();
     testHeldLayoutSurvivesCacheChurn();
+    testConcurrentShapingOwnership();
 
     if (failures == 0) {
         std::printf("scene_render_tests: all fixtures passed\n");

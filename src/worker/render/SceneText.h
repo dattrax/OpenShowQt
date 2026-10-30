@@ -30,6 +30,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "include/core/SkFontMgr.h"
@@ -75,8 +76,10 @@ public:
     SceneTextEngine(const SceneTextEngine&) = delete;
     SceneTextEngine& operator=(const SceneTextEngine&) = delete;
 
-    // Assembles the fontconfig font manager, the default and bold
-    // typefaces and the paragraph FontCollection. Fills error on failure.
+    // Assembles the fontconfig font manager and the default and bold
+    // typefaces. No paragraph FontCollection is built here: that mutable
+    // half belongs to the threads that shape (see fontCollection(), task
+    // 6.22a). Fills error on failure.
     bool create(std::string* error);
 
     // The faces every worker text draws with when a scene names no family.
@@ -85,9 +88,28 @@ public:
 
     // Paragraph services for callers building their own paragraphs (the
     // demo title) with the engine's font resolution.
-    const sk_sp<skia::textlayout::FontCollection>& fontCollection() const {
-        return fFontCollection;
-    }
+    //
+    // The FontCollection is the mutable half of shaping (task 6.22a, review
+    // A1): skparagraph's FontCollection resolves family names through
+    // fontconfig into a lock-free face-cache hash table (pinned source:
+    // modules/skparagraph/src/FontCollection.cpp — a lookup and an insert
+    // without a mutex). Two threads shaping through ONE collection — the
+    // frame loop's cache miss and the prepare executor's prewarm, or a
+    // thumbnail companion — race inside that table. So the collection is
+    // OWNED PER THREAD: this call returns the calling thread's own instance,
+    // created on first use over the engine's shared SkFontMgr, and no thread
+    // ever touches another's. What the engine shares is what is thread-safe
+    // by construction: the font manager (the fontconfig port guards its own
+    // typeface cache and defers to fontconfig's thread-safe matching above
+    // 2.13.93), ref-counted typefaces, and Unicode. The cost is one cold
+    // family resolution per family per thread (the worker has a handful);
+    // the alternative — one collection under a lock — would make rendering
+    // wait for preparation, which is the very coupling 6.9b removed.
+    //
+    // A layout built through one thread's collection still travels to
+    // another (that is the prewarm hand-off); what does NOT travel freely is
+    // a PAINT of a shared handle — see drawLayout.
+    sk_sp<skia::textlayout::FontCollection> fontCollection() const;
     const sk_sp<SkUnicode>& unicode() const { return fUnicode; }
 
     // One item laid out: wrapped at its authored box width, centred,
@@ -142,7 +164,10 @@ public:
     // 6.18a), with the raw Scene pointer kept as a second key so a fixture
     // that draws a scene nobody prepared still hits. Every method is safe
     // from any thread; a build runs OUTSIDE the lock, exactly like the
-    // image cache builds a blur outside its own.
+    // image cache builds a blur outside its own. Handles are handed from the
+    // building thread to the painting thread (find/put are the synchronising
+    // point); a handle is painted by one thread at a time, as drawLayout's
+    // comment spells out.
     class LayoutCache {
     public:
         // The returned layout is RETAINED (task 6.21a, review F1): the handle
@@ -187,9 +212,10 @@ public:
     // not the engine, even though a companion borrows the engine (task 6.16b,
     // review R16): a slide list churning a document must not evict the
     // audience's layouts nor charge the audience its shaping. The cache BUILDS
-    // through this engine — fonts and shaping are shared and immutable — but
-    // its four slots, its LRU clock and its miss counter belong to one
-    // renderer. The factory exists because the constructor is private (a cache
+    // through this engine — fonts shared, the MUTABLE shaping state owned
+    // per-thread (6.22a, review A1, see fontCollection()) — but its four
+    // slots, its LRU clock and its miss counter belong to one renderer. The
+    // factory exists because the constructor is private (a cache
     // only ever points at a live engine); a static member reaches it.
     static std::unique_ptr<LayoutCache> newLayoutCache(const SceneTextEngine& engine) {
         return std::unique_ptr<LayoutCache>(new LayoutCache(&engine));
@@ -211,6 +237,21 @@ public:
     // the same authored order, with the same fade alpha. The two switches
     // exist so the operator's `words` and `images` toggles filter one
     // authored stack by kind — a stack omits, it never reorders.
+    //
+    // A layout is not frozen until it has been drawn: skparagraph completes
+    // each line's text blobs on that line's FIRST paint (pinned source:
+    // modules/skparagraph/src/TextLine.cpp — buildTextBlob appends to
+    // fTextBlobCache), so drawing mutates the Paragraphs a handle points at.
+    // A handle may therefore CROSS threads — the prewarm hand-off (6.9b)
+    // shapes on the prepare executor and paints here, on the frame loop —
+    // but exactly one thread may paint a given handle at a time. Production
+    // keeps that by ownership: a renderer's frame loop is its renderer's only
+    // painter, and a thumbnail companion is a renderer of its own (6.16b,
+    // review R16). Painting one handle from two threads is not a slow path,
+    // it is heap corruption; testConcurrentShapingOwnership pins the two
+    // shapes that are supported instead — contexts painting their own bytes
+    // concurrently, and a shaped-elsewhere handle painting this thread's
+    // pixels.
     void drawLayout(SkCanvas* canvas, const SceneLayout& layout,
                     const SkPaint* paint = nullptr,
                     SceneImageCache* images = nullptr, bool textItems = true) const;
@@ -219,7 +260,13 @@ private:
     sk_sp<SkFontMgr> fFontMgr;
     sk_sp<SkTypeface> fRegular;
     sk_sp<SkTypeface> fBold;
-    sk_sp<skia::textlayout::FontCollection> fFontCollection;
+    // Per-thread FontCollections (6.22a, review A1 — see fontCollection()).
+    // The map lock is held only for the probe and the sk_sp copy; the
+    // collection itself is used OUTSIDE it, by its owning thread alone.
+    // Entries live for the engine's lifetime: the worker's shaping threads
+    // are few and long-lived, and a dead thread's table dies with the engine.
+    mutable std::mutex fCollectionsMutex;
+    mutable std::map<std::thread::id, sk_sp<skia::textlayout::FontCollection>> fCollections;
     sk_sp<SkUnicode> fUnicode;
 };
 

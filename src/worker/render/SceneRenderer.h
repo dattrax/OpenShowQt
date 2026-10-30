@@ -235,7 +235,8 @@ public:
     // charged to no miss counter (this is not a draw); it only moves when the
     // work is paid. A companion never prewarms — the audience's layouts stay
     // the audience's (R16 isolation). Safe from any thread: the cache builds
-    // outside its lock.
+    // outside its lock, and the shaping itself runs in the calling thread's
+    // own FontCollection (6.22a, review A1).
     void prewarmLayouts(std::shared_ptr<const openshow::scene::Scene> scene) const {
         if (fLayouts && scene) {
             const openshow::scene::Scene* key = scene.get();

@@ -334,7 +334,7 @@ no runtime verification was performed in this review pass.
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| 6.22a | TODO | Give mutable text-shaping resources safe thread ownership | Concurrent cold font-family/style resolution without shared-cache races; A1 |
+| 6.22a | DONE | Give mutable text-shaping resources safe thread ownership | Per-thread `FontCollection` over the shared font manager; ownership, six-context cold-resolution and prepare→frame hand-off fixtures in `scene_render_tests`; paint-completion rule recorded (a handle crosses threads, one painter per handle); A1 |
 | 6.22b | TODO | Synchronize retired GPU reclamation with successor uploads | Queue operations and resource completion remain ordered during overlapped retirement; A2 |
 | 6.22c | TODO | Deactivate outgoing audio before waiting for video retirement | No old background audio after swap/clear while retaining clock lifetime; A3 |
 | 6.22d | TODO | Defer/coalesce swaps when retirement capacity is occupied | A→B→C and A→B→clear remain responsive during a delayed A retirement; A4 |

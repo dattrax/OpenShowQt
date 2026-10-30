@@ -135,8 +135,9 @@ bool SceneTextEngine::create(std::string* error) {
         return false;
     }
 
-    fFontCollection = sk_make_sp<skia::textlayout::FontCollection>();
-    fFontCollection->setDynamicFontManager(fFontMgr);
+    // No shared FontCollection is built here (task 6.22a, review A1): the
+    // mutable face table belongs to its threading context, so fontCollection()
+    // hands each thread its own over this engine's SkFontMgr.
     // Real Unicode: UAX #14 line breaking, UAX #29 grapheme clustering and
     // UBA bidi from the public ICU-backed module (task 6.2b). The worker's
     // Skia is built with skia_use_system_icu=true, so libskunicode_icu and
@@ -149,6 +150,23 @@ bool SceneTextEngine::create(std::string* error) {
         return false;
     }
     return true;
+}
+
+sk_sp<skia::textlayout::FontCollection> SceneTextEngine::fontCollection() const {
+    // The per-thread rule (6.22a, review A1): one mutable FontCollection per
+    // threading context, over the shared font manager. The map lock covers
+    // only the probe and the refcount copy; shaping then runs with no lock
+    // at all, each thread in its own table.
+    const std::lock_guard<std::mutex> lock(fCollectionsMutex);
+    const auto found = fCollections.find(std::this_thread::get_id());
+    if (found != fCollections.end()) {
+        return found->second;
+    }
+    sk_sp<skia::textlayout::FontCollection> collection =
+        sk_make_sp<skia::textlayout::FontCollection>();
+    collection->setDynamicFontManager(fFontMgr);
+    fCollections.emplace(std::this_thread::get_id(), collection);
+    return collection;
 }
 
 /*
@@ -176,7 +194,8 @@ std::shared_ptr<const SceneTextEngine::SceneLayout> SceneTextEngine::LayoutCache
 
 SceneTextEngine::SceneLayout SceneTextEngine::LayoutCache::build(
     const openshow::scene::Scene& scene) const {
-    return fEngine->layoutScene(scene);  // const shaping, no lock: any thread
+    return fEngine->layoutScene(scene);  // const shaping in the CALLER'S OWN
+                                         // FontCollection: any thread (6.22a)
 }
 
 std::shared_ptr<const SceneTextEngine::SceneLayout> SceneTextEngine::LayoutCache::put(
@@ -286,7 +305,7 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Scen
     textStyle.setFontFamilies(std::move(families));
     paragraphStyle.setTextStyle(textStyle);
 
-    auto builder = skia::textlayout::ParagraphBuilder::make(paragraphStyle, fFontCollection,
+    auto builder = skia::textlayout::ParagraphBuilder::make(paragraphStyle, fontCollection(),
                                                             fUnicode);
     builder->pushStyle(textStyle);
     builder->addText(joined.data(), joined.size());
