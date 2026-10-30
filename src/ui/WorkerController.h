@@ -1,16 +1,18 @@
 /*
  * WorkerController: the frontend's session half of the worker conversation —
- * the QML facade that owns the process (task 1.2 supervision) and the
+ * the QML facade that owns the process (task 1.2 supervision) and routes the
  * acknowledged output model behind the status properties.
  *
  * It spawns openshow-worker --socket PATH and runs the JSON-RPC handshake
  * through RpcClient, which owns the socket, the framing and the rule that a
- * reply belongs to the request its id names. This class decides what an answer
- * MEANS: which revision is on air, which clear a control derives from, which
- * picture the canvas is owed — and hands the pictures themselves to
- * PreviewConsumer, which owns the stream they travel in. The same session
- * operations the UI calls are what the RPC exposes: layer toggles now, scenes
- * later.
+ * reply belongs to the request its id names. This class decides which event is
+ * whose: what the store acknowledged goes to PresentationModel — the task
+ * 6.19a3 owner of what is on air, what the output is owed, and the restore
+ * point — and what the worker has to show goes to PreviewConsumer, the task
+ * 6.19a2 owner of the stream the pictures travel in. The same session
+ * operations the UI calls are what the RPC exposes: the operator plays frames,
+ * toggles layers, goes to scenes, and the facade forwards each to whoever
+ * owns its half.
  *
  * Lifecycle per PLAN.md: the worker lives only while connected. Closing
  * the UI sends "shutdown"; a worker that dies or hangs anyway is
@@ -34,8 +36,9 @@
 #include "openshow/protocol/protocol.h"
 #include "openshow/scene/demo.h"
 
+#include "PresentationModel.h"
+#include "PreviewConsumer.h"
 #include "RpcClient.h"
-#include "SceneEdit.h"
 
 namespace openshow::ui {
 
@@ -250,12 +253,14 @@ public:
     QVariantMap layers() const { return fLayers; }
     qint64 currentMonitor() const { return fCurrentMonitor; }
     QVariantList displays() const { return fDisplays; }
-    qint64 sceneActive() const { return fSceneActive; }
-    qint64 scenePending() const { return fScenePending; }
-    qint64 scenePrepared() const { return fScenePrepared; }
-    bool wordsOnAir() const { return fSceneContent.words; }
-    bool backgroundOnAir() const { return fSceneContent.background; }
-    bool canRestore() const { return !fRestoreJson.isEmpty(); }
+    // The output model (task 6.19a3): the truth is PresentationModel's; these
+    // are the reads the QML properties point at.
+    qint64 sceneActive() const { return fPresent->sceneActive(); }
+    qint64 scenePending() const { return fPresent->scenePending(); }
+    qint64 scenePrepared() const { return fPresent->scenePrepared(); }
+    bool wordsOnAir() const { return fPresent->wordsOnAir(); }
+    bool backgroundOnAir() const { return fPresent->backgroundOnAir(); }
+    bool canRestore() const { return fPresent->canRestore(); }
 
     qint64 demoSlideCount() const;
 
@@ -337,27 +342,11 @@ private:
                              std::shared_ptr<void> intent = nullptr);
     void sendNotification(const char* method, boost::json::object params);
     void setStatus(const QString& text);
-    // The prepare/present chain the public calls share; unlike
-    // presentSceneJson it does not touch the restore slot, so the clear
-    // operations can stage a derived scene without forgetting what they
-    // cleared. Returns the request id of the prepare, or 0 when the JSON
-    // was unreadable or the session not live.
-    std::int64_t presentSceneInternal(const QString& sceneJson);
     // Runs the worker's own reader over a scene BEFORE anything is written to
     // the socket (task 6.8a, review R11): returns true when the payload may go
     // on the wire, and otherwise sets the status line to the reason the
     // operator has to fix.
     bool sceneIsSendable(const boost::json::value& candidate, const char* verb);
-    // The scene a clear derives from: the pending logical presentation
-    // (latest go) when one exists, else the last confirmed on-air payload
-    // (task 6.3b: clears issued before an earlier clear's confirmation
-    // must compose with it, not resurrect what it removed).
-    QString clearSourceScene() const;
-    // Attach the per-request prepare context (payload, and the go intent
-    // when this prepare should present its ack).
-    void armPrepare(std::int64_t requestId, const boost::json::object& scene,
-                    bool autoPresent);
-    void resetSceneTracking();
 
     QProcess fProcess;
     // The transport (task 6.19a1): the socket, the shared framing, the ledger of
@@ -386,38 +375,15 @@ private:
     qint64 fCurrentMonitor = -1;
     QVariantList fDisplays;
 
-    // Scene adapter state (task 2.4c): the worker's store revisions as
-    // last reported by output.status, plus the prepare-then-present
-    // chain presentDemoSlide uses (the present waits for prepare's ack).
-    qint64 fSceneActive = 0;
-    qint64 fScenePending = 0;
-    qint64 fScenePrepared = 0;
     openshow::domain::Documents fDemoDocuments = openshow::scene::demoDocuments();
 
-    // Output controls (task 3.4): the JSON each revision was prepared with,
-    // so a clear can derive from what is actually on air and the live
-    // indicators can describe it. The worker may prune its store; this mirror
-    // is kept to the same recent window and is only a mirror, never the
-    // source of truth for what output shows.
-    QHash<qint64, QString> fSceneJson;
-    qint64 fMirrorMax = 0;        // highest revision mirrored (prune bound)
-    SceneContent fSceneContent;   // derived from fSceneJson[fSceneActive]
-    // Restore state (task 6.3b): the payload the first clear of a sequence
-    // cut from, retained as content so the worker's store window cannot
-    // retire it; the id of a restore whose prepare is still in flight; and
-    // the revision that must reach "active" before the snapshot retires.
-    QString fRestoreJson;
-    std::int64_t fRestoreArmedGo = 0;
-    qint64 fRestoreDoneRevision = 0;
-    // The payload of the newest go: what the output will show once that
-    // go is acknowledged. Clears derive from this, not from the last
-    // confirmed status, so rapid successive clears compose (task 6.3b).
-    QString fDesiredSceneJson;
-    // Id of the most recent go-intent still awaiting its presentation.
-    // A prepare ack presents only while its request is still the newest
-    // go (the latest-go rule): an older go acknowledged late must not
-    // regress the audience off a newer one.
-    std::int64_t fLatestGoId = 0;
+    // The acknowledged output model (task 6.19a3): what the worker's store
+    // confirmed and what it is owed — the revision mirror, the pending logical
+    // presentation the clears derive from, the restore point — with its own
+    // answers behind the scene properties above. The QML operations forward
+    // here; the prepare ack, the `scene` block of a status answer and every
+    // refused request arrive through the transport in onRpcReply.
+    PresentationModel* fPresent = nullptr;
 
     // The pictures (task 6.19a2): the shm stream, the frames copied out of it,
     // and the rules about which of them this client is still owed. Created with

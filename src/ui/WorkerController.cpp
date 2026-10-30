@@ -30,9 +30,6 @@ namespace proto = openshow::protocol;
 namespace {
 
 constexpr int kStatusPollMs = 500;
-// Revisions of prepared-scene JSON kept as a mirror for the clear
-// controls (task 3.4). Bounded; the worker prunes its own store too.
-constexpr int kSceneMirrorSize = 32;
 
 }  // namespace
 
@@ -78,6 +75,46 @@ WorkerController::WorkerController(QObject* parent) : QObject(parent), fRpc(this
     connect(fPreview, &PreviewConsumer::changed, this, &WorkerController::previewChanged);
     connect(fPreview, &PreviewConsumer::thumbnailReady, this, &WorkerController::thumbnailReady);
     connect(fPreview, &PreviewConsumer::statusMessage, this, &WorkerController::setStatus);
+    // The acknowledged output model (task 6.19a3): what the store confirmed,
+    // what the output is owed, and the restore point. It sends through this
+    // session and reaches back only into the prepare intents it armed; the
+    // budget its presents are checked against stays here, because it is exactly
+    // the budget a selection is checked against too. Its changed() is the
+    // sceneChanged the scene properties notify on.
+    fPresent = new PresentationModel(
+        PresentationModel::Outbound{
+            [this] { return fConnected && fHandshakeDone; },
+            [this](const boost::json::value& candidate, const char* verb) {
+                return sceneIsSendable(candidate, verb);
+            },
+            [this](const char* method, boost::json::object params) {
+                return sendRequest(method, std::move(params));
+            },
+            [this](std::int64_t requestId) -> std::shared_ptr<ScenePrepareAsk> {
+                // The same record armPrepare used to attach inline: created on
+                // the request itself, never a side table keyed by id (6.3a).
+                RpcRequest* entry = fRpc.pending(requestId);
+                if (!entry) {
+                    return nullptr;  // a refused send has no entry to arm
+                }
+                auto ask = entry->intentAs<ScenePrepareAsk>();
+                if (!ask) {
+                    ask = std::make_shared<ScenePrepareAsk>();
+                    entry->intent = ask;
+                }
+                return ask;
+            },
+            [this](const std::function<void(ScenePrepareAsk&)>& visit) {
+                fRpc.eachPending([&visit](RpcRequest& pending) {
+                    if (const auto ask = pending.intentAs<ScenePrepareAsk>()) {
+                        visit(*ask);
+                    }
+                });
+            },
+            [this](const QString& text) { setStatus(text); },
+        },
+        this);
+    connect(fPresent, &PresentationModel::changed, this, &WorkerController::sceneChanged);
 }
 
 WorkerController::~WorkerController() {
@@ -182,7 +219,8 @@ void WorkerController::onRpcDisconnected() {
     fStatusRequestId = 0;
     fPreview->setSessionLive(false);
     fPreview->closeStream();
-    resetSceneTracking();
+    fPresent->reset();
+    fRpc.clearPending();
     fMediaPlaying = false;
     fMediaError.clear();  // the media state describes a worker we lost
     fMediaAudio = QStringLiteral("none");
@@ -204,7 +242,8 @@ void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exit
     // The stream died with the process: its mapping, and every picture that
     // was a window into it, go now (task 6.19a2).
     fPreview->closeStream();
-    resetSceneTracking();
+    fPresent->reset();
+    fRpc.clearPending();
     fMediaPlaying = false;
     fMediaError.clear();
     fMediaAudio = QStringLiteral("none");
@@ -244,15 +283,13 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
     if (error != message.end() && error->value().is_object()) {
         // An error answers its request's intent: drop that context so a
         // failed go cannot resurface on some later reply.
-        if (id == fRestoreArmedGo) {
-            // A rejected restore keeps its retained content (task 6.3b):
-            // only the in-flight marker clears, so the retry is available.
-            fRestoreArmedGo = 0;
-        }
         // A refused ask that was carrying a picture was never MADE, so the
         // dedupe that remembers it has to forget it and the status poll can
         // re-issue what the UI still wants (task 6.16a, 6.16b).
         fPreview->handleRefusal(intent);
+        // A refused restore keeps its retained content (task 6.3b): only the
+        // in-flight marker clears, so the retry is available.
+        fPresent->handleRefusal(id);
         const boost::json::object& reported = error->value().as_object();
         const auto text = reported.find("message");
         setStatus(QStringLiteral("worker error (%1): %2")
@@ -390,45 +427,11 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         if (!payload.contains("revision")) {
             return;
         }
-        // The scene now lives in the worker's store under this revision,
-        // and THIS request's payload is what was stored under it — a
-        // second prepare issued before the first was acknowledged cannot
-        // move either mirror entry (task 6.3a).
         const qint64 prepared =
             static_cast<qint64>(payload.at("revision").to_number<std::uint64_t>());
-        if (!intent.prepareJson.isEmpty()) {
-            fSceneJson.insert(prepared, intent.prepareJson);
-            if (prepared > fMirrorMax) {
-                fMirrorMax = prepared;
-            }
-            if (fSceneJson.size() > kSceneMirrorSize) {
-                const qint64 cutoff = fMirrorMax - kSceneMirrorSize;
-                for (auto entry = fSceneJson.begin(); entry != fSceneJson.end();) {
-                    if (entry.key() <= cutoff) {
-                        entry = fSceneJson.erase(entry);
-                    } else {
-                        ++entry;
-                    }
-                }
-            }
-        }
-        // Latest-go rule: the audience moves only for the newest go. A
-        // superseded prepare still mirrors its payload (the store has it;
-        // clears and indicators may still reference that revision) but
-        // must not present it, so a slow ack for an older go can never
-        // regress the audience off the newer slide already intended.
-        if (intent.autoPresent && id == fLatestGoId) {
-            fLatestGoId = 0;
-            presentScene(prepared);
-            if (id == fRestoreArmedGo) {
-                // The restore's own go moved the audience; its snapshot
-                // retires once a status poll confirms this revision on
-                // air — until then canRestore honestly says the restored
-                // scene is not yet confirmed (task 6.3b).
-                fRestoreArmedGo = 0;
-                fRestoreDoneRevision = prepared;
-            }
-        }
+        // The store has named its revision: the mirror, the latest-go rule and
+        // the restore's flight marker are the model's to settle (task 6.19a3).
+        fPresent->handlePrepareAck(id, intent, prepared);
         // The off-air ask (task 6.16a): when this prepare was one, this
         // revision IS the picture the editor asked for, and the consumer names
         // it back with the generation the ask carried. The worker refuses a
@@ -436,7 +439,6 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         // rule that keeps a retried or reordered prepare from putting an edit
         // the operator abandoned back on the canvas.
         fPreview->handlePrepareAck(intent, prepared);
-        emit sceneChanged();
         return;
     }
 
@@ -461,28 +463,10 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             fCurrentMonitor =
                 static_cast<qint64>(payload.at("monitor").to_number<std::int64_t>());
         }
-        if (payload.contains("scene") && payload.at("scene").is_object()) {
-            const boost::json::object& scene = payload.at("scene").as_object();
-            fSceneActive =
-                static_cast<qint64>(scene.at("active").to_number<std::uint64_t>());
-            fScenePending =
-                static_cast<qint64>(scene.at("pending").to_number<std::uint64_t>());
-            fScenePrepared =
-                static_cast<qint64>(scene.at("prepared").to_number<std::uint64_t>());
-            // A restore is confirmed when the revision it re-prepared is
-            // the one on air: only now does the retained snapshot retire
-            // and canRestore go quiet (task 6.3b).
-            if (fRestoreDoneRevision != 0 && fSceneActive == fRestoreDoneRevision) {
-                fRestoreDoneRevision = 0;
-                fRestoreJson.clear();
-            }
-            // The live indicators describe the acknowledged active revision
-            // only (task 3.4): words/background flags come from the JSON that
-            // revision was prepared with, so a clear or present lights the
-            // indicator when the output has it, not when it was requested.
-            fSceneContent = sceneContent(fSceneJson.value(fSceneActive));
-            emit sceneChanged();
-        }
+        // The scene block (task 6.19a3): what the store confirmed active,
+        // whether a restore is now on air, and what the live indicators
+        // describe — the model's answers, re-exported as sceneChanged.
+        fPresent->updateFromStatus(payload);
         // The preview block (task 6.19a2): the worker's own counters, and the
         // one place a target the worker stood down on its own is noticed and
         // asked for again. Owned end to end by the consumer.
@@ -629,23 +613,15 @@ bool WorkerController::sceneIsSendable(const boost::json::value& candidate,
     return false;
 }
 
+// --- the scene operations (task 2.4c, 3.3; the model is task 6.19a3) ---------
+//
+// The go and clear chain — parse, budget, prepare, mirror, latest-go, restore
+// — is PresentationModel's: the QML names below are the same operations the RPC
+// exposes, forwarded to the class that owns what they mean. The budget check
+// travels with them (task 6.8a, review R11): the model asks the session whether
+// a scene may go on the wire before any byte of it is written.
 void WorkerController::prepareScene(const QString& sceneJson) {
-    if (!fConnected || !fHandshakeDone) {
-        return;
-    }
-    boost::system::error_code parseError;
-    const boost::json::value parsed =
-        boost::json::parse(sceneJson.toStdString(), parseError);
-    if (parseError || !parsed.is_object()) {
-        setStatus(QStringLiteral("scene.prepare: the scene JSON is not readable"));
-        return;
-    }
-    if (!sceneIsSendable(parsed, "scene.prepare")) {
-        return;
-    }
-    // The scene object itself is the params (the worker validates it too).
-    const std::int64_t id = sendRequest("scene.prepare", parsed.as_object());
-    armPrepare(id, parsed.as_object(), /*autoPresent=*/false);
+    fPresent->prepareScene(sceneJson);
 }
 
 // --- the pictures (task 6.16a, 6.16b; the consumer is task 6.19a2) ---------
@@ -675,255 +651,38 @@ void WorkerController::clearThumbnails() {
 }
 
 void WorkerController::presentScene(qint64 revision) {
-    if (!fConnected || !fHandshakeDone) {
-        return;
-    }
-    // An explicit present re-targets the logical presentation: later
-    // clears derive from what this revision was prepared with (task 6.3b).
-    fDesiredSceneJson = fSceneJson.value(revision);
-    sendRequest("scene.present",
-                boost::json::object{{"revision", static_cast<std::uint64_t>(revision)}});
+    fPresent->presentScene(revision);
 }
 
 void WorkerController::presentSceneJson(const QString& sceneJson) {
-    // New content is a fresh go: whatever a clear sequence kept for restore is
-    // history now (the operator moved on). That only becomes true once the new
-    // content is actually on its way (task 6.8a): a scene this client refuses
-    // to send leaves the audience exactly where it was, and the snapshot that
-    // could put it back is still worth having.
-    const std::int64_t id = presentSceneInternal(sceneJson);
-    if (id == 0) {
-        return;
-    }
-    fRestoreJson.clear();
-    fRestoreArmedGo = 0;
-    fRestoreDoneRevision = 0;
+    fPresent->presentSceneJson(sceneJson);
 }
 
 void WorkerController::adoptAssetPaths(const QVariantMap& pathMap) {
-    if (pathMap.isEmpty()) {
-        return;
-    }
-    // One payload's rewrite: the new JSON when background.assetPath named a
-    // path this save moved, empty for anything else — an unreadable payload
-    // or one that does not name the file is left exactly as it was, because
-    // there is nothing here that was made stale by the move.
-    const auto rewrite = [&pathMap](const QString& sceneJson) {
-        if (sceneJson.isEmpty()) {
-            return QString();
-        }
-        boost::system::error_code parseError;
-        boost::json::value parsed = boost::json::parse(sceneJson.toStdString(), parseError);
-        if (parseError || !parsed.is_object()) {
-            return QString();
-        }
-        const auto background = parsed.as_object().find("background");
-        if (background == parsed.as_object().end() || !background->value().is_object()) {
-            return QString();
-        }
-        const auto path = background->value().as_object().find("assetPath");
-        if (path == background->value().as_object().end() || !path->value().is_string()) {
-            return QString();
-        }
-        const QString oldPath = QString::fromStdString(std::string(path->value().as_string()));
-        if (!pathMap.contains(oldPath)) {
-            return QString();
-        }
-        path->value() = pathMap.value(oldPath).toString().toStdString();
-        return QString::fromStdString(boost::json::serialize(parsed));
-    };
-
-    // The mirror: each retained revision's payload. A later explicit
-    // presentScene(revision) must not put a deleted path back on air.
-    for (auto entry = fSceneJson.begin(); entry != fSceneJson.end(); ++entry) {
-        const QString adopted = rewrite(entry.value());
-        if (!adopted.isEmpty()) {
-            entry.value() = adopted;
-        }
-    }
-    // A prepare whose ack has not landed yet: the worker has the old payload
-    // (it decoded it at prepare time, and the on-air path stays pinned), but
-    // when the ack arrives the mirror must record what the session now
-    // believes owns those bytes. The transport holds the request; the payload
-    // the session attached to it is what gets rewritten.
-    fRpc.eachPending([&rewrite](RpcRequest& request) {
-        const auto ask = request.intentAs<ScenePrepareAsk>();
-        if (!ask || ask->prepareJson.isEmpty()) {
-            return;
-        }
-        const QString adopted = rewrite(ask->prepareJson);
-        if (!adopted.isEmpty()) {
-            ask->prepareJson = adopted;
-        }
-    });
-    // The restore snapshot re-prepares through presentSceneInternal when the
-    // operator clicks it, so rewriting it here is enough: it names the new
-    // file at the moment it is used.
-    const QString adoptedRestore = rewrite(fRestoreJson);
-    if (!adoptedRestore.isEmpty()) {
-        fRestoreJson = adoptedRestore;
-    }
-    const QString adoptedDesired = rewrite(fDesiredSceneJson);
-    if (adoptedDesired.isEmpty()) {
-        return;  // nothing the output is owed named a moved file
-    }
-    fDesiredSceneJson = adoptedDesired;
-    // Stage the corrected payload for the next go (a clear deriving from it,
-    // an explicit present). Prepare only: presenting would restart a fade.
-    prepareScene(fDesiredSceneJson);
+    fPresent->adoptAssetPaths(pathMap);
 }
 
-std::int64_t WorkerController::presentSceneInternal(const QString& sceneJson) {
-    if (!fConnected || !fHandshakeDone) {
-        return 0;
-    }
-    boost::system::error_code parseError;
-    const boost::json::value parsed =
-        boost::json::parse(sceneJson.toStdString(), parseError);
-    if (parseError || !parsed.is_object()) {
-        setStatus(QStringLiteral("scene.present: the scene JSON is not readable"));
-        return 0;
-    }
-    if (!sceneIsSendable(parsed, "scene.present")) {
-        return 0;
-    }
-    // Same hand-off as presentDemoSlide: present on the prepare ack, so
-    // the audience switch lands as soon as the store names the revision.
-    const std::int64_t id = sendRequest("scene.prepare", parsed.as_object());
-    armPrepare(id, parsed.as_object(), /*autoPresent=*/true);
-    return id;
-}
-
-// --- output controls (task 3.4, hardened by task 6.3b) --------------------
-//
-// Each clear presents a scene derived from the PENDING logical
-// presentation — the newest go's payload, not merely the last confirmed
-// status — so two clears clicked back to back compose: the second removes
-// its layer from what the first already staged instead of resurrecting it
-// from a stale snapshot. The layer promises hold: clears are independent,
-// the untouched layer rides through unchanged, and the latest-go rule
-// (task 6.3a) means the audience only ever moves to the composed result.
-// The scene the first clear of a sequence cut from is retained as content,
-// so a restore survives the worker pruning its store; the retained intent
-// lives until the restore is confirmed on air, and a failed restore leaves
-// it in place so the retry stays available.
-
-QString WorkerController::clearSourceScene() const {
-    if (!fDesiredSceneJson.isEmpty()) {
-        return fDesiredSceneJson;
-    }
-    return fSceneJson.value(fSceneActive);
-}
-
+// The output controls and the demo go forward to the model: the pending
+// logical presentation they derive from, the retained restore snapshot, and
+// the latest-go rule that decides which acknowledgement moves the audience
+// are all PresentationModel's now (task 6.19a3).
 void WorkerController::clearSlide() {
-    const QString source = clearSourceScene();
-    if (source.isEmpty()) {
-        return;  // nothing on air with a known payload: nothing to clear
-    }
-    const QString cleared = withWordsCleared(source);
-    if (cleared.isEmpty() || cleared == source) {
-        return;  // nothing to clear, or already gone: coalesce to a no-op
-    }
-    if (fRestoreJson.isEmpty()) {
-        fRestoreJson = source;
-    }
-    presentSceneInternal(cleared);
+    fPresent->clearSlide();
 }
 
 void WorkerController::clearBackground() {
-    const QString source = clearSourceScene();
-    if (source.isEmpty()) {
-        return;
-    }
-    const QString cleared = withBackgroundCleared(source);
-    if (cleared.isEmpty() || cleared == source) {
-        return;  // already gone: coalesce to a no-op
-    }
-    if (fRestoreJson.isEmpty()) {
-        fRestoreJson = source;
-    }
-    presentSceneInternal(cleared);
+    fPresent->clearBackground();
 }
 
 void WorkerController::clearAll() {
-    const QString source = clearSourceScene();
-    if (source.isEmpty()) {
-        return;
-    }
-    const QString cleared = clearedSceneJson();
-    if (cleared.isEmpty() || cleared == source) {
-        return;
-    }
-    if (fRestoreJson.isEmpty()) {
-        fRestoreJson = source;
-    }
-    presentSceneInternal(cleared);
+    fPresent->clearAll();
 }
 
 void WorkerController::restoreOutput() {
-    if (fRestoreJson.isEmpty() || fRestoreArmedGo != 0) {
-        return;  // nothing retained, or a restore is already in flight
-    }
-    // Restore re-prepares the RETAINED content rather than presenting the
-    // pre-clear revision: the worker may have pruned its store since the
-    // clear, and the audience is owed the scene the clear cut from
-    // regardless (task 6.3b). Until a status poll confirms the restored
-    // revision on air the snapshot stays, so canRestore never goes quiet
-    // on a restore the output has not taken — and an error reply leaves it
-    // here, keeping the retry available.
-    const std::int64_t id = presentSceneInternal(fRestoreJson);
-    if (id != 0) {
-        fRestoreArmedGo = id;
-    }
-}
-
-void WorkerController::armPrepare(std::int64_t requestId, const boost::json::object& scene,
-                                  bool autoPresent) {
-    // The prepare's payload is recorded on the request itself, not on a side
-    // table keyed by id: when the ack lands it brings this record with it, so a
-    // mirror entry can only ever be written from the payload THAT prepare sent
-    // (task 6.3a). A refused send has no entry, so it arms nothing.
-    RpcRequest* entry = fRpc.pending(requestId);
-    if (!entry) {
-        return;  // sendRequest always records the entry; belt and braces
-    }
-    auto ask = entry->intentAs<ScenePrepareAsk>();
-    if (!ask) {
-        ask = std::make_shared<ScenePrepareAsk>();
-        entry->intent = ask;
-    }
-    ask->prepareJson = QString::fromStdString(boost::json::serialize(scene));
-    ask->autoPresent = autoPresent;
-    if (autoPresent) {
-        // This go supersedes any older one still awaiting its ack; only
-        // the newest go's acknowledgement moves the audience. Its payload
-        // is the pending logical presentation the clears compose against
-        // (task 6.3b).
-        fDesiredSceneJson = ask->prepareJson;
-        fLatestGoId = requestId;
-    }
-}
-
-void WorkerController::resetSceneTracking() {
-    fSceneJson.clear();
-    fMirrorMax = 0;
-    fSceneContent = SceneContent{};
-    fRestoreJson.clear();
-    fRestoreArmedGo = 0;
-    fRestoreDoneRevision = 0;
-    fDesiredSceneJson.clear();
-    fLatestGoId = 0;
-    // In-flight intents die with the connection; a reply can no longer
-    // arrive for them, and none must survive to act on a later one. The
-    // transport holds the requests, so this is where they are given up on.
-    fRpc.clearPending();
-    emit sceneChanged();
+    fPresent->restoreOutput();
 }
 
 void WorkerController::presentDemoSlide(qint64 index) {
-    if (!fConnected || !fHandshakeDone) {
-        return;
-    }
     openshow::scene::Scene scene;
     std::string error;
     if (!openshow::scene::compileDemoSlide(fDemoDocuments,
@@ -934,13 +693,7 @@ void WorkerController::presentDemoSlide(qint64 index) {
         return;
     }
     boost::json::value jsonScene = openshow::scene::toJson(scene);
-    // Present on the prepare acknowledgement: the revision is the
-    // worker's to hand out, and the store only names it once stored.
-    fRestoreJson.clear();  // a fresh go retires any clear's restore point
-    fRestoreArmedGo = 0;
-    fRestoreDoneRevision = 0;
-    const std::int64_t id = sendRequest("scene.prepare", jsonScene.as_object());
-    armPrepare(id, jsonScene.as_object(), /*autoPresent=*/true);
+    fPresent->presentCompiledScene(jsonScene.as_object());
 }
 
 qint64 WorkerController::demoSlideCount() const {

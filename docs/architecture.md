@@ -16,6 +16,7 @@ flowchart LR
     DC --> AS[AutosaveScheduler]
     DC --> SC[Scene compiler]
     SC --> WC[WorkerController]
+    WC --> PM[PresentationModel]
     WC --> PC[PreviewConsumer]
     WC <-->|JSON-RPC control and scene metadata| RPC[Worker RpcServer]
     RPC --> OS[OutputSession]
@@ -35,18 +36,21 @@ graduated into `PreviewProducer` (task 6.18a2) and the background media into
 `BackgroundTransport` (task 6.18b1), both beside `SceneStore`, task 6.18b2 moved
 the bench/diagnostic drivers into their own `openshow-worker-dev` executable,
 task 6.19a1 moved the frontend's transport into `RpcClient`: the socket, the
-framing, the reply ledger, the send bounds and the write-stall deadline, and task
+framing, the reply ledger, the send bounds and the write-stall deadline, task
 6.19a2 moved the frontend's pictures into `PreviewConsumer`: the shm mapping and
-the mirror, off-air and thumbnail frames copied out of it. What still shares
-`WorkerController` is the supervisor and the acknowledged output model; their
-extraction is pending (6.19a3–a4).
+the mirror, off-air and thumbnail frames copied out of it, and task 6.19a3 moved
+the acknowledged output model into `PresentationModel`: the revision mirror, the
+latest-go rule, the clear derivation and the restore snapshot. What shares
+`WorkerController` now is the process supervisor and its QML facade — the
+division the plan intends — leaving only the worker's connection loop versus its
+method and status codecs (6.19a4).
 
 | Boundary | Implementation and evidence | Assessment |
 |---|---|---|
 | Editable documents and history | `src/domain/{documents,history,storage}.cpp`; Qt adapters in `src/ui/DocumentController.cpp`; `domain_tests`, `document_controller_tests` | Matches. The frontend owns editable state and package writes; history has one observed Documents and bounded snapshots. |
 | Immutable render scenes | `src/scene/{scene,demo}.cpp`, `scene_tests` | Matches. Compilation resolves styles, geometry, item order and asset paths; the worker validates scene JSON. The scene library currently depends on domain types/compiler code, but neither uses Qt or GPU APIs. |
 | Process separation | `src/worker/CMakeLists.txt`, `worker_is_qt_free`, headless preset | Matches. GLFW/Vulkan/Skia/FFmpeg/PipeWire stay in the worker. Qt Quick, process supervision and document adapters stay in the frontend. |
-| RPC | `src/protocol`, `src/worker/rpc/{RpcServer.cpp,OutboundQueue.h}`, `src/ui/{RpcClient,WorkerController,PreviewConsumer}.cpp`; protocol/limits/transport/controller tests; prepare-time file work in `session/PrepareExecutor.{h,cpp}` | Matches the bounded metadata transport. Since **6.19a1** the frontend half has its own class: `RpcClient` owns the socket, the framing, the ledger of requests the worker owes, the size/backlog/in-flight refusals and the 2 s no-byte deadline, and interprets no result — a reply returns with its request's method name, connection generation and the caller's intent record, which is R3's rule kept in one place (`WorkerController::onRpcReply` decides meaning). Worker socket writes are nonblocking; since 6.9a dispatch schedules still decodes and media probes onto the bounded prepare executor and answers each request from its completion (self-piped wake, ids correlate), so a cold file delays no other command. |
+| RPC | `src/protocol`, `src/worker/rpc/{RpcServer.cpp,OutboundQueue.h}`, `src/ui/{RpcClient,WorkerController,PreviewConsumer,PresentationModel}.cpp`; protocol/limits/transport/controller tests; prepare-time file work in `session/PrepareExecutor.{h,cpp}` | Matches the bounded metadata transport. Since **6.19a1** the frontend half has its own class: `RpcClient` owns the socket, the framing, the ledger of requests the worker owes, the size/backlog/in-flight refusals and the 2 s no-byte deadline, and interprets no result — a reply returns with its request's method name, connection generation and the caller's intent record, which is R3's rule kept in one place (`WorkerController::onRpcReply` decides meaning). Since **6.19a3** the scene operations the facade sends are decided by `PresentationModel`, which holds no transport of its own and reaches the ledger only through the injected callbacks. Worker socket writes are nonblocking; since 6.9a dispatch schedules still decodes and media probes onto the bounded prepare executor and answers each request from its completion (self-piped wake, ids correlate), so a cold file delays no other command. |
 | Media transport | `src/worker/session/BackgroundTransport.{h,cpp}` over `playback/{PlaybackPipeline,AvPlayer}`; `background_transport_tests` plus the live `background_media_tests` | Matches since **6.18b1** (2026-10-29). The transport owns the background pipeline and its feeder, the standalone track and its swap, the video seam's two bounded slots and their leases, the newest-wins intent slots, the typed faults and the media status mirror; R6's quiesce boundary and the render-thread-owns-the-transport rule are stated in its header. Since **6.9b** (2026-10-30) it also owns the one primed background: `primeVideo` opens a prepared clip's file half on the prepare executor and parks it as the single prime, the render thread attaches that prime's GPU half at the frame boundary (or opens cold), and a superseded prime is closed on the thread that made it. The session keeps the loop's wake gate and the frame's present/lease calls, delegates the RPC verbs, and reads the mirror in `status()`. |
 
 | Requested versus presented state | `src/worker/session/SceneStore.{h,cpp}`, `scene_store_tests`, `output_status_tests` | Matches. Decide captures commands together; landed state is distinct from published state. OutputSession reports the store's published state after successful presentation. |
@@ -69,7 +73,7 @@ proves and must be closed or explicitly accepted before M6/M7 acceptance.
 | Preview rendering/readback runs on the render thread after output; its budget defers future attempts after an overrun (now inside `PreviewProducer::fillPreviewSlot`). | It bounds average preview work and drops owned slots, but cannot prevent one expensive readback delaying the next audience frame. | Extraction done (**6.18a2**, 2026-10-29) without changing the policy. **6.9b** (2026-10-30) measured the loop THROUGH a slow off-loop open instead of assuming it: the audience's presented frames advanced with a 50 ms worst gap while a scripted 700 ms open ran on the executor. **7.2/7.4** still owe one readback's worst-frame impact. |
 | SceneImageCache retains pinned resources even above its 192 MiB eviction budget. | The budget bounds evictable decoded data, not total process/GPU memory; pinned excess is reported. | **7.2/7.4** resource accounting and service soak. Do not describe it as a hard total-memory cap. |
 | Missing foreground image errors are logged in `preloadScene()`; the acknowledged media error lane remains background/transport focused. | A missing foreground box can disappear without an operator-facing per-item error. | **6.20** failure-reporting closure (R18); keep a focused task if further implementation is needed. |
-| The 6.18a2 extraction landed 2026-10-29: `PreviewProducer` is built (`openshow-worker-preview-producer`), used by OutputSession through a thin delegating seam, and pinned headless by `preview_producer_tests`. The 6.18b1 extraction landed the same day: `BackgroundTransport` (`openshow-worker-session-transport`) owns the background media and its status mirror. The 6.18b2 split landed the same day: the bench/diagnostic drivers and `render/TestScene.cpp` moved out of worker main into the `openshow-worker-dev` executable, leaving the product binary socket-mode only. The 6.19a1 extraction landed 2026-10-30: `RpcClient` (`src/ui/RpcClient.{h,cpp}`, in `openshow-ui-core`) owns the frontend socket, framing, reply ledger, send bounds and write-stall deadline, driven by an unchanged `worker_controller_tests`. The 6.19a2 extraction landed the same day: `PreviewConsumer` (`src/ui/PreviewConsumer.{h,cpp}`, same target) owns the frontend's shm mapping and the mirror/off-air/thumbnail frames, asking through injected callbacks and reading only its own replies, with `scene.prepare`'s intent shared through `src/ui/SceneAsk.h`. What remains combined is the acknowledged output model with the supervisor, and the worker's connection versus method/status codecs. | The remaining planned responsibility boundaries are unfinished. | **6.19a3–a4/6.19b**. |
+| The 6.18a2 extraction landed 2026-10-29: `PreviewProducer` is built (`openshow-worker-preview-producer`), used by OutputSession through a thin delegating seam, and pinned headless by `preview_producer_tests`. The 6.18b1 extraction landed the same day: `BackgroundTransport` (`openshow-worker-session-transport`) owns the background media and its status mirror. The 6.18b2 split landed the same day: the bench/diagnostic drivers and `render/TestScene.cpp` moved out of worker main into the `openshow-worker-dev` executable, leaving the product binary socket-mode only. The 6.19a1 extraction landed 2026-10-30: `RpcClient` (`src/ui/RpcClient.{h,cpp}`, in `openshow-ui-core`) owns the frontend socket, framing, reply ledger, send bounds and write-stall deadline, driven by an unchanged `worker_controller_tests`. The 6.19a2 extraction landed the same day: `PreviewConsumer` (`src/ui/PreviewConsumer.{h,cpp}`, same target) owns the frontend's shm mapping and the mirror/off-air/thumbnail frames, asking through injected callbacks and reading only its own replies, with `scene.prepare`'s intent shared through `src/ui/SceneAsk.h`. The 6.19a3 extraction landed the same day: `PresentationModel` (`src/ui/PresentationModel.{h,cpp}`, same target) owns the frontend's acknowledged output model — the revision mirror, the latest-go rule, the pending logical presentation the clears compose against, the restore snapshot and the asset-path adoption — with the facade's six scene properties and its go/clear/restore/adopt invokables forwarding unchanged. What remains combined is the worker's connection versus method/status codecs; `WorkerController` keeps the supervisor and the QML facade, which is the planned division. | The remaining planned responsibility boundaries are unfinished. | **6.19a4/6.19b**. |
 | Stable display identity, destination-removal disabling and complete restart/device recovery are not complete. | Historical display tests and successful launch/shutdown do not establish M7 failure recovery. | **7.1a–c**, physical Wayland/X11 and projector acceptance. |
 
 ## Contracts to retain during optimization
@@ -109,6 +113,18 @@ proves and must be closed or explicitly accepted before M6/M7 acceptance.
   sends through the transport its host injects and applies the same scene budget
   a present passes, so authoring-side refusal stays one rule (R11), and it
   interprets no reply except the acks its own asks expect (R5).
+- Since **6.19a3** the acknowledged output model is `PresentationModel`, and the
+  truth it holds is the one R3 and R5 were about: a QML scene property reads a
+  single owner, so an indicator cannot light from a request that was refused and
+  a clear cannot compose against a payload the operator has already replaced.
+  The revision mirror records only payloads this session sent, the newest go is
+  tracked separately from the store's counters so a late ack for a superseded
+  go cannot move the audience backwards, and a restore keeps its
+  content until a status answer confirms the restored revision is actually on
+  air. It sends nothing itself — its host injects the live gate, the request
+  sender, the prepare-intent handle, the visit over pending prepares and the
+  status line — and it reads only the prepare ack and the `scene` block of
+  `output.status`, never the shape of any other result (R5).
 - Prepare-time file work (task 6.9a) runs on `PrepareExecutor`: one worker
   thread, at most `kMaxQueued` accepted jobs including the running one,
   cooperative cancellation checked between images, completion fired exactly

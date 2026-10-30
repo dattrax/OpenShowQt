@@ -13,6 +13,11 @@ qt_policy(SET QTP0001 NEW)
 # mapping and the three targets drawn into it — so it shares the target for
 # the same reason: its fixtures read the same controller, and the boundary
 # that matters is the one between its files, not between build outputs.
+# PresentationModel (task 6.19a3) is the acknowledged-output half of the same
+# conversation — the revision mirror, the pending logical presentation and the
+# restore point behind the scene properties — and shares the target for the
+# same reason: worker_controller_tests asserts the go/clear/restore promises
+# through the controller either way.
 add_library(openshow-ui-core STATIC
   AppSettings.cpp
   AppSettings.h
@@ -22,6 +27,8 @@ add_library(openshow-ui-core STATIC
   DocumentController.h
   LibrarySearch.cpp
   LibrarySearch.h
+  PresentationModel.cpp
+  PresentationModel.h
   PreviewConsumer.cpp
   PreviewConsumer.h
   RpcClient.cpp

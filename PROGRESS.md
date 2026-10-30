@@ -5,9 +5,10 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.19a2**, the frontend `PreviewConsumer`
-(6.19a1's `RpcClient` at `001588e`, 6.9b's prepared-scene prewarm at `d83469e`,
-SceneStore's one scene truth at `1b54bdb`, and the `PreviewProducer`,
+The committed checkpoint is task **6.19a3**, the frontend `PresentationModel`
+(6.19a2's `PreviewConsumer` at `a4cb9e2`, 6.19a1's `RpcClient` at `001588e`,
+6.9b's prepared-scene prewarm at `d83469e`, SceneStore's one scene truth at
+`1b54bdb`, and the `PreviewProducer`,
 `BackgroundTransport` and dev-binary extractions plus the bounded prepare
 executor in the commits before those). The R10 scheduling pair is now closed:
 prepare-time file work left the RPC dispatch loop on 2026-10-29 (**6.9a**) and a
@@ -54,10 +55,24 @@ shared `SceneAsk.h` record the session and the consumer both name, which is what
 keeps a prepare ack from answering the wrong feature. `WorkerController` keeps
 the process, the handshake, the poll rhythm and the acknowledged output model,
 and re-exports the picture properties unchanged for QML.
-**Next implementation task: 6.19a3** — the acknowledged output model
-(scene-revision mirror, latest-go rule, clear derivation and the restore
-snapshot), then **6.19a4** (the worker's connection loop versus its method and
-status codecs) and **6.19b**. This handoff does not mark 6.20 complete.
+
+**Task 6.19a3 is committed.** The acknowledged output model has left
+`WorkerController`: `src/ui/PresentationModel.{h,cpp}` owns the revision mirror
+(the payload each prepare stored, bounded to the same 32-revision window the
+worker prunes to), the latest-go rule that lets only the newest go's
+acknowledgement move the audience, the pending logical presentation the clears
+compose against, the restore snapshot with its confirmed-on-air retirement, and
+the asset-path adoption that rewrites every payload the model holds plus every
+prepare still awaiting its ack. It sends through injected callbacks — the live
+gate, the same 6.8a scene-budget predicate the preview asks already pass, the
+request sender, the prepare intent attached after the send (R3's one-record
+rule), the visit over in-flight prepares and the status line — and interprets
+nothing but the prepare ack, the `scene` block of `output.status` and a
+refusal's in-flight marker. `WorkerController`'s six scene properties, its go,
+clear, restore and adopt invokables forward; the QML surface is byte-identical.
+**Next implementation task: 6.19a4** — the worker's connection loop versus its
+method and status codecs, then **6.19b**. This handoff does not mark 6.20
+complete.
 
 ## Completed capabilities
 
@@ -97,9 +112,10 @@ audience composition match the intended design. Important open differences:
 - **6.19b/6.20:** background autosave is asynchronous; explicit save/load and
   decision/quit drains remain synchronous. Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19a2–a4/b:** the remaining ownership extractions are unfinished
-  (6.18a2's `PreviewProducer` and 6.18b1's `BackgroundTransport` landed
-  2026-10-29; 6.19a1's `RpcClient` landed 2026-10-30, uncommitted).
+- **6.18b, 6.19a3–a4/b:** the remaining ownership extractions are unfinished
+  (6.18a2's `PreviewProducer`, 6.18b1's `BackgroundTransport` and 6.19a2's
+  `PreviewConsumer` landed; 6.19a1's `RpcClient` and 6.19a3's
+  `PresentationModel` landed 2026-10-30).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
   physical-display acceptance remain open. Pinned cache excess is reported,
   not a hard bound on total process memory.
@@ -138,10 +154,40 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19a2**. Tasks **6.19a1** (`001588e`),
+The working tree carries task **6.19a3**. Tasks **6.19a2** (`a4cb9e2`),
+**6.19a1** (`001588e`),
 **6.18a2**, **6.18b1**, **6.18b2** and **6.9a** are committed at
 `0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
 in their commit messages:
+
+- `src/ui/PresentationModel.{h,cpp}` (6.19a3) — the acknowledged output model's
+  new owner, inside `openshow-ui-core`: the mirror of every prepare payload the
+  session sent, keyed by the revision the store handed out and pruned to a
+  32-revision window; the latest-go rule (`fLatestGoId`: a prepare ack presents
+  only while its request is still the newest go, so a slow ack cannot regress
+  the audience); the pending logical presentation (`fDesiredSceneJson`) that
+  successive clears compose against instead of a stale confirmed status; the
+  restore trio (`fRestoreJson` retained as CONTENT so store pruning cannot
+  retire it, `fRestoreArmedGo` for the in-flight restore, `fRestoreDoneRevision`
+  that must reach active before the snapshot retires); the `sceneContent`
+  indicators derived from the ACTIVE revision's payload; and `adoptAssetPaths`,
+  rewriting the mirror, the in-flight prepare intents (through the host's
+  `eachPending` visit), the snapshot and the owed scene, re-preparing — never
+  re-presenting — what the output is owed. Its `Outbound` bag is five callbacks
+  the `WorkerController` injects: the live gate, the same `sceneIsSendable`
+  budget a present and a selection pass (R11 keeps one owner), the request
+  sender, `prepareHandle` (the `ScenePrepareAsk` created on the request itself
+  after the send — 6.3a's one-record rule, `RpcRequest` stays out of the model),
+  the visit over pending prepares, and the status line. It interprets only the
+  `scene.prepare` ack, the `scene` block of `output.status` and a refused
+  request's restore marker; `changed()` is forwarded as `sceneChanged`, so the
+  six scene properties and every go/clear/restore/adopt invokable forward with a
+  byte-identical QML surface. `WorkerController.cpp` lost 247 lines and its
+  header 34; `fSceneJson`/`fMirrorMax`/`fSceneActive`/`fScenePending`/
+  `fScenePrepared`/`fSceneContent`/`fRestoreJson`/`fRestoreArmedGo`/
+  `fRestoreDoneRevision`/`fDesiredSceneJson`/`fLatestGoId` are no longer its
+  members, and the three worker-reported revisions survive a lost connection
+  exactly as they did before — re-confirmed by the next status poll.
 
 - `src/ui/PreviewConsumer.{h,cpp}` + `src/ui/SceneAsk.h` (6.19a2) — the
   frontend's pictures' new owner, inside `openshow-ui-core`: the read-only
@@ -329,6 +375,30 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.19a3:
+
+- `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS, no
+  warnings in either tree (the headless preset builds no UI, so the new
+  component is compiled and exercised by the desktop preset alone).
+- `ctest --preset desktop`: **53/53 PASS**, 244.0 s, all 12 display-labelled
+  tests (133.8 sec*proc of them). `worker_controller_tests` (46.9 s) is again
+  the acceptance, and again it was not touched: its go/clear/restore scenarios
+  drive the real `WorkerController`, which now delegates every one of them —
+  the prepare-burst mirror that cannot misattribute a payload, the latest-go
+  rule against a slow older ack, the refused go that presents nothing, the
+  composed successive clears, the restore that survives store pruning and the
+  canRestore that goes quiet only on the confirming poll, and the asset-path
+  adoption across mirror, in-flight prepare and owed scene. The live
+  `document_present_tests` (0.9 s) and `preview_selection_tests` (15.4 s) pass
+  against an unchanged worker — the selection ask still rides a `scene.prepare`
+  whose intent the model now arms. `ui_loads` (8.0 s) proves the QML surface —
+  all six scene properties and every go/clear/restore/adopt invokable — is
+  unchanged.
+- `ctest --preset headless`: **32/32 PASS**, 51.5 s.
+- No new test was added and no assertion was edited, and no protocol message
+  changed: the worker cannot tell which of the frontend's classes assembled a
+  prepare or armed its intent.
+
 Verification after 6.19a2:
 
 - `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS, no
@@ -354,7 +424,6 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19a3**, the acknowledged output model out of `WorkerController`; then
-**6.19a4** (the worker's connection loop versus its method/status codecs),
+**6.19a4**, the worker's connection loop versus its method and status codecs;
 then **6.19b**, then **6.20**'s recorded architecture differences. Do not claim
 M6 closure until 6.20 resolves those and the remaining gates pass.
