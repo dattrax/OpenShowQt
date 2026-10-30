@@ -5,9 +5,9 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.9a** at `0907877` (SceneStore's one scene
+The committed checkpoint is task **6.9b** at `d83469e` (SceneStore's one scene
 truth at `1b54bdb`, the `PreviewProducer`/`BackgroundTransport`/dev-binary
-extractions and the bounded prepare executor in the commit after them). The R10
+extractions and the bounded prepare executor in the two commits before it). The R10
 scheduling pair is now closed: prepare-time file work left the RPC dispatch loop
 on 2026-10-29 (**6.9a**) and a prepared scene's media, text and blur readiness
 left the render loop on 2026-10-30 (**6.9b**). The authoritative task/status
@@ -15,22 +15,33 @@ ledger is
 [PLAN.md](PLAN.md#m6--code-review-remediation-and-architecture).
 Productization, recovery, packaging and full hardware acceptance remain M7.
 
-**Task 6.9b is implemented and commit-ready (uncommitted).** A background
-clip's bring-up is a PRIME: `PlaybackPipeline` split into `openFile` (probe,
-format, decoders — any thread) and `attachGpu` (uploader + ring — render
-thread), `BackgroundTransport::primeVideo` runs a prepared clip's open on the
-prepare executor and parks exactly one prime under its own leaf mutex, and
-`applyBackground` adopts that prime at the frame boundary instead of opening
-the file there (a cold open is still honest when nothing was primed or the
-attach fails). A prepare also prewarms the two caches a draw reads: the
-renderer's text layout — which moved from the shared `SceneTextEngine` to each
-`SceneRenderer`, because the companion borrows the engine and R16's isolation
-means a churning slide list must not evict the audience's layouts — and a blur
-background's backdrop. `status().scene.images` gained the trio
-`drawDecodes`/`drawBackdrops`/`layoutBuilds`: what the frame loop still had to
-build for itself. **Next implementation task: 6.19a/b** (the
-frontend/worker `WorkerController` responsibilities). This handoff does not
-mark 6.20 complete.
+**Task 6.9b is committed** (`d83469e`). A background clip's bring-up is a PRIME:
+`PlaybackPipeline` split into `openFile` (probe, format, decoders — any thread)
+and `attachGpu` (uploader + ring — render thread), `BackgroundTransport::primeVideo`
+runs a prepared clip's open on the prepare executor and parks exactly one prime
+under its own leaf mutex, and `applyBackground` adopts that prime at the frame
+boundary instead of opening the file there (a cold open is still honest when
+nothing was primed or the attach fails). A prepare also prewarms the two caches a
+draw reads: the renderer's text layout — which moved from the shared
+`SceneTextEngine` to each `SceneRenderer`, because the companion borrows the
+engine and R16's isolation means a churning slide list must not evict the
+audience's layouts — and a blur background's backdrop. `status().scene.images`
+gained the trio `drawDecodes`/`drawBackdrops`/`layoutBuilds`: what the frame loop
+still had to build for itself.
+
+**Task 6.19a1 is implemented and commit-ready (uncommitted).** The frontend's
+transport has left `WorkerController`: `src/ui/RpcClient.{h,cpp}` owns the
+`QLocalSocket`, the shared framing, the ledger of requests the worker owes, the
+size/backlog/in-flight refusals and the 2 s no-byte write deadline, and it
+interprets nothing — a reply comes back with the method its request was sent
+under, the connection generation it was written on and the sender's own intent
+record, so R3's correlation rule now lives in exactly one class and a new
+protocol method cannot drift from it. `WorkerController` keeps the process, the
+handshake and poll rhythm, the acknowledged output model and the preview
+pictures, and tells the transport when to stop reaching for the worker.
+**Next implementation task: 6.19a2** (the frontend preview consumer and
+acknowledged output model, then the worker's connection versus method/status
+codecs), then **6.19b**. This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
 
@@ -70,8 +81,9 @@ audience composition match the intended design. Important open differences:
 - **6.19b/6.20:** background autosave is asynchronous; explicit save/load and
   decision/quit drains remain synchronous. Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19a/b:** the remaining ownership extractions are unfinished
-  (6.18a2's `PreviewProducer` landed 2026-10-29, uncommitted).
+- **6.18b, 6.19a2/b:** the remaining ownership extractions are unfinished
+  (6.18a2's `PreviewProducer` and 6.18b1's `BackgroundTransport` landed
+  2026-10-29; 6.19a1's `RpcClient` landed 2026-10-30, uncommitted).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
   physical-display acceptance remain open. Pinned cache excess is reported,
   not a hard bound on total process memory.
@@ -110,10 +122,25 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries tasks **6.18a2**, **6.18b1**, **6.18b2** and **6.9a**,
-all commit-ready (the user controls commits; the proposed 6.9a message is with
-the handoff):
+The working tree carries task **6.19a1**, commit-ready (the user controls
+commits). Tasks **6.18a2**, **6.18b1**, **6.18b2** and **6.9a** are committed at
+`0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
+in their commit messages:
 
+- `src/ui/RpcClient.{h,cpp}` (6.19a1) — the frontend transport's new owner,
+  inside `openshow-ui-core`: the `QLocalSocket` and its XDG_RUNTIME_DIR path,
+  the shared `openshow::protocol` decoder, the connect-retry clock, the ledger
+  of requests the worker owes (id → the method it was sent under, the connection
+  generation it was written on, and the sender's own intent record), the three
+  refusals (a frame over the transport's limit, 4 MiB of unread backlog, 64
+  unanswered requests), and the 2 s deadline that ends a connection whose peer
+  has taken not one byte — with the reason kept alive so the disconnect path and
+  the process-exit path both report it. It reads no result: `WorkerController`
+  answers `replyReceived` by the recorded method, which is R3's rule in one
+  place. `WorkerController` lost ~180 lines and no behaviour, and the
+  `PendingRequest` table it keyed by id is now `Ask`, an object the request
+  carries home — so a decoration made after a send and the reply that finds it
+  are the same record.
 - `src/worker/session/BackgroundTransport.{h,cpp}` — the media's new owner
   (`openshow-worker-session-transport`): background pipeline + audio feeder,
   the standalone track and its swap, the video seam's two bounded slots and
@@ -238,7 +265,28 @@ Verification after 6.9b:
   6.16b isolation test caught the design error the day it was made; the cache
   belongs to each `SceneRenderer`.
 
-Resume by inspecting Git status, then take the next open ledger line: the
-frontend/worker `WorkerController` responsibilities (**6.19a/b** area), then
-**6.20**'s recorded architecture differences. Do not claim M6 closure until
-6.20 resolves those and the remaining gates pass.
+Verification after 6.19a1:
+
+- `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS, no
+  warnings in either tree.
+- `ctest --preset desktop`: **53/53 PASS**, 244.9 s, all 12 display-labelled
+  tests. `worker_controller_tests` (47.1 s) is the acceptance for this
+  extraction and was not touched: its scripted peer re-execs the test binary as
+  the worker, and the fixtures that pin R3/R5/R11 still drive the real
+  `WorkerController` through the new seam — S1's burst of three prepares the peer
+  holds still mirrors each request's own payload and moves the audience only for
+  the newest go, `never-answer` still trips the 64-request refusal ("requests
+  are already waiting for the worker to reply"), `stop-reading` still trips the
+  backlog refusal and then the 2 s "has not read a byte" abort carrying the depth
+  the abort discarded, and the resuming peer still keeps its session.
+  `ui_loads`/`document_present` prove the QML surface is unchanged.
+- `ctest --preset headless`: **32/32 PASS**, 51.7 s (the preset builds no UI, so
+  this gate only confirms the shared protocol library the transport uses).
+- No new test was added and no assertion was edited: an extraction that changes
+  behaviour is a failed gate, not a new expectation.
+
+Resume by inspecting Git status, then take the next open ledger line:
+**6.19a2** (the frontend `PreviewConsumer` and the acknowledged output model out
+of `WorkerController`, then the worker's connection loop versus its method/status
+codecs), then **6.19b**, then **6.20**'s recorded architecture differences. Do
+not claim M6 closure until 6.20 resolves those and the remaining gates pass.

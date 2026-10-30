@@ -1,11 +1,15 @@
 /*
- * WorkerController: the frontend side of task 1.2 supervision.
+ * WorkerController: the frontend's session half of the worker conversation —
+ * the QML facade that owns the process (task 1.2 supervision), the acknowledged
+ * output model behind the status properties, and the preview consumer that
+ * paints what the audience and the editor are shown.
  *
- * Spawns openshow-worker --socket PATH, connects with QLocalSocket, runs
- * the JSON-RPC handshake through the shared openshow::protocol framing,
- * and keeps the QML status properties updated with output.status polls.
- * The same session operations the UI calls are what the RPC exposes:
- * layer toggles now, scenes later.
+ * It spawns openshow-worker --socket PATH and runs the JSON-RPC handshake
+ * through RpcClient, which owns the socket, the framing and the rule that a
+ * reply belongs to the request its id names. This class decides what an answer
+ * MEANS: which revision is on air, which clear a control derives from, which
+ * picture the canvas is owed. The same session operations the UI calls are what
+ * the RPC exposes: layer toggles now, scenes later.
  *
  * Lifecycle per PLAN.md: the worker lives only while connected. Closing
  * the UI sends "shutdown"; a worker that dies or hangs anyway is
@@ -18,18 +22,20 @@
 
 #include <QHash>
 #include <QImage>
-#include <QLocalSocket>
 #include <QProcess>
 #include <QTimer>
 #include <QVariantMap>
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
+#include <string>
 
 #include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
 #include "openshow/scene/demo.h"
 
+#include "RpcClient.h"
 #include "SceneEdit.h"
 
 namespace openshow::ui {
@@ -301,21 +307,28 @@ signals:
     void mediaChanged();
 
 private slots:
-    void tryConnect();
-    void onSocketReady();
-    void onSocketConnected();
-    void onSocketDisconnected();
+    // The transport's events, as the session reads them. What the socket doing
+    // something means here is a policy question (handshake, resets, what to
+    // tell the operator), which is exactly the half RpcClient does not own.
+    void onRpcConnected();
+    void onRpcDisconnected();
+    void onRpcReply(const RpcRequest& request, const boost::json::object& message);
+    // A message that names a method is the worker originating, not answering:
+    // the media failure that needs the operator now, and the preview frame that
+    // says the segment the render thread made is ready to read.
+    void handleNotification(const boost::json::object& message);
     void onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus);
     void pollStatus();
 
 private:
-    // Reply correlation (task 6.3a, review R3): every request is recorded
-    // with the connection generation it was written on, and every reply
-    // belongs to the request its id names — never to "whatever result
-    // shape arrived". A prepare carries its own payload and, when it began
-    // as a go, the intent to present the revision the worker hands back.
-    struct PendingRequest {
-        std::string method;
+    // What the sender of a request needed its reply to remember (task 6.3a,
+    // review R3). RpcClient owns the record this lives in — so the answer can
+    // only reach the request that asked — but never looks inside it. A prepare
+    // carries its own payload and, when it began as a go, the intent to present
+    // the revision the worker hands back; an off-air or slide-list ask carries
+    // the generation it sent, which is the only order in which a stale replay
+    // cannot resurrect work the operator has left.
+    struct Ask {
         QString prepareJson;       // scene.prepare: the payload to mirror
         bool autoPresent = false;  // present the acked revision (a "go")
         // Set on a prepare issued for the editor's off-air target (task
@@ -328,25 +341,18 @@ private:
         // an older ack arriving late would otherwise map a frame of a
         // superseded band onto a row that is on screen.
         std::uint32_t thumbnailRequest = 0;
-        std::uint64_t connection = 0;
     };
 
-    std::int64_t sendRequest(const char* method, boost::json::object params);
+    // Both forwards to the transport, kept so the session speaks the protocol in
+    // the same terms everywhere: a request owes an answer and gets an id, a
+    // notification owes nothing. A refused send is 0 (or simply absent) with the
+    // reason already in the status line, which is RpcClient's answer, not a
+    // failure of the call site. The optional intent is what the sender wants its
+    // reply to find (see Ask); a request that was refused carries nothing,
+    // because it never became one.
+    std::int64_t sendRequest(const char* method, boost::json::object params,
+                             std::shared_ptr<void> intent = nullptr);
     void sendNotification(const char* method, boost::json::object params);
-    // Arms the stalled-write deadline when the socket's backlog is over budget
-    // (task 6.8b, review R11). When the window closes, a backlog that has shrunk
-    // at all means the worker is slow and stays connected; one that has not lost
-    // a single byte means it is gone, and the connection is closed rather than
-    // buffered indefinitely.
-    void watchWriteBacklog();
-    void onWriteStallExpired();
-    // The sentence both the disconnect path and the process-exit path use for a
-    // worker this side gave up on, so the reason survives whichever of the two
-    // arrives last.
-    QString writeStallMessage() const;
-    void drainMessages();
-    void handleReply(const boost::json::object& message);
-    void handleNotification(const boost::json::object& message);
     void openPreviewSegment(const std::string& name, std::uint64_t bytesPerSlot);
     void closePreviewSegment();
     void setStatus(const QString& text);
@@ -373,36 +379,20 @@ private:
     void resetSceneTracking();
 
     QProcess fProcess;
-    QLocalSocket fSocket;
-    openshow::protocol::Decoder fDecoder;
-    QString fSocketPath;
-    QTimer fConnectRetry;
-    int fConnectAttempts = 0;
-    // Armed by a refusal to queue more and then read on a short tick: what ends
-    // the connection is the worker taking no byte for kWriteStallMs, not the
-    // depth of the queue. fWriteStalled carries the reason into the disconnect
-    // message, and fWriteStalledBytes is the backlog as it stood when the deadline
-    // fired — abort() discards the buffer the number came from.
-    QTimer fWriteStallDeadline;
-    bool fWriteStalled = false;
-    qint64 fWriteStalledBytes = 0;
-    // When the worker last took a byte, as Qt reports it flushing the backlog.
-    // The deadline is measured from this and not from the depth of the queue: a
-    // worker that is slow keeps its session, one that has taken nothing for the
-    // whole window does not (task 6.8b, review R11).
-    std::chrono::steady_clock::time_point fLastByteOutAt{};
-
-    std::int64_t fNextId = 1;
+    // The transport (task 6.19a1): the socket, the shared framing, the ledger of
+    // requests the worker owes, the bounds on what this side will put on the
+    // wire, and the deadline for a peer that has stopped reading. This class
+    // tells it when to reach for the worker and what a reply means; it does not
+    // own any of that machinery.
+    RpcClient fRpc;
     // The output.status request currently awaiting its answer, 0 for none. The
     // poll is a refresh, so while one is outstanding the next tick asks for
     // something already on its way (task 6.8b).
     std::int64_t fStatusRequestId = 0;
-    // Bumped on every successful connect. Replies are only honoured for
-    // requests of the current connection; the decoder is reset with it,
-    // so bytes of a dead stream can never answer a new one.
-    std::uint64_t fConnectionGeneration = 0;
-    QHash<std::int64_t, PendingRequest> fPendingRequests;
     bool fHandshakeDone = false;
+    // The SESSION's view of the link, not the socket's: it also goes false when
+    // the process is gone, which is a fact the transport is not told about. The
+    // QML `connected` property reads this.
     bool fConnected = false;
     bool fOutputStopped = false;
     bool fShutdownRequested = false;

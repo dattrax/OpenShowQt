@@ -3,17 +3,14 @@
  *
  * - The worker path comes from the build ($<TARGET_FILE>); packaging can
  *   point it next to the UI later (task 6.3).
- * - The socket lives under XDG_RUNTIME_DIR with the UI pid, so two UIs
- *   never collide and bind has a fresh path (the worker also unlinks a
- *   stale one).
- * - QLocalSocket with a path containing '/' connects to exactly the file
- *   the worker bound, using the same framing both sides share.
+ * - The socket, the framing and the reply ledger are RpcClient's (task 6.19a1).
+ *   What is left here is the session: the process, the handshake and poll
+ *   rhythm, the acknowledged output model, and the preview pictures.
  */
 
 #include "WorkerController.h"
 
 #include <QCoreApplication>
-#include <QDir>
 #include <QFile>
 #include <QStringList>
 #include <QTimer>
@@ -33,77 +30,27 @@ namespace proto = openshow::protocol;
 
 namespace {
 
-constexpr int kConnectRetryMs = 100;
 constexpr int kStatusPollMs = 500;
 // Revisions of prepared-scene JSON kept as a mirror for the clear
 // controls (task 3.4). Bounded; the worker prunes its own store too.
 constexpr int kSceneMirrorSize = 32;
 
-// How many requests may be waiting on the worker at once (task 6.8b, review
-// R11). A reply is owed for each of them, so this is a bound on the queue the
-// UI builds on the worker's behalf — and before it there was none: the status
-// poll fired every 500 ms into QLocalSocket whatever the worker was doing, so
-// a worker that stopped answering was followed by an ever-longer list of
-// requests that could never be answered. Sixty-four is far beyond anything the
-// UI issues at once (a go is a prepare plus at most a present), and past it the
-// honest answer is "the worker has not replied to what you already sent", not
-// "here is one more".
-constexpr int kMaxInFlightRequests = 64;
-
-// How much unwritten request traffic the socket may hold. Generous by design,
-// because it only binds when the WORKER has stopped draining: 4 MiB is ten of
-// the largest scenes this build's own budgets allow (the every-budget slide
-// measured in task 6.8a is 408 KiB inside its frame) or thousands of ordinary
-// commands. Beyond it a request is refused with the reason rather than added to
-// a backlog nobody is reading, and if the backlog is still there a deadline
-// later the connection is closed — a worker that has taken no byte in that long
-// is not coming back, and the operator needs to know rather than keep clicking.
-constexpr qint64 kMaxQueuedWriteBytes = 4 * 1024 * 1024;
-// How long the worker may take NO byte at all before the connection is ended,
-// and how often that clock is read while the watch is armed. The window runs
-// from the last byte this side managed to hand over, exactly as the worker's own
-// write deadline does, because the two things that look like a verdict are not:
-// the queue's depth says nothing (a queue that is refusing requests is by
-// construction already at its bound), and bytesToWrite() moves by ~100 KiB on
-// accounting alone with a peer that has read nothing — both measured on this
-// task's fixtures. Whether bytes are actually leaving is the only question that
-// separates a worker that is slow from one that is gone, and slow must never
-// cost a worker its session.
-constexpr int kWriteStallMs = 2000;
-constexpr int kWriteStallTickMs = 250;  // only ticks while a refusal has armed it
-
 }  // namespace
 
-WorkerController::WorkerController(QObject* parent) : QObject(parent) {
-    fSocketPath = QDir(qEnvironmentVariable("XDG_RUNTIME_DIR", QDir::tempPath()))
-                      .filePath(QStringLiteral("openshow-ui-%1.sock")
-                                    .arg(QCoreApplication::applicationPid()));
-
-    connect(&fSocket, &QLocalSocket::connected, this, &WorkerController::onSocketConnected);
-    connect(&fSocket, &QLocalSocket::disconnected, this,
-            &WorkerController::onSocketDisconnected);
-    connect(&fSocket, &QLocalSocket::readyRead, this, &WorkerController::onSocketReady);
-    // The worker binds its socket a moment after we spawn it, so the first
-    // connect attempts fail; retry on a short timer until it answers, the
-    // worker dies, or patience runs out.
-    fConnectRetry.setInterval(kConnectRetryMs);
-    connect(&fConnectRetry, &QTimer::timeout, this, &WorkerController::tryConnect);
-    // Armed by a refusal to queue more (watchWriteBacklog) and then read on a
-    // short tick: what ends the connection is the worker taking no byte for
-    // kWriteStallMs, not how deep the queue happens to be (task 6.8b, review R11).
-    fWriteStallDeadline.setSingleShot(false);
-    fWriteStallDeadline.setInterval(kWriteStallTickMs);
-    connect(&fWriteStallDeadline, &QTimer::timeout, this,
-            &WorkerController::onWriteStallExpired);
-    // The one fact that clock needs: when the worker last took a byte. Qt emits
-    // this as it hands its write buffer to the kernel, which on a stream socket
-    // only proceeds as far as the peer's window allows — so when it stops firing,
-    // the peer has stopped reading. The 0-length emission at the end of a flush is
-    // not progress and does not count.
-    connect(&fSocket, &QLocalSocket::bytesWritten, this, [this](qint64 bytes) {
-        if (bytes > 0) {
-            fLastByteOutAt = std::chrono::steady_clock::now();
-        }
+WorkerController::WorkerController(QObject* parent) : QObject(parent), fRpc(this) {
+    // The transport's events, read as session news. A connection that came up is
+    // a handshake to send; one that went away is a session to forget, with the
+    // reason the transport kept for whichever of the two paths reports it last.
+    connect(&fRpc, &RpcClient::socketConnected, this, &WorkerController::onRpcConnected);
+    connect(&fRpc, &RpcClient::socketDisconnected, this, &WorkerController::onRpcDisconnected);
+    connect(&fRpc, &RpcClient::replyReceived, this, &WorkerController::onRpcReply);
+    connect(&fRpc, &RpcClient::notificationReceived, this, &WorkerController::handleNotification);
+    connect(&fRpc, &RpcClient::statusMessage, this, &WorkerController::setStatus);
+    // Reaching for the worker stops when this side asked for a shutdown or the
+    // process is gone: the transport asks, because only the supervisor knows
+    // which of those two the answer to "keep trying?" depends on.
+    fRpc.setStopCondition([this] {
+        return fShutdownRequested || fProcess.state() == QProcess::NotRunning;
     });
     connect(&fProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
@@ -119,7 +66,7 @@ WorkerController::~WorkerController() {
         fProcess.kill();
         fProcess.waitForFinished(1000);
     }
-    QFile::remove(fSocketPath);
+    QFile::remove(fRpc.socketPath());
 }
 
 void WorkerController::start() {
@@ -136,7 +83,7 @@ void WorkerController::start() {
             : programOverride;
 #endif
     setStatus(QStringLiteral("starting worker..."));
-    QStringList arguments{QStringLiteral("--socket"), fSocketPath};
+    QStringList arguments{QStringLiteral("--socket"), fRpc.socketPath()};
     // Development hook, e.g. OPENSHOW_WORKER_EXTRA_ARGS="--monitor 1" to
     // send the audience output to the second display while debugging.
     const QString extra = qEnvironmentVariable("OPENSHOW_WORKER_EXTRA_ARGS");
@@ -147,42 +94,12 @@ void WorkerController::start() {
     // observable (M6.2 will turn this into proper diagnostics).
     fProcess.setProcessChannelMode(QProcess::ForwardedChannels);
     fProcess.start(workerPath, arguments);
-    fConnectAttempts = 0;
-    fConnectRetry.start();
-    tryConnect();
+    fRpc.startConnecting();
 }
 
-void WorkerController::tryConnect() {
-    const QLocalSocket::LocalSocketState state = fSocket.state();
-    if (state == QLocalSocket::ConnectedState || state == QLocalSocket::ConnectingState) {
-        return;
-    }
-    if (fShutdownRequested || fProcess.state() == QProcess::NotRunning) {
-        fConnectRetry.stop();
-        return;
-    }
-    if (++fConnectAttempts > 100) {  // ten seconds of patience
-        fConnectRetry.stop();
-        setStatus(QStringLiteral("could not reach the worker on %1").arg(fSocketPath));
-        return;
-    }
-    fSocket.connectToServer(fSocketPath);
-}
-
-void WorkerController::onSocketConnected() {
-    fConnectRetry.stop();
+void WorkerController::onRpcConnected() {
     fConnected = true;
-    // A fresh connection owns a fresh conversation: no request of the old
-    // one may be answered, and no half-read frame of the old stream may
-    // join the new one (task 6.3a).
-    ++fConnectionGeneration;
-    fDecoder.reset();
-    fPendingRequests.clear();
-    fStatusRequestId = 0;
-    fWriteStallDeadline.stop();  // a new connection has a new backlog to mean it with
-    fWriteStalled = false;
-    fWriteStalledBytes = 0;
-    fLastByteOutAt = std::chrono::steady_clock::now();
+    fStatusRequestId = 0;  // the ledger is the transport's, and it started empty
     setStatus(QStringLiteral("handshaking..."));
     boost::json::object params = proto::helloParams("openshow-ui", proto::kProtocolMajor,
                                                     proto::kProtocolMinor);
@@ -190,11 +107,10 @@ void WorkerController::onSocketConnected() {
     emit stateChanged();
 }
 
-void WorkerController::onSocketDisconnected() {
+void WorkerController::onRpcDisconnected() {
     fConnected = false;
     fHandshakeDone = false;
     fStatusRequestId = 0;
-    fWriteStallDeadline.stop();
     closePreviewSegment();
     resetSceneTracking();
     fMediaPlaying = false;
@@ -206,8 +122,8 @@ void WorkerController::onSocketDisconnected() {
         // A connection this side closed because the worker had stopped reading
         // says so: "connection lost" would leave the operator looking for a
         // crash in a worker that is still running (task 6.8b, review R11).
-        setStatus(fWriteStalled ? writeStallMessage()
-                                : QStringLiteral("worker connection lost"));
+        setStatus(fRpc.endedByWriteStall() ? fRpc.writeStallMessage()
+                                           : QStringLiteral("worker connection lost"));
     }
 }
 
@@ -215,7 +131,6 @@ void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exit
     fConnected = false;
     fOutputStopped = true;
     fStatusRequestId = 0;
-    fWriteStallDeadline.stop();
     closePreviewSegment();
     resetSceneTracking();
     fMediaPlaying = false;
@@ -227,72 +142,30 @@ void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exit
         setStatus(QStringLiteral("worker stopped (exit %1)").arg(exitCode));
     } else if (exitStatus == QProcess::CrashExit) {
         setStatus(QStringLiteral("worker crashed"));
-    } else if (fWriteStalled) {
+    } else if (fRpc.endedByWriteStall()) {
         // Keep the reason this side hung up: "worker exited (0)" would read as
         // if nothing had gone wrong, when what went wrong was that the worker
         // stopped reading and the operator is the one who ended it.
-        setStatus(writeStallMessage().append(
+        setStatus(fRpc.writeStallMessage().append(
             QStringLiteral(" (worker exited %1)").arg(exitCode)));
     } else {
         setStatus(QStringLiteral("worker exited (%1)").arg(exitCode));
     }
 }
 
-QString WorkerController::writeStallMessage() const {
-    return QStringLiteral("the worker has not read a byte for %1 s with %2 KiB of requests "
-                          "queued: the connection is closed")
-        .arg(kWriteStallMs / 1000)
-        .arg(static_cast<qulonglong>(fWriteStalledBytes / 1024));
-}
-
-void WorkerController::onSocketReady() {
-    const QByteArray incoming = fSocket.readAll();
-    fDecoder.feed(std::string_view(incoming.constData(),
-                                   static_cast<std::size_t>(incoming.size())));
-    drainMessages();
-}
-
-void WorkerController::drainMessages() {
-    boost::json::value message;
-    std::string error;
-    while (fDecoder.next(&message, &error)) {
-        if (!message.is_object()) {
-            continue;
-        }
-        if (message.as_object().contains("method")) {  // worker-originated
-            handleNotification(message.as_object());
-        } else {
-            handleReply(message.as_object());
-        }
-    }
-    if (fDecoder.failed()) {
-        setStatus(QStringLiteral("worker broke the protocol: %1")
-                      .arg(QString::fromStdString(error)));
-        fSocket.disconnectFromServer();
-    }
-}
-
-void WorkerController::handleReply(const boost::json::object& message) {
-    // Reply correlation (task 6.3a, review R3): a reply is only what the
-    // request its id names said it would be. Shape-matching replies let a
-    // burst of prepares misattribute payloads and fire stale auto-presents.
-    const auto idEntry = message.find("id");
-    if (idEntry == message.end() ||
-        !(idEntry->value().is_int64() || idEntry->value().is_uint64())) {
-        return;  // a reply with no usable id answers nothing
-    }
-    const std::int64_t id = idEntry->value().to_number<std::int64_t>();
-    const auto pendingEntry = fPendingRequests.find(id);
-    if (pendingEntry == fPendingRequests.end()) {
-        return;  // duplicate, superseded, or from a previous connection
-    }
-    const PendingRequest pending = pendingEntry.value();
-    fPendingRequests.erase(pendingEntry);
+void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::object& message) {
+    // The transport has already done the correlation: it found the request this
+    // reply's id names, consumed its ledger entry, and dropped anything written
+    // on a connection that is gone. What is left is the meaning, which is read
+    // off the METHOD the request went out under — never off the shape of the
+    // result, which is what let a burst of prepares misattribute payloads before
+    // task 6.3a — plus the intent its sender left for exactly this answer.
+    const std::int64_t id = pending.id;
+    const std::shared_ptr<Ask> armed = pending.intentAs<Ask>();
+    const Ask nothing;  // a request whose sender needed nothing remembered
+    const Ask& intent = armed ? *armed : nothing;
     if (id == fStatusRequestId) {
         fStatusRequestId = 0;  // the poll is answered: the next tick may ask again
-    }
-    if (pending.connection != fConnectionGeneration) {
-        return;  // written on a connection that is gone
     }
 
     const auto error = message.find("error");
@@ -304,7 +177,7 @@ void WorkerController::handleReply(const boost::json::object& message) {
             // only the in-flight marker clears, so the retry is available.
             fRestoreArmedGo = 0;
         }
-        if (pending.thumbnailRequest != 0) {
+        if (intent.thumbnailRequest != 0) {
             // A refused batch — no stream yet, an extent that could not fit a
             // slot, a generation the worker will not take — means the ask was
             // never MADE, so "asked" goes back to empty. The status poll's
@@ -314,7 +187,7 @@ void WorkerController::handleReply(const boost::json::object& message) {
             fThumbnailAwaitAck = false;
             fThumbnailAskedPayload.clear();
         }
-        if (pending.selectionRequest != 0) {
+        if (intent.selectionRequest != 0) {
             // Task 6.9a's refusal is the same shape: an off-air prepare the
             // worker would not schedule was never MADE, so the dedupe that
             // remembers the asked payload must forget it — otherwise
@@ -490,8 +363,8 @@ void WorkerController::handleReply(const boost::json::object& message) {
         // move either mirror entry (task 6.3a).
         const qint64 prepared =
             static_cast<qint64>(payload.at("revision").to_number<std::uint64_t>());
-        if (!pending.prepareJson.isEmpty()) {
-            fSceneJson.insert(prepared, pending.prepareJson);
+        if (!intent.prepareJson.isEmpty()) {
+            fSceneJson.insert(prepared, intent.prepareJson);
             if (prepared > fMirrorMax) {
                 fMirrorMax = prepared;
             }
@@ -511,7 +384,7 @@ void WorkerController::handleReply(const boost::json::object& message) {
         // clears and indicators may still reference that revision) but
         // must not present it, so a slow ack for an older go can never
         // regress the audience off the newer slide already intended.
-        if (pending.autoPresent && id == fLatestGoId) {
+        if (intent.autoPresent && id == fLatestGoId) {
             fLatestGoId = 0;
             presentScene(prepared);
             if (id == fRestoreArmedGo) {
@@ -529,11 +402,11 @@ void WorkerController::handleReply(const boost::json::object& message) {
         // one it accepted — which is the rule that keeps a retried or
         // reordered prepare from putting an edit the operator abandoned back
         // on the canvas.
-        if (pending.selectionRequest != 0) {
+        if (intent.selectionRequest != 0) {
             sendRequest(proto::kMethodPreviewSelect,
                         boost::json::object{{"revision",
                                             static_cast<std::uint64_t>(prepared)},
-                                           {"request", pending.selectionRequest}});
+                                           {"request", intent.selectionRequest}});
         }
         emit sceneChanged();
         return;
@@ -545,7 +418,7 @@ void WorkerController::handleReply(const boost::json::object& message) {
         // only while it is still the newest ask this client made — an ack for
         // a band the operator has since scrolled past would otherwise map a
         // frame of nothing onto a row that is on screen.
-        if (pending.thumbnailRequest != fThumbnailRequest) {
+        if (intent.thumbnailRequest != fThumbnailRequest) {
             return;  // superseded: the ids it names are already nobody's
         }
         fThumbnailAwaitAck = false;
@@ -907,16 +780,16 @@ void WorkerController::requestSelectionPreview(const QString& sceneJson) {
     // only way to have one is to hand the scene over. No armPrepare — that
     // mirrors the payload as a presentable scene, and this one is not being
     // presented; the marker below is what makes the ack answer with a
-    // preview.select instead.
-    const std::int64_t id = sendRequest("scene.prepare", parsed.as_object());
+    // preview.select instead. The ask travels WITH the request rather than being
+    // noted after it: the generation only exists once the socket carries it, and
+    // the reply has to find the one it belongs to.
+    auto ask = std::make_shared<Ask>();
+    const std::int64_t id = sendRequest("scene.prepare", parsed.as_object(), ask);
     if (id == 0) {
         return;  // refused locally (backlog or in-flight bound); a later change re-asks
     }
     ++fSelectionRequest;
-    const auto entry = fPendingRequests.find(id);
-    if (entry != fPendingRequests.end()) {
-        entry->selectionRequest = fSelectionRequest;
-    }
+    ask->selectionRequest = fSelectionRequest;
     fSelectionAskedJson = sceneJson;
 }
 
@@ -1121,19 +994,17 @@ void WorkerController::sendThumbnailBatch(const QString& scenesPayload, qint64 w
     // accepted. That is what makes a duplicated scroll handler, a retried
     // request and a replayed frame all the same non-event.
     ++fThumbnailRequest;
-    const std::int64_t id = sendRequest(
-        proto::kMethodPreviewThumbnails,
-        boost::json::object{{"scenes", scenes},
-                            {"width", static_cast<std::int64_t>(width)},
-                            {"height", static_cast<std::int64_t>(height)},
-                            {"request", fThumbnailRequest}});
+    auto ask = std::make_shared<Ask>();
+    boost::json::object params{{"scenes", scenes},
+                               {"width", static_cast<std::int64_t>(width)},
+                               {"height", static_cast<std::int64_t>(height)},
+                               {"request", fThumbnailRequest}};
+    const std::int64_t id =
+        sendRequest(proto::kMethodPreviewThumbnails, std::move(params), ask);
     if (id == 0) {
         return;  // refused locally; the next change re-asks
     }
-    const auto entry = fPendingRequests.find(id);
-    if (entry != fPendingRequests.end()) {
-        entry->thumbnailRequest = fThumbnailRequest;
-    }
+    ask->thumbnailRequest = fThumbnailRequest;
     fThumbnailAskedPayload = scenesPayload;
     fThumbnailAskedWidth = width;
     fThumbnailAskedHeight = height;
@@ -1238,13 +1109,18 @@ void WorkerController::adoptAssetPaths(const QVariantMap& pathMap) {
     // A prepare whose ack has not landed yet: the worker has the old payload
     // (it decoded it at prepare time, and the on-air path stays pinned), but
     // when the ack arrives the mirror must record what the session now
-    // believes owns those bytes.
-    for (auto& pending : fPendingRequests) {
-        const QString adopted = rewrite(pending.prepareJson);
-        if (!adopted.isEmpty()) {
-            pending.prepareJson = adopted;
+    // believes owns those bytes. The transport holds the request; the payload
+    // the session attached to it is what gets rewritten.
+    fRpc.eachPending([&rewrite](RpcRequest& request) {
+        const auto ask = request.intentAs<Ask>();
+        if (!ask || ask->prepareJson.isEmpty()) {
+            return;
         }
-    }
+        const QString adopted = rewrite(ask->prepareJson);
+        if (!adopted.isEmpty()) {
+            ask->prepareJson = adopted;
+        }
+    });
     // The restore snapshot re-prepares through presentSceneInternal when the
     // operator clicks it, so rewriting it here is enough: it names the new
     // file at the moment it is used.
@@ -1368,18 +1244,27 @@ void WorkerController::restoreOutput() {
 
 void WorkerController::armPrepare(std::int64_t requestId, const boost::json::object& scene,
                                   bool autoPresent) {
-    const auto entry = fPendingRequests.find(requestId);
-    if (entry == fPendingRequests.end()) {
+    // The prepare's payload is recorded on the request itself, not on a side
+    // table keyed by id: when the ack lands it brings this record with it, so a
+    // mirror entry can only ever be written from the payload THAT prepare sent
+    // (task 6.3a). A refused send has no entry, so it arms nothing.
+    RpcRequest* entry = fRpc.pending(requestId);
+    if (!entry) {
         return;  // sendRequest always records the entry; belt and braces
     }
-    entry->prepareJson = QString::fromStdString(boost::json::serialize(scene));
-    entry->autoPresent = autoPresent;
+    auto ask = entry->intentAs<Ask>();
+    if (!ask) {
+        ask = std::make_shared<Ask>();
+        entry->intent = ask;
+    }
+    ask->prepareJson = QString::fromStdString(boost::json::serialize(scene));
+    ask->autoPresent = autoPresent;
     if (autoPresent) {
         // This go supersedes any older one still awaiting its ack; only
         // the newest go's acknowledgement moves the audience. Its payload
         // is the pending logical presentation the clears compose against
         // (task 6.3b).
-        fDesiredSceneJson = entry->prepareJson;
+        fDesiredSceneJson = ask->prepareJson;
         fLatestGoId = requestId;
     }
 }
@@ -1394,8 +1279,9 @@ void WorkerController::resetSceneTracking() {
     fDesiredSceneJson.clear();
     fLatestGoId = 0;
     // In-flight intents die with the connection; a reply can no longer
-    // arrive for them, and none must survive to act on a later one.
-    fPendingRequests.clear();
+    // arrive for them, and none must survive to act on a later one. The
+    // transport holds the requests, so this is where they are given up on.
+    fRpc.clearPending();
     emit sceneChanged();
 }
 
@@ -1495,120 +1381,18 @@ void WorkerController::selectStandaloneTrack(const QString& path) {
                 boost::json::object{{"path", path.toStdString()}});
 }
 
-std::int64_t WorkerController::sendRequest(const char* method, boost::json::object params) {
-    // The frame is built BEFORE the request exists (task 6.8a, review R11).
-    // kMaxMessageBytes is the budget of BOTH directions, and the review's probe
-    // measured what an unchecked sender costs: it wrote the length of a
-    // 1,048,650-byte payload, the worker's decoder refused the frame and hung
-    // up, and the operator's paste of large text took the whole output down
-    // with it. Refusing here instead writes no byte, consumes no id (so no
-    // pending entry exists that could never be answered) and leaves the
-    // connection up; the status line is the operator's answer.
-    const std::int64_t id = fNextId;
-    std::string wire;
-    if (!proto::appendFrame(proto::makeRequest(id, method, std::move(params)), &wire)) {
-        setStatus(QStringLiteral("%1 was not sent: it is over the %2 KiB this transport "
-                                 "allows, so the worker would refuse it")
-                      .arg(QString::fromLatin1(method))
-                      .arg(static_cast<qulonglong>(proto::kMaxMessageBytes / 1024u)));
-        return 0;
-    }
-    // The two bounds of task 6.8b, checked before the id is consumed for the
-    // same reason as above: a request that is not going to be answered must not
-    // exist. Both refuse in the client with the reason, and neither touches the
-    // connection — the worker gets the chance to come back on its own.
-    if (fSocket.bytesToWrite() + static_cast<qint64>(wire.size()) > kMaxQueuedWriteBytes) {
-        setStatus(QStringLiteral("%1 was not sent: %2 KiB of requests are already waiting "
-                                 "for the worker, which is not reading them")
-                      .arg(QString::fromLatin1(method))
-                      .arg(static_cast<qulonglong>(fSocket.bytesToWrite() / 1024)));
-        watchWriteBacklog();
-        return 0;
-    }
-    if (fPendingRequests.size() >= static_cast<size_t>(kMaxInFlightRequests)) {
-        setStatus(QStringLiteral("%1 was not sent: %2 requests are already waiting for the "
-                                 "worker to reply")
-                      .arg(QString::fromLatin1(method))
-                      .arg(kMaxInFlightRequests));
-        return 0;
-    }
-    ++fNextId;
-    // Record before writing: the reply to this id must find its request,
-    // tagged with the connection it belongs to (task 6.3a).
-    PendingRequest pending;
-    pending.method = method;
-    pending.connection = fConnectionGeneration;
-    fPendingRequests.insert(id, std::move(pending));
-    fSocket.write(wire.data(), static_cast<qint64>(wire.size()));
-    return id;
-}
-
-void WorkerController::watchWriteBacklog() {
-    // Called by the two paths that had to refuse a message for want of backlog
-    // room. The refusal IS the signal: by the time a request is accepted the
-    // queue is under the budget by construction, so testing the depth here armed
-    // nothing at exactly the depth that was refusing — an earlier version did,
-    // and its deadline never fired.
-    if (!fWriteStallDeadline.isActive()) {
-        fWriteStallDeadline.start();
-    }
-}
-
-void WorkerController::onWriteStallExpired() {
-    if (!fConnected || fShutdownRequested) {
-        fWriteStallDeadline.stop();
-        return;
-    }
-    const qint64 queued = fSocket.bytesToWrite();
-    if (queued == 0) {
-        fWriteStallDeadline.stop();  // the worker caught up: nothing is owed
-        return;
-    }
-    const auto idleMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now() - fLastByteOutAt)
-                            .count();
-    if (idleMs < kWriteStallMs) {
-        // Bytes are moving, so this worker is behind rather than gone, and a
-        // worker that is merely slow must never lose its session. This is the
-        // same measurement the worker's own write deadline makes from its side.
-        return;
-    }
-    // Not one byte has reached the worker in the whole window while this side
-    // still owes what it has queued. Keeping the connection would only mean more
-    // of the same, so: close, and let the disconnect path say WHY, with the depth
-    // captured here because abort() discards the buffer the number came from
-    // (task 6.3a's reset of the intents that can no longer be confirmed follows on
-    // disconnected()).
-    fWriteStallDeadline.stop();
-    fWriteStalled = true;
-    fWriteStalledBytes = queued;
-    fSocket.abort();  // the backlog cannot be delivered, and must not be replayed
+std::int64_t WorkerController::sendRequest(const char* method, boost::json::object params,
+                                          std::shared_ptr<void> intent) {
+    // The transport decides whether this message can go on the wire at all: the
+    // frame's size, the backlog the worker has not read, and how many replies it
+    // already owes (task 6.8a/6.8b, review R11). A 0 here means it refused and
+    // said why through statusMessage, and no request exists for the caller to
+    // undo — which is why an intent handed to a refused send costs nothing.
+    return fRpc.sendRequest(method, std::move(params), std::move(intent));
 }
 
 void WorkerController::sendNotification(const char* method, boost::json::object params) {
-    std::string wire;
-    if (!proto::appendFrame(proto::makeNotification(method, std::move(params)), &wire)) {
-        // A notification has no reply to carry a reason, and a partially built
-        // frame would poison the stream for the messages behind it: drop it and
-        // keep the connection. Every notification this client sends names a
-        // slot and a sequence, so arriving here means a bug rather than input.
-        setStatus(QStringLiteral("%1 could not be sent: it does not fit this transport")
-                      .arg(QString::fromLatin1(method)));
-        return;
-    }
-    // Same backlog bound as a request: a notification is droppable by contract
-    // (the preview consumer works off the newest frame it is given, and the
-    // worker re-reports state), so it is the first thing to lose when the worker
-    // has stopped reading.
-    if (fSocket.bytesToWrite() + static_cast<qint64>(wire.size()) > kMaxQueuedWriteBytes) {
-        setStatus(QStringLiteral("%1 was dropped: the worker is not reading, and %2 KiB of "
-                                 "traffic is already queued for it")
-                      .arg(QString::fromLatin1(method))
-                      .arg(static_cast<qulonglong>(fSocket.bytesToWrite() / 1024)));
-        watchWriteBacklog();
-        return;
-    }
-    fSocket.write(wire.data(), static_cast<qint64>(wire.size()));
+    fRpc.sendNotification(method, std::move(params));
 }
 
 void WorkerController::handleNotification(const boost::json::object& message) {
@@ -1853,7 +1637,7 @@ void WorkerController::shutdownNow() {
     fShutdownRequested = true;
     if (fConnected && fHandshakeDone) {
         sendRequest("shutdown", {});
-        fSocket.flush();
+        fRpc.flush();
     }
     // Grace first: a healthy worker exits on its own the moment the
     // request lands. Anything left after two seconds is ours to kill.

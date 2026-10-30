@@ -5,7 +5,10 @@ qt_policy(SET QTP0001 NEW)
 # The worker supervisor (task 6.3a) joins it so its reply-correlation
 # fixtures drive the real WorkerController: QProcess/QLocalSocket need Qt
 # Network and QImage needs Qt Gui, but neither needs a display, so the
-# supervisor's tests stay display-free as well.
+# supervisor's tests stay display-free as well. RpcClient (task 6.19a1) is
+# the transport half of that conversation and lives here with it: the
+# fixtures assert through the controller either way, and a component the UI
+# cannot run without is not worth a target of its own.
 add_library(openshow-ui-core STATIC
   AppSettings.cpp
   AppSettings.h
@@ -15,6 +18,8 @@ add_library(openshow-ui-core STATIC
   DocumentController.h
   LibrarySearch.cpp
   LibrarySearch.h
+  RpcClient.cpp
+  RpcClient.h
   SceneEdit.cpp
   SceneEdit.h
   WorkerController.cpp
