@@ -30,7 +30,7 @@ estimate is historical; re-estimate remaining work before productization.
   SkParagraph with real ICU text support, FFmpeg decode/conversion/resampling.
 - **Scheduling:** decoding, RPC and rendering have separate execution contexts.
   Files, decode, IPC and preview consumers must not block presentation or audio
-  callbacks. Remaining scheduling gaps from the post-M6 review are 6.21c/d.
+  callbacks. Remaining scheduling gaps from the post-M6 review are 6.21d.
 - **RPC:** length-prefixed JSON-RPC 2.0 on Unix-domain sockets; Qt local sockets
   in the frontend and a raw socket/poll loop in the worker. Version/capability
   negotiation, request IDs, structured errors and acknowledged revisions. Traffic
@@ -320,7 +320,7 @@ Checkpoint: `M6: close code review and graduate production architecture`.
 | 6.21a | DONE | Keep drawn text layouts alive across concurrent preparation | Layout-cache slots hold shared handles; a draw retains what it paints through eviction, same-key replacement and a concurrent prepare churn (`scene_render_tests`); F1 |
 | 6.21b | DONE | Adopt foreground-image paths in every retained scene payload | Adoption rewrites every path-bearing item as well as the background; the scripted-peer fixture drives present→adopt→clear-all→restore twice, once with the adoption landing mid-prepare, asserting per-prepare item paths (`worker_controller_tests`); F2. Real-worker adoption coverage joins the 6.21g journey |
 | 6.21c1 | DONE | Stage prepared audio readiness off the render thread | `primeAudio` stages a held player (probe answer, feeders, sink negotiation, pre-roll) beside the file prime; `applyBackground` adopts and releases it (measured 6.4 ms present→air against a 700 ms scripted bring-up, audience gap stayed 50 ms, lane live — `background_media_tests`); F3 (1/2) |
-| 6.21c2 | TODO | Retire old transports off the render thread | Stop/join and audio close run off the frame tick behind a handoff that keeps R6's explicit quiescence; GPU attach/destruction and the final close stay on the render thread; the standalone swap stops synchronously under the transport mutex; slow-retirement and status-responsiveness fixtures; F3 (2/2) |
+| 6.21c2 | DONE | Retire old transports off the render thread | Teardown requests the producer's stop and hands pipeline and audio player to a one-deep retirement lane; the atomic presenter's generation filter lets the successor's frames start before the old thread returns, with GPU close and reap staying on the render thread strictly after the join. The standalone swap claims its instance in microseconds and stages the new bring-up (held) on a lane until a later pass publishes it. Measured through the wire: present→air 4.5 ms and a bed-swap ack of 1.6 ms against 700 ms scripted exit/bring-up, audience frame gap ≤ 26 ms, status answered ≤ 0.6 ms throughout (`background_media_tests`); F3 (2/2) |
 | 6.21d | TODO | Move thumbnail file decoding off the RPC thread | Cold thumbnail decode leaves status, release, commands and shutdown responsive; F5 |
 | 6.21e | TODO | Clear gradient backgrounds and report their live state correctly | Black-to-colour gradient enables clear; clearing yields uniform black with correct flags; F4 |
 | 6.21f | TODO | Surface foreground-image failures in the operator UI | Missing image path/reason visible; repair clears notice; background fault remains independent; F6 |

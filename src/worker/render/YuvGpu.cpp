@@ -499,7 +499,11 @@ bool GpuYuvUploader::commitSlot(Slot& slot, uint64_t sequence, DecodeImage* sour
     // while it holds the slot, so by the time waitForFree let this commit
     // through every sampling of the previous frame has registered its
     // obligation — but the queue lock still stands between a preview
-    // readback's flush and this submit touching the same images.
+    // readback's flush and this submit touching the same images. Since
+    // 6.21c2 the lock also separates a RETIRED transport's pacing thread
+    // from its successor's: the retirement lane lets two producers submit
+    // this queue at once, and Vulkan requires external synchronization
+    // for that — which this function-wide guard already gives them.
     std::lock_guard queueLock(graphicsQueueMutex());
     VkImage linear = source ? source->image : slot.linear;
     bool firstLinear = source ? source->firstTransfer : slot.firstTransfer;

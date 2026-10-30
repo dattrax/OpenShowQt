@@ -59,6 +59,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -209,9 +210,12 @@ public:
 
     // --- the video seam (tasks 1.5e, 5.5; the bench seam too) ---
 
-    // Before run(), or behind a quiesce boundary: the render thread writes
-    // it only when no pacing thread can read it. submitVideo() reads it
-    // unsynchronised, and thread creation/join order the two (R6).
+    // Before run(), or behind a retirement boundary (the 6.21c2 re-reading
+    // of R6): the render thread is the only writer, the pointer is atomic,
+    // and every pipeline it once named outlives its own join — so a pacing
+    // thread's unsynchronised read finds either the pipeline it belongs to
+    // or the successor, and the generation filter below decides which
+    // submissions the seam still accepts.
     void setVideoPresenter(VideoPresenter* presenter);
     // Clock in seconds that pts is expressed against; defaults to wall
     // time since run() began (noteRunStart).
@@ -220,9 +224,15 @@ public:
     // pending submission (dropping it through the presenter) and wakes the
     // render thread.
     void submitVideo(VideoSubmission submission);
+    // The pacing sink's entry (task 6.21c2, review F3): identical, plus the
+    // GENERATION filter the retirement needs. A submission produced by a
+    // pipeline the seam no longer names is retired work: dropped silently,
+    // because the producing pipeline is stopping and its close() releases
+    // every slot it held — including this frame's.
+    void submitVideo(VideoSubmission submission, PlaybackPipeline* producer);
     // Render thread: the presenter submissions were made to (see the
-    // quiesce rule for who may hold this and when).
-    VideoPresenter* presenter() const { return fPresenter; }
+    // retirement rule for who may hold this and when).
+    VideoPresenter* presenter() const { return fPresenter.load(std::memory_order_relaxed); }
 
     // The run loop's wake question (task 6.7d, review R19): is a submitted
     // frame due against its DEADLINE in the clock's domain, and if not, how
@@ -366,7 +376,9 @@ public:
     // paths ride to the render thread's swap (newest selection wins, like
     // every pending slot here) and output.status.media.standalone answers.
     // "" is a removal, not a probe candidate: it always accepts, and the
-    // swap takes the track down.
+    // swap takes the track down. Since 6.21c2 the swap itself is cheap on
+    // the render thread (claim, stage, publish) — the bring-up's waits
+    // belong to a lane.
     bool requestStandaloneAudio(const std::string& path, std::string* error);
     // Any thread: the standalone transport is up (between a swap that
     // started it and one that stopped it, or teardown).
@@ -399,6 +411,13 @@ private:
     // called with fMutex held: the join() must not wait behind a dying
     // transport's own mediaFailed report.
     void teardownBackgroundTransport();
+    // Close a COMPLETED retirement on the render thread (the GPU half is a
+    // Ganesh release; the close strictly follows the lane's join) and reap
+    // its thread. Returns without touching anything while the lane still
+    // waits — the lane's wakeRenderThread() brings the loop back for it.
+    // Called from the loop's transport pass, applyBackground's head, and
+    // (after a bounded wait for the lane) shutdown().
+    void reapRetirement();
     // Task 6.21c1 (review F3): swap the current AvPlayer instance out for a
     // fresh silent one under fMutex, then stop the outgoing instance outside
     // the lock. Every death of an audio instance runs through here, so the
@@ -418,17 +437,27 @@ private:
     void mediaFaultClearedLocked(MediaFault fault, const std::string& path);
     void refreshMediaStateLocked();
 
-    // Standalone track machinery (task 6.15b). swapStandalonePendingLocked
-    // applies the newest probed selection — stop the old player, start the
-    // new one ("" is the removal), and move live/mask/status with it;
-    // called by applyTransportOps before the ops, so a selection and a
-    // gain in the same pass land in order. refreshStandaloneMediaLocked
-    // samples the player into media.standalone (position, lane, the
-    // lane-fault sticky) and rebuilds the cross-transport sources list.
-    // standaloneFailedLocked names the track's own path in the sticky
-    // error and the pushed notification — deduplicated on the message,
-    // exactly the background's rule. Caller holds fMutex.
-    void swapStandalonePendingLocked();
+    // Standalone track machinery (task 6.15b; the swap re-cut by 6.21c2,
+    // review F3). applyStandaloneOps() runs on the render thread ahead of
+    // the ops, so a selection and a gain in the same pass land in order:
+    // it publishes a lane-staged player when one is done (swap the instance
+    // in under fMutex, release its hold, move live/mask/status with it),
+    // takes a pending intent when the lane is free — claim the current
+    // instance under fMutex, stop it outside the lock ("" ends there; a
+    // path spawns the staging lane, Config::startHeld paying negotiation
+    // and pre-roll there) — and never holds fMutex across either wait.
+    // What the old swapStandalonePendingLocked did under the lock (stop +
+    // start inline) held every RPC status reader for the seconds a bring-up
+    // can take. reapStandaloneStage() drains the lane for shutdown (not a
+    // frame tick; the bounded start wait is paid there).
+    // refreshStandaloneMediaLocked samples the player into media.standalone
+    // (position, lane, the lane-fault sticky) and rebuilds the
+    // cross-transport sources list. standaloneFailedLocked names the
+    // track's own path in the sticky error and the pushed notification —
+    // deduplicated on the message, exactly the background's rule. Those
+    // two keep their caller-holds-fMutex contract.
+    void applyStandaloneOps();
+    void reapStandaloneStage();
     void refreshStandaloneMediaLocked();
     void standaloneFailedLocked(const std::string& message);
     // Rebuilds media.sources from BOTH transports' registrations: "video"
@@ -466,6 +495,24 @@ private:
     std::unique_ptr<PlaybackPipeline> fBackground;
     openshow::scene::Background fAppliedBackground;    // identity in service
 
+    // The retirement lane (task 6.21c2, review F3). The retired transport's
+    // waits — join() and the player's stop — move onto this lane's thread;
+    // the transport keeps the objects the retiring producer can still
+    // REACH alive until the lane reports done and reapRetirement() closes
+    // the GPU half on the render thread. One at a time: a second teardown
+    // while the lane waits is the hung-producer overlap and pays the join
+    // synchronously rather than growing a queue. The render thread owns the
+    // slot; the lane holds a shared reference for the duration, so the
+    // state (and its last release, which runs the post-close destructor)
+    // stays ordered behind reapRetirement()'s join.
+    struct Retirement {
+        std::unique_ptr<PlaybackPipeline> pipeline;  // requestStop() already done
+        std::unique_ptr<AvPlayer> audio;             // its player; stops on the lane
+        std::atomic<bool> laneDone{false};           // join and audio stop finished
+        std::thread worker;                          // the lane itself
+    };
+    std::shared_ptr<Retirement> fRetirement;         // render thread
+
     // Prepare-time prime (task 6.9b, review R10): a video transport whose
     // FILE half (container + decoder) is open but whose GPU half is not,
     // parked here for the render loop to attach. Bound to ONE — primeVideo
@@ -499,20 +546,40 @@ private:
     // just because one component could. The pending swap is the newest
     // selection the requesting thread probed; the render thread applies it
     // on the transport's own thread, where the background swap also runs.
-    AvPlayer fStandalonePlayer;
+    // Since 6.21c2 (review F3) the player is an INSTANCE — a staged, held
+    // bring-up swaps in whole under fMutex, exactly like fAudio in 6.21c1 —
+    // and the seconds of server negotiation and pre-roll a bring-up used to
+    // spend under fMutex (blocking every RPC status reader with it) are
+    // paid on the staging lane below. One stage at a time: a new intent
+    // while a stage runs stays pending rather than racing a second
+    // bring-up, and reapStandaloneStage() drains the lane before the
+    // transport dies.
+    std::unique_ptr<AvPlayer> fStandalonePlayer = std::make_unique<AvPlayer>();
+    struct StandaloneStage {
+        std::unique_ptr<AvPlayer> player;  // staged held player when done; null on failure
+        std::string error;                 // bring-up failure (empty = ok)
+        std::string path;                  // the request this stage answers
+        std::atomic<bool> done{false};
+        std::thread worker;
+    };
+    std::shared_ptr<StandaloneStage> fStandaloneStage;  // render thread
     std::mutex fStandaloneSwapMutex;                   // guards fStandaloneSwap
     std::optional<std::string> fStandaloneSwap;        // path to apply ("" = remove)
     std::atomic<bool> fStandaloneLive{false};          // any thread (the swap writes)
     std::string fStandalonePath;                       // transport thread; "" = none
 
-    // The video seam (task 1.5e). fPresenter (task 6.6b, review R6): the
-    // render thread writes it only when no pacing thread can read it —
-    // before run(), after a teardown's requestStop+join, or around a
-    // start() whose failure means no thread was ever spawned. submitVideo()
-    // (the producer's thread) reads it unsynchronised, and thread creation
-    // and join are what order those accesses; nothing else may change it
-    // while a transport runs.
-    VideoPresenter* fPresenter = nullptr;
+    // The video seam (task 1.5e). fPresenter (task 6.6b, review R6, kept by
+    // task 6.21c2): the render thread is the only writer, and it writes at
+    // exactly three kinds of moment — before run(), around a start() whose
+    // failure means no thread was ever spawned, and at a retirement, where
+    // the pointer is ATOMIC so a pacing thread's unsynchronised read is
+    // well-defined, and everything the read can name (the pipeline it was
+    // stored from) stays alive in the retirement slot until that thread has
+    // been joined. submitVideo() is the only reader off the render thread;
+    // the producer-generation filter there is what lets the seam be
+    // republished BEFORE the old producer's join instead of behind it —
+    // the wait moved to the lane, the ordering stayed.
+    std::atomic<VideoPresenter*> fPresenter{nullptr};
     std::function<double()> fVideoClock;               // fMutex
     std::optional<VideoSubmission> fPendingVideo;      // fMutex
     std::optional<VideoSubmission> fDrawnVideo;        // fMutex

@@ -1,7 +1,10 @@
 #include "playback/PlaybackPipeline.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <thread>
 
 namespace openshow::worker {
 
@@ -49,6 +52,9 @@ bool PlaybackPipeline::openCommon(const Options& options, std::string* error) {
                        ? info.durationSeconds
                        : 0.0;
     fLoop = options.loop;
+    // The exit fault (below, in runPacing) matches on this path; the value
+    // itself is read per exit so a fixture arms it like every other knob.
+    fFaultPath = options.path;
     return true;
 }
 
@@ -389,6 +395,29 @@ void PlaybackPipeline::runPacing() {
         // draw, because the next commit gates on that draw's completion
         // semaphore before touching OPTIMAL again.
         returnFrame(frame, !abandoned);
+    }
+
+    // Test seam (task 6.21c2, review F3): the slow exit a retirement must
+    // not be made to pay for on the frame tick. A pacing thread can genuinely
+    // take time to return after the stop flag — a blocking read still in
+    // flight, a driver call winding down — and join() waits for all of it.
+    // A fixture cannot depend on real slow I/O, so the scenario names the
+    // clip (path substring) and how long the exit sleeps AFTER the loop has
+    // ended: the wait sits between requestStop() and the thread's return,
+    // which is exactly the window the retirement lane moved off the render
+    // thread.
+    if (const char* exitMs = std::getenv("OPENSHOW_FAULT_PACING_EXIT_MS")) {
+        const int milliseconds = std::atoi(exitMs);
+        const char* match = std::getenv("OPENSHOW_FAULT_PACING_EXIT_MATCH");
+        if (milliseconds > 0 && match != nullptr && *match != '\0' &&
+            fFaultPath.find(match) != std::string::npos) {
+            std::fprintf(stderr, "openshow-worker: scripted slow pacing exit: %d ms for %s\n",
+                         milliseconds, fFaultPath.c_str());
+            for (int elapsed = 0; elapsed < milliseconds; elapsed += 20) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(
+                    std::min(20, milliseconds - elapsed)));
+            }
+        }
     }
 }
 

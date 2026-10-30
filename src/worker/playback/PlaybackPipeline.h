@@ -244,6 +244,7 @@ private:
     std::string fStagedPath;
     unsigned fStagedRingDepth = 0;
     bool fStagedCopyFallback = false;
+    std::string fFaultPath;  // the scripted slow-exit seam's match target (6.21c2)
     media::VideoFrameSource fSource;
     GpuYuvUploader fUploader;
     unsigned fDepth = 0;

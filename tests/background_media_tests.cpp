@@ -2102,6 +2102,279 @@ void exerciseStagedAudioGoLive(const std::string& videoB, const std::string& aud
     retireScopedWorker(fd, worker, socket, "the staged-audio worker answers shutdown");
 }
 
+// --- task 6.21c2 (review F3): the retirement lane, measured off the wire ---
+//
+// The c2 half of the split moves the two teardown waits — the pacing
+// thread's join and the audio player's stop — from the frame tick onto a
+// retirement lane, and re-grounds the presenter rule so a successor can
+// start BEFORE the old producer has returned: the seam refuses the retired
+// producer's submissions by generation, and everything the producer can
+// still reach lives on until its join. Two measurements make that honest,
+// and both need a producer whose exit is genuinely slow. Real slow exits
+// (a blocking read in flight, a driver winding down) cannot be scripted
+// from disk, so the worker carries OPENSHOW_FAULT_PACING_EXIT_MS/_MATCH:
+// the named clip's pacing thread sleeps AFTER its frame loop has ended —
+// exactly the window join() used to absorb inline.
+constexpr double k621cExitMs = 700.0;
+
+struct MonitorReport {
+    double worstRpcMs = 0.0;      // worst output.status round trip
+    double worstFrameGapMs = 0.0;  // longest no-growth stretch of presented frames
+    double framesBegin = -1.0;
+    double framesEnd = -1.0;
+};
+
+// Samples output.status at a 25 ms cadence for durationMs and measures the
+// two promises the retirement lane makes AT THE BOUNDARY the operator and
+// the audience see: every ask answered promptly, and — while a clip is
+// playing — the presented-frame counter never frozen. One loop tracks both
+// because the windows are short and the subject (a lane's sleep) is not
+// something two separate samplers can be timed against independently.
+MonitorReport monitorResponsiveness(int fd, int durationMs) {
+    MonitorReport report;
+    const auto began = std::chrono::steady_clock::now();
+    const auto hardStop = began + std::chrono::milliseconds(durationMs);
+    auto lastGrowth = began;
+    bool seeded = false;
+    while (std::chrono::steady_clock::now() < hardStop) {
+        const auto sent = std::chrono::steady_clock::now();
+        const boost::json::object result = status(fd);
+        const auto answered = std::chrono::steady_clock::now();
+        report.worstRpcMs =
+            std::max(report.worstRpcMs,
+                     std::chrono::duration<double, std::milli>(answered - sent).count());
+        const double frames = framesOf(result);
+        if (frames >= 0.0) {
+            if (!seeded) {
+                seeded = true;
+                report.framesBegin = frames;
+                report.framesEnd = frames;
+                lastGrowth = answered;
+            }
+            if (frames > report.framesEnd) {
+                report.framesEnd = frames;
+                lastGrowth = answered;
+            }
+            report.worstFrameGapMs =
+                std::max(report.worstFrameGapMs,
+                         std::chrono::duration<double, std::milli>(answered - lastGrowth)
+                             .count());
+        }
+        sleepMs(25);
+    }
+    return report;
+}
+
+// A playing A, a scripted slow exit, and the change to B through it: the
+// change lands inside the go-live budget (the join is not at the boundary
+// any more), frames keep advancing while the lane waits out A's exit, and
+// the RPC stays answered. Before the lane, the FIRST of these would have
+// cost the whole scripted exit and the second would have frozen the
+// audience for it; the bounds below sit comfortably above the healthy
+// numbers (a present->air of milliseconds, a gap near one frame interval)
+// and far below k621cExitMs, so the regression is what they catch.
+void exerciseSlowRetirement(const std::string& videoA, const std::string& videoB) {
+    std::string socket;
+    pid_t worker = -1;
+    const int fd = spawnScopedWorker(
+        "retirement",
+        {"OPENSHOW_FAULT_PACING_EXIT_MS=" + std::to_string(static_cast<int>(k621cExitMs)),
+         "OPENSHOW_FAULT_PACING_EXIT_MATCH=loop-a.mp4"},
+        &socket, &worker);
+    if (fd < 0) {
+        check(false, "the retirement worker could be spawned and handed its slow-exit clip");
+        return;
+    }
+    boost::json::value reply;
+
+    const std::uint64_t first =
+        preparePresent(fd, lyricScene("6.21c2 A", "c22a", videoA, true, "c22-video-a"));
+    check(first != 0 && waitActive(fd, first, nullptr), "A is on air before the retirement");
+    check(waitForMediaPlaying(fd, videoA, /*afterPosition=*/0.0), "and A is playing");
+    sleepMs(200);  // A's frames own the counter for a beat first
+
+    // Prepare B (its prime pays the file open; the swap is attach-only), then
+    // time the boundary itself: ack plus on-air credit. The scripted wait
+    // starts the moment the swap calls requestStop — inside this window.
+    std::uint64_t second = 0;
+    {
+        if (!call(fd, "scene.prepare", lyricScene("6.21c2 B", "c22b", videoB, true, "c22-video-b"),
+                  &reply) ||
+            !reply.as_object().contains("result")) {
+            check(false, "B's prepare is accepted while A plays");
+            retireScopedWorker(fd, worker, socket, "the retirement worker answers shutdown");
+            return;
+        }
+        second = reply.at("result").as_object().at("revision").to_number<std::uint64_t>();
+    }
+    const auto presentSent = std::chrono::steady_clock::now();
+    const bool presented =
+        call(fd, "scene.present",
+             boost::json::object{{"revision", second}, {"transition", std::string("cut")}},
+             &reply) &&
+        reply.as_object().contains("result");
+    const double presentAckMs = std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - presentSent)
+                                    .count();
+    check(presented, "B's scene is presented while A's exit is scripted slow");
+    double landSeconds = -1.0;
+    const bool landed = second != 0 && waitActive(fd, second, &landSeconds);
+    const double landMs = presentAckMs + landSeconds * 1000.0;
+    std::fprintf(stderr,
+                 "6.21c2: slow-retirement present->air %.1f ms (ack %.1f + credit %.1f; scripted "
+                 "exit %.0f ms)\n",
+                 landMs, presentAckMs, landSeconds * 1000.0, k621cExitMs);
+    check(landed && landMs < 100.0,
+          "the video change lands within 100 ms although the retired producer's exit sleeps");
+
+    // The lane is still waiting out the scripted exit; B plays beside it.
+    // Watch the whole remaining window (exit + margin for the reap pass).
+    const int windowMs =
+        static_cast<int>(k621cExitMs + 400.0 - std::min(landMs, k621cExitMs));
+    const MonitorReport report = monitorResponsiveness(fd, windowMs);
+    std::fprintf(stderr,
+                 "6.21c2: through the lane's wait the RPC answered in <= %.1f ms, presented "
+                 "frames advanced %.0f -> %.0f (worst gap %.0f ms)\n",
+                 report.worstRpcMs, report.framesBegin, report.framesEnd,
+                 report.worstFrameGapMs);
+    check(report.framesEnd > report.framesBegin && report.worstFrameGapMs < 400.0,
+          "the audience never froze while the retired pacing thread slept and was reaped");
+    check(report.worstRpcMs < 100.0,
+          "status kept answering while the retirement lane held the producer's exit");
+
+    // B is the transport now, honestly: playing, advancing, no fault. (The
+    // reap itself is proven by the shutdown below — a retirement that hung
+    // or double-reaped makes that hang or exit non-zero, and the session's
+    // own teardown drains the lane through the same reapRetirement().)
+    check(waitForMediaPlaying(fd, videoB, /*afterPosition=*/0.0),
+          "the successor plays through and after the retirement");
+    retireScopedWorker(fd, worker, socket, "the retirement worker answers shutdown");
+}
+
+// The standalone block of a status media object ({} when the worker predates
+// it — every read below tolerates that exactly like WorkerController does).
+boost::json::object standaloneOf(const boost::json::object& media) {
+    const auto track = media.find("standalone");
+    return track != media.end() && track->value().is_object()
+               ? track->value().as_object()
+               : boost::json::object{};
+}
+
+// True when the track's block reports this exact path live (the same shape
+// the 6.15b scenario reads, named here for the 6.21c2 swap's waits).
+bool standaloneLiveAs(const boost::json::object& media, const std::string& path) {
+    const boost::json::object track = standaloneOf(media);
+    const auto live = track.find("live");
+    const auto trackPath = track.find("path");
+    return live != track.end() && live->value().is_bool() && live->value().as_bool() &&
+           trackPath != track.end() && trackPath->value().is_string() &&
+           trackPath->value().as_string() == path;
+}
+
+// The standalone track's swap, measured the same way (review F3's second
+// half: the bed change held fMutex — and every RPC status reader behind it
+// — for the seconds a bring-up can take). With the swap re-cut, the claim
+// is microseconds and the new bed's negotiation plus pre-roll runs on the
+// staging lane, held silent; the assertions are the swap's ack, the RPC's
+// and the frame loop's freedom through the staged wait, and the bed's
+// eventual live truth. The scripted slow start matches the bed's name
+// alone: the silent background clip carries no audio path for it to hit.
+void exerciseStandaloneSwapOffLoop(const std::string& videoB, const std::string& bed6,
+                                   const std::string& tone2) {
+    std::string socket;
+    pid_t worker = -1;
+    const int fd = spawnScopedWorker(
+        "standaloneswap",
+        {"OPENSHOW_FAULT_AUDIO_START_MS=" + std::to_string(static_cast<int>(k621cWaitMs)),
+         "OPENSHOW_FAULT_AUDIO_START_MATCH=bed-6s.m4a"},
+        &socket, &worker);
+    if (fd < 0) {
+        check(false, "the standalone-swap worker could be spawned with its slow bed");
+        return;
+    }
+    boost::json::value reply;
+
+    const std::uint64_t onAir =
+        preparePresent(fd, lyricScene("6.21c2 bed", "c23a", videoB, true, "c23-video-b"));
+    check(onAir != 0 && waitActive(fd, onAir, nullptr),
+          "a playing clip is on air beside the track");
+
+    // First selection: the ack answers without the bring-up, and the track
+    // comes live later — off-loop, through the scripted wait.
+    const auto selectSent = std::chrono::steady_clock::now();
+    check(call(fd, proto::kMethodMediaStandalone, boost::json::object{{"path", bed6}}, &reply) &&
+              reply.at("result").as_object().at("pending").as_bool(),
+          "the slow bed is accepted pending");
+    std::fprintf(stderr, "6.21c2: bed selection acked in %.1f ms\n",
+                 std::chrono::duration<double, std::milli>(
+                     std::chrono::steady_clock::now() - selectSent)
+                     .count());
+    check(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                    selectSent)
+                              .count() < 100.0,
+          "the selection does not wait on its own bring-up");
+    check(waitMedia(fd,
+                    [&](const boost::json::object& media) {
+                        return standaloneLiveAs(media, bed6);
+                    },
+                    5000),
+          "the staged bed comes live through its scripted negotiation");
+
+    // Over to the fast tone (a millisecond swap), then back through the slow
+    // bring-up WITH the audience watching: the frame loop and the RPC must
+    // stay free the whole time the lane negotiates.
+    check(call(fd, proto::kMethodMediaStandalone, boost::json::object{{"path", tone2}}, &reply) &&
+              reply.at("result").as_object().at("pending").as_bool(),
+          "the swap to the fast tone is accepted");
+    check(waitMedia(fd,
+                    [&](const boost::json::object& media) {
+                        return standaloneLiveAs(media, tone2);
+                    },
+                    5000),
+          "the fast track comes live");
+    const auto swapSent = std::chrono::steady_clock::now();
+    check(call(fd, proto::kMethodMediaStandalone, boost::json::object{{"path", bed6}}, &reply) &&
+              reply.at("result").as_object().at("pending").as_bool(),
+          "the swap back to the slow bed is accepted");
+    const double swapAckMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - swapSent)
+                                 .count();
+    check(swapAckMs < 100.0, "the swap's ack does not wait on the staged bring-up");
+    const MonitorReport report =
+        monitorResponsiveness(fd, static_cast<int>(k621cWaitMs + 400.0));
+    std::fprintf(stderr,
+                 "6.21c2: through the staged bed swap the RPC answered in <= %.1f ms, frames "
+                 "advanced %.0f -> %.0f (worst gap %.0f ms)\n",
+                 report.worstRpcMs, report.framesBegin, report.framesEnd,
+                 report.worstFrameGapMs);
+    check(report.framesEnd > report.framesBegin && report.worstFrameGapMs < 400.0,
+          "the frame loop ran freely while the swapped bed negotiated on its lane");
+    check(report.worstRpcMs < 100.0,
+          "status kept answering while the standalone bring-up held its lane");
+
+    // And the swap's promise, kept: the requested bed is live and advancing.
+    check(waitMedia(fd,
+                    [&](const boost::json::object& media) {
+                        return standaloneLiveAs(media, bed6);
+                    },
+                    5000),
+          "the bed comes live again after the lane's bring-up");
+    check(waitMedia(fd,
+                    [](const boost::json::object& media) {
+                        return numberOf(standaloneOf(media), "position") >= 0.0;
+                    },
+                    4000),
+          "the re-published bed reports a sampled position");
+    {
+        const double first = numberOf(standaloneOf(mediaOf(status(fd))), "position");
+        sleepMs(500);
+        const double later = numberOf(standaloneOf(mediaOf(status(fd))), "position");
+        check(later > first + 0.2 && later < first + 2.0,
+              "and its clock runs at a clock's rate");
+    }
+    retireScopedWorker(fd, worker, socket, "the standalone-swap worker answers shutdown");
+}
+
 // The schedule below, in milliseconds after the transport opened. Keeping the
 // numbers here means the assertions and the worker's script cannot drift.
 constexpr double kForwardMs = 1200.0;
@@ -2827,15 +3100,6 @@ void exerciseRpcSeekRefusal(const std::string& audioClip) {
     retireScopedWorker(fd, worker, socket, "the rpc-refusal worker answers shutdown");
 }
 
-// The standalone block of a status media object ({} when the worker predates
-// it — every read below tolerates that exactly like WorkerController does).
-boost::json::object standaloneOf(const boost::json::object& media) {
-    const auto track = media.find("standalone");
-    return track != media.end() && track->value().is_object()
-               ? track->value().as_object()
-               : boost::json::object{};
-}
-
 // --- task 6.15b (review R15): the standalone production track ---
 //
 // The independent audio transport over the operator's wire: selection with
@@ -3551,6 +3815,18 @@ int main(int argc, char** argv) {
         exerciseStagedAudioGoLive(videoB, audioClip);
     } else {
         std::printf("   skipped the staged-audio scenario (no audio fixture)\n");
+    }
+
+    // --- task 6.21c2 (review F3): the retirement lane, off the frame tick ---
+    //
+    // Both own their workers (the scripted pacing exit and the scripted
+    // audio start are read at spawn). The retirement scenario needs no
+    // audio fixture — its yardstick is a playing silent clip.
+    exerciseSlowRetirement(videoA, videoB);
+    if (audioOk) {
+        exerciseStandaloneSwapOffLoop(videoB, bed6, tone2);
+    } else {
+        std::printf("   skipped the standalone-swap scenario (no audio fixture)\n");
     }
 
     ::unlink(corrupt.c_str());

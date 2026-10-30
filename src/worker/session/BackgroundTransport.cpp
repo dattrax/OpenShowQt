@@ -49,15 +49,31 @@ void BackgroundTransport::shutdown() {
     // part is idempotent: a never-started transport tears down as cleanly
     // as a running one, which is what makes the destructor safe.
     teardownBackgroundTransport();
+    // 6.21c2: teardown may have HANDLED the transport's waits to the
+    // retirement lane rather than paid them; shutdown is not a frame tick,
+    // so it pays them here — the session must not leave a pacing thread,
+    // a player, or unreleased GPU leases outliving it. reapRetirement()
+    // closes the GPU half on this thread (which it has been since 6.9c's
+    // order: the transport dies before the GPU resources it references).
+    if (fRetirement) {
+        while (!fRetirement->laneDone.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        reapRetirement();
+    }
     // The standalone track is deliberately NOT part of the background
     // transport's lifetime (task 6.15b) — which is exactly why shutdown
     // must end it by name. Live first, teardown's rule: a command that
     // races this refuses, never lands on a stopping player; the sticky
-    // error keeps its path.
+    // error keeps its path. The bring-up lane is drained before the track
+    // itself: a staged player that never published is stopped by the
+    // reaper (6.21c2), and its thread reaped, before the last instance
+    // goes down.
+    reapStandaloneStage();
     fStandaloneLive.store(false, std::memory_order_release);
     fMediaSourceMask.store(fMediaSourceMask.load(std::memory_order_relaxed) & ~2,
                            std::memory_order_release);
-    fStandalonePlayer.stop();  // idempotent
+    fStandalonePlayer->stop();  // idempotent
     {
         std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
         fStandaloneSwap.reset();  // nobody left to apply it
@@ -146,7 +162,8 @@ SkImage* BackgroundTransport::heldVideoImage() const {
     if (!held || !fPresenter) {
         return nullptr;
     }
-    return fPresenter->acquireImage(held->token, held->sequence);
+    return fPresenter.load(std::memory_order_relaxed)
+        ->acquireImage(held->token, held->sequence);
 }
 
 void BackgroundTransport::noteRunStart(std::chrono::steady_clock::time_point now) {
@@ -379,9 +396,25 @@ void BackgroundTransport::setVideoClock(std::function<double()> clock) {
 }
 
 void BackgroundTransport::submitVideo(VideoSubmission submission) {
+    submitVideo(std::move(submission), nullptr);
+}
+
+void BackgroundTransport::submitVideo(VideoSubmission submission,
+                                      PlaybackPipeline* producer) {
     std::optional<VideoSubmission> dropped;
     {
         std::lock_guard<std::mutex> lock(fMutex);
+        // The retirement generation filter (task 6.21c2, review F3). With
+        // the producer's pipeline named, the seam answers "is this the
+        // transport in service?" — and a submission from one the seam no
+        // longer names is retired work: dropped, because that pipeline is
+        // stopping and its close() releases every slot it held, this
+        // frame's included. The bench seam (nullptr) predates pipelines and
+        // keeps the old "always accepted" behaviour.
+        if (producer != nullptr &&
+            fPresenter.load(std::memory_order_relaxed) != producer) {
+            return;
+        }
         if (fPendingVideo) {
             dropped = fPendingVideo;
         }
@@ -390,8 +423,15 @@ void BackgroundTransport::submitVideo(VideoSubmission submission) {
     // A slot replaced before ever being drawn goes back now, with no GPU
     // semaphore: nothing ever sampled it. The release carries the
     // replaced submission's sequence as its proof of ownership (6.6a).
-    if (dropped && fPresenter && dropped->token != submission.token) {
-        fPresenter->onDropped(dropped->token, dropped->sequence);
+    // With a producer named, the replaced submission is ITS OWN (the seam
+    // was cleared at the last retirement), so the release walks the
+    // pipeline that owns the slot rather than a pointer read off the seam.
+    if (dropped && dropped->token != submission.token) {
+        if (producer != nullptr) {
+            producer->onDropped(dropped->token, dropped->sequence);
+        } else if (VideoPresenter* presenter = fPresenter.load(std::memory_order_relaxed)) {
+            presenter->onDropped(dropped->token, dropped->sequence);
+        }
     }
     wakeRenderThread();
 }
@@ -557,12 +597,109 @@ void BackgroundTransport::rebuildMediaSourcesLocked() {
         // which AvPlayer's own table resolves — the standalone-only
         // transport hands that identity whichever mixer index it got (6.7b).
         fMedia.sources.push_back({"standalone",
-                                         fStandalonePlayer.volume(AvPlayer::kSecondInput),
-                                         fStandalonePlayer.muted(AvPlayer::kSecondInput)});
+                                         fStandalonePlayer->volume(AvPlayer::kSecondInput),
+                                         fStandalonePlayer->muted(AvPlayer::kSecondInput)});
     }
 }
 
-void BackgroundTransport::swapStandalonePendingLocked() {
+// The standalone swap, re-cut by 6.21c2 (review F3). The old function ran
+// stop()+start() — a server negotiation and a pre-roll, up to seconds —
+// INSIDE fMutex, and every RPC status reader queued behind the transport's
+// own lock for the whole of it. The waits are simply not the lock's, nor
+// the frame tick's, business now:
+//
+//   * begin: claim the current instance (swap for a fresh silent one under
+//     fMutex) and stop it outside the lock — milliseconds, and no reader
+//     ever sees a dying player; a removal ends here;
+//   * stage: a lane thread starts the new clip with Config::startHeld —
+//     connection, negotiation, feeders, mixer, pre-roll ALL paid there,
+//     nothing audible — and the finished player waits for the next pass;
+//   * publish: swap the staged instance in under fMutex, release its hold
+//     (microseconds), and move live/mask/status with it, exactly the old
+//     swap's bookkeeping in the same order.
+// One stage at a time: while a stage runs, a new intent stays PENDING (the
+// old track keeps playing — the honest newest-wins wait, not a queue of
+// bring-ups), and the stage's result for a superseded request dies on its
+// own thread. The pending gain/mute drop keeps the teardown rule — the
+// intent addresses the mixer that is going away — and the publish-then-ops
+// order of applyTransportOps still lands a same-pass gain on the NEW
+// player's mixer.
+void BackgroundTransport::applyStandaloneOps() {
+    // Publish first, if a stage has finished: same-pass gains land on it.
+    if (fStandaloneStage && fStandaloneStage->done.load(std::memory_order_acquire)) {
+        std::shared_ptr<StandaloneStage> stage = std::move(fStandaloneStage);
+        stage->worker.join();  // the job returned with its store; this only reaps
+        std::unique_ptr<AvPlayer> abandoned;
+        {
+            std::lock_guard<std::mutex> swapLock(fStandaloneSwapMutex);
+            if (fStandaloneSwap && *fStandaloneSwap != stage->path) {
+                // A newer selection arrived mid-bring-up: this player is
+                // for a request the operator has already replaced. It
+                // started HELD — nothing was ever audible — and stopping
+                // it here costs milliseconds (its joins only); the pending
+                // intent gets its own stage on the next pass.
+                abandoned = std::move(stage->player);
+            }
+        }
+        if (abandoned == nullptr && !stage->player) {
+            // A failed bring-up: the block's story, told under fMutex as
+            // the old swap told it (sticky error, path pairing, dedupe).
+            std::lock_guard<std::mutex> lock(fMutex);
+            fMedia.standalone.live = false;
+            fMedia.standalone.path = stage->path;
+            standaloneFailedLocked("standalone track: " +
+                                   (stage->error.empty() ? "the audio transport refused it"
+                                                         : stage->error));
+            std::fprintf(stderr, "openshow-worker: standalone track %s: %s\n",
+                         stage->path.c_str(), stage->error.c_str());
+        } else if (abandoned == nullptr) {
+            std::lock_guard<std::mutex> lock(fMutex);
+            fStandalonePlayer = std::move(stage->player);
+            // Release the hold: the transport comes up exactly where the
+            // old swap's start() left it — position 0, playing, lane
+            // honest — and the refresh promotes the block's fields as
+            // before. play() touches only this player's own sink and
+            // clock; no reader can observe it mid-call.
+            fStandalonePlayer->play();
+            fStandaloneLive.store(true, std::memory_order_release);
+            fMediaSourceMask.store(fMediaSourceMask.load(std::memory_order_relaxed) | 2,
+                                   std::memory_order_release);
+            // A successful bring-up replaces any earlier failure
+            // (mediaPlaying's rule), and the block's path names what the
+            // block's error describes.
+            fMedia.standalone.error.clear();
+            fMedia.standalone.live = true;
+            fMedia.standalone.path = stage->path;
+            fMedia.standalone.playing = false;  // the refresh promotes it, lane first
+            fMedia.standalone.position = -1.0;
+            // The lane seeded from the player that just came up: `live`
+            // and the lane are one statement about the same transport, so
+            // the swap that sets the first owes the second an honest value
+            // — leaving the last block's "none" in place would let status
+            // say "live" beside "none" until the next refresh (a real
+            // window: the selection's own wait returns on live, and reads
+            // the lane right there).
+            fMedia.standalone.audio = AvPlayer::laneName(fStandalonePlayer->audioLaneState());
+            // A fresh transport has not wrapped; the count is THIS file's story.
+            fMedia.standalone.loops = 0;
+            double duration = -1.0;
+            openshow::media::MediaInfo info;
+            std::string probeError;
+            if (openshow::media::probeMedia(stage->path, &info, &probeError) ==
+                    openshow::media::ProbeStatus::kOk &&
+                info.durationSeconds > 0.0) {
+                duration = info.durationSeconds;
+            }
+            fMedia.standalone.duration = duration;
+            rebuildMediaSourcesLocked();
+            std::fprintf(stderr, "openshow-worker: standalone track %s (%s clock)\n",
+                         stage->path.c_str(),
+                         fStandalonePlayer->audioLive() ? "audio" : "monotonic");
+        }
+    }
+    if (fStandaloneStage) {
+        return;  // one bring-up at a time; the lane wakes this loop when done
+    }
     std::optional<std::string> swap;
     {
         std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
@@ -580,73 +717,76 @@ void BackgroundTransport::swapStandalonePendingLocked() {
     if (fPendingMuteSource.load(std::memory_order_relaxed) == AvPlayer::kSecondInput) {
         fPendingMuteSource.store(-1, std::memory_order_release);
     }
-    fStandalonePlayer.stop();  // idempotent: a never-started player tears down clean
-    fStandaloneLive.store(false, std::memory_order_release);
-    fMediaSourceMask.store(fMediaSourceMask.load(std::memory_order_relaxed) & ~2,
-                           std::memory_order_release);
-    rebuildMediaSourcesLocked();
-    fStandalonePath = *swap;
+    // Claim the current instance under fMutex, stop it OUTSIDE: the
+    // 6.21c1 rule, and the only wait the render thread still pays here —
+    // a stopped player's joins are milliseconds, not a negotiation.
+    std::unique_ptr<AvPlayer> retiring;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        retiring = std::move(fStandalonePlayer);
+        fStandalonePlayer = std::make_unique<AvPlayer>();
+        fStandaloneLive.store(false, std::memory_order_release);
+        fMediaSourceMask.store(fMediaSourceMask.load(std::memory_order_relaxed) & ~2,
+                               std::memory_order_release);
+        rebuildMediaSourcesLocked();
+        fStandalonePath = *swap;
+        if (swap->empty()) {
+            // A removal: the block goes idle — except the error, which
+            // stays sticky beside the path it describes (the operator
+            // still needs to read what broke).
+            fMedia.standalone.live = false;
+            fMedia.standalone.playing = false;
+            fMedia.standalone.position = -1.0;
+            fMedia.standalone.duration = -1.0;
+            fMedia.standalone.audio = "none";
+            fMedia.standalone.loops = 0;
+        }
+    }
+    retiring.reset();  // ~AvPlayer stops; the track's old instance is gone
     if (swap->empty()) {
-        // A removal: the block goes idle — except the error, which stays
-        // sticky beside the path it describes (the operator still needs
-        // to read what broke).
-        fMedia.standalone.live = false;
-        fMedia.standalone.playing = false;
-        fMedia.standalone.position = -1.0;
-        fMedia.standalone.duration = -1.0;
-        fMedia.standalone.audio = "none";
-        fMedia.standalone.loops = 0;
         std::fprintf(stderr, "openshow-worker: standalone track removed\n");
         return;
     }
-    AvPlayer::Config config;
-    config.secondAudioPath = *swap;
     // The production bed loops, the background transport's own default
     // (FreeShow's rule): the removal is the stop, and a walk-in track
     // that falls silent at its EOF mid-service is its own surprise.
+    auto stage = std::make_shared<StandaloneStage>();
+    stage->path = *swap;
+    AvPlayer::Config config;
+    config.secondAudioPath = *swap;
     config.loop = true;
-    std::string startError;
-    if (!fStandalonePlayer.start(config, &startError)) {
-        fMedia.standalone.live = false;
-        fMedia.standalone.path = *swap;
-        standaloneFailedLocked("standalone track: " +
-                               (startError.empty() ? "the audio transport refused it"
-                                                   : startError));
-        std::fprintf(stderr, "openshow-worker: standalone track %s: %s\n", swap->c_str(),
-                     startError.c_str());
+    config.startHeld = true;  // silent while the wait runs (6.21c1's hold)
+    stage->worker = std::thread([this, stage, config] {
+        auto player = std::make_unique<AvPlayer>();
+        if (!player->start(config, &stage->error)) {
+            stage->player.reset();  // a failed start has self-cleaned (6.7a)
+        } else {
+            stage->player = std::move(player);
+        }
+        stage->done.store(true, std::memory_order_release);
+        // The publish prompt: like the retirement lane, the stage wakes
+        // the loop even when an idle slide would otherwise sleep through
+        // the bring-up finishing.
+        wakeRenderThread();
+    });
+    fStandaloneStage = std::move(stage);
+}
+
+void BackgroundTransport::reapStandaloneStage() {
+    // Shutdown only (6.21c2): the stage's bring-up is bounded (start()
+    // waits on negotiation and pre-roll, seconds at worst) and shutdown is
+    // not a frame tick — the session must not die with a lane thread
+    // staging a player into it. The staged player, published or not, dies
+    // here (its stop runs on this thread; no GPU is anywhere near it).
+    if (!fStandaloneStage) {
         return;
     }
-    fStandaloneLive.store(true, std::memory_order_release);
-    fMediaSourceMask.store(fMediaSourceMask.load(std::memory_order_relaxed) | 2,
-                           std::memory_order_release);
-    // A successful bring-up replaces any earlier failure (mediaPlaying's
-    // rule), and the block's path names what the block's error describes.
-    fMedia.standalone.error.clear();
-    fMedia.standalone.live = true;
-    fMedia.standalone.path = *swap;
-    fMedia.standalone.playing = false;  // the refresh promotes it, lane first
-    fMedia.standalone.position = -1.0;
-    // The lane seeded from the player that just came up: `live` and the
-    // lane are one statement about the same transport, so the swap that
-    // sets the first owes the second an honest value — leaving the last
-    // block's "none" in place would let status say "live" beside "none"
-    // until the next refresh (a real window: the selection's own wait
-    // returns on live, and reads the lane right there).
-    fMedia.standalone.audio = AvPlayer::laneName(fStandalonePlayer.audioLaneState());
-    // A fresh transport has not wrapped; the count is THIS file's story.
-    fMedia.standalone.loops = 0;
-    double duration = -1.0;
-    openshow::media::MediaInfo info;
-    std::string probeError;
-    if (openshow::media::probeMedia(*swap, &info, &probeError) ==
-            openshow::media::ProbeStatus::kOk &&
-        info.durationSeconds > 0.0) {
-        duration = info.durationSeconds;
+    while (!fStandaloneStage->done.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    fMedia.standalone.duration = duration;
-    rebuildMediaSourcesLocked();
-    std::fprintf(stderr, "openshow-worker: standalone track %s (%s clock)\n",
-                 swap->c_str(), fStandalonePlayer.audioLive() ? "audio" : "monotonic");
+    fStandaloneStage->worker.join();
+    fStandaloneStage->player.reset();
+    fStandaloneStage.reset();
 }
 
 void BackgroundTransport::refreshStandaloneMediaLocked() {
@@ -654,20 +794,20 @@ void BackgroundTransport::refreshStandaloneMediaLocked() {
     if (!fStandaloneLive.load(std::memory_order_relaxed)) {
         return;  // while no player is up, the swap owns the block's fields
     }
-    const AvPlayer::AudioLane lane = fStandalonePlayer.audioLaneState();
+    const AvPlayer::AudioLane lane = fStandalonePlayer->audioLaneState();
     standalone.audio = AvPlayer::laneName(lane);
-    standalone.position = fStandalonePlayer.clockSeconds();
+    standalone.position = fStandalonePlayer->clockSeconds();
     // The track's own feeder answers the one question the lane cannot: with
     // the loop on, a starved feed is SILENCE the sink paces as usual. The
     // rewind counter is the difference between "still walking" and "ran
     // out", and the fixture watches it rather than trusting the lane.
-    standalone.loops = fStandalonePlayer.feederStats(true).loops;
+    standalone.loops = fStandalonePlayer->feederStats(true).loops;
     // "Playing" means the transport is advancing: held freezes it, and a
     // transport that opened NO source has nothing to advance (its position
     // is a clock, not music). A no-output machine still runs — the same
     // monotonic-clock transport the video uses when the server is absent —
     // so it plays while its lane names why nothing is heard.
-    standalone.playing = !fStandalonePlayer.paused() && lane != AvPlayer::AudioLane::kDegraded;
+    standalone.playing = !fStandalonePlayer->paused() && lane != AvPlayer::AudioLane::kDegraded;
     // The lane fault is the track's own story (R18's rule, per block): a
     // fault lane is NAMED, a healthy one is the recovery that clears it.
     // An error set while the player was down (a bring-up that failed) is
@@ -776,14 +916,17 @@ void BackgroundTransport::applyTransportOps() {
     // this loop owns. Each slot is independent of the momentary op above —
     // muting a source must not swallow a pending seek, and a loop toggle
     // is meaningless as an instant, it is the value EOF will honour.
+    // Reap first (6.21c2): a retirement the lane finished gets its GPU half
+    // closed here, on the device's owner thread, before anything else the
+    // pass decides. The lane's wake brought this pass home for it.
+    reapRetirement();
     // The standalone selection first (task 6.15b): a pass that both swaps
     // the track and carries a gain for it must land the gain on the NEW
     // player's mixer, not the one being stopped. The status fields it
-    // touches are the same ones the refresh below samples.
-    {
-        std::lock_guard<std::mutex> lock(fMutex);
-        swapStandalonePendingLocked();
-    }
+    // touches are the same ones the refresh below samples. Since 6.21c2
+    // the selection publishes or stages (see applyStandaloneOps) and takes
+    // its own locks; the waits it used to hold under fMutex are gone.
+    applyStandaloneOps();
     const int loop = fPendingLoop.exchange(-1, std::memory_order_acq_rel);
     if (loop >= 0 && fBackground != nullptr) {
         fAudio->setLoop(loop == 1);
@@ -801,7 +944,7 @@ void BackgroundTransport::applyTransportOps() {
     const int gainSource = fPendingGainSource.exchange(-1, std::memory_order_acq_rel);
     if (gainSource >= 0) {
         const bool forTrack = gainSource == AvPlayer::kSecondInput;
-        AvPlayer& player = forTrack ? fStandalonePlayer : *fAudio;
+        AvPlayer& player = forTrack ? *fStandalonePlayer : *fAudio;
         if (forTrack ? fStandaloneLive.load(std::memory_order_relaxed) : fBackground != nullptr) {
             player.setVolume(gainSource,
                              static_cast<float>(fPendingGain.load(std::memory_order_relaxed)));
@@ -811,7 +954,7 @@ void BackgroundTransport::applyTransportOps() {
     const int muteSource = fPendingMuteSource.exchange(-1, std::memory_order_acq_rel);
     if (muteSource >= 0) {
         const bool forTrack = muteSource == AvPlayer::kSecondInput;
-        AvPlayer& player = forTrack ? fStandalonePlayer : *fAudio;
+        AvPlayer& player = forTrack ? *fStandalonePlayer : *fAudio;
         if (forTrack ? fStandaloneLive.load(std::memory_order_relaxed) : fBackground != nullptr) {
             player.setMute(muteSource, fPendingMute.load(std::memory_order_relaxed) == 1);
             applied = true;
@@ -1200,8 +1343,15 @@ bool BackgroundTransport::applyBackground(
     fBackground = std::move(pipeline);
     setVideoClock(fAudio->clockFn());
     fPresenter = fBackground.get();
+    // The sink names its producer (task 6.21c2): once a teardown hands this
+    // pipeline to the retirement lane, the seam's generation filter drops
+    // anything still in flight from it, so a slow exit can never present a
+    // frame past its transport. The captured raw pointer names an object
+    // the retirement slot keeps alive until after the pacing thread's join.
     if (!fBackground->start(
-            [this](const VideoSubmission& submission) { submitVideo(submission); },
+            [this, producer = fBackground.get()](const VideoSubmission& submission) {
+                submitVideo(submission, producer);
+            },
             fAudio->clockFn(), &error)) {
         std::fprintf(stderr, "openshow-worker: background decode %s: %s\n",
                      wanted.assetPath.c_str(), error.c_str());
@@ -1266,6 +1416,7 @@ bool BackgroundTransport::applyBackground(
 }
 
 void BackgroundTransport::teardownBackgroundTransport() {
+    reapRetirement();  // a completed retirement closes here (render thread)
     mediaStopped();
     // The transport this script was armed for is going away (task 6.7d): a
     // pending intent and any later scheduled ops must not fire against a
@@ -1295,39 +1446,93 @@ void BackgroundTransport::teardownBackgroundTransport() {
         fAppliedBackground = openshow::scene::Background{};
         return;
     }
-    // Quiesce the producer FIRST (task 6.6b, review R6). submitVideo()
-    // reads the presenter pointer outside fMutex, so the only moment it is
-    // safe to change anything the sink touches — the presenter, the clock,
-    // the pending seam — is behind the stop/join generation boundary:
-    // requestStop wakes every wait the pacing thread can park in (clock
-    // sleep, ring poll, uploader commit) and join closes the window for
-    // good. After it the render thread owns the seam exclusively until the
-    // next start(), which creates the new pacing thread after its presenter
-    // is already published (thread creation orders the two).
+    // Quiesce, then hand off (task 6.21c2, review F3, re-expressing R6).
+    // The old order — requestStop, join, close, all here — put the
+    // producer's exit wait on the frame tick: a blocking read inside the
+    // pacing thread held the audience's frames for its whole timeout. The
+    // generation rule replaces that wait:
+    //
+    //   * requestStop() wakes every wait the pacing thread can park in
+    //     (clock sleep, ring poll, uploader commit). It does not wait; it
+    //     only opens the exit;
+    //   * the seam closes to the old producer before its successor
+    //     arrives: the atomic presenter goes null (an in-flight submit
+    //     that took fMutex before this point still lands in the pre-
+    //     retirement seam; any submit after it sees the filter and is
+    //     retired work), and the seam's slots — pending, drawn, clock —
+    //     forget this transport;
+    //   * everything the producer can still REACH — the pipeline it paces,
+    //     the player whose clock function it carries — now lives in the
+    //     retirement slot, so the thread touches nothing but live memory
+    //     until it returns;
+    //   * the lane joins it, stops the player, and the RENDER thread then
+    //     closes the GPU half (Ganesh keeps its owner, and the close
+    //     strictly follows the join).
+    //
+    // Only ONE retirement is in flight: reapRetirement() ran at the head of
+    // this function, so a still-occupied slot means the lane's join is still
+    // running — the hung-producer overlap — and that wait is paid here
+    // rather than growing a queue. Normal retirements never meet it: the
+    // lane returns in milliseconds once the stop flag is seen.
+    if (fRetirement) {
+        while (!fRetirement->laneDone.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        reapRetirement();
+    }
     fBackground->requestStop();
-    fBackground->join();
-    // Presenter and clock down next, then the seam forgets the slots:
-    // their GPU lifetime belongs to the pipeline being closed. Outstanding
-    // leases die with the pipeline — the joined producer parked on one was
-    // woken by requestStop, and close() releases every slot (task 6.6a).
-    fPresenter = nullptr;
+    fPresenter.store(nullptr, std::memory_order_relaxed);
     setVideoClock(nullptr);
+    // Detaching the clock's owner relation is seam work, and AvPlayer's
+    // attach list belongs to the thread that swaps transports (6.6b) — so
+    // it happens here, before the hand-off, never on the lane.
     fAudio->detachPipeline(fBackground.get());
+    auto retirement = std::make_shared<Retirement>();
+    retirement->pipeline = std::move(fBackground);
     {
         std::lock_guard<std::mutex> lock(fMutex);
         fPendingVideo.reset();
         fDrawnVideo.reset();
+        // The audio half moves out with its pipeline (6.21c1's instance
+        // ownership): the stop is the lane's work after the join, and until
+        // it runs the retired player still answers its producer's final
+        // clock reads. The seam gets the fresh silent instance at once, so
+        // no status reader ever sees the outgoing one being taken down.
+        retirement->audio = std::move(fAudio);
+        fAudio = std::make_unique<AvPlayer>();
     }
-    fBackground->close();
-    fBackground.reset();
-    // The audio player outlived no clock reader: its clock function was
-    // only ever handed to the (now joined) pipeline, so retiring it here
-    // cannot race a pacing thread either. 6.21c1: retire means swap-and-
-    // stop — the seam gets a fresh silent instance under fMutex, and the
-    // outgoing one is stopped where the caller stands (the render thread
-    // today; the retirement lane is 6.21c2's job).
-    retireAudioInstance();
+    retirement->worker = std::thread([this, r = retirement] {
+        r->pipeline->join();  // THE wait this task moved off the frame tick
+        r->audio.reset();     // ~AvPlayer stops: joins feeder, mixer, sink threads
+        r->laneDone.store(true, std::memory_order_release);
+        // The render thread owes the GPU half a close. This wake is the
+        // reap's prompt, so even a loop sleeping an idle slide comes back
+        // for it: nothing from the old transport outlives the next pass.
+        wakeRenderThread();
+    });
+    fRetirement = std::move(retirement);
     fAppliedBackground = openshow::scene::Background{};
+}
+
+void BackgroundTransport::reapRetirement() {
+    // Render thread only (the loop's pass, applyBackground's head, and the
+    // shutdown drain): the close is a Ganesh release and must keep the
+    // device's owner thread.
+    if (!fRetirement) {
+        return;
+    }
+    if (!fRetirement->laneDone.load(std::memory_order_acquire)) {
+        return;  // the lane wakes this thread when it is done
+    }
+    // Close follows the join (R6's order kept): no producer can be uploading
+    // into a slot this releases. The unique_ptr itself goes with the slot's
+    // last reference — which is here, after the worker is reaped, so the
+    // (post-close, GPU-quiet) destructor runs on this thread.
+    if (fRetirement->pipeline) {
+        fRetirement->pipeline->close();
+    }
+    fRetirement->worker.join();
+    fRetirement.reset();
 }
 
 void BackgroundTransport::retireAudioInstance() {
