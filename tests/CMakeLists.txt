@@ -268,6 +268,17 @@ if(OPENSHOW_BUILD_UI)
   add_test(NAME document_present_tests
     COMMAND document_present_tests $<TARGET_FILE:openshow-worker>)
   set_tests_properties(document_present_tests PROPERTIES LABELS display TIMEOUT 90)
+
+  # Task 6.20c: the whole production journey — author through the panels'
+  # DocumentController, an off-air picture of the next slide, the go, the
+  # per-layer clears and the restore, and a background swap under live
+  # words — each hand-off asserted in output.status AND sampled in the
+  # live preview stream. Display (worker window) and ffmpeg (real PNGs).
+  add_executable(production_journey_tests production_journey_tests.cpp)
+  target_link_libraries(production_journey_tests PRIVATE openshow::ui-core openshow::protocol)
+  add_test(NAME production_journey_tests
+    COMMAND production_journey_tests $<TARGET_FILE:openshow-worker>)
+  set_tests_properties(production_journey_tests PROPERTIES LABELS display TIMEOUT 120)
 endif()
 
 # Runs the Qt-free worker with no display and no audio session.

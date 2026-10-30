@@ -342,8 +342,20 @@ void RpcServer::serve(int connectionFd) {
         std::vector<QueuedFrame> notifications;
         collectNotifications(&notifications);
         collectDeferred(&notifications);  // prepare acks from the executor thread (6.9a)
+        // (task 6.20c, found by production_journey_tests): the deadline
+        // measures the time the queue has OWED bytes with no progress, not
+        // the time since the last byte moved. A frontend that read
+        // everything and then had nothing to say for ten seconds is idle,
+        // not stalled — and the first frame this loop hands it after that
+        // quiet must not arrive already late. A connection whose peer has
+        // truly stopped reading keeps the queue continuously non-empty, so
+        // its deadline still runs from the moment the debt began.
+        const bool debtWasIdle = outbound.empty();
         for (QueuedFrame& note : notifications) {
             outbound.push(note.key, std::move(note.bytes));
+        }
+        if (debtWasIdle && !outbound.empty()) {
+            lastProgress = std::chrono::steady_clock::now();  // the debt starts now
         }
         if (!outbound.empty()) {
             // The deadline is measured against PROGRESS, not against the queue

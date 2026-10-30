@@ -236,12 +236,45 @@ correction recorded in the ledger row: the split's `rpc_limits_tests` does
 not exist — the fixtures are `protocol_tests`, `scene_tests`,
 `outbound_queue_tests` and the live `worker_rpc_limits`/`worker_rpc_transport`.
 
-**Next implementation task: 6.20c** — the production
-author→preview→go→clear→restore→media-swap proof: one display-labelled
-fixture driving a real `--socket` worker end to end, authoring through the
-same `DocumentController` the panels bind and asserting each hand-off
-through worker status and the preview stream, with environment limits
-printed as honest skips in its own output.
+**Task 6.20c is committed.** `tests/production_journey_tests.cpp` (display-
+labelled, timeout 120 s) spawns a real `--socket` production worker and walks
+the operator's whole day through the production objects: a song with slides
+authored through the same `DocumentController` the panels bind, the off-air
+picture asked over the shm preview stream while the leak ceiling (nothing may
+appear on the audience mirror before the first present ack) guards it, the go
+through the panel's own hand-off, words cleared, background cleared, clear-
+all, restore of the remembered revision, and a background-asset swap under
+still-live words — every act asserted in `output.status` AND in the actual
+preview-stream pixels, glyph presence counted as white pixels (all three
+channels above 0x80) because gold is "lit" in the old single-channel sense.
+Getting it green exposed three conflations, two in the fixture and one real.
+The fixture's: it had expected audience frames to carry the PREPARED revision,
+when the mirror tags what the frame PUT on air — the output revision the
+present ack names — and its wait gated on frame counts a status poll could
+consume before the wait began. The worker's, and the finding of this leaf:
+`RpcServer::serve` measured its 2 s write deadline from the last successful
+WRITE rather than from when the queue began OWING bytes, so a frontend that
+took everything and then had nothing to say for two seconds was disconnected
+by the first frame owed to it after the quiet — "frontend has not taken a byte
+of the 0 KiB owed to it" says it plainly. The fix resets the progress stamp
+when the queue transitions empty→non-empty ("the debt starts now"); a peer
+that truly stops reading keeps the queue continuously non-empty and is still
+dropped exactly on the window, which is what `worker_rpc_transport` pins and
+it passed unchanged. The frontend half's comment had claimed its deadline was
+"the same measurement the worker's own write deadline makes" — it is now.
+The fixture prints its honest environment skips: Wayland session, silent
+journey (pipewire-0 present, unused — the one-vs-two audio-stream question is
+6.20d's), RADV indistinguishable from llvmpipe here (M7.4).
+
+**Next implementation task: 6.20d** — resolve the three named differences as
+decisions, not prose: the `images` layer toggling only development decoration
+while production foreground images ride the words stack under mixed z order;
+the contract's one-software-mixed-stream wording against the two shipped
+transports; and the missing-foreground-image failure logged but not reported
+per item the way the acknowledged media lane reports. Each becomes code-to-
+contract or contract-with-reasoning plus an explicit M7 gate, naming which;
+if any one turns out to be a slice over a day, it splits again before it
+starts.
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -329,7 +362,9 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.20b**. Tasks **6.20a** (`ebb282d`),
+The working tree is clean at task **6.20c**. Tasks
+**6.20b** (`d12c594`),
+**6.20a** (`ebb282d`),
 **6.19b8** (`88cb050`),
 **6.19b7** (`f6752b0`),
 **6.19b6** (`8722b9e`),
@@ -716,6 +751,36 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.20c:
+
+- `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS —
+  and the headless build now matters for this leaf, because the deadline fix
+  lives in the worker's RPC server that both presets compile.
+- The new fixture ran standalone five times (worker binary and fixture from
+  the desktop tree): exit 0 every time, zero FAILs. Three fixture races had
+  to be fixed to get there, each fixed by making the assertion match the
+  protocol's real rule rather than by loosening it: the audience mirror tags
+  the PRESENTED frame's output revision (the present ack's number), not the
+  prepared revision; the wait is tag-matched rather than delivery-count-gated
+  (the mirror frame can arrive during the present helper's own status polls,
+  which the earlier freshness gate mistook for staleness); and text over a
+  bright still is counted as white pixels — all three channels over 0x80 —
+  because gold is "lit" under the single-channel test.
+- The run also earned a real worker fix: `RpcServer::serve` measured the 2 s
+  write deadline from the last successful WRITE, so an idle-but-healthy
+  frontend was disconnected by the first frame owed after ≥2 s of quiet
+  ("frontend has not taken a byte of the 0 KiB owed to it"). The stamp now
+  resets when the queue transitions empty→non-empty. The slow-peer fixtures
+  (`worker_rpc_transport`, `worker_controller_tests`) passed unchanged — the
+  queue stays continuously non-empty for a peer that truly stops reading, so
+  its deadline still runs from the moment the debt began. All debug
+  instrumentation was stripped before the gates below; the worker diff is
+  exactly the 12-line fix.
+- `ctest --preset desktop`: **54/54 PASS**, 246.6 s, all 13 display-labelled
+  tests (136.6 sec*proc) — `production_journey_tests` registered and green
+  inside the suite, everything else untouched.
+- `ctest --preset headless`: **32/32 PASS**, 51.6 s.
+
 Verification after 6.20b:
 
 - `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS
@@ -1002,7 +1067,8 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.20c**, the production author→preview→go→clear→restore→media-swap proof;
-then **6.20d–e** — the three reconciliations and the recorded closure. They
-are the last open lines of M6; do not claim M6 closure until all three
+**6.20d**, resolving the images-layer z order, the one-mixed-stream contract
+against the two shipped transports, and per-item foreground error reporting —
+as decisions, not prose; then **6.20e**, the recorded closure. They
+are the last open lines of M6; do not claim M6 closure until both
 resolve and the remaining gates pass.
