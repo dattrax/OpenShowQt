@@ -54,7 +54,7 @@ supervisor and its QML facade, which is the division the plan intends; the
 remaining planned split is 6.19b1–b8: the `DocumentPersistence` and
 `DocumentViews` adapters out of `DocumentController`, then `Main.qml`'s shortcut
 map, output panel, playlist panel, show page, edit page and settings page. The
-first two have landed. **6.19b1**: `DocumentPersistence`
+first three have landed. **6.19b1**: `DocumentPersistence`
 (`src/ui/DocumentPersistence.{h,cpp}`, `openshow-ui-core`) owns the scratch, its
 executor, the decision protocol around an explicit save or load and the wording
 of a refusal or a survivor, and `DocumentController` keeps the documents, their
@@ -66,7 +66,14 @@ search, and the selected box's text, kind and asset — and is a pure reader wit
 no state of its own: where a shape depends on where the operator is, the
 navigation arrives as a `Cursor` value the controller builds from the ids it
 owns, and `selectedBox()` is the single resolution of the selection with its
-positional fallback that the controller's own box-scoped edits go through too.
+positional fallback that the controller's own box-scoped edits go through
+too. **6.19b3**: `ShortcutMap` (`src/ui/ShortcutMap.qml`) holds the window's
+entire key table — 49 `Shortcut`s whose gates the component composes itself
+from fact properties passed in (page, focus holders, canvas selection, on-air
+state, settings opt-in) and whose activations leave as intent signals the
+window handles — because two enabled `Shortcut`s for one key make Qt drop the
+key, so R17's one-live-owner-per-key rule is only checkable where every
+claimant is on one page.
 
 | Boundary | Implementation and evidence | Assessment |
 |---|---|---|
@@ -96,7 +103,7 @@ proves and must be closed or explicitly accepted before M6/M7 acceptance.
 | Preview rendering/readback runs on the render thread after output; its budget defers future attempts after an overrun (now inside `PreviewProducer::fillPreviewSlot`). | It bounds average preview work and drops owned slots, but cannot prevent one expensive readback delaying the next audience frame. | Extraction done (**6.18a2**, 2026-10-29) without changing the policy. **6.9b** (2026-10-30) measured the loop THROUGH a slow off-loop open instead of assuming it: the audience's presented frames advanced with a 50 ms worst gap while a scripted 700 ms open ran on the executor. **7.2/7.4** still owe one readback's worst-frame impact. |
 | SceneImageCache retains pinned resources even above its 192 MiB eviction budget. | The budget bounds evictable decoded data, not total process/GPU memory; pinned excess is reported. | **7.2/7.4** resource accounting and service soak. Do not describe it as a hard total-memory cap. |
 | Missing foreground image errors are logged in `preloadScene()`; the acknowledged media error lane remains background/transport focused. | A missing foreground box can disappear without an operator-facing per-item error. | **6.20** failure-reporting closure (R18); keep a focused task if further implementation is needed. |
-| The 6.18a2 extraction landed 2026-10-29: `PreviewProducer` is built (`openshow-worker-preview-producer`), used by OutputSession through a thin delegating seam, and pinned headless by `preview_producer_tests`. The 6.18b1 extraction landed the same day: `BackgroundTransport` (`openshow-worker-session-transport`) owns the background media and its status mirror. The 6.18b2 split landed the same day: the bench/diagnostic drivers and `render/TestScene.cpp` moved out of worker main into the `openshow-worker-dev` executable, leaving the product binary socket-mode only. The 6.19a1 extraction landed 2026-10-30: `RpcClient` (`src/ui/RpcClient.{h,cpp}`, in `openshow-ui-core`) owns the frontend socket, framing, reply ledger, send bounds and write-stall deadline, driven by an unchanged `worker_controller_tests`. The 6.19a2 extraction landed the same day: `PreviewConsumer` (`src/ui/PreviewConsumer.{h,cpp}`, same target) owns the frontend's shm mapping and the mirror/off-air/thumbnail frames, asking through injected callbacks and reading only its own replies, with `scene.prepare`'s intent shared through `src/ui/SceneAsk.h`. The 6.19a3 extraction landed the same day: `PresentationModel` (`src/ui/PresentationModel.{h,cpp}`, same target) owns the frontend's acknowledged output model — the revision mirror, the latest-go rule, the pending logical presentation the clears compose against, the restore snapshot and the asset-path adoption — with the facade's six scene properties and its go/clear/restore/adopt invokables forwarding unchanged. The 6.19a4 split landed the same day, closing 6.19a: `RpcMethods` (`src/worker/rpc/RpcMethods.{h,cpp}`, compiled into the worker binary) owns the method table and the status/notification encoders, and `RpcServer` keeps only the connection — and `WorkerController` keeps the supervisor and the QML facade, which is the planned division. The 6.19b1 extraction landed the same day: `DocumentPersistence` (`src/ui/DocumentPersistence.{h,cpp}`, `openshow-ui-core`) owns the scratch, its executor, the decision protocol, the startup rule and the durability wording, with `DocumentController` still the one documents-and-history owner and its public persistence surface unchanged. And the 6.19b2 extraction landed the same day: `DocumentViews` (`src/ui/DocumentViews.{h,cpp}`, same target) owns the row shapes the views read, a stateless reader over the documents with the navigation passed in as a `Cursor`, `selectedBox()` the single selection resolution the controller's edits also resolve through, and the controller's property getters forwarding. | The remaining planned responsibility boundaries are unfinished. | **6.19b3–b8**. |
+| The 6.18a2 extraction landed 2026-10-29: `PreviewProducer` is built (`openshow-worker-preview-producer`), used by OutputSession through a thin delegating seam, and pinned headless by `preview_producer_tests`. The 6.18b1 extraction landed the same day: `BackgroundTransport` (`openshow-worker-session-transport`) owns the background media and its status mirror. The 6.18b2 split landed the same day: the bench/diagnostic drivers and `render/TestScene.cpp` moved out of worker main into the `openshow-worker-dev` executable, leaving the product binary socket-mode only. The 6.19a1 extraction landed 2026-10-30: `RpcClient` (`src/ui/RpcClient.{h,cpp}`, in `openshow-ui-core`) owns the frontend socket, framing, reply ledger, send bounds and write-stall deadline, driven by an unchanged `worker_controller_tests`. The 6.19a2 extraction landed the same day: `PreviewConsumer` (`src/ui/PreviewConsumer.{h,cpp}`, same target) owns the frontend's shm mapping and the mirror/off-air/thumbnail frames, asking through injected callbacks and reading only its own replies, with `scene.prepare`'s intent shared through `src/ui/SceneAsk.h`. The 6.19a3 extraction landed the same day: `PresentationModel` (`src/ui/PresentationModel.{h,cpp}`, same target) owns the frontend's acknowledged output model — the revision mirror, the latest-go rule, the pending logical presentation the clears compose against, the restore snapshot and the asset-path adoption — with the facade's six scene properties and its go/clear/restore/adopt invokables forwarding unchanged. The 6.19a4 split landed the same day, closing 6.19a: `RpcMethods` (`src/worker/rpc/RpcMethods.{h,cpp}`, compiled into the worker binary) owns the method table and the status/notification encoders, and `RpcServer` keeps only the connection — and `WorkerController` keeps the supervisor and the QML facade, which is the planned division. The 6.19b1 extraction landed the same day: `DocumentPersistence` (`src/ui/DocumentPersistence.{h,cpp}`, `openshow-ui-core`) owns the scratch, its executor, the decision protocol, the startup rule and the durability wording, with `DocumentController` still the one documents-and-history owner and its public persistence surface unchanged. And the 6.19b2 extraction landed the same day: `DocumentViews` (`src/ui/DocumentViews.{h,cpp}`, same target) owns the row shapes the views read, a stateless reader over the documents with the navigation passed in as a `Cursor`, `selectedBox()` the single selection resolution the controller's edits also resolve through, and the controller's property getters forwarding. And the 6.19b3 extraction landed the same day: `ShortcutMap` (`src/ui/ShortcutMap.qml`) is the window's entire key table — every sequence, its gate, and its intent as a signal — with no key's owner, sequence or gate changed and the live notice set proving the shortcuts register from the new file. | The remaining planned responsibility boundaries are unfinished. | **6.19b4–b8**. |
 | Stable display identity, destination-removal disabling and complete restart/device recovery are not complete. | Historical display tests and successful launch/shutdown do not establish M7 failure recovery. | **7.1a–c**, physical Wayland/X11 and projector acceptance. |
 
 ## Contracts to retain during optimization
@@ -187,6 +194,18 @@ proves and must be closed or explicitly accepted before M6/M7 acceptance.
   the code. Navigation reaches the views only as a `Cursor` value the
   controller builds from the ids it owns — views cannot hold a stale position
   because they hold no position at all.
+- Since **6.19b3** the key table is `ShortcutMap.qml`, and the rule it keeps is
+  R17's: exactly one live `Shortcut` per key per context, because Qt drops a
+  key two enabled owners claim rather than picking one. Every claimant on
+  every key therefore reads in one file — Escape hands off between output
+  clear and canvas deselect on the selection alone, Ctrl+D splits on slide
+  count, the presenter arrows stand down whenever a nudging box wants them —
+  and the gates moved WITH their sequences, never left behind. The map takes
+  facts (which item holds focus, which page is up, what is on air) as
+  properties and returns intents as signals: it never touches the worker,
+  the documents or the canvas itself, so "what a key means" and "who may
+  answer it" are one file and "what happens" stays beside the buttons that do
+  it.
 - Prepare-time file work (task 6.9a) runs on `PrepareExecutor`: one worker
   thread, at most `kMaxQueued` accepted jobs including the running one,
   cooperative cancellation checked between images, completion fired exactly

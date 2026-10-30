@@ -5,8 +5,8 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.19b2**, the frontend `DocumentViews`
-(6.19b1's `DocumentPersistence` at `7050a2d`,
+The committed checkpoint is task **6.19b3**, the window `ShortcutMap`
+(6.19b2's `DocumentViews` at `eaf5586`, 6.19b1's `DocumentPersistence` at `7050a2d`,
 6.19a4's worker `RpcMethods` split at `7cd5edf`, which completed 6.19a,
 6.19a3's `PresentationModel` at `c00d025`,
 6.19a2's `PreviewConsumer` at `a4cb9e2`, 6.19a1's `RpcClient` at `001588e`,
@@ -128,11 +128,30 @@ keeps the documents, the navigation and every mutation, and all of its property
 getters forward — no QML binding, row key or fallback changed, which is why no
 test was edited. `DocumentController.cpp` is 261 lines shorter.
 
-**Next implementation task: 6.19b3** — the window's keyboard shortcuts out of
-`Main.qml` into `ShortcutMap.qml`, the third of the eight
+**Task 6.19b3 is committed.** The window's whole key table has left
+`Main.qml`: `src/ui/ShortcutMap.qml` carries all 49 `Shortcut` objects — the
+Escape/F1/F2 output keys, the Ctrl+D duplicate-or-toggle and Ctrl+F search
+rules, Ctrl+1..5 for pages, the 1px/10px nudges, Tab/Shift+Tab stack steps,
+the presenter keys and the opt-in number keys, undo/redo/save/clipboard and
+F11 — and computes their gates itself from eleven fact properties: which page
+is up, what holds the focus (typing, a squatted button, the drawer, the
+canvas's handles), the on-air state, and the settings opt-in. Every activation
+emits an intent signal; the window handles them beside the same buttons that
+perform the actions, and keeps only the facts its own `activeFocusItem` can
+speak for. No key changed owner, sequence or gate on the way out — the two
+Escape owners still hand off on the canvas selection, the Ctrl+D pair still
+splits on slide count, the presenter arrows still stand down for a nudging
+box — and that is the acceptance: two enabled `Shortcut`s for one key make Qt
+drop the key entirely, so the R17 rule that each key has exactly one live
+owner is now something one file can be read to check. `Main.qml` is 240 lines
+shorter.
+
+**Next implementation task: 6.19b4** — the right dock (the preview and the
+output tools) out of `Main.qml` into `OutputPanel.qml`, the fourth of the eight
 single-component leaves 6.19b was split into (`DocumentPersistence` and
-`DocumentViews` have landed; `Main.qml`'s `ShortcutMap`, `OutputPanel`,
-`PlaylistPanel`, `ShowPage`, `EditPage` and `SettingsPage` remain).
+`DocumentViews` have landed; `ShortcutMap` has landed; `Main.qml`'s
+`OutputPanel`, `PlaylistPanel`, `ShowPage`, `EditPage` and `SettingsPage`
+remain).
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -175,11 +194,12 @@ audience composition match the intended design. Important open differences:
   owner, `DocumentPersistence`, and deliberately did not move the write off the
   UI thread). Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19b3–b8:** the remaining ownership extractions are unfinished
+- **6.18b, 6.19b4–b8:** the remaining ownership extractions are unfinished
   (6.18a2's `PreviewProducer`, 6.18b1's `BackgroundTransport` and 6.19a2's
   `PreviewConsumer` landed; 6.19a1's `RpcClient`, 6.19a3's `PresentationModel`
   and 6.19a4's `RpcMethods` landed 2026-10-30, closing 6.19a, and 6.19b1's
-  `DocumentPersistence` and 6.19b2's `DocumentViews` landed the same day).
+  `DocumentPersistence`, 6.19b2's `DocumentViews` and 6.19b3's `ShortcutMap`
+landed the same day).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
   physical-display acceptance remain open. Pinned cache excess is reported,
   not a hard bound on total process memory.
@@ -218,7 +238,8 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19b2**. Tasks **6.19b1** (`7050a2d`),
+The working tree carries task **6.19b3**. Tasks **6.19b2** (`eaf5586`),
+**6.19b1** (`7050a2d`),
 **6.19a4** (`7cd5edf`, with the
 6.19b split plan at `5aeeebc`),
 **6.19a3** (`c00d025`),
@@ -227,6 +248,24 @@ The working tree carries task **6.19b2**. Tasks **6.19b1** (`7050a2d`),
 `0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
 in their commit messages:
 
+- `src/ui/ShortcutMap.qml` (6.19b3) — the window's entire key table as one
+  component: 49 `Shortcut` objects, each keeping the exact `sequence` and
+  `enabled` expression it had in `Main.qml`, with the four composite gates
+  (`nudging`, `boxStepping`, `presenterTyping`+`presenterNav`, `numberKeys`)
+  composed inside the map from eleven fact properties (`page`,
+  `typingIntoField`, `squattedFocus`, `drawerFocused`, `boxSelected`,
+  `currentBox`, `slideCount`, `wordsOnAir`, `backgroundOnAir`, `canRestore`,
+  `numberKeysPresent`) so who may answer a key reads next to what the key
+  means. Actions come back as 20 intent signals handled in the window; the
+  `Escape` restore-or-clear branch, the Ctrl+D slide-count split and the
+  drawer's Ctrl+1/2 exemption are unchanged. The window keeps the executor
+  functions (`nudgeBox`, `stepBox`, `presenterStep`, `presenterJump`,
+  `presentCurrentSlide` — the last also serves the Present buttons), the two
+  focus facts that only its `activeFocusItem` can answer, and F11's flip of
+  the persisted `appSettings.fullscreen`. 240 lines left `Main.qml`; the
+  registered-shortcut proof is the live notice set: the three multi-sequence
+  `StandardKey` notices now name `ShortcutMap.qml:92/289/304` and nothing
+  else changed.
 - `src/ui/DocumentViews.{h,cpp}` (6.19b2) — the row shapes the operator's
   lists read, now one author inside `openshow-ui-core`: song rows, slide rows
   (first-line preview, first-box geometry, background asset and fit), the
@@ -501,6 +540,33 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.19b3:
+
+- `cmake --build --preset desktop -j 2`: PASS, no warnings (the headless
+  preset builds no UI: `--preset headless` reported "no work to do").
+- `ctest --preset desktop`: **53/53 PASS**, 246.9 s, all 12 display-labelled
+  tests (136.5 sec*proc of them) — on the re-run. The first full run failed
+  one test, `background_media_tests`, a 57 s display-side media fixture with
+  no QML involvement (it does not load the shell); it passed run alone
+  (57.1 s) and passed the full re-run, and is recorded here as the flake it
+  appears to be rather than absorbed. The acceptance for this change is
+  `ui_loads` (8.0 s), which stayed up with no load errors, and the live
+  notice set verified by hand beside it: the shell prints exactly the
+  notices it printed before — the three multi-sequence `StandardKey`
+  bindings, now naming `ShortcutMap.qml` lines 92/289/304 instead of
+  `Main.qml`, and the same two `Flow` anchor complaints — which proves the
+  shortcuts registered from the new component rather than silently vanishing
+  from a broken one (a `Shortcut` that failed to load would end the run:
+  the type would not resolve and the guard would fail). `ui_links_qt`, both
+  `ui_loads_guard_*` negatives and `document_present_tests` (1.0 s) are
+  unchanged.
+- `ctest --preset headless`: **32/32 PASS**, 51.8 s.
+- No test was edited. The Qt-side honesty limit is worth stating: no
+  automated test presses a key (`ui_loads` only proves the shell loads), so
+  the gates' mutual exclusivity is guaranteed here by the gates being moved
+  as literal text with their shortcuts, not by new coverage — closing that
+  gap is a named M7 candidate, not a claim of this commit.
+
 Verification after 6.19b2:
 
 - `cmake --build --preset headless -j 2` and `--preset desktop -j 2`: PASS, no
@@ -623,8 +689,8 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19b3**, the window's keyboard shortcuts out of `Main.qml` into
-`ShortcutMap.qml`; then **6.19b4–b8** (`Main.qml`'s output panel, playlist
-panel, show page, edit page and settings page), then **6.20**'s recorded
-architecture differences. Do not claim M6 closure until 6.20 resolves
-those and the remaining gates pass.
+**6.19b4**, the right dock (preview and output tools) out of `Main.qml` into
+`OutputPanel.qml`; then **6.19b5–b8** (`Main.qml`'s playlist panel, show
+page, edit page and settings page), then **6.20**'s recorded architecture
+differences. Do not claim M6 closure until 6.20 resolves those and the
+remaining gates pass.

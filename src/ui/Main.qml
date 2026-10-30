@@ -12,6 +12,10 @@ import QtQuick.Controls.Material
  * like the reference's Preview + ShowTools.
  *
  * Theme tokens are the reference palette (docs/reference.md §3).
+ *
+ * Since task 6.19b3 the window's whole key table lives in ShortcutMap.qml;
+ * what remains here is execution — the functions and buttons that perform
+ * what a key asked, and the focus facts only the window can speak for.
  */
 Window {
     id: root
@@ -82,89 +86,25 @@ Window {
         }
     }
 
-    // Task 3.4: the reference's presenter keys. Escape clears all — and
-    // restores when the output is already clear, matching the button's
-    // Clear-all/Restore toggle. Disabled controls (nothing on air) simply
-    // do nothing. On the edit page the first Escape steps out of the
-    // selection first (4.3); the two owners gate on editCanvas.selected,
-    // so the key never lands on both at once.
-    Shortcut {
-        sequence: StandardKey.Cancel
-        enabled: (worker.wordsOnAir || worker.backgroundOnAir || worker.canRestore)
-                 && !(page === "edit" && editCanvas.selected)
-        onActivated: worker.canRestore ? worker.restoreOutput() : worker.clearAll()
-    }
-    Shortcut {
-        sequence: "Escape"
-        enabled: page === "edit" && editCanvas.selected
-        onActivated: editCanvas.selected = false
-    }
-    Shortcut {
-        sequence: "F1"
-        enabled: worker.backgroundOnAir
-        onActivated: worker.clearBackground()
-    }
-    Shortcut {
-        sequence: "F2"
-        enabled: worker.wordsOnAir
-        onActivated: worker.clearSlide()
-    }
+    // A focused button or combo eats Space and the arrow keys themselves;
+    // the presenter gates stand down for it (task 4.5, AbstractButton is
+    // both in the reference's rule). The window has to be the one to say
+    // this: activeFocusItem is the window's, and a panel's own
+    // activeFocusItem would answer a different question.
+    readonly property bool squattedFocus: activeFocusItem !== null
+        && (activeFocusItem instanceof AbstractButton || activeFocusItem instanceof ComboBox)
 
-    // Task 4.2: the drawer keys the reference carries (Ctrl+F opens its
-    // search; Ctrl+D toggles the library strip unless a slide is current,
-    // when it duplicates instead — the reference's selection rule, 4.5).
-    // Ctrl+1..2 inside the drawer still pick its tabs — see LibraryDrawer
-    // — but from the window they now pick pages, like the reference's
-    // Ctrl+1..5 (4.3); 3..4 belong to pages that do not exist yet and do
-    // nothing.
-    Shortcut {
-        sequence: "Ctrl+D"
-        enabled: !typingIntoField && docs.slides.length > 0
-        onActivated: docs.duplicateCurrentSlide()
-    }
-    Shortcut {
-        sequence: "Ctrl+D"
-        enabled: !typingIntoField && docs.slides.length === 0
-        onActivated: panels.toggleDrawer()
-    }
-    Shortcut {
-        sequence: "Ctrl+F"
-        onActivated: libraryDrawer.focusSearch()
-    }
-    // The window's Ctrl+1..5 pick pages like the reference; 3..5 belong to
-    // pages that do not exist yet, so those stay switched off. While the
-    // keyboard is inside the drawer, Ctrl+1/2 stay with its tabs instead.
-    Shortcut {
-        sequence: "Ctrl+1"
-        enabled: !libraryDrawer.containsFocus
-        onActivated: root.page = "show"
-    }
-    Shortcut {
-        sequence: "Ctrl+2"
-        enabled: !libraryDrawer.containsFocus
-        onActivated: root.page = "edit"
-    }
-    Shortcut {
-        sequence: "Ctrl+3"
-        enabled: false  // stage page arrives later
-    }
-    Shortcut {
-        sequence: "Ctrl+4"
-        enabled: false  // draw page arrives later
-    }
-    Shortcut {
-        sequence: "Ctrl+5"
-        enabled: !libraryDrawer.containsFocus
-        onActivated: root.page = "settings"
-    }
+    // The key actions themselves (task 6.19b3) live in ShortcutMap.qml —
+    // every sequence, its gate, and the intent it carries, so R17's
+    // one-owner-per-key rule reads in one file. What stays here is
+    // execution: the map emits an intent, and these functions (and the
+    // buttons below) are the ones that perform it against the canvas, the
+    // controller and the worker.
 
-    // Task 4.3: the reference's nudge rule (EditTools.svelte:314-326) —
-    // arrows walk the selected text box 1px, Ctrl+arrows 10px. Every step
-    // is one undo entry, so it only runs on the edit page with a box
-    // selected and nobody typing. Since 6.17a2 "the selected box" is the
-    // session's selection, not the slide's one tuple: the canvas mirrors
-    // its rectangle, and arrows, drag, fields and inspector all move the
-    // box that wears the handles.
+    // Task 4.3: the reference's nudge rule (EditTools.svelte:314-326).
+    // Since 6.17a2 "the selected box" is the session's selection: the
+    // canvas mirrors its rectangle, and arrows, drag, fields and inspector
+    // all move the box that wears the handles.
     function nudgeBox(dx, dy) {
         if (docs.currentSlide < 0 || docs.slides.length === 0) {
             return
@@ -172,56 +112,7 @@ Window {
         docs.setTextBoxGeometry(editCanvas.boxX + dx, editCanvas.boxY + dy,
                                 editCanvas.boxW, editCanvas.boxH)
     }
-    readonly property bool nudging: page === "edit" && editCanvas.selected
-                                    && !typingIntoField && docs.slides.length > 0
-    Shortcut {
-        sequence: "Left"
-        enabled: root.nudging
-        onActivated: root.nudgeBox(-1, 0)
-    }
-    Shortcut {
-        sequence: "Right"
-        enabled: root.nudging
-        onActivated: root.nudgeBox(1, 0)
-    }
-    Shortcut {
-        sequence: "Up"
-        enabled: root.nudging
-        onActivated: root.nudgeBox(0, -1)
-    }
-    Shortcut {
-        sequence: "Down"
-        enabled: root.nudging
-        onActivated: root.nudgeBox(0, 1)
-    }
-    Shortcut {
-        sequence: "Ctrl+Left"
-        enabled: root.nudging
-        onActivated: root.nudgeBox(-10, 0)
-    }
-    Shortcut {
-        sequence: "Ctrl+Right"
-        enabled: root.nudging
-        onActivated: root.nudgeBox(10, 0)
-    }
-    Shortcut {
-        sequence: "Ctrl+Up"
-        enabled: root.nudging
-        onActivated: root.nudgeBox(0, -10)
-    }
-    Shortcut {
-        sequence: "Ctrl+Down"
-        enabled: root.nudging
-        onActivated: root.nudgeBox(0, 10)
-    }
-
-    // Task 6.17a2: Tab steps the selection through the slide's stack and
-    // Shift+Tab steps back, wrapping — the keyboard reaches every box the
-    // canvas outlines, so a slide of eight does not demand eight mouse
-    // presses. Same gates as the nudge: edit page, a box to select, and
-    // nobody typing (in a field, Tab belongs to the field).
-    readonly property bool boxStepping: page === "edit" && docs.currentBox >= 0
-                                        && !typingIntoField
+    // Task 6.17a2: step the selection through the slide's stack, wrapping.
     function stepBox(delta) {
         const count = editCanvas.boxes.length
         if (count === 0) {
@@ -229,30 +120,8 @@ Window {
         }
         docs.selectTextBox((docs.currentBox + delta + count) % count)
     }
-    Shortcut {
-        sequence: "Tab"
-        enabled: root.boxStepping
-        onActivated: root.stepBox(1)
-    }
-    Shortcut {
-        sequence: "Shift+Tab"
-        enabled: root.boxStepping
-        onActivated: root.stepBox(-1)
-    }
-
-    // Task 4.5: the reference's presenter keys (shortcuts.ts) — Space,
-    // PageDown and Right advance, PageUp and Left step back, Home and End
-    // jump, F5 advances for presenter clickers, "." clears all. They walk
-    // the same navigation a Present click armed, so a service runs from
-    // the keyboard alone. The gates are the reference's: typing keeps its
-    // keys, a focused button or combo eats Space (AbstractButton is both),
-    // the library drawer owns arrows for its own list, and the edit page's
-    // selected box owns Left/Right — nudging and presenter arrows are
-    // mutually exclusive, like the Escape pair.
-    readonly property bool squattedFocus: activeFocusItem !== null
-        && (activeFocusItem instanceof AbstractButton || activeFocusItem instanceof ComboBox)
-    readonly property bool presenterTyping: typingIntoField
-        || libraryDrawer.containsFocus || squattedFocus
+    // Task 4.5: the presenter's steps walk the same navigation a Present
+    // click armed, so a service runs from the keyboard alone.
     function presenterStep(delta) {
         if (docs.slides.length === 0) {
             return
@@ -266,161 +135,52 @@ Window {
             root.presentCurrentSlide()
         }
     }
-    readonly property bool presenterNav: !presenterTyping && docs.slides.length > 0
-    Shortcut {
-        sequence: "Space"
-        enabled: root.presenterNav
-        onActivated: root.presenterStep(1)
-    }
-    Shortcut {
-        sequence: "PageDown"
-        enabled: root.presenterNav
-        onActivated: root.presenterStep(1)
-    }
-    Shortcut {
-        sequence: "F5"
-        enabled: root.presenterNav
-        onActivated: root.presenterStep(1)
-    }
-    Shortcut {
-        sequence: "PageUp"
-        enabled: root.presenterNav
-        onActivated: root.presenterStep(-1)
-    }
-    Shortcut {
-        sequence: "Left"
-        enabled: root.presenterNav && !root.nudging
-        onActivated: root.presenterStep(-1)
-    }
-    Shortcut {
-        sequence: "Right"
-        enabled: root.presenterNav && !root.nudging
-        onActivated: root.presenterStep(1)
-    }
-    Shortcut {
-        sequence: "Home"
-        enabled: root.presenterNav
-        onActivated: root.presenterJump(0)
-    }
-    Shortcut {
-        sequence: "End"
-        enabled: root.presenterNav
-        onActivated: root.presenterJump(docs.slides.length - 1)
-    }
-    Shortcut {
-        sequence: "."
-        enabled: root.presenterNav && (worker.wordsOnAir || worker.backgroundOnAir)
-        onActivated: worker.clearAll()
-    }
 
-    // Task 4.5: the core document keys. While a field has the focus the
-    // editing keys belong to it — undo, redo and the clipboard letters
-    // all have native text-field meanings — so they are gated away from
-    // typing. Ctrl+S is not a keystroke any field wants, so saving works
-    // at any time (it flushes the pending edit first, like every other
-    // controller call). The clipboard is the controller's slide clipboard
-    // — the system one stays with the text fields, exactly as in the
-    // reference.
-    Shortcut {
-        sequence: StandardKey.Undo
-        enabled: !typingIntoField
-        onActivated: docs.undo()
-    }
-    Shortcut {
-        sequence: "Ctrl+Y"
-        enabled: !typingIntoField
-        onActivated: docs.redo()
-    }
-    Shortcut {
-        sequence: "Ctrl+Shift+Z"
-        enabled: !typingIntoField
-        onActivated: docs.redo()
-    }
-    Shortcut {
-        sequence: StandardKey.Save
-        onActivated: docs.save()
-    }
-    // Explicit letters rather than StandardKey.Copy/Cut/Paste: the
-    // standard keys also carry Ctrl+Ins-style bindings that this app has
-    // no use for, and each one logs a binding warning at startup.
-    Shortcut {
-        sequence: "Ctrl+C"
-        enabled: !typingIntoField
-        onActivated: docs.copyCurrentSlide()
-    }
-    Shortcut {
-        sequence: "Ctrl+X"
-        enabled: !typingIntoField
-        onActivated: docs.cutCurrentSlide()
-    }
-    Shortcut {
-        sequence: "Ctrl+V"
-        enabled: !typingIntoField
-        onActivated: docs.pasteSlide()
-    }
+    // Task 6.19b3: the whole key table. The facts only the window and its
+    // panels can speak for arrive as the properties below — which page is
+    // up, what holds the focus (typing, a squatted button, the drawer, the
+    // canvas's handles) and the on-air state the clear keys gate on — and
+    // every activated key comes back as a signal handled here, beside the
+    // same buttons that perform it. No key changed owner, sequence or gate
+    // on the way out; two enabled owners for one key make Qt drop the key
+    // entirely, which is why the gates moved WITH the shortcuts rather
+    // than staying behind.
+    ShortcutMap {
+        page: root.page
+        typingIntoField: root.typingIntoField
+        squattedFocus: root.squattedFocus
+        drawerFocused: libraryDrawer.containsFocus
+        boxSelected: editCanvas.selected
+        currentBox: docs.currentBox
+        slideCount: docs.slides.length
+        wordsOnAir: worker.wordsOnAir
+        backgroundOnAir: worker.backgroundOnAir
+        canRestore: worker.canRestore
+        numberKeysPresent: appSettings.numberKeysPresent
 
-    // Presenter number keys, the reference's opt-in: 1..9 play slide
-    // one..nine and 0 plays ten. Off until the settings page enables it,
-    // and silent while typing, inside the drawer, or on the edit page.
-    readonly property bool numberKeys: appSettings.numberKeysPresent
-        && !presenterTyping && page !== "edit" && docs.slides.length > 0
-    Shortcut {
-        sequence: "1"
-        enabled: root.numberKeys
-        onActivated: root.presenterJump(0)
-    }
-    Shortcut {
-        sequence: "2"
-        enabled: root.numberKeys
-        onActivated: root.presenterJump(1)
-    }
-    Shortcut {
-        sequence: "3"
-        enabled: root.numberKeys
-        onActivated: root.presenterJump(2)
-    }
-    Shortcut {
-        sequence: "4"
-        enabled: root.numberKeys
-        onActivated: root.presenterJump(3)
-    }
-    Shortcut {
-        sequence: "5"
-        enabled: root.numberKeys
-        onActivated: root.presenterJump(4)
-    }
-    Shortcut {
-        sequence: "6"
-        enabled: root.numberKeys
-        onActivated: root.presenterJump(5)
-    }
-    Shortcut {
-        sequence: "7"
-        enabled: root.numberKeys
-        onActivated: root.presenterJump(6)
-    }
-    Shortcut {
-        sequence: "8"
-        enabled: root.numberKeys
-        onActivated: root.presenterJump(7)
-    }
-    Shortcut {
-        sequence: "9"
-        enabled: root.numberKeys
-        onActivated: root.presenterJump(8)
-    }
-    Shortcut {
-        sequence: "0"
-        enabled: root.numberKeys
-        onActivated: root.presenterJump(9)
-    }
-
-    // F11 flips the window between fullscreen and windowed (the
-    // reference's app fullscreen) and is remembered, so a projector
-    // setup survives restarts.
-    Shortcut {
-        sequence: "F11"
-        onActivated: appSettings.fullscreen = !appSettings.fullscreen
+        // Escape clears all — and restores when the output is already
+        // clear, matching the button's Clear-all/Restore toggle (3.4).
+        onOutputCancelRequested: worker.canRestore ? worker.restoreOutput()
+                                                   : worker.clearAll()
+        onDeselectBoxRequested: editCanvas.selected = false
+        onClearBackgroundRequested: worker.clearBackground()
+        onClearWordsRequested: worker.clearSlide()
+        onDuplicateSlideRequested: docs.duplicateCurrentSlide()
+        onToggleDrawerRequested: panels.toggleDrawer()
+        onFocusDrawerSearchRequested: libraryDrawer.focusSearch()
+        onPageSelected: name => root.page = name
+        onBoxNudgeRequested: (dx, dy) => root.nudgeBox(dx, dy)
+        onBoxStepRequested: delta => root.stepBox(delta)
+        onPresenterStepRequested: delta => root.presenterStep(delta)
+        onPresenterJumpRequested: index => root.presenterJump(index)
+        onClearAllRequested: worker.clearAll()
+        onUndoRequested: docs.undo()
+        onRedoRequested: docs.redo()
+        onSaveRequested: docs.save()
+        onCopyRequested: docs.copyCurrentSlide()
+        onCutRequested: docs.cutCurrentSlide()
+        onPasteRequested: docs.pasteSlide()
+        onFullscreenToggled: appSettings.fullscreen = !appSettings.fullscreen
     }
 
     TopBar {
