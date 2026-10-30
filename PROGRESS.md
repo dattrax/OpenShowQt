@@ -39,9 +39,10 @@ record, so R3's correlation rule now lives in exactly one class and a new
 protocol method cannot drift from it. `WorkerController` keeps the process, the
 handshake and poll rhythm, the acknowledged output model and the preview
 pictures, and tells the transport when to stop reaching for the worker.
-**Next implementation task: 6.19a2** (the frontend preview consumer and
-acknowledged output model, then the worker's connection versus method/status
-codecs), then **6.19b**. This handoff does not mark 6.20 complete.
+**Next implementation task: 6.19a2** — the frontend `PreviewConsumer`, the first
+of the three remaining 6.19a leaves (6.19a3 is the acknowledged output model,
+6.19a4 the worker's connection loop versus its method/status codecs), then
+**6.19b**. This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
 
@@ -81,7 +82,7 @@ audience composition match the intended design. Important open differences:
 - **6.19b/6.20:** background autosave is asynchronous; explicit save/load and
   decision/quit drains remain synchronous. Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19a2/b:** the remaining ownership extractions are unfinished
+- **6.18b, 6.19a2–a4/b:** the remaining ownership extractions are unfinished
   (6.18a2's `PreviewProducer` and 6.18b1's `BackgroundTransport` landed
   2026-10-29; 6.19a1's `RpcClient` landed 2026-10-30, uncommitted).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
@@ -286,7 +287,8 @@ Verification after 6.19a1:
   behaviour is a failed gate, not a new expectation.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19a2** (the frontend `PreviewConsumer` and the acknowledged output model out
-of `WorkerController`, then the worker's connection loop versus its method/status
-codecs), then **6.19b**, then **6.20**'s recorded architecture differences. Do
-not claim M6 closure until 6.20 resolves those and the remaining gates pass.
+**6.19a2**, the frontend `PreviewConsumer` out of `WorkerController`; then
+**6.19a3** (the acknowledged output model) and **6.19a4** (the worker's
+connection loop versus its method/status codecs), then **6.19b**, then **6.20**'s
+recorded architecture differences. Do not claim M6 closure until 6.20 resolves
+those and the remaining gates pass.
