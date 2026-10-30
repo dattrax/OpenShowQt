@@ -5,8 +5,9 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.19b4**, the right-dock `OutputPanel`
-(6.19b3's `ShortcutMap` at `337626e`, 6.19b2's `DocumentViews` at `eaf5586`,
+The committed checkpoint is task **6.19b5**, the left-dock `PlaylistPanel`
+(6.19b4's `OutputPanel` at `5446a6e`, 6.19b3's `ShortcutMap` at `337626e`,
+6.19b2's `DocumentViews` at `eaf5586`,
 6.19b1's `DocumentPersistence` at `7050a2d`,
 6.19a4's worker `RpcMethods` split at `7cd5edf`, which completed 6.19a,
 6.19a3's `PresentationModel` at `c00d025`,
@@ -166,12 +167,25 @@ module files so the extracted panels carry the same look without borrowing a
 window declaration. `Main.qml` is 367 lines shorter; the live notice set is
 the same five, both `Flow` complaints now naming `OutputPanel.qml`.
 
-**Next implementation task: 6.19b5** — the left dock (the playlists row and
-the running order with its drag, drop and reorder gestures) out of `Main.qml`
-into `PlaylistPanel.qml`, the fifth of the eight
+**Task 6.19b5 is committed.** The left dock has left `Main.qml`:
+`src/ui/PlaylistPanel.qml` carries the playlist chips (current highlighted,
+`+` chip for a new one), the running-order rows with their section prefix,
+resolved show names and current-song highlight, the ▲/▼/✕ handles, the row
+drag whose mimeData names the entry, the DropArea that rounds a pointer to
+the nearest 30px row gap and shifts the after-the-move index for a row
+travelling downwards, the reference's empty "Nothing here", and the status
+line — the unsaved marker, the controller's status text, the service
+directory — all addressing `docs` and rendering the 6.19b2 projection rows.
+The second honest correction to the split's row after b4: the asked-for
+insert/remove/move/select signals have no window-side owner to signal to, so
+there are none, and the window keeps the anchors and the `leftDock` id.
+`Main.qml` is 270 lines shorter; the live notice set is still the same five.
+
+**Next implementation task: 6.19b6** — the show page (slide list and lyric
+editor) out of `Main.qml` into `ShowPage.qml`, the sixth of the eight
 single-component leaves 6.19b was split into (`DocumentPersistence`,
-`DocumentViews`, `ShortcutMap` and `OutputPanel` have landed; `Main.qml`'s
-`PlaylistPanel`, `ShowPage`, `EditPage` and `SettingsPage` remain).
+`DocumentViews`, `ShortcutMap`, `OutputPanel` and `PlaylistPanel` have
+landed; `Main.qml`'s `ShowPage`, `EditPage` and `SettingsPage` remain).
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -214,12 +228,12 @@ audience composition match the intended design. Important open differences:
   owner, `DocumentPersistence`, and deliberately did not move the write off the
   UI thread). Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19b5–b8:** the remaining ownership extractions are unfinished
+- **6.18b, 6.19b6–b8:** the remaining ownership extractions are unfinished
   (6.18a2's `PreviewProducer`, 6.18b1's `BackgroundTransport` and 6.19a2's
   `PreviewConsumer` landed; 6.19a1's `RpcClient`, 6.19a3's `PresentationModel`
   and 6.19a4's `RpcMethods` landed 2026-10-30, closing 6.19a, and 6.19b1's
-  `DocumentPersistence`, 6.19b2's `DocumentViews`, 6.19b3's `ShortcutMap` and
-6.19b4's `OutputPanel` landed the same day).
+  `DocumentPersistence`, 6.19b2's `DocumentViews`, 6.19b3's `ShortcutMap`,
+6.19b4's `OutputPanel` and 6.19b5's `PlaylistPanel` landed the same day).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
   physical-display acceptance remain open. Pinned cache excess is reported,
   not a hard bound on total process memory.
@@ -258,7 +272,8 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19b4**. Tasks **6.19b3** (`337626e`),
+The working tree carries task **6.19b5**. Tasks **6.19b4** (`5446a6e`),
+**6.19b3** (`337626e`),
 **6.19b2** (`eaf5586`),
 **6.19b1** (`7050a2d`),
 **6.19a4** (`7cd5edf`, with the
@@ -269,6 +284,19 @@ The working tree carries task **6.19b4**. Tasks **6.19b3** (`337626e`),
 `0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
 in their commit messages:
 
+- `src/ui/PlaylistPanel.qml` (6.19b5) — the left dock as one component: the
+  horizontal chip ListView over `docs.playlists` (current chip in --secondary,
+  click to select, `+` chip styled as a chip because the Controls Button
+  dropped its glyph at this size), the entry ListView over
+  `docs.playlistEntries` with the section prefix, the resolved show name and
+  the current-song highlight, the ▲/▼/✕ Repeater handles (disabled at the
+  ends, each handle a one-step `movePlaylistEntry`), the row drag
+  (`Drag.mimeData` `entry:<id>`, release-drops through the MouseArea), the
+  DropArea whose nearest-row arithmetic — `Math.round((drop.y - y) / 30)` and
+  the down-move `index - 1` — moved WITH the gesture rather than being
+  re-derived, and the dirty-marked status line over `docs.serviceDirectory`.
+  No properties, no signals: every command was the controller's, as the
+  OutputPanel case was. 270 lines left `Main.qml`.
 - `src/ui/OutputPanel.qml` + `PanelField.qml` + `PanelButton.qml` (6.19b4) —
   the right dock as one component: the `SidePanel` root reading
   `panels.rightWidth` and answering its own drag/click the way
@@ -577,6 +605,22 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.19b5:
+
+- `cmake --build --preset headless -j 2` ("no work to do" — no UI in that
+  preset) and `--preset desktop -j 2`: PASS, no warnings.
+- `ctest --preset desktop`: **53/53 PASS**, 244.9 s, all 12 display-labelled
+  tests (134.8 sec*proc), first run. `ui_loads` (8.0 s) is the acceptance and
+  was not touched; the live notice set was again read by hand — same five,
+  and the left dock contributed none of its own, which is what it printed
+  before the move too. `workspace_panels_tests` and `document_controller_tests`
+  (the playlist scenarios: chips through `createPlaylist`/`selectPlaylist`,
+  the entry rows through insert/move/remove with the dangling-show `?`/0
+  row) drive the controller the panel renders, unchanged.
+- `ctest --preset headless`: **32/32 PASS**, 51.5 s.
+- No test was edited; every binding and the drop arithmetic moved as literal
+  text.
+
 Verification after 6.19b4:
 
 - `cmake --build --preset headless -j 2` ("no work to do" — the preset builds
@@ -747,8 +791,7 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19b5**, the left dock (playlists row and running order) out of `Main.qml`
-into `PlaylistPanel.qml`; then **6.19b6–b8** (`Main.qml`'s show page, edit
-page and settings page), then **6.20**'s recorded architecture differences.
-Do not claim M6 closure until 6.20 resolves those and the remaining gates
-pass.
+**6.19b6**, the show page (slide list and lyric editor) out of `Main.qml`
+into `ShowPage.qml`; then **6.19b7–b8** (`Main.qml`'s edit page and settings
+page), then **6.20**'s recorded architecture differences. Do not claim M6
+closure until 6.20 resolves those and the remaining gates pass.
