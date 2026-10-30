@@ -439,6 +439,18 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
         // start, so it stays in the log.
         std::fprintf(stderr, "openshow-worker: background prime %s skipped: %s\n",
                      background.assetPath.c_str(), error.c_str());
+    } else {
+        // Task 6.21c1 (review F3): the audio half rides the same lane, on
+        // the same thread — negotiation, feeders and pre-roll paid here, so
+        // the frame boundary that starts this clip releases a held player
+        // instead of building one. A staging failure is the same kind of
+        // non-story as a file-prime failure: the present falls back to the
+        // inline start and reports there.
+        std::string audioError;
+        if (!fTransport.primeAudio(background.assetPath, cancelled, &audioError)) {
+            std::fprintf(stderr, "openshow-worker: background audio prime %s skipped: %s\n",
+                         background.assetPath.c_str(), audioError.c_str());
+        }
     }
     // A successful probe deliberately clears nothing: the audience still
     // has the previous background until this one's transport opens, and the

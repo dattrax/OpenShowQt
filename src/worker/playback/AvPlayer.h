@@ -96,6 +96,17 @@ public:
         std::string secondAudioPath;
         bool loop = false;      // feeder EOF rewind (live via setLoop)
         uint32_t preferredRate = 48000;
+        // Task 6.21c1 (review F3): STAGE the transport without rolling it.
+        // Everything a normal start brings up comes up — sink connection
+        // and rate negotiation, feeders open, mixer started, pre-roll paid
+        // — but the sink is never resumed and the clock is anchored in its
+        // hold, so nothing is audible and no position advances. This is
+        // exactly the paused state a live transport reaches on an
+        // operator's hold, entered at start: a later play() releases it
+        // (sink resume, clock continue) and the first audible millisecond
+        // belongs to whoever adopts the staged transport, not to the
+        // thread that built it. Default false: today's start-rolls behaviour.
+        bool startHeld = false;
         // Per-input pre-fill before the mixer starts: enough that the
         // first mixed block has real content from every feeder that
         // opened (default 100 ms). A slower starter delays the start by

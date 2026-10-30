@@ -1,5 +1,6 @@
 #include "playback/AvPlayer.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -50,6 +51,28 @@ bool AvPlayer::start(const Config& config, std::string* error) {
     fFallbackBaseNs.store(0, std::memory_order_relaxed);
     fFallbackAnchorNs.store(steadyNowNs(), std::memory_order_release);
     fFallbackHeld.store(false, std::memory_order_relaxed);
+
+    // Test seam (task 6.21c1, review F3): a bring-up that really waits.
+    // Real starts can hold the calling thread for up to ~1.5 s of server
+    // negotiation and ~2 s of pre-roll; a fixture must not depend on a
+    // daemon being slow on one machine and instant on another, so the
+    // scenario names the file (substring) and how long its bring-up sleeps
+    // first. Whoever staged this transport pays the wait on the staging
+    // thread — which is the whole point of staging it.
+    if (const char* waitMs = std::getenv("OPENSHOW_FAULT_AUDIO_START_MS")) {
+        const int milliseconds = std::atoi(waitMs);
+        const char* match = std::getenv("OPENSHOW_FAULT_AUDIO_START_MATCH");
+        const std::string paths = config.videoAudioPath + " " + config.secondAudioPath;
+        if (milliseconds > 0 && match != nullptr && *match != '\0' &&
+            paths.find(match) != std::string::npos) {
+            std::fprintf(stderr, "openshow-worker: scripted slow audio start: %d ms for %s\n",
+                         milliseconds, match);
+            for (int elapsed = 0; elapsed < milliseconds; elapsed += 20) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(
+                    std::min(20, milliseconds - elapsed)));
+            }
+        }
+    }
 
     const bool wantVideo = !config.videoAudioPath.empty();
     const bool wantSecond = !config.secondAudioPath.empty();
@@ -220,9 +243,21 @@ bool AvPlayer::start(const Config& config, std::string* error) {
             return false;
         }
         fAudioLive.store(sinkUp);
-        if (sinkUp) {
+        if (sinkUp && !config.startHeld) {
             fSink.resume();
             fSinkActive.store(fSink.active());
+        }
+    }
+    if (config.startHeld) {
+        // Staged handover (task 6.21c1): the transport is up and pre-rolled
+        // but held. The sink — when there is one — negotiated and was never
+        // resumed, so nothing is audible; the clock answers from its hold at
+        // the position start anchored (0), and a later play() releases both
+        // exactly the way it releases an operator's pause. This is the same
+        // held state a live transport reaches mid-show, entered at start.
+        fPaused.store(true);
+        if (!fAudioLive.load(std::memory_order_relaxed)) {
+            fFallbackHeld.store(true, std::memory_order_release);  // base 0, anchor now
         }
     }
     return true;

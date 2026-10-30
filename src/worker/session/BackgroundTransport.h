@@ -312,6 +312,19 @@ public:
     // applyBackground touches the device, always on the render thread.
     bool primeVideo(const std::string& path, const std::atomic<bool>* cancelled,
                     std::string* error);
+    // Prepare-time audio prime (task 6.21c1, review F3). Runs on the
+    // CALLER's thread (the prepare executor) like primeVideo: probes the
+    // clip's audio story, starts an AvPlayer over it with
+    // Config::startHeld — sink connection and negotiation, feeders, mixer,
+    // pre-roll all paid HERE — and parks the held player beside the file
+    // prime of the same path. The next applyBackground for that path adopts
+    // the player (microseconds) instead of paying up to 1.5 s of negotiation
+    // and 2 s of pre-roll on the render thread. A prime whose file half
+    // never parked stages nothing; a superseded staged player is stopped on
+    // the calling thread, never in a frame tick. The player touches no GPU,
+    // so staging it keeps every GPU rule untouched.
+    bool primeAudio(const std::string& path, const std::atomic<bool>* cancelled,
+                    std::string* error);
     // End everything by name: the background transport (R6 order — quiesce,
     // then the slots, then the players) and the standalone track, which is
     // deliberately NOT part of the background's lifetime (task 6.15b) and
@@ -386,6 +399,12 @@ private:
     // called with fMutex held: the join() must not wait behind a dying
     // transport's own mediaFailed report.
     void teardownBackgroundTransport();
+    // Task 6.21c1 (review F3): swap the current AvPlayer instance out for a
+    // fresh silent one under fMutex, then stop the outgoing instance outside
+    // the lock. Every death of an audio instance runs through here, so the
+    // render thread's player is never null and a status reader is never
+    // inside a dying player.
+    void retireAudioInstance();
 
     // The lane to publish: the transport's own, unless this asset's audio
     // loss is something only the transport knows (a stream no decoder can
@@ -432,7 +451,18 @@ private:
     // rule says when the seam fields may change). The applied scene copy is
     // the identity in service: the session reads the seam, this decides
     // whether a scene change is even a change.
-    AvPlayer fAudio;
+    //
+    // Task 6.21c1 (review F3) made the audio half a swap-in INSTANCE, not a
+    // fixed member: a staged, held player built on the prepare executor can
+    // be adopted whole at the land. The instance is only ever commanded
+    // from the render thread; the cross-thread readers (status under
+    // fMutex) see whichever instance is current, and every replacement
+    // happens under fMutex through retireAudioInstance(), so a reader is
+    // never inside a dying player. The clock function a pacing thread holds
+    // belongs to the instance that adopted it, and the R6 order (join, then
+    // clock down, then retire) still guarantees the instance outlives its
+    // last clock reader.
+    std::unique_ptr<AvPlayer> fAudio = std::make_unique<AvPlayer>();
     std::unique_ptr<PlaybackPipeline> fBackground;
     openshow::scene::Background fAppliedBackground;    // identity in service
 
@@ -444,8 +474,18 @@ private:
     // executor, applyBackground consumes it on the render thread, and neither
     // holds fMutex across the swap. A primed transport has touched no GPU,
     // so retiring it never runs a Ganesh call off its owner thread.
+    //
+    // Task 6.21c1 adds the audio half to the same lane, bound to the same
+    // path: primeAudio stages a HELD AvPlayer (sink connected, feeders open,
+    // pre-roll paid, clock parked — Config::startHeld) that
+    // applyBackground adopts instead of probing and starting on the frame
+    // boundary. The pair retires as a pair: a prime for a new path stops the
+    // superseded audio on the executor thread, never in a tick.
     std::mutex fPrimeMutex;
     std::unique_ptr<PlaybackPipeline> fPrimed;
+    std::unique_ptr<AvPlayer> fPrimedAudio;
+    bool fPrimedAudioWanted = false;      // the prime's probe found a decodable stream
+    std::string fPrimedAudioLoss;         // and what the audience would miss, if anything
     std::string fPrimedPath;
 
     // Standalone production audio (task 6.15b, review R15). A SEPARATE

@@ -1437,6 +1437,9 @@ std::vector<MediaSample> sampleMedia(int fd, int durationMs, int stepMs = 100) {
 constexpr double k69bOpenMs = 700.0;
 constexpr double k69bPrepareMs = 400.0;
 
+// Task 6.21c1 (review F3): the scripted audio bring-up, same size.
+constexpr double k621cWaitMs = 700.0;
+
 // Written without waiting for an answer, like the 6.9a offload scenario.
 std::int64_t sendOnly(int fd, const char* method, boost::json::object params) {
     const std::int64_t id = gNextId++;
@@ -1889,6 +1892,214 @@ void exerciseGoLiveUnderLoad(const std::string& videoA, const std::string& video
     } else {
         check(false, "the supersession worker could be spawned");
     }
+}
+
+// --- task 6.21c1 (review F3): the audio bring-up off the frame loop --------
+//
+// F3's finding was that 6.9b primed a clip's FILE half only: on the render
+// thread applyBackground still probed again and started the audio — feeders
+// open, server negotiation (up to 1.5 s), pre-roll (up to 2 s). Since this
+// task the prepare executor stages the audio too, held (Config::startHeld),
+// and the boundary adopts it. The scripted wait belongs to AvPlayer::start
+// (OPENSHOW_FAULT_AUDIO_START_MS / _MATCH), so it is paid on whichever
+// thread brings the audio up — and the scenario measures that thread is no
+// longer the one presenting:
+//
+//   * while the staged clip's bring-up sleeps, the active output (a playing
+//     video, the only thing that advances the presented-frame counter)
+//     never freezes — the longest no-frame gap stays far below the scripted
+//     wait — and status keeps answering promptly;
+//   * the prepare's ack honestly reflects the staged audio it waited for;
+//   * presenting the staged clip is frame work, not bring-up work: it
+//     reaches the audience inside the same 100 ms boundary budget, plays,
+//     and its lane is not "degraded" — the staged story survived adoption.
+void exerciseStagedAudioGoLive(const std::string& videoB, const std::string& audioClip) {
+    std::string socket;
+    pid_t worker = -1;
+    const int fd = spawnScopedWorker(
+        "stagedaudio",
+        {"OPENSHOW_FAULT_AUDIO_START_MS=" + std::to_string(static_cast<int>(k621cWaitMs)),
+         "OPENSHOW_FAULT_AUDIO_START_MATCH=with-audio.mp4"},
+        &socket, &worker);
+    if (fd < 0) {
+        check(false, "the staged-audio worker could be spawned and handed its slow bring-up");
+        return;
+    }
+
+    // The active output: a playing clip advances the presented-frame
+    // counter (a static scene does not), and its own bring-up does not
+    // match the scripted name — it is the yardstick, not the subject.
+    const std::uint64_t active =
+        preparePresent(fd, lyricScene("6.21c active", "c21h", videoB, true));
+    check(active != 0 && waitActive(fd, active, nullptr),
+          "a healthy playing clip is the active output before the staged audio");
+    check(waitForMediaPlaying(fd, videoB, /*afterPosition=*/0.0),
+          "and that active output is playing");
+
+    // The subject, prepared WITHOUT waiting for its ack: the audio bring-up
+    // now sleeps on the executor thread, and through the whole sleep the
+    // render loop keeps presenting and the RPC thread keeps answering. One
+    // read loop tracks both truths, matching ids rather than arrival order.
+    const std::int64_t audioId =
+        sendOnly(fd, "scene.prepare", lyricScene("6.21c slow audio", "c21a", audioClip, true));
+    check(audioId != 0, "the slow-audio clip's prepare is accepted while videoB plays");
+    std::vector<std::int64_t> owedAudio{audioId};
+    std::uint64_t audioRevision = 0;
+
+    struct Probe {
+        std::int64_t id;
+        std::chrono::steady_clock::time_point sent;
+    };
+    std::vector<Probe> probes;
+    const auto stageStart = std::chrono::steady_clock::now();
+    const auto hardStop =
+        stageStart + std::chrono::milliseconds(static_cast<int>(k621cWaitMs + 6000.0));
+    auto nextProbe = stageStart;
+    auto lastGrowth = stageStart;
+    double worstRpcMs = 0.0;
+    double longestFreezeMs = 0.0;
+    double framesAtStart = -1.0;
+    double framesSeen = -1.0;
+    double ackSeconds = -1.0;
+    while (std::chrono::steady_clock::now() < hardStop) {
+        const auto now = std::chrono::steady_clock::now();
+        if (probes.size() < 3 && now >= nextProbe) {
+            const std::int64_t id = sendOnly(fd, "output.status", {});
+            if (id != 0) {
+                probes.push_back({id, now});
+            }
+            nextProbe = now + std::chrono::milliseconds(25);
+        }
+        pollfd pfd{fd, POLLIN, 0};
+        const int ready = ::poll(&pfd, 1, 25);
+        if (ready > 0) {
+            char buffer[64 * 1024];
+            const ssize_t got = ::recv(fd, buffer, sizeof(buffer), 0);
+            if (got <= 0) {
+                break;
+            }
+            gDecoder.feed(std::string_view(buffer, static_cast<size_t>(got)));
+        } else if (ready < 0 && errno != EINTR) {
+            break;
+        }
+        boost::json::value message;
+        std::string decodeError;
+        while (gDecoder.next(&message, &decodeError)) {
+            if (!message.is_object()) {
+                continue;
+            }
+            if (message.as_object().contains("method")) {
+                routeNotification(message);
+                continue;
+            }
+            bool matchedAck = false;
+            for (auto it = owedAudio.begin(); it != owedAudio.end(); ++it) {
+                if (!messageHasId(message, *it)) {
+                    continue;
+                }
+                if (message.as_object().contains("result")) {
+                    audioRevision = message.as_object()
+                                        .at("result")
+                                        .as_object()
+                                        .at("revision")
+                                        .to_number<std::uint64_t>();
+                }
+                ackSeconds = std::chrono::duration<double>(
+                                 std::chrono::steady_clock::now() - stageStart)
+                                 .count();
+                owedAudio.erase(it);
+                matchedAck = true;
+                break;
+            }
+            if (matchedAck) {
+                continue;
+            }
+            for (auto it = probes.begin(); it != probes.end(); ++it) {
+                if (!messageHasId(message, it->id)) {
+                    continue;
+                }
+                worstRpcMs =
+                    std::max(worstRpcMs,
+                             std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - it->sent)
+                                 .count());
+                if (message.as_object().contains("result")) {
+                    const double frames =
+                        framesOf(message.as_object().at("result").as_object());
+                    if (frames >= 0.0) {
+                        if (framesAtStart < 0.0) {
+                            framesAtStart = frames;
+                            framesSeen = frames;
+                        }
+                        if (frames > framesSeen) {
+                            framesSeen = frames;
+                            lastGrowth = std::chrono::steady_clock::now();
+                        }
+                    }
+                }
+                probes.erase(it);
+                break;
+            }
+        }
+        longestFreezeMs = std::max(
+            longestFreezeMs,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                      lastGrowth)
+                .count());
+        if (owedAudio.empty()) {
+            break;
+        }
+    }
+
+    std::fprintf(stderr,
+                 "6.21c1: staged audio acked in %.0f ms off-loop; through it the RPC answered "
+                 "in <= %.1f ms and presented frames advanced %.0f -> %.0f (longest no-frame "
+                 "gap %.0f ms)\n",
+                 ackSeconds * 1000.0, worstRpcMs, framesAtStart, framesSeen, longestFreezeMs);
+    check(owedAudio.empty() && audioRevision != 0,
+          "the slow-audio clip's prepare is answered through its own off-loop bring-up");
+    // The ack honestly waited for the staged audio: without the staging the
+    // ack would still wait (prepare never did this work before), so the
+    // HALF-bound below only claims the scripted sleep really ran there; the
+    // freeze measurement above is the claim that it ran OFF the frame loop.
+    check(ackSeconds * 1000.0 >= k621cWaitMs * 0.5,
+          "the prepare's ack reflects the scripted audio bring-up the prime now owns");
+    check(framesSeen > framesAtStart && longestFreezeMs < 400.0,
+          "the active output never froze while the audio bring-up slept on the executor");
+    check(worstRpcMs < 100.0,
+          "the RPC kept answering status while the audio bring-up held its thread");
+
+    // The audience's boundary: presenting the staged clip adopts a held
+    // player — microseconds — so the land costs the video attach, never the
+    // scripted audio wait. Same 100 ms budget the primed file half met.
+    boost::json::value presentReply;
+    const bool presented =
+        audioRevision != 0 &&
+        call(fd, "scene.present",
+             boost::json::object{{"revision", audioRevision},
+                                 {"transition", std::string("cut")}},
+             &presentReply) &&
+        presentReply.as_object().contains("result");
+    check(presented, "the staged clip's scene is presented");
+    double landSeconds = -1.0;
+    const bool landed = audioRevision != 0 && waitActive(fd, audioRevision, &landSeconds);
+    std::fprintf(stderr, "6.21c1: staged-audio present->air %.1f ms (scripted wait %.0f ms)\n",
+                 landSeconds * 1000.0, k621cWaitMs);
+    check(landed && landSeconds >= 0.0 && landSeconds * 1000.0 < 100.0,
+          "the staged clip reaches the audience within 100 ms (the audio wait is not at the boundary)");
+    check(waitForMediaPlaying(fd, audioClip, /*afterPosition=*/0.0),
+          "the staged clip plays and advances after adoption");
+    // The lane tells the staged story survived: an audio-bearing clip whose
+    // staged player adopted and released reports its own state — live where
+    // a server exists, no-output where the sandbox denies one — but never
+    // "degraded", which would mean wanted-audio went unheard, nor "none",
+    // which would mean the prime's probe answer was lost on the way.
+    const std::string lane = textOf(mediaOf(status(fd)), "audio");
+    std::fprintf(stderr, "6.21c1: adopted lane reads '%s'\n", lane.c_str());
+    check(lane == "live" || lane == "no-output",
+          "the adopted staged player's lane is its own truth, not a lost story");
+
+    retireScopedWorker(fd, worker, socket, "the staged-audio worker answers shutdown");
 }
 
 // The schedule below, in milliseconds after the transport opened. Keeping the
@@ -3329,6 +3540,17 @@ int main(int argc, char** argv) {
         exerciseGoLiveUnderLoad(videoA, videoB, bigStill);
     } else {
         std::printf("   skipped the go-live scenario (no big still fixture)\n");
+    }
+
+    // --- task 6.21c1 (review F3): the audio bring-up off the frame loop ---
+    //
+    // Its own worker (the scripted audio start is read at the spawns it
+    // makes) and the audio fixture: the staged half is a decodable stream,
+    // and only a playing clip can measure whether the loop froze.
+    if (audioOk) {
+        exerciseStagedAudioGoLive(videoB, audioClip);
+    } else {
+        std::printf("   skipped the staged-audio scenario (no audio fixture)\n");
     }
 
     ::unlink(corrupt.c_str());
