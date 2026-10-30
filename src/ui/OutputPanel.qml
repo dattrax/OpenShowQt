@@ -191,6 +191,36 @@ SidePanel {
                 }
             }
 
+            // Task 6.21f (review F6): a stack picture the worker could not
+            // decode names itself. Its own lane, beside the transport's —
+            // mediaError says nothing about a still in the picture panel
+            // and a missing still says nothing about the transport — and
+            // it is the worker's answer rather than the click's, so the
+            // notice clears when a later prepare acknowledges the repair,
+            // not when the file reappears on disk. The worker caps the
+            // list; its lifetime event count says when more happened than
+            // is shown.
+            Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                visible: worker.foregroundErrors.length > 0
+                color: "#d9a441"
+                font.pixelSize: 11
+                text: {
+                    const faults = worker.foregroundErrors
+                    if (faults.length === 0) {
+                        return ""
+                    }
+                    const more = faults.length > 1
+                                 ? " (+" + (faults.length - 1) + " more)" : ""
+                    const events = worker.foregroundFailureEvents > faults.length
+                                   ? " · " + worker.foregroundFailureEvents
+                                     + " failure events" : ""
+                    return "picture not drawn: " + faults[0].path + " — "
+                           + faults[0].error + more + events
+                }
+            }
+
             // Task 6.15a (review R15): the media transport, live over
             // the socket. Every control mirrors worker status — the
             // Pause/Play label follows mediaPlaying, the sliders

@@ -96,6 +96,13 @@
  * whether each prepare's background still named its second colour, which is
  * how the fixture proves the clear took the key off the wire rather than
  * merely moving a property in the client.
+ *
+ * Task 6.21f (review F6) added S17: the per-item foreground faults. The peer
+ * (scenario "foreground") reports the worker's own `scene.foregroundErrors`
+ * shape, arms and repairs it from the markers a prepared payload carries, and
+ * keeps its transport faulted the whole time — so the fixture sees the notice
+ * project path and reason, clear on an acknowledged repair, and leave the
+ * media lane's separate report alone.
  */
 
 #include <boost/json.hpp>
@@ -114,6 +121,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <fcntl.h>
@@ -435,12 +443,38 @@ private:
                                      {"video", true},
                                      {"clock", false},
                                      {"aux", false}}},
-                {"scene", std::move(scene)},
-                {"preview",
-                 boost::json::object{{"running", false},
-                                     {"dropped", 0},
-                                     {"error", ""}}},
             };
+            if (fScenario == "foreground") {
+                // Task 6.21f (review F6): the per-item foreground faults,
+                // shaped exactly as the real worker shapes them — a capped
+                // list of {path, error} beside a monotonic event count —
+                // and the transport's own lane faulted throughout, so the
+                // fixture can see the two reports refuse to interfere.
+                boost::json::array faults;
+                for (const auto& fault : fForegroundFaults) {
+                    faults.push_back(
+                        boost::json::object{{"path", fault.first}, {"error", fault.second}});
+                }
+                scene["foregroundErrors"] = std::move(faults);
+                scene["foregroundFailureEvents"] = fForegroundEvents;
+                result["media"] =
+                    boost::json::object{{"playing", true},
+                                        {"path", "fake-clip.mp4"},
+                                        {"error", "fake: background decode failed"},
+                                        {"audio", "silent"},
+                                        {"position", 1.0},
+                                        {"live", true},
+                                        {"loop", true},
+                                        {"duration", 6.0},
+                                        {"sources", boost::json::array{}},
+                                        {"standalone", boost::json::object{{"live", false},
+                                                                           {"error", ""}}}};
+            }
+            result["scene"] = std::move(scene);
+            result["preview"] =
+                boost::json::object{{"running", false},
+                                    {"dropped", 0},
+                                    {"error", ""}};
             // Task 6.16a: the scripted stream is RUNNING, and its second
             // target reports for itself. `stale` is derived, not pinned: the
             // peer counts a superseded draw when a new ask arrives while a
@@ -599,6 +633,24 @@ private:
                 }
             }
             fGradients.push_back(std::move(gradient));
+            if (fScenario == "foreground") {
+                // The marked prepares drive the fault lane (see above).
+                // Each marker names ONE path, so the list and the count
+                // grow the way the worker's do, and the repair clears the
+                // list alone.
+                const std::string wireForm = boost::json::serialize(request);
+                if (wireForm.find("FGMISSING") != std::string::npos) {
+                    fForegroundFaults = {{"./shows/gone.png",
+                                          "fake: no such file or directory"}};
+                    ++fForegroundEvents;
+                } else if (wireForm.find("FGSECOND") != std::string::npos) {
+                    fForegroundFaults.push_back(
+                        {"./shows/plate.jpg", "fake: not an image file"});
+                    ++fForegroundEvents;
+                } else if (wireForm.find("FGREPAIR") != std::string::npos) {
+                    fForegroundFaults.clear();
+                }
+            }
             if (fScenario == "die-first-prepare" && fPrepares == 1) {
                 writeReport();
                 _exit(44);  // no answer at all: the go hangs, then dies
@@ -1565,6 +1617,13 @@ private:
     std::vector<std::string> fAssetPaths;  // each prepare's background file (task 6.12)
     std::vector<std::string> fItemPaths;   // and its path-bearing items, space-joined (task 6.21b)
     std::vector<std::string> fGradients;   // and its background gradient, or "" (task 6.21e)
+    // Task 6.21f (review F6): the per-item foreground faults the status
+    // scene block reports. Marked payloads arm them (FGMISSING/FGSECOND)
+    // and a later marked prepare repairs the list (FGREPAIR) — the same
+    // edge the real worker gives its own decode: a prepare that reads the
+    // path again takes the report away, and never un-counts the event.
+    std::vector<std::pair<std::string, std::string>> fForegroundFaults;
+    std::uint64_t fForegroundEvents = 0;
     // Task 6.15a (review R15): the scripted transport's state and the
     // verbatim ledger of the media.* commands that moved it. The peer starts
     // as a live, playing, looping 6 s clip with one registered audio source.
@@ -3897,6 +3956,103 @@ void scenarioGradientClear() {
           "gradient: three presents - the go, the clear, the restore");
 }
 
+// S17 (task 6.21f, review F6): the foreground fault lane reaches the
+// operator. The worker has reported per-item picture failures since 6.20d;
+// this is the frontend half — the projection into the properties QML binds,
+// the growth of the capped list beside its monotonic event count, the
+// repair transition the operator can cause by fixing the file and going
+// again, and the independence of the transport's own fault line, which the
+// foreground notice must neither evict nor be evicted by.
+void scenarioForegroundFaults() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "foreground", 1);
+    const std::string report = tempPath("foreground");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "fgfault: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    // The media lane is faulted from the first poll and stays so for the
+    // whole scenario — the yardstick for "the new notice joined the
+    // reports, it did not replace one".
+    check(waitUntil([&controller] {
+              return controller.mediaError().contains(QStringLiteral("background decode"));
+          }),
+          "fgfault: the transport reports its own fault, undisturbed");
+    const QString mediaFault = controller.mediaError();
+    check(controller.foregroundErrors().isEmpty() && controller.foregroundFailureEvents() == 0,
+          "fgfault: nothing is reported before a picture has failed");
+
+    controller.presentSceneJson(
+        QString::fromStdString(sceneForSelection("FGMISSING", "One", 0xFFFFFFu)));
+    const bool armed = waitUntil([&controller] {
+        return controller.foregroundErrors().size() == 1 &&
+               controller.foregroundFailureEvents() == 1;
+    });
+    if (!check(armed, "fgfault: a failed picture is projected from the status poll")) {
+        std::fprintf(stderr, "fgfault: errors=%lld events=%lld\n",
+                     static_cast<long long>(controller.foregroundErrors().size()),
+                     static_cast<long long>(controller.foregroundFailureEvents()));
+        controller.shutdownNow();
+        return;
+    }
+    const QVariantMap first = controller.foregroundErrors().first().toMap();
+    check(first.value(QStringLiteral("path")).toString() == QLatin1String("./shows/gone.png") &&
+              first.value(QStringLiteral("error"))
+                  .toString()
+                  .contains(QStringLiteral("no such file")),
+          "fgfault: the notice names the path AND the reason, verbatim from the worker");
+    check(controller.sceneActive() == 1 && controller.wordsOnAir(),
+          "fgfault: a missing picture is not a failed go — the scene is on air");
+    check(controller.mediaError() == mediaFault,
+          "fgfault: the transport's line is untouched by the foreground report");
+
+    controller.presentSceneJson(
+        QString::fromStdString(sceneForSelection("FGSECOND", "Two", 0xFFFFFFu)));
+    const bool grew = waitUntil([&controller] {
+        return controller.foregroundErrors().size() == 2 &&
+               controller.foregroundFailureEvents() == 2;
+    });
+    check(grew, "fgfault: a second broken path extends the list and the count");
+    const QVariantList faults = controller.foregroundErrors();
+    check(faults.size() == 2 &&
+              faults[0].toMap().value(QStringLiteral("path")) !=
+                  faults[1].toMap().value(QStringLiteral("path")),
+          "fgfault: the list reports one entry per asset path, not one incident");
+
+    // The repair: the operator puts the file back and goes again. The
+    // worker's later prepare decodes the path and drops the report; the
+    // notice follows the WORKER's answer, and the event count — monotonic,
+    // like presentFailures — does not un-happen.
+    controller.presentSceneJson(
+        QString::fromStdString(sceneForSelection("FGREPAIR", "Three", 0xFFFFFFu)));
+    const bool repaired = waitUntil([&controller] {
+        return controller.foregroundErrors().isEmpty() &&
+               controller.foregroundFailureEvents() == 2;
+    });
+    check(repaired,
+          "fgfault: the notice clears when the repair is acknowledged, and the lifetime count "
+          "stays counted");
+    check(controller.mediaError() == mediaFault,
+          "fgfault: clearing the foreground notice did not clear the transport's own fault");
+    std::fprintf(stderr,
+                 "fgfault: %d fault(s) projected with path+reason, repaired to %d, events "
+                 "steady at %lld, media lane unchanged\n",
+                 2, static_cast<int>(controller.foregroundErrors().size()),
+                 static_cast<long long>(controller.foregroundFailureEvents()));
+    controller.shutdownNow();
+    const boost::json::object counts = readReport(report);
+    check(reportNumber(counts, "prepares") == 3,
+          "fgfault: three prepares - the broken go, the second path, the repair");
+}
+
 int main(int argc, char* argv[]) {
     const char* scenario = std::getenv("OPENSHOW_FAKE_SCENARIO");
     if (scenario != nullptr) {
@@ -3937,6 +4093,7 @@ int main(int argc, char* argv[]) {
     scenarioSelectionPreview();
     scenarioThumbnailPreview();
     scenarioGradientClear();
+    scenarioForegroundFaults();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "worker_controller_tests: %d failure(s)\n", gFailures);

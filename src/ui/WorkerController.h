@@ -141,6 +141,13 @@ class WorkerController : public QObject {
     Q_PROPERTY(bool wordsOnAir READ wordsOnAir NOTIFY sceneChanged)
     Q_PROPERTY(bool backgroundOnAir READ backgroundOnAir NOTIFY sceneChanged)
     Q_PROPERTY(bool canRestore READ canRestore NOTIFY sceneChanged)
+    // Foreground pictures the worker could not decode (task 6.21f, review
+    // F6): the bounded [{path, error}, ...] list from the last status poll
+    // and the worker's lifetime failure-event count beside it. Their own
+    // lane: the transport's mediaError above says nothing about a stack
+    // picture, and a stack picture says nothing about the transport.
+    Q_PROPERTY(QVariantList foregroundErrors READ foregroundErrors NOTIFY sceneChanged)
+    Q_PROPERTY(qint64 foregroundFailureEvents READ foregroundFailureEvents NOTIFY sceneChanged)
 
 public:
     explicit WorkerController(QObject* parent = nullptr);
@@ -261,6 +268,8 @@ public:
     bool wordsOnAir() const { return fPresent->wordsOnAir(); }
     bool backgroundOnAir() const { return fPresent->backgroundOnAir(); }
     bool canRestore() const { return fPresent->canRestore(); }
+    QVariantList foregroundErrors() const { return fPresent->foregroundErrors(); }
+    qint64 foregroundFailureEvents() const { return fPresent->foregroundFailureEvents(); }
 
     qint64 demoSlideCount() const;
 

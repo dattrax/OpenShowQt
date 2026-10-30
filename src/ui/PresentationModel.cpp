@@ -17,6 +17,13 @@ namespace {
 // controls (task 3.4). Bounded; the worker prunes its own store too.
 constexpr int kSceneMirrorSize = 32;
 
+// The foreground-fault list the worker reports per poll is capped at its
+// own bound (OutputSession's kMaxReportedForegroundFailures = 8); this is
+// the receiving side's identical ceiling, so a peer — real or scripted —
+// that sent more than the contract allows cannot grow a UI list without
+// limit (task 6.21f, review F6).
+constexpr int kMaxForegroundFaults = 8;
+
 }  // namespace
 
 PresentationModel::PresentationModel(Outbound outbound, QObject* parent)
@@ -331,6 +338,41 @@ void PresentationModel::updateFromStatus(const boost::json::object& payload) {
     // revision was prepared with, so a clear or present lights the
     // indicator when the output has it, not when it was requested.
     fSceneContent = sceneContent(fSceneJson.value(fSceneActive));
+    // The per-item foreground faults (task 6.21f, review F6). Replaced
+    // wholesale from this poll, exactly as the worker replaced them: an
+    // entry whose path a later prepare decoded successfully is simply not
+    // in the next list, so a repair that the worker has acknowledged makes
+    // the notice go — and a status block that carries no such array (an
+    // older worker) leaves the lane empty rather than stale. The shape is
+    // checked entry by entry: a malformed element costs that entry only.
+    QVariantList foregroundErrors;
+    const auto failures = block.find("foregroundErrors");
+    if (failures != block.end() && failures->value().is_array()) {
+        for (const boost::json::value& element : failures->value().as_array()) {
+            if (!element.is_object() || foregroundErrors.size() >= kMaxForegroundFaults) {
+                continue;
+            }
+            const boost::json::object& fault = element.as_object();
+            const auto path = fault.find("path");
+            const auto error = fault.find("error");
+            if (path == fault.end() || !path->value().is_string() || error == fault.end() ||
+                !error->value().is_string()) {
+                continue;
+            }
+            foregroundErrors.push_back(QVariantMap{{QStringLiteral("path"),
+                                                   QString::fromStdString(
+                                                       std::string(path->value().as_string()))},
+                                                  {QStringLiteral("error"),
+                                                   QString::fromStdString(
+                                                       std::string(error->value().as_string()))}});
+        }
+    }
+    const auto events = block.find("foregroundFailureEvents");
+    fForegroundErrors = foregroundErrors;
+    fForegroundFailureEvents =
+        events != block.end() && events->value().is_number()
+            ? static_cast<qint64>(events->value().to_number<std::uint64_t>())
+            : 0;
     emit changed();
 }
 
@@ -338,6 +380,11 @@ void PresentationModel::reset() {
     fSceneJson.clear();
     fMirrorMax = 0;
     fSceneContent = SceneContent{};
+    // The worker's fault list died with the connection: a reconnect's first
+    // poll reports the truth again, and a stale amber line over a fresh
+    // session is the lie R18 was about (task 6.21f).
+    fForegroundErrors.clear();
+    fForegroundFailureEvents = 0;
     fRestoreJson.clear();
     fRestoreArmedGo = 0;
     fRestoreDoneRevision = 0;

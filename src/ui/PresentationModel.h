@@ -26,6 +26,7 @@
 #include <QHash>
 #include <QObject>
 #include <QString>
+#include <QVariantList>
 #include <QVariantMap>
 
 #include <cstdint>
@@ -110,6 +111,13 @@ public:
     bool wordsOnAir() const { return fSceneContent.words; }
     bool backgroundOnAir() const { return fSceneContent.background; }
     bool canRestore() const { return !fRestoreJson.isEmpty(); }
+    // The stack pictures the worker could not decode (task 6.21f, review
+    // F6): the bounded list as [{path, error}, ...] and the worker's
+    // lifetime failure-event count beside it. Both are the worker's truth
+    // from the last status poll, so the notice clears when a repair is
+    // acknowledged — not when the operator puts the file back and hopes.
+    QVariantList foregroundErrors() const { return fForegroundErrors; }
+    qint64 foregroundFailureEvents() const { return fForegroundFailureEvents; }
 
 signals:
     // Any change to the acknowledged state or to what is owed it; the host
@@ -150,6 +158,14 @@ private:
     qint64 fScenePending = 0;
     qint64 fScenePrepared = 0;
     SceneContent fSceneContent;
+    // The per-item foreground faults of the last status poll (task 6.21f,
+    // review F6): one {path, error} entry per picture the worker could not
+    // decode, capped at the worker's own bound, plus its lifetime event
+    // count so a truncated list is still honest. Deliberately its own
+    // state, never folded into the media lane: a stack picture's decode
+    // error must not evict the transport's truth from mediaError.
+    QVariantList fForegroundErrors;
+    qint64 fForegroundFailureEvents = 0;
     // Restore state (task 6.3b): the payload the first clear of a sequence cut
     // from, retained as content so the worker's store window cannot retire it;
     // the id of a restore whose prepare is still in flight; and the revision
