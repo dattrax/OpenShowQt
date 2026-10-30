@@ -294,10 +294,26 @@ bool OutputSession::prepareScene(const openshow::scene::Scene& scene, uint64_t j
     auto ready = [revision, onReady = std::move(onReady)](bool cancelled) {
         onReady(revision, cancelled);
     };
+    // The job prewarms the store's OWN instance (task 6.9b): the frame
+    // loop's layout cache is keyed by that pointer, so the shape only
+    // counts as a hit when it is built for the shared object. pin() shares
+    // it out exactly as the draw path takes it; held by the job, the
+    // content cannot be evicted beneath it or beneath the frame loop.
+    ActiveScene content;
+    fStore.pin(revision, &content);
     if (!fPrepares.submit(
             jobId,
-            [this, scene](const std::atomic<bool>& cancelled) {
+            [this, scene, content](const std::atomic<bool>& cancelled) {
                 preloadScene(scene, &cancelled);
+                // Task 6.9b: the same job prewarms the shared caches the
+                // frame boundary draws from — the scene's shaped text and
+                // its blur backdrop — because a pin, a decode and a shape
+                // for one prepared scene belong to one unit of file work.
+                // The scene travels BY VALUE (the job may run after this
+                // function returns); the shape is keyed on `content`, the
+                // store's own instance, because that is the pointer the
+                // draw path will ask with.
+                prewarmScene(content);
             },
             std::move(ready))) {
         // Explicit refusal, two possible reasons, both honest: the worker
@@ -316,6 +332,20 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
     };
     if (fScene == nullptr || stopped()) {
         return;
+    }
+    // Task 6.9b (review R10): a prepare whose file work really costs time,
+    // so the queue's bound is tested against a cost. The sleep checks the
+    // cooperative flag the way real cancellable work does — a retired job
+    // stops early, its ack comes from the retirement.
+    if (faults().prepareDelayMs > 0) {
+        const int milliseconds = faults().prepareDelayMs;
+        for (int elapsed = 0; elapsed < milliseconds && !stopped(); elapsed += 20) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(
+                std::min(20, milliseconds - elapsed)));
+        }
+        if (stopped()) {
+            return;
+        }
     }
     // Foreground pictures (task 6.17b): the same discipline as the
     // background's still — decoded NOW, on the prepare executor thread
@@ -362,15 +392,31 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
                                 "background image: " + error);
         } else {
             fTransport.mediaFaultCleared(MediaFault::kImage, background.assetPath);
+            // Task 6.9b: the blur fit's companion rides this same unit of
+            // file work — built NOW, on the executor thread, once the pixels
+            // it derives from are resident — so the frame boundary that
+            // switches to this scene pays only the map probe. Blur is a fit
+            // (task 6.17c1), not a flag; a cover/contain still has no
+            // backdrop to prewarm, and a blur over a VIDEO composites from
+            // the presented frame (6.6), so this belongs to the still alone.
+            if (background.fit == openshow::domain::BackgroundFit::Blur) {
+                fScene->imageCache()->prewarmBackdrop(background.assetPath);
+            }
         }
         return;
     }
     // Videos: opening a transport belongs to the present (the audience
-    // decides when it starts), but the cheap probe belongs to now — a
-    // file that cannot even be read or demuxed is known while the old
-    // scene is still on air, and reported (5.5d) instead of discovered
-    // as a silent colour fill one frame after the change. The probe is
-    // one file open: it runs whole or not at all (6.9a's unit boundary).
+    // decides when it starts), but the cheap probe AND the file-half prime
+    // belong to now. The probe is first: a file that cannot even be read or
+    // demuxed is known while the old scene is still on air, and reported
+    // (5.5d) instead of discovered as a silent colour fill one frame after
+    // the change. A file the probe could read is then PRIME-OPENED on THIS
+    // thread — the prepare executor's — so the audience's boundary attaches
+    // the GPU half instead of opening from disk (task 6.9b, review R10):
+    // the slow open happens while the old scene is still on air, and the
+    // prime is the one bounded transport R10 asks for (a superseded prime
+    // retires on this thread). The prime changes nothing on screen — it is
+    // readiness, and the present remains the decision.
     openshow::media::MediaInfo info;
     std::string error;
     if (openshow::media::probeMedia(background.assetPath, &info, &error) !=
@@ -379,11 +425,30 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
                      background.assetPath.c_str(), error.c_str());
         fTransport.mediaFailed(MediaFault::kVideo, background.assetPath,
                              "background preload: " + error);
+    } else if (!fTransport.primeVideo(background.assetPath, cancelled, &error)) {
+        // A prime failure is not a reportable media fault: the file reads
+        // (the probe just said so), and the present will open cold and
+        // report anything truly wrong. It is only the loss of the head
+        // start, so it stays in the log.
+        std::fprintf(stderr, "openshow-worker: background prime %s skipped: %s\n",
+                     background.assetPath.c_str(), error.c_str());
     }
     // A successful probe deliberately clears nothing: the audience still
     // has the previous background until this one's transport opens, and the
     // report of what is on air belongs to that transport (mediaPlaying),
     // not to a probe of something not yet shown.
+}
+
+void OutputSession::prewarmScene(
+    const std::shared_ptr<const openshow::scene::Scene>& scene) {
+    if (fScene == nullptr || !scene || scene->items.empty()) {
+        return;
+    }
+    // Shaping is a scene's expensive half (task 6.9b): the frame loop's
+    // first draw of a prepared scene must find the paragraphs already
+    // built. The production renderer owns the cache its draw reads; this
+    // call only moves the moment of payment, never the work's rules.
+    fScene->prewarmLayouts(scene);
 }
 
 bool OutputSession::presentScene(uint64_t prepared, uint64_t* revisionOut,
@@ -873,6 +938,13 @@ void OutputSession::mirrorImageStatsLocked() {
     fStatus.scene.images.pins = stats.pins;
     fStatus.scene.images.evictions = stats.evictions;
     fStatus.scene.images.preloadHits = stats.preloadHits;
+    // The draw-boundary trio (task 6.9b, review R10): what the frame loop
+    // still had to build for itself — decodes, blur backdrops, and the text
+    // layouts that missed this renderer's own cache. A companion's shaping
+    // is deliberately absent: it is not the audience's cost (R16).
+    fStatus.scene.images.drawDecodes = stats.drawDecodes;
+    fStatus.scene.images.drawBackdrops = stats.drawBackdrops;
+    fStatus.scene.images.layoutBuilds = fScene->textLayoutBuilds();
 }
 
 /*

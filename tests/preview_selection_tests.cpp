@@ -1683,13 +1683,45 @@ void testStandDown(std::int64_t& nextId, int fd, std::uint64_t greenRevision) {
     }
 }
 
+// --- quieting the armed stream before the race --------------------------
+//
+// The armed worker pays the scripted cost on the FIRST preview frame it
+// draws — and that frame is the audience's own mirror, because starting a
+// stream makes the loop present and publish once. One 250 ms frame is an
+// overrun of the preview's share of an audience frame, so the producer buys
+// the audience its time back by standing the WHOLE preview down for
+// cost × (period / budget − 1): three times the cost at 60 fps, ~750 ms
+// (task 6.11a, review R13). An ask that lands inside that window is never
+// drawn at all — the loop sleeps to the end of it rather than attempt a
+// frame — so the supersession below would not happen and `stale` would stay
+// flat for a reason that has nothing to do with the generation gate. The
+// race needs its first ask to be the draw that pays, so the fixture waits
+// for the mirror's overrun to be visible in status and then for the
+// repayment window to lapse.
+void waitForPreviewQuiet(std::int64_t& nextId, int fd) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const boost::json::object preview = previewStatus(fd, nextId);
+        if (fieldValue(preview, "published") >= 1 &&
+            fieldValue(preview, "worstMs") >= static_cast<std::uint64_t>(kFaultPreviewMs)) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    // 3× the armed cost is exactly what one overrun buys back at this
+    // stream's rate; 120 ms more covers the round trips around it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(kFaultPreviewMs * 3 + 120));
+}
+
 // --- the superseded draw (armed) ---------------------------------------
 //
 // The race the generation gate exists for: a draw that has already spent its
 // time when the operator picks something else. With the fault knob the first
-// draw is verifiably still asleep when the second ask lands, so the frame it
-// would have published is destroyed rather than delivered, and the ask that
-// arrives second is the one the wire carries.
+// draw is verifiably still asleep when the second ask lands — the caller has
+// first waited out the stream's own budget stand-down, so this ask IS the
+// draw that pays — and the frame it would have published is destroyed rather
+// than delivered, and the ask that arrives second is the one the wire
+// carries.
 void testSupersededDrawIsDestroyed(std::int64_t& nextId, int fd, std::uint64_t greenRevision,
                                    std::uint64_t blueRevision) {
     const std::string first = selectScene(fd, nextId, greenRevision, 1);
@@ -1855,6 +1887,9 @@ int main(int argc, char* argv[]) {
     const std::uint64_t armedGreen = prepareScene(fd, nextId, solidScene("A", kGreen, "GREEN"));
     const std::uint64_t armedBlue = prepareScene(fd, nextId, solidScene("B", kBlue, "BLUE"));
     check(armedGreen != 0 && armedBlue != 0, "two scenes prepared on the armed worker");
+    // The stream's first mirror frame pays the armed cost; the race is armed
+    // only once that overrun has been repaid (see waitForPreviewQuiet).
+    waitForPreviewQuiet(nextId, fd);
     testSupersededDrawIsDestroyed(nextId, fd, armedGreen, armedBlue);
 
     close(fd);

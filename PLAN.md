@@ -30,8 +30,8 @@ estimate is historical; re-estimate remaining work before productization.
 - **Scheduling:** decoding, RPC and rendering have separate execution contexts.
   Files, decode, IPC and preview consumers must not block presentation or audio
   callbacks. Prepare-time file work left the RPC loop for the bounded prepare
-  executor (6.9a); transport start/pre-roll/retirement waits remain a target:
-  **6.9b is TODO**.
+  executor (6.9a), and a background video's bring-up is primed there too — the
+  render loop only attaches its GPU half at the frame boundary (**6.9b**).
 - **RPC:** length-prefixed JSON-RPC 2.0 on Unix-domain sockets; Qt local sockets
   in the frontend and a raw socket/poll loop in the worker. Version/capability
   negotiation, request IDs, structured errors and acknowledged revisions. Traffic
@@ -100,8 +100,9 @@ remain **7.3**. Do not use old machine paths as current dependency configuration
 ## Task, pause and Git rules
 
 1. Work in milestone/dependency order. Preserve recorded DONE checkpoints;
-   later work does not waive earlier open tasks. **6.9b is outstanding**;
-   the recorded extractions 6.18a1 and 6.18a2 are DONE (the earlier "untracked
+   later work does not waive earlier open tasks. 6.9b is DONE (2026-10-30,
+   the prepare-time transport prime); the recorded extractions 6.18a1 and
+   6.18a2 are DONE (the earlier "untracked
    preparation" note is closed out: 6.18a2 was implemented, wired and tested
    2026-10-29); 6.18b is split in the ledger (6.18b1 transport extraction and
    6.18b2 the dev-driver split, both DONE 2026-10-29). Finish/check boundaries without
@@ -238,7 +239,7 @@ Checkpoint: `M4: complete core operator workspace and editor`.
 | 5.4b | DONE | Audio seek flush, rebase and acknowledgement seam | `av_sync_tests`; failures/generation pairing refined in 6.7d |
 | 5.4c | DONE | AvPlayer pre-roll, lifecycle and clock fallback | `av_sync_tests`; restartability refined in 6.7a/b |
 | 5.4d | DONE | Clock, feeder and complete transport regressions | `av_sync_tests`; thirty-minute hardware gate remains M7 |
-| 5.5 | DONE | Prepared assets, continuous video backgrounds and failures | `background_media_tests`; transport-side scheduling limits remain 6.9b |
+| 5.5 | DONE | Prepared assets, continuous video backgrounds and failures | `background_media_tests`; the transport-side scheduling limit this row named is closed by 6.9b |
 | 5.5a | DONE | Video background identity in compiled scenes | `scene_tests` |
 | 5.5b | DONE | Production background transport and lyric continuity | `background_media_tests` |
 | 5.5c | DONE | Prepare-time still decode and video probe | `background_media_tests`; since 6.9a off the RPC thread on the prepare executor, ack deferred to readiness |
@@ -274,7 +275,7 @@ references in historical logs/source mean 7.1–7.4. M6 remains incomplete.
 | 6.8a | DONE | Encoded-size, scene/reference and JSON-RPC envelope limits | `protocol_tests`, `scene_tests`, `worker_rpc_limits`; R11 |
 | 6.8b | DONE | Bounded nonblocking RPC writers and stall handling | `outbound_queue_tests`, `worker_rpc_transport`, `worker_controller_tests`; R11 |
 | 6.9a | DONE | Move file decode/probe preparation off the single RPC loop into a bounded cancellable executor | `prepare_executor_tests` (exactly-once/capacity/cancel/stop contract), `background_media_tests` (live: status/displays/release/shutdown-class probes answered during four cold 4K prepares, `scene.preparing` evidence, `preloadHits` cache proof); `PrepareExecutor` joins `SceneStore`/`PreviewProducer`/`BackgroundTransport` as session-owned leaves. R10 |
-| 6.9b | TODO | Prepare bounded media/text/blur resources before go; move transport start/pre-roll/retirement waits off the render loop, preserving Ganesh ownership | Slow video open/audio pre-roll/old teardown cannot freeze active output; ready still and video changes meet p95 100 ms measured at the frame boundary; superseded primed transports are bounded. R10 |
+| 6.9b | DONE | Prepare bounded media/text/blur resources before go; move transport start/pre-roll/retirement waits off the render loop, preserving Ganesh ownership | `background_media_tests` (live: a scripted 700 ms video open is a PRIME on the prepare executor — its ack lands ~1.1 s later while the RPC answers status in ≤0.3 ms and the audience's frames advance with a 50 ms worst gap; presenting the primed clip reaches the air in ~15 ms, a same-identity lyric change in ~2 ms, warm switches p95 ~9 ms over 15; the draw-boundary trio — decodes, blur backdrops, text layouts — stays +0 across the warm loop; one prime parked at a time, a superseded one closed on the priming thread; shutdown answered in 0.1 ms with the queue full), `scene_frame_tests` (a companion's layouts stay its own: R16). Staged transport open (`PlaybackPipeline::openFile` on any thread / `attachGpu` on the render thread), `BackgroundTransport::primeVideo`, per-`SceneRenderer` `LayoutCache`, prepare-time blur prewarm. R10 |
 | 6.10 | DONE | Budgeted image cache, input limits, pins and retry | `scene_image_cache_tests`, `background_media_tests`; pinned excess reported, not evicted; R12 |
 | 6.11a | DONE | One immutable audience frame; previews cannot advance fades | `scene_frame_tests`, `preview_budget_tests`; synchronous readback remains; R13 |
 | 6.11b | DONE | Correct background fade groups without intermediate targets | `scene_render_tests`, `render_layer_guard` and negative fixtures; R13 |

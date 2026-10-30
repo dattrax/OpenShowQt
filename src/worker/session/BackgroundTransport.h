@@ -298,6 +298,20 @@ public:
     // (the loop owes a present for its head frame).
     bool applyBackground(const openshow::scene::Background& wanted, const GpuHandles& handles,
                          const std::function<bool(const std::string&)>& imageResident);
+    // Prepare-time transport prime (task 6.9b, review R10). Runs a video
+    // transport's FILE half — openFile: container, streams, decoder — on the
+    // CALLER's thread (the prepare executor's), and parks the result as the
+    // one primed transport. The next applyBackground that wants THIS path
+    // attaches the GPU half on the render (owner) thread instead of opening
+    // from disk, so a slow open cannot stall the frame boundary; a want for
+    // any other path closes the stale prime (here, off the loop) and opens
+    // fresh. The primed transport is bound to ONE: preparing a second video
+    // retires the first's prime on the calling thread, never in a tick, and
+    // the memory the file half holds (decoder + demuxer) is the whole cost.
+    // The GPU handle stays untouched, so Ganesh's owner rule holds: only
+    // applyBackground touches the device, always on the render thread.
+    bool primeVideo(const std::string& path, const std::atomic<bool>* cancelled,
+                    std::string* error);
     // End everything by name: the background transport (R6 order — quiesce,
     // then the slots, then the players) and the standalone track, which is
     // deliberately NOT part of the background's lifetime (task 6.15b) and
@@ -421,6 +435,18 @@ private:
     AvPlayer fAudio;
     std::unique_ptr<PlaybackPipeline> fBackground;
     openshow::scene::Background fAppliedBackground;    // identity in service
+
+    // Prepare-time prime (task 6.9b, review R10): a video transport whose
+    // FILE half (container + decoder) is open but whose GPU half is not,
+    // parked here for the render loop to attach. Bound to ONE — primeVideo
+    // supersedes the previous prime on its own (executor) thread — and every
+    // access is under fPrimeMutex, a leaf: primeVideo runs on the prepare
+    // executor, applyBackground consumes it on the render thread, and neither
+    // holds fMutex across the swap. A primed transport has touched no GPU,
+    // so retiring it never runs a Ganesh call off its owner thread.
+    std::mutex fPrimeMutex;
+    std::unique_ptr<PlaybackPipeline> fPrimed;
+    std::string fPrimedPath;
 
     // Standalone production audio (task 6.15b, review R15). A SEPARATE
     // AvPlayer, not the background's second mixer input: the background

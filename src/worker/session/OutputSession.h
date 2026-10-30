@@ -168,6 +168,13 @@ public:
             // wall-clock timing cannot tell a re-decode from a hit — this
             // counter is the worker's own word that the disk was skipped.
             uint64_t preloadHits = 0;
+            // The draw-boundary misses (task 6.9b, review R10): decodes and
+            // blur builds the DRAW paid because the prepare did not cover
+            // them — plus the frame loop's own text-layout builds. A ready
+            // show moves none of these three.
+            uint64_t drawDecodes = 0;
+            uint64_t drawBackdrops = 0;
+            uint64_t layoutBuilds = 0;
         } images;
     };
 
@@ -355,6 +362,13 @@ public:
     // checked between files, the natural unit.
     void preloadScene(const openshow::scene::Scene& scene,
                       const std::atomic<bool>* cancelled);
+    // Task 6.9b: the text and blur half of a prepare — the costs the
+    // frame loop used to pay AT the switch. Shapes the scene into the
+    // production renderer's OWN layout cache and builds its blur backdrop
+    // if it has one, on the CALLER's thread (the prepare executor's). The
+    // caches' own rules (LRU slots, byte budget) are unchanged; only the
+    // moment of payment moves off the frame boundary (p95 100 ms, R10).
+    void prewarmScene(const std::shared_ptr<const openshow::scene::Scene>& scene);
 
     // Names a prepared revision as the output's scene. The switch lands
     // on the render thread's next frame, like layer toggles, and

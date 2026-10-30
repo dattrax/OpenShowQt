@@ -304,7 +304,20 @@ boost::json::object statusResult(const OutputSession::Status& status) {
                                                                   // latency on the wire can say.
                                                                   {"preloadHits",
                                                                    status.scene.images
-                                                                       .preloadHits}}}}},
+                                                                       .preloadHits},
+                                                                  // The draw-boundary trio
+                                                                  // (task 6.9b, review R10):
+                                                                  // what the frame loop still
+                                                                  // had to build for itself.
+                                                                  {"drawDecodes",
+                                                                   status.scene.images
+                                                                       .drawDecodes},
+                                                                  {"drawBackdrops",
+                                                                   status.scene.images
+                                                                       .drawBackdrops},
+                                                                  {"layoutBuilds",
+                                                                   status.scene.images
+                                                                       .layoutBuilds}}}}},
                                // Background media (task 5.5d): the video
                                // transport's live state; error is sticky
                                // until a successful open replaces it.

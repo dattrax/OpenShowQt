@@ -94,6 +94,24 @@ public:
     // builds the uploader at the decoded size and validates the first
     // frame before accepting, exactly as the bench did.
     bool openGpu(const Gpu& gpu, const Options& options, std::string* error);
+    // Staged GPU open (task 6.9b, review R10): openGpu's two halves on
+    // two threads. openFile() runs the FILE half — probe, demuxer, decoder
+    // allocation — and touches no GPU handle, so a session can prime a
+    // transport for a scene its operator prepared, on any thread; the
+    // slow disk cost never lands at the frame boundary. attachGpu() runs
+    // the GPU half (uploader create, ring build) on whoever calls it —
+    // which is the context's OWNER thread, the R10 rule that keeps Ganesh
+    // where it lives. openFile must have succeeded; between the two calls
+    // the pipeline holds open file and decoder handles (closed by close()
+    // or consumed by attachGpu) — one prime is the session's whole budget.
+    // openGpu is exactly openFile followed by attachGpu; the copying
+    // compatibility fallback reopens the file on the ATTACHING thread, so
+    // it stays the exception the comments describe, never the plan.
+    bool openFile(const Options& options, std::string* error);
+    bool attachGpu(const Gpu& gpu, std::string* error);
+    // True between a successful openFile and a close()/attachGpu(): the
+    // file half is resident and only the GPU half remains.
+    bool fileOnly() const { return fMode == Mode::kFile; }
     // CPU mode: plain-memory ring, copying decode. The presenter role is
     // inert (acquireImage returns null); this is the bounded queue the
     // headless tests drive without Vulkan.
@@ -208,7 +226,7 @@ public:
     Stats stats() const;
 
 private:
-    enum class Mode { kClosed, kCpu, kGpu };
+    enum class Mode { kClosed, kFile, kCpu, kGpu };
 
     void runPacing();
     // Seconds against the injected clock; callers hold fStatsMutex.
@@ -219,6 +237,13 @@ private:
     bool openCommon(const Options& options, std::string* error);
 
     Mode fMode = Mode::kClosed;
+    // Staged-open bookkeeping (task 6.9b): the path/depth/fallback permission
+    // the prime carried from openFile to attachGpu, so the GPU half needs no
+    // Options object of its own and the two calls can live on different
+    // threads. Cleared on close().
+    std::string fStagedPath;
+    unsigned fStagedRingDepth = 0;
+    bool fStagedCopyFallback = false;
     media::VideoFrameSource fSource;
     GpuYuvUploader fUploader;
     unsigned fDepth = 0;

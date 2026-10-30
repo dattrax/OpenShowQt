@@ -126,6 +126,66 @@ public:
     };
     SceneLayout layoutScene(const openshow::scene::Scene& scene) const;
 
+    // A renderer's layout cache (task 6.9b). The expensive half of a scene
+    // change is shaping its text, and until now that cost was paid on the
+    // frame loop at the switch itself: a layout cache miss inside draw()
+    // runs the whole shrink-to-fit pass before the audience sees a pixel.
+    // This cache lets the prepare executor BUILD the layout on its own
+    // thread — through the same const layoutScene(), no engine mutation —
+    // so the audience's first miss finds the work already done. It is built
+    // per SceneRenderer (see newLayoutCache): the ENGINE is what a companion
+    // borrows, and four slots cannot be shared between the audience and a
+    // churning slide list (task 6.16b, review R16).
+    //
+    // Shape: four slots, least-recently-used, keyed by the shared_ptr the
+    // store shares (one immutable instance per prepared revision, task
+    // 6.18a), with the raw Scene pointer kept as a second key so a fixture
+    // that draws a scene nobody prepared still hits. Every method is safe
+    // from any thread; a build runs OUTSIDE the lock, exactly like the
+    // image cache builds a blur outside its own.
+    class LayoutCache {
+    public:
+        // The reference stays valid while the cache holds the slot: the
+        // draw path uses it inside one frame, and no call rebuilds a
+        // scene the caller is drawing.
+        const SceneLayout* find(const openshow::scene::Scene* scene) const;
+        SceneLayout build(const openshow::scene::Scene& scene) const;
+        // Returns WHERE the layout landed, so a draw that missed builds once
+        // and draws the stored bytes: the slot it wrote is the LRU victim,
+        // and the four-slot contract means the scenes one frame asks for (its
+        // own and its fade's) cannot push each other out.
+        const SceneLayout* put(const std::shared_ptr<const openshow::scene::Scene>& shared,
+                               const openshow::scene::Scene* scene, SceneLayout layout) const;
+
+    private:
+        friend class SceneTextEngine;
+        LayoutCache(const SceneTextEngine* engine) : fEngine(engine) {}
+        struct Slot {
+            std::shared_ptr<const openshow::scene::Scene> shared;
+            const openshow::scene::Scene* scene = nullptr;
+            SceneLayout layout;
+            std::uint64_t used = 0;
+        };
+
+        const SceneTextEngine* fEngine;
+        mutable std::mutex fMutex;
+        mutable Slot fSlots[4];
+        mutable std::uint64_t fClock = 0;
+    };
+
+    // A renderer owns exactly one LayoutCache (built through this factory)
+    // and draws its text through it. It deliberately lives on the RENDERER,
+    // not the engine, even though a companion borrows the engine (task 6.16b,
+    // review R16): a slide list churning a document must not evict the
+    // audience's layouts nor charge the audience its shaping. The cache BUILDS
+    // through this engine — fonts and shaping are shared and immutable — but
+    // its four slots, its LRU clock and its miss counter belong to one
+    // renderer. The factory exists because the constructor is private (a cache
+    // only ever points at a live engine); a static member reaches it.
+    static std::unique_ptr<LayoutCache> newLayoutCache(const SceneTextEngine& engine) {
+        return std::unique_ptr<LayoutCache>(new LayoutCache(&engine));
+    }
+
     // Draws a laid-out scene's text (which the caller's canvas transform
     // must map from authored units): each paragraph centred in its item's
     // box, and each image entry of the stack drawn stretched into its box
@@ -136,8 +196,7 @@ public:
     // composition pass keeps no intermediate render target (task 6.11b,
     // review R13); a fading image item takes the same alpha on its own
     // paint. A null `images` draws only the text items.
-    void drawLayout(SkCanvas* canvas, const SceneLayout& layout,
-                    const SkPaint* paint = nullptr,
+    void drawLayout(SkCanvas* canvas, const SceneLayout& layout,                    const SkPaint* paint = nullptr,
                     SceneImageCache* images = nullptr) const;
 
 private:
@@ -219,6 +278,13 @@ public:
         std::size_t backdrops = 0;      // blur backdrops held (6.17c2)
         std::size_t backdropComputations = 0;  // lifetime builds: ONE per
                                                // image is the pinned rule
+        // The DRAW-BOUNDARY misses (task 6.9b, review R10): decodes and
+        // blur builds the caches could not answer and the DRAW paid. A
+        // prepare covers a scene's pixels, backdrop and text; anything
+        // still missing at the frame boundary is the prewarm's miss, and
+        // the fixtures count exactly that number instead of timing luck.
+        std::size_t drawDecodes = 0;    // draw-path decodes (loadFor)
+        std::size_t drawBackdrops = 0;  // draw-path backdrop builds
     };
 
     // Decode a file at MOST maxW x maxH pixels (task 6.16b). Skia is asked
@@ -273,8 +339,22 @@ public:
     // the operator-facing one (task 6.7c, review R18): a cached failure is
     // re-decoded — the missing file that has been put back must come back
     // on air and clear its error — while a cached success is kept.
+    // `drawBoundary` (task 6.9b) says WHO is paying: a decode that starts
+    // here on the draw path is a prepare that did not cover its scene,
+    // and it is counted as such (Stats::drawDecodes).
     sk_sp<SkImage> loadFor(const std::string& path);
-    sk_sp<SkImage> refreshFor(const std::string& path, std::string* error);
+    sk_sp<SkImage> refreshFor(const std::string& path, std::string* error,
+                              bool drawBoundary = false);
+
+    // Prepare-time blur build (task 6.9b): the blurred companion of a
+    // resident image, computed NOW on the caller's thread and stored.
+    // Returns false when the image itself is absent (nothing to blur —
+    // refreshFor is the call that decodes first); true when the backdrop
+    // is in the cache, whether this call built it or found it there. The
+    // draw path keeps calling backdropFor(), which then only ever pays
+    // the map probe — the frame boundary stops being where a blurred
+    // background discovers its 4K blur (p95 100 ms, R10).
+    bool prewarmBackdrop(const std::string& path);
 
     // Reference-counted protection against eviction. pin() attaches to the
     // path (a not-yet-cached path pins too: the count precedes the load
@@ -333,6 +413,14 @@ private:
     std::size_t fEvictions = 0;
     std::size_t fPreloadHits = 0;  // refreshFor early returns (6.9a evidence)
     std::size_t fBackdropComputations = 0;  // 6.17c2's once-per-image pin
+    // The draw-boundary evidence (task 6.9b): who paid the cache's two
+    // expensive builds. fDrawDecodes counts refreshFor calls that came
+    // from the draw path (loadFor) and had to reach the file; the live
+    // draws' imageFor is a pure lookup and counts nothing. fDrawBackdrops
+    // counts backdropFor builds — a prewarmed blur answers from the cache
+    // and never lands here.
+    std::size_t fDrawDecodes = 0;
+    std::size_t fDrawBackdrops = 0;
 };
 
 // Draws a scene's background: the colour fill — flat, or a vertical

@@ -53,29 +53,67 @@ bool PlaybackPipeline::openCommon(const Options& options, std::string* error) {
 }
 
 bool PlaybackPipeline::openGpu(const Gpu& gpu, const Options& options, std::string* error) {
-    if (!openCommon(options, error)) {
+    if (!openFile(options, error)) {
         return false;
     }
-    fDepth = options.ringDepth != 0 ? options.ringDepth : unsigned(GpuYuvUploader::kSlots);
+    return attachGpu(gpu, error);
+}
+
+bool PlaybackPipeline::openFile(const Options& options, std::string* error) {
+    if (!openCommon(options, error)) {  // validates mode/path, probes duration
+        return false;
+    }
+    // The FILE half: container, streams, decoder — every cost a slow disk
+    // can impose (task 6.9b). Chosen for the direct-decode plan; the
+    // copying fallback below stays attachGpu's exception. The ring format
+    // and dimensions come out of the source, so the GPU half needs no
+    // second probe to size its uploader.
+    fStagedPath = options.path;
+    fStagedRingDepth = options.ringDepth;
+    fStagedCopyFallback = options.allowVideoCopy;
+    fSource.setDirectDecodeEnabled(true);
+    fSource.setHardwareDecodeEnabled(options.hardwareDecode);
+    if (!fSource.open(options.path, error)) {
+        fMode = Mode::kClosed;
+        return false;
+    }
+    fMode = Mode::kFile;
+    return true;
+}
+
+bool PlaybackPipeline::attachGpu(const Gpu& gpu, std::string* error) {
+    if (fMode != Mode::kFile) {
+        if (error) {
+            *error = "attachGpu needs a file-opened (primed) pipeline";
+        }
+        return false;
+    }
+    fDepth = fStagedRingDepth != 0 ? fStagedRingDepth : unsigned(GpuYuvUploader::kSlots);
     if (fDepth > unsigned(GpuYuvUploader::kSlots)) {
         if (error) {
             *error = "GPU ring depth exceeds the uploader's " +
                      std::to_string(GpuYuvUploader::kSlots) + " presentation slots";
         }
+        fSource.close();
         fMode = Mode::kClosed;
         return false;
     }
     fPtsByToken.assign(fDepth, 0.0);
     fLeaseSeq.assign(fDepth, 0);  // no generation leases anything yet
-    // Direct decode is the plan; the copying compatibility path is the
-    // explicitly permitted fallback (task 1.5i). No presentation has
-    // started between attempts, so the first can release all decoder
-    // references before the backing is rebuilt and the file reopened.
-    for (int attempt = 0; attempt < (options.allowVideoCopy ? 2 : 1); ++attempt) {
-        fSource.setDirectDecodeEnabled(attempt == 0);
-        fSource.setHardwareDecodeEnabled(options.hardwareDecode);
-        if (fSource.open(options.path, error) &&
-            fUploader.create(gpu.device, gpu.physicalDevice, gpu.graphicsQueueIndex,
+    // The GPU half: uploader at the decoded size, then the ring on top.
+    // Direct decode (the prime's choice) runs first. No presentation has
+    // started, so the copying compatibility path is the explicitly
+    // permitted fallback (task 1.5i): it reopens the FILE — on this thread
+    // — which is precisely why the prime exists and why this stays rare.
+    for (int attempt = 0; attempt < (fStagedCopyFallback ? 2 : 1); ++attempt) {
+        if (attempt > 0) {
+            fSource.close();
+            fSource.setDirectDecodeEnabled(false);
+            if (!fSource.open(fStagedPath, error)) {
+                continue;
+            }
+        }
+        if (fUploader.create(gpu.device, gpu.physicalDevice, gpu.graphicsQueueIndex,
                              gpu.uploadQueueIndex, gpu.uploadQueue, gpu.context,
                              fSource.frameWidth(), fSource.frameHeight(), fSource.ringFormat(),
                              pickYuvColorSpace(fSource.streamInfo()), error) &&
@@ -88,13 +126,13 @@ bool PlaybackPipeline::openGpu(const Gpu& gpu, const Options& options, std::stri
             fMode = Mode::kGpu;
             return true;
         }
-        fSource.close();
         fUploader.destroy();
-        if (attempt == 0 && options.allowVideoCopy) {
+        if (attempt == 0 && fStagedCopyFallback) {
             std::fprintf(stderr, "openshow-worker: playback: copying video fallback: %s\n",
                          error ? error->c_str() : "unknown");
         }
     }
+    fSource.close();
     fMode = Mode::kClosed;
     return false;
 }
@@ -408,13 +446,18 @@ void PlaybackPipeline::close() {
         fClock = nullptr;
     }
     // Codec-held reference images are freed before the owner's Vulkan
-    // teardown (the bench's closing order).
+    // teardown (the bench's closing order). In the file-only (primed) mode
+    // there is nothing GPU-side to free — close() is the primed transport's
+    // retirement path (task 6.9b), and it runs on whichever thread holds it.
     fSource.close();
     if (fMode == Mode::kGpu) {
         fUploader.destroy();
     }
     fPtsByToken.clear();
     fLeaseSeq.clear();
+    fStagedPath.clear();
+    fStagedRingDepth = 0;
+    fStagedCopyFallback = false;
     fMode = Mode::kClosed;
 }
 

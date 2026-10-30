@@ -249,7 +249,8 @@ std::string textOf(const boost::json::object& object, const char* key) {
 // invented fresh ids per slide would (correctly) force a reopen.
 boost::json::object lyricScene(const std::string& line, const std::string& slideId,
                                const std::string& backgroundPath, bool video,
-                               const std::string& assetId = "") {
+                               const std::string& assetId = "",
+                               const std::string& fit = "cover") {
     scene::Scene sceneValue;
     sceneValue.showId = "bg-acceptance";
     sceneValue.slideId = slideId;
@@ -260,6 +261,12 @@ boost::json::object lyricScene(const std::string& line, const std::string& slide
         sceneValue.background.assetId =
             assetId.empty() ? "asset-" + slideId : assetId;
         sceneValue.background.assetPath = backgroundPath;
+    }
+    // The blur companion's live half (task 6.9b): fit "blur" is the one
+    // scene shape whose backdrop is built by the prepare now, so the
+    // scenario needs to be able to name it.
+    if (fit == "blur") {
+        sceneValue.background.fit = openshow::domain::BackgroundFit::Blur;
     }
     scene::SceneItem item;
     item.lines = {line};
@@ -323,6 +330,29 @@ bool waitActive(int fd, std::uint64_t revision, double* secondsOut) {
 
 void sleepMs(int ms) {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+// Polls status until the media lane reports `path` actively playing — and,
+// for a clip meant to have moved on from its head, a position past `after`.
+// The lane is refreshed by the transport's own housekeeping, not on the
+// frame that first carries the scene, so a check taken milliseconds after a
+// present would read the pre-start defaults (playing false, position -1).
+// This waits out that refresh, bounded; it says nothing about WHEN the frame
+// reached the air (that is what waitActive measures).
+bool waitForMediaPlaying(int fd, const std::string& path, double afterPosition,
+                         int timeoutMs = 2500) {
+    const auto start = std::chrono::steady_clock::now();
+    const auto deadline = start + std::chrono::milliseconds(timeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const boost::json::object media = mediaOf(status(fd));
+        if (textOf(media, "path") == path && media.contains("playing") &&
+            media.at("playing").is_bool() && media.at("playing").as_bool() &&
+            numberOf(media, "position") > afterPosition) {
+            return true;
+        }
+        sleepMs(25);
+    }
+    return false;
 }
 
 bool fileExists(const std::string& path) {
@@ -1374,6 +1404,491 @@ std::vector<MediaSample> sampleMedia(int fd, int durationMs, int stepMs = 100) {
         sleepMs(stepMs);
     }
     return samples;
+}
+
+// --- task 6.9b (review R10): the go-live boundary under slow media ------
+//
+// The acceptance sentences: "slow video open / audio pre-roll / old
+// teardown cannot freeze active output; ready still and video changes
+// meet p95 100 ms measured at the frame boundary; superseded primed
+// transports are bounded." The worker proves them against a file worker
+// whose decodes are deliberately slow (OPENSHOW_FAULT_PREPARE_MS, the
+// 6.9a executor's cooperative sleep) and a video bring-up that really
+// waits (OPENSHOW_FAULT_VIDEO_OPEN_MS, scripted in
+// BackgroundTransport::applyBackground, so the scenario tests a SLOW
+// open rather than a codec's mood):
+//
+//   * four COLD 4K prepares fill the executor to its cap and a fifth is
+//     REFUSED — the queue's bound observable over the wire; then a cold
+//     video is presented into that full queue. The RPC answers both
+//     commands promptly (the file worker is not the RPC thread since
+//     6.9a), the change lands within its scripted open plus a margin,
+//     and output.status.frames — the presented-frame counter, task 6.4's
+//     truth — ADVANCES through the window: "cannot freeze active
+//     output" read at the only boundary the frontend sees;
+//   * the WARM repeats (the still's pixels, shaped text and blur
+//     backdrop all prewarmed by the prepare's own file work since this
+//     task): the p95 of present -> on-air credit stays under the ledger's
+//     100 ms; and the video change back to a transport that KEPT RUNNING
+//     (the M3 identity rule) is one frame's work, not an open;
+//   * the supersession: shutdown with cold prepares in flight answers,
+//     retires and exits clean — superseded primed work is bounded by the
+//     close, not waited out.
+constexpr double k69bOpenMs = 700.0;
+constexpr double k69bPrepareMs = 400.0;
+
+// Written without waiting for an answer, like the 6.9a offload scenario.
+std::int64_t sendOnly(int fd, const char* method, boost::json::object params) {
+    const std::int64_t id = gNextId++;
+    std::string wire;
+    proto::appendFrame(proto::makeRequest(id, method, std::move(params)), &wire);
+    if (::send(fd, wire.data(), wire.size(), MSG_NOSIGNAL) < 0) {
+        return 0;
+    }
+    return id;
+}
+
+// One decoded reply is an ack if it answers an id, an error if it names a
+// failure, and a notification otherwise (media.error messages route).
+enum class Reply { ignored, ack, error };
+
+Reply takeReply(int fd, std::vector<std::int64_t>* owedIds) {
+    pollfd pfd{fd, POLLIN, 0};
+    const int ready = ::poll(&pfd, 1, 50);
+    if (ready < 0 && errno != EINTR) {
+        return Reply::ignored;
+    }
+    if (ready > 0) {
+        char buffer[64 * 1024];
+        const ssize_t got = ::recv(fd, buffer, sizeof(buffer), 0);
+        if (got <= 0) {
+            return Reply::ignored;
+        }
+        gDecoder.feed(std::string_view(buffer, static_cast<size_t>(got)));
+    }
+    boost::json::value message;
+    std::string decodeError;
+    while (gDecoder.next(&message, &decodeError)) {
+        if (!message.is_object()) {
+            continue;
+        }
+        if (message.as_object().contains("method")) {
+            routeNotification(message);
+            continue;
+        }
+        if (owedIds != nullptr) {
+            for (auto it = owedIds->begin(); it != owedIds->end(); ++it) {
+                if (messageHasId(message, *it)) {
+                    owedIds->erase(it);
+                    return Reply::ack;
+                }
+            }
+        }
+        if (message.as_object().contains("error")) {
+            return Reply::error;
+        }
+    }
+    return Reply::ignored;
+}
+
+// Drain outstanding replies until no id in `owedIds` remains (or the bound
+// runs out). Ids are matched, never arrival order.
+void drainReplies(int fd, std::vector<std::int64_t>* owedIds, int timeoutMs) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (!owedIds->empty() && std::chrono::steady_clock::now() < deadline) {
+        takeReply(fd, owedIds);
+    }
+}
+
+double framesOf(const boost::json::object& result) {
+    return numberOf(result, "frames");
+}
+
+void exerciseGoLiveUnderLoad(const std::string& videoA, const std::string& videoB,
+                             const std::string& bigStill) {
+    std::string socket;
+    pid_t worker = -1;
+    const int fd = spawnScopedWorker(
+        "golive",
+        {"OPENSHOW_FAULT_VIDEO_OPEN_MS=" + std::to_string(static_cast<int>(k69bOpenMs)),
+         "OPENSHOW_FAULT_VIDEO_OPEN_MATCH=loop-a.mp4",
+         "OPENSHOW_FAULT_PREPARE_MS=" + std::to_string(static_cast<int>(k69bPrepareMs))},
+        &socket, &worker);
+    if (fd < 0) {
+        check(false, "the go-live worker could be spawned and handed its slow open");
+        return;
+    }
+
+    // Four cold 4K copies fill the prepare executor to its cap (kMaxQueued
+    // is four including the running job).
+    std::vector<std::string> cold;
+    for (int i = 0; i < 4; ++i) {
+        const std::string copy = "/tmp/openshow-6-9b-" + std::to_string(getpid()) + "-" +
+                                 std::to_string(i) + ".jpg";
+        if (generate("cp '" + bigStill + "' '" + copy + "'")) {
+            cold.push_back(copy);
+        }
+    }
+    std::vector<std::int64_t> owed;
+    for (size_t i = 0; i < cold.size(); ++i) {
+        const std::int64_t id =
+            sendOnly(fd, "scene.prepare",
+                     lyricScene("6.9b cold " + std::to_string(i),
+                                "g9bc" + std::to_string(i), cold[i], false));
+        if (id != 0) {
+            owed.push_back(id);
+        }
+    }
+    const bool queueFull = owed.size() == 4;
+    check(queueFull, "four cold prepares filled the queue (copies staged)");
+
+    // The bound, live: with four accepted jobs outstanding a fifth prepare
+    // is REFUSED — the RPC answers it from the refusal rule, and the
+    // refusal says so over the wire. Nothing about it touches the output.
+    if (queueFull) {
+        bool refused = false;
+        sendOnly(fd, "scene.prepare",
+                 lyricScene("6.9b fifth", "g9bfifth", cold[0], false));
+        const auto refuseDeadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(8);
+        while (!refused && std::chrono::steady_clock::now() < refuseDeadline) {
+            // A reply that answers none of the owed ids is the fifth
+            // prepare's own — and while the queue is full it can only be
+            // the refusal.
+            if (takeReply(fd, &owed) == Reply::error) {
+                refused = true;
+            }
+        }
+        check(refused,
+              "a fifth cold prepare meets the queue's refusal (superseded work is bounded)");
+    }
+
+    // Drain the queue first: the acks travel as the cold decodes finish, and
+    // the video below needs a free executor slot to run its own prime in.
+    // The ordering keeps the two claims clean — the refusal above proves the
+    // queue is bounded; the wait below is the slow PRIME alone, not the
+    // queue's decodes.
+    drainReplies(fd, &owed, 20000);
+    check(owed.empty(), "every cold prepare was acknowledged by its id");
+
+    // --- the slow open cannot freeze the active output (R10) --------------
+    // Present a healthy playing clip as the audience's active output first.
+    // A static scene does NOT advance the presented-frame counter (present-
+    // on-change), so only a video already on air can show whether the loop
+    // froze; and its scripted open does not match (loop-b), so this is a
+    // fast bring-up, not a second test subject.
+    const std::uint64_t active =
+        preparePresent(fd, lyricScene("6.9b active", "g9bh", videoB, true));
+    check(active != 0 && waitActive(fd, active, nullptr),
+          "a healthy playing clip is the active output before the slow prime");
+    check(waitForMediaPlaying(fd, videoB, /*afterPosition=*/0.0),
+          "and that active output is videoB, playing");
+
+    // The slow open, paid OFF the loop. The scripted open now belongs to the
+    // PRIME, which runs on the prepare executor's thread, so a video whose
+    // open is slow is prepared WITHOUT waiting for its ack: while the whole
+    // open sleeps on that thread, the render loop keeps presenting videoB and
+    // the RPC thread keeps answering. One read loop tracks both truths — the
+    // prepare's deferred ack by id, and status probes whose reply names the
+    // presented-frame counter and the RPC's own round-trip. call() would
+    // discard the ack (its id differs), so the ack and the probes are matched
+    // in this single loop, never by arrival order (6.3a's rule, exercised on
+    // genuinely out-of-order answers).
+    const std::int64_t videoId =
+        sendOnly(fd, "scene.prepare", lyricScene("6.9b slow video", "g9bv", videoA, true));
+    check(videoId != 0, "the slow video's prepare is accepted while videoB plays");
+    std::vector<std::int64_t> owedVideo{videoId};
+    std::uint64_t videoRevision = 0;
+
+    struct Probe {
+        std::int64_t id;
+        std::chrono::steady_clock::time_point sent;
+    };
+    std::vector<Probe> probes;
+    const auto primeStart = std::chrono::steady_clock::now();
+    const auto hardStop =
+        primeStart +
+        std::chrono::milliseconds(static_cast<int>(k69bPrepareMs + k69bOpenMs + 4000.0));
+    auto nextProbe = primeStart;
+    auto lastGrowth = primeStart;
+    double worstRpcMs = 0.0;       // slowest status answer while the file worker ran
+    double longestFreezeMs = 0.0;  // longest stretch with no new presented frame
+    double framesAtStart = -1.0;
+    double framesSeen = -1.0;
+    double ackSeconds = -1.0;
+    while (std::chrono::steady_clock::now() < hardStop) {
+        const auto now = std::chrono::steady_clock::now();
+        if (probes.size() < 3 && now >= nextProbe) {
+            const std::int64_t id = sendOnly(fd, "output.status", {});
+            if (id != 0) {
+                probes.push_back({id, now});
+            }
+            nextProbe = now + std::chrono::milliseconds(25);
+        }
+        pollfd pfd{fd, POLLIN, 0};
+        const int ready = ::poll(&pfd, 1, 25);
+        if (ready > 0) {
+            char buffer[64 * 1024];
+            const ssize_t got = ::recv(fd, buffer, sizeof(buffer), 0);
+            if (got <= 0) {
+                break;
+            }
+            gDecoder.feed(std::string_view(buffer, static_cast<size_t>(got)));
+        } else if (ready < 0 && errno != EINTR) {
+            break;
+        }
+        boost::json::value message;
+        std::string decodeError;
+        while (gDecoder.next(&message, &decodeError)) {
+            if (!message.is_object()) {
+                continue;
+            }
+            if (message.as_object().contains("method")) {
+                routeNotification(message);
+                continue;
+            }
+            bool matchedAck = false;
+            for (auto it = owedVideo.begin(); it != owedVideo.end(); ++it) {
+                if (!messageHasId(message, *it)) {
+                    continue;
+                }
+                if (message.as_object().contains("result")) {
+                    videoRevision = message.as_object()
+                                        .at("result")
+                                        .as_object()
+                                        .at("revision")
+                                        .to_number<std::uint64_t>();
+                }
+                ackSeconds = std::chrono::duration<double>(
+                                 std::chrono::steady_clock::now() - primeStart)
+                                 .count();
+                owedVideo.erase(it);
+                matchedAck = true;
+                break;
+            }
+            if (matchedAck) {
+                continue;
+            }
+            for (auto it = probes.begin(); it != probes.end(); ++it) {
+                if (!messageHasId(message, it->id)) {
+                    continue;
+                }
+                worstRpcMs =
+                    std::max(worstRpcMs,
+                             std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - it->sent)
+                                 .count());
+                if (message.as_object().contains("result")) {
+                    const double frames =
+                        framesOf(message.as_object().at("result").as_object());
+                    if (frames >= 0.0) {
+                        if (framesAtStart < 0.0) {
+                            framesAtStart = frames;
+                            framesSeen = frames;
+                        }
+                        if (frames > framesSeen) {
+                            framesSeen = frames;
+                            lastGrowth = std::chrono::steady_clock::now();
+                        }
+                    }
+                }
+                probes.erase(it);
+                break;
+            }
+        }
+        longestFreezeMs = std::max(
+            longestFreezeMs,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                      lastGrowth)
+                .count());
+        if (owedVideo.empty()) {
+            break;
+        }
+    }
+
+    std::fprintf(stderr,
+                 "6.9b: slow prime acked in %.0f ms off-loop; through it the RPC answered in "
+                 "<= %.1f ms and presented frames advanced %.0f -> %.0f (longest no-frame gap "
+                 "%.0f ms)\n",
+                 ackSeconds * 1000.0, worstRpcMs, framesAtStart, framesSeen, longestFreezeMs);
+    check(owedVideo.empty() && videoRevision != 0,
+          "the slow video's prepare is answered through its own off-loop open");
+    // The ack honestly waited for the off-loop work: the prepare delay plus
+    // the scripted open is what moved onto the executor thread.
+    check(ackSeconds * 1000.0 >= (k69bPrepareMs + k69bOpenMs) * 0.5,
+          "the prepare's ack reflects the scripted open now owned by the prime");
+    check(framesSeen > framesAtStart && longestFreezeMs < 400.0,
+          "the active output never froze while the slow open ran on the executor");
+    check(worstRpcMs < 100.0,
+          "the RPC kept answering status while the file worker held the disk");
+
+    // The audience's boundary: presenting the primed video attaches the GPU
+    // half on the render thread — the file half is already open, so the
+    // scripted open the audience would otherwise wait on is gone. A ready
+    // video change reaches the frame boundary, not the open.
+    boost::json::value presentReply;
+    const bool presented =
+        videoRevision != 0 &&
+        call(fd, "scene.present",
+             boost::json::object{{"revision", videoRevision},
+                                 {"transition", std::string("cut")}},
+             &presentReply) &&
+        presentReply.as_object().contains("result");
+    check(presented, "the primed video scene is presented");
+    double videoLandSeconds = -1.0;
+    const bool videoLanded =
+        videoRevision != 0 && waitActive(fd, videoRevision, &videoLandSeconds);
+    const bool primedPlays = waitForMediaPlaying(fd, videoA, /*afterPosition=*/0.1);
+    std::fprintf(stderr, "6.9b: primed video present->air %.1f ms (scripted open %.0f ms)\n",
+                 videoLandSeconds * 1000.0, k69bOpenMs);
+    check(videoLanded && primedPlays,
+          "and the audience has the primed clip playing and advancing");
+    check(videoLandSeconds >= 0.0 && videoLandSeconds * 1000.0 < 100.0,
+          "a primed video change reaches the audience within 100 ms (no reopen at the boundary)");
+
+    // --- the identity rule keeps the running transport alive (M3) ---------
+    // videoA is on air and advancing. A lyric change that keeps the SAME
+    // assetId and path is the same background to the transport's continuity
+    // identity — nothing to tear down, nothing to open — so the frame
+    // boundary carries the new words while the clip keeps running. A derived
+    // assetId differs per slide and would (correctly) force a reopen, so this
+    // scene names the shared asset out loud. Its own ~1.1 s prepare runs on
+    // the executor while the transport keeps playing, so by the present the
+    // position is well past the head.
+    const std::uint64_t lyricOverVideo = preparePresent(
+        fd, lyricScene("6.9b over video", "g9bv2", videoA, true, "asset-g9bv"));
+    double lyricSeconds = -1.0;
+    const bool lyricLanded =
+        lyricOverVideo != 0 && waitActive(fd, lyricOverVideo, &lyricSeconds);
+    std::fprintf(stderr, "6.9b: same-identity lyric change landed in %.1f ms\n",
+                 lyricSeconds * 1000.0);
+    check(lyricLanded && lyricSeconds >= 0.0 && lyricSeconds * 1000.0 < 100.0,
+          "the same-identity lyric change reaches the air as a frame's work, not an open");
+    // The transport never stopped: the lane still names videoA and the clip
+    // has advanced well past its head — a reopen would reset toward 0 and pay
+    // the scripted open. The lane's housekeep refresh is waited out.
+    check(waitForMediaPlaying(fd, videoA, /*afterPosition=*/0.5, /*timeoutMs=*/1500),
+          "the lyric change over a running video rode the transport that never stopped");
+
+    // Move away to a still so the warm-loop trio below samples still switches
+    // from a clean, video-free output.
+    const std::uint64_t awayScene =
+        preparePresent(fd, lyricScene("6.9b away", "g9ba", bigStill, false));
+    check(awayScene != 0 && waitActive(fd, awayScene, nullptr),
+          "the audience moves off the video");
+
+    // --- the warm boundary: the p95 over prepared slides -----------------
+    // The draw-boundary trio (task 6.9b, review R10) sampled around the
+    // whole loop: decodes, blur builds and text layouts the frame loop
+    // paid for itself. A ready show moves NONE of these three — every
+    // switch draws text the prepare shaped and a picture it decoded. Any
+    // growth names the prewarm's miss.
+    const boost::json::object trioBefore = imagesOf(status(fd));
+    std::vector<double> latencies;
+    for (int attempt = 0; attempt < 15; ++attempt) {
+        const std::uint64_t revision = preparePresent(
+            fd, lyricScene("6.9b warm " + std::to_string(attempt),
+                           "g9bw" + std::to_string(attempt), bigStill, false));
+        double seconds = 0.0;
+        if (revision == 0 || !waitActive(fd, revision, &seconds)) {
+            check(false, "a warm prepared slide failed to reach the air");
+            break;
+        }
+        latencies.push_back(seconds);
+    }
+    const boost::json::object trioAfter = imagesOf(status(fd));
+    {
+        const double decodeDelta = numberOf(trioAfter, "drawDecodes") -
+                                   numberOf(trioBefore, "drawDecodes");
+        const double backdropDelta = numberOf(trioAfter, "drawBackdrops") -
+                                     numberOf(trioBefore, "drawBackdrops");
+        const double layoutDelta =
+            numberOf(trioAfter, "layoutBuilds") - numberOf(trioBefore, "layoutBuilds");
+        std::fprintf(stderr,
+                     "6.9b draw-boundary trio across 15 warm switches: decodes %+.0f, "
+                     "backdrops %+.0f, layouts %+.0f\n",
+                     decodeDelta, backdropDelta, layoutDelta);
+        check(decodeDelta == 0.0 && backdropDelta == 0.0 && layoutDelta == 0.0,
+              "the warm switches built nothing at the frame boundary (all prewarmed)");
+    }
+    if (latencies.size() == 15) {
+        std::sort(latencies.begin(), latencies.end());
+        const double p95 = latencies[13];  // 14th of 15
+        std::fprintf(stderr, "6.9b warm present->air p95 %.1f ms (max %.1f ms)\n",
+                     p95 * 1000.0, latencies.back() * 1000.0);
+        check(p95 < 0.100, "6.9b: ready still changes reach the audience within 100 ms p95");
+    }
+
+    // The blur backdrop's live half: a BLUR-fit still over a fresh cold
+    // copy. drawBackdrops counts the builds the DRAW paid, so a backdrop
+    // that rode the prepare leaves the counter exactly where it was — the
+    // one observable that separates "prewarmed" from "first frame paid".
+    const std::string blurCopy =
+        "/tmp/openshow-6-9b-blur-" + std::to_string(getpid()) + ".jpg";
+    if (generate("cp '" + bigStill + "' '" + blurCopy + "'")) {
+        const boost::json::object beforeBlur = imagesOf(status(fd));
+        const std::uint64_t blurScene = preparePresent(
+            fd, lyricScene("6.9b blur", "g9bg", blurCopy, false, "", "blur"));
+        const bool blurLanded = blurScene != 0 && waitActive(fd, blurScene, nullptr);
+        sleepMs(150);  // frames that would rebuild if the prepare had not
+        const boost::json::object afterBlur = imagesOf(status(fd));
+        check(blurLanded && numberOf(afterBlur, "drawBackdrops") ==
+                               numberOf(beforeBlur, "drawBackdrops"),
+              "a blur background's backdrop came from the prepare, not the frame loop");
+        ::unlink(blurCopy.c_str());
+    }
+
+    retireScopedWorker(fd, worker, socket, "the go-live worker answers shutdown");
+    for (const std::string& copy : cold) {
+        ::unlink(copy.c_str());
+    }
+
+    // --- superseded primed work is bounded by the close ------------------
+    // A fresh worker, a queue full of cold prepares — and no acks waited
+    // for: shutdown arrives mid-file-work. The close answers the request
+    // it sits on and the session's teardown retires the queue (6.9a's
+    // completions); the clean exit is the observable that no file work
+    // outlived the session.
+    std::string socket2;
+    pid_t worker2 = -1;
+    const int fd2 = spawnScopedWorker("golive2", {"OPENSHOW_FAULT_PREPARE_MS=400"},
+                                      &socket2, &worker2);
+    if (fd2 >= 0) {
+        std::vector<std::string> cold2;
+        for (int i = 0; i < 4; ++i) {
+            const std::string copy = "/tmp/openshow-6-9b-b" + std::to_string(getpid()) +
+                                     "-" + std::to_string(i) + ".jpg";
+            if (generate("cp '" + bigStill + "' '" + copy + "'")) {
+                cold2.push_back(copy);
+                sendOnly(fd2, "scene.prepare",
+                         lyricScene("6.9b superseded " + std::to_string(i),
+                                    "g9bs" + std::to_string(i), copy, false));
+            }
+        }
+        boost::json::value shutdownReply;
+        const auto closeStart = std::chrono::steady_clock::now();
+        const bool answered = call(fd2, "shutdown", {}, &shutdownReply);
+        const double closeSeconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - closeStart)
+                .count();
+        close(fd2);
+        int waitStatus = 0;
+        waitpid(worker2, &waitStatus, 0);
+        std::fprintf(stderr, "6.9b: shutdown with the queue full answered in %.1f ms\n",
+                     closeSeconds * 1000.0);
+        check(answered, "the worker answers shutdown with cold prepares in flight");
+        check(WIFEXITED(waitStatus) && WEXITSTATUS(waitStatus) == 0,
+              "and exits clean with superseded primed work outstanding");
+        check(closeSeconds < 2.5,
+              "the close bounds the outstanding file work (retires, does not wait it out)");
+        ::unlink(socket2.c_str());
+        for (const std::string& copy : cold2) {
+            ::unlink(copy.c_str());
+        }
+    } else {
+        check(false, "the supersession worker could be spawned");
+    }
 }
 
 // The schedule below, in milliseconds after the transport opened. Keeping the
@@ -2802,6 +3317,18 @@ int main(int argc, char** argv) {
         exerciseStandaloneTrack(bed6, tone2, videoA, audioClip);
     } else {
         std::printf("   skipped the RPC gain/refusal and standalone scenarios (no audio fixture)\n");
+    }
+
+    // --- task 6.9b (review R10): the go-live boundary under slow media ---
+    //
+    // Owns its workers: the scripted slow open and the slow prepares are
+    // read at spawn, and the scenario deliberately fills the prepare
+    // queue — nothing else may share a worker whose file worker is busy
+    // by design.
+    if (!bigStill.empty()) {
+        exerciseGoLiveUnderLoad(videoA, videoB, bigStill);
+    } else {
+        std::printf("   skipped the go-live scenario (no big still fixture)\n");
     }
 
     ::unlink(corrupt.c_str());

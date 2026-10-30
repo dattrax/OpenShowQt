@@ -35,6 +35,20 @@ struct Faults {
     // Task 6.11a (review R13): the cost of an expensive preview target,
     // paid inside the measured region of the preview fill.
     int previewDelayMs = 0;       // OPENSHOW_FAULT_PREVIEW_MS
+    // Task 6.9b (review R10): a prepare that really reads the disk for
+    // milliseconds, so the prepare queue's bound and the RPC's honesty
+    // against it are tested against a COST, not a race window. The sleep
+    // checks the executor's cooperative flag, so a retired job stops
+    // early exactly the way real cancellable file work does.
+    int prepareDelayMs = 0;       // OPENSHOW_FAULT_PREPARE_MS
+    // Task 6.9b (review R10): a video open that really waits. The scenario
+    // names the clip (substring) and how long its transport's bring-up
+    // sleeps first — the fixture must not depend on a codec being slow on
+    // some machine and instant on another, and R10's sentence ("slow video
+    // open cannot freeze active output") deserves to be tested against a
+    // SLOW open, not against a guess.
+    int videoOpenDelayMs = 0;     // OPENSHOW_FAULT_VIDEO_OPEN_MS
+    std::string videoOpenMatch;   // OPENSHOW_FAULT_VIDEO_OPEN_MATCH (path substring)
     Faults() {
         const auto read = [](const char* name) {
             const char* value = std::getenv(name);
@@ -44,6 +58,17 @@ struct Faults {
         scenePresentFails = read("OPENSHOW_FAULT_SCENE_PRESENT_FAILS");
         holdMs = read("OPENSHOW_FAULT_HOLD_MS");
         previewDelayMs = read("OPENSHOW_FAULT_PREVIEW_MS");
+        prepareDelayMs = read("OPENSHOW_FAULT_PREPARE_MS");
+        videoOpenDelayMs = read("OPENSHOW_FAULT_VIDEO_OPEN_MS");
+        if (const char* match = std::getenv("OPENSHOW_FAULT_VIDEO_OPEN_MATCH")) {
+            videoOpenMatch = match;
+        }
+    }
+
+    // True when THIS video's bring-up owes the injected wait.
+    bool delaysVideoOpen(const std::string& path) const {
+        return videoOpenDelayMs > 0 && !videoOpenMatch.empty() &&
+               path.find(videoOpenMatch) != std::string::npos;
     }
 };
 

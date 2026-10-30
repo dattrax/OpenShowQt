@@ -151,6 +151,60 @@ bool SceneTextEngine::create(std::string* error) {
     return true;
 }
 
+/*
+ * A renderer's layout cache (task 6.9b). A hit is one map walk under the
+ * lock; a build is the engine's own const layoutScene(), run OUTSIDE the
+ * lock so the prepare executor and the frame loop never wait on each
+ * other's shaping. Four slots is the contract the old SceneItemsLayer
+ * carried: the audience's fade pair plus the selected edit and its
+ * predecessor, LRU — switching selection costs one rebuild, a steady
+ * show and edit cost none.
+ */
+const SceneTextEngine::SceneLayout* SceneTextEngine::LayoutCache::find(
+    const openshow::scene::Scene* scene) const {
+    const std::lock_guard<std::mutex> lock(fMutex);
+    const std::uint64_t now = ++fClock;
+    for (auto& slot : fSlots) {
+        if (slot.scene == scene) {
+            slot.used = now;
+            return &slot.layout;
+        }
+    }
+    return nullptr;
+}
+
+SceneTextEngine::SceneLayout SceneTextEngine::LayoutCache::build(
+    const openshow::scene::Scene& scene) const {
+    return fEngine->layoutScene(scene);  // const shaping, no lock: any thread
+}
+
+const SceneTextEngine::SceneLayout* SceneTextEngine::LayoutCache::put(
+    const std::shared_ptr<const openshow::scene::Scene>& shared,
+    const openshow::scene::Scene* scene, SceneLayout layout) const {
+    const std::lock_guard<std::mutex> lock(fMutex);
+    const std::uint64_t now = ++fClock;
+    Slot* victim = &fSlots[0];
+    for (auto& slot : fSlots) {
+        if (slot.scene == scene) {
+            slot.layout = std::move(layout);  // replace, keep identity
+            slot.shared = shared;
+            slot.used = now;
+            return &slot.layout;
+        }
+        if (slot.used < victim->used) {
+            victim = &slot;
+        }
+    }
+    // Retiring the evicted slot's pin is the whole memory rule: the cache
+    // holds at most four scenes' paragraphs, and a scene alive only here
+    // dies when a fifth arrives.
+    victim->shared = shared;
+    victim->scene = scene;
+    victim->layout = std::move(layout);
+    victim->used = now;
+    return &victim->layout;
+}
+
 namespace {
 
 float effectiveSize(const openshow::scene::SceneItem& item, float scale) {
@@ -750,8 +804,45 @@ sk_sp<SkImage> SceneImageCache::backdropFor(const std::string& path) {
     existing->second.seen = ++fClock;
     fBytes += existing->second.backdropBytes;
     ++fBackdropComputations;
+    ++fDrawBackdrops;  // the frame boundary paid this build (6.9b's evidence)
     evictLocked(path);
     return backdrop;
+}
+
+bool SceneImageCache::prewarmBackdrop(const std::string& path) {
+    // The same derived-data rule as backdropFor, just paid earlier: the
+    // build runs off the lock, and a concurrent draw that beats the store
+    // gets its own fresh build rather than a lost picture.
+    sk_sp<SkImage> source;
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        const auto existing = fEntries.find(path);
+        if (existing == fEntries.end() || existing->second.image == nullptr) {
+            return false;  // no picture: nothing to derive one from
+        }
+        if (existing->second.backdrop != nullptr) {
+            return true;  // already prepared: this pass costs nothing
+        }
+        source = existing->second.image;
+    }
+    const sk_sp<SkImage> backdrop = makeBlurredBackdrop(*source);
+    if (backdrop == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(fMutex);
+    const auto existing = fEntries.find(path);
+    if (existing == fEntries.end() || existing->second.image != source) {
+        return true;  // the entry moved on; a later build follows it
+    }
+    if (existing->second.backdrop == nullptr) {
+        existing->second.backdrop = backdrop;
+        existing->second.backdropBytes = static_cast<std::size_t>(backdrop->width()) *
+                                         static_cast<std::size_t>(backdrop->height()) * 4u;
+        fBytes += existing->second.backdropBytes;
+        ++fBackdropComputations;
+        evictLocked(path);
+    }
+    return existing->second.backdrop != nullptr;
 }
 
 bool SceneImageCache::has(const std::string& path) {
@@ -767,10 +858,14 @@ sk_sp<SkImage> SceneImageCache::loadFor(const std::string& path) {
     // yet answered. loadFor once returned the empty placeholder as if it
     // were one, which made a pin-before-load (exactly what prepare does)
     // poison its own prefetch; that is why the two share this one body.
-    return refreshFor(path, nullptr);
+    // The flag marks WHO pays: loadFor is the draw-side loader (a snapshot
+    // drawing its own picture), so a decode started here is a scene whose
+    // prepare did not cover it — counted as Stats::drawDecodes (6.9b).
+    return refreshFor(path, nullptr, /*drawBoundary=*/true);
 }
 
-sk_sp<SkImage> SceneImageCache::refreshFor(const std::string& path, std::string* error) {
+sk_sp<SkImage> SceneImageCache::refreshFor(const std::string& path, std::string* error,
+                                           bool drawBoundary) {
     // Always decode a FAILURE or an empty (pin-only) entry, then let a
     // success overwrite it. A cached SUCCESS is returned without
     // re-decoding: the bytes are the same file, and re-decoding a 4K still
@@ -788,6 +883,10 @@ sk_sp<SkImage> SceneImageCache::refreshFor(const std::string& path, std::string*
             }
             return existing->second.image;
         }
+    }
+    if (drawBoundary) {
+        ++fDrawDecodes;  // the frame paid a decode the prepare should have
+                         // covered (task 6.9b's evidence)
     }
     sk_sp<SkImage> image = decodeImageFile(path, error);
     std::lock_guard<std::mutex> lock(fMutex);
@@ -887,6 +986,8 @@ SceneImageCache::Stats SceneImageCache::stats() const {
         }
     }
     out.backdropComputations = fBackdropComputations;
+    out.drawDecodes = fDrawDecodes;
+    out.drawBackdrops = fDrawBackdrops;
     return out;
 }
 

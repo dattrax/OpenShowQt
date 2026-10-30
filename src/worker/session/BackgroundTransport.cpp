@@ -9,12 +9,17 @@
 
 #include "session/BackgroundTransport.h"
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 #include <utility>
 
 #include <GLFW/glfw3.h>
+
+#include "session/Faults.h"
 
 #include "media/MediaProbe.h"
 
@@ -25,6 +30,16 @@ BackgroundTransport::~BackgroundTransport() {
 }
 
 void BackgroundTransport::shutdown() {
+    // The prime (task 6.9b) goes first and dies here: the prepare executor
+    // has already retired (OutputSession::close stops it before shutting the
+    // transport down), so no priming thread can be reaching the slot, and a
+    // file-only close has no GPU call and no thread to join. A session must
+    // not leave an open decoder parked past its own end.
+    {
+        const std::lock_guard<std::mutex> lock(fPrimeMutex);
+        fPrimed.reset();
+        fPrimedPath.clear();
+    }
     // End everything by name (6.9c's order): the background transport first
     // — it decodes into frame slots on the session's device and context, so
     // it goes before every GPU resource it references (task 5.5). Every
@@ -845,6 +860,51 @@ void BackgroundTransport::applyTransportOp(int op, double seconds) {
                     " s was refused: " + (error.empty() ? "no reason given" : error));
 }
 
+bool BackgroundTransport::primeVideo(const std::string& path,
+                                     const std::atomic<bool>* cancelled, std::string* error) {
+    // Runs on the CALLER's thread — the prepare executor's, never the render
+    // loop. The scripted slow open (Faults.h) belongs here, not in
+    // applyBackground: the point of the task is that a slow open is paid on
+    // this thread, so the chunked sleep checks the same cooperative flag the
+    // executor hands every prepare and a retired prime stops between chunks
+    // rather than after the whole wait.
+    const auto stopped = [cancelled] {
+        return cancelled != nullptr && cancelled->load();
+    };
+    if (path.empty() || stopped()) {
+        return false;
+    }
+    if (faults().delaysVideoOpen(path)) {
+        const int milliseconds = faults().videoOpenDelayMs;
+        std::fprintf(stderr, "openshow-worker: scripted slow video prime: %d ms for %s\n",
+                     milliseconds, path.c_str());
+        for (int elapsed = 0; elapsed < milliseconds && !stopped(); elapsed += 20) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(
+                std::min(20, milliseconds - elapsed)));
+        }
+        if (stopped()) {
+            return false;
+        }
+    }
+    auto pipeline = std::make_unique<PlaybackPipeline>();
+    PlaybackPipeline::Options options;
+    options.path = path;
+    options.loop = true;
+    options.allowVideoCopy = true;
+    if (!pipeline->openFile(options, error)) {
+        return false;  // nothing parked; the present reopens cold and reports
+    }
+    // One prime, superseded here. The transport the previous prime held
+    // dies on THIS thread (a file-only close: no GPU call, no thread to
+    // join), so a stream of prepared videos never grows the primed set and
+    // the retirement is never in a frame tick — R10's "superseded primed
+    // transports are bounded".
+    const std::lock_guard<std::mutex> lock(fPrimeMutex);
+    fPrimed = std::move(pipeline);
+    fPrimedPath = path;
+    return true;
+}
+
 bool BackgroundTransport::applyBackground(
     const openshow::scene::Background& wanted, const GpuHandles& handles,
     const std::function<bool(const std::string&)>& imageResident) {
@@ -934,12 +994,41 @@ bool BackgroundTransport::applyBackground(
     // frame-copy.
     options.loop = true;
     options.allowVideoCopy = true;
-    auto pipeline = std::make_unique<PlaybackPipeline>();
-    if (!pipeline->openGpu(gpu, options, &error)) {
-        std::fprintf(stderr, "openshow-worker: background video %s: %s\n",
+
+    // Task 6.9b (review R10): the prime, if one covers THIS path. A prepare
+    // opened the file half on the executor thread; attaching the GPU half
+    // here — always on the render (owner) thread, so Ganesh never leaves it
+    // — is the whole boundary cost, and the slow open the audience would
+    // otherwise wait on already happened off-loop. A prime for another path
+    // is not this scene's; it stays parked for its own present or for the
+    // next prime to retire (off the loop). No prime — a scene presented
+    // without a prepare, or one whose prepare failed — is the honest cold
+    // path: openGpu whole, exactly as before this task.
+    std::unique_ptr<PlaybackPipeline> pipeline;
+    {
+        const std::lock_guard<std::mutex> lock(fPrimeMutex);
+        if (fPrimed && fPrimedPath == wanted.assetPath) {
+            pipeline = std::move(fPrimed);
+            fPrimedPath.clear();
+        }
+    }
+    if (pipeline != nullptr && !pipeline->attachGpu(gpu, &error)) {
+        // The GPU half failed on a transport whose file half was sound;
+        // retire it (a close of a not-yet-started pipeline: no threads to
+        // join) and let the cold open below report the bad news once.
+        std::fprintf(stderr, "openshow-worker: primed background %s cannot attach (%s); "
+                             "reopening cold\n",
                      wanted.assetPath.c_str(), error.c_str());
-        mediaFailed(MediaFault::kVideo, wanted.assetPath, "background video: " + error);
-        return false;  // the colour fill stands; the scene stays legible
+        pipeline.reset();
+    }
+    if (pipeline == nullptr) {
+        pipeline = std::make_unique<PlaybackPipeline>();
+        if (!pipeline->openGpu(gpu, options, &error)) {
+            std::fprintf(stderr, "openshow-worker: background video %s: %s\n",
+                         wanted.assetPath.c_str(), error.c_str());
+            mediaFailed(MediaFault::kVideo, wanted.assetPath, "background video: " + error);
+            return false;  // the colour fill stands; the scene stays legible
+        }
     }
 
     // Embedded audio, when it can be decoded, becomes the audible mix and

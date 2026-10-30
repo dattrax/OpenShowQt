@@ -227,6 +227,22 @@ public:
         return fTextLayoutBuilds.load(std::memory_order_relaxed);
     }
 
+    // Prewarm a prepared scene's text layout into THIS renderer's own cache
+    // (task 6.9b, review R10). The shaping runs on the CALLER's thread — the
+    // prepare executor's, never the frame loop's — and lands in the same
+    // four slots the production draw reads, so the frame boundary that
+    // switches to a prepared scene finds its paragraphs already built. It is
+    // charged to no miss counter (this is not a draw); it only moves when the
+    // work is paid. A companion never prewarms — the audience's layouts stay
+    // the audience's (R16 isolation). Safe from any thread: the cache builds
+    // outside its lock.
+    void prewarmLayouts(std::shared_ptr<const openshow::scene::Scene> scene) const {
+        if (fLayouts && scene) {
+            const openshow::scene::Scene* key = scene.get();
+            fLayouts->put(std::move(scene), key, fLayouts->build(*scene));
+        }
+    }
+
     // Layer toggles, driven by the RPC layer controls (and the dev CLI).
     void setLayerEnabled(LayerId id, bool enabled) { fLayers.setEnabled(id, enabled); }
     bool layerEnabled(LayerId id) const { return fLayers.isEnabled(id); }
@@ -255,6 +271,12 @@ private:
     // The words layer's layout-build counter (declared ahead of fLayers so
     // it outlives the layer that writes it).
     std::atomic<std::uint64_t> fTextLayoutBuilds{0};
+    // This renderer's OWN text-layout cache (task 6.9b): one per renderer,
+    // built through the shared engine but never shared with it — a companion
+    // gets its own instance, so the R16 isolation holds (a preview's churn
+    // cannot evict the audience's layouts). Declared before fLayers so it
+    // outlives the layer that reads it; the engine outlives this.
+    std::unique_ptr<SceneTextEngine::LayoutCache> fLayouts;
     SceneTransition fTransition;
     bool fTransitionRunning = false;
     LayerStack fLayers;
