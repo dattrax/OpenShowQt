@@ -36,8 +36,9 @@ struct SceneContent {
 };
 
 // Content flags of a scene JSON; {} for anything unparseable. The
-// background counts when it carries an image or a non-black colour —
-// a black fill is what "no background" looks like.
+// background counts when it carries an image, a non-black colour, or a
+// gradient (6.21e) — a black fill with nothing second to it is what
+// "no background" looks like.
 SceneContent sceneContent(const QString& sceneJson);
 
 // The scene with its words removed (background untouched) or its

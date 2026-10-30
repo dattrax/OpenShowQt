@@ -57,11 +57,23 @@ mid-read answered immediately with a clean drained exit
 with a pump-until-settled helper). R10 is fully closed in
 [architecture.md](docs/architecture.md).
 
+**6.21e is DONE** (F4): `dropBackground()` now erases the optional
+`background.gradient` (its absence is the flat answer the codec defines, so
+the key must go, not be zeroed), and `sceneContent()` counts a present
+gradient as a live background. Pinned in both shapes — black-to-colour and
+image-plus-gradient — at the wire level (`scene_edit_tests`), at the acked
+indicator with the scripted peer's per-prepare gradient ledger
+(`worker_controller_tests` S16: go and restore name the second colour, the
+cleared prepare does not), and in the audience pixels
+(`production_journey_tests`: #F87C00 at the floor through a black-top ramp,
+#000000 at both ends after the clear, words still lit). R17's gradient
+qualifier is closed in [architecture.md](docs/architecture.md).
+
 ## Remaining 6.21 gaps
 
-F4 (6.21e, gradient clears), F6 (6.21f, foreground-error visibility) and
-F7 (6.21g, real frontend journey fixture). The review holds source
-locations, reproduced evidence and required regressions for each.
+F6 (6.21f, foreground-error visibility in the operator UI) and F7 (6.21g,
+real frontend journey fixture). The review holds source locations,
+reproduced evidence and required regressions for each.
 
 ## Verification
 
@@ -69,8 +81,10 @@ locations, reproduced evidence and required regressions for each.
 |---|---|
 | `cmake --build --preset headless -j 2` | PASS |
 | `cmake --build --preset desktop -j 2` | PASS |
-| `ctest --preset desktop` with local-session access | 54/54 PASS, 258.84 s; all 13 display-labelled checks, 144.77 sec*proc |
-| `ctest --preset headless` | 32/32 PASS, 51.57 s; sandboxed, live PipeWire subscenarios internally skipped |
+| `ctest --preset desktop` with local-session access | 54/54 PASS, 262.93 s; all 13 display-labelled checks, 146.42 sec*proc |
+| `ctest --preset headless` | 32/32 PASS, 51.50 s; sandboxed, live PipeWire subscenarios internally skipped |
+| `production_journey_tests` standalone | PASS; 6.21e gradient step sampled #070400/#F87C00 before the clear and #000000/#000000 after |
+| `worker_controller_tests` standalone | PASS; 6.21e ledger `[16744448 \| flat \| 16744448]` |
 | `preview_selection_tests` standalone | PASS in both trees; 6.21d scenario measured RPC ≤ 0.6 ms through a 600 ms decode, shutdown mid-read clean |
 | `background_media_tests` standalone | PASS; 6.21c2 scenarios measured present→air 4.5 ms (exit 700 ms), swap ack 1.6 ms, worst audience gap 26 ms, RPC ≤ 0.6 ms |
 
@@ -80,7 +94,9 @@ PID-named temporary directory, and desktop needs local-session access.
 
 ## Next action
 
-**6.21e** (F4): `dropBackground()` (`src/ui/SceneEdit.cpp`) must clear
-`background.gradient` too, and `sceneContent()` must count it — with
-fixtures on final pixels and acked button state. Then 6.21f–g. M7.1a–c
-recovery, 7.2 budgets, 7.3 packaging and 7.4 hardware rehearsal remain TODO.
+**6.21f** (F6): the frontend ignores `scene.foregroundErrors` /
+`foregroundFailureEvents` — read them in `WorkerController`/
+`PresentationModel`, expose a QML property and show a notice in
+`OutputPanel.qml`, keeping the background fault lane independent. Then
+6.21g. M7.1a–c recovery, 7.2 budgets, 7.3 packaging and 7.4 hardware
+rehearsal remain TODO.

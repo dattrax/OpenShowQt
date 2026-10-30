@@ -91,6 +91,11 @@
  * the bytes it ever took from the socket) to OPENSHOW_FAKE_REPORT so the parent
  * can prove WHICH requests the controller actually sent, not just the final
  * revision. No display, no GPU, no real worker.
+ *
+ * Task 6.21e (review F4) added S16: the gradient background. The peer records
+ * whether each prepare's background still named its second colour, which is
+ * how the fixture proves the clear took the key off the wire rather than
+ * merely moving a property in the client.
  */
 
 #include <boost/json.hpp>
@@ -579,6 +584,21 @@ private:
                 fItemPaths.push_back(std::move(itemPaths));
             }
             fAssetPaths.push_back(std::move(assetPath));
+            // Task 6.21e (review F4): whether THIS prepare's background still
+            // names a gradient. The clear must take the key with it, and the
+            // fixture reads the wire rather than trusting the client's own
+            // bookkeeping: "" means flat, anything else is the second colour.
+            std::string gradient;
+            if (request.contains("params") && request.at("params").is_object()) {
+                const auto background = request.at("params").at("background");
+                if (background.is_object()) {
+                    const auto second = background.as_object().find("gradient");
+                    if (second != background.as_object().end()) {
+                        gradient = boost::json::serialize(second->value());
+                    }
+                }
+            }
+            fGradients.push_back(std::move(gradient));
             if (fScenario == "die-first-prepare" && fPrepares == 1) {
                 writeReport();
                 _exit(44);  // no answer at all: the go hangs, then dies
@@ -1143,6 +1163,11 @@ private:
         for (const std::string& itemPath : fItemPaths) {
             foregroundPaths.emplace_back(itemPath);
         }
+        // Task 6.21e: per-prepare gradient spelling ("" = the flat answer).
+        boost::json::array gradients;
+        for (const std::string& gradient : fGradients) {
+            gradients.emplace_back(gradient);
+        }
         boost::json::object methods;
         std::int64_t total = 0;
         for (const auto& counted : fMethodCounts) {
@@ -1157,6 +1182,7 @@ private:
             {"presented", std::move(presented)},
             {"assetPaths", std::move(assetPaths)},
             {"foregroundPaths", std::move(foregroundPaths)},
+            {"gradients", std::move(gradients)},
             {"methods", std::move(methods)},
             {"requests", total},
             {"bytesReceived", fBytesReceived},
@@ -1538,6 +1564,7 @@ private:
     std::vector<int> fPresented;       // revisions the controller went to
     std::vector<std::string> fAssetPaths;  // each prepare's background file (task 6.12)
     std::vector<std::string> fItemPaths;   // and its path-bearing items, space-joined (task 6.21b)
+    std::vector<std::string> fGradients;   // and its background gradient, or "" (task 6.21e)
     // Task 6.15a (review R15): the scripted transport's state and the
     // verbatim ledger of the media.* commands that moved it. The peer starts
     // as a live, playing, looping 6 s clip with one registered audio source.
@@ -1740,6 +1767,19 @@ std::string sceneForeground(const char* slideId, const std::string& assetPath) {
     picture.assetId = std::string("asset-") + slideId;
     picture.assetPath = assetPath;
     scene.items.push_back(std::move(picture));
+    return boost::json::serialize(scene::toJson(scene));
+}
+
+// Task 6.21e (review F4): a background with a SECOND colour. With a black
+// top the payload reads as "no background" to anything that looks only at
+// `backgroundColor` — the exact shape that left the clear button disabled
+// while the canvas glowed — so the fixtures drive it explicitly.
+std::string sceneGradient(const char* slideId, unsigned top, unsigned bottom,
+                          const std::vector<std::string>& lines) {
+    scene::Scene scene = authoredScene(lines, top);
+    scene.slideId = slideId;
+    scene.background.gradient = bottom;
+    scene.background.hasGradient = true;
     return boost::json::serialize(scene::toJson(scene));
 }
 
@@ -3770,6 +3810,93 @@ void scenarioThumbnailPreview() {
     controller.shutdownNow();
 }
 
+// S16 (task 6.21e, review F4): a gradient background IS a background. The
+// black-to-colour payload the flat flag used to miss goes on air with the
+// indicator lit, the clear takes the gradient off the wire (the key, not a
+// zeroed value — presence is what the renderer reads), the acked state then
+// reads as empty with the words untouched, and the restore brings the ramp
+// back. The scripted peer's per-prepare gradient ledger is what proves the
+// second point on the wire rather than in the client's own books.
+void scenarioGradientClear() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
+    const std::string report = tempPath("gradient");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "gradient: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    // Black top, amber bottom, one line of words. Nothing about the top
+    // colour says "there is a background"; only the gradient key does.
+    controller.presentSceneJson(QString::fromStdString(
+        sceneGradient("GRADED", 0x000000u, 0xFF8000u, {"Graduated"})));
+    const bool onAir = waitUntil([&controller] {
+        return controller.sceneActive() == 1 && controller.wordsOnAir() &&
+               controller.backgroundOnAir();
+    });
+    if (!check(onAir,
+               "gradient: a black-to-colour gradient is on air WITH its background indicator "
+               "lit (the button the old flag left dead)")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    controller.clearBackground();
+    const bool cleared = waitUntil([&controller] {
+        return controller.sceneActive() == 2 && controller.scenePending() == 0;
+    });
+    if (!check(cleared, "gradient: the background clear is acknowledged on air")) {
+        controller.shutdownNow();
+        return;
+    }
+    digestThenRefresh(controller, 50);
+    check(!controller.backgroundOnAir(),
+          "gradient: the acked output reads as no background — the UI and the audience agree");
+    check(controller.wordsOnAir(), "gradient: the words rode through the gradient clear");
+    check(controller.canRestore(), "gradient: restore is available after a gradient clear");
+
+    controller.restoreOutput();
+    const bool restored = waitUntil([&controller] {
+        return controller.sceneActive() == 3 && controller.scenePending() == 0 &&
+               controller.backgroundOnAir() && controller.wordsOnAir();
+    });
+    check(restored, "gradient: the restore brings the ramp back, indicator and all");
+
+    controller.shutdownNow();
+    const boost::json::object counts = readReport(report);
+    // The peer's ledger: go carries the second colour, the clear's payload
+    // does not even name the key, the restore names it again.
+    std::vector<std::string> gradients;
+    if (const auto entry = counts.find("gradients");
+        entry != counts.end() && entry->value().is_array()) {
+        for (const auto& value : entry->value().as_array()) {
+            if (value.is_string()) {
+                gradients.push_back(std::string(value.as_string()));
+            }
+        }
+    }
+    std::string joined;
+    for (const std::string& gradient : gradients) {
+        joined += (joined.empty() ? "" : " | ") + (gradient.empty() ? "flat" : gradient);
+    }
+    std::fprintf(stderr, "6.21e: gradient ledger per prepare: [%s]\n", joined.c_str());
+    check(gradients.size() == 3 && !gradients[0].empty() && gradients[1].empty() &&
+              !gradients[2].empty(),
+          ("gradient: go and restore carry the second colour, the cleared prepare does not "
+           "name it (got [" +
+           joined + "])")
+              .c_str());
+    check(reportNumber(counts, "presents") == 3,
+          "gradient: three presents - the go, the clear, the restore");
+}
+
 int main(int argc, char* argv[]) {
     const char* scenario = std::getenv("OPENSHOW_FAKE_SCENARIO");
     if (scenario != nullptr) {
@@ -3809,6 +3936,7 @@ int main(int argc, char* argv[]) {
     scenarioMediaTransport();
     scenarioSelectionPreview();
     scenarioThumbnailPreview();
+    scenarioGradientClear();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "worker_controller_tests: %d failure(s)\n", gFailures);

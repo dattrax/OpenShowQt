@@ -691,6 +691,43 @@ int main(int argc, char* argv[]) {
                   whitePixels(g.audience) > 0,
               "the restored frame samples gold with words over it");
 
+        // --- the gradient: the second colour is part of the background ----
+        // (task 6.21e, review F4). A black-to-colour ramp is exactly the
+        // payload a flag that reads only the top colour calls empty, and its
+        // clear used to leave the audience glowing amber along the floor
+        // while the panel said nothing was on air. The style's second colour
+        // is written into the slide's own payload the way the compiler writes
+        // it, and BOTH halves of the claim are sampled off the live stream:
+        // the ramp while it stands, black where it stood once cleared.
+        boost::json::value gradedValue = boost::json::parse(json1.toStdString());
+        gradedValue.as_object()["background"].as_object().emplace("gradient", 0xFF8000u);
+        const QString gradedJson = QString::fromStdString(boost::json::serialize(gradedValue));
+        const Presented gradedGo = presentJson(fd, nextId, gradedJson);
+        check(gradedGo.scene != 0, "the black-to-colour gradient is acknowledged on air");
+        g.maxPresentedSeen = gradedGo.tag;
+        check(waitFor(&g.audience, gradedGo.tag, fd, 6),
+              "the audience frame carrying the gradient arrives");
+        const uint32_t rampTop = pixelAt(g.audience, 0.02, 0.03);
+        const uint32_t rampFloor = pixelAt(g.audience, 0.02, 0.97);
+        check(nearColor(rampTop, 0x000000, 12),
+              "the ramp's top is the top colour (the ceiling is black)");
+        check(nearColor(rampFloor, 0xFF8000, 24),
+              "and its floor is the SECOND colour — this audience is not black");
+        const QString gradedGone = openshow::ui::withBackgroundCleared(gradedJson);
+        const Presented gradedCleared = presentJson(fd, nextId, gradedGone);
+        check(gradedCleared.scene != 0, "clearing the gradient is acknowledged on air");
+        g.maxPresentedSeen = gradedCleared.tag;
+        check(waitFor(&g.audience, gradedCleared.tag, fd, 6),
+              "the audience frame after the gradient clear arrives");
+        const uint32_t clearedTop = pixelAt(g.audience, 0.02, 0.03);
+        const uint32_t clearedFloor = pixelAt(g.audience, 0.02, 0.97);
+        check(nearColor(clearedTop, 0x000000, 12) && nearColor(clearedFloor, 0x000000, 12),
+              "the floor is BLACK — the cleared payload painted no ramp (F4's claim)");
+        check(litPixels(g.audience) > 0, "and the words rode through the gradient clear");
+        std::printf("6.21e: gradient audience sampled #%06X at the ceiling and #%06X at the"
+                    " floor; after the clear #%06X and #%06X, words still lit\n",
+                    rampTop, rampFloor, clearedTop, clearedFloor);
+
         // --- the swap: a different picture under the SAME live words ------
         // The swap's promise is that the words are untouched: the compiled
         // scene after re-attaching to the blue still must carry byte-for-

@@ -45,6 +45,13 @@ void dropBackground(boost::json::object& root) {
         background["image"] = false;
         background["assetId"] = "";
         background["assetPath"] = "";
+        // The gradient goes with the rest (task 6.21e, review F4). Its
+        // ABSENCE is the flat answer the codec defines (6.17c3: written
+        // only when set), so the key must be REMOVED, not zeroed — a
+        // present-but-black second colour would keep the renderer drawing
+        // a ramp and the "cleared" canvas would grade from black to black
+        // under a UI that says nothing is on air.
+        background.erase("gradient");
     }
 }
 
@@ -70,6 +77,15 @@ SceneContent sceneContent(const QString& sceneJson) {
         const auto image = background->value().as_object().find("image");
         if (image != background->value().as_object().end() && image->value().is_bool() &&
             image->value().as_bool()) {
+            content.background = true;
+        }
+        // A gradient IS a background (task 6.21e, review F4): the black-to-
+        // colour scene the flat flag missed paints a full canvas of ramp.
+        // The key's presence is the answer, whatever its colour — even a
+        // black-on-black pair is a payload whose Clear button must be live
+        // to reach the flat form the absence spells.
+        const auto gradient = background->value().as_object().find("gradient");
+        if (gradient != background->value().as_object().end()) {
             content.background = true;
         }
     }
