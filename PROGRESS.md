@@ -5,8 +5,9 @@ Updated: 2026-10-30 (Europe/London).
 ## Current checkpoint
 
 **M0–M5 are historical implementation checkpoints. M6 is incomplete.**
-The committed checkpoint is task **6.19b6**, the show page
-(6.19b5's `PlaylistPanel` at `cfc782c`, 6.19b4's `OutputPanel` at `5446a6e`,
+The committed checkpoint is task **6.19b7**, the edit page
+(6.19b6's `ShowPage` at `8722b9e`, 6.19b5's `PlaylistPanel` at `cfc782c`,
+6.19b4's `OutputPanel` at `5446a6e`,
 6.19b3's `ShortcutMap` at `337626e`,
 6.19b2's `DocumentViews` at `eaf5586`,
 6.19b1's `DocumentPersistence` at `7050a2d`,
@@ -168,29 +169,33 @@ module files so the extracted panels carry the same look without borrowing a
 window declaration. `Main.qml` is 367 lines shorter; the live notice set is
 the same five, both `Flow` complaints now naming `OutputPanel.qml`.
 
-**Task 6.19b6 is committed.** The show page has left `Main.qml`:
-`src/ui/ShowPage.qml` carries the Add/Remove actions and the slide counter,
-the 6.16b band logic whole — current ±5, the one-ask latch that waits for the
-handshake without re-asking on every preview frame, the re-ask on navigation,
-document and text changes — the rows that put the worker's own picture beside
-the legible text line, the Undo/Redo/Save/Load row, Prev/Next/Present with the
-follow checkbox, the picture panel that replaces the field when the selection
-is a picture, and the lyric editor with its binding-re-establishing
-`Connections`. The third honest correction to the split's rows: select, step
-and text intents have no window-side owner — every gesture addresses `docs`
-and the debounced write lives behind the controller's own seam — and follow
-mode, task 3.3's `following`, turned out to be read and written by nothing
-outside the block, so it travelled with its only consumer. One signal leaves
-the page: `presentRequested()`, because `presentCurrentSlide()` is genuinely
-the window's — the keyboard executors run it too. `Main.qml` is 314 lines
-shorter (1001 remain); the live notice set is still the same five.
+**Task 6.19b7 is committed.** The edit page has left `Main.qml`:
+`src/ui/EditPage.qml` is the `EditCanvas` stage with its outlines, handles and
+gestures, the 6.16a debounced ask for the worker's picture of the slide under
+edit (payload compiled at the tick, target stood down when the page is not
+visible), the X/Y/W/H fields that commit all four on focus-out and snap back
+as a unit on a refusal, the stack commands whose enabled state reads the
+session's selection, and the whole style panel — combo, fork/default/follow
+buttons, colours, the empty-means-flat gradient field, typography, background
+asset and fit. The fourth honest correction to the split's rows: geometry and
+stack edits address `docs` directly, and the nudge/step executors travelled
+WITH the canvas rather than staying behind as signals — only the canvas
+tracks the live rectangle a nudge commits from, so a
+`nudgeRequested(dx,dy)` split across the file boundary would have cut through
+the middle of that rule. The page's contract with the key map is one alias and
+two functions: `boxSelected` (the flag the two Escape owners hand off on; the
+deselect lands through it), `nudgeBox()` and `stepBox()`. R17's one selection
+resolution is untouched — the box wearing the handles is still the box the
+fields, arrows and inspector edit. `Main.qml` is 612 lines shorter (389
+remain: placement, the focus facts, the executors — and the settings page, the
+last inline block); the live notice set is still the same five.
 
-**Next implementation task: 6.19b7** — the edit page (the 16:9 stage over
-`EditCanvas`, the box fields and the stack commands) out of `Main.qml` into
-`EditPage.qml`, the seventh of the eight
+**Next implementation task: 6.19b8** — the settings page (the persisted
+number-keys/F11 toggles, the shortcut cheat sheet, the service rows) out of
+`Main.qml` into `SettingsPage.qml`, the last of the eight
 single-component leaves 6.19b was split into (`DocumentPersistence`,
-`DocumentViews`, `ShortcutMap`, `OutputPanel`, `PlaylistPanel` and `ShowPage`
-have landed; `Main.qml`'s `EditPage` and `SettingsPage` remain).
+`DocumentViews`, `ShortcutMap`, `OutputPanel`, `PlaylistPanel`, `ShowPage` and
+`EditPage` have landed; `Main.qml`'s `SettingsPage` remains).
 This handoff does not mark 6.20 complete.
 
 ## Completed capabilities
@@ -233,13 +238,13 @@ audience composition match the intended design. Important open differences:
   owner, `DocumentPersistence`, and deliberately did not move the write off the
   UI thread). Missing foreground-image failures
   are logged but lack acknowledged per-item UI reporting.
-- **6.18b, 6.19b7–b8:** the remaining ownership extractions are unfinished
+- **6.18b, 6.19b8:** the remaining ownership extraction is unfinished
   (6.18a2's `PreviewProducer`, 6.18b1's `BackgroundTransport` and 6.19a2's
   `PreviewConsumer` landed; 6.19a1's `RpcClient`, 6.19a3's `PresentationModel`
   and 6.19a4's `RpcMethods` landed 2026-10-30, closing 6.19a, and 6.19b1's
   `DocumentPersistence`, 6.19b2's `DocumentViews`, 6.19b3's `ShortcutMap`,
-6.19b4's `OutputPanel`, 6.19b5's `PlaylistPanel` and 6.19b6's `ShowPage`
-landed the same day).
+6.19b4's `OutputPanel`, 6.19b5's `PlaylistPanel`, 6.19b6's `ShowPage` and
+6.19b7's `EditPage` landed the same day).
   **7.1–7.4:** recovery, resource/latency measurements, packaging and service/
   physical-display acceptance remain open. Pinned cache excess is reported,
   not a hard bound on total process memory.
@@ -278,7 +283,8 @@ Historical desktop/headless totals in archived logs are not fresh results.
 
 ## Working tree and exact next action
 
-The working tree carries task **6.19b6**. Tasks **6.19b5** (`cfc782c`),
+The working tree carries task **6.19b7**. Tasks **6.19b6** (`8722b9e`),
+**6.19b5** (`cfc782c`),
 **6.19b4** (`5446a6e`),
 **6.19b3** (`337626e`),
 **6.19b2** (`eaf5586`),
@@ -291,6 +297,26 @@ The working tree carries task **6.19b6**. Tasks **6.19b5** (`cfc782c`),
 `0907877`, **6.9b** at `d83469e`; what those moved is recorded below as well as
 in their commit messages:
 
+- `src/ui/EditPage.qml` (6.19b7) — the edit page as one component: the
+  `EditCanvas` child with the page's anchors reaching from its right/bottom
+  edges inward (stage above the fields, style panel to its right), the
+  `selectionAsk` timer behind `askForWorkerPicture()` (250 ms, restarted by
+  every documents/text/navigation change while visible, payload compiled at
+  the tick so the render shows how the slide ended up, `clearSelectionPreview`
+  on leaving the page), the geometry `Row` whose `commit()` demands all four
+  finite/positive values from `docs.setTextBoxGeometry` and whose `sync()`
+  re-establishes the `editCanvas.boxX.toFixed(0)`-style bindings (objectName
+  `geometryField` on all four), the STACK column's New/Delete/Back/Forward
+  (enabled straight off `docs.currentBox` and the box-row count, refusal
+  naming the limit on the status line), and the `stylePanel` — `targetId()`,
+  `styleIdAt()`, the one-edit `commit(newAlign)` that forks a style on first
+  edit and unwinds the creation with `docs.undo()` if the domain refuses the
+  values, the `sync()` that maps style/asset/fit ids onto combo indices and
+  leaves an unresolvable fit where it is, and every field and button under
+  their objectNames. `boxSelected` is an alias on the canvas flag the key
+  map's Escape pair hand off on; `nudgeBox()`/`stepBox()` moved because they
+  read the canvas's live rectangle — the same one the drag commits, which is
+  why one undo entry lands either way. 612 lines left `Main.qml`.
 - `src/ui/ShowPage.qml` (6.19b6) — the show page as one component: the
   slide-actions row (`docs.addSlide`/`removeCurrentSlide`, the "slide n of m"
   counter), the 6.16b thumbnail band kept whole (`requestSlideBand()` with the
@@ -629,6 +655,28 @@ Verification after 6.19a1:
 - No new test was added and no assertion was edited: an extraction that changes
   behaviour is a failed gate, not a new expectation.
 
+Verification after 6.19b7:
+
+- `cmake --build --preset headless -j 2` ("no work to do" — no UI in that
+  preset) and `--preset desktop -j 2`: PASS, no warnings.
+- `ctest --preset desktop`: **53/53 PASS**, 246.2 s, all 12 display-labelled
+  tests (135.7 sec*proc) — on the re-run. The first full run failed one test,
+  `playback_queue_tests`, a worker-side media fixture with no QML involvement
+  (it does not load the shell); it passed run alone (9.6 s) and passed the
+  full re-run, and is recorded here as the flake it appears to be rather than
+  absorbed. The acceptance is `ui_loads` (8.0 s) — the edit page instantiates
+  at shell load even while hidden, so a broken component would have ended the
+  run — and the live notice set read by hand beside it: the same five, none of
+  them the page's. `document_controller_tests` (the box scenarios: selection
+  following identity across delete/undo, `setTextBoxGeometry` as the one op
+  both the drag and the fields commit, the refusal leaving the model untouched)
+  and `scene_edit_tests` drive what this page calls, unchanged.
+- `ctest --preset headless`: **32/32 PASS**, 51.5 s.
+- No test was edited; every binding, objectName and gesture moved as literal
+  text, and the key map's four canvas touchpoints are the only interface that
+  changed — three of them from `editCanvas.*` to the same objects reached
+  through `editPage`.
+
 Verification after 6.19b6:
 
 - `cmake --build --preset headless -j 2` ("no work to do" — no UI in that
@@ -835,8 +883,7 @@ Verification after 6.19a2:
   the worker cannot tell which of its two classes assembled a request.
 
 Resume by inspecting Git status, then take the next open ledger line:
-**6.19b7**, the edit page (the 16:9 stage over `EditCanvas`, the box fields
-and the stack commands) out of `Main.qml` into `EditPage.qml`; then
-**6.19b8** (`Main.qml`'s settings page), then **6.20**'s recorded architecture
-differences. Do not claim M6 closure until 6.20 resolves those and the
-remaining gates pass.
+**6.19b8**, the settings page (the persisted number-keys/F11 toggles, the
+shortcut cheat sheet, the service rows) out of `Main.qml` into
+`SettingsPage.qml`; then **6.20**'s recorded architecture differences. Do not
+claim M6 closure until 6.20 resolves those and the remaining gates pass.
