@@ -8,21 +8,21 @@ import QtQuick
  *
  * Why the gate lives here and the action lives there: a key's MEANING is
  * "when nothing else may have this key, do THIS", and the "nothing else"
- * half — typing keeps its keystrokes, the drawer keeps its arrows, a box
- * with the handles keeps Left/Right, a focused button keeps Space — is only
+ * half — typing keeps its keystrokes, a box with the handles keeps
+ * Left/Right, a focused button keeps Space — is only
  * readable when every claimant is on the same page. Qt drops a key that two
  * enabled Shortcuts claim at once, so these gates are load-bearing in a way
  * ordinary bindings are not, and R17's one-owner-per-key rule is what makes
  * this file, not a code review across two thousand lines, the place the rule
  * is checked. What stays in the window is execution: the signals land beside
  * the same buttons that perform the actions, and the facts only the window
- * can speak for (which item holds the focus, which page is up, the drawer's
- * focus, the canvas's selection) arrive as the properties below.
+ * can speak for (which item holds the focus, which page is up, the canvas's
+ * selection) arrive as the properties below.
  *
  * The keys, block by block:
  *
  *   Escape / F1 / F2          output clear, clear-background, clear-words (3.4)
- *   Ctrl+D / Ctrl+F           duplicate-or-drawer, drawer search (4.2)
+ *   Ctrl+D / Ctrl+F           duplicate, or toggle the media bin; search (4.2)
  *   Ctrl+1..5                 pages (4.3)
  *   arrows, Ctrl+arrows       nudge the selected box 1px / 10px (4.3)
  *   Tab, Shift+Tab            step the selection through the stack (6.17a2)
@@ -43,7 +43,6 @@ Item {
     property string page: "show"
     property bool typingIntoField: false
     property bool squattedFocus: false      // a button or combo holds it
-    property bool drawerFocused: false
     property bool boxSelected: false        // the canvas's handles are on
     property int currentBox: -1             // docs.currentBox
     property int slideCount: 0
@@ -60,7 +59,8 @@ Item {
     signal clearWordsRequested()
     signal duplicateSlideRequested()
     signal toggleDrawerRequested()
-    signal focusDrawerSearchRequested()
+    // Ctrl+F: the search for presentations, which the sidebar owns (UI.4a).
+    signal focusLibrarySearchRequested()
     signal pageSelected(string name)
     signal boxNudgeRequested(real dx, real dy)
     signal boxStepRequested(int delta)
@@ -82,8 +82,7 @@ Item {
                                     && !typingIntoField && slideCount > 0
     readonly property bool boxStepping: page === "edit" && currentBox >= 0
                                         && !typingIntoField
-    readonly property bool presenterTyping: typingIntoField || drawerFocused
-                                            || squattedFocus
+    readonly property bool presenterTyping: typingIntoField || squattedFocus
     readonly property bool presenterNav: page === "show" && !presenterTyping && cueCount > 0
     readonly property bool numberKeys: numberKeysPresent && !presenterTyping
                                        && page === "show" && cueCount > 0
@@ -116,12 +115,14 @@ Item {
         onActivated: clearWordsRequested()
     }
 
-    // Task 4.2: the drawer keys the reference carries (Ctrl+F opens its
-    // search; Ctrl+D duplicates only in Edit, and toggles the library in Show).
-    // Ctrl+1..2 inside the drawer still pick its tabs — see LibraryDrawer
-    // — but from the window they now pick pages, like the reference's
-    // Ctrl+1..5 (4.3); 3..4 belong to pages that do not exist yet and do
-    // nothing.
+    // Task 4.2's drawer keys, retargeted by UI.4a: Ctrl+F opens the search
+    // for presentations, which the sidebar owns now that the bottom of the
+    // window is the media bin. Ctrl+D duplicates only in Edit and toggles the
+    // bin everywhere else. There is no longer a second owner of Ctrl+1..2:
+    // the tabs that used to claim them while the drawer held focus are gone,
+    // so the window's page keys (4.3) answer from anywhere — and typing in
+    // the search field is still covered by typingIntoField, which is what
+    // keeps the presenter's keys off a caret.
     Shortcut {
         sequence: "Ctrl+D"
         enabled: page === "edit" && !typingIntoField && slideCount > 0
@@ -134,19 +135,16 @@ Item {
     }
     Shortcut {
         sequence: "Ctrl+F"
-        onActivated: focusDrawerSearchRequested()
+        onActivated: focusLibrarySearchRequested()
     }
-    // The window's Ctrl+1..5 pick pages like the reference; 3..5 belong to
-    // pages that do not exist yet, so those stay switched off. While the
-    // keyboard is inside the drawer, Ctrl+1/2 stay with its tabs instead.
+    // The window's Ctrl+1..5 pick pages like the reference; 3..4 belong to
+    // pages that do not exist yet, so those stay switched off.
     Shortcut {
         sequence: "Ctrl+1"
-        enabled: !drawerFocused
         onActivated: pageSelected("show")
     }
     Shortcut {
         sequence: "Ctrl+2"
-        enabled: !drawerFocused
         onActivated: pageSelected("edit")
     }
     Shortcut {
@@ -159,7 +157,6 @@ Item {
     }
     Shortcut {
         sequence: "Ctrl+5"
-        enabled: !drawerFocused
         onActivated: pageSelected("settings")
     }
 
@@ -233,9 +230,10 @@ Item {
     // the same navigation a Present click armed, so a service runs from
     // the keyboard alone. The gates are the reference's: typing keeps its
     // keys, a focused button or combo eats Space (AbstractButton is both),
-    // the library drawer owns arrows for its own list, and the edit page's
-    // selected box owns Left/Right — nudging and presenter arrows are
-    // mutually exclusive, like the Escape pair.
+    // and the edit page's selected box owns Left/Right — nudging and
+    // presenter arrows are mutually exclusive, like the Escape pair. Nothing
+    // else claims the arrows any more: the media bin's list is plain Item
+    // delegates that never take focus (UI.4a), so the rows cannot eat them.
     Shortcut {
         sequence: "Space"
         enabled: shortcutMap.presenterNav
@@ -331,8 +329,8 @@ Item {
     }
 
     // Presenter number keys, the reference's opt-in: 1..9 play slide
-    // one..nine and 0 plays ten. Off until the settings page enables it,
-    // and silent while typing, inside the drawer, or on the edit page.
+    // one..nine and 0 plays ten. Off until the settings page enables it, and
+    // silent while typing or on the edit page.
     Shortcut {
         sequence: "1"
         enabled: shortcutMap.numberKeys

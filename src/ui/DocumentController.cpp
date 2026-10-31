@@ -1104,6 +1104,25 @@ bool DocumentController::removeAsset(const QString& assetId) {
     return true;
 }
 
+QStringList DocumentController::mediaImportNameFilters() const {
+    // One table (openshow::domain) spells the kinds, so this filter, the
+    // bin's labels and the pipeline's decision cannot drift apart: a dialog
+    // that listed "*.mp4" by hand would be a fourth place to change when the
+    // media pipeline learns a container, and the fourth is the one that lies.
+    auto glob = [](const char* const* names) {
+        QStringList patterns;
+        for (; *names != nullptr; ++names) {
+            patterns << QStringLiteral("*.") + QString::fromLatin1(*names);
+        }
+        return patterns.join(QLatin1Char(' '));
+    };
+    return {QStringLiteral("Media files (%1 %2 %3)")
+                .arg(glob(openshow::domain::kPictureExtensions),
+                     glob(openshow::domain::kVideoExtensions),
+                     glob(openshow::domain::kAudioExtensions)),
+            QStringLiteral("All files (*)")};
+}
+
 void DocumentController::seedDefaultPlaylist() {
     if (fDocuments.playlistIds().empty()) {
         fDocuments.createPlaylist("Service");

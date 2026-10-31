@@ -39,7 +39,7 @@ stage, scripture, streaming, cloud or multi-output scope.
 | Library/media import | Keep as preparation | Registers an asset without presenting it; native file URL conversion belongs in C++ |
 | Remove library assets / add asset to authored slide | Exclude | Edit; importing must not implicitly modify a slide |
 | Full media source paths in list/details | Exclude | Edit details; Show identifies items by name |
-| Duplicate Shows library in bottom drawer | Replace in UI.4 | Presentation browsing belongs in the left sidebar; bottom becomes media |
+| Duplicate Shows library in bottom drawer | Replaced (UI.4a) | Presentation browsing belongs in the left sidebar; bottom is media only |
 | Playlist chips above a second library list | Replace in UI.2 | One collection outline and one selected-collection detail view |
 | Inactive/future feature buttons | Exclude | Expose a control only when its complete action exists |
 
@@ -247,6 +247,56 @@ activation follows the actual media type and worker validation. Empty, missing,
 corrupt and renamed assets have useful names/notices. Closing or resizing the bin
 preserves sidebar selection, slide navigation and the audience monitor.
 
+Verification (UI.4a, 2026-10-31): `LibraryDrawer.qml` is gone and
+`MediaBin.qml` owns the bottom of the window — one MEDIA bar over collections,
+rows and an info column, and no tabs. Presentation browsing left with it: the
+sidebar's Library detail carries `librarySearchField` (still the only writable
+field on Show, still `docs.searchShows` over names and lyrics, Enter still
+lands the best match after the current show) plus the Edit-only New/Remove, so
+a presentation is found, searched and named in exactly one place, and Ctrl+F
+opens that field by taking the detail view to the Library first. Kind has one
+authority: `AssetKind` with `kVideoExtensions`, `kPictureExtensions` and
+`kAudioExtensions`, read by `assetPathKind`, with `assetPathLooksLikeVideo`
+delegating to it — so the model's video refusal, the scene's background rule,
+the row's label and the import dialog's filter
+(`DocumentController::mediaImportNameFilters`) are one table read four ways.
+`domain_tests` pins that table: the kind each name gets, `other` for a name
+nothing claims, one lower-case wire word per kind, every offered extension in
+its own kind and no extension in two. `DocumentViews::assets()` writes the kind
+into every row; `document_controller_tests` pins the rows case-insensitively,
+that the filter offers every extension in the table and not `.txt`, and — in
+the adoption fixture — that the package copy keeps its extension, so a save
+that renames a file cannot quietly turn every picture into `other`.
+
+The bin is browsing. Its collections name every kind the media fills, with a
+count, and a kind with no rows is absent rather than a dead click; no grid,
+list, size control or input source appears without a model behind it. Clicking
+a collection filters the list to that kind, and clicking a row only describes
+it in the info column — which goes on describing the same row when the filter
+changes under it. `workspace_ui_tests` imports a video, an audio file and a
+`notes.txt`, then pins the counts, the kind chips, the notice wording, the
+one-row filter, and that the worker's pending and live cue keys stay empty,
+nothing plays, and neither the editing cursor nor the presenter's place moves.
+Remove takes the row out of the library; Add to slide is enabled only for the
+kind it places — `kind === "picture"` is enablement, `Documents::addItem` still
+owns the refusal — and clicking it puts the selected picture on the slide. An
+unusable name stays listed and says so instead of vanishing, and at 1000 px the
+notice steps aside so the name stays whole: the suite checks the notices are
+hidden there and that no row's name is elided. `document_present_tests` proves
+the same boundary on the wire — with a scene on air, three imports and a
+removal leave the applied revision where it was across eight status polls.
+Closing the bin and dragging its top edge leave the sidebar selection, slide
+navigation and the audience monitor usable, and with the tabs gone the
+shortcuts have one owner again: Ctrl+1/2/5 always pick pages, Ctrl+F searches
+presentations, and the cheat sheet says so.
+
+Still owed by UI.4b: activating a media cue, where audio and video follow their
+real type and the worker validates playback, and the existence and corruption
+notices only that validation can supply — what UI.4a says about a row is what
+the product can do with its type, deliberately not a claim about its bytes.
+Gates: desktop 57/57 (343.31 s, 15 display), headless 32/32 (65.95 s); both
+trees build clean.
+
 ### UI.5 — Runtime monitor and show controls
 
 Arrange compact clear controls beside the preview, playback beneath it and an
@@ -278,8 +328,9 @@ completion. Run workspace/controller tests and relevant live frontend journeys.
 
 ## Completion rule
 
-UI.1–UI.3c are closed (verification recorded above); UI.4–6 remain TODO
-until implemented and checked.
+UI.1–UI.3c and UI.4a are closed (verification recorded above); UI.4b–6 remain
+TODO until implemented and checked, and the UI.4 parent stays open until UI.4b
+closes its activation half.
 A colour change or one screenshot does not close the layout work. Keep the short
 ledger in PLAN.md; store audit details and later capture evidence alongside this
 plan. M6's completed async fixes remain DONE, and M7 release gates remain open.

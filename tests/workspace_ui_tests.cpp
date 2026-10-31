@@ -73,11 +73,11 @@ int main(int argc, char** argv) {
     };
     auto* left = window->findChild<QQuickItem*>("libraryDock");
     auto* right = window->findChild<QQuickItem*>("outputDock");
-    auto* drawer = window->findChild<QQuickItem*>("libraryDrawer");
+    auto* mediaBin = window->findChild<QQuickItem*>("mediaBin");
     auto* grid = window->findChild<QQuickItem*>("operatorSlideGrid");
     auto* editor = window->findChild<QQuickItem*>("slideTextEditor");
     auto* preview = window->findChild<QQuickItem*>("audiencePreview");
-    if (!left || !right || !drawer || !grid || !editor || !preview) return 1;
+    if (!left || !right || !mediaBin || !grid || !editor || !preview) return 1;
     auto* destination = window->findChild<QQuickItem*>("audienceDestinationPicker");
     check(destination && !destination->isVisible(), "Show hides audience routing configuration");
     // Walk the actual visible tree: destination/layer setup and arbitrary
@@ -135,29 +135,14 @@ int main(int argc, char** argv) {
         }
         check(grid->width() >= 190 && grid->height() > 100,
               "slide grid remains usable at supported sizes");
-        check(drawer->mapToScene(QPointF(0, 0)).y() > 300,
-              "opening the library preserves the slide workspace");
+        check(mediaBin->mapToScene(QPointF(0, 0)).y() > 300,
+              "the media bin leaves the top of the slide workspace visible");
     }
     panels.resizeDrawer(300, window->height() - 364);
     QTest::qWait(30);
-    // Dragging a library entry into blank space must not displace its row.
-    QList<QQuickItem*> rows;
-    std::function<void(QQuickItem*)> findRows = [&](QQuickItem* item) {
-        if (item->objectName() == "libraryShowRow") rows.append(item);
-        for (auto* child : item->childItems()) findRows(child);
-    };
-    findRows(window->contentItem());
-    check(!rows.isEmpty(), "library rows are instantiated");
-    if (!rows.isEmpty()) {
-        QPointer<QQuickItem> row = rows.first();
-        const auto position = row->position();
-        const auto start = row->mapToScene(QPointF(25, 14)).toPoint();
-        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
-        QTest::mouseMove(window, start + QPoint(100, 20), 20);
-        QTest::mouseMove(window, start + QPoint(160, -30), 20);
-        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, start + QPoint(160, -30));
-        check(row && row->position() == position, "library row remains in place after a drag");
-    }
+    // The library rows this drag used to test now live in the sidebar, so the
+    // "a row dragged into blank space is not displaced" pin lives with them in
+    // the UI.2 section below, where collectionLibraryRow delegates exist.
     // --- task UI.3b: cue triggers, running-order stepping and markers ------
     std::function<QQuickItem*(QQuickItem*, const char*)> findNamed =
         [&](QQuickItem* item, const char* name) -> QQuickItem* {
@@ -330,6 +315,25 @@ int main(int argc, char** argv) {
         }
         check(!docs.currentSongId().isEmpty(), "and the long row is selectable");
     }
+    // Dragging a library row into blank space must not displace it — the pin
+    // the flat drawer used to carry, kept with the rows that now answer for it.
+    {
+        QList<QQuickItem*> libraryRows;
+        collectNamed(libraryList, "collectionLibraryRow", libraryRows);
+        check(!libraryRows.isEmpty(), "the Library detail instantiates rows");
+        if (!libraryRows.isEmpty()) {
+            QPointer<QQuickItem> row = libraryRows.first();
+            const auto position = row->position();
+            const auto start = row->mapToScene(QPointF(25, 14)).toPoint();
+            QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+            QTest::mouseMove(window, start + QPoint(100, 20), 20);
+            QTest::mouseMove(window, start + QPoint(160, -30), 20);
+            QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier,
+                                start + QPoint(160, -30));
+            check(row && row->position() == position,
+                  "a library row dragged into blank space stays in place");
+        }
+    }
     docs.selectSong(songId);  // back to the fixture's working song for later checks
     // Repeated entries: two cues, two stable ids, one selection.
     QTest::qWait(20);
@@ -438,16 +442,39 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Ctrl+F searches PRESENTATIONS, and the sidebar owns those now (UI.4a
+    // moved the field there when the bottom of the window became the media
+    // bin). The operator audit runs with the caret in it, and the caret is
+    // what keeps the presenter's keys off: the tab strip that used to claim
+    // Ctrl+1/2 for itself is gone, so nothing else has to step aside.
+    window->setProperty("page", "show");
+    QTest::qWait(30);
+    const int cueBeforeSearch = showPageItem->property("cueIndex").toInt();
     QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
-    QTest::qWait(20);
+    QTest::qWait(40);
     auditOperator(window->contentItem());
-    QTest::keyClick(window, Qt::Key_2, Qt::ControlModifier);
-    check(window->property("page").toString() == "show"
-          && drawer->property("tab").toString() == "media",
-          "focused library search owns its tab shortcuts");
+    auto* searchField = findNamed(window->contentItem(), "librarySearchField");
+    check(searchField != nullptr && searchField->isVisible()
+              && searchField->mapToScene(QPointF(0, 0)).x() < left->width(),
+          "Ctrl+F opens the presentation search in the sidebar");
+    check(window->property("typingIntoField").toBool(),
+          "the window knows the search caret owns the keyboard");
+    QTest::keyClick(window, Qt::Key_PageDown);
+    QTest::qWait(30);
+    check(showPageItem->property("cueIndex").toInt() == cueBeforeSearch,
+          "typing in the search never steps the presenter's order");
     QTest::keyClick(window, Qt::Key_Escape);
-    check(!drawer->property("containsFocus").toBool(), "dismissing search releases presenter keys");
-    drawer->setProperty("tab", "shows");
+    QTest::qWait(20);
+    check(!window->property("typingIntoField").toBool(),
+          "dismissing the search hands the presenter's keys back");
+    QTest::keyClick(window, Qt::Key_PageDown);
+    QTest::qWait(30);
+    check(showPageItem->property("cueIndex").toInt() == cueBeforeSearch + 1,
+          "and the running order walks again");
+    showPageItem->setProperty("cueIndex", cueBeforeSearch);
+    QTest::keyClick(window, Qt::Key_2, Qt::ControlModifier);
+    check(window->property("page").toString() == "edit",
+          "Ctrl+2 is the page's key from anywhere now that no tab strip claims it");
     // Verify moved editor accepts words and synchronizes after navigation.
     window->setProperty("page", "edit");
     QTest::qWait(20);
@@ -465,6 +492,229 @@ int main(int argc, char** argv) {
     check(editor->property("text").toString() == docs.currentSlideText(),
           "editor follows slide selection without copying the old text over it");
     docs.selectSlide(0);
+
+    // --- task UI.4a: the bottom of the window is the media bin -----------
+    // The bin lists the service's registered media with the kind each name
+    // means to the pipeline, filters on it, says what it cannot do, and keeps
+    // every activation to itself: browsing, importing and removing a file
+    // never put anything near the output. Its own layout is pinned at the
+    // largest supported size, where a row has room for name, kind and notice
+    // side by side, and checked again at the smallest.
+    {
+        const QSize binSizeBefore = window->size();
+        window->setProperty("page", "edit");
+        window->resize(1680, 1020);
+        QTest::qWait(60);
+        panels.resizeDrawer(300, window->height() - 364);
+        QTest::qWait(50);
+        const QString files = QString::fromStdString(scratch.path().toStdString());
+        check(mediaBin->property("open").toBool(), "the bin opens with a body over its bar");
+        check(findNamed(mediaBin, "librarySearchField") == nullptr,
+              "the bin carries no second search for presentations");
+        check(docs.assets().isEmpty(), "the fixture authors no media of its own");
+        check(docs.importMediaFile(files + "/loop.mp4")
+                  && docs.importMediaFile(files + "/hymn.mp3")
+                  && docs.importMediaFile(files + "/notes.txt"),
+              "import registers a video, an audio file and a name nothing presents");
+        QTest::qWait(40);
+        QMap<QString, QString> kinds;
+        for (const QVariant& entry : docs.assets()) {
+            const QVariantMap row = entry.toMap();
+            kinds.insert(row.value(QStringLiteral("name")).toString(),
+                         row.value(QStringLiteral("kind")).toString());
+        }
+        check(kinds.value("loop.mp4") == QLatin1String("video")
+                  && kinds.value("hymn.mp3") == QLatin1String("audio")
+                  && kinds.value("notes.txt") == QLatin1String("other"),
+              "every row carries the kind its name means to the media pipeline");
+
+        auto collectionRows = [&] {
+            QList<QQuickItem*> found;
+            collectNamed(mediaBin, "mediaCollectionRow", found);
+            return found;
+        };
+        auto mediaRows = [&] {
+            QList<QQuickItem*> found;
+            collectNamed(mediaBin, "mediaBinRow", found);
+            return found;
+        };
+        auto clickAt = [window](QQuickItem* item, qreal x, qreal y) {
+            if (item) {
+                QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                  item->mapToScene(QPointF(x, y)).toPoint());
+            }
+        };
+
+        QStringList labels;
+        QStringList counts;
+        for (auto* row : collectionRows()) {
+            const QVariantMap data = row->property("modelData").toMap();
+            labels << data.value(QStringLiteral("label")).toString();
+            counts << data.value(QStringLiteral("count")).toString();
+        }
+        check(labels == (QStringList{"All media", "Video", "Audio", "Other"})
+                  && counts == (QStringList{"3", "1", "1", "1"}),
+              "the bin lists every kind its media fills, with a count on each");
+
+        QStringList chips;
+        {
+            QList<QQuickItem*> found;
+            collectNamed(mediaBin, "mediaRowKind", found);
+            for (auto* chip : found) chips << chip->property("text").toString();
+        }
+        QStringList notices;
+        bool noticesWhole = true;
+        {
+            QList<QQuickItem*> found;
+            collectNamed(mediaBin, "mediaRowNotice", found);
+            for (auto* notice : found) {
+                if (notice->isVisible()) notices << notice->property("text").toString();
+                noticesWhole = noticesWhole && !notice->property("elided").toBool();
+            }
+        }
+        check(chips == (QStringList{"Video", "Audio", "Other"}),
+              "each media row says which kind of file it is");
+        check(notices.size() == 3 && notices.at(0).contains("background")
+                  && notices.at(1).contains("nothing plays")
+                  && notices.at(2).contains("nothing presents") && noticesWhole,
+              "a row the product cannot use says why, in full, instead of hiding");
+
+        // A collection filters the list to its kind, and only that.
+        for (auto* row : collectionRows())
+            if (row->property("modelData").toMap().value("kind").toString() == "audio")
+                clickAt(row, 20, 12);
+        QTest::qWait(40);
+        QList<QQuickItem*> filtered = mediaRows();
+        check(mediaBin->property("filter").toString() == QLatin1String("audio")
+                  && filtered.size() == 1
+                  && filtered.first()->property("modelData").toMap()
+                         .value("name").toString() == QLatin1String("hymn.mp3"),
+              "picking a collection leaves only that kind in the list");
+
+        // Selecting a row inspects it. Nothing else happens: no go, no play,
+        // no move of the editing cursor or the presenter's place.
+        const int slideBeforeBin = docs.currentSlide();
+        const QString songBeforeBin = docs.currentSongId();
+        const int cueBeforeBin = showPageItem->property("cueIndex").toInt();
+        clickAt(filtered.first(), 20, 14);
+        QTest::qWait(40);
+        QList<QQuickItem*> info;
+        collectNamed(mediaBin, "mediaInfoKind", info);
+        check(!mediaBin->property("selectedAssetId").toString().isEmpty()
+                  && !info.isEmpty()
+                  && info.first()->property("text").toString().contains("Audio"),
+              "a clicked row is described in the bin's info column");
+        check(worker.pendingCueKey().isEmpty() && worker.liveCueKey().isEmpty()
+                  && !worker.outputLive() && !worker.mediaPlaying(),
+              "browsing media never puts anything on the wire");
+        check(docs.currentSlide() == slideBeforeBin && docs.currentSongId() == songBeforeBin
+                  && showPageItem->property("cueIndex").toInt() == cueBeforeBin,
+              "media browsing never moves the editing cursor or the presenter's place");
+
+        // Back to all media: the two document actions, both Edit-only and both
+        // honest about the kinds they cover.
+        QList<QQuickItem*> allFirst = collectionRows();
+        if (!allFirst.isEmpty()) clickAt(allFirst.first(), 20, 12);
+        QTest::qWait(40);
+        auto* placeButton = findNamed(window->contentItem(), "placeAssetButton");
+        auto* removeButton = findNamed(window->contentItem(), "mediaRemoveButton");
+        check(placeButton != nullptr && placeButton->isVisible()
+                  && removeButton != nullptr && removeButton->isVisible(),
+              "the bin's document actions are available while Edit is up");
+        for (auto* row : mediaRows())
+            if (row->property("modelData").toMap().value("name").toString()
+                == QLatin1String("notes.txt"))
+                clickAt(row, 20, 14);
+        QTest::qWait(30);
+        check(!placeButton->property("enabled").toBool(),
+              "Add to slide stays off for a file nothing places on a slide");
+        check(removeButton->property("enabled").toBool(),
+              "Remove follows the selection, not the kind");
+        clickAt(removeButton, 20, 12);
+        QTest::qWait(40);
+        const QVariantList afterRemove = docs.assets();
+        QStringList remainingNames;
+        for (const QVariant& entry : afterRemove)
+            remainingNames << entry.toMap().value("name").toString();
+        check(!remainingNames.contains(QLatin1String("notes.txt"))
+                  && remainingNames.size() == 2,
+              "Remove takes the row out of the media library");
+
+        // A picture is the one kind a bin row can join today, and the button's
+        // enablement is that same rule rather than a second copy of it.
+        check(docs.importMediaFile(files + "/cross.png"), "a picture is imported");
+        QTest::qWait(40);
+        QString pictureId;
+        for (const QVariant& entry : docs.assets())
+            if (entry.toMap().value("name").toString() == QLatin1String("cross.png"))
+                pictureId = entry.toMap().value("id").toString();
+        for (auto* row : mediaRows())
+            if (row->property("modelData").toMap().value("id").toString() == pictureId)
+                clickAt(row, 20, 14);
+        QTest::qWait(40);
+        const int boxesBefore = docs.currentSlideBoxes().size();
+        check(placeButton->property("enabled").toBool(),
+              "the picture makes Add to slide live");
+        clickAt(placeButton, 20, 12);
+        QTest::qWait(40);
+        const QVariantList boxes = docs.currentSlideBoxes();
+        check(boxes.size() == boxesBefore + 1
+                  && boxes.last().toMap().value("kind").toString() == "image"
+                  && boxes.last().toMap().value("assetId").toString() == pictureId,
+              "Add to slide places the picture the operator had selected");
+        check(worker.pendingCueKey().isEmpty() && !worker.outputLive(),
+              "and placing it still presents nothing");
+
+        // Closing the bin and dragging its edge give the workspace its area
+        // back without disturbing what the operator was doing.
+        docs.selectSong(songBeforeBin);
+        docs.selectSlide(0);
+        window->setProperty("page", "show");
+        QTest::qWait(80);
+        const qreal openTop = mediaBin->mapToScene(QPointF(0, 0)).y();
+        panels.toggleDrawer();
+        QTest::qWait(60);
+        check(!mediaBin->property("open").toBool()
+                  && mediaBin->mapToScene(QPointF(0, 0)).y() > openTop,
+              "the bar collapses the bin and stays where the operator can reach it");
+        check(preview->isVisible() && grid->width() >= 190 && grid->height() > 100,
+              "a collapsed bin leaves the preview and the cue grid usable");
+        const auto grip = mediaBin->mapToScene(QPointF(4, 2)).toPoint();
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, grip);
+        QTest::mouseMove(window, grip - QPoint(0, 90), 20);
+        QTest::mouseMove(window, grip - QPoint(0, 160), 20);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, grip - QPoint(0, 160));
+        QTest::qWait(60);
+        check(mediaBin->property("open").toBool(),
+              "dragging the top edge brings the media back");
+        check(docs.currentSongId() == songBeforeBin && docs.currentSlide() == 0,
+              "opening and sizing the bin never moves the editing cursor");
+
+        // And at the smallest supported size: the notice steps aside so the
+        // name stays whole, rather than a long kind label eating the name. The
+        // info column still explains whichever row the operator picks.
+        window->resize(1000, 680);
+        QTest::qWait(80);
+        {
+            QList<QQuickItem*> noticeItems;
+            collectNamed(mediaBin, "mediaRowNotice", noticeItems);
+            QList<QQuickItem*> names;
+            collectNamed(mediaBin, "mediaRowName", names);
+            bool noticesAside = !noticeItems.isEmpty();
+            for (auto* notice : noticeItems)
+                noticesAside = noticesAside && !notice->isVisible();
+            bool namesWhole = names.size() == 3;
+            for (auto* name : names)
+                namesWhole = namesWhole && !name->property("elided").toBool();
+            check(noticesAside && namesWhole,
+                  "a narrow bin drops the notice and keeps whole file names");
+        }
+        window->resize(binSizeBefore);
+        QTest::qWait(60);
+        panels.resizeDrawer(300, window->height() - 364);
+        QTest::qWait(40);
+    }
+
     window->setProperty("page", "show");
     QTest::qWait(80);
     panels.resizeDrawer(300, window->height() - 364);

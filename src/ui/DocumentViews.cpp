@@ -356,6 +356,13 @@ QVariantList DocumentViews::assets() const {
         entry.insert(QStringLiteral("id"), QString::fromStdString(id));
         entry.insert(QStringLiteral("name"), QString::fromStdString(asset->name));
         entry.insert(QStringLiteral("sourcePath"), QString::fromStdString(asset->sourcePath));
+        // The kind the bin filters and labels by (UI.4a), from the domain's
+        // one name rule — the same answer the model refuses a video with and
+        // the scene compiles a background with, so a row cannot promise a
+        // thing the pipeline will not do.
+        entry.insert(QStringLiteral("kind"),
+                     QString::fromLatin1(openshow::domain::assetKindName(
+                         openshow::domain::assetPathKind(asset->sourcePath))));
         list.append(entry);
     }
     return list;

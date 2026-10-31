@@ -102,8 +102,10 @@ class DocumentController : public QObject {
     // cues needs no cursor change and makes none.
     Q_PROPERTY(QVariantList runningOrderCues READ runningOrderCues NOTIFY documentsChanged)
     Q_PROPERTY(QString currentPlaylistId READ currentPlaylistId NOTIFY navigationChanged)
-    // The media library (drawer Media tab): [{id, name, sourcePath}],
-    // import order. save() is where the bytes join the package.
+    // The media bin (UI.4a): [{id, name, sourcePath, kind}], import order,
+    // where kind is the domain's own name rule ("picture", "video", "audio",
+    // "other") so the list can say what a row is. save() is where the bytes
+    // join the package.
     Q_PROPERTY(QVariantList assets READ assets NOTIFY documentsChanged)
     // The style panel (task 4.4): every style in the service, and the one
     // the current slide actually resolves through (override or show
@@ -302,6 +304,12 @@ public:
     Q_INVOKABLE bool importMediaFile(const QString& filePath);
     Q_INVOKABLE bool importMediaUrl(const QUrl& file);
     Q_INVOKABLE bool removeAsset(const QString& assetId);
+    // The bin's import filter (UI.4a), spelled from the domain's one
+    // extension table so the dialog, the rows' kind labels and the pipeline's
+    // own decision cannot hold three opinions about what a name means.
+    // "All files" stays offered: registering a name nothing claims is
+    // possible, and the bin shows it as unsupported rather than hiding it.
+    Q_INVOKABLE QStringList mediaImportNameFilters() const;
 
     // --- presentation hand-off ---
 

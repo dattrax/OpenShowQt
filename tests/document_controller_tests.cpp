@@ -460,6 +460,12 @@ void exerciseRecoveredAssetOwnership(const std::filesystem::path& root) {
             check(path.startsWith(QString::fromStdString(package.string())) &&
                       QFileInfo::exists(path),
                   "adopt: every asset names a file inside the package, and it exists");
+            // Task UI.4a rides along for free here: the bin labels and filters
+            // a row by its name's extension, so an adoption that dropped the
+            // extension would silently turn every picture into "other".
+            check(entry.toMap().value(QStringLiteral("kind")).toString() ==
+                      QStringLiteral("picture"),
+                  "adopt: the package copy keeps its extension, so its kind survives");
         }
     }
     {
@@ -2102,6 +2108,59 @@ void exerciseBackgroundPersistence(const std::filesystem::path& root) {
 
 }  // namespace
 
+// --- task UI.4a: what the media bin reads ---------------------------------
+// The bin's rows and its import filter both come out of the controller, and
+// both have to be the domain's own answer about a name. A row carrying a kind
+// the pipeline disagrees with would let the operator trust a label nothing
+// enforces, and a filter offering an extension the bin then calls "other"
+// would be a second place to change when the media pipeline learns one.
+void exerciseMediaBinViews(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong(QStringLiteral("Bin"));
+    docs.addSlide();
+    check(docs.assets().isEmpty(), "a service starts with no media to list");
+
+    // Registered the way the import dialog hands names over. The bytes need
+    // not exist yet: what a name IS is decided from the name, and whether the
+    // file is really there is a save-time question (task 2.2) — exactly as the
+    // bin's label is a browse-time one.
+    check(docs.importMediaFile(QStringLiteral("/fixtures/loop.mp4"))
+              && docs.importMediaFile(QStringLiteral("/fixtures/hymn.MP3"))
+              && docs.importMediaFile(QStringLiteral("/fixtures/plate.jpeg"))
+              && docs.importMediaFile(QStringLiteral("/fixtures/notes.txt")),
+          "video, audio, a picture and an unsupported name are all registered");
+    QVariantMap kinds;
+    for (const QVariant& entry : docs.assets()) {
+        const QVariantMap row = entry.toMap();
+        kinds.insert(row.value(QStringLiteral("name")).toString(),
+                     row.value(QStringLiteral("kind")).toString());
+    }
+    check(kinds.value("loop.mp4") == QLatin1String("video")
+              && kinds.value("hymn.MP3") == QLatin1String("audio")
+              && kinds.value("plate.jpeg") == QLatin1String("picture")
+              && kinds.value("notes.txt") == QLatin1String("other"),
+          "every asset row carries the kind its name means to the pipeline");
+
+    const QStringList filters = docs.mediaImportNameFilters();
+    check(filters.size() == 2 && filters.at(0).startsWith(QStringLiteral("Media files ("))
+              && filters.at(1) == QLatin1String("All files (*)"),
+          "the import dialog offers one media filter, and everything else");
+    auto listed = [&filters](const char* const* names) {
+        for (; *names != nullptr; ++names) {
+            if (!filters.at(0).contains(QLatin1String(*names))) {
+                return false;
+            }
+        }
+        return true;
+    };
+    check(listed(openshow::domain::kPictureExtensions)
+              && listed(openshow::domain::kVideoExtensions)
+              && listed(openshow::domain::kAudioExtensions),
+          "the filter offers every extension the bin can label a kind");
+    check(!filters.at(0).contains(QStringLiteral("txt")),
+          "and does not offer a name the bin would have to call other");
+}
+
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("openshow-document-tests"));
@@ -2123,6 +2182,7 @@ int main(int argc, char* argv[]) {
     exerciseBackgroundFit(tempRoot / "fit");
     exerciseImageItemSession(tempRoot / "mixeditem");
     exerciseImageAuthoring(tempRoot / "imageauthoring");
+    exerciseMediaBinViews(tempRoot / "mediabin");
     exerciseAutosaveSurfacing(tempRoot / "surfacing");
     exerciseBackgroundPersistence(tempRoot / "background");
     std::filesystem::remove_all(tempRoot);

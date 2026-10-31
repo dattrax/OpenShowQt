@@ -421,6 +421,40 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // --- UI.4a: importing media never goes live ---------------------------
+    // The other half of the window, same rule. The media bin's import and
+    // remove are document edits (they cost an undo step each) and its row
+    // selections are browse state; with a scene on air, none of it may move
+    // the picture the audience is looking at.
+    {
+        boost::json::value statusReply;
+        std::uint64_t liveRev = 0;
+        if (call(fd, nextId++, "output.status", {}, &statusReply) &&
+            statusReply.as_object().contains("result")) {
+            liveRev = numberValue(statusReply.at("result").at("scene").as_object().at("active"));
+        }
+        if (check(liveRev != 0, "a scene is on air before the bin is opened")) {
+            const bool imported =
+                docs.importMediaFile(QStringLiteral("/bin/loop.mp4")) &&
+                docs.importMediaFile(QStringLiteral("/bin/hymn.mp3")) &&
+                docs.importMediaFile(QStringLiteral("/bin/notes.txt"));
+            check(imported && docs.assets().size() == 3,
+                  "the bin's import path registers a video, an audio file and a plain name");
+            check(docs.removeAsset(docs.assets().last().toMap().value("id").toString())
+                      && docs.assets().size() == 2,
+                  "and Remove takes one of them out again");
+            bool unchanged = true;
+            for (int poll = 0; poll < 8 && unchanged; ++poll) {
+                unchanged = call(fd, nextId++, "output.status", {}, &statusReply) &&
+                            statusReply.at("result").at("scene").as_object().contains("active") &&
+                            numberValue(statusReply.at("result")
+                                            .at("scene").as_object().at("active")) == liveRev;
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            check(unchanged, "importing and removing media never present, prepare or clear");
+        }
+    }
+
     call(fd, nextId++, "shutdown", {}, &reply);
     int status = 0;
     waitpid(worker, &status, 0);

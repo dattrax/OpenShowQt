@@ -54,6 +54,13 @@ using Slide = openshow::domain::Slide;
 using Style = openshow::domain::Style;
 using SlideItem = openshow::domain::SlideItem;
 using openshow::domain::assetPathLooksLikeVideo;
+using openshow::domain::assetKindName;
+using openshow::domain::assetPathExtension;
+using openshow::domain::assetPathKind;
+using openshow::domain::AssetKind;
+using openshow::domain::kAudioExtensions;
+using openshow::domain::kPictureExtensions;
+using openshow::domain::kVideoExtensions;
 using ItemKind = openshow::domain::ItemKind;
 
 void exerciseShows() {
@@ -317,6 +324,57 @@ void exerciseImageItems() {
     // drifting apart from the model's rule.
     check(assetPathLooksLikeVideo("/media/loop.MP4") && !assetPathLooksLikeVideo("/media/a.png"),
           "assetPathLooksLikeVideo reads a name's kind, case-insensitively");
+    // Task UI.4a turned that predicate into one half of a kind, because the
+    // media bin labels and filters its rows with the same table. So the whole
+    // table is pinned here: what a name is, what that is called on the wire,
+    // and that the two video questions still agree.
+    check(assetPathKind("/media/loop.MP4") == AssetKind::Video
+              && assetPathKind("/media/a.PNG") == AssetKind::Picture
+              && assetPathKind("/media/hymn.mp3") == AssetKind::Audio,
+          "assetPathKind reads a name's kind, case-insensitively");
+    check(assetPathKind("/media/notes.txt") == AssetKind::Other
+              && assetPathKind("/media/soundtrack") == AssetKind::Other
+              && assetPathExtension("/media/archive.tar.GZ") == "gz"
+              && assetPathExtension("/media/noext") == "",
+          "a name nothing claims is Other, never a guessed Picture");
+    check(std::string(assetKindName(AssetKind::Picture)) == "picture"
+              && std::string(assetKindName(AssetKind::Video)) == "video"
+              && std::string(assetKindName(AssetKind::Audio)) == "audio"
+              && std::string(assetKindName(AssetKind::Other)) == "other",
+          "a kind names itself with one lower-case word");
+    {
+        // Every extension the import dialog offers must land in its own kind,
+        // and the video half must agree with the predicate the model and the
+        // scene still ask — one table, three callers, no room for drift.
+        auto allAre = [](const char* const* names, AssetKind kind) {
+            for (; *names != nullptr; ++names) {
+                const std::string path = std::string("/media/x.") + *names;
+                if (assetPathKind(path) != kind
+                    || assetPathLooksLikeVideo(path) != (kind == AssetKind::Video)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        check(allAre(kVideoExtensions, AssetKind::Video)
+                  && allAre(kPictureExtensions, AssetKind::Picture)
+                  && allAre(kAudioExtensions, AssetKind::Audio),
+              "every offered extension lands in the kind the bin labels it");
+        auto pairwiseDistinct = [](const char* const* left, const char* const* right) {
+            for (; *left != nullptr; ++left) {
+                for (const char* const* other = right; *other != nullptr; ++other) {
+                    if (std::string(*left) == *other) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        };
+        check(pairwiseDistinct(kVideoExtensions, kPictureExtensions)
+                  && pairwiseDistinct(kVideoExtensions, kAudioExtensions)
+                  && pairwiseDistinct(kPictureExtensions, kAudioExtensions),
+              "no extension belongs to two kinds");
+    }
 
     SlideItem picture;
     picture.kind = ItemKind::Image;

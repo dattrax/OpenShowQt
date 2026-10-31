@@ -90,18 +90,46 @@ inline bool backgroundFitFromName(const std::string& name, BackgroundFit* fit) {
     return false;
 }
 
-// True when a file's NAME is one the media pipeline treats as video
-// (extension-based, case-insensitive — the same rule task 5.5 gave
-// backgrounds, moved here from the scene lib so the model can refuse a
-// video asset for a foreground image item at add time rather than at
-// present time, and scene::assetPathIsVideo is this function).
-inline bool assetPathLooksLikeVideo(const std::string& path) {
+// What the media pipeline makes of a file's NAME (task UI.4a). The rule is
+// extension-based and case-insensitive — the same one task 5.5 gave
+// backgrounds, held here so the model can refuse a video asset for a
+// foreground image item at add time rather than at present time, so
+// scene::assetPathIsVideo is the same answer, and so the media bin's label
+// for a row is the opinion the pipeline will act on rather than a second
+// one written in QML.
+//
+// A browse-time label, not a validation: whether the bytes exist and whether
+// they decode stay the renderer's problem, exactly as the scene's background
+// comment says. Audio is named because the bin has to say what an imported
+// soundtrack IS even though nothing presents it yet (its transport arrives
+// with the show controls), and Other is the honest answer for a name nothing
+// claims — the bin shows that as unsupported instead of hiding the row, which
+// is the only way an operator can find out the file is the wrong thing.
+enum class AssetKind { Picture, Video, Audio, Other };
+
+// The three lists the kind rule claims, in the order the kind asks them,
+// null-terminated so a caller can walk them. The media import dialog builds
+// its file filter from these (DocumentController::mediaImportNameFilters),
+// which is how the dialog cannot offer a name the bin would label "other".
+inline constexpr const char* const kVideoExtensions[] = {
+    "mp4", "mov", "m4v", "mkv", "webm", "avi",
+    "mpg", "mpeg", "wmv", "flv", "ogv", "ts", nullptr,
+};
+inline constexpr const char* const kPictureExtensions[] = {
+    "jpg", "jpeg", "png", "webp", "gif", "bmp", nullptr,
+};
+inline constexpr const char* const kAudioExtensions[] = {
+    "mp3", "wav", "ogg", "oga", "opus", "m4a", "aac", "flac", nullptr,
+};
+
+// The lower-cased extension of a path's file name, empty when it has none.
+inline std::string assetPathExtension(const std::string& path) {
     const size_t slash = path.find_last_of('/');
     const std::string name =
         slash == std::string::npos ? path : path.substr(slash + 1);
     const size_t dot = name.find_last_of('.');
     if (dot == std::string::npos || dot + 1 >= name.size()) {
-        return false;
+        return {};
     }
     std::string ext = name.substr(dot + 1);
     for (char& c : ext) {
@@ -109,16 +137,51 @@ inline bool assetPathLooksLikeVideo(const std::string& path) {
             c = static_cast<char>(c - 'A' + 'a');
         }
     }
-    static constexpr const char* kVideoExtensions[] = {
-        "mp4", "mov", "m4v", "mkv", "webm", "avi",
-        "mpg", "mpeg", "wmv", "flv", "ogv", "ts",
-    };
-    for (const char* candidate : kVideoExtensions) {
-        if (ext == candidate) {
-            return true;
+    return ext;
+}
+
+inline AssetKind assetPathKind(const std::string& path) {
+    const std::string ext = assetPathExtension(path);
+    auto named = [&ext](const char* const* names) {
+        for (; *names != nullptr; ++names) {
+            if (ext == *names) {
+                return true;
+            }
         }
+        return false;
+    };
+    if (named(kVideoExtensions)) {
+        return AssetKind::Video;
     }
-    return false;
+    if (named(kPictureExtensions)) {
+        return AssetKind::Picture;
+    }
+    if (named(kAudioExtensions)) {
+        return AssetKind::Audio;
+    }
+    return AssetKind::Other;
+}
+
+// The wire/QML spelling of a kind: one word, lower case, never empty.
+inline const char* assetKindName(AssetKind kind) {
+    switch (kind) {
+        case AssetKind::Picture:
+            return "picture";
+        case AssetKind::Video:
+            return "video";
+        case AssetKind::Audio:
+            return "audio";
+        case AssetKind::Other:
+            break;
+    }
+    return "other";
+}
+
+// True when a file's NAME is one the media pipeline treats as video: the
+// video half of the kind above, kept as a name because every existing caller
+// asks exactly that question, and one function answers it everywhere.
+inline bool assetPathLooksLikeVideo(const std::string& path) {
+    return assetPathKind(path) == AssetKind::Video;
 }
 
 // One authored item (tasks 6.17a/6.17b, review R17): its own identity, its

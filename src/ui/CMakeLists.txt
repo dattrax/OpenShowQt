@@ -78,7 +78,7 @@ add_executable(openshow::ui ALIAS openshow-ui)
 
 # The interaction fixture loads exactly the same QML and native preview type.
 set(OPENSHOW_WORKSPACE_QML_NAMES
-  Main.qml TopBar.qml SidePanel.qml LibraryDrawer.qml EditCanvas.qml
+  Main.qml TopBar.qml SidePanel.qml MediaBin.qml EditCanvas.qml
   ShortcutMap.qml OutputPanel.qml PlaylistPanel.qml ShowPage.qml
   EditPage.qml SettingsPage.qml PanelField.qml PanelButton.qml
 )

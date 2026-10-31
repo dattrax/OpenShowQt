@@ -11,6 +11,11 @@ import QtQuick.Controls
 // order, dragging rows — stay separate from live slide triggers, and the
 // playlist's entry ids give repeated entries of the same show one stable
 // identity each.
+//
+// UI.4a gave this panel the rest of what the bottom drawer used to own for
+// presentations: the search field and the Edit-only New/Remove. It is the one
+// place a presentation is found, so the one place it is searched for, named
+// and removed — the bin below the workspace is media only.
 SidePanel {
     id: playlistPanel
     side: "left"
@@ -33,6 +38,34 @@ SidePanel {
     // The entry row the operator last clicked. Keyed by ENTRY id, so a show
     // that appears twice in the order shows one selection, not two.
     property string selectedEntryId: ""
+
+    // Search (UI.4a), moved here with presentation browsing: this is the one
+    // panel that lists presentations, so it is the one that filters them.
+    // The reference's rule is unchanged — a blank query is the whole Library,
+    // anything else is LibrarySearch over names and lyrics, and Enter places
+    // the best match after the current show and opens it.
+    property string query: ""
+
+    function focusSearch() {
+        // Searching means the Library, so the detail view shows it first: the
+        // field filters presentations and has nothing to say about a running
+        // order. Selecting the Library moves no order and presents nothing.
+        if (playlistPanel.outlineKind !== "library") {
+            playlistPanel.selectOutline("library", "")
+        }
+        Qt.callLater(() => librarySearch.forceActiveFocus())
+    }
+
+    function searchEnter() {
+        const hits = docs.searchShows(query)
+        if (hits.length === 0) {
+            return
+        }
+        const id = hits[0].id
+        docs.insertShowAfterCurrentShow(id)
+        docs.selectSong(id)
+        query = ""
+    }
 
     function selectOutline(kind, id) {
         if (kind === "playlist" && id !== "") {
@@ -252,9 +285,74 @@ SidePanel {
                             .map(p => p.name).join("") || "?"))
         }
 
+        // Search (UI.4a): moved out of the bottom drawer with the rest of
+        // presentation browsing, because this is the one panel that lists
+        // presentations. It filters the Library detail — so Ctrl+F takes that
+        // detail view to the Library first (see focusSearch) — and a blank
+        // query is the whole Library again. Escape clears the value and hands
+        // the keyboard back, the reference's searchKeydown behaviour.
+        PanelField {
+            id: librarySearch
+            objectName: "librarySearchField"
+            anchors.top: detailTitle.bottom
+            anchors.topMargin: 6
+            anchors.left: parent.left
+            anchors.right: parent.right
+            visible: playlistPanel.outlineKind === "library"
+            placeholderText: "Search presentations\u2026"
+            placeholderTextColor: "#929292"
+            text: playlistPanel.query
+            onTextChanged: playlistPanel.query = text
+            onAccepted: {
+                playlistPanel.searchEnter()
+                text = ""
+            }
+            Keys.onEscapePressed: {
+                text = ""
+                focus = false
+            }
+        }
+
+        // The presentation controls the bottom drawer used to carry, kept
+        // with the list they act on and behind the same Edit gate: naming a
+        // new presentation and removing one are authoring, not presenting.
+        Flow {
+            id: newShowActions
+            visible: playlistPanel.editingEnabled && playlistPanel.outlineKind === "library"
+            anchors.top: librarySearch.bottom
+            anchors.topMargin: visible ? 6 : 0
+            anchors.left: parent.left
+            anchors.right: parent.right
+            spacing: 4
+            height: visible ? implicitHeight : 0
+
+            PanelField {
+                id: newSongName
+                width: Math.max(110, newShowActions.width - newSongButton.width
+                                                - removeSongButton.width - 8)
+                placeholderText: "new presentation name"
+                placeholderTextColor: "#929292"
+                onAccepted: newSongButton.clicked()
+            }
+            PanelButton {
+                id: newSongButton
+                objectName: "newPresentationButton"
+                text: "New"
+                enabled: newSongName.text.trim().length > 0
+                onClicked: if (docs.createSong(newSongName.text)) newSongName.text = ""
+            }
+            PanelButton {
+                id: removeSongButton
+                objectName: "removePresentationButton"
+                text: "Remove"
+                enabled: docs.currentSongId !== ""
+                onClicked: docs.removeCurrentSong()
+            }
+        }
+
         Rectangle {
             id: detailBox
-            anchors.top: detailTitle.bottom
+            anchors.top: newShowActions.bottom
             anchors.topMargin: 6
             anchors.left: parent.left
             anchors.right: parent.right
@@ -271,7 +369,12 @@ SidePanel {
                 anchors.margins: 1
                 clip: true
                 visible: playlistPanel.outlineKind === "library"
-                model: docs.songs
+                // A blank query is the full Library; anything else is the
+                // reference's search over names and lyrics. Naming docs.songs
+                // in the condition is also what re-runs it when the document
+                // changes, since a function call carries no dependency.
+                model: playlistPanel.query === "" ? docs.songs
+                                                  : docs.searchShows(playlistPanel.query)
                 ScrollBar.vertical: ScrollBar {}
 
                 delegate: Item {
@@ -354,9 +457,11 @@ SidePanel {
                     font.pixelSize: 13
                     horizontalAlignment: Text.AlignHCenter
                     width: parent.width
-                    text: playlistPanel.editingEnabled
-                          ? "No presentations \u2014 create one above"
-                          : "No presentations \u2014 open Edit to create one"
+                    text: playlistPanel.query !== ""
+                          ? "nothing matches \u201c" + playlistPanel.query + "\u201d"
+                          : (playlistPanel.editingEnabled
+                             ? "No presentations \u2014 create one above"
+                             : "No presentations \u2014 open Edit to create one")
                 }
             }
 

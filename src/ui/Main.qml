@@ -86,7 +86,6 @@ Window {
         page: root.page
         typingIntoField: root.typingIntoField
         squattedFocus: root.squattedFocus
-        drawerFocused: libraryDrawer.containsFocus
         boxSelected: editPage.boxSelected
         currentBox: docs.currentBox
         slideCount: docs.slides.length
@@ -105,7 +104,9 @@ Window {
         onClearWordsRequested: worker.clearSlide()
         onDuplicateSlideRequested: docs.duplicateCurrentSlide()
         onToggleDrawerRequested: panels.toggleDrawer()
-        onFocusDrawerSearchRequested: libraryDrawer.focusSearch()
+        // Ctrl+F searches PRESENTATIONS, which is what the sidebar lists
+        // since UI.4a turned the bottom of the window into the media bin.
+        onFocusLibrarySearchRequested: leftDock.focusSearch()
         onPageSelected: name => root.page = name
         onBoxNudgeRequested: (dx, dy) => editPage.nudgeBox(dx, dy)
         onBoxStepRequested: delta => editPage.stepBox(delta)
@@ -138,7 +139,7 @@ Window {
                : Math.min(panels.leftWidth, root.width * 0.24)
         anchors.left: parent.left
         anchors.top: topBar.bottom
-        anchors.bottom: libraryDrawer.top
+        anchors.bottom: mediaBin.top
         onSourceChosen: (kind, id) => root.browsedShowId = kind === "show" ? id : ""
     }
 
@@ -159,7 +160,7 @@ Window {
         anchors.left: leftDock.right
         anchors.right: rightDock.left
         anchors.top: topBar.bottom
-        anchors.bottom: libraryDrawer.top
+        anchors.bottom: mediaBin.top
         anchors.margins: 0
 
         sourceShowId: root.browsedShowId
@@ -172,7 +173,7 @@ Window {
         anchors.left: leftDock.right
         anchors.right: rightDock.left
         anchors.top: topBar.bottom
-        anchors.bottom: libraryDrawer.top
+        anchors.bottom: mediaBin.top
         anchors.margins: 12
     }
 
@@ -181,13 +182,13 @@ Window {
         anchors.left: leftDock.right
         anchors.right: rightDock.left
         anchors.top: topBar.bottom
-        anchors.bottom: libraryDrawer.top
+        anchors.bottom: mediaBin.top
         anchors.margins: 12
     }
 
-    LibraryDrawer {
-        id: libraryDrawer
-        objectName: "libraryDrawer"
+    MediaBin {
+        id: mediaBin
+        objectName: "mediaBin"
         editingEnabled: root.page === "edit"
         height: Math.min(panels.drawerHeight, Math.max(40,
                     root.height - topBar.height - 300))
