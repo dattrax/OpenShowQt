@@ -369,6 +369,58 @@ int main(int argc, char* argv[]) {
               "and the store is unharmed: the stacked slide presents again after the refusal");
     }
 
+    // --- UI.2: browsing and preparing never go live -----------------------
+    // The whole sidebar dance — new presentations, a new playlist, duplicate
+    // entries, inserts, moves and selections — runs through the very
+    // DocumentController the outline clicks call, while a scene stands on
+    // air. The audience's picture must not move: the applied revision stays
+    // put across a window of status polls, even though the edited document
+    // has visibly moved on. (Task UI.2's "selecting or moving a presentation
+    // never goes live", proven on the wire rather than asserted.)
+    {
+        boost::json::value statusReply;
+        std::uint64_t liveRev = 0;
+        if (call(fd, nextId++, "output.status", {}, &statusReply) &&
+            statusReply.as_object().contains("result")) {
+            const boost::json::value& live = statusReply.at("result");
+            if (live.as_object().contains("scene") &&
+                live.at("scene").as_object().contains("active")) {
+                liveRev = numberValue(live.at("scene").as_object().at("active"));
+            }
+        }
+        if (check(liveRev != 0, "a scene is on air before the browsing starts")) {
+            check(docs.createSong(QStringLiteral("How Deep")),
+                  "the outline creates a presentation");
+            const QString browseId = docs.currentSongId();
+            docs.addSlide();
+            docs.setSlideText(QStringLiteral("How deep the Father's love"));
+            docs.flushText();
+            check(docs.createPlaylist(QStringLiteral("Sunday")), "the outline creates a playlist");
+            check(docs.addShowToPlaylist(browseId) && docs.addShowToPlaylist(browseId),
+                  "the running order takes the show twice");
+            check(docs.insertShowInPlaylist(browseId, 1), "and one more between the copies");
+            const auto entries = docs.playlistEntries();
+            check(entries.size() == 3 &&
+                      docs.movePlaylistEntry(entries[2].toMap().value("entryId").toString(), 0),
+                  "rows move inside the running order");
+            docs.selectSlide(0);
+            docs.selectSong(browseId);
+            docs.selectPlaylist(docs.currentPlaylistId());  // clicking the viewed row again
+            bool unchanged = true;
+            for (int poll = 0; poll < 8 && unchanged; ++poll) {
+                unchanged = call(fd, nextId++, "output.status", {}, &statusReply) &&
+                            statusReply.at("result").at("scene").as_object().contains("active") &&
+                            numberValue(statusReply.at("result")
+                                            .at("scene").as_object().at("active")) == liveRev;
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            check(unchanged,
+                  "creating, selecting and moving never present, prepare or clear on their own");
+            check(docs.currentSongId() == browseId && docs.currentSceneJson() != first,
+                  "the edited document has visibly moved on while the audience stayed");
+        }
+    }
+
     call(fd, nextId++, "shutdown", {}, &reply);
     int status = 0;
     waitpid(worker, &status, 0);

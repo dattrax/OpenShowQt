@@ -155,6 +155,180 @@ int main(int argc, char** argv) {
         QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, start + QPoint(160, -30));
         check(row && row->position() == position, "library row remains in place after a drag");
     }
+    // --- task UI.2: one collection outline, one detail view --------------
+    std::function<QQuickItem*(QQuickItem*, const char*)> findNamed =
+        [&](QQuickItem* item, const char* name) -> QQuickItem* {
+            if (item->objectName() == QLatin1String(name)) return item;
+            for (auto* child : item->childItems())
+                if (auto* hit = findNamed(child, name)) return hit;
+            return nullptr;
+        };
+    std::function<void(QQuickItem*, const char*, QList<QQuickItem*>&)> collectNamed =
+        [&](QQuickItem* item, const char* name, QList<QQuickItem*>& out) {
+            if (item->objectName() == QLatin1String(name)) out.append(item);
+            for (auto* child : item->childItems()) collectNamed(child, name, out);
+        };
+    auto* outline = findNamed(window->contentItem(), "collectionOutline");
+    auto* libraryList = findNamed(window->contentItem(), "collectionLibraryList");
+    auto* playlistList = findNamed(window->contentItem(), "collectionPlaylistList");
+    check(outline && libraryList && playlistList,
+          "the sidebar is one outline above one detail view");
+    check(outline->property("count").toInt() == static_cast<int>(docs.playlists().size()) + 1,
+          "the outline carries the Library plus every playlist");
+    check(left->property("outlineKind").toString() == QLatin1String("playlist") &&
+              left->property("outlinePlaylistId").toString() == docs.currentPlaylistId(),
+          "the running order under preparation is the detail view that opens");
+    check(playlistList->isVisible() &&
+              playlistList->property("count").toInt() ==
+                  static_cast<int>(docs.playlistEntries().size()),
+          "the detail view shows the selected order's cues");
+    // The outline re-binds whenever the documents change, so row pointers are
+    // only trusted straight after a refresh.
+    QList<QQuickItem*> outlineRows;
+    auto refreshOutlineRows = [&] {
+        outlineRows.clear();
+        collectNamed(outline, "collectionOutlineRow", outlineRows);
+    };
+    refreshOutlineRows();
+    check(!outlineRows.isEmpty() &&
+              outlineRows.first()->property("modelData").toMap().value("kind").toString() ==
+                  QLatin1String("library"),
+          "the Library leads the outline");
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                      outlineRows.first()->mapToScene(QPointF(20, 14)).toPoint());
+    QTest::qWait(20);
+    check(left->property("outlineKind").toString() == QLatin1String("library") &&
+              libraryList->isVisible() &&
+              libraryList->property("count").toInt() == static_cast<int>(docs.songs().size()),
+          "selecting the Library moves only the detail view");
+    // Long names stay one bounded, selectable row.
+    const QString longName(180, 'x');
+    check(docs.createSong(longName), "a long-named presentation is created");
+    QTest::qWait(20);
+    {
+        QList<QQuickItem*> rows;
+        collectNamed(libraryList, "collectionLibraryRow", rows);
+        QQuickItem* longRow = nullptr;
+        for (auto* row : rows)
+            if (row->property("modelData").toMap().value("name").toString() == longName)
+                longRow = row;
+        check(longRow && longRow->width() <= libraryList->width() && longRow->height() > 0,
+              "a long name stays one bounded row in the detail view");
+        if (longRow) {
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                              longRow->mapToScene(QPointF(20, 14)).toPoint());
+            QTest::qWait(20);
+        }
+        check(!docs.currentSongId().isEmpty(), "and the long row is selectable");
+    }
+    docs.selectSong(songId);  // back to the fixture's working song for later checks
+    // Repeated entries: two cues, two stable ids, one selection.
+    QTest::qWait(20);
+    refreshOutlineRows();
+    check(outlineRows.size() >= 2, "the outline still rows after a document change");
+    if (outlineRows.size() >= 2) {
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          outlineRows[1]->mapToScene(QPointF(20, 14)).toPoint());
+    }
+    QTest::qWait(20);
+    check(docs.addShowToPlaylist(songId), "the order takes a second copy of the show");
+    QTest::qWait(20);
+    {
+        QList<QQuickItem*> rows;
+        collectNamed(playlistList, "collectionPlaylistRow", rows);
+        QStringList copies;
+        for (auto* row : rows)
+            if (row->property("modelData").toMap().value("showId").toString() == songId)
+                copies.append(row->property("rowEntryId").toString());
+        check(copies.size() >= 2 && copies.first() != copies[1],
+              "repeated entries of one show carry distinct stable ids");
+        QQuickItem* firstCopy = nullptr;
+        for (auto* row : rows)
+            if (row->property("rowEntryId").toString() == copies.first()) firstCopy = row;
+        if (firstCopy) {
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                              firstCopy->mapToScene(QPointF(20, 15)).toPoint());
+            QTest::qWait(20);
+        }
+        check(left->property("selectedEntryId").toString() == copies.first(),
+              "clicking a cue selects that entry");
+        rows.clear();
+        collectNamed(playlistList, "collectionPlaylistRow", rows);
+        int marked = 0;
+        for (auto* row : rows)
+            if (row->property("rowSelected").toBool()) ++marked;
+        check(marked == 1, "exactly one row wears the cue selection");
+        // Scrolling a long order: every instantiated row still names its cue.
+        bool grew = true;
+        for (int i = 0; i < 12; ++i) grew = grew && docs.addShowToPlaylist(songId);
+        check(grew, "the running order grows");
+        QTest::qWait(30);
+        const auto entries = docs.playlistEntries();
+        check(playlistList->property("count").toInt() == static_cast<int>(entries.size()),
+              "every cue is a row");
+        playlistList->setProperty("contentY", 240);
+        QTest::qWait(30);
+        check(playlistList->property("contentY").toReal() > 100.0, "the long order scrolls");
+        rows.clear();
+        collectNamed(playlistList, "collectionPlaylistRow", rows);
+        bool identities = !rows.isEmpty();
+        for (auto* row : rows) {
+            const int index = qRound(row->y() / 30.0);
+            if (index < 0 || index >= static_cast<int>(entries.size()) ||
+                row->property("rowEntryId").toString() !=
+                    entries[index].toMap().value("entryId").toString())
+                identities = false;
+        }
+        check(identities, "scrolled rows keep the identities of the cues they show");
+        playlistList->setProperty("contentY", 0);
+    }
+    // Drag a presentation from the Library detail onto a playlist outline
+    // row: preparation lands at the end of that order, selection intact.
+    QTest::qWait(20);
+    refreshOutlineRows();
+    check(outlineRows.size() >= 2, "the outline rows rebuild intact");
+    if (outlineRows.size() >= 2) {
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          outlineRows.first()->mapToScene(QPointF(20, 14)).toPoint());
+    }
+    QTest::qWait(20);
+    {
+        QString welcomeId;
+        for (const auto& song : docs.songs())
+            if (song.toMap().value("name").toString() == QLatin1String("Welcome"))
+                welcomeId = song.toMap().value("id").toString();
+        QList<QQuickItem*> rows;
+        collectNamed(libraryList, "collectionLibraryRow", rows);
+        QQuickItem* welcomeRow = nullptr;
+        for (auto* row : rows)
+            if (row->property("modelData").toMap().value("id").toString() == welcomeId)
+                welcomeRow = row;
+        check(welcomeRow != nullptr, "the Welcome row is in the Library detail");
+        if (welcomeRow) {
+            const auto start = welcomeRow->mapToScene(QPointF(25, 14)).toPoint();
+            const auto target = outlineRows[1]->mapToScene(QPointF(25, 14)).toPoint();
+            const int before = static_cast<int>(docs.playlistEntries().size());
+            // Lead the drag sideways: the detail list flicks vertically, so a
+            // vertical-first gesture is stolen as a scroll before the row's
+            // drag threshold passes.
+            QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+            QTest::mouseMove(window, start + QPoint(60, 0), 15);
+            QTest::mouseMove(window, (start + target) / 2 + QPoint(30, 0), 15);
+            QTest::mouseMove(window, target + QPoint(20, 0), 15);
+            QTest::mouseMove(window, target, 15);
+            QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, target);
+            QTest::qWait(40);
+            const auto after = docs.playlistEntries();
+            check(static_cast<int>(after.size()) == before + 1 &&
+                      after.last().toMap().value("showId").toString() == welcomeId,
+                  "dragging a presentation onto a playlist prepares it at the end");
+            check(left->property("outlineKind").toString() == QLatin1String("playlist"),
+                  "the drop leaves the target order in the detail view");
+            check(docs.currentSongId() == songId,
+                  "browsing and preparing never move the presented selection");
+        }
+    }
+
     QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
     QTest::qWait(20);
     auditOperator(window->contentItem());

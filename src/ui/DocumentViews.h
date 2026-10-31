@@ -100,6 +100,11 @@ public:
 
     // --- playlists, media, search ---
     QVariantList playlists() const;
+    // The sidebar's collection outline (UI.2): one Library row ahead of one
+    // row per playlist, each with its entry count. The outline is a view
+    // shape, so it is authored here like every other row; the panel selects
+    // from it but never mutates through it.
+    QVariantList collectionOutline() const;
     // cursor's playlist with each entry's show resolved (name and slide
     // count, or "?" and 0 for a row pointing at nothing).
     QVariantList playlistEntries(const openshow::domain::Id& playlistId) const;

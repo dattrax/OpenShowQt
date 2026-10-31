@@ -937,6 +937,10 @@ QVariantList DocumentController::playlists() const {
     return fViews.playlists();
 }
 
+QVariantList DocumentController::collectionOutline() const {
+    return fViews.collectionOutline();
+}
+
 QVariantList DocumentController::playlistEntries() const {
     return fViews.playlistEntries(fCurrentPlaylistId);
 }

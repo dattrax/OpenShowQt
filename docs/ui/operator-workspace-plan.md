@@ -102,7 +102,7 @@ refuses a non-local URL without creating a library entry. `ui_loads` plus its
 two guard negatives pass. Gates: desktop 57/57 (338.55 s, 15 display-labelled),
 headless 32/32 (65.92 s); both trees build clean.
 
-### UI.2 — One sidebar outline and one detail view
+### UI.2 — One sidebar outline and one detail view — CLOSED 2026-10-31
 
 Replace the flat library plus horizontal playlist chips with an outline of the
 existing library and playlists. Selecting an outline item controls the detail
@@ -114,6 +114,28 @@ Acceptance: library/playlist selection, duplicate playlist entries, long names,
 scrolling and supported drag/drop preserve stable identities. Selecting or moving
 a presentation never goes live. Add read-only projections through DocumentViews;
 do not introduce another document or history owner.
+
+Verification (2026-10-31): `PlaylistPanel.qml` is now one outline
+(`collectionOutline`) above one detail view (`collectionLibraryList` /
+`collectionPlaylistList`); the flat library box and horizontal playlist chips
+are gone and no second song list exists. The row shape keeps one author:
+`DocumentViews::collectionOutline()` — Library first, then every playlist with
+its entry count — exposed as the controller's `collectionOutline` property;
+the panel selects through it and never mutates through it. `workspace_ui_tests`
+walks the live tree: the Library leads the outline, selecting it moves only
+the detail view, a 180-character name stays one bounded selectable row, the
+same show twice in an order carries two distinct entry ids of which exactly
+one wears the click selection, a fourteen-cue order scrolls with every visible
+row still naming its own cue, and dragging a Library row onto a playlist
+outline row prepares that show at the order's end while the viewed order and
+selection stay coherent. `document_present_tests` proves the never-goes-live
+half on the wire: with a scene on air, creating presentations and playlists,
+duplicating, inserting and moving entries and clicking selections leaves the
+worker's active revision unchanged across repeated status polls while the
+edited document has visibly moved on. Preparing (add/insert/move/drop) and
+triggering remain separate paths; `+` and the reorder handles stay behind
+`editingEnabled`. Gates: desktop 57/57 (339.21 s, 15 display), headless
+32/32 (66.02 s); both trees build clean.
 
 ### UI.3 — Presentation-oriented slide workspace
 
@@ -182,7 +204,7 @@ completion. Run workspace/controller tests and relevant live frontend journeys.
 
 ## Completion rule
 
-UI.1 is closed (verification recorded above); UI.2–6 remain TODO until
+UI.1 and UI.2 are closed (verification recorded above); UI.3–6 remain TODO until
 implemented and checked.
 A colour change or one screenshot does not close the layout work. Keep the short
 ledger in PLAN.md; store audit details and later capture evidence alongside this

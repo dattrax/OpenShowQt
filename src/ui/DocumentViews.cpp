@@ -277,6 +277,27 @@ QVariantList DocumentViews::playlists() const {
     return list;
 }
 
+QVariantList DocumentViews::collectionOutline() const {
+    QVariantList list;
+    QVariantMap library;
+    library.insert(QStringLiteral("kind"), QStringLiteral("library"));
+    library.insert(QStringLiteral("id"), QString());
+    library.insert(QStringLiteral("name"), QStringLiteral("Library"));
+    library.insert(QStringLiteral("count"),
+                   static_cast<int>(fDocuments.showIds().size()));
+    list.append(library);
+    for (const QVariant& row : playlists()) {
+        const QVariantMap playlist = row.toMap();
+        QVariantMap outline;
+        outline.insert(QStringLiteral("kind"), QStringLiteral("playlist"));
+        outline.insert(QStringLiteral("id"), playlist.value(QStringLiteral("id")));
+        outline.insert(QStringLiteral("name"), playlist.value(QStringLiteral("name")));
+        outline.insert(QStringLiteral("count"), playlist.value(QStringLiteral("entryCount")));
+        list.append(outline);
+    }
+    return list;
+}
+
 QVariantList DocumentViews::playlistEntries(const openshow::domain::Id& playlistId) const {
     QVariantList list;
     const openshow::domain::Playlist* playlist = fDocuments.findPlaylist(playlistId);

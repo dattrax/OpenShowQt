@@ -370,7 +370,7 @@ and authoring in Edit. [Detailed scope, control audit and acceptance](docs/ui/op
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
 | UI.1 | DONE | Remove setup and diagnostic forms from Show | Routing/content setup lives in Settings; Show keeps runtime cues and concise notices; the visible-tree audit finds no setup control or writable field but `librarySearchField` on Show and exposes the picker there; picker URLs with spaces/`#`/Unicode reach the wire decoded while non-local URLs cannot alter the track or library; the shell loads without QML warnings and stays usable at the three capture sizes; visible-tree and file-picker regressions |
-| UI.2 | TODO | Sidebar collection outline and selected contents | Stable library/playlist navigation, sections and drag/drop without going live |
+| UI.2 | DONE | Sidebar collection outline and selected contents | One outline (Library + playlists, counts) above one detail view; selection, duplicate entries, long names, scrolling and drag/drop keep stable entry identities, and the wire proves browsing never goes live |
 | UI.3 | TODO | Presentation/playlist slide workspace | Parent closes when UI.3a–c pass |
 | UI.3a | TODO | Read-only running-order cue projection | Stable repeated-entry identities and arbitrary-show compilation without moving the editing cursor |
 | UI.3b | TODO | Consistent Show cue triggers and live markers | Click/keyboard presentation follows the running order; markers wait for acknowledgements |

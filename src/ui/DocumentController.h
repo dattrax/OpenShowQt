@@ -91,6 +91,10 @@ class DocumentController : public QObject {
     // showId, showName, section, slideCount}]. selectPlaylist also emits
     // documentsChanged so this view rebuilds.
     Q_PROPERTY(QVariantList playlistEntries READ playlistEntries NOTIFY documentsChanged)
+    // The sidebar outline (UI.2): the Library row followed by one row per
+    // playlist — [{kind, id, name, count}]. A projection through
+    // DocumentViews like every other row shape.
+    Q_PROPERTY(QVariantList collectionOutline READ collectionOutline NOTIFY documentsChanged)
     Q_PROPERTY(QString currentPlaylistId READ currentPlaylistId NOTIFY navigationChanged)
     // The media library (drawer Media tab): [{id, name, sourcePath}],
     // import order. save() is where the bytes join the package.
@@ -132,6 +136,7 @@ public:
     QVariantList songs() const;
     QVariantList slides() const;
     QVariantList playlists() const;
+    QVariantList collectionOutline() const;
     QVariantList playlistEntries() const;
     QVariantList assets() const;
     QVariantList styles() const;
