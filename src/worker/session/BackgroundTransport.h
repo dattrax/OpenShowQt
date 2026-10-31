@@ -305,7 +305,12 @@ public:
     // cache" (a lookup the session's renderer owns, consulted under NO
     // lock); a picture that is not is a degradation the operator must see
     // (task 6.7c, review R18). Returns true when a video transport started
-    // (the loop owes a present for its head frame).
+    // (the loop owes a present for its head frame). Since task 6.22d a call
+    // that arrives while a retirement is in flight STARTS nothing and
+    // returns false: the wanted transition becomes the single pending ask
+    // (latest wins) and applyTransportOps() retries it when the lane
+    // reports in — the realtime thread never waits on a slow join, and the
+    // output keeps drawing the background still on screen meanwhile.
     bool applyBackground(const openshow::scene::Background& wanted, const GpuHandles& handles,
                          const std::function<bool(const std::string&)>& imageResident);
     // Prepare-time transport prime (task 6.9b, review R10). Runs a video
@@ -387,8 +392,12 @@ public:
     // The render loop's transport pass (task 6.7d): the pending intent and
     // any due scheduled op, then the mode/mix slots, then the standalone
     // swap, then a status refresh if anything was applied. Called by the
-    // loop ahead of its present decision.
-    void applyTransportOps();
+    // loop ahead of its present decision. Since task 6.22d it also reaps a
+    // completed retirement and retries any deferred background transition
+    // (PendingTransition); returns true when that retry STARTED a transport
+    // — the loop then owes a present for its head frame, exactly as if the
+    // scene had driven applyBackground itself.
+    bool applyTransportOps();
 
     // Parses the test schedule (see fScheduledOps): "seek@900:0.6,
     // pause@2400,play@3200", milliseconds after the transport opened.
@@ -512,13 +521,33 @@ private:
     std::unique_ptr<PlaybackPipeline> fBackground;
     openshow::scene::Background fAppliedBackground;    // identity in service
 
+    // The deferred background transition (task 6.22d, review A4): when
+    // applyBackground is asked for a new background while the ONE retirement
+    // slot is still occupied, the transition is stored here — latest wins,
+    // a burst of operator changes coalesces into the newest ask — and the
+    // call returns without waiting. applyTransportOps() retries it on the
+    // pass whose reap emptied the slot (the lane's wake makes that pass
+    // prompt). Render-thread-only, like everything beside fAppliedBackground; a re-present of the background still in service cancels
+    // it (the operator outranked it), and shutdown simply drops it (the
+    // session is going away with its scene). No unbounded queue: capacity
+    // overflow is this one slot plus the store's own newest-wins truth.
+    struct PendingTransition {
+        openshow::scene::Background wanted;
+        GpuHandles handles;
+        std::function<bool(const std::string&)> imageResident;
+        std::chrono::steady_clock::time_point requestedAt;
+    };
+    std::optional<PendingTransition> fPendingTransition;
+
     // The retirement lane (task 6.21c2, review F3). The retired transport's
     // waits — join() and the player's stop — move onto this lane's thread;
     // the transport keeps the objects the retiring producer can still
     // REACH alive until the lane reports done and reapRetirement() closes
-    // the GPU half on the render thread. One at a time: a second teardown
-    // while the lane waits is the hung-producer overlap and pays the join
-    // synchronously rather than growing a queue. The render thread owns the
+    // the GPU half on the render thread. One at a time: since task 6.22d a
+    // second transition while the lane waits is DEFERRED by its caller
+    // (PendingTransition below) rather than blocking this thread, so a
+    // teardown reached with the slot occupied is a logged invariant
+    // violation, not an overflow policy. The render thread owns the
     // slot; the lane holds a shared reference for the duration, so the
     // state (and its last release, which runs the post-close destructor)
     // stays ordered behind reapRetirement()'s join.

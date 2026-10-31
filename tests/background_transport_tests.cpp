@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -462,6 +463,157 @@ void testRetiredAudioGoesSilentAtHandoff() {
     unsetenv("OPENSHOW_FAULT_PACING_EXIT_MATCH");
 }
 
+/* --- task 6.22d (review A4): a swap during a slow retirement DEFERS --------
+   The retirement slot is one deep, and it used to be the frame loop's
+   problem: presenting C (or clearing B) while A still retired entered an
+   untimed sleep on the realtime thread before B had even been stopped. Two
+   ordinary operator changes plus one slow exit froze the audience — and two
+   quick changes naturally overlap any slow retirement. The contract: the
+   loop never waits on capacity. applyBackground keeps the LATEST wanted
+   transition (a burst coalesces), returns false (nothing owed a present —
+   the scene keeps drawing the seam's held frames of what is on screen), and
+   the retry rides the next applyTransportOps pass, which the lane's own wake
+   makes prompt. No unbounded queue anywhere.
+
+   The scripted 700 ms pacing exit makes "A is retiring" measurable rather
+   than hoped: the third call is timed, and its deferral is checked against
+   the live mirror (still B — requested vs presented kept distinct) before
+   the transition lands through the loop pass. Same skip conditions as the
+   6.22c fixture. */
+bool makeSilentClip(const std::string& path) {
+    const std::string command =
+        "ffmpeg -hide_banner -loglevel error -nostdin -y "
+        "-f lavfi -i nullsrc=s=160x96:r=12 -t 2 "
+        "-c:v libx264 -preset veryfast -pix_fmt yuv420p " + path;
+    return std::system(command.c_str()) == 0;
+}
+
+// Drive the loop's transport pass until the predicate holds (this is what a
+// frame loop does with the lane's wake: one glfw-waked pass, reap, retry).
+// Returns the number of passes taken, or -1 when the budget ran out.
+int pumpUntil(BackgroundTransport& transport, const std::function<bool()>& done) {
+    for (int pass = 1; pass <= 100; ++pass) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        transport.applyTransportOps();
+        if (done()) {
+            return pass;
+        }
+    }
+    return -1;
+}
+
+void testSwapDefersBehindSlowRetirement() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) {
+        std::printf("   skipped the deferred-swap fixtures (no ffmpeg)\n");
+        return;
+    }
+    openshow::worker::VulkanContext vk;
+    if (!vk.createHeadless()) {
+        std::printf("   skipped the deferred-swap fixtures (no headless Vulkan device)\n");
+        return;
+    }
+    auto gr = GrDirectContexts::MakeVulkan(vk.backendContext());
+    if (!gr) {
+        std::printf("   skipped the deferred-swap fixtures (no Ganesh context)\n");
+        return;
+    }
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string clipA = "transport-fixtures/defer-a.mp4";
+    const std::string clipB = "transport-fixtures/defer-b.mp4";
+    const std::string clipC = "transport-fixtures/defer-c.mp4";
+    if (!makeSilentClip(clipA) || !makeSilentClip(clipB) || !makeSilentClip(clipC)) {
+        check(false, "the deferred-swap fixture clips are generated");
+        return;
+    }
+
+    // Only clip A carries the slow exit (6.21c2's seam matches by name), so
+    // B and C open and close at normal speed and every slow window in these
+    // scenarios is provably A's retirement.
+    setenv("OPENSHOW_FAULT_PACING_EXIT_MS", "800", 1);
+    setenv("OPENSHOW_FAULT_PACING_EXIT_MATCH", "defer-a.mp4", 1);
+
+    openshow::worker::GpuHandles handles;
+    handles.device = vk.device();
+    handles.physicalDevice = vk.physicalDevice();
+    handles.graphicsQueueIndex = vk.queueIndex();
+    handles.uploadQueueIndex = vk.uploadQueueIndex();
+    handles.uploadQueue = vk.uploadQueue();
+    handles.context = gr.get();
+    const auto resident = [](const std::string&) { return true; };
+
+    // --- A→B→C: the third swap is the first one the slot-full rule used to
+    // block (B's own teardown reached the sleep loop with A's lane waiting).
+    {
+        BackgroundTransport transport;
+        transport.noteRunStart(kEpoch);
+        check(transport.applyBackground(videoBackground(clipA), handles, resident),
+              "A starts (the clip whose retirement will be scripted slow)");
+        check(transport.applyBackground(videoBackground(clipB), handles, resident),
+              "B starts beside the retiring A (6.21c2's allowed overlap)");
+
+        const auto began = std::chrono::steady_clock::now();
+        const bool startedC = transport.applyBackground(videoBackground(clipC), handles,
+                                                        resident);
+        const double thirdMs = std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - began)
+                                   .count();
+        check(!startedC, "the C swap defers rather than waiting on A's lane");
+        check(thirdMs < 100.0, "the deferred call returned in milliseconds");
+
+        // Requested vs presented, kept distinct: the transport still in
+        // service is B and status says exactly that — it does not claim the
+        // deferred C, and it does not go silent about B.
+        transport.refreshMediaState();
+        check(transport.mediaTransportLive() && transport.mediaStatus().path == clipB,
+              "while deferred, status honestly reports the live B transport");
+
+        const int pass = pumpUntil(transport, [&] {
+            transport.refreshMediaState();
+            return transport.mediaStatus().path == clipC;
+        });
+        check(pass > 0, "a loop pass retried the deferred transition and C started");
+        std::fprintf(stderr, "6.22d: A→B→C deferred %.1f ms then landed on pass %d\n",
+                     thirdMs, pass);
+        transport.shutdown();  // drains C's (fast) retirement; must not hang
+    }
+
+    // --- A→B→clear: same deferral for a clear-to-black. The clear cannot
+    // precede B's teardown, so it waits too — and status keeps reporting the
+    // live B until it actually lands (no premature silence in the mirror).
+    {
+        BackgroundTransport transport;
+        transport.noteRunStart(kEpoch);
+        check(transport.applyBackground(videoBackground(clipA), handles, resident),
+              "A starts again (clear scenario)");
+        check(transport.applyBackground(videoBackground(clipB), handles, resident),
+              "B starts beside the retiring A");
+
+        const auto began = std::chrono::steady_clock::now();
+        const bool startedClear =
+            transport.applyBackground(openshow::scene::Background{}, handles, resident);
+        const double clearMs = std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - began)
+                                   .count();
+        check(!startedClear, "the clear defers rather than waiting on A's lane");
+        check(clearMs < 100.0, "the deferred clear returned in milliseconds");
+        transport.refreshMediaState();
+        check(transport.mediaTransportLive() && transport.mediaStatus().path == clipB,
+              "a deferred clear still reports B live until it lands");
+
+        const int pass = pumpUntil(transport, [&] {
+            transport.refreshMediaState();
+            return !transport.mediaTransportLive() && transport.mediaStatus().path.empty();
+        });
+        check(pass > 0, "a loop pass retried the deferred clear and the transport ended");
+        std::fprintf(stderr, "6.22d: A→B→clear deferred %.1f ms then landed on pass %d\n",
+                     clearMs, pass);
+        transport.shutdown();
+    }
+
+    unsetenv("OPENSHOW_FAULT_PACING_EXIT_MS");
+    unsetenv("OPENSHOW_FAULT_PACING_EXIT_MATCH");
+}
+
 }  // namespace
 
 int main() {
@@ -481,6 +633,7 @@ int main() {
     testScheduleGrammar();
 
     testRetiredAudioGoesSilentAtHandoff();
+    testSwapDefersBehindSlowRetirement();
 
     BackgroundTransport shutdownTransport;
     testShutdown(shutdownTransport);

@@ -1413,8 +1413,13 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
         // Transport control first (task 6.7d): a seek or a hold the audience
         // asked for changes what this pass must decide, and the apply belongs
         // on this thread (see BackgroundTransport::applyTransportOps for the
-        // discipline).
-        fTransport.applyTransportOps();
+        // discipline). Since 6.22d the pass can also START a transport — the
+        // retry of a background transition deferred behind a slow retirement
+        // — and a started transport owes its head frame a present, exactly
+        // like the scene-driven call in applySnapshot.
+        if (fTransport.applyTransportOps()) {
+            fNeedsPresent = true;
+        }
 
         bool presentNow = false;
         bool previewDue = false;

@@ -43,20 +43,32 @@ void BackgroundTransport::shutdown() {
         fPrimedAudioLoss.clear();
         fPrimedPath.clear();
     }
+    // 6.21c2: a retirement may still be in flight; shutdown is not a frame
+    // tick, so it pays the lane's wait here BEFORE the teardown (task 6.22d
+    // moved the drain ahead): the session must not leave a pacing thread, a
+    // player, or unreleased GPU leases outliving it, and teardownBackground-
+    // Transport's hand-off requires an empty slot (6.22d's capacity rule).
+    // reapRetirement() closes the GPU half on this thread (which it has been
+    // since 6.9c's order: the transport dies before the GPU resources it
+    // references).
+    if (auto prior = inFlightRetirement()) {
+        while (!prior->laneDone.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        reapRetirement();
+    }
     // End everything by name (6.9c's order): the background transport first
     // — it decodes into frame slots on the session's device and context, so
     // it goes before every GPU resource it references (task 5.5). Every
     // part is idempotent: a never-started transport tears down as cleanly
     // as a running one, which is what makes the destructor safe.
     teardownBackgroundTransport();
-    // 6.21c2: teardown may have HANDLED the transport's waits to the
-    // retirement lane rather than paid them; shutdown is not a frame tick,
-    // so it pays them here — the session must not leave a pacing thread,
-    // a player, or unreleased GPU leases outliving it. reapRetirement()
-    // closes the GPU half on this thread (which it has been since 6.9c's
-    // order: the transport dies before the GPU resources it references).
-    if (auto prior = inFlightRetirement()) {
-        while (!prior->laneDone.load(std::memory_order_acquire)) {
+    // And drain once more AFTER the teardown: shutdown's own teardown hands
+    // the live transport to a fresh retirement, and nothing below is a
+    // frame tick to reap it — leaving it would destroy a joinable
+    // std::thread with this object.
+    if (auto lingering = inFlightRetirement()) {
+        while (!lingering->laneDone.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         reapRetirement();
@@ -881,7 +893,7 @@ std::vector<BackgroundTransport::ScheduledOp> BackgroundTransport::parseSchedule
     return ops;
 }
 
-void BackgroundTransport::applyTransportOps() {
+bool BackgroundTransport::applyTransportOps() {
     // The transport's thread: AvPlayer's fan-out walks the attached-pipeline
     // list, which only the thread swapping transports may touch (6.6b's
     // rule). A seek also blocks until the audio answers — normally a few
@@ -960,8 +972,32 @@ void BackgroundTransport::applyTransportOps() {
             applied = true;
         }
     }
+    // The deferred transition (task 6.22d, review A4), LAST so it keeps the
+    // production order — an op applied to the transport still in service is
+    // cleared by the swap exactly as the session's own applySnapshot would
+    // clear it. The reap above emptied the slot (only this thread starts
+    // retirements, so it cannot refill before the call); the lane's wake is
+    // what brought this pass home. Cleared BEFORE the call: the retry owns
+    // the ask now, and sameIdentity or a fresh deferral inside writes the
+    // slot afresh rather than finding a half-applied one.
+    bool started = false;
+    if (fPendingTransition) {
+        PendingTransition deferred = std::move(*fPendingTransition);
+        fPendingTransition.reset();
+        if (applyBackground(deferred.wanted, deferred.handles, deferred.imageResident)) {
+            started = true;
+            applied = true;
+        }
+        // Only a transition that was ever deferred logs; the ordinary pass
+        // stays silent (this function runs every frame-loop iteration).
+        std::fprintf(stderr, "openshow-worker: deferred background retried after %.1f ms: %s\n",
+                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                               deferred.requestedAt)
+                         .count(),
+                     started ? "started" : "re-deferred or unchanged");
+    }
     if (!applied) {
-        return;
+        return started;
     }
     // An op the operator issued is an op status must report on this pass. A
     // held transport presents nothing after the hold — and the per-frame
@@ -971,6 +1007,7 @@ void BackgroundTransport::applyTransportOps() {
     // wearing a different hat).
     std::lock_guard<std::mutex> lock(fMutex);
     refreshMediaStateLocked();
+    return started;
 }
 
 void BackgroundTransport::applyTransportOp(int op, double seconds) {
@@ -1142,6 +1179,37 @@ bool BackgroundTransport::applyBackground(
         fAppliedBackground.assetId == wanted.assetId &&
         fAppliedBackground.assetPath == wanted.assetPath;
     if (sameIdentity) {
+        // The wanted background is what is ALREADY on screen
+        // (fAppliedBackground is the transport in service, even while a
+        // deferral holds a newer ask). Normally a pure no-op. It is
+        // meaningful during a deferral: an operator return to this background
+        // outranks the pending transition, which was the older ask — a
+        // re-present must be able to undo a deferral, so the pending slot
+        // goes and the transport stays exactly as it is (6.22d).
+        fPendingTransition.reset();
+        return false;
+    }
+    // Capacity rule (task 6.22d, review A4): one retirement slot, and this
+    // is the realtime caller that must never block on it. Reap first — a
+    // retirement whose lane finished must not read as busy, and teardown
+    // would reap here anyway — then defer: keep the latest wanted
+    // background (a burst of operator changes coalesces into this one),
+    // return false (nothing new to present — the scene keeps drawing the
+    // seam's held frames of the background still on screen, which is
+    // exactly the requested-vs-presented distinction the review names), and
+    // let applyTransportOps() retry once the lane reports in. The check is
+    // gated on fBackground because only a video transport's teardown ever
+    // HANDS OFF: swapping a still pays no slot and may proceed beside a
+    // retiring clip (6.21c2's allowed overlap). There is deliberately no
+    // queue: capacity overflow is a LATEST-WINS policy, and the scene store
+    // keeps everything older than this transition.
+    reapRetirement();
+    if (fBackground != nullptr && inFlightRetirement()) {
+        fPendingTransition = PendingTransition{
+            wanted, handles, imageResident, std::chrono::steady_clock::now()};
+        std::fprintf(stderr, "openshow-worker: background swap deferred, "
+                             "retirement in flight: %s\n",
+                     wanted.hasImage ? wanted.assetPath.c_str() : "<clear>");
         return false;
     }
     teardownBackgroundTransport();
@@ -1469,12 +1537,20 @@ void BackgroundTransport::teardownBackgroundTransport() {
     //     closes the GPU half (Ganesh keeps its owner, and the close
     //     strictly follows the join).
     //
-    // Only ONE retirement is in flight: reapRetirement() ran at the head of
-    // this function, so a still-occupied slot means the lane's join is still
-    // running — the hung-producer overlap — and that wait is paid here
-    // rather than growing a queue. Normal retirements never meet it: the
-    // lane returns in milliseconds once the stop flag is seen.
-    if (auto prior = inFlightRetirement()) {
+    // Capacity rule (task 6.22d, review A4): the ONE retirement slot must be
+    // empty here. It used to sleep for the prior lane's join — an untimed
+    // wait on the realtime thread before the current transport's even got
+    // its stop request, so two ordinary operator changes plus one slow exit
+    // froze the audience. The wait cannot belong to this function's ordinary
+    // path any more: applyBackground DEFERS before reaching here, and
+    // shutdown drains before calling here. Reaching this line with the slot
+    // occupied is a routing bug — and draining is the only total response
+    // (overwriting the slot would destroy a joinable std::thread with the
+    // lane's own last reference), so the loop below is a logged invariant
+    // violation, not the overflow policy it used to be.
+    if (auto prior = inFlightRetirement(); prior != nullptr) {
+        std::fprintf(stderr, "openshow-worker: BUG: retirement hand-off over a "
+                             "busy slot; the caller bypassed 6.22d's capacity check\n");
         while (!prior->laneDone.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
