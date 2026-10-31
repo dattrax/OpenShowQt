@@ -1,22 +1,22 @@
 # OpenShowQt progress and handoff
 
 Updated: 2026-10-30 (Europe/London). Reviewed code: `8402e69` (6.21g); **6.22a**
-through **6.22d** and **6.22e1–e3** have landed since.
+through **6.22d** and **6.22e1–e4** have landed since.
 
 ## Current checkpoint
 
 The [architecture re-review](docs/reviews/M6-architecture-follow-up-2026-10-30.md)
-found seven remaining issues. **6.22a (A1)**, **6.22b (A2)**, **6.22c (A3)**
-and **6.22d (A4)** are DONE — all four P1s are closed — and **6.22e** is in
-progress with its recorded split: **6.22e1–e3 DONE**, **6.22e4** and
+found seven remaining issues. **6.22a (A1)**, **6.22b (A2)**, **6.22c (A3)**,
+**6.22d (A4)** and **6.22e (A5, all four leaves)** are DONE — all four P1s
+are closed and the blocking-media finding is closed — while
 **6.22f–g** remain in [PLAN.md](PLAN.md) before claiming full conformance or
 advancing to M7. Preserve the recorded 6.21 DONE checkpoints.
 
 ## Review summary
 
-Three P2 issues remain: remaining synchronous media operations (A5, **6.22e**),
-stale standalone status (A6, **6.22f**) and thumbnail completion compatibility
-(A7, **6.22g**). Source locations and proposed contracts are in the review.
+Two P2 issues remain: stale standalone status (A6, **6.22f**) and thumbnail
+completion compatibility (A7, **6.22g**). Source locations and proposed
+contracts are in the review.
 
 The P1s are closed. Shared mutable font resolution: `SceneTextEngine` builds
 no shared `FontCollection`; one per threading context over the shared
@@ -31,6 +31,41 @@ wake makes prompt) reaps and retries it, and a started retry makes the loop
 owe a present exactly like the scene-driven call did.
 
 ## Leaf records
+
+**6.22e4.** The transport pass contained the seek's wait: `AvPlayer::seekTo`
+fanned the jump out and then `waitSeekApplied(500)`-ed every feeder inline,
+so a slow container acknowledgment held the audience's frame loop for the
+whole window. The seek split into three halves — `beginSeekTo` (fan-out, no
+waiting), `waitSeekTo` (the cost, abortible by the waiter) and
+`finishSeekTo` (sink flush, clock rebase, fallback move) — with the sync
+`seekTo` kept as their composition for callers that own their blocking (the
+bench, `av_sync_tests`). On the transport, a seek is now a one-deep FLIGHT:
+the pass fans out and spawns a worker that only waits, publishes its verdict
+and wakes the loop; the completing pass runs the finish half and the
+fault report on the transport's own thread. Ordering survives the split
+because the momentary-op slot is not consumed while a flight runs — pause,
+play and a newer seek hold their turn behind the seek, exactly the order
+the synchronous code enforced — while gain, mute and loop (independent
+slots) proceed. The flight is its own generation: no second can stack, and
+it retires WITH its transport — teardown moves it into the Retirement,
+sets its abort, and the lane joins the seek worker BEFORE the player's
+stop, because the worker waits on feeders that player owns (a flight whose
+transport died is discarded, never replayed); `retireAudioInstance` drains
+one too, and shutdown's existing lane drains cover it. New fault seam
+`OPENSHOW_FAULT_SEEK_ACK_MS/_MATCH` sleeps in the feeder's settle path
+between the container's jump and its acknowledgment — the window a waiter
+pays; it also gave `AudioFileFeeder` its long-vestigial `fPath` (now
+recorded in `open()`). The fixture scripts a 300 ms ack: the seek pass
+takes 0.1 ms, a pause asked for mid-flight is still unapplied (status says
+playing) while the wait holds, and completion lands at pass ~15 of the
+20 ms pump with the position at the target (2.33 s read for a 2.0 s seek —
+the clock's honest lag) and the held pause
+applied behind it; a swap across the second flight hand-offs at 0.1 ms and
+shutdown drains the lane holding the waiting worker. Negative controls:
+the synchronous route pays the ack on the pass (307.6 ms) and swallows the
+pause's turn; consuming ops mid-flight fails exactly the hold check (and a
+variant with no single-flight rule at all dies in the thread destructor —
+the gate is what makes the precondition total).
 
 **6.22e3.** A replaced or abandoned standalone player was destroyed on the
 render thread — `~AvPlayer` joins the feeders, mixer and PipeWire sink,
@@ -148,6 +183,18 @@ crosses threads by hand-off but exactly one thread may paint it at a time
 
 ## Verification and retained evidence
 
+6.22e4: the new fixture passed five consecutive runs, identically (seek
+pass 0.1–0.2 ms against the 300 ms scripted ack, completion and held pause
+at pass 15–16 at 2.33 s, mid-flight swap 0.1 ms — evidence lines in both
+presets' logs); negative controls fail exactly the A5 checks (synchronous
+route: 307.6 ms seek pass and the swallowed pause; op slot opened
+mid-flight: the hold check alone). One earlier desktop gate run failed a
+6.22e2 check (that scenario's worker answered `shutdown` later than the
+harness's 5 s poll under ctest load); the scenario touches none of the
+6.22e4 code paths, and the failure did not reproduce in three standalone
+re-runs or in the re-run gate. Gates: desktop **55/55** (291.25 s, 14
+display-labelled), headless **32/32** (59.05 s); both trees build clean.
+
 6.22e3: the new fixture passed five consecutive runs, identically
 (hand-off 1.4–1.7 ms, delivery frozen at 12288 frames, removal deferred
 0.0–0.1 ms and landed on pass 27 — evidence lines in both presets' logs);
@@ -192,18 +239,20 @@ are preserved in [history](docs/history/PROGRESS-through-6.21g.md).
 
 ## Next action
 
-**6.22e4**: move the seek-completion wait off the render thread.
-`AvPlayer::seek` (src/worker/playback/AvPlayer.cpp ~383) fans the seek out
-then `waitSeekApplied(500)`s per feeder — on the transport pass — so a
-slow feeder acknowledgment holds the frame loop up to half a second per
-input. The shape: begin the seek on the render thread, wait and flush on
-a control-lane completion tagged with the transport generation, hold
-later transport intents in their existing slots while a seek runs, let
-retirement join the seek worker before stopping the player, and add a
-slow-ack fault seam so the fixture measures the wait wherever it is paid.
-Then **6.22f** (standalone ownership pending/live mirror,
-`BackgroundTransport.cpp` ~723/792) and **6.22g** (thumbnail completion
-carries generation/extent, `PreviewProducer.cpp` ~338/502/620). When a–g
-are DONE: align the PLAN header and this handoff with the re-review
-evidence. M7 recovery, budgets, packaging and hardware/long-service
-acceptance remain TODO.
+**6.22f** (review A6): replacing an ACTIVE standalone track with a new path
+removes the old player and clears `fStandaloneLive`, but the mirrored
+`fMedia.standalone` block (live, playing, path, position, lane) is reset
+only for an empty-path removal — so through the successor's whole slow
+stage status keeps reporting the gone player as live, while the atomic
+command gate already refuses gain/mute as "no standalone track is playing"
+(`BackgroundTransport.cpp` ~723/~792, `applyStandaloneOps`/`refresh-
+StandaloneMediaLocked`). Publish ownership, command availability and the
+mirror together — an explicit pending-selection state, or retain the old
+player until the replacement is ready — and verify the INTERMEDIATE status
+during a slow replacement, not only the eventual new path. Then **6.22g**
+(review A7): the thumbnail completion must carry generation and decode
+extent (`PreviewProducer.cpp` ~338/502/620) so extent changes and stream
+restarts reject incompatible in-flight results. When a–g are DONE: align
+the PLAN header and this handoff with the re-review evidence. M7
+recovery, budgets, packaging and hardware/long-service acceptance remain
+TODO.

@@ -59,12 +59,18 @@ public:
     // refused. Returns as soon as it settles either way, so a refusal does
     // not cost the caller the whole timeout. timeoutMs < 0 waits forever;
     // `abort`, when set and true, ends the wait as a failure — the caller's
-    // worker thread is gone and nothing will settle this request.
+    // worker thread is gone and nothing will settle this request. `abort2`
+    // (task 6.22e4, review A5) is a second such flag owned by whoever waits
+    // rather than by the applier: a transport moving its wait to a lane can
+    // call the wait off when the transport is retired, while the feeder's
+    // own stop flag still ends it independently.
     bool waitApplied(uint64_t generation, int timeoutMs,
-                     const std::atomic<bool>* abort = nullptr) const;
+                     const std::atomic<bool>* abort = nullptr,
+                     const std::atomic<bool>* abort2 = nullptr) const;
 
     // Same, for the newest request as of this call.
-    bool waitAppliedLatest(int timeoutMs, const std::atomic<bool>* abort = nullptr) const;
+    bool waitAppliedLatest(int timeoutMs, const std::atomic<bool>* abort = nullptr,
+                           const std::atomic<bool>* abort2 = nullptr) const;
 
     // Transport restart: no requests have been made and none is pending.
     void reset();

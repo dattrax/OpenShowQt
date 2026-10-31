@@ -392,21 +392,31 @@ void AvPlayer::pause() {
     }
 }
 
-bool AvPlayer::seekTo(double targetSeconds, std::string* error) {
-    // Fan out first (all seeks are asynchronous), then move the clock
-    // once the audio actually jumped — video's deadline must never lead
-    // the heard position to the target. Each feeder's seeked callback
-    // dropped its input's queue at the instant it went quiet (and a feeder
-    // that refused its jump fired nothing, so its queue is intact).
+void AvPlayer::beginSeekTo(double targetSeconds) {
+    // Fan out (all seeks are asynchronous): every feeder's request queue
+    // and every pipeline's own seek. Nothing waits here — the wait is
+    // waitSeekTo()'s, and since 6.22e4 the transport runs it on a lane
+    // worker rather than on the frame tick.
     for (FeederSlot& slot : fFeeders) {
         slot.feeder->requestSeek(targetSeconds);
     }
     for (PlaybackPipeline* pipeline : fPipelines) {
         pipeline->seekTo(targetSeconds);
     }
+}
+
+bool AvPlayer::waitSeekTo(int timeoutMs, const std::atomic<bool>* abort, std::string* error) {
+    // Each feeder's seeked callback dropped its input's queue at the
+    // instant it went quiet (and a feeder that refused its jump fired
+    // nothing, so its queue is intact). The wait walks EVERY feeder even
+    // after one failed: a refusal must not leave a later feeder's settle
+    // unobserved, and the first refusal reason is the one reported.
+    // `abort` (task 6.22e4) belongs to whoever waits: a transport that
+    // retires around its seek flight calls its waits off, and the loop
+    // stops looking at further feeders.
     bool applied = true;
     for (FeederSlot& slot : fFeeders) {
-        if (!slot.feeder->waitSeekApplied(500)) {
+        if (!slot.feeder->waitSeekApplied(timeoutMs, abort)) {
             applied = false;
             if (error && error->empty()) {
                 const std::string reason = slot.feeder->lastSeekError();
@@ -414,7 +424,14 @@ bool AvPlayer::seekTo(double targetSeconds, std::string* error) {
                                         : reason;
             }
         }
+        if (abort != nullptr && abort->load(std::memory_order_acquire)) {
+            break;  // the waiter is retired; nobody will read a fuller answer
+        }
     }
+    return applied;
+}
+
+void AvPlayer::finishSeekTo(double targetSeconds, bool applied) {
     if (!fFeeders.empty() && applied) {
         // The sink queue goes last: everything the ring still holds is
         // pre-jump content (the inputs were flushed at their jumps). The
@@ -438,6 +455,16 @@ bool AvPlayer::seekTo(double targetSeconds, std::string* error) {
         fFallbackBaseNs.store(targetNs, std::memory_order_relaxed);
         fFallbackAnchorNs.store(steadyNowNs(), std::memory_order_relaxed);
     }
+}
+
+bool AvPlayer::seekTo(double targetSeconds, std::string* error) {
+    // The whole jump, waited inline (task 6.22e4's composition of the
+    // halves): correct on any thread that OWNS its blocking, which is what
+    // the bench and the sync tests do. The transport's frame loop instead
+    // runs begin on the pass and the wait on a seek lane.
+    beginSeekTo(targetSeconds);
+    const bool applied = waitSeekTo(500, nullptr, error);
+    finishSeekTo(targetSeconds, applied);
     return applied;
 }
 

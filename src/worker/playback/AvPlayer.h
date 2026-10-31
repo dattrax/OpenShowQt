@@ -159,7 +159,24 @@ public:
     // refusal reason. Video followers apply asynchronously and a video seek
     // that cannot be performed is fatal for that transport (it surfaces as
     // the pipeline's own error), so this answer is about the audio.
+    // Since 6.22e4 this is the composition of the three halves below with
+    // the original 500 ms per-feeder budget and no abort — for callers that
+    // own their thread (the bench, the tests). The transport pass pays the
+    // wait on a lane instead, through the halves.
     bool seekTo(double targetSeconds, std::string* error = nullptr);
+    // The seek's three halves (task 6.22e4, review A5). beginSeekTo() fans
+    // the jump out — every feeder's request queue and every pipeline's
+    // asynchronous seek — and waits for NOTHING. waitSeekTo() is the whole
+    // cost: it blocks until each feeder settles its request, bounded per
+    // feeder by timeoutMs, ended early when `abort` is set (the transport
+    // retired around the waiter). finishSeekTo() moves the sink queue, the
+    // clock and the fallback position, and belongs to the thread that owns
+    // the transport pass — it may only run after the wait, and only ever
+    // once per seek, with the wait's verdict. Nothing here is reentrant:
+    // one seek in flight per player, as before.
+    void beginSeekTo(double targetSeconds);
+    bool waitSeekTo(int timeoutMs, const std::atomic<bool>* abort, std::string* error);
+    void finishSeekTo(double targetSeconds, bool applied);
     void setLoop(bool enabled);
     bool paused() const { return fPaused.load(); }
     bool audioLive() const { return fAudioLive.load(); }

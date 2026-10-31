@@ -1,6 +1,9 @@
 #include "media/AudioFeeder.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "media/FFmpeg.h"
@@ -32,6 +35,9 @@ bool AudioFileFeeder::open(const std::string& path, uint32_t targetRate, std::st
     if (targetRate == 0) {
         return fail("AudioFileFeeder needs a target sample rate");
     }
+    // The name this feeder reads (task 6.22e4): recorded before the open so
+    // the fault matcher below — and any later per-file seam — can name it.
+    fPath = path;
 
     AVFormatContext* format = nullptr;
     int err = avformat_open_input(&format, path.c_str(), nullptr, nullptr);
@@ -125,7 +131,7 @@ void AudioFileFeeder::requestSeek(double targetSeconds) {
     fSeek.request(targetSeconds);
 }
 
-bool AudioFileFeeder::waitSeekApplied(int timeoutMs) {
+bool AudioFileFeeder::waitSeekApplied(int timeoutMs, const std::atomic<bool>* callerAbort) {
     // Waits for the newest request to reach a TERMINAL state and reports
     // which one (task 6.7d, review R19): a jump the container refused settles
     // as refused, so the caller learns the truth in milliseconds instead of
@@ -133,7 +139,9 @@ bool AudioFileFeeder::waitSeekApplied(int timeoutMs) {
     // transport acted on by flushing queues and re-anchoring the clock on a
     // position the media never reached. The stop flag ends the wait as a
     // failure too: with the decode thread gone nothing can settle a request.
-    return fSeek.waitAppliedLatest(timeoutMs, &fStopRequested);
+    // Since 6.22e4 the waiter may add its own abort: the transport's seek
+    // flight dies with its transport, and its waits die with it.
+    return fSeek.waitAppliedLatest(timeoutMs, &fStopRequested, callerAbort);
 }
 
 bool AudioFileFeeder::applyPendingSeek(double targetSeconds) {
@@ -273,6 +281,25 @@ void AudioFileFeeder::run() {
         if (!applyPendingSeek(target)) {
             fSeek.refuse(generation);
             return -1.0;
+        }
+        // Test seam (task 6.22e4, review A5): an acknowledgment that really
+        // waits. The container HAS jumped here; only the settle is late —
+        // exactly the window in which a synchronous waiter (the render
+        // thread, pre-6.22e4) parks for the whole ack while a lane worker
+        // merely occupies itself. A fixture names the file (substring) and
+        // how long the ack sleeps.
+        if (const char* ackMs = std::getenv("OPENSHOW_FAULT_SEEK_ACK_MS")) {
+            const int milliseconds = std::atoi(ackMs);
+            const char* match = std::getenv("OPENSHOW_FAULT_SEEK_ACK_MATCH");
+            if (milliseconds > 0 && match != nullptr && *match != '\0' &&
+                fPath.find(match) != std::string::npos) {
+                std::fprintf(stderr, "openshow-worker: scripted slow seek ack: %d ms for %s\n",
+                             milliseconds, match);
+                for (int elapsed = 0; elapsed < milliseconds; elapsed += 20) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(
+                        std::min(20, milliseconds - elapsed)));
+                }
+            }
         }
         fSeek.apply(generation);
         return target;

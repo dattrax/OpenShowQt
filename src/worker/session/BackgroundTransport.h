@@ -577,6 +577,37 @@ private:
     };
     std::optional<PendingTransition> fPendingTransition;
 
+    // The in-flight seek (task 6.22e4, review A5). AvPlayer's seek wait —
+    // up to 500 ms per feeder, a poll deadline rather than a promise from
+    // the container — used to be paid on the frame tick. Now the pass
+    // FANS the jump out (beginSeekTo, no waiting), a lane worker runs the
+    // WAIT (waitSeekTo, this flight's abort flag ends it early), and the
+    // completing pass runs the FINISH half and the fault report on the
+    // render thread, where the sink queue and the clock live. One flight
+    // at a time: while it runs, the momentary-op slot is NOT consumed —
+    // pause, play and a newer seek hold their turn behind the seek, the
+    // order the synchronous code enforced — while gain, mute and loop are
+    // independent slots and proceed. Render-thread-owned like everything
+    // beside fPendingTransition; retirement MOVES the flight into its
+    // Retirement and joins the worker there BEFORE the player's stop,
+    // because the worker waits on feeders the retired player owns.
+    struct SeekFlight {
+        std::thread worker;
+        std::atomic<bool> done{false};   // result below written; release-published
+        std::atomic<bool> abort{false};  // retired around: end the waits early
+        // The completion, written by the worker before the release store
+        // and read by the consuming pass after the acquire load:
+        bool applied = false;
+        std::string error;
+        std::string assetPath;  // the identity the fault report speaks of
+        double target = 0.0;
+        AvPlayer* player = nullptr;  // non-null while this flight is owned (see above)
+    };
+    void beginSeekFlight(double seconds);           // render thread, no wait
+    bool consumeSeekCompletion();                   // render thread; true if it consumed
+    void drainSeekFlight();                         // non-frame paths: abort + join, discard
+    std::shared_ptr<SeekFlight> fSeekFlight;
+
     // The retirement lane (task 6.21c2, review F3). The retired transport's
     // waits — join() and the player's stop — move onto this lane's thread;
     // the transport keeps the objects the retiring producer can still
@@ -592,6 +623,7 @@ private:
     struct Retirement {
         std::unique_ptr<PlaybackPipeline> pipeline;  // requestStop() already done
         std::unique_ptr<AvPlayer> audio;             // its player; stops on the lane
+        std::shared_ptr<SeekFlight> pendingSeek;     // its seek worker; joins FIRST (6.22e4)
         std::atomic<bool> laneDone{false};           // join and audio stop finished
         std::thread worker;                          // the lane itself
     };

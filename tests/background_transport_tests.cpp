@@ -834,6 +834,148 @@ void testStandaloneStopRunsOnLane() {
     unsetenv("OPENSHOW_FAULT_PLAYER_STOP_MATCH");
 }
 
+/* --- task 6.22e4 (review A5): the seek-completion wait off the loop -------
+   AvPlayer::seekTo fanned the jump out and then waited up to 500 ms PER
+   FEEDER for the container's acknowledgment — inline, on the transport
+   pass. A slow acknowledgment held the audience's frame loop for its whole
+   window; "normally milliseconds" is not a contract. The seek now splits:
+   the pass FANS OUT (no wait), a lane worker holds the WAIT, and the pass
+   the completion wakes runs the FINISH half (sink flush, clock rebase) and
+   the fault report. While a flight runs, the momentary-op slot is not
+   consumed — a pause behind the seek holds its turn — so no op overtakes
+   an unfinished seek; gain, mute and loop are independent slots. And a
+   transport retired mid-flight takes its flight along: the lane joins the
+   seek worker BEFORE stopping the player, because the worker waits on
+   feeders that player owns.
+
+   OPENSHOW_FAULT_SEEK_ACK_MS/_MATCH sleeps between the container's jump
+   and the settle — the ack window a waiter pays. With a 300 ms scripted
+   ack: the seek pass returns in milliseconds, a pause asked for mid-flight
+   is still unapplied (status still says playing), and the completion lands
+   with the position at the target and the held pause applied behind it. A
+   swap across the second flight hand-offs fast (the lane joins the worker,
+   not the frame tick), and shutdown drains it. Reverting to the synchronous
+   seek pays the ack on the pass and swallows the held pause's turn; opening
+   the op slot mid-flight loses the hold — the finding's exact symptoms. */
+void testSeekCompletesOffTheFrameTick() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) {
+        std::printf("   skipped the seek-flight fixtures (no ffmpeg)\n");
+        return;
+    }
+    openshow::media::PipeWireSink probe;
+    std::string probeError;
+    if (!probe.start(48000, &probeError)) {
+        std::printf("   skipped the seek-flight fixtures (no PipeWire daemon: %s)\n",
+                    probeError.c_str());
+        return;
+    }
+    probe.stop();
+    openshow::worker::VulkanContext vk;
+    if (!vk.createHeadless()) {
+        std::printf("   skipped the seek-flight fixtures (no headless Vulkan device)\n");
+        return;
+    }
+    auto gr = GrDirectContexts::MakeVulkan(vk.backendContext());
+    if (!gr) {
+        std::printf("   skipped the seek-flight fixtures (no Ganesh context)\n");
+        return;
+    }
+
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string clip = "transport-fixtures/seek-ack.mp4";
+    const std::string command =
+        "ffmpeg -hide_banner -loglevel error -nostdin -y "
+        "-f lavfi -i nullsrc=s=160x96:r=12 "
+        "-f lavfi -i sine=frequency=440:sample_rate=48000 "
+        "-t 6 -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac " + clip;
+    if (std::system(command.c_str()) != 0) {
+        check(false, "the seek-flight fixture clip is generated");
+        return;
+    }
+    setenv("OPENSHOW_FAULT_SEEK_ACK_MS", "300", 1);
+    setenv("OPENSHOW_FAULT_SEEK_ACK_MATCH", "seek-ack.mp4", 1);
+
+    BackgroundTransport transport;
+    transport.noteRunStart(kEpoch);
+    openshow::worker::GpuHandles handles;
+    handles.device = vk.device();
+    handles.physicalDevice = vk.physicalDevice();
+    handles.graphicsQueueIndex = vk.queueIndex();
+    handles.uploadQueueIndex = vk.uploadQueueIndex();
+    handles.uploadQueue = vk.uploadQueue();
+    handles.context = gr.get();
+    const auto resident = [](const std::string&) { return true; };
+    check(transport.applyBackground(videoBackground(clip), handles, resident),
+          "the audio-bearing background transport starts for the seek flight");
+
+    bool audible = false;
+    for (int attempt = 0; attempt < 100 && !audible; ++attempt) {
+        transport.refreshMediaState();
+        const openshow::worker::MediaStatus media = transport.mediaStatus();
+        audible = media.playing && media.audio == "live" && media.position > 0.05;
+        if (!audible) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+    check(audible, "the clip is really delivering audio before its seek");
+
+    // The seek pass. Pre-6.22e4 this call contained the wait: the scripted
+    // 300 ms ack WAS this function's runtime.
+    transport.requestMediaSeek(2.0);
+    const auto began = std::chrono::steady_clock::now();
+    transport.applyTransportOps();
+    const double seekPassMs = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - began)
+                                  .count();
+    check(seekPassMs < 100.0, "the seek pass did not pay the scripted ack");
+
+    // A pause asked for while the flight waits must NOT be consumed: the
+    // order the synchronous seek enforced was pause-after-seek, and the
+    // mirror's story mid-flight is still the live transport.
+    transport.requestMediaPause();
+    const auto heldBegan = std::chrono::steady_clock::now();
+    transport.applyTransportOps();
+    const double heldPassMs = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - heldBegan)
+                                  .count();
+    transport.refreshMediaState();
+    check(heldPassMs < 100.0, "a pass behind an in-flight seek stayed fast");
+    check(transport.mediaStatus().playing,
+          "the pause held its turn behind the in-flight seek");
+
+    // The completion: the finish half rebases the clock onto the target;
+    // the held pause then lands behind it, two facts one after the other.
+    const int landed = pumpUntil(transport, [&] {
+        transport.refreshMediaState();
+        return !transport.mediaStatus().playing;
+    });
+    check(landed > 0, "the completion landed and the held pause applied behind it");
+    const double position = transport.mediaStatus().position;
+    check(position > 1.4 && position < 3.2,
+          "the seek finished at its target with the clock rebased");
+    std::fprintf(stderr,
+                 "6.22e4: seek pass %.1f ms against a 300 ms scripted ack; completion and "
+                 "held pause landed on pass %d at %.2f s\n",
+                 seekPassMs, landed, position);
+
+    // Retirement across a flight: the second seek starts its 300 ms wait,
+    // and the background goes away mid-window. The hand-off must not pay
+    // the ack — the flight rides the lane, whose join of the seek worker
+    // releases the wait (abort) and then ends the player safely.
+    transport.requestMediaSeek(1.0);
+    transport.applyTransportOps();  // flight #2, waiting
+    const auto swapBegan = std::chrono::steady_clock::now();
+    transport.applyBackground(openshow::scene::Background{}, handles, resident);
+    const double swapMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - swapBegan)
+            .count();
+    check(swapMs < 150.0, "the swap across an in-flight seek did not pay the ack");
+    transport.shutdown();  // drains the retirement holding the flight; must not hang
+    std::fprintf(stderr, "6.22e4: swap over a waiting seek flight took %.1f ms\n", swapMs);
+    unsetenv("OPENSHOW_FAULT_SEEK_ACK_MS");
+    unsetenv("OPENSHOW_FAULT_SEEK_ACK_MATCH");
+}
+
 }  // namespace
 
 int main() {
@@ -856,6 +998,7 @@ int main() {
     testSwapDefersBehindSlowRetirement();
     testStandaloneDurationTravelsWithStage();
     testStandaloneStopRunsOnLane();
+    testSeekCompletesOffTheFrameTick();
 
     BackgroundTransport shutdownTransport;
     testShutdown(shutdownTransport);

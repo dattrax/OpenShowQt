@@ -51,7 +51,8 @@ void SeekQueue::apply(uint64_t generation) {
 }
 
 bool SeekQueue::waitApplied(uint64_t generation, int timeoutMs,
-                            const std::atomic<bool>* abort) const {
+                            const std::atomic<bool>* abort,
+                            const std::atomic<bool>* abort2) const {
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     for (;;) {
@@ -63,8 +64,9 @@ bool SeekQueue::waitApplied(uint64_t generation, int timeoutMs,
                 return fApplied >= generation;
             }
         }
-        if (abort && abort->load(std::memory_order_acquire)) {
-            return false;  // the applier is gone; this request never settles
+        if ((abort && abort->load(std::memory_order_acquire)) ||
+            (abort2 && abort2->load(std::memory_order_acquire))) {
+            return false;  // the applier is gone, or the waiter retired; never settles
         }
         if (timeoutMs >= 0 && std::chrono::steady_clock::now() >= deadline) {
             return false;
@@ -73,7 +75,8 @@ bool SeekQueue::waitApplied(uint64_t generation, int timeoutMs,
     }
 }
 
-bool SeekQueue::waitAppliedLatest(int timeoutMs, const std::atomic<bool>* abort) const {
+bool SeekQueue::waitAppliedLatest(int timeoutMs, const std::atomic<bool>* abort,
+                                  const std::atomic<bool>* abort2) const {
     uint64_t target = 0;
     {
         std::lock_guard<std::mutex> lock(fMutex);
@@ -82,7 +85,7 @@ bool SeekQueue::waitAppliedLatest(int timeoutMs, const std::atomic<bool>* abort)
     if (target == 0) {
         return true;  // nothing was ever requested: nothing is outstanding
     }
-    return waitApplied(target, timeoutMs, abort);
+    return waitApplied(target, timeoutMs, abort, abort2);
 }
 
 void SeekQueue::reset() {

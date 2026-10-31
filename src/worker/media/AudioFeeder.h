@@ -86,8 +86,11 @@ public:
     // passes); true only when it was APPLIED. A jump the container refused
     // settles immediately as a refusal, so a failed seek is answered in
     // milliseconds rather than as a timeout — and never as "applied"
-    // (task 6.7d, review R19).
-    bool waitSeekApplied(int timeoutMs);
+    // (task 6.7d, review R19). `callerAbort` (task 6.22e4, review A5) ends
+    // the wait as a failure from the WAITER's side: the transport moved
+    // this wait to a lane, and a retiring transport calls its own waits off
+    // without stopping the feeder first.
+    bool waitSeekApplied(int timeoutMs, const std::atomic<bool>* callerAbort = nullptr);
     double lastSeekSeconds() const { return fLastSeekSeconds.load(std::memory_order_relaxed); }
     // Why the last seek did not apply (empty when it did, or when nothing
     // failed since). Reported through the transport so the operator can read

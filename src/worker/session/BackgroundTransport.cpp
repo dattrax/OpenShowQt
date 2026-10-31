@@ -1078,11 +1078,17 @@ std::vector<BackgroundTransport::ScheduledOp> BackgroundTransport::parseSchedule
 bool BackgroundTransport::applyTransportOps() {
     // The transport's thread: AvPlayer's fan-out walks the attached-pipeline
     // list, which only the thread swapping transports may touch (6.6b's
-    // rule). A seek also blocks until the audio answers — normally a few
-    // milliseconds, bounded at 500 — because the clock must not be re-anchored
-    // on a jump the media did not make; 6.9b moves that wait off this loop.
-    const int op = fPendingTransportOp.exchange(kOpNone, std::memory_order_acq_rel);
-    bool applied = false;
+    // rule). Since task 6.22e4 (review A5) a seek does NOT block this pass:
+    // the op fans the jump out and hands the wait to a lane worker, and the
+    // pass whose wake carries the completion runs the finish half (sink
+    // flush, clock rebase) and the fault report here, on the transport's
+    // own thread. While a flight runs, the momentary-op slot is not
+    // consumed — pause, play and a newer seek hold their turn behind the
+    // seek — so the ORDER the synchronous code enforced survives the split.
+    bool applied = consumeSeekCompletion();
+    const int op = fSeekFlight == nullptr
+                       ? fPendingTransportOp.exchange(kOpNone, std::memory_order_acq_rel)
+                       : kOpNone;
     if (op != kOpNone) {
         applyTransportOp(op, fPendingSeekSeconds.load(std::memory_order_relaxed));
         applied = true;
@@ -1091,12 +1097,13 @@ bool BackgroundTransport::applyTransportOps() {
         // transport exactly as 6.15a's RPC will. Ops fire in schedule order;
         // everything whose time has passed goes out on this pass (the last
         // seek wins, exactly as a burst of operator clicks would), and the
-        // cursor only advances past what was applied.
+        // cursor only advances past what was applied — which since 6.22e4
+        // also means it stops at a seek whose flight is still waiting.
         const double elapsedMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                       fScheduledStart)
                 .count();
-        while (fScheduledCursor < fScheduledOps.size() &&
+        while (fSeekFlight == nullptr && fScheduledCursor < fScheduledOps.size() &&
                elapsedMs >= fScheduledOps[fScheduledCursor].atMs) {
             applyTransportOp(fScheduledOps[fScheduledCursor].kind,
                              fScheduledOps[fScheduledCursor].seconds);
@@ -1208,21 +1215,86 @@ void BackgroundTransport::applyTransportOp(int op, double seconds) {
         std::fprintf(stderr, "openshow-worker: transport resumed\n");
         return;
     }
-    std::string error;
-    if (fAudio->seekTo(seconds, &error)) {
-        std::fprintf(stderr, "openshow-worker: transport seek landed at %.3f s\n", seconds);
+    // The jump STARTS here and COMPLETES on a later pass (task 6.22e4,
+    // review A5): beginSeekFlight fans the seek out on this thread — the
+    // feeders' request queues and the pipelines' asynchronous seeks accept
+    // without waiting — and the wait half, the sink flush, the clock
+    // rebase and the fault report ride the flight's completion below
+    // (consumeSeekCompletion). What applyTransportOps guarantees across
+    // the split: no momentary op overtakes an unfinished seek, so the
+    // order the synchronous code enforced is the order the operator sees.
+    beginSeekFlight(seconds);
+}
+
+void BackgroundTransport::beginSeekFlight(double seconds) {
+    // Preconditions (both enforced by the pass above): a background is
+    // open, and no flight is in progress. The thread spawn is the whole
+    // cost of this pass — seeks arrive at operator speed, and one flight
+    // at a time keeps the lane trivially bounded.
+    fAudio->beginSeekTo(seconds);
+    auto flight = std::make_shared<SeekFlight>();
+    flight->target = seconds;
+    flight->assetPath = fAppliedBackground.assetPath;
+    flight->player = fAudio.get();
+    AvPlayer* player = flight->player;
+    flight->worker = std::thread([this, flight, player] {
+        // THE wait this task moved off the frame tick: up to 500 ms per
+        // feeder is a poll deadline, not a promise from the container.
+        // The player OUTLIVES this thread by ownership: consuming a flight
+        // is the render thread's alone, and every path that ends a player
+        // (teardown's hand-off, retireAudioInstance) takes the flight with
+        // it — the lane joins this thread before a retired player stops.
+        flight->applied = player->waitSeekTo(500, &flight->abort, &flight->error);
+        flight->done.store(true, std::memory_order_release);
+        // The completing pass rides this wake, so even a loop parked on an
+        // idle slide lands the finish half and the fault report promptly.
+        wakeRenderThread();
+    });
+    fSeekFlight = std::move(flight);
+}
+
+bool BackgroundTransport::consumeSeekCompletion() {
+    if (fSeekFlight == nullptr || !fSeekFlight->done.load(std::memory_order_acquire)) {
+        return false;  // the worker's wake brings the pass that consumes it
+    }
+    std::shared_ptr<SeekFlight> flight = std::move(fSeekFlight);
+    flight->worker.join();  // returned with its store; this only reaps
+    // The finish half, on the transport's own thread (6.22e4): the sink
+    // queue, the clock and the fallback position move on the wait's
+    // verdict exactly as the synchronous seekTo did — one pass later.
+    flight->player->finishSeekTo(flight->target, flight->applied);
+    if (flight->applied) {
+        std::fprintf(stderr, "openshow-worker: transport seek landed at %.3f s\n",
+                     flight->target);
         // A seek that landed is the recovery for a previous refusal on this
         // asset (typed exactly as such): the parts agree again.
-        mediaFaultCleared(MediaFault::kSync, fAppliedBackground.assetPath);
-        return;
+        mediaFaultCleared(MediaFault::kSync, flight->assetPath);
+        return true;
     }
     // The audio refused the jump. The picture moved (the video seek applies
     // on its own thread), so the audience now hears one position and sees
     // another — that is what the operator has to be told, and the reported
     // position stays whatever the transport actually presents.
-    mediaFailed(MediaFault::kSync, fAppliedBackground.assetPath,
-                "background seek to " + std::to_string(seconds) +
-                    " s was refused: " + (error.empty() ? "no reason given" : error));
+    mediaFailed(MediaFault::kSync, flight->assetPath,
+                "background seek to " + std::to_string(flight->target) +
+                    " s was refused: " +
+                    (flight->error.empty() ? "no reason given" : flight->error));
+    return true;
+}
+
+void BackgroundTransport::drainSeekFlight() {
+    // The paths that are not a frame tick (retireAudioInstance's family):
+    // the abort ends the feeder waits inside one poll, the join releases
+    // the worker, and the completion is DISCARDED with the transport that
+    // started it — a jump whose asset is out of service has no story left
+    // to tell, and a dropped command is a dropped command, never a late
+    // one fired against a successor.
+    if (fSeekFlight == nullptr) {
+        return;
+    }
+    fSeekFlight->abort.store(true, std::memory_order_release);
+    fSeekFlight->worker.join();
+    fSeekFlight.reset();
 }
 
 bool BackgroundTransport::primeVideo(const std::string& path,
@@ -1758,6 +1830,18 @@ void BackgroundTransport::teardownBackgroundTransport() {
     fAudio->pause();
     auto retirement = std::make_shared<Retirement>();
     retirement->pipeline = std::move(fBackground);
+    // Task 6.22e4 (review A5): a seek still waiting is waiting on THIS
+    // player's feeders, so the flight retires with the player. Abort first
+    // — the feeder waits end inside one poll — and the lane joins the
+    // worker before the player's stop below; without that order the worker
+    // would be waiting on feeders a dead AvPlayer owned. The completion is
+    // discarded: the transport it described is out of service (teardown
+    // already dropped its identity and its pending ops above), so the jump
+    // reports to nobody.
+    retirement->pendingSeek = std::move(fSeekFlight);
+    if (retirement->pendingSeek != nullptr) {
+        retirement->pendingSeek->abort.store(true, std::memory_order_release);
+    }
     {
         std::lock_guard<std::mutex> lock(fMutex);
         fPendingVideo.reset();
@@ -1771,6 +1855,13 @@ void BackgroundTransport::teardownBackgroundTransport() {
         fAudio = std::make_unique<AvPlayer>();
     }
     retirement->worker = std::thread([this, r = retirement] {
+        if (r->pendingSeek != nullptr) {
+            // 6.22e4: the seek worker waits on the player's feeders, so it
+            // goes down BEFORE the player does. The abort was set at the
+            // hand-off, so this join costs a poll, not the 500 ms deadline
+            // the worker was under.
+            r->pendingSeek->worker.join();
+        }
         r->pipeline->join();  // THE wait this task moved off the frame tick
         // The player's DESTRUCTION is lane work (~AvPlayer joins its
         // feeder, mixer and sink threads), but its availability rides
@@ -1838,7 +1929,11 @@ BackgroundTransport::retiringAudioDelivery() const {
 }
 
 void BackgroundTransport::retireAudioInstance() {
-    // One place an AvPlayer instance goes out of service. The swap happens
+    // One place an AvPlayer instance goes out of service. A seek flight
+    // still waiting on THIS instance's feeders cannot outlive it (6.22e4):
+    // drain the flight first — abort, join, discard — before the swap.
+    drainSeekFlight();
+    // The swap happens
     // under fMutex so the status readers that take the lane on another
     // thread see either the outgoing instance or the fresh silent one —
     // never a player mid-destruction. The stop then runs outside the lock,
