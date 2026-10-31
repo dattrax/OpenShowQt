@@ -31,10 +31,10 @@ stage, scripture, streaming, cloud or multi-output scope.
 | Clear slide/background/all, restore | Keep | Runtime cues; later arrange beside the preview |
 | Present / Previous / Next / Follow selection | Keep as interim runtime controls | UI.3b replaces implicit follow-arming with consistent Show triggers |
 | Play/pause, seek, loop, gain and mute | Keep when applicable | Transport and audio show controls, bound to worker acknowledgements |
-| Typed audio path / Set track form | Remove | Explicit Play audio file chooser now; prepared audio bin in UI.5 |
+| Typed audio path / Set track form | Remove | Cue activation from the bin (UI.4b); UI.5 replaces the interim chooser in the rail |
 | Active audio filename, elapsed time and Stop | Keep | Runtime audio state; no absolute path form |
 | Protocol versions, worker/GPU diagnostics and service directory | Remove | Settings → Service and diagnostics; Show gets concise readiness/attention labels |
-| Media failures | Keep concise, actionable notice | Filename on Show; detailed failure text/path in Settings |
+| Media failures | Keep concise, actionable notice | Filename on Show; the worker's own sentence in the item's Edit details (UI.4b) |
 | Add/remove/edit slides, text, styles and geometry | Exclude | Edit only, including mutating shortcuts |
 | Library/media import | Keep as preparation | Registers an asset without presenting it; native file URL conversion belongs in C++ |
 | Remove library assets / add asset to authored slide | Exclude | Edit; importing must not implicitly modify a slide |
@@ -290,11 +290,53 @@ navigation and the audience monitor usable, and with the tabs gone the
 shortcuts have one owner again: Ctrl+1/2/5 always pick pages, Ctrl+F searches
 presentations, and the cheat sheet says so.
 
-Still owed by UI.4b: activating a media cue, where audio and video follow their
-real type and the worker validates playback, and the existence and corruption
-notices only that validation can supply — what UI.4a says about a row is what
-the product can do with its type, deliberately not a claim about its bytes.
-Gates: desktop 57/57 (343.31 s, 15 display), headless 32/32 (65.95 s); both
+Verification (UI.4b, 2026-10-31): the bin's rows got a cue, and one kind of
+them. `MediaBin.qml` puts a Play/Stop control above the list for the selected
+audio row — the worker's independent production track, which slide changes
+neither restart nor stop — and nothing for the kinds with no runtime of their
+own: a video reaches the audience as a slide's background and a picture as a
+slide's content, both authored in Edit, so those rows are told where they go
+rather than handed a greyed-out Play that would read as a fault with the
+output. Activation is not editing: it costs no undo step, moves neither the
+editing cursor nor a cue marker, and presents nothing, so unlike Remove and
+Add to slide it does not wait behind `editingEnabled`. Its enablement is the
+worker's connection and nothing else — deliberately not the view's snapshot of
+whether the file is present, because a row whose file came back would stay
+dead until something re-read the document. Asking is always allowed; Play is
+never a promise.
+
+What a row then claims comes from the worker. `DocumentViews::assets()` adds
+one stat per row (`exists`, no decoding), so a file the service has lost — a
+moved or renamed file is how that arrives — keeps its row and says "file is
+not here", in the notice column and in the info line. Whether the BYTES play
+is the probe's answer, and a refusal needed somewhere to land: the status
+block describes the track that kept playing and never the file that was turned
+down, so `WorkerController` now carries `standaloneRefusal` and
+`standaloneRefusalPath`, recorded against the path the refused ask had named
+and only for the newest ask — the transport retires an overtaken selection,
+and a retirement is not a verdict on a file. `noticeForState` is the priority
+rule in one function with its inputs as arguments, so the offscreen suite can
+drive it without a transport: live, then a missing file, then the standing
+kind rules, then the probe's verdict, and an untouched audio row says nothing
+because its button is the notice. `noticeFor` is that rule with the worker's
+answers; `isLive` marks whichever row the status block says the audience is
+getting, the production track for audio and the on-air slide's background for
+video. Per the plan's split for media failures, Show names the file and Edit
+quotes the worker's sentence, path and all.
+
+`worker_controller_tests` pins the seam against the scripted peer: the refusal
+arrives naming its path, survives the status echoes on either side of it
+(every one of which speaks for the track rather than for the ask), and is
+retired by the next selection, the removal included. `frontend_journey_tests`
+section 8 then does it through a real worker: an authored AAC bed goes on air
+and reports its own clock, a file of garbage is refused naming that file while
+the bed carries on, a go moves none of it, and the removal is the stop. Losing
+the worker now takes the standalone mirror down with the rest of the media
+state, so no row can still read ON AIR after the process it describes has
+gone. The rail's interim file chooser stays until UI.5 replaces it with the
+prepared-audio area; both drive the same command and read the same
+acknowledged block, so the two cannot disagree about what is playing.
+Gates: desktop 57/57 (346.07 s, 15 display), headless 32/32 (65.71 s); both
 trees build clean.
 
 ### UI.5 — Runtime monitor and show controls
@@ -328,9 +370,8 @@ completion. Run workspace/controller tests and relevant live frontend journeys.
 
 ## Completion rule
 
-UI.1–UI.3c and UI.4a are closed (verification recorded above); UI.4b–6 remain
-TODO until implemented and checked, and the UI.4 parent stays open until UI.4b
-closes its activation half.
+UI.1–UI.3c and UI.4 (both leaves) are closed, verification recorded above;
+UI.5–6 remain TODO until implemented and checked.
 A colour change or one screenshot does not close the layout work. Keep the short
 ledger in PLAN.md; store audit details and later capture evidence alongside this
 plan. M6's completed async fixes remain DONE, and M7 release gates remain open.

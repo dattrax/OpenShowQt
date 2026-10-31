@@ -128,6 +128,16 @@ class WorkerController : public QObject {
     Q_PROPERTY(QString standalonePath READ standalonePath NOTIFY mediaChanged)
     Q_PROPERTY(double standalonePosition READ standalonePosition NOTIFY mediaChanged)
     Q_PROPERTY(QString standaloneError READ standaloneError NOTIFY mediaChanged)
+    // A refused selection (task UI.4b): media.standalone is PROBED before it
+    // is accepted, so a file the worker cannot use is a refused request and
+    // the track that was playing keeps playing — the status block above still
+    // describes THAT track, and never mentions the file that was turned down.
+    // So the refusal needs its own pair: the reason the worker gave and the
+    // path the refused ask had named (carried as the request's intent, which
+    // is why a superseded ask can never blame a newer one). It says nothing
+    // about playback; the next selection, including the removal, clears it.
+    Q_PROPERTY(QString standaloneRefusal READ standaloneRefusal NOTIFY mediaChanged)
+    Q_PROPERTY(QString standaloneRefusalPath READ standaloneRefusalPath NOTIFY mediaChanged)
     // Scene store (task 2.4c): what the worker has applied and is about
     // to apply, and how many prepared scenes it keeps. demoSlideCount is
     // the fixture's size, fixed for the session.
@@ -229,12 +239,16 @@ public:
     Q_INVOKABLE void setMediaMute(const QString& source, bool muted);
 
     // Standalone production track (task 6.15b, review R15): select the
-    // independent audio file ("" removes it). The worker probes before
-    // acknowledging, so a bad path is a refused request whose reason
-    // reaches the status line like any other worker error, and the
-    // properties stay on the last worker truth — the track on air (if
-    // any) was never touched. When the track is up, its own story is the
-    // standalone* properties, mirrored from status and nothing else.
+    // independent audio file ("" removes it). This is UI.4b's media cue
+    // activation, and it is fire-and-confirm like every other media call:
+    // the worker probes before acknowledging, so a bad path is a refused
+    // request whose reason reaches the status line like any other worker
+    // error and the standaloneRefusal pair above, while the properties stay
+    // on the last worker truth — the track on air (if any) was never
+    // touched. Nothing here claims a file will play: asking is the operator's,
+    // the answer is the worker's, and the probe runs in the worker's file
+    // thread, never in this process. When the track is up, its own story is
+    // the standalone* properties, mirrored from status and nothing else.
     Q_INVOKABLE void selectStandaloneTrack(const QString& path);
     Q_INVOKABLE void selectStandaloneFile(const QUrl& file);
 
@@ -329,6 +343,8 @@ public:
     QString standalonePath() const { return fStandalonePath; }
     double standalonePosition() const { return fStandalonePosition; }
     QString standaloneError() const { return fStandaloneError; }
+    QString standaloneRefusal() const { return fStandaloneRefusal; }
+    QString standaloneRefusalPath() const { return fStandaloneRefusalPath; }
 
 signals:
     void stateChanged();
@@ -441,6 +457,17 @@ private:
     QString fStandalonePath;
     double fStandalonePosition = -1.0;
     QString fStandaloneError;
+    // The last selection the worker probed and turned down (task UI.4b): the
+    // reason it gave and the path that refused ask had named. Deliberately
+    // separate from the four above — a refusal changes no track, so the status
+    // block has nothing to say about the file that was rejected.
+    QString fStandaloneRefusal;
+    QString fStandaloneRefusalPath;
+    // The selection this side is waiting on (task UI.4b): the path its ask
+    // named and the id it went out under, so a refusal can name the row and a
+    // reply to an overtaken ask cannot be mistaken for one on the newest.
+    QString fStandaloneAskPath;
+    std::int64_t fStandaloneAskId = 0;
 };
 
 }  // namespace openshow::ui

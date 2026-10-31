@@ -18,6 +18,8 @@
 #include "openshow/protocol/preview_wire.h"
 
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 
 int main(int argc, char** argv) {
@@ -493,11 +495,11 @@ int main(int argc, char** argv) {
           "editor follows slide selection without copying the old text over it");
     docs.selectSlide(0);
 
-    // --- task UI.4a: the bottom of the window is the media bin -----------
+    // --- task UI.4a and UI.4b: the bottom of the window is the media bin --
     // The bin lists the service's registered media with the kind each name
     // means to the pipeline, filters on it, says what it cannot do, and keeps
-    // every activation to itself: browsing, importing and removing a file
-    // never put anything near the output. Its own layout is pinned at the
+    // activation to one explicit control: browsing, importing and removing a
+    // file never put anything near the output. Its own layout is pinned at the
     // largest supported size, where a row has room for name, kind and notice
     // side by side, and checked again at the smallest.
     {
@@ -512,17 +514,29 @@ int main(int argc, char** argv) {
         check(findNamed(mediaBin, "librarySearchField") == nullptr,
               "the bin carries no second search for presentations");
         check(docs.assets().isEmpty(), "the fixture authors no media of its own");
+        // The files behind these names are written for real (bytes nobody
+        // decodes: this fixture has no worker, and the bin never claims a file
+        // plays). What a row's `exists` says is a fact about the disk, so the
+        // rows here are the ordinary kind — and a fourth name is registered
+        // with nothing on disk behind it, which is the row that must speak up.
+        for (const char* name : {"loop.mp4", "hymn.mp3", "notes.txt"})
+            std::ofstream(std::filesystem::path(scratch.path().toStdString()) / name) << "BYTES";
         check(docs.importMediaFile(files + "/loop.mp4")
                   && docs.importMediaFile(files + "/hymn.mp3")
                   && docs.importMediaFile(files + "/notes.txt"),
               "import registers a video, an audio file and a name nothing presents");
         QTest::qWait(40);
         QMap<QString, QString> kinds;
+        QStringList present;
         for (const QVariant& entry : docs.assets()) {
             const QVariantMap row = entry.toMap();
             kinds.insert(row.value(QStringLiteral("name")).toString(),
                          row.value(QStringLiteral("kind")).toString());
+            present << row.value(QStringLiteral("name")).toString()
+                    + (row.value(QStringLiteral("exists")).toBool() ? "=there" : "=gone");
         }
+        check(present == (QStringList{"loop.mp4=there", "hymn.mp3=there", "notes.txt=there"}),
+              "a row says whether the file it names is on disk");
         check(kinds.value("loop.mp4") == QLatin1String("video")
                   && kinds.value("hymn.mp3") == QLatin1String("audio")
                   && kinds.value("notes.txt") == QLatin1String("other"),
@@ -563,10 +577,12 @@ int main(int argc, char** argv) {
             for (auto* chip : found) chips << chip->property("text").toString();
         }
         QStringList notices;
+        int noticeRows = 0;
         bool noticesWhole = true;
         {
             QList<QQuickItem*> found;
             collectNamed(mediaBin, "mediaRowNotice", found);
+            noticeRows = found.size();
             for (auto* notice : found) {
                 if (notice->isVisible()) notices << notice->property("text").toString();
                 noticesWhole = noticesWhole && !notice->property("elided").toBool();
@@ -574,10 +590,41 @@ int main(int argc, char** argv) {
         }
         check(chips == (QStringList{"Video", "Audio", "Other"}),
               "each media row says which kind of file it is");
-        check(notices.size() == 3 && notices.at(0).contains("background")
-                  && notices.at(1).contains("nothing plays")
-                  && notices.at(2).contains("nothing presents") && noticesWhole,
+        // The two rows nothing here can fire say so, in full; the audio row
+        // says nothing, because UI.4b gave it a control instead of a notice.
+        check(noticeRows == 3 && notices.size() == 2 && notices.at(0).contains("background")
+                  && notices.at(1).contains("nothing presents") && noticesWhole,
               "a row the product cannot use says why, in full, instead of hiding");
+
+        // The table those notices come out of, driven directly. An offscreen
+        // fixture with no worker cannot make a track live or a probe refuse,
+        // so the rows' states are invented here rather than staged; the live
+        // frontend journey proves the worker really answers these two.
+        auto notice = [mediaBin](const char* kind, bool present, bool live, bool refused) {
+            QVariant answer;
+            QMetaObject::invokeMethod(mediaBin, "noticeForState",
+                                      Q_RETURN_ARG(QVariant, answer),
+                                      Q_ARG(QVariant, QString::fromUtf8(kind)),
+                                      Q_ARG(QVariant, present), Q_ARG(QVariant, live),
+                                      Q_ARG(QVariant, refused));
+            return answer.toString();
+        };
+        check(notice("audio", true, true, false) == QLatin1String("on air")
+                  && notice("video", true, true, false) == QLatin1String("on air"),
+              "the file the worker says is playing is marked before anything else");
+        check(notice("audio", false, false, false) == QLatin1String("file is not here")
+                  && notice("video", false, false, false) == QLatin1String("file is not here")
+                  && notice("picture", false, false, false) == QLatin1String("file is not here"),
+              "a kind the product can use says so when its file has gone");
+        check(notice("other", false, false, false)
+                  == QLatin1String("nothing presents this file type"),
+              "an unusable type keeps its reason even when its file is missing");
+        check(notice("video", true, false, false).startsWith(QLatin1String("background only"))
+                  && notice("picture", true, false, false).isEmpty(),
+              "the standing kind rule: a video's route is Edit, a picture has none to explain");
+        check(notice("audio", true, false, true) == QLatin1String("cannot play")
+                  && notice("audio", true, false, false).isEmpty(),
+              "a refused probe marks the row, and an audio cue nobody has tried says nothing");
 
         // A collection filters the list to its kind, and only that.
         for (auto* row : collectionRows())
@@ -611,6 +658,27 @@ int main(int argc, char** argv) {
                   && showPageItem->property("cueIndex").toInt() == cueBeforeBin,
               "media browsing never moves the editing cursor or the presenter's place");
 
+        // UI.4b: the audio row has a cue control, and with no output to
+        // receive it the control is honest rather than hopeful. Clicking a
+        // row selected it; nothing else has happened, and nothing here can
+        // pretend a track is up — that answer only ever comes from a worker.
+        auto* activate = findNamed(window->contentItem(), "mediaActivateButton");
+        auto* statusLine = findNamed(mediaBin, "mediaInfoStatus");
+        check(activate != nullptr && activate->isVisible()
+                  && !activate->property("enabled").toBool(),
+              "an audio cue offers Play, and no connected output keeps it off");
+        check(statusLine != nullptr
+                  && statusLine->property("text").toString().contains("no output connected"),
+              "the info column names what stands between this row and sound");
+        check(worker.standalonePath().isEmpty() && !worker.standaloneOnAir()
+                  && worker.standaloneRefusal().isEmpty()
+                  && worker.standaloneRefusalPath().isEmpty(),
+              "and a bin with no output has said nothing about any track");
+        clickAt(activate, 20, 12);
+        QTest::qWait(30);
+        check(!worker.standaloneOnAir() && worker.standalonePath().isEmpty(),
+              "a disabled cue sends nothing");
+
         // Back to all media: the two document actions, both Edit-only and both
         // honest about the kinds they cover.
         QList<QQuickItem*> allFirst = collectionRows();
@@ -621,6 +689,46 @@ int main(int argc, char** argv) {
         check(placeButton != nullptr && placeButton->isVisible()
                   && removeButton != nullptr && removeButton->isVisible(),
               "the bin's document actions are available while Edit is up");
+
+        // The kinds with no runtime to fire are offered no button at all: a
+        // greyed-out Play would read as something wrong with the output, where
+        // the truth is that this file has no cue to fire — which is what the
+        // notice column and the info line say instead.
+        for (auto* row : mediaRows())
+            if (row->property("modelData").toMap().value("name").toString()
+                == QLatin1String("loop.mp4"))
+                clickAt(row, 20, 14);
+        QTest::qWait(30);
+        check(!activate->isVisible()
+                  && statusLine->property("text").toString().contains("background"),
+              "a video row is not offered a cue, and is told where it does go");
+
+        // A name whose file the service has lost (a moved or renamed file is
+        // how this arrives) keeps its row and says so, and names itself in the
+        // info column rather than the path — Show identifies by name.
+        check(docs.importMediaFile(files + "/ghost.mp3"),
+              "an audio name with no file behind it is registered like any other");
+        QTest::qWait(40);
+        for (auto* row : mediaRows())
+            if (row->property("modelData").toMap().value("name").toString()
+                == QLatin1String("ghost.mp3"))
+                clickAt(row, 20, 14);
+        QTest::qWait(40);
+        {
+            QList<QQuickItem*> missingNotices;
+            collectNamed(mediaBin, "mediaRowNotice", missingNotices);
+            QString ghostNotice;
+            for (auto* item : missingNotices)
+                if (item->isVisible()
+                    && item->property("text").toString() == QLatin1String("file is not here"))
+                    ghostNotice = item->property("text").toString();
+            check(!ghostNotice.isEmpty()
+                      && statusLine->property("text").toString()
+                             .contains("this file is not where the service says"),
+                  "a row whose file has gone says so in both columns");
+        }
+        check(activate->isVisible(),
+              "and its Play is not disabled by a snapshot: the worker's probe decides");
         for (auto* row : mediaRows())
             if (row->property("modelData").toMap().value("name").toString()
                 == QLatin1String("notes.txt"))
@@ -637,7 +745,7 @@ int main(int argc, char** argv) {
         for (const QVariant& entry : afterRemove)
             remainingNames << entry.toMap().value("name").toString();
         check(!remainingNames.contains(QLatin1String("notes.txt"))
-                  && remainingNames.size() == 2,
+                  && remainingNames.size() == 3,
               "Remove takes the row out of the media library");
 
         // A picture is the one kind a bin row can join today, and the button's
@@ -703,7 +811,7 @@ int main(int argc, char** argv) {
             bool noticesAside = !noticeItems.isEmpty();
             for (auto* notice : noticeItems)
                 noticesAside = noticesAside && !notice->isVisible();
-            bool namesWhole = names.size() == 3;
+            bool namesWhole = names.size() == 4;
             for (auto* name : names)
                 namesWhole = namesWhole && !name->property("elided").toBool();
             check(noticesAside && namesWhole,
@@ -713,6 +821,17 @@ int main(int argc, char** argv) {
         QTest::qWait(60);
         panels.resizeDrawer(300, window->height() - 364);
         QTest::qWait(40);
+        // Leave the bin on the row UI.4b is about: the audio cue, its control
+        // visible and still saying there is nothing to send it to. This is also
+        // the state the artefact captures below are taken in.
+        for (auto* row : mediaRows())
+            if (row->property("modelData").toMap().value("name").toString()
+                == QLatin1String("hymn.mp3"))
+                clickAt(row, 20, 14);
+        QTest::qWait(40);
+        check(activate->isVisible() && !activate->property("enabled").toBool()
+                  && !worker.standaloneOnAir(),
+              "the last word is the cue control, honest about having no output");
     }
 
     window->setProperty("page", "show");

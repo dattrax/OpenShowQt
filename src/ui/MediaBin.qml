@@ -10,11 +10,23 @@ import QtQuick.Dialogs
 // What the bin is: the service's registered media as named cues, with the
 // kind each one has (DocumentViews writes it into every asset row from the
 // domain's one name rule), collections down the left that filter that list,
-// and import kept separate from every activation — nothing here sends
-// anything to the worker, and the two controls that change the document stay
-// behind editingEnabled. A file the product cannot present is still listed
-// and says so: hiding the row would leave the operator wondering where the
-// import went.
+// and import kept separate from every activation. The two controls that
+// change the document (Remove, Add to slide) stay behind editingEnabled; a
+// file the product cannot present is still listed and says so, because
+// hiding the row would leave the operator wondering where the import went.
+//
+// UI.4b adds the activation, and it is one control on one kind. What the
+// worker offers at runtime is the independent production audio track
+// (media.standalone): a file with a life of its own, unaffected by slide
+// changes, which is exactly what a bin cue is — so an audio row gets
+// Play/Stop. A video has no cue of its own to fire: its route to the audience
+// is as a slide's background, an authored change made in Edit. A picture's
+// route is a slide. Those kinds are told where they go rather than given a
+// button with nothing behind it, per the plan's rule that a control appears
+// only when its complete action exists. Activation touches no document: no
+// undo step, no moved cursor, nothing presented. And it never promises a
+// file will play — the worker probes the bytes in its own file thread and
+// answers, and until that answer says so this file says nothing.
 //
 // The 40px bar is the toggle (the reference's strip click), the top edge
 // drags the height (WorkspacePanels' heightFor does the snapping), and the
@@ -58,16 +70,103 @@ FocusScope {
     readonly property var rows: mediaBin.filter === ""
         ? docs.assets
         : docs.assets.filter(a => a.kind === mediaBin.filter)
-    // What a row adds to its name. The kind chip already says what the file
-    // IS, so this is only the part the operator acts on — and a picture needs
-    // nothing: it is the kind that works. Each notice is kept short enough to
-    // read whole in the row's notice column (the suite checks that), because a
-    // warning that elides into "background on…" explains nothing.
-    function noticeFor(kind) {
-        if (kind === "audio") return "nothing plays it from the bin yet"
-        if (kind === "video") return "background only, not a slide picture"
+    // ------------------------------------------------------------------
+    // The notice rule (UI.4b), in one place, with its inputs as arguments
+    // rather than bindings: the suite drives this table directly, because an
+    // offscreen fixture cannot conjure a live transport. noticeFor(row) below
+    // is exactly this, with the worker's real answers.
+    //
+    // The order is what the operator acts on. A file the audience is hearing
+    // is the present fact. Next, a file the product could use that the
+    // document says is not on disk — worth saying before anyone reaches for a
+    // button, though the button stays live because this view only took a
+    // snapshot and the worker's probe is the authority. Then the standing kind
+    // rules for the rows nothing fires from here, which no file's state would
+    // change. Only an audio row that is present and refused by that probe says
+    // "cannot play", and an audio row that is fine says nothing, because its
+    // Play button is the notice. Each string stays short enough to read whole
+    // in the row's notice column (the suite checks that); the long version of
+    // a refusal is an Edit detail, and Show names the file.
+    // ------------------------------------------------------------------
+    function noticeForState(kind, present, live, refused) {
+        if (!kind) return ""
+        if (live) return "on air"
+        // A file the product COULD use, and that is not there: the one thing
+        // worth saying. "other" is exempt — its type is unusable either way,
+        // and the reason below is the one that stops an operator trying.
+        if (!present && kind !== "other") return "file is not here"
+        if (kind === "video") return "background only \u2014 set it in Edit"
         if (kind === "other") return "nothing presents this file type"
+        if (kind === "audio" && refused) return "cannot play"
         return ""
+    }
+    // Whether the worker says THIS file is what the audience is getting: the
+    // production track for an audio row, the on-air slide's background for a
+    // video. Never derived from a click.
+    function isLive(row) {
+        if (!row || !row.sourcePath) return false
+        if (row.kind === "audio")
+            return worker.standaloneOnAir && row.sourcePath === worker.standalonePath
+        if (row.kind === "video")
+            return worker.mediaOnAir && row.sourcePath === worker.mediaPath
+        return false
+    }
+    function isRefused(row) {
+        return worker.standaloneRefusal !== "" && !!row && !!row.sourcePath
+                && row.sourcePath === worker.standaloneRefusalPath
+    }
+    function noticeFor(row) {
+        if (!row || !row.kind) return ""
+        return mediaBin.noticeForState(row.kind, row.exists !== false,
+                                       mediaBin.isLive(row), mediaBin.isRefused(row))
+    }
+    // Live is a marker, not a warning; everything else in this column is. The
+    // brighter pair is for a selected row, whose background is the blue.
+    function noticeColor(row, onSelection) {
+        const live = mediaBin.isLive(row)
+        if (onSelection) return live ? "#c8f5cd" : "#ffe0a3"
+        return live ? "#5ec96a" : "#c8a24a"
+    }
+    // The one cue the bin can activate: an audio row, while an output is
+    // connected to receive it. Whether the FILE is there is deliberately not
+    // part of enablement — that is a snapshot this view took, and a row marked
+    // "file is not here" whose file came back would stay dead until something
+    // re-read the document. The worker's probe is the authority on a file, so
+    // asking is always allowed and Play is never a promise.
+    readonly property bool canActivate: selected.kind === "audio" && worker.connected
+    readonly property bool selectedLive: mediaBin.isLive(mediaBin.selected)
+    // The row's whole story, for the info column. Kept to the file's name
+    // where one exists (the plan's rule: filename on Show, the detailed
+    // failure text down the Edit side) — and a claim about playback appears
+    // here only in the worker's own voice.
+    readonly property string statusLine: {
+        const row = mediaBin.selected
+        if (!row || !row.kind) return ""
+        if (row.kind === "audio" && mediaBin.selectedLive) {
+            return "audio track on air"
+                   + (worker.standalonePosition >= 0
+                      ? " \u00b7 " + worker.standalonePosition.toFixed(1) + " s" : "")
+                   + " \u00b7 loops until stopped"
+        }
+        if (row.exists === false && row.kind !== "other")
+            return "this file is not where the service says it is"
+        if (row.kind === "picture") return "a picture goes on a slide \u2014 Edit only"
+        if (row.kind === "video") {
+            return mediaBin.selectedLive
+                   ? "on air as this slide\u2019s background"
+                   : "a video goes to output as a slide\u2019s background \u2014 set it in Edit"
+        }
+        if (row.kind === "other") return "nothing presents this file type"
+        // An audio cue, off air: what is standing between this row and sound.
+        if (!worker.connected) return "no output connected \u2014 nothing can play"
+        if (mediaBin.isRefused(row))
+            return "cannot play audio: " + mediaBin.fileName(row.sourcePath)
+        if (worker.standaloneOnAir) return "replaces the track now on air"
+        return "press Play to start it on the production audio track"
+    }
+    function fileName(path) {
+        const parts = String(path).split("/")
+        return parts[parts.length - 1]
     }
     // The selected row, whether or not the current filter shows it: the info
     // column describes what the operator last picked, and a filter change
@@ -110,6 +209,10 @@ FocusScope {
                 text: docs.assets.length + (docs.assets.length === 1 ? " item" : " items")
                       + (mediaBin.filter === "" ? ""
                          : " \u00b7 " + mediaBin.rows.length + " shown")
+                      // The bin's one runtime control needs an output, and the
+                      // bar is where the operator can see it has none even with
+                      // the bin closed (the button itself says why when picked).
+                      + (worker.connected ? "" : " \u00b7 output offline")
             }
         }
     }
@@ -167,9 +270,33 @@ FocusScope {
                     font.pixelSize: 11
                     text: mediaBin.selected.kind
                           ? (mediaBin.kindLabels[mediaBin.selected.kind]
-                             + (mediaBin.noticeFor(mediaBin.selected.kind) === ""
-                                ? "" : " \u00b7 " + mediaBin.noticeFor(mediaBin.selected.kind)))
+                             + (mediaBin.noticeFor(mediaBin.selected) === ""
+                                ? "" : " \u00b7 " + mediaBin.noticeFor(mediaBin.selected)))
                           : "Pick a media item to inspect it"
+                }
+                // What can be DONE with it, from here (UI.4b). The row's notice
+                // column is a handful of words; this is the sentence, and it is
+                // the same rule the notice and the button's enablement read.
+                Text {
+                    objectName: "mediaInfoStatus"
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    color: mediaBin.selectedLive ? "#5ec96a" : "#b0b0b0"
+                    font.pixelSize: 11
+                    text: mediaBin.statusLine
+                }
+                // The worker's own words about a refused cue. Show says the
+                // file's name, per the plan's split for media failures; the
+                // sentence that names the path is an Edit detail, exactly like
+                // the path below it.
+                Text {
+                    objectName: "mediaInfoDetail"
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    visible: mediaBin.editingEnabled && mediaBin.isRefused(mediaBin.selected)
+                    color: "#d9a441"
+                    font.pixelSize: 10
+                    text: "the output refused this file: " + worker.standaloneRefusal
                 }
                 // The path is an Edit detail (the Show page identifies media by
                 // name); on Show there is no path text to squint at.
@@ -266,6 +393,30 @@ FocusScope {
                 anchors.right: parent.right
                 spacing: 6
 
+                // The bin's runtime cue (UI.4b), and the only one this product
+                // has: the worker's independent production audio track, which
+                // slide changes neither restart nor stop. The kinds with no cue
+                // of their own are absent rather than greyed out — a video
+                // reaches the audience as a slide's background and a picture as
+                // a slide's content, both authored in Edit, and a disabled Play
+                // would read as a fault with the output when the truth is that
+                // this file has no runtime to fire.
+                //
+                // Nothing here edits the document, so nothing here waits for
+                // Edit: this is a presenter's control. And what the row shows
+                // afterwards is the worker's, never the click's — the track
+                // reads ON AIR when the status block says it is live, and a
+                // refused probe reads "cannot play" with the reason beside it.
+                PanelButton {
+                    objectName: "mediaActivateButton"
+                    visible: mediaBin.selected.kind === "audio"
+                    enabled: mediaBin.canActivate
+                    text: mediaBin.selectedLive ? "Stop" : "Play"
+                    Accessible.name: text + (mediaBin.canActivate
+                                             ? "" : " \u2014 no output connected")
+                    onClicked: worker.selectStandaloneTrack(
+                        mediaBin.selectedLive ? "" : mediaBin.selected.sourcePath)
+                }
                 PanelButton {
                     objectName: "mediaImportButton"
                     text: "Import\u2026"
@@ -328,8 +479,8 @@ FocusScope {
                         readonly property string rowKind: modelData.kind
                         Accessible.name: modelData.name + ", "
                                          + mediaBin.kindLabels[modelData.kind]
-                                         + (mediaBin.noticeFor(modelData.kind) === ""
-                                            ? "" : ", " + mediaBin.noticeFor(modelData.kind))
+                                         + (mediaBin.noticeFor(modelData) === ""
+                                            ? "" : ", " + mediaBin.noticeFor(modelData))
 
                         Rectangle {
                             anchors.fill: parent
@@ -339,9 +490,10 @@ FocusScope {
                         }
 
                         // Name, kind, and — when the row is wide enough for
-                        // all three — why this file cannot be used. The name
-                        // takes whatever the two fixed columns leave, so a
-                        // long file name elides in the middle instead of
+                        // all three — the one thing worth knowing about this
+                        // file: that it is on air, or why it cannot be used.
+                        // The name takes whatever the two fixed columns leave,
+                        // so a long file name elides in the middle instead of
                         // pushing the kind off the row; and at bin widths
                         // where the notice would eat the name it steps aside
                         // and the info column carries the explanation alone.
@@ -380,11 +532,13 @@ FocusScope {
                                 objectName: "mediaRowNotice"
                                 width: rowParts.noticeWidth
                                 visible: rowParts.noticeWidth > 0
-                                         && mediaBin.noticeFor(modelData.kind) !== ""
+                                         && mediaBin.noticeFor(modelData) !== ""
                                 elide: Text.ElideRight
                                 font.pixelSize: 11
-                                color: "#c8a24a"
-                                text: mediaBin.noticeFor(modelData.kind)
+                                color: mediaBin.noticeColor(modelData,
+                                                           mediaRow.rowAssetId
+                                                           === mediaBin.selectedAssetId)
+                                text: mediaBin.noticeFor(modelData)
                             }
                         }
                         MouseArea {

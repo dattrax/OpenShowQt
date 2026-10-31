@@ -3050,7 +3050,9 @@ void scenarioAdoptedForeground() {
 // worker's truth). Task 6.15b extends the same peer with the independent
 // track: a mix that spans two transports, a probe refusal that changes
 // nothing, and a removal that takes the track's row while the embedded
-// source keeps its own gain.
+// source keeps its own gain. Task UI.4b reads that refusal a second way: not
+// as "nothing changed", but as the verdict a media bin marks its row with —
+// which the status block alone can never say.
 void scenarioMediaTransport() {
     ::setenv("OPENSHOW_FAKE_SCENARIO", "media", 1);
     const std::string report = tempPath("media");
@@ -3178,6 +3180,13 @@ void scenarioMediaTransport() {
     check(controller.standaloneOnAir() &&
               controller.standalonePath() == QLatin1String("fake-bed.m4a"),
           "media: a refused selection keeps the track and its path on the worker's truth");
+    // Task UI.4b, the half the block above cannot express: the status echo
+    // describes the track that kept playing and NEVER the file that was turned
+    // down, so a refusal needs its own answer or the bin cannot mark the row it
+    // belongs to. This is the seam where the worker's words become a property.
+    check(controller.standaloneRefusalPath() == QLatin1String("/tmp/missing-bed.m4a")
+              && controller.standaloneRefusal().contains(QLatin1String("cannot be opened")),
+          "media: a refused probe arrives as a verdict naming the path that was asked for");
 
     controller.setMediaGain("standalone", 0.25);
     check(waitUntil([&controller] {
@@ -3194,12 +3203,21 @@ void scenarioMediaTransport() {
                      std::abs(sources[0].toMap().value("gain").toDouble() - 0.4) < 0.001;
           }),
           "media: muting the track leaves the embedded source exactly as it was");
+    // And the verdict STAYS. The polls either side of that mute describe the
+    // track on air, which is a different file — none of them has anything to
+    // say about the ask that was turned down, so none may clear its "cannot
+    // play" (task UI.4b: the operator sees it until they act again).
+    check(controller.standaloneRefusalPath() == QLatin1String("/tmp/missing-bed.m4a")
+              && !controller.standaloneRefusal().isEmpty(),
+          "media: later status echoes leave the refusal standing");
 
     controller.selectStandaloneTrack("");
     check(waitUntil([&controller] {
               return !controller.standaloneOnAir() && controller.mediaSources().size() == 1;
           }),
           "media: the removal takes the live flag and the row with it");
+    check(controller.standaloneRefusal().isEmpty() && controller.standaloneRefusalPath().isEmpty(),
+          "media: the removal retires the verdict the last ask left behind");
     {  // The video source survived the whole track lifetime untouched.
         const QVariantMap video = controller.mediaSources().first().toMap();
         check(video.value("id").toString() == QLatin1String("video") &&

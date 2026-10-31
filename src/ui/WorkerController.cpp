@@ -225,6 +225,17 @@ void WorkerController::onRpcDisconnected() {
     fMediaPath.clear();
     fMediaError.clear();  // the media state describes a worker we lost
     fMediaAudio = QStringLiteral("none");
+    // Same rule for the standalone track and for a refusal the lost worker
+    // owed: with no worker there is no track and no verdict (task UI.4b), and
+    // a row still marked ON AIR would be this process talking about itself.
+    fStandaloneLive = false;
+    fStandalonePath.clear();
+    fStandalonePosition = -1.0;
+    fStandaloneError.clear();
+    fStandaloneRefusal.clear();
+    fStandaloneRefusalPath.clear();
+    fStandaloneAskPath.clear();
+    fStandaloneAskId = 0;
     emit mediaChanged();
     emit stateChanged();
     if (!fShutdownRequested) {
@@ -249,6 +260,17 @@ void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exit
     fMediaPath.clear();
     fMediaError.clear();
     fMediaAudio = QStringLiteral("none");
+    // The standalone track died with the process, and so did any verdict it
+    // owed (task UI.4b): a row still marked ON AIR after this would be this
+    // process talking about itself.
+    fStandaloneLive = false;
+    fStandalonePath.clear();
+    fStandalonePosition = -1.0;
+    fStandaloneError.clear();
+    fStandaloneRefusal.clear();
+    fStandaloneRefusalPath.clear();
+    fStandaloneAskPath.clear();
+    fStandaloneAskId = 0;
     emit mediaChanged();
     emit stateChanged();
     if (fShutdownRequested) {
@@ -294,12 +316,24 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         fPresent->handleRefusal(id);
         const boost::json::object& reported = error->value().as_object();
         const auto text = reported.find("message");
+        const QString reason =
+            text != reported.end() && text->value().is_string()
+                ? QString::fromStdString(std::string(text->value().as_string()))
+                : QStringLiteral("unspecified");
+        // A refused media.standalone is the worker's verdict on a FILE, and
+        // the only place that verdict exists (task UI.4b): the request changed
+        // nothing, so the status block still describes the track that kept
+        // playing and never mentions the file it turned down. Publish it for
+        // the ask the operator is still waiting on; an overtaken selection is
+        // retired by the transport, and its retirement is not a verdict.
+        if (pending.method == proto::kMethodMediaStandalone && id == fStandaloneAskId) {
+            fStandaloneAskId = 0;
+            fStandaloneRefusalPath = fStandaloneAskPath;
+            fStandaloneRefusal = reason;
+            emit mediaChanged();
+        }
         setStatus(QStringLiteral("worker error (%1): %2")
-                      .arg(QString::fromStdString(pending.method),
-                           text != reported.end() && text->value().is_string()
-                               ? QString::fromStdString(
-                                     std::string(text->value().as_string()))
-                               : QStringLiteral("unspecified")));
+                      .arg(QString::fromStdString(pending.method), reason));
         return;
     }
     const auto result = message.find("result");
@@ -778,11 +812,27 @@ void WorkerController::selectStandaloneFile(const QUrl& file) {
 }
 
 void WorkerController::selectStandaloneTrack(const QString& path) {
+    // A new selection — the removal included — supersedes the last verdict:
+    // until the worker answers THIS ask the bin has nothing honest to say
+    // about the file, and an old refusal must not sit on a row the operator
+    // has just tried again (or just taken off the track).
+    if (!fStandaloneRefusal.isEmpty() || !fStandaloneRefusalPath.isEmpty()) {
+        fStandaloneRefusal.clear();
+        fStandaloneRefusalPath.clear();
+        emit mediaChanged();
+    }
     if (!fConnected || !fHandshakeDone) {
         return;
     }
-    sendRequest(proto::kMethodMediaStandalone,
-                boost::json::object{{"path", path.toStdString()}});
+    // Which file this ask named, remembered against the id it went out under:
+    // a refusal comes back as an error reply, which carries a reason but not
+    // the request's own params, and the bin has to name WHICH row the worker
+    // turned down. Only the newest ask is remembered — an overtaken selection
+    // is no longer the operator's intent, and the worker retires it on those
+    // terms, so its retirement is not a verdict on the file.
+    fStandaloneAskPath = path;
+    fStandaloneAskId = sendRequest(proto::kMethodMediaStandalone,
+                                   boost::json::object{{"path", path.toStdString()}});
 }
 
 std::int64_t WorkerController::sendRequest(const char* method, boost::json::object params,

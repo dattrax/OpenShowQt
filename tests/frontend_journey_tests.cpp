@@ -37,6 +37,10 @@
  *      only once the worker names its revision active — the LIVE cue owns
  *      the pixels on the preview stream — and a go that never reaches the
  *      worker marks nothing.
+ *   8. the media bin's cue (UI.4b): a real probe accepts a file and the
+ *      production track reports it (with its own clock), a file it cannot use
+ *      is refused naming that file while the live track carries on, a go moves
+ *      none of it, and the removal is the stop.
  *
  * Needs a display (the worker opens its output window) and ffmpeg (the plates
  * are real PNGs through the real decode path). Desktop preset, label display.
@@ -49,6 +53,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <thread>
@@ -541,6 +546,76 @@ int main(int argc, char* argv[]) {
     check(controller.pendingCueKey().isEmpty() &&
               controller.liveCueKey() == QStringLiteral("cue-b"),
           "cue: the refused go leaves the settled markers unchanged");
+
+    // --- 8. the media bin's cue, validated by a real worker (task UI.4b) ----
+    // The bin's Play button is WorkerController::selectStandaloneTrack and
+    // nothing else, so what a row may claim is exactly what this seam answers.
+    // In order: a decodable file becomes the production track and the status
+    // block says so; a file the probe cannot use is REFUSED, with the worker's
+    // own reason recorded against the path that ask named (the only way the
+    // bin can mark the right row "cannot play"); the track already on air is
+    // untouched by that failure; a slide change moves none of it; and the
+    // removal is the stop.
+    const std::string bedPath = (scratch / "bed.m4a").string();
+    const std::string corruptPath = (scratch / "not-audio.m4a").string();
+    {
+        const std::string command =
+            "ffmpeg -v error -y -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
+            " -t 2 -c:a aac '" + bedPath + "' >/dev/null 2>&1";
+        if (std::system(command.c_str()) != 0) {
+            std::fprintf(stderr, "FAIL: the audio bed could not be authored\n");
+            controller.shutdownNow();
+            return 1;
+        }
+        std::ofstream corrupt(corruptPath);
+        corrupt << "these are not the audio bytes you are looking for";
+    }
+    const QString bed = QString::fromStdString(bedPath);
+    controller.selectStandaloneTrack(bed);
+    if (!check(waitUntil([&controller, &bed] {
+                   return controller.standaloneOnAir() && controller.standalonePath() == bed;
+               }),
+               "media cue: the accepted file is confirmed as the production track")) {
+        controller.shutdownNow();
+        return 1;
+    }
+    check(controller.standaloneRefusal().isEmpty() && controller.standaloneRefusalPath().isEmpty(),
+          "media cue: an accepted selection carries no verdict at all");
+    check(waitUntil([&controller] { return controller.standalonePosition() >= 0.0; }),
+          "media cue: the track reports the clock the audience is hearing");
+    check(controller.liveCueKey() == QStringLiteral("cue-b") &&
+              controller.pendingCueKey().isEmpty(),
+          "media cue: activating audio presents nothing and moves no cue marker");
+    // The probe's bad news, on a file that exists and is not audio: the ask
+    // comes back with the worker's reason naming it, and the bed keeps playing
+    // exactly as it was — which is what lets the bin mark one row and leave the
+    // live one alone.
+    const QString corruptFile = QString::fromStdString(corruptPath);
+    controller.selectStandaloneTrack(corruptFile);
+    const bool refused = waitUntil([&controller, &corruptFile] {
+        return controller.standaloneRefusalPath() == corruptFile &&
+               !controller.standaloneRefusal().isEmpty();
+    });
+    check(refused, "media cue: a file the real probe cannot use is refused with a reason");
+    check(refused && controller.standaloneRefusal().contains(corruptFile),
+          "media cue: the refusal names the file the worker turned down");
+    check(controller.standaloneOnAir() && controller.standalonePath() == bed,
+          "media cue: the refused selection leaves the track on air untouched");
+    // A go, and the bed is still the bed: this track has a life of its own,
+    // which is the whole reason a bin cue can be more than a slide's accessory.
+    const auto revisionBefore = controller.sceneActive();
+    controller.presentSceneJson(sceneAlpha(goldPath, magentaPath));
+    check(waitUntil([&controller, revisionBefore] {
+              return controller.scenePending() == 0 && controller.sceneActive() != revisionBefore;
+          }),
+          "media cue: the scene did move, so the claim below is not vacuous");
+    check(controller.standaloneOnAir() && controller.standalonePath() == bed,
+          "media cue: a go neither restarts nor stops the production track");
+    controller.selectStandaloneTrack(QString());
+    check(waitUntil([&controller] { return !controller.standaloneOnAir(); }),
+          "media cue: Stop takes the track down, and the removal is the acknowledgement");
+    check(controller.standaloneRefusal().isEmpty() && controller.standaloneRefusalPath().isEmpty(),
+          "media cue: the new selection retires the verdict the last one left");
 
     std::printf("frontend_journey: go/gradient/composed clears/restore across a 16-deep prune, "
                 "adoption of both plates with restore from the new paths, a real missing-"

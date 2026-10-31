@@ -2120,10 +2120,10 @@ void exerciseMediaBinViews(const std::filesystem::path& root) {
     docs.addSlide();
     check(docs.assets().isEmpty(), "a service starts with no media to list");
 
-    // Registered the way the import dialog hands names over. The bytes need
-    // not exist yet: what a name IS is decided from the name, and whether the
-    // file is really there is a save-time question (task 2.2) — exactly as the
-    // bin's label is a browse-time one.
+    // Registered the way the import dialog hands names over: what a name IS
+    // is decided from the name, not from bytes, so these four are listed
+    // whether or not anything is behind them (the second half of that —
+    // whether the file is there at all — is pinned just below).
     check(docs.importMediaFile(QStringLiteral("/fixtures/loop.mp4"))
               && docs.importMediaFile(QStringLiteral("/fixtures/hymn.MP3"))
               && docs.importMediaFile(QStringLiteral("/fixtures/plate.jpeg"))
@@ -2140,6 +2140,33 @@ void exerciseMediaBinViews(const std::filesystem::path& root) {
               && kinds.value("plate.jpeg") == QLatin1String("picture")
               && kinds.value("notes.txt") == QLatin1String("other"),
           "every asset row carries the kind its name means to the pipeline");
+
+    // And whether the file is where that name says (task UI.4b) — the row the
+    // bin shows as "file is not here". These four came from a dialog and were
+    // never written, so "not here" is the honest answer for all of them; and
+    // because the answer is taken each time the rows are projected, the file
+    // that turns up afterwards, or is moved away mid-service, is what the row
+    // then says. That is the whole of what a view may claim about a file: one
+    // stat. Whether the bytes DECODE is the worker's probe's answer, and the
+    // bin waits for it.
+    auto existsOf = [&docs](const char* name) {
+        for (const QVariant& entry : docs.assets()) {
+            const QVariantMap row = entry.toMap();
+            if (row.value(QStringLiteral("name")).toString() == QLatin1String(name)) {
+                return row.value(QStringLiteral("exists")).toBool();
+            }
+        }
+        return false;
+    };
+    check(!existsOf("loop.mp4") && !existsOf("notes.txt"),
+          "a registered name with nothing behind it reports itself absent");
+    const std::filesystem::path bed = root / "bed.mp3";
+    { std::ofstream out(bed); out << "AUDIOBYTES"; }
+    check(docs.importMediaFile(QString::fromStdString(bed.string())) && existsOf("bed.mp3"),
+          "a file that is really there reports itself present");
+    std::filesystem::rename(bed, root / "bed-moved-away.mp3");
+    check(!existsOf("bed.mp3"),
+          "and a file moved out from under the service says so without any edit");
 
     const QStringList filters = docs.mediaImportNameFilters();
     check(filters.size() == 2 && filters.at(0).startsWith(QStringLiteral("Media files ("))

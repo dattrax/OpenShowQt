@@ -12,6 +12,8 @@
 #include <QStringList>
 
 #include <cstddef>
+#include <filesystem>
+#include <system_error>
 
 #include "LibrarySearch.h"
 
@@ -363,6 +365,17 @@ QVariantList DocumentViews::assets() const {
         entry.insert(QStringLiteral("kind"),
                      QString::fromLatin1(openshow::domain::assetKindName(
                          openshow::domain::assetPathKind(asset->sourcePath))));
+        // And whether the file is where that name says it is (task UI.4b).
+        // One stat per row, no decoding: whether the BYTES play is the
+        // worker's probe's answer and this view never presumes to give it —
+        // it only declines to call a file that is plainly absent a cue the
+        // operator can use. Renamed and deleted files are what this reports,
+        // and it is the difference between "the service lost the file" and
+        // "this build cannot use the file", which the bin says separately.
+        std::error_code present;
+        entry.insert(QStringLiteral("exists"),
+                     !asset->sourcePath.empty()
+                         && std::filesystem::exists(asset->sourcePath, present));
         list.append(entry);
     }
     return list;
