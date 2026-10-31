@@ -356,7 +356,7 @@ and archived 6.22 handoff. The current post-6.22 findings are B1–B5 below.
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| 6.23a | TODO | Make standalone supersession and retirement reservation one decision | Controlled request-arrival race cannot overwrite a busy lane or lose a joinable thread; B1 |
+| 6.23a | DONE | Make standalone supersession and retirement reservation one decision | Controlled request-arrival race cannot overwrite a busy lane or lose a joinable thread; B1 |
 | 6.23b | TODO | Commit deferred scenes and media as one output transaction | Real-session A→B→C/clear retains truthful pending/active state and matching preview pixels; B2 |
 | 6.23c | TODO | Invalidate old standalone probes when a newer intent removes audio | Removal during one or several queued probes cannot resurrect playback; B3 |
 | 6.23d | TODO | Pair seek completion with video deadline and clock generations | Delayed forward/backward seeks continue presenting without stale-clock stalls; B4 |

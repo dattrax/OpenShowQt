@@ -705,20 +705,28 @@ void BackgroundTransport::applyStandaloneOps() {
         // brings the retry. Abandoning inline (the old way) destroyed the
         // player right here: feeder, mixer and sink joins on the frame
         // tick, uncontracted by anything.
+        if (fStandaloneStageClaimHook) {
+            fStandaloneStageClaimHook();
+        }
         bool superseded = false;
+        std::shared_ptr<StandaloneRetirement> reservation;
+        std::shared_ptr<StandaloneStage> stage;
         {
             std::lock_guard<std::mutex> swapLock(fStandaloneSwapMutex);
             superseded = fStandaloneSwap && *fStandaloneSwap != fStandaloneStage->path;
+            if (superseded && fStandaloneStage->player) {
+                reservation = reserveStandaloneRetirement();
+                if (!reservation) return;  // keep the held player and its lane owned
+            }
+            stage = std::move(fStandaloneStage);
         }
-        if (superseded && inFlightStandaloneRetirement() != nullptr) {
-            return;
-        }
-        std::shared_ptr<StandaloneStage> stage = std::move(fStandaloneStage);
         stage->worker.join();  // the job returned with its store; this only reaps
         std::unique_ptr<AvPlayer> abandoned;
         {
-            std::lock_guard<std::mutex> swapLock(fStandaloneSwapMutex);
-            if (fStandaloneSwap && *fStandaloneSwap != stage->path) {
+            // This is the decision made while claiming the stage. A later
+            // request is the next swap, not a reason to change this outcome
+            // after its retirement capacity has already been reserved.
+            if (superseded) {
                 // A newer selection arrived mid-bring-up: this player is
                 // for a request the operator has already replaced. It
                 // started HELD — nothing was ever audible — and its joins
@@ -730,9 +738,8 @@ void BackgroundTransport::applyStandaloneOps() {
             }
         }
         if (abandoned != nullptr) {
-            // The peek above proved the slot free; only this thread fills
-            // it, so the hand-off here holds its precondition.
-            retireStandaloneInstance(std::move(abandoned));
+            // The claim reserved this slot before consuming the held player.
+            retireStandaloneInstance(std::move(abandoned), reservation);
         }
         if (abandoned == nullptr && !stage->player) {
             // A failed bring-up: the block's story, told under fMutex as
@@ -807,8 +814,9 @@ void BackgroundTransport::applyStandaloneOps() {
     // requested-vs-presented pair. A claim of a SILENT placeholder does
     // not occupy the lane at all, so a swap that has nothing audible to
     // retire never defers.
-    if (fStandaloneLive.load(std::memory_order_acquire) &&
-        inFlightStandaloneRetirement() != nullptr) {
+    const bool needsRetirement = fStandaloneLive.load(std::memory_order_acquire);
+    const auto reservation = needsRetirement ? reserveStandaloneRetirement() : nullptr;
+    if (needsRetirement && !reservation) {
         std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
         if (!fStandaloneSwap) {
             fStandaloneSwap = swap;
@@ -874,7 +882,7 @@ void BackgroundTransport::applyStandaloneOps() {
         // new is being asked of the block.
     }
     if (hadLive) {
-        retireStandaloneInstance(std::move(retiring));  // pause here, joins on the lane
+        retireStandaloneInstance(std::move(retiring), reservation);  // joins on the lane
     } else {
         retiring.reset();  // never started: no threads, no wait, no lane
     }
@@ -931,7 +939,17 @@ void BackgroundTransport::reapStandaloneStage() {
     fStandaloneStage.reset();
 }
 
-void BackgroundTransport::retireStandaloneInstance(std::unique_ptr<AvPlayer> player) {
+std::shared_ptr<BackgroundTransport::StandaloneRetirement>
+BackgroundTransport::reserveStandaloneRetirement() {
+    const std::lock_guard<std::mutex> lock(fMutex);
+    if (fStandaloneRetirement) return nullptr;
+    fStandaloneRetirement = std::make_shared<StandaloneRetirement>();
+    return fStandaloneRetirement;
+}
+
+void BackgroundTransport::retireStandaloneInstance(
+    std::unique_ptr<AvPlayer> player,
+    const std::shared_ptr<StandaloneRetirement>& retirement) {
     // Silence at the hand-off (6.22c's rule, re-expressed for the track):
     // pause() deactivates the sink stream and latches the clock, and it
     // joins no thread. The retired bed must not stay AUDIBLE for as long
@@ -940,8 +958,10 @@ void BackgroundTransport::retireStandaloneInstance(std::unique_ptr<AvPlayer> pla
     // was never audible (Config::startHeld); pausing it states the same
     // fact twice, harmlessly.
     player->pause();
-    auto retirement = std::make_shared<StandaloneRetirement>();
-    retirement->player = std::move(player);
+    {
+        const std::lock_guard<std::mutex> lock(fMutex);
+        retirement->player = std::move(player);
+    }
     retirement->worker = std::thread([this, r = retirement] {
         // Unlike the background lane, there is no producer join that keeps
         // this slot occupied while the player dies — so the player stays
@@ -967,10 +987,6 @@ void BackgroundTransport::retireStandaloneInstance(std::unique_ptr<AvPlayer> pla
         // has paid its one sleep).
         wakeRenderThread();
     });
-    {
-        const std::lock_guard<std::mutex> lock(fMutex);
-        fStandaloneRetirement = std::move(retirement);
-    }
 }
 
 void BackgroundTransport::reapStandaloneRetirement() {

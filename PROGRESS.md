@@ -4,10 +4,10 @@ Updated: 2026-10-31 (Europe/London). Reviewed code: `db406f7` (6.22g).
 
 ## Current checkpoint
 
-The [post-6.22 review](docs/reviews/M6-post-6.22-review-2026-10-31.md) identifies
-five remaining integration defects, now tracked as **6.23a–e** in [PLAN.md](PLAN.md).
-Keep earlier DONE checkpoints and their evidence. Complete these follow-ups
-before claiming full conformance or advancing to M7.
+The [post-6.22 review](docs/reviews/M6-post-6.22-review-2026-10-31.md) introduced
+**6.23a–e**. **6.23a is DONE**; b–e remain open. The retirement claim reserves
+capacity before consuming a superseded stage; its controlled arrival regression
+passed with real audio. Current evidence: [6.23 verification](docs/reviews/M6-6.23-verification-2026-10-31.md).
 
 Manual output fix: disabled GLFW's fullscreen auto-iconify on focus loss, so
 activating the operator UI does not ask Wayland to minimize the audience window.

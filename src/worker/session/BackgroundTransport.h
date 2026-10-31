@@ -208,6 +208,12 @@ public:
     BackgroundTransport(const BackgroundTransport&) = delete;
     BackgroundTransport& operator=(const BackgroundTransport&) = delete;
 
+    // Deterministic request-arrival seam, configured before running. Called
+    // without locks once a completed standalone stage is ready to be claimed.
+    void setStandaloneStageClaimHook(std::function<void()> hook) {
+        fStandaloneStageClaimHook = std::move(hook);
+    }
+
     // --- the video seam (tasks 1.5e, 5.5; the bench seam too) ---
 
     // Before run(), or behind a retirement boundary (the 6.21c2 re-reading
@@ -516,7 +522,10 @@ private:
     // destruction follows the join, on the reaping thread, like every
     // other player death. reapStandaloneRetirement() runs on the render
     // thread (the loop's pass) and drained for shutdown.
-    void retireStandaloneInstance(std::unique_ptr<AvPlayer> player);
+    struct StandaloneRetirement;
+    std::shared_ptr<StandaloneRetirement> reserveStandaloneRetirement();
+    void retireStandaloneInstance(std::unique_ptr<AvPlayer> player,
+                                  const std::shared_ptr<StandaloneRetirement>& reservation);
     void reapStandaloneRetirement();
     // The track's duration read, seam and all (task 6.22e1): called on the
     // bring-up lane, never on the render thread. -1 when the container
@@ -697,6 +706,7 @@ private:
         std::thread worker;
     };
     std::shared_ptr<StandaloneStage> fStandaloneStage;  // render thread
+    std::function<void()> fStandaloneStageClaimHook;
     // The standalone track's OWN retirement lane (task 6.22e3, review A5).
     // It mirrors the background transport's Retirement and deliberately
     // does NOT share its slot: a bed change and a background change are

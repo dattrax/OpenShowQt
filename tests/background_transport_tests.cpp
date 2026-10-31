@@ -834,6 +834,64 @@ void testStandaloneStopRunsOnLane() {
     unsetenv("OPENSHOW_FAULT_PLAYER_STOP_MATCH");
 }
 
+// 6.23a: C arrives at the completed-stage claim boundary while A still
+// occupies the retirement lane. B must remain held, not overwrite A's owner.
+void testStandaloneClaimReservesRetirement() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) return;
+    openshow::media::PipeWireSink probe;
+    std::string error;
+    if (!probe.start(48000, &error)) {
+        std::printf("   skipped standalone claim race (no PipeWire: %s)\n", error.c_str());
+        return;
+    }
+    probe.stop();
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string a = "transport-fixtures/claim-a.m4a";
+    const std::string b = "transport-fixtures/claim-b.m4a";
+    const std::string c = "transport-fixtures/claim-c.m4a";
+    for (const auto& path : {a, b, c}) {
+        if (std::system(("ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+                         "anullsrc=channel_layout=stereo:sample_rate=48000 -t 2 -c:a aac "
+                         + path).c_str()) != 0) {
+            check(false, "standalone claim fixtures generated");
+            return;
+        }
+    }
+    setenv("OPENSHOW_FAULT_PLAYER_STOP_MS", "1500", 1);
+    setenv("OPENSHOW_FAULT_PLAYER_STOP_MATCH", "claim-a.m4a", 1);
+    BackgroundTransport transport;
+    bool inject = false;
+    bool injected = false;
+    transport.setStandaloneStageClaimHook([&] {
+        if (inject && !injected) {
+            injected = true;
+            std::thread request([&] { transport.armStandaloneTrack(c); });
+            request.join();
+        }
+    });
+    check(transport.requestStandaloneAudio(a, &error), "claim race: A accepted");
+    check(pumpUntil(transport, [&] { return transport.standaloneLive(); }) > 0,
+          "claim race: A is live");
+    transport.armStandaloneTrack(b);
+    transport.applyTransportOps();
+    inject = true;
+    check(pumpUntil(transport, [&] { return injected; }) > 0,
+          "claim race: request C arrives as B completes");
+    check(transport.retiringStandaloneDelivery().has_value(),
+          "claim race: A's retirement ownership is retained");
+    check(!transport.standaloneLive(), "claim race: superseded B remains held while A retires");
+    const auto began = std::chrono::steady_clock::now();
+    transport.applyTransportOps();
+    check(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
+              .count() < 100, "claim race: occupied capacity does not block rendering");
+    check(pumpUntil(transport, [&] {
+        return transport.standaloneLive() && transport.mediaStatus().standalone.path == c;
+    }) > 0, "claim race: latest C starts after both predecessor owners retire safely");
+    transport.shutdown();
+    unsetenv("OPENSHOW_FAULT_PLAYER_STOP_MS");
+    unsetenv("OPENSHOW_FAULT_PLAYER_STOP_MATCH");
+}
+
 /* --- task 6.22e4 (review A5): the seek-completion wait off the loop -------
    AvPlayer::seekTo fanned the jump out and then waited up to 500 ms PER
    FEEDER for the container's acknowledgment — inline, on the transport
@@ -1133,6 +1191,7 @@ int main() {
     testSwapDefersBehindSlowRetirement();
     testStandaloneDurationTravelsWithStage();
     testStandaloneStopRunsOnLane();
+    testStandaloneClaimReservesRetirement();
     testSeekCompletesOffTheFrameTick();
     testStandaloneStatusTracksReplacement();
 
