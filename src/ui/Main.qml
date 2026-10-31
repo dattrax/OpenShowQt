@@ -125,7 +125,14 @@ Window {
     TopBar {
         id: topBar
         page: root.page
+        // The toolbar's two working controls (UI.6): Search is exactly
+        // Ctrl+F, and the bin toggle reads the bin's own open state and
+        // asks the panel store to flip it — the bin's strip and the
+        // keyboard stay live, and all three can never disagree.
+        drawerOpen: mediaBin.open
         onPageSelected: name => root.page = name
+        onSearchRequested: leftDock.focusSearch()
+        onDrawerToggleRequested: panels.toggleDrawer()
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top

@@ -1114,6 +1114,86 @@ int main(int argc, char** argv) {
         combo->setProperty("currentIndex", 0);
         QTest::qWait(20);
     }
+    // --- task UI.6: toolbar controls, keyboard handback, panel restore ----
+    // The header's two working controls, and the layout promises the leaf
+    // makes about them: the bin toggle reads the bin's state (it never
+    // remembers its own press), Search is exactly Ctrl+F — the field owns
+    // the keyboard, Escape hands it back, the presenter's walk is live
+    // again — the page controls work from the bar on every page, and a
+    // collapsed dock restores from its strip.
+    {
+        auto clickAt = [window](QQuickItem* item, qreal x, qreal y) {
+            if (item) {
+                QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                  item->mapToScene(QPointF(x, y)).toPoint());
+            }
+        };
+        auto* search = findNamed(window->contentItem(), "toolbarSearchButton");
+        auto* binToggle = findNamed(window->contentItem(), "toolbarBinToggle");
+        auto* tabShow = findNamed(window->contentItem(), "toolbarTabShow");
+        auto* tabEdit = findNamed(window->contentItem(), "toolbarTabEdit");
+        auto* tabSettings = findNamed(window->contentItem(), "toolbarTabSettings");
+        check(search && binToggle && tabShow && tabEdit && tabSettings
+                  && search->isVisible() && binToggle->isVisible()
+                  && tabEdit->isVisible() && tabSettings->isVisible(),
+              "the header offers Search, both operator pages, media visibility and Settings");
+        check(binToggle->property("checked").toBool() && mediaBin->property("open").toBool(),
+              "the visibility control reads the bin's own state");
+        clickAt(binToggle, 30, 20);
+        QTest::qWait(60);
+        check(!mediaBin->property("open").toBool() && !binToggle->property("checked").toBool(),
+              "the toolbar closes the bin and the control follows the state, not the click");
+        clickAt(mediaBin, mediaBin->width() / 2, 20);
+        QTest::qWait(60);
+        check(mediaBin->property("open").toBool() && binToggle->property("checked").toBool(),
+              "and the bin's own bar reopens it with the toolbar agreeing");
+
+        clickAt(search, 30, 20);
+        QTest::qWait(80);
+        auto* field = findNamed(window->contentItem(), "librarySearchField");
+        check(field && field->property("activeFocus").toBool()
+                  && window->property("typingIntoField").toBool(),
+              "the toolbar Search takes the keyboard to the sidebar field");
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTest::qWait(40);
+        check(!window->property("typingIntoField").toBool(),
+              "Escape leaves the field and the presenter's keys come back");
+        showPageItem->setProperty("cueIndex", 0);
+        QTest::qWait(20);
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QTest::qWait(40);
+        check(showPageItem->property("cueIndex").toInt() == 1,
+              "the running-order walk is live again after a search");
+        showPageItem->setProperty("cueIndex", 0);
+        QTest::qWait(20);
+
+        clickAt(tabSettings, 33, 26);
+        QTest::qWait(60);
+        check(window->property("page").toString() == QLatin1String("settings"),
+              "the right-hand Settings tab switches modes");
+        check(search->isVisible() && binToggle->isVisible() && tabShow->isVisible(),
+              "no header control hides or collapses because a different page is up");
+        clickAt(tabShow, 33, 26);
+        QTest::qWait(60);
+        check(window->property("page").toString() == QLatin1String("show")
+                  && tabShow->property("selected").toBool()
+                  && !tabSettings->property("selected").toBool(),
+              "the page marker follows the toolbar's own choice");
+
+        auto* right = window->findChild<QQuickItem*>("outputDock");
+        const qreal rightBefore = panels.rightWidth();
+        const auto gripR = right->mapToScene(QPointF(2, 60)).toPoint();
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, gripR);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, gripR);
+        check(panels.rightWidth() == rightBefore,
+              "a press released in place on the handle resizes nothing");
+        panels.resizeRight(4);
+        QTest::qWait(60);
+        check(panels.rightWidth() <= 4.5, "the right dock can collapse to its strip");
+        clickAt(right, 2, right->height() / 2);
+        QTest::qWait(60);
+        check(panels.rightWidth() > 200.0, "a click on the collapsed strip restores it");
+    }
     if (qEnvironmentVariableIsSet("OPENSHOW_WORKSPACE_LIVE")) {
         worker.start();
         QElapsedTimer timeout;
@@ -1129,19 +1209,70 @@ int main(int argc, char** argv) {
     }
     const auto capture = qEnvironmentVariable("OPENSHOW_WORKSPACE_CAPTURE");
     if (!capture.isEmpty()) {
+        // UI.6's deterministic populated state. The long-named cue is
+        // imported HERE so no earlier assertion sees it: it is the bin
+        // row's and rail combo's long-name story. This run is a
+        // disconnected session, which is the disconnected capture; the
+        // faulted sentences are pinned in the controller tests, which an
+        // offscreen window cannot drive.
+        const QString files = QString::fromStdString(scratch.path().toStdString());
+        const QString longName = QStringLiteral(
+            "A very long hymn title that has to elide inside the row column.mp3");
+        {
+            std::ofstream(std::filesystem::path(scratch.path().toStdString())
+                          / longName.toStdString()) << "BYTES";
+        }
+        check(docs.importMediaFile(files + "/" + longName),
+              "the capture library carries a long-named cue");
+        QTest::qWait(60);
         window->grabWindow().save(capture);
+        panels.toggleDrawer();
+        QTest::qWait(60);
+        window->grabWindow().save(capture + ".closed.png");
+        panels.toggleDrawer();
+        QTest::qWait(60);
         window->resize(QSize(1380, 800));
         QTest::qWait(50);
         window->grabWindow().save(capture + ".1380.png");
+        panels.toggleDrawer();
+        QTest::qWait(50);
+        window->grabWindow().save(capture + ".1380.closed.png");
+        panels.toggleDrawer();
+        QTest::qWait(50);
         window->resize(QSize(1000, 680));
         QTest::qWait(50);
         window->grabWindow().save(capture + ".1000.png");
+        panels.toggleDrawer();
+        QTest::qWait(50);
+        window->grabWindow().save(capture + ".1000.closed.png");
+        panels.toggleDrawer();
+        QTest::qWait(50);
+        // The empty-collection word: no pictures exist, so the Pictures
+        // collection must say what is missing instead of showing a void.
+        mediaBin->setProperty("filter", "picture");
+        QTest::qWait(50);
+        window->grabWindow().save(capture + ".emptyfilter.png");
+        mediaBin->setProperty("filter", "");
+        QTest::qWait(50);
+        window->resize(QSize(1680, 1020));
+        QTest::qWait(50);
         window->setProperty("page", "edit");
         QTest::qWait(50);
         window->grabWindow().save(capture + ".edit.png");
         window->setProperty("page", "settings");
         QTest::qWait(50);
         window->grabWindow().save(capture + ".settings.png");
+        // The empty-collection state, last because removal is a document
+        // edit: the bin with nothing in it must say what is missing rather
+        // than show a void. The list is copied first — removeAsset mutates
+        // the very model the loop would otherwise be walking.
+        window->setProperty("page", "show");
+        QTest::qWait(50);
+        const QVariantList capturedAssets = docs.assets();
+        for (const QVariant& asset : capturedAssets)
+            docs.removeAsset(asset.toMap().value(QStringLiteral("id")).toString());
+        QTest::qWait(80);
+        window->grabWindow().save(capture + ".emptybin.png");
     }
     worker.shutdownNow();
     for (const auto& warning : warnings) {

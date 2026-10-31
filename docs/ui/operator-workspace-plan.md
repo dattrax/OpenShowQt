@@ -416,10 +416,55 @@ panel restore. Compare hierarchy, proportions, spacing, contrast and live/select
 markers against the reference image; record remaining differences before claiming
 completion. Run workspace/controller tests and relevant live frontend journeys.
 
+Verification (UI.6, 2026-10-31): `TopBar.qml` is the plan's header row. Left:
+title, then Search, the two operator pages, and media-bin visibility. Right:
+the unsaved marker, the audience dot and its one sentence, and Settings — a
+mode at the far right, not a third operator page. Neither working control
+acts on state it owns: Search is exactly Ctrl+F (the sidebar takes the
+detail view to the Library before the field takes focus), and the visibility
+toggle reads `mediaBin.open` and asks `panels.toggleDrawer()` — the bin's own
+strip and the keyboard shortcut flip that same value, so the three can never
+disagree. No header control hides or collapses with the page: the Settings
+capture shows Search, Show, Edit and Media all present with Settings the one
+underlined. `workspace_ui_tests` pins this — the toggle in both directions
+with the bin's own bar agreeing, Search taking focus to the field, Escape
+handing the keyboard back, the presenter's PgDn walk then stepping again,
+tab clicks switching modes and moving the marker, a press released in place
+on a panel handle resizing nothing, and a collapsed dock restoring from a
+strip click; the snap maths behind those two is `workspace_panels_tests`.
+
+The deterministic populated state captures at all three sizes with the bin
+open and closed, the bin filtered to a one-row kind (the bar counting
+"5 items · 1 shown"), the same library after every asset is removed ("no
+media — import a file", with the rail answering "no prepared audio"), a cue
+whose name is whole at 1680 and elided at 1380 and 1000, and a library row
+that elides. This run
+has no worker, which is the disconnected capture: "Output disconnected" on
+the monitor, "Output unavailable" in the bar, every cue control disabled
+and honest. The faulted sentences need a live worker and stay pinned where
+the acknowledgements originate — the refusal seam in `worker_controller_tests`
+and `frontend_journey_tests` section 8 — the same properties the bar's
+attention sentence reads.
+
+Against the reference (docs/reference.md §2): the charcoal surfaces,
+separators, blue selection, the underlined current page, amber attention and
+the green/red audience dot follow its scheme, and the panel widths, snap
+behaviour and collapsed-strip restore already matched from UI.1. Remaining
+differences, recorded not closed: the reference bar is 40 px of centred
+icon-only buttons and doubles as the window drag region, while ours is 64 px
+with glyph over label grouped left — larger targets, labels that read
+without hover, native window frame kept; the reference marks unsaved work
+with a red strip at the bar's left edge, where we say "Unsaved changes" in
+words beside the audience dot; and the reference's right-hand cluster holds
+output buttons including fullscreen, while ours holds state only —
+fullscreen remains the F11 setting and no routing control returned.
+Gates: desktop 57/57 (344.68 s, 15 display), headless 32/32 (65.43 s); both
+trees build clean.
+
 ## Completion rule
 
-UI.1–UI.3c, UI.4 (both leaves) and UI.5 are closed, verification recorded
-above; UI.6 remains TODO until implemented and checked.
+UI.1–UI.3c, UI.4 (both leaves), UI.5 and UI.6 are closed, verification
+recorded above.
 A colour change or one screenshot does not close the layout work. Keep the short
 ledger in PLAN.md; store audit details and later capture evidence alongside this
 plan. M6's completed async fixes remain DONE, and M7 release gates remain open.
