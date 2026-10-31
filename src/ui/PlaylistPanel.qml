@@ -1,27 +1,11 @@
 import QtQuick
 import QtQuick.Controls
 
-/*
- * The left dock (task 6.19b5, from Main.qml's 4.2 panel): the show page of
- * the reference — the playlist chips on top (with the current one), the
- * running order itself below. Rows reorder by drag or the small handles
- * (drop targets compute the gap), rows arriving from the drawer insert at
- * the drop point, and everything goes through the undoable controller (§5).
- *
- * The split's row asked for "explicit signals for insert/remove/move/
- * select"; reading the real block, those commands were always the
- * controller's — every gesture calls `docs` (the context property) and the
- * rows it renders are its projection rows (playlists, playlistEntries with
- * each show resolved). There is no window state in here to signal about, so
- * like OutputPanel this component takes no properties and emits no signals:
- * the window's remaining ownership is where the dock sits and the id the
- * centre pages anchor to. What the gesture code has to get right is
- * positional arithmetic — the nearest-row drop and the after-the-move
- * toIndex — and that moves with the gestures, not out of them.
- */
+// Library above the running order, as in the supplied operator reference.
 SidePanel {
     id: playlistPanel
     side: "left"
+    property bool editingEnabled: false
     width: panels.leftWidth
     onDraggedTo: candidate => panels.resizeLeft(candidate)
     onStripClicked: panels.clickLeft()
@@ -31,10 +15,38 @@ SidePanel {
         anchors.margins: 10
 
         Text {
+            id: libraryTitle
+            text: "LIBRARY"
+            color: "#b0b0b0"; font.pixelSize: 11; font.bold: true
+        }
+        ListView {
+            id: libraryBox
+            anchors.top: libraryTitle.bottom; anchors.topMargin: 8
+            width: parent.width
+            height: Math.min(150, Math.max(65, parent.height * 0.25))
+            clip: true
+            model: docs.songs
+            ScrollBar.vertical: ScrollBar {}
+            delegate: ItemDelegate {
+                required property var modelData
+                width: libraryBox.width; height: 28
+                text: modelData.name
+                font.pixelSize: 12
+                highlighted: modelData.id === docs.currentSongId
+                onClicked: docs.selectSong(modelData.id)
+                onDoubleClicked: docs.addShowToPlaylist(modelData.id)
+                background: Rectangle {
+                    color: parent.highlighted ? "#1678cf" : parent.hovered ? "#4a4a4a" : "transparent"
+                }
+            }
+        }
+
+        Text {
             id: playlistsTitle
-            anchors.top: parent.top
+            anchors.top: libraryBox.bottom
+            anchors.topMargin: 14
             anchors.left: parent.left
-            color: "#8f93a5"
+            color: "#b0b0b0"
             font.pixelSize: 11
             font.bold: true
             text: "PLAYLISTS"
@@ -51,7 +63,7 @@ SidePanel {
             ListView {
                 id: playlistList
                 orientation: ListView.Horizontal
-                width: playlistRow.width - newPlaylistButton.width - 6
+                width: Math.max(0, playlistRow.width - (newPlaylistButton.visible ? newPlaylistButton.width + 6 : 0))
                 height: 26
                 spacing: 6
                 clip: true
@@ -64,14 +76,14 @@ SidePanel {
                     width: chipText.width + 18
                     height: 26
                     radius: 4
-                    color: playlistChip.modelData.id === docs.currentPlaylistId ? "#f0008c" : "#12121c"
-                    border.color: "#2f3542"
+                    color: playlistChip.modelData.id === docs.currentPlaylistId ? "#1685f8" : "#242424"
+                    border.color: "#4a4a4a"
 
                     Text {
                         id: chipText
                         anchors.centerIn: parent
                         font.pixelSize: 12
-                        color: playlistChip.modelData.id === docs.currentPlaylistId ? "#ffffff" : "#f0f0ff"
+                        color: playlistChip.modelData.id === docs.currentPlaylistId ? "#ffffff" : "#eeeeee"
                         text: playlistChip.modelData.name
                     }
 
@@ -86,17 +98,18 @@ SidePanel {
             // without the glyph at this size).
             Rectangle {
                 id: newPlaylistButton
+                visible: playlistPanel.editingEnabled
 
                 width: 32
                 height: 26
                 radius: 4
-                color: newPlaylistMouse.containsMouse ? "#2f3542" : "#12121c"
-                border.color: "#2f3542"
+                color: newPlaylistMouse.containsMouse ? "#4a4a4a" : "#242424"
+                border.color: "#4a4a4a"
 
                 Text {
                     anchors.centerIn: parent
                     font.pixelSize: 15
-                    color: "#f0f0ff"
+                    color: "#eeeeee"
                     text: "+"
                 }
 
@@ -114,7 +127,7 @@ SidePanel {
             anchors.top: playlistRow.bottom
             anchors.topMargin: 10
             anchors.left: parent.left
-            color: "#8f93a5"
+            color: "#b0b0b0"
             font.pixelSize: 11
             font.bold: true
             text: "PLAYLIST"
@@ -128,8 +141,8 @@ SidePanel {
             anchors.right: parent.right
             anchors.bottom: serviceDirText.top
             anchors.bottomMargin: 8
-            color: "#12121c"
-            border.color: "#2f3542"
+            color: "#242424"
+            border.color: "#4a4a4a"
 
             ListView {
                 id: entryList
@@ -149,18 +162,18 @@ SidePanel {
                     Rectangle {
                         anchors.fill: parent
                         anchors.margins: 1
-                        color: entryRow.modelData.showId === docs.currentSongId ? "#f0008c"
-                             : (entryMouse.containsMouse ? "#2f3542" : "transparent")
+                        color: entryRow.modelData.showId === docs.currentSongId ? "#1685f8"
+                             : (entryMouse.containsMouse ? "#4a4a4a" : "transparent")
                     }
 
                     Text {
                         anchors.left: parent.left
                         anchors.leftMargin: 6
                         anchors.verticalCenter: parent.verticalCenter
-                        width: entryRow.width - 76
+                        width: Math.max(0, entryRow.width - (playlistPanel.editingEnabled ? 76 : 12))
                         elide: Text.ElideRight
                         font.pixelSize: 13
-                        color: entryRow.modelData.showId === docs.currentSongId ? "#ffffff" : "#f0f0ff"
+                        color: entryRow.modelData.showId === docs.currentSongId ? "#ffffff" : "#eeeeee"
                         text: (entryRow.modelData.section !== ""
                                ? entryRow.modelData.section + " \u00b7 " : "")
                               + entryRow.modelData.showName
@@ -169,6 +182,8 @@ SidePanel {
                     // The reorder handles: the drag is the reference's
                     // path, these make the same move without a mouse.
                     Row {
+                        z: 1
+                        visible: playlistPanel.editingEnabled
                         anchors.right: parent.right
                         anchors.rightMargin: 2
                         anchors.verticalCenter: parent.verticalCenter
@@ -193,8 +208,8 @@ SidePanel {
                                 horizontalAlignment: Text.AlignHCenter
                                 verticalAlignment: Text.AlignVCenter
                                 font.pixelSize: modelData.action === "remove" ? 11 : 9
-                                color: !modelData.enabled ? "#3a3f4e"
-                                     : (handleMouse.containsMouse ? "#f0f0ff" : "#8f93a5")
+                                color: !modelData.enabled ? "#606060"
+                                     : (handleMouse.containsMouse ? "#eeeeee" : "#b0b0b0")
                                 text: modelData.glyph
 
                                 MouseArea {
@@ -220,21 +235,32 @@ SidePanel {
                         id: entryMouse
                         anchors.fill: parent
                         hoverEnabled: true
-                        drag.target: entryRow
+                        drag.target: playlistPanel.editingEnabled ? entryDragProxy : null
                         onClicked: docs.selectSong(entryRow.modelData.showId)
-                        onReleased: if (entryRow.Drag.active) entryRow.Drag.drop()
+                        onReleased: {
+                            if (entryDragProxy.Drag.active) entryDragProxy.Drag.drop()
+                            entryDragProxy.x = 0
+                            entryDragProxy.y = 0
+                        }
+                        onCanceled: { entryDragProxy.x = 0; entryDragProxy.y = 0 }
                     }
 
-                    Drag.active: entryMouse.drag.active
-                    Drag.keys: ["text/plain"]
-                    Drag.mimeData: ({ "text/plain": "entry:" + entryRow.modelData.entryId })
-                    Drag.hotSpot: Qt.point(width / 2, height / 2)
+                    Item {
+                        id: entryDragProxy
+                        readonly property string payload: "entry:" + entryRow.modelData.entryId
+                        Drag.source: entryDragProxy
+                        width: entryRow.width; height: entryRow.height
+                        Drag.active: entryMouse.drag.active
+                        Drag.keys: ["text/plain"]
+                        Drag.mimeData: ({"text/plain": "entry:" + entryRow.modelData.entryId})
+                        Drag.hotSpot: Qt.point(width / 2, height / 2)
+                    }
                 }
 
                 Text {
                     anchors.centerIn: parent
                     visible: entryList.count === 0
-                    color: "#6a6f80"
+                    color: "#929292"
                     font.pixelSize: 13
                     text: "Nothing here"  // the reference's empty playlist
                 }
@@ -248,7 +274,9 @@ SidePanel {
                 keys: ["text/plain"]
 
                 onDropped: function (drop) {
-                    const parts = drop.mimeData.text.split(":")
+                    const payload = drop.source && drop.source.payload
+                        ? drop.source.payload : drop.getDataAsString("text/plain")
+                    const parts = payload.split(":")
                     const kind = parts[0]
                     const id = parts[1]
                     if (!id) {
@@ -284,7 +312,7 @@ SidePanel {
             anchors.left: parent.left
             anchors.right: parent.right
             wrapMode: Text.WordWrap
-            color: docs.dirty ? "#d8c07a" : "#8f93a5"
+            color: docs.dirty ? "#d8c07a" : "#b0b0b0"
             font.pixelSize: 11
             text: (docs.dirty ? "\u25cf unsaved  \u00b7  " : "")
                   + (docs.status !== "" ? docs.status + "  \u00b7  " : "")

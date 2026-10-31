@@ -43,9 +43,8 @@ int main(int argc, char* argv[]) {
     app.setApplicationName("openshow-ui");
     app.setApplicationVersion(QString::fromLatin1(openshow::domain::applicationVersion()));
 
-    // M4: the reference is a flat dark UI; the default light controls sit
-    // wrong on its palette. Material's dark theme, with the reference's
-    // accent (--secondary #f0008c) attached on the root in QML.
+    // Workspace controls inherit the neutral dark palette and blue accent
+    // from Main.qml; shared compact buttons provide the flat toolbar style.
     QQuickStyle::setStyle("Material");
 
     openshow::ui::WorkerController worker;

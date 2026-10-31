@@ -76,13 +76,23 @@ qt_add_executable(openshow-ui
 )
 add_executable(openshow::ui ALIAS openshow-ui)
 
+# The interaction fixture loads exactly the same QML and native preview type.
+set(OPENSHOW_WORKSPACE_QML_NAMES
+  Main.qml TopBar.qml SidePanel.qml LibraryDrawer.qml EditCanvas.qml
+  ShortcutMap.qml OutputPanel.qml PlaylistPanel.qml ShowPage.qml
+  EditPage.qml SettingsPage.qml PanelField.qml PanelButton.qml
+)
+set(OPENSHOW_WORKSPACE_QML_FILES)
+foreach(qml IN LISTS OPENSHOW_WORKSPACE_QML_NAMES)
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/${qml}
+    PROPERTIES QT_RESOURCE_ALIAS ${qml})
+  list(APPEND OPENSHOW_WORKSPACE_QML_FILES ${CMAKE_CURRENT_SOURCE_DIR}/${qml})
+endforeach()
+set(OPENSHOW_WORKSPACE_QML_FILES ${OPENSHOW_WORKSPACE_QML_FILES} PARENT_SCOPE)
 qt_add_qml_module(openshow-ui
   URI OpenShow
   VERSION 1.0
-  QML_FILES Main.qml TopBar.qml SidePanel.qml LibraryDrawer.qml EditCanvas.qml
-            ShortcutMap.qml OutputPanel.qml PlaylistPanel.qml ShowPage.qml
-            EditPage.qml SettingsPage.qml
-            PanelField.qml PanelButton.qml
+  QML_FILES ${OPENSHOW_WORKSPACE_QML_FILES}
   SOURCES PreviewView.h PreviewView.cpp
 )
 

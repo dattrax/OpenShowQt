@@ -12,14 +12,14 @@ import QtQuick.Controls
  * declarations.
  */
 TextField {
-    color: "#f0f0ff"
+    color: "#eeeeee"
     font.pixelSize: 13
     height: 30
     verticalAlignment: Text.AlignVCenter
     leftPadding: 6
     rightPadding: 6
     background: Rectangle {
-        color: "#12121c"
-        border.color: "#2f3542"
+        color: "#242424"
+        border.color: "#4a4a4a"
     }
 }

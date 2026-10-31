@@ -83,9 +83,9 @@ Item {
                                         && !typingIntoField
     readonly property bool presenterTyping: typingIntoField || drawerFocused
                                             || squattedFocus
-    readonly property bool presenterNav: !presenterTyping && slideCount > 0
+    readonly property bool presenterNav: page === "show" && !presenterTyping && slideCount > 0
     readonly property bool numberKeys: numberKeysPresent && !presenterTyping
-                                       && page !== "edit" && slideCount > 0
+                                       && page === "show" && slideCount > 0
 
     // Task 3.4: the reference's presenter keys. Escape clears all — and
     // restores when the output is already clear, matching the button's
@@ -116,20 +116,19 @@ Item {
     }
 
     // Task 4.2: the drawer keys the reference carries (Ctrl+F opens its
-    // search; Ctrl+D toggles the library strip unless a slide is current,
-    // when it duplicates instead — the reference's selection rule, 4.5).
+    // search; Ctrl+D duplicates only in Edit, and toggles the library in Show).
     // Ctrl+1..2 inside the drawer still pick its tabs — see LibraryDrawer
     // — but from the window they now pick pages, like the reference's
     // Ctrl+1..5 (4.3); 3..4 belong to pages that do not exist yet and do
     // nothing.
     Shortcut {
         sequence: "Ctrl+D"
-        enabled: !typingIntoField && slideCount > 0
+        enabled: page === "edit" && !typingIntoField && slideCount > 0
         onActivated: duplicateSlideRequested()
     }
     Shortcut {
         sequence: "Ctrl+D"
-        enabled: !typingIntoField && slideCount === 0
+        enabled: !typingIntoField && (page !== "edit" || slideCount === 0)
         onActivated: toggleDrawerRequested()
     }
     Shortcut {
@@ -282,7 +281,7 @@ Item {
         onActivated: clearAllRequested()
     }
 
-    // Task 4.5: the core document keys. While a field has the focus the
+    // Document mutations belong to Edit. While a field has the focus the
     // editing keys belong to it — undo, redo and the clipboard letters
     // all have native text-field meanings — so they are gated away from
     // typing. Ctrl+S is not a keystroke any field wants, so saving works
@@ -292,17 +291,17 @@ Item {
     // reference.
     Shortcut {
         sequence: StandardKey.Undo
-        enabled: !typingIntoField
+        enabled: page === "edit" && !typingIntoField
         onActivated: undoRequested()
     }
     Shortcut {
         sequence: "Ctrl+Y"
-        enabled: !typingIntoField
+        enabled: page === "edit" && !typingIntoField
         onActivated: redoRequested()
     }
     Shortcut {
         sequence: "Ctrl+Shift+Z"
-        enabled: !typingIntoField
+        enabled: page === "edit" && !typingIntoField
         onActivated: redoRequested()
     }
     Shortcut {
@@ -319,12 +318,12 @@ Item {
     }
     Shortcut {
         sequence: "Ctrl+X"
-        enabled: !typingIntoField
+        enabled: page === "edit" && !typingIntoField
         onActivated: cutRequested()
     }
     Shortcut {
         sequence: "Ctrl+V"
-        enabled: !typingIntoField
+        enabled: page === "edit" && !typingIntoField
         onActivated: pasteRequested()
     }
 

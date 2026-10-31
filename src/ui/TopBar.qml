@@ -1,121 +1,107 @@
 import QtQuick
+import QtQuick.Controls
 
-/*
- * The workspace top bar (task 4.1, docs/reference.md §2): 40px tall,
- * title left, page buttons centred, output state right — plus the
- * reference's unsaved marker, a 5x40 red strip at the left edge while
- * the document has unwritten changes. Since 4.3 the show and edit pages
- * have content and their buttons switch root.page; settings arrived with
- * 4.5, and stage/draw follow the reference's later pages, so those two
- * buttons stay present but disabled rather than pretending.
- */
 Rectangle {
     id: bar
-
-    height: 40
-    color: "#242832"  // --primary
-
-    // The workspace page (Main owns it); clicks ask for another one.
+    height: 64
+    color: "#505052"
     property string page: "show"
     signal pageSelected(string name)
 
-    Rectangle {
-        width: 5
-        height: 40
-        color: "#40ff0000"  // rgba(255, 0, 0, .25)
-        visible: docs.dirty
-    }
-
-    Text {
-        x: 16
-        anchors.verticalCenter: parent.verticalCenter
-        color: "#f0f0ff"  // --text
-        font.pixelSize: 14
-        font.bold: true
-        text: "OpenShowQt"
-    }
-
-    // Page buttons, centred like the reference's Top.svelte.
     Row {
-        anchors.centerIn: parent
-        spacing: 4
-
+        anchors.left: parent.left
+        anchors.leftMargin: 12
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: 8
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: "OpenShowQt"
+            color: "#eeeeee"
+            font.pixelSize: 16
+            font.bold: true
+        }
+        Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            width: 1; height: 32; color: "#666668"
+        }
         Repeater {
-            model: ["show", "edit", "stage", "draw", "settings"]
-
-            delegate: Item {
-                id: pageButton
-
-                required property string modelData
-                // Show, edit and settings have content (4.3/4.5); stage
-                // and draw wait for their milestones.
-                readonly property bool usable: modelData === "show" || modelData === "edit"
-                                               || modelData === "settings"
-                readonly property bool active: modelData === bar.page
-                width: label.width + 20
-                height: 40
-
-                Text {
-                    id: label
-                    anchors.centerIn: parent
-                    color: pageButton.active ? "#f0f0ff"
-                         : (pageButton.usable ? "#8f93a5" : "#565b6b")
-                    font.pixelSize: 13
-                    text: pageButton.modelData
+            model: [{name: "show", label: "Show", glyph: "\u25b6"},
+                    {name: "edit", label: "Edit", glyph: "\u270e"},
+                    {name: "settings", label: "Settings", glyph: "\u2699"}]
+            delegate: AbstractButton {
+                id: tab
+                required property var modelData
+                width: 66; height: 52
+                padding: 0
+                focusPolicy: Qt.NoFocus
+                Accessible.name: modelData.label
+                onClicked: bar.pageSelected(modelData.name)
+                background: Rectangle {
+                    radius: 4
+                    color: bar.page === tab.modelData.name ? "#626265"
+                         : tab.hovered ? "#59595b" : "transparent"
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        width: parent.width; height: 2
+                        color: "#1685f8"
+                        visible: bar.page === tab.modelData.name
+                    }
                 }
-
-                Rectangle {
-                    width: parent.width
-                    height: 2
-                    anchors.bottom: parent.bottom
-                    visible: pageButton.active
-                    color: "#f0008c"  // --secondary
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    enabled: pageButton.usable
-                    onClicked: bar.pageSelected(pageButton.modelData)
+                contentItem: Item {
+                    Column {
+                        anchors.centerIn: parent
+                        width: parent.width
+                        spacing: 2
+                        Text {
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            text: tab.modelData.glyph
+                            color: "#dedede"; font.pixelSize: 23
+                        }
+                        Text {
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            text: tab.modelData.label
+                            color: "#dedede"; font.pixelSize: 12
+                        }
+                    }
                 }
             }
         }
     }
 
-    // Output state, right-aligned where the reference keeps its output
-    // controls. The colour is the reference's connected/disconnected pair.
     Row {
         anchors.right: parent.right
-        anchors.rightMargin: 14
+        anchors.rightMargin: 16
         anchors.verticalCenter: parent.verticalCenter
-        spacing: 8
-
-        Rectangle {
-            anchors.verticalCenter: parent.verticalCenter
-            width: 8
-            height: 8
-            radius: 4
-            color: worker.outputLive ? "#27a827" : "#a82727"
-        }
-
+        spacing: 10
         Text {
             anchors.verticalCenter: parent.verticalCenter
-            // A background media failure outranks the connection line
-            // (task 5.5d): amber means the output lives but its picture
-            // or sound is broken. The connection state stays visible as
-            // the dot, and about/version still carries the full status.
-            // Task 6.7c adds the audio lane, and only its fault lanes are
-            // worth an amber line: "none" (a clip with no audio), "silent"
-            // (an output switched off by configuration), "paused" and
-            // "live" all describe a sound situation nobody needs warning
-            // about.
-            color: worker.mediaError !== "" || worker.mediaAudio === "degraded" ||
-                   worker.mediaAudio === "no-output" ? "#e0a030"
-                 : worker.outputLive ? "#27a827" : "#a82727"
-            font.pixelSize: 12
-            text: worker.mediaError !== "" ? "media: " + worker.mediaError
-                  : worker.mediaAudio === "degraded" || worker.mediaAudio === "no-output"
-                      ? "audio: " + worker.mediaAudio
-                      : worker.status
+            color: "#d8c07a"; font.pixelSize: 11
+            visible: docs.dirty
+            text: "Unsaved changes"
+        }
+        Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            width: 10; height: 10; radius: 5
+            color: worker.outputLive ? "#63bd4c" : "#d46767"
+        }
+        Column {
+            spacing: 3
+            Text { color: "#eeeeee"; font.pixelSize: 12; text: "AUDIENCE" }
+            Text {
+                width: Math.min(260, bar.width * 0.25)
+                elide: Text.ElideRight
+                color: worker.mediaError !== "" || worker.mediaAudio === "degraded"
+                       || worker.mediaAudio === "no-output" ? "#e0a030" : "#cccccc"
+                font.pixelSize: 11
+                text: worker.mediaError !== "" ? worker.mediaError
+                    : worker.mediaAudio === "degraded" || worker.mediaAudio === "no-output"
+                        ? "Audio: " + worker.mediaAudio : worker.status
+                ToolTip.visible: statusHover.containsMouse
+                ToolTip.text: text
+                MouseArea { id: statusHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+            }
         }
     }
 }

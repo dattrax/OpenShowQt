@@ -1,342 +1,216 @@
 import QtQuick
 import QtQuick.Controls
 
-/*
- * The show page (task 6.19b6, from Main.qml's 3.3/4.3/6.16b panel): the
- * current song's slide list with the worker's own pictures of each row,
- * the present-on-navigate follow, the history buttons and the lyric
- * editor. Everything here drives DocumentController ("docs"); presenting
- * compiles the selected slide and hands the JSON to the worker, which
- * presents on the acknowledgement.
- *
- * The split's row asked for "select/step/present/text intents to the
- * window"; read honestly, only one of those has a window-side owner.
- * Selecting, stepping and editing call `docs` — the context property —
- * directly, as they always did, and follow mode is this page's own state:
- * nothing outside the block ever read it. What genuinely stays in the
- * window is PRESENTING — presentCurrentSlide() is also what the keyboard
- * executors run — so the page emits exactly one signal: presenting a
- * slide after navigation moved (the Present button, or a row click or step
- * while following) leaves as presentRequested().
- */
-Item {
+// Presenting only. Slide text, authoring commands and history live in EditPage.
+Rectangle {
     id: showPage
-
-    // Task 3.3: once a slide has been presented from this panel, navigating
-    // follows it onto the output — that is the operator's expectation
-    // mid-service. Any Present click (re)arms it.
+    color: "#202020"
     property bool following: false
-
     signal presentRequested()
+    signal editRequested()
+    readonly property string showName: docs.songs.filter(s => s.id === docs.currentSongId)
+                                                       .map(s => s.name).join("")
 
-    Row {
-        id: slideActions
-        anchors.top: parent.top
-        anchors.left: parent.left
-        spacing: 8
-
-        Button {
-            text: "Add slide"
-            enabled: docs.currentSongId !== ""
-            onClicked: docs.addSlide()
-        }
-
-        Button {
-            text: "Remove slide"
-            enabled: docs.slides.length > 0
-            onClicked: docs.removeCurrentSlide()
-        }
-
-        Text {
-            anchors.verticalCenter: parent.verticalCenter
-            color: "#8f93a5"
-            font.pixelSize: 12
-            text: docs.slides.length > 0
-                ? "slide " + (docs.currentSlide + 1) + " of " + docs.slides.length
-                : "no slides"
-        }
-    }
-
-    // The slide list's pictures (task 6.16b, review R16): the worker
-    // renders the visible band with the production compositor, so a row
-    // shows the slide as the audience would see it — same fonts, same
-    // wrap, same background — instead of a line of Qt-laid-out text.
-    //
-    // The band is the current slide ±5, which is the rows on screen (the
-    // box fits about six at 26 px) plus a scroll's worth either way, and
-    // it is inside the 32-slide cap the protocol declares. Asking per
-    // visible row would send one batch per pixel of scroll; asking for a
-    // band moves the list in steps, and the client coalesces a band it
-    // already has. A slide the worker has not drawn yet keeps its text
-    // line: the fallback is the row's own, so a list is never blank while
-    // pictures are on their way.
+    // Request the visible rows plus one ahead, within the worker's 32-slide cap.
+    // Scrolling, resizing and keyboard navigation all move this band.
     function requestSlideBand() {
-        if (!worker.thumbnailSupported) {
-            return
-        }
+        if (!visible || !worker.thumbnailSupported) return
         const slides = docs.slides
-        if (slides.length === 0) {
-            worker.clearThumbnails()
-            return
-        }
+        if (slides.length === 0) { worker.clearThumbnails(); return }
+        const first = Math.max(0, Math.floor(slideGrid.contentY / slideGrid.cellHeight))
+                      * slideGrid.columns
+        const count = Math.min(32, (Math.ceil(slideGrid.height / slideGrid.cellHeight) + 1)
+                                  * slideGrid.columns)
         const band = []
-        const first = Math.max(0, docs.currentSlide - 5)
-        const last = Math.min(slides.length - 1, docs.currentSlide + 5)
-        for (let i = first; i <= last; ++i) {
-            band.push({key: slides[i].id,
-                       scene: docs.sceneJsonForSlide(slides[i].id)})
-        }
-        worker.requestThumbnails(band, 160, 90)
+        for (let i = first; i < Math.min(slides.length, first + count); ++i)
+            band.push({key: slides[i].id, scene: docs.sceneJsonForSlide(slides[i].id)})
+        worker.requestThumbnails(band, 320, 180)
     }
-
-    // Navigating, editing and editing the document (a slide added, a song
-    // switched) all change what the list wants a picture of. The client
-    // re-issues across a preview restart and a worker that dropped the
-    // batch on its own, so the list does not have to watch the socket too.
+    Timer { id: thumbnailAsk; interval: 80; onTriggered: showPage.requestSlideBand() }
     Connections {
         target: docs
-        function onNavigationChanged() { showPage.requestSlideBand() }
-        function onDocumentsChanged() { showPage.requestSlideBand() }
-        function onSlideTextChanged() { showPage.requestSlideBand() }
+        function onNavigationChanged() {
+            slideGrid.positionViewAtIndex(docs.currentSlide, GridView.Contain)
+            thumbnailAsk.restart()
+        }
+        function onDocumentsChanged() { thumbnailAsk.restart() }
+        function onSlideTextChanged() { thumbnailAsk.restart() }
     }
-    // The capability arrives with the handshake, which is usually after
-    // this page was built. ONE ask follows the first moment the worker can
-    // draw the list: previewChanged fires with every preview frame, and a
-    // handler that asked each time would recompile eleven scenes fifteen
-    // times a second for a list that already has them.
     property bool bandAskedFor: false
     Connections {
         target: worker
         function onPreviewChanged() {
             if (worker.thumbnailSupported && !showPage.bandAskedFor) {
                 showPage.bandAskedFor = true
-                showPage.requestSlideBand()
+                thumbnailAsk.restart()
             }
         }
     }
-    Component.onCompleted: Qt.callLater(function() { showPage.requestSlideBand() })
+    onVisibleChanged: if (visible) thumbnailAsk.restart()
+    Component.onCompleted: thumbnailAsk.restart()
 
     Rectangle {
-        id: slideListBox
-        anchors.top: slideActions.bottom
-        anchors.topMargin: 8
-        anchors.left: parent.left
-        anchors.right: parent.right
-        height: 150
-        color: "#12121c"
-        border.color: "#2f3542"
+        id: heading
+        anchors.top: parent.top
+        width: parent.width; height: 38
+        color: "#141414"
+        Text {
+            anchors.left: parent.left; anchors.leftMargin: 14
+            anchors.right: slideCount.left; anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            text: showPage.showName || "Select a presentation"
+            color: "#eeeeee"; font.pixelSize: 14; font.bold: true
+            elide: Text.ElideRight
+        }
+        Text {
+            id: slideCount
+            anchors.right: parent.right; anchors.rightMargin: 14
+            anchors.verticalCenter: parent.verticalCenter
+            color: "#aaaaaa"; font.pixelSize: 11
+            text: docs.slides.length + (docs.slides.length === 1 ? " slide" : " slides")
+        }
+    }
 
-        ListView {
-            id: slideList
-            anchors.fill: parent
-            anchors.margins: 1
-            clip: true
-            model: docs.slides
-
-            delegate: ItemDelegate {
-                id: control
-                required property var modelData
-                width: slideList.width
-                height: 26
-                text: (modelData.index + 1) + ".  " + modelData.preview
-                highlighted: modelData.index === docs.currentSlide
-                contentItem: Row {
-                    spacing: 6
-                    // The worker's own picture of this slide (task 6.16b).
-                    // It is an addition, not a replacement: the text line
-                    // stays, so a row is legible before its picture
-                    // arrives, on a worker that cannot draw the list, and
-                    // to a screen reader either way.
+    GridView {
+        id: slideGrid
+        objectName: "operatorSlideGrid"
+        anchors.top: heading.bottom
+        anchors.bottom: transport.top
+        anchors.left: parent.left; anchors.right: parent.right
+        anchors.margins: 12
+        clip: true
+        readonly property int columns: Math.max(1, Math.floor(width / 190))
+        cellWidth: width / columns
+        cellHeight: (cellWidth - 12) * 9 / 16 + 48
+        model: docs.slides
+        onContentYChanged: thumbnailAsk.restart()
+        onWidthChanged: thumbnailAsk.restart()
+        onHeightChanged: thumbnailAsk.restart()
+        ScrollBar.vertical: ScrollBar {}
+        delegate: AbstractButton {
+            id: tile
+            required property var modelData
+            width: slideGrid.cellWidth - 12
+            height: slideGrid.cellHeight - 12
+            focusPolicy: Qt.NoFocus
+            readonly property bool selected: modelData.index === docs.currentSlide
+            Accessible.name: "Slide " + (modelData.index + 1) + ": " + modelData.preview
+            onClicked: {
+                slideGrid.forceActiveFocus()
+                docs.selectSlide(modelData.index)
+                if (showPage.following) showPage.presentRequested()
+            }
+            background: Rectangle {
+                color: tile.hovered ? "#393939" : "#2d2d2d"
+                border.width: tile.selected ? 2 : 1
+                border.color: tile.selected ? "#1685f8" : "#505050"
+            }
+            contentItem: Item {
+                Rectangle {
+                    id: picture
+                    anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+                    anchors.margins: 3
+                    height: width * 9 / 16
+                    color: "black"
+                    Text {
+                        anchors.fill: parent; anchors.margins: 12
+                        visible: !worker.thumbnailSupported
+                        text: tile.modelData.preview
+                        color: "#eeeeee"; font.pixelSize: 13
+                        wrapMode: Text.WordWrap
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
                     PreviewView {
-                        id: rowPicture
                         visible: worker.thumbnailSupported
-                        width: 46
-                        height: 26
-                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.fill: parent
                         controller: worker
                         target: PreviewView.Thumbnail
-                        key: modelData.id
+                        key: tile.modelData.id
                     }
+                }
+                Rectangle {
+                    anchors.top: picture.bottom; anchors.bottom: parent.bottom
+                    anchors.left: parent.left; anchors.right: parent.right
+                    anchors.margins: 2
+                    color: tile.selected ? "#1678cf" : "#414141"
                     Text {
-                        // The picture's 46 px only when there is one: a
-                        // positioner lays out nothing for an invisible
-                        // child, so narrowing the line for a picture that
-                        // is not there would elide it for no reason.
-                        width: slideList.width
-                               - (rowPicture.visible ? rowPicture.width : 0) - 40
-                        text: control.text
-                        color: control.highlighted ? "#ffffff" : "#f0f0ff"
-                        font.pixelSize: 13
+                        anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6
                         verticalAlignment: Text.AlignVCenter
+                        text: (tile.modelData.index + 1) + "  " + tile.modelData.preview
+                        color: "#eeeeee"; font.pixelSize: 12
                         elide: Text.ElideRight
                     }
                 }
-                background: Rectangle {
-                    color: control.highlighted ? "#f0008c"
-                         : (control.hovered ? "#2f3542" : "transparent")
-                }
-                onClicked: {
-                    docs.selectSlide(modelData.index)
-                    if (showPage.following) {
-                        showPage.presentRequested()
-                    }
-                }
             }
         }
     }
-
-    Row {
-        id: historyRow
-        anchors.bottom: parent.bottom
-        anchors.left: parent.left
-        spacing: 8
-
-        Button {
-            text: "Undo"
-            enabled: docs.canUndo
-            onClicked: docs.undo()
-        }
-
-        Button {
-            text: "Redo"
-            enabled: docs.canRedo
-            onClicked: docs.redo()
-        }
-
-        Button {
-            text: "Save"
-            enabled: docs.dirty
-            onClicked: docs.save()
-        }
-
-        Button {
-            text: "Load"
-            onClicked: docs.load()
-        }
-    }
-
-    Row {
-        id: navRow
-        anchors.bottom: historyRow.top
-        anchors.bottomMargin: 10
-        anchors.left: parent.left
-        spacing: 8
-
-        Button {
-            text: "\u25c0 Prev"
-            enabled: docs.slides.length > 0
-            onClicked: {
-                docs.stepSlide(-1)
-                if (showPage.following) {
-                    showPage.presentRequested()
-                }
-            }
-        }
-
-        Button {
-            text: "Next \u25b6"
-            enabled: docs.slides.length > 0
-            onClicked: {
-                docs.stepSlide(1)
-                if (showPage.following) {
-                    showPage.presentRequested()
-                }
-            }
-        }
-
-        Button {
-            text: "Present"
-            enabled: docs.slides.length > 0 && worker.outputLive
-            onClicked: {
-                showPage.following = true
-                showPage.presentRequested()
-            }
-        }
-
-        CheckBox {
-            text: "follow"
-            checked: showPage.following
-            onToggled: showPage.following = checked
-        }
-    }
-
-    // The editor writes into the debounced controller slot; the
-    // binding is re-established (not just assigned) when navigation,
-    // undo or a load changes the slide under the operator, so future
-    // changes keep flowing without breaking typing again. Since
-    // 6.17b2 the selection may be a picture, which has no words to
-    // edit — offering an empty field for one invites a typing burst
-    // the model must refuse, so the dock shows the picture's asset
-    // instead, and the field returns the moment a text box is
-    // selected again.
     Column {
-        id: pictureInfo
-        objectName: "pictureInfo"
-        anchors.top: slideListBox.bottom
-        anchors.topMargin: 10
-        anchors.bottom: navRow.top
-        anchors.bottomMargin: 10
-        anchors.left: parent.left
-        anchors.right: parent.right
-        visible: docs.currentBoxKind === "image"
-        spacing: 6
-
+        anchors.centerIn: slideGrid
+        width: Math.max(0, slideGrid.width - 40)
+        spacing: 10
+        visible: docs.slides.length === 0
         Text {
-            color: "#8f93a5"
-            font.pixelSize: 10
-            font.bold: true
-            text: "PICTURE"
+            width: parent.width; horizontalAlignment: Text.AlignHCenter
+            color: "#dddddd"; font.pixelSize: 18
+            text: docs.currentSongId === "" ? "Choose a presentation" : "This presentation has no slides"
         }
         Text {
-            objectName: "pictureAssetName"
-            width: parent.width
-            elide: Text.ElideMiddle
-            color: "#f0f0ff"
-            font.pixelSize: 14
-            text: docs.currentBoxAsset.name || "this picture has lost its asset"
-        }
-        Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            color: "#8f93a5"
-            font.pixelSize: 11
-            text: docs.currentBoxAsset.sourcePath || " "
-        }
-        Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            color: "#6a6f80"
-            font.pixelSize: 11
-            text: "drag on the canvas to place it \u00b7 Back/Forward reorder "
-                  + "\u00b7 Delete takes it off the slide"
+            width: parent.width; horizontalAlignment: Text.AlignHCenter
+            color: "#aaaaaa"; font.pixelSize: 12; wrapMode: Text.WordWrap
+            text: docs.currentSongId === "" ? "Select an item in the library or running order."
+                                          : "Open Edit to add slides and prepare your content."
         }
     }
-
-    TextArea {
-        id: lyricText
-        visible: docs.currentBoxKind !== "image"
-        anchors.top: slideListBox.bottom
-        anchors.topMargin: 10
-        anchors.bottom: navRow.top
-        anchors.bottomMargin: 10
-        anchors.left: parent.left
-        anchors.right: parent.right
-        text: docs.currentSlideText
-        onTextChanged: docs.setSlideText(text)
-        selectByMouse: true
-        wrapMode: TextArea.Wrap
-        color: "#f0f0ff"
-        background: Rectangle {
-            color: "#12121c"
-            border.color: "#2f3542"
-        }
-
-        Connections {
-            target: docs
-            function onSlideTextChanged() {
-                lyricText.text = Qt.binding(function () { return docs.currentSlideText })
-                lyricText.cursorPosition = 0
+    Rectangle {
+        id: transport
+        anchors.bottom: parent.bottom
+        width: parent.width; height: 52
+        color: "#2c2c2c"
+        Row {
+            anchors.left: parent.left; anchors.leftMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 6
+            PanelButton {
+                text: "\u25c0"
+                Accessible.name: "Previous slide"
+                enabled: docs.slides.length > 0
+                onClicked: {
+                    slideGrid.forceActiveFocus()
+                    docs.stepSlide(-1)
+                    if (showPage.following) showPage.presentRequested()
+                }
             }
+            PanelButton {
+                text: "\u25b6"
+                Accessible.name: "Next slide"
+                enabled: docs.slides.length > 0
+                onClicked: {
+                    slideGrid.forceActiveFocus()
+                    docs.stepSlide(1)
+                    if (showPage.following) showPage.presentRequested()
+                }
+            }
+            PanelButton {
+                text: "Present"
+                highlighted: true
+                enabled: docs.slides.length > 0 && worker.outputLive
+                onClicked: { slideGrid.forceActiveFocus(); showPage.following = true; showPage.presentRequested() }
+            }
+            CheckBox {
+                text: "Follow selection"
+                font.pixelSize: 11
+                checked: showPage.following
+                onToggled: showPage.following = checked
+            }
+        }
+        PanelButton {
+            anchors.right: parent.right; anchors.rightMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Edit"
+            visible: showPage.width >= 530
+            enabled: docs.currentSongId !== ""
+            onClicked: showPage.editRequested()
         }
     }
 }

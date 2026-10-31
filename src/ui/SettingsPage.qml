@@ -35,14 +35,14 @@ Item {
         spacing: 5
 
         Text {
-            color: "#f0f0ff"
+            color: "#eeeeee"
             font.pixelSize: 15
             font.bold: true
             text: "Settings"
         }
 
         Text {
-            color: "#8f93a5"
+            color: "#b0b0b0"
             font.pixelSize: 10
             topPadding: 10
             text: "PRESENTER"
@@ -54,7 +54,7 @@ Item {
             onToggled: appSettings.numberKeysPresent = checked
         }
         Text {
-            color: "#8f93a5"
+            color: "#b0b0b0"
             font.pixelSize: 11
             wrapMode: Text.WordWrap
             width: parent.width
@@ -62,7 +62,7 @@ Item {
         }
 
         Text {
-            color: "#8f93a5"
+            color: "#b0b0b0"
             font.pixelSize: 10
             topPadding: 10
             text: "WINDOW"
@@ -75,7 +75,7 @@ Item {
         }
 
         Text {
-            color: "#8f93a5"
+            color: "#b0b0b0"
             font.pixelSize: 10
             topPadding: 10
             text: "SHORTCUTS"
@@ -83,7 +83,7 @@ Item {
         Repeater {
             model: [
                 { key: "Space / PageDown / Right / F5",
-                  what: "Next slide \u2014 straight to the output" },
+                  what: "Next slide in Show \u2014 straight to the output" },
                 { key: "PageUp / Left", what: "Previous slide" },
                 { key: "Home / End", what: "First / last slide" },
                 { key: ". ", what: "Clear everything on air" },
@@ -91,9 +91,9 @@ Item {
                 { key: "F1 / F2", what: "Clear the background / the slide" },
                 { key: "Ctrl+1 / Ctrl+2 / Ctrl+5", what: "Show, edit and settings pages" },
                 { key: "Ctrl+F", what: "Library search" },
-                { key: "Ctrl+D", what: "Duplicate the slide \u2014 opens the drawer when there is none" },
-                { key: "Ctrl+C / Ctrl+X / Ctrl+V", what: "Copy / cut / paste the slide \u2014 text fields keep theirs" },
-                { key: "Ctrl+Z \u00b7 Ctrl+Y / Ctrl+Shift+Z", what: "Undo \u00b7 redo" },
+                { key: "Ctrl+D", what: "Duplicate in Edit; toggle the library in Show" },
+                { key: "Ctrl+C / Ctrl+X / Ctrl+V", what: "Copy slide; cut / paste in Edit only" },
+                { key: "Ctrl+Z \u00b7 Ctrl+Y / Ctrl+Shift+Z", what: "Undo \u00b7 redo (Edit only)" },
                 { key: "Ctrl+S", what: "Save the service file" },
                 { key: "Arrows / Ctrl+Arrows", what: "Nudge the selected box 1px / 10px (edit page)" },
                 { key: "Tab / Shift+Tab", what: "Select the next / previous text box (edit page)" },
@@ -104,12 +104,12 @@ Item {
                 spacing: 14
                 Text {
                     width: 250
-                    color: "#f0f0ff"
+                    color: "#eeeeee"
                     font.pixelSize: 12
                     text: modelData.key
                 }
                 Text {
-                    color: "#8f93a5"
+                    color: "#b0b0b0"
                     font.pixelSize: 12
                     text: modelData.what
                 }
@@ -117,7 +117,7 @@ Item {
         }
 
         Text {
-            color: "#8f93a5"
+            color: "#b0b0b0"
             font.pixelSize: 10
             topPadding: 10
             text: "SERVICE"
@@ -126,12 +126,12 @@ Item {
             spacing: 14
             Text {
                 width: 250
-                color: "#f0f0ff"
+                color: "#eeeeee"
                 font.pixelSize: 12
                 text: "Version"
             }
             Text {
-                color: "#8f93a5"
+                color: "#b0b0b0"
                 font.pixelSize: 12
                 text: applicationVersion + " \u00b7 worker " + worker.status
             }
@@ -140,12 +140,12 @@ Item {
             spacing: 14
             Text {
                 width: 250
-                color: "#f0f0ff"
+                color: "#eeeeee"
                 font.pixelSize: 12
                 text: "Service directory"
             }
             Text {
-                color: "#8f93a5"
+                color: "#b0b0b0"
                 font.pixelSize: 12
                 text: docs.serviceDirectory
             }
@@ -154,12 +154,12 @@ Item {
             spacing: 14
             Text {
                 width: 250
-                color: "#f0f0ff"
+                color: "#eeeeee"
                 font.pixelSize: 12
                 text: "Recovery autosave"
             }
             Text {
-                color: "#8f93a5"
+                color: "#b0b0b0"
                 font.pixelSize: 12
                 text: "saved with every edit \u00b7 Ctrl+S writes the service file"
             }

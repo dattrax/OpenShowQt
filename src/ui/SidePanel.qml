@@ -27,11 +27,12 @@ Rectangle {
 
     default property alias content: contentArea.data
 
-    color: "#242832"  // --primary
+    color: "#353535"  // --primary
     clip: true
 
     Item {
         id: contentArea
+        visible: !dock.collapsed
         anchors.fill: parent
         anchors.leftMargin: dock.side === "right" ? dock.handleWidth : 0
         anchors.rightMargin: dock.side === "left" ? dock.handleWidth : 0
@@ -55,6 +56,8 @@ Rectangle {
             travelled = false
         }
         onPositionChanged: function (mouse) {
+            if (!pressed) return
+            if (Math.abs(mapToItem(null, mouse.x, 0).x - pressX) < 3 && !travelled) return
             travelled = true
             const x = mapToItem(null, mouse.x, 0).x
             // Left: width is the absolute scene-x of the pointer (the panel
@@ -78,7 +81,7 @@ Rectangle {
         height: parent.height
         x: dock.side === "left" ? parent.width - width : 0
         visible: handle.containsMouse
-        color: "#2f3542"  // --primary-lighter
+        color: "#4a4a4a"  // --primary-lighter
     }
 
     // Collapsed: the white arrow in the strip (the reference's arrow_right),

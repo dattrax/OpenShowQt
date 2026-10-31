@@ -2,40 +2,26 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 
-/*
- * The operator workspace (M4 task 4.1): the reference's shell — a 40px
- * top bar over a row of left panel / center / right panel — with the
- * lyric flow built through M3 living inside it. The side panels are the
- * reference's resizable ones (SidePanel.qml + WorkspacePanels' measured
- * snap rules); the centre carries the slide list and the editor, and
- * the right panel is always the preview with the output tools below it,
- * like the reference's Preview + ShowTools.
- *
- * Theme tokens are the reference palette (docs/reference.md §3).
- *
- * Since task 6.19b this window composes rather than contains: the key
- * table is ShortcutMap.qml, the docks are OutputPanel.qml and
- * PlaylistPanel.qml, the three centre pages are ShowPage.qml, EditPage.qml
- * and SettingsPage.qml, and the drawer was already its own file. What
- * remains here is what only the window can own: the placement of every
- * part, which centre page is up, the focus facts only its activeFocusItem
- * can answer, and the executors the key map's intents land on.
- */
+// The operator shell keeps the running order, slide grid and audience
+// monitor visible together. Content authoring belongs to the Edit page.
 Window {
     id: root
     width: uiSize.width
     height: uiSize.height
-    minimumWidth: 400   // the reference's window minimum
-    minimumHeight: 400
+    minimumWidth: 1000
+    minimumHeight: 680
     visible: true
-    color: "#191923"  // --primary-darker, the canvas behind everything
+    color: "#202020"  // --primary-darker, the canvas behind everything
     title: "OpenShowQt " + applicationVersion
     // Task 4.5: the F11/settings fullscreen is a persisted app setting,
     // so a projector setup survives restarts.
     visibility: appSettings.fullscreen ? Window.FullScreen : Window.Windowed
 
     Material.theme: Material.Dark
-    Material.accent: "#f0008c"  // --secondary
+    Material.accent: "#1685f8"
+    Material.primary: "#505050"
+    Material.background: "#353535"
+    Material.foreground: "#eeeeee"
 
     // Task 1.2: closing the UI shuts the worker down before the window
     // actually goes away.
@@ -43,24 +29,15 @@ Window {
         worker.shutdownNow()
     }
 
-    // The workspace page under the top bar (4.3): "show" is the running
-    // order and lyric editor, "edit" the text-box canvas. The remaining
-    // reference pages arrive later and their buttons stay disabled.
+    // Explicit modes separate presenting from content authoring.
     property string page: "show"
+    onPageChanged: contentItem.forceActiveFocus()
 
     // True while a text field holds the focus — the plain-arrow nudges
     // must not steal keystrokes from someone typing.
     readonly property bool typingIntoField: activeFocusItem !== null
         && (activeFocusItem instanceof TextField || activeFocusItem instanceof TextArea
             || activeFocusItem instanceof TextInput)
-
-    // Panel building blocks (task 4.4): Material's default TextField is
-    // too tall for a 250px column once the background is replaced (the
-    // placeholder and text split vertically), and its Button is too wide
-    // for three in a row. Since task 6.19b4 they are module files
-    // (PanelField.qml, PanelButton.qml) carrying the workspace palette and
-    // metrics, so the panels that got their own files style themselves
-    // without borrowing the window's private declarations.
 
     function presentCurrentSlide() {
         const json = docs.currentSceneJson()
@@ -102,15 +79,7 @@ Window {
         }
     }
 
-    // Task 6.19b3: the whole key table. The facts only the window and its
-    // panels can speak for arrive as the properties below — which page is
-    // up, what holds the focus (typing, a squatted button, the drawer, the
-    // canvas's handles) and the on-air state the clear keys gate on — and
-    // every activated key comes back as a signal handled here, beside the
-    // same buttons that perform it. No key changed owner, sequence or gate
-    // on the way out; two enabled owners for one key make Qt drop the key
-    // entirely, which is why the gates moved WITH the shortcuts rather
-    // than staying behind.
+    // One shortcut owner for each key, with authoring gated to Edit.
     ShortcutMap {
         page: root.page
         typingIntoField: root.typingIntoField
@@ -158,63 +127,39 @@ Window {
         anchors.top: parent.top
     }
 
-    /* ------------------------------------------------------------------
-     * Left panel — the show page of the reference: playlist chips over
-     * the running order. Task 6.19b5: the dock is PlaylistPanel.qml —
-     * its chips, rows, reorder handles and drop target all address
-     * `docs` and the rows are its projections; what the window owns is
-     * where the dock sits and the id the centre pages anchor to.
-     * ------------------------------------------------------------------ */
     PlaylistPanel {
         id: leftDock
+        objectName: "libraryDock"
+        editingEnabled: root.page === "edit"
+        width: panels.leftWidth <= 8 ? panels.leftWidth
+               : Math.min(panels.leftWidth, root.width * 0.24)
         anchors.left: parent.left
         anchors.top: topBar.bottom
         anchors.bottom: libraryDrawer.top
     }
 
-    /* ------------------------------------------------------------------
-     * Right panel — always the preview, with the show's output tools
-     * below it (the reference's Preview + ShowTools arrangement). Task
-     * 6.19b4: the dock itself is OutputPanel.qml — it mirrors `worker`
-     * status and drags through `panels` on its own; what the window still
-     * owns is where it sits, between the top bar and the drawer, and the
-     * id the two centre pages anchor their right edges to.
-     * ------------------------------------------------------------------ */
     OutputPanel {
         id: rightDock
+        objectName: "outputDock"
+        width: panels.rightWidth <= 8 ? panels.rightWidth
+               : Math.min(Math.max(320, panels.rightWidth), root.width * 0.34)
         anchors.right: parent.right
         anchors.top: topBar.bottom
-        anchors.bottom: libraryDrawer.top
+        anchors.bottom: parent.bottom
     }
 
-    /* ------------------------------------------------------------------
-     * Center — two pages (4.3) on the reference's show/edit split. Task
-     * 6.19b6: the show page is ShowPage.qml — the slide list with the
-     * worker's thumbnails, follow-presenting, the history buttons and the
-     * lyric editor. What the window owns is placement, which page is up,
-     * and presenting itself: presentCurrentSlide() is also what the
-     * keyboard executors run, so the page asks and this performs.
-     * ------------------------------------------------------------------ */
     ShowPage {
         visible: root.page === "show"
         anchors.left: leftDock.right
         anchors.right: rightDock.left
         anchors.top: topBar.bottom
         anchors.bottom: libraryDrawer.top
-        anchors.margins: 12
+        anchors.margins: 0
 
         onPresentRequested: root.presentCurrentSlide()
+        onEditRequested: root.page = "edit"
     }
 
-    /* ------------------------------------------------------------------
-     * The edit page (task 4.3, stack since 6.17a2). Task 6.19b7: the page
-     * is EditPage.qml — the 16:9 stage over EditCanvas with the worker's
-     * picture of the slide under edit, the exact geometry fields, the
-     * stack commands and the style panel. What the window owns is
-     * placement, which page is up, and the key map's share: the
-     * selection flag its two Escape owners hand off on, and the
-     * nudge/step executors the page performs on its own canvas.
-     * ------------------------------------------------------------------ */
     EditPage {
         id: editPage
         visible: root.page === "edit"
@@ -225,13 +170,6 @@ Window {
         anchors.margins: 12
     }
 
-    /* ------------------------------------------------------------------
-     * The settings page (task 4.5). Task 6.19b8: it is SettingsPage.qml —
-     * the two persisted toggles, the cheat sheet of the key table
-     * ShortcutMap.qml owns, and the service rows. Its inputs are the
-     * appSettings/applicationVersion/worker/docs context properties, so
-     * the window's only contribution is placement again.
-     * ------------------------------------------------------------------ */
     SettingsPage {
         visible: root.page === "settings"
         anchors.left: leftDock.right
@@ -241,15 +179,14 @@ Window {
         anchors.margins: 12
     }
 
-    /* ------------------------------------------------------------------
-     * Bottom library drawer (task 4.2): the searchable Shows/Media strip.
-     * Its height is WorkspacePanels' (300 open, 40 closed). The type is
-     * named LibraryDrawer so it doesn't shadow QtQuick.Controls' Drawer.
-     * ------------------------------------------------------------------ */
     LibraryDrawer {
         id: libraryDrawer
+        objectName: "libraryDrawer"
+        editingEnabled: root.page === "edit"
+        height: Math.min(panels.drawerHeight, Math.max(40,
+                    root.height - topBar.height - 300))
         anchors.left: parent.left
-        anchors.right: parent.right
+        anchors.right: rightDock.left
         anchors.bottom: parent.bottom
     }
 }

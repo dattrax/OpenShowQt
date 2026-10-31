@@ -2,30 +2,17 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 
-/*
- * The library drawer (task 4.2, docs/reference.md §4): the bottom strip
- * the operator finds shows and media in. Height is WorkspacePanels'
- * (open 300, closed to a 40px tab bar; Ctrl+D or a click on the bar
- * toggles, the top edge drags with the reference's snap). The tab bar
- * carries the reference's eight tabs in order — Shows and Media are the
- * ones with content today, the rest wait for their milestones and sit
- * disabled — and at its right end the Search button (100px) swaps for
- * the 290px input on Ctrl+F; Esc clears and collapses it, and Enter
- * drops the first match into the playlist after the current show, like
- * the reference.
- *
- * The reference nests its own three-column split in here (categories,
- * list, item info). OpenShowQt has no tag categories yet, so the drawer
- * runs list + info, with the widths following the window rather than a
- * third persisted pair.
- */
-Rectangle {
+// The library below the running order and slide grid. Show allows finding
+// presentations and arranging the playlist; content authoring is Edit-only.
+FocusScope {
     id: drawer
 
-    color: "#242832"  // --primary
+    Rectangle { anchors.fill: parent; color: "#353535"; z: -1 }
     height: panels.drawerHeight
+    property bool editingEnabled: false
+    clip: true
 
-    readonly property bool open: panels.drawerHeight > 40.5
+    readonly property bool open: height > 40.5
     property string tab: "shows"
     property string query: ""
     property bool searchActive: false
@@ -33,7 +20,7 @@ Rectangle {
 
     // True while any part of the drawer holds the keyboard — Main's
     // Ctrl+1/2 page keys step aside exactly while it does.
-    readonly property bool containsFocus: drawer.activeFocusItem !== null
+    readonly property bool containsFocus: drawer.activeFocus
 
     function openTab(id) {
         tab = id
@@ -102,13 +89,7 @@ Rectangle {
             Repeater {
                 model: [
                     {id: "shows", label: "Shows", enabled: true},
-                    {id: "media", label: "Media", enabled: true},
-                    {id: "audio", label: "Audio", enabled: false},
-                    {id: "overlays", label: "Overlays", enabled: false},
-                    {id: "templates", label: "Templates", enabled: false},
-                    {id: "scripture", label: "Scripture", enabled: false},
-                    {id: "calendar", label: "Calendar", enabled: false},
-                    {id: "functions", label: "Functions", enabled: false}
+                    {id: "media", label: "Media", enabled: true}
                 ]
 
                 delegate: Item {
@@ -123,8 +104,8 @@ Rectangle {
                         id: tabLabel
                         anchors.centerIn: parent
                         font.pixelSize: 12
-                        color: tabButton.active ? "#f0f0ff"
-                             : (tabButton.modelData.enabled ? "#8f93a5" : "#4a4f5e")
+                        color: tabButton.active ? "#eeeeee"
+                             : (tabButton.modelData.enabled ? "#b0b0b0" : "#777777")
                         text: tabButton.modelData.label
                     }
 
@@ -133,7 +114,7 @@ Rectangle {
                         height: 2
                         anchors.bottom: parent.bottom
                         visible: tabButton.active
-                        color: "#f0008c"  // --secondary
+                        color: "#1685f8"  // --secondary
                     }
 
                     // The reference toggles the active tab (click it again
@@ -164,7 +145,7 @@ Rectangle {
             width: drawer.searchActive ? 290 : searchButton.width
             height: 36
 
-            Button {
+            PanelButton {
                 id: searchButton
                 visible: !drawer.searchActive
                 width: 100
@@ -179,8 +160,8 @@ Rectangle {
                 width: 290
                 height: 36
                 placeholderText: "Search..."
-                placeholderTextColor: "#6a6f80"
-                color: "#f0f0ff"
+                placeholderTextColor: "#929292"
+                color: "#eeeeee"
                 text: drawer.query
                 onTextChanged: drawer.query = text
                 onAccepted: drawer.searchEnter()
@@ -190,6 +171,7 @@ Rectangle {
                     drawer.query = ""
                     drawer.searchActive = false
                     searchField.focus = false
+                    drawer.focus = false
                 }
             }
         }
@@ -217,9 +199,9 @@ Rectangle {
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             anchors.right: parent.right
-            width: 260
-            color: "#12121c"  // --primary-darkest
-            border.color: "#2f3542"
+            width: Math.min(220, parent.width * 0.28)
+            color: "#242424"  // --primary-darkest
+            border.color: "#4a4a4a"
 
             Column {
                 anchors.fill: parent
@@ -229,7 +211,7 @@ Rectangle {
                 Text {
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    color: "#8f93a5"
+                    color: "#b0b0b0"
                     font.pixelSize: 11
                     font.bold: true
                     text: drawer.tab === "shows" ? "SONG INFO" : "MEDIA INFO"
@@ -238,7 +220,7 @@ Rectangle {
                 Text {
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    color: "#f0f0ff"
+                    color: "#eeeeee"
                     font.pixelSize: 13
                     text: drawer.tab === "shows"
                         ? (docs.currentSongId === "" ? "nothing selected"
@@ -251,7 +233,7 @@ Rectangle {
                 Text {
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    color: "#8f93a5"
+                    color: "#b0b0b0"
                     font.pixelSize: 11
                     text: drawer.tab === "shows"
                           ? (docs.slides.length + " slides \u00b7 "
@@ -271,30 +253,32 @@ Rectangle {
             anchors.rightMargin: 10
             visible: drawer.tab === "shows"
 
-            Row {
+            Flow {
                 id: showActions
+                visible: drawer.editingEnabled
+                height: visible ? implicitHeight : 0
                 anchors.top: parent.top
                 anchors.left: parent.left
                 anchors.right: parent.right
                 spacing: 6
 
-                TextField {
+                PanelField {
                     id: newSongName
-                    width: showActions.width - newSongButton.width - removeSongButton.width - 12
+                    width: Math.max(180, showActions.width - newSongButton.width - removeSongButton.width - 12)
                     placeholderText: "new show name"
-                    placeholderTextColor: "#6a6f80"
-                    color: "#f0f0ff"
+                    placeholderTextColor: "#929292"
+                    color: "#eeeeee"
                     onAccepted: newSongButton.clicked()
                 }
 
-                Button {
+                PanelButton {
                     id: newSongButton
                     text: "New show"
                     enabled: newSongName.text.trim().length > 0
                     onClicked: if (docs.createSong(newSongName.text)) newSongName.text = ""
                 }
 
-                Button {
+                PanelButton {
                     id: removeSongButton
                     text: "Remove"
                     enabled: docs.currentSongId !== ""
@@ -308,8 +292,8 @@ Rectangle {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                color: "#12121c"
-                border.color: "#2f3542"
+                color: "#242424"
+                border.color: "#4a4a4a"
 
                 ListView {
                     id: showList
@@ -322,6 +306,7 @@ Rectangle {
 
                     delegate: Item {
                         id: showRow
+                        objectName: "libraryShowRow"
 
                         required property var modelData
                         required property int index
@@ -331,8 +316,8 @@ Rectangle {
                         Rectangle {
                             anchors.fill: parent
                             anchors.margins: 1
-                            color: showRow.modelData.id === docs.currentSongId ? "#f0008c"
-                                 : (rowMouse.containsMouse ? "#2f3542" : "transparent")
+                            color: showRow.modelData.id === docs.currentSongId ? "#1685f8"
+                                 : (rowMouse.containsMouse ? "#4a4a4a" : "transparent")
                         }
 
                         Text {
@@ -342,7 +327,7 @@ Rectangle {
                             width: showRow.width - 80
                             elide: Text.ElideRight
                             font.pixelSize: 13
-                            color: showRow.modelData.id === docs.currentSongId ? "#ffffff" : "#f0f0ff"
+                            color: showRow.modelData.id === docs.currentSongId ? "#ffffff" : "#eeeeee"
                             text: showRow.modelData.name
                         }
 
@@ -351,7 +336,7 @@ Rectangle {
                             anchors.rightMargin: 8
                             anchors.verticalCenter: parent.verticalCenter
                             font.pixelSize: 11
-                            color: showRow.modelData.id === docs.currentSongId ? "#f8d0e6" : "#8f93a5"
+                            color: showRow.modelData.id === docs.currentSongId ? "#d9ebff" : "#b0b0b0"
                             text: showRow.modelData.slideCount
                                   + (showRow.modelData.slideCount === 1 ? " slide" : " slides")
                         }
@@ -360,28 +345,39 @@ Rectangle {
                             id: rowMouse
                             anchors.fill: parent
                             hoverEnabled: true
-                            drag.target: showRow
+                            drag.target: showDragProxy
                             acceptedButtons: Qt.LeftButton
                             onClicked: docs.selectSong(showRow.modelData.id)
                             onDoubleClicked: docs.addShowToPlaylist(showRow.modelData.id)
                             // Release delivers the drag wherever the pointer
                             // ended up (the playlist accepts it); releasing
                             // over the list is a no-op drop.
-                            onReleased: if (showRow.Drag.active) showRow.Drag.drop()
+                            onReleased: {
+                                if (showDragProxy.Drag.active) showDragProxy.Drag.drop()
+                                showDragProxy.x = 0
+                                showDragProxy.y = 0
+                            }
+                            onCanceled: { showDragProxy.x = 0; showDragProxy.y = 0 }
                         }
 
                         // The row drags out to the playlist as text/plain
                         // "show:<id>" — the drop side reads it back.
-                        Drag.active: rowMouse.drag.active
-                        Drag.keys: ["text/plain"]
-                        Drag.mimeData: ({ "text/plain": "show:" + showRow.modelData.id })
-                        Drag.hotSpot: Qt.point(width / 2, height / 2)
+                        Item {
+                            id: showDragProxy
+                            readonly property string payload: "show:" + showRow.modelData.id
+                            Drag.source: showDragProxy
+                            width: showRow.width; height: showRow.height
+                            Drag.active: rowMouse.drag.active
+                            Drag.keys: ["text/plain"]
+                            Drag.mimeData: ({"text/plain": "show:" + showRow.modelData.id})
+                            Drag.hotSpot: Qt.point(width / 2, height / 2)
+                        }
                     }
 
                     Text {
                         anchors.centerIn: parent
                         visible: showList.count === 0
-                        color: "#6a6f80"
+                        color: "#929292"
                         font.pixelSize: 13
                         text: drawer.query === "" ? "no songs \u2014 create one above"
                                                   : "nothing matches \u201c" + drawer.query + "\u201d"
@@ -399,19 +395,20 @@ Rectangle {
             anchors.rightMargin: 10
             visible: drawer.tab === "media"
 
-            Row {
+            Flow {
                 id: mediaActions
                 anchors.top: parent.top
                 anchors.left: parent.left
                 spacing: 6
 
-                Button {
+                PanelButton {
                     text: "Import\u2026"
                     onClicked: mediaDialog.open()
                 }
 
-                Button {
+                PanelButton {
                     text: "Remove"
+                    visible: drawer.editingEnabled
                     enabled: drawer.selectedAssetId !== ""
                     onClicked: {
                         docs.removeAsset(drawer.selectedAssetId)
@@ -424,8 +421,9 @@ Rectangle {
                 // this drawer is what "New box" is for words. A refusal
                 // (no current slide, a video, the stack's ceiling) lands
                 // on the status line naming itself; the drawer stays put.
-                Button {
+                PanelButton {
                     objectName: "placeAssetButton"
+                    visible: drawer.editingEnabled
                     text: "Add to slide"
                     enabled: drawer.selectedAssetId !== ""
                     onClicked: docs.placeAssetOnSlide(drawer.selectedAssetId)
@@ -438,8 +436,8 @@ Rectangle {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                color: "#12121c"
-                border.color: "#2f3542"
+                color: "#242424"
+                border.color: "#4a4a4a"
 
                 ListView {
                     id: assetList
@@ -458,8 +456,8 @@ Rectangle {
                         Rectangle {
                             anchors.fill: parent
                             anchors.margins: 1
-                            color: assetRow.modelData.id === drawer.selectedAssetId ? "#f0008c"
-                                 : (assetMouse.containsMouse ? "#2f3542" : "transparent")
+                            color: assetRow.modelData.id === drawer.selectedAssetId ? "#1685f8"
+                                 : (assetMouse.containsMouse ? "#4a4a4a" : "transparent")
                         }
 
                         Text {
@@ -469,7 +467,7 @@ Rectangle {
                             width: assetRow.width - 200
                             elide: Text.ElideRight
                             font.pixelSize: 13
-                            color: assetRow.modelData.id === drawer.selectedAssetId ? "#ffffff" : "#f0f0ff"
+                            color: assetRow.modelData.id === drawer.selectedAssetId ? "#ffffff" : "#eeeeee"
                             text: assetRow.modelData.name
                         }
 
@@ -480,7 +478,7 @@ Rectangle {
                             width: 190
                             elide: Text.ElideMiddle
                             font.pixelSize: 11
-                            color: assetRow.modelData.id === drawer.selectedAssetId ? "#f8d0e6" : "#8f93a5"
+                            color: assetRow.modelData.id === drawer.selectedAssetId ? "#d9ebff" : "#b0b0b0"
                             text: assetRow.modelData.sourcePath
                         }
 
@@ -496,7 +494,7 @@ Rectangle {
                             // picture lands selected and draggable.
                             onDoubleClicked: {
                                 drawer.selectedAssetId = assetRow.modelData.id
-                                docs.placeAssetOnSlide(assetRow.modelData.id)
+                                if (drawer.editingEnabled) docs.placeAssetOnSlide(assetRow.modelData.id)
                             }
                         }
                     }
@@ -504,7 +502,7 @@ Rectangle {
                     Text {
                         anchors.centerIn: parent
                         visible: assetList.count === 0
-                        color: "#6a6f80"
+                        color: "#929292"
                         font.pixelSize: 13
                         text: "no media \u2014 import a file"
                     }
@@ -539,14 +537,15 @@ Rectangle {
 
         onPressed: function (mouse) {
             const y = mapToItem(null, 0, mouse.y).y
-            pressOffset = drawer.parent.height - panels.drawerHeight - y
+            pressOffset = drawer.parent.height - drawer.height - y
         }
         onPositionChanged: function (mouse) {
+            if (!pressed) return
             const y = mapToItem(null, 0, mouse.y).y
             // maxHeight is the window minus the 40px top bar, like the
             // reference's available height.
             panels.resizeDrawer(drawer.parent.height - y - pressOffset,
-                                drawer.parent.height - 40)
+                                drawer.parent.height - 64 - 300)
         }
     }
 }

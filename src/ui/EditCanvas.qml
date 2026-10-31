@@ -153,7 +153,7 @@ Item {
         width: canvas.stageWidth
         height: canvas.stageHeight
         color: canvas.canvasColor
-        border.color: "#2f3542"
+        border.color: "#4a4a4a"
 
         // The slide as the WORKER draws it, rendered off the air (task 6.16a,
         // review R16). This replaced a QML Text that laid the same slide out
@@ -178,7 +178,7 @@ Item {
         Text {
             anchors.centerIn: parent
             visible: canvas.hasSlide && !worker.selectionReady
-            color: "#6a6f80"
+            color: "#929292"
             font.pixelSize: 13
             horizontalAlignment: Text.AlignHCenter
             text: worker.selectionSupported
@@ -206,7 +206,7 @@ Item {
                 color: "transparent"
                 border.width: index === canvas.currentBox && canvas.selected ? 2 : 1
                 border.color: index === canvas.currentBox && canvas.selected
-                              ? "#f0008c" : "#8f93a5"
+                              ? "#1685f8" : "#b0b0b0"
             }
         }
 
@@ -218,8 +218,8 @@ Item {
                 required property var modelData
                 width: 8
                 height: 8
-                color: "#f0008c"
-                border.color: "#191923"
+                color: "#1685f8"
+                border.color: "#202020"
                 x: canvas.boxX * canvas.zoom
                     + (modelData.x === 0 ? -width / 2
                                          : canvas.boxW * canvas.zoom - width / 2)
@@ -232,7 +232,7 @@ Item {
         Text {
             anchors.centerIn: parent
             visible: !canvas.hasSlide || canvas.currentBox < 0
-            color: "#6a6f80"
+            color: "#929292"
             font.pixelSize: 13
             text: !canvas.hasSlide
                   ? "Select or create a slide to edit its text boxes"

@@ -21,8 +21,13 @@ import QtQuick.Controls
  * slide under edit, the geometry fields, the stack commands and the
  * style editor, all addressing `docs` and `worker` directly.
  */
-Item {
+Flickable {
     id: editPage
+    contentWidth: Math.max(width, 760)
+    contentHeight: Math.max(height, 650)
+    clip: true
+    ScrollBar.horizontal: ScrollBar {}
+    ScrollBar.vertical: ScrollBar {}
 
     // The canvas's handles being on (or Escape having stepped out).
     property alias boxSelected: editCanvas.selected
@@ -48,13 +53,66 @@ Item {
     }
 
 
+    function askForWorkerPicture() { selectionAsk.restart() }
+
+    Flow {
+        id: slideActions
+        anchors.top: parent.top; anchors.left: parent.left
+        anchors.right: styleScroll.left; anchors.rightMargin: 12
+        spacing: 6
+        ComboBox {
+            width: Math.min(180, slideActions.width)
+            height: 30
+            model: docs.slides.map(s => ({label: (s.index + 1) + ". " + s.preview}))
+            textRole: "label"
+            currentIndex: docs.currentSlide
+            onActivated: docs.selectSlide(currentIndex)
+        }
+        PanelButton { text: "Add slide"; enabled: docs.currentSongId !== ""; onClicked: docs.addSlide() }
+        PanelButton { text: "Remove slide"; enabled: docs.slides.length > 0; onClicked: docs.removeCurrentSlide() }
+        PanelButton { text: "Undo"; enabled: docs.canUndo; onClicked: docs.undo() }
+        PanelButton { text: "Redo"; enabled: docs.canRedo; onClicked: docs.redo() }
+        PanelButton { text: "Save"; enabled: docs.dirty; onClicked: docs.save() }
+        PanelButton { text: "Load"; onClicked: docs.load() }
+    }
+
+    ScrollView {
+        id: lyricEditor
+        anchors.left: parent.left; anchors.right: styleScroll.left
+        anchors.rightMargin: 12
+        anchors.bottom: boxFields.top; anchors.bottomMargin: 12
+        height: 110
+        clip: true
+        TextArea {
+            id: lyricText
+            objectName: "slideTextEditor"
+            enabled: docs.slides.length > 0 && docs.currentBoxKind !== "image"
+            text: docs.currentSlideText
+            placeholderText: docs.currentBoxKind === "image" ? "Select a text box to edit its words" : "Slide text"
+            onTextChanged: if (activeFocus && enabled) docs.setSlideText(text)
+            selectByMouse: true
+            wrapMode: TextArea.Wrap
+            color: "#eeeeee"
+            font.pixelSize: 15
+            background: Rectangle { color: "#242424"; border.color: "#4a4a4a" }
+            Connections {
+                target: docs
+                function onSlideTextChanged() {
+                    lyricText.text = Qt.binding(function() { return docs.currentSlideText })
+                }
+            }
+        }
+    }
+
+
     EditCanvas {
         id: editCanvas
-        anchors.top: parent.top
+        anchors.top: slideActions.bottom
+        anchors.topMargin: 12
         anchors.left: parent.left
-        anchors.right: stylePanel.left
+        anchors.right: styleScroll.left
         anchors.rightMargin: 12
-        anchors.bottom: boxFields.top
+        anchors.bottom: lyricEditor.top
         anchors.bottomMargin: 12
     }
 
@@ -81,9 +139,6 @@ Item {
             worker.requestSelectionPreview(
                 docs.sceneJsonForSlide(docs.slides[docs.currentSlide].id))
         }
-    }
-    function askForWorkerPicture() {
-        selectionAsk.restart()
     }
     Connections {
         target: docs
@@ -115,8 +170,10 @@ Item {
         }
     }
 
-    Row {
+    Flow {
         id: boxFields
+        anchors.right: styleScroll.left
+        anchors.rightMargin: 12
         anchors.bottom: parent.bottom
         anchors.left: parent.left
         spacing: 8
@@ -157,20 +214,20 @@ Item {
         Column {
             spacing: 2
             Text {
-                color: "#8f93a5"
+                color: "#b0b0b0"
                 font.pixelSize: 10
                 text: "X"
             }
             TextField {
                 id: fieldX
                 objectName: "geometryField"
-                width: 72
-                color: "#f0f0ff"
+                width: 60
+                color: "#eeeeee"
                 font.pixelSize: 13
                 onEditingFinished: boxFields.commit()
                 background: Rectangle {
-                    color: "#12121c"
-                    border.color: "#2f3542"
+                    color: "#242424"
+                    border.color: "#4a4a4a"
                 }
             }
         }
@@ -178,20 +235,20 @@ Item {
         Column {
             spacing: 2
             Text {
-                color: "#8f93a5"
+                color: "#b0b0b0"
                 font.pixelSize: 10
                 text: "Y"
             }
             TextField {
                 id: fieldY
                 objectName: "geometryField"
-                width: 72
-                color: "#f0f0ff"
+                width: 60
+                color: "#eeeeee"
                 font.pixelSize: 13
                 onEditingFinished: boxFields.commit()
                 background: Rectangle {
-                    color: "#12121c"
-                    border.color: "#2f3542"
+                    color: "#242424"
+                    border.color: "#4a4a4a"
                 }
             }
         }
@@ -199,20 +256,20 @@ Item {
         Column {
             spacing: 2
             Text {
-                color: "#8f93a5"
+                color: "#b0b0b0"
                 font.pixelSize: 10
                 text: "W"
             }
             TextField {
                 id: fieldW
                 objectName: "geometryField"
-                width: 72
-                color: "#f0f0ff"
+                width: 60
+                color: "#eeeeee"
                 font.pixelSize: 13
                 onEditingFinished: boxFields.commit()
                 background: Rectangle {
-                    color: "#12121c"
-                    border.color: "#2f3542"
+                    color: "#242424"
+                    border.color: "#4a4a4a"
                 }
             }
         }
@@ -220,20 +277,20 @@ Item {
         Column {
             spacing: 2
             Text {
-                color: "#8f93a5"
+                color: "#b0b0b0"
                 font.pixelSize: 10
                 text: "H"
             }
             TextField {
                 id: fieldH
                 objectName: "geometryField"
-                width: 72
-                color: "#f0f0ff"
+                width: 60
+                color: "#eeeeee"
                 font.pixelSize: 13
                 onEditingFinished: boxFields.commit()
                 background: Rectangle {
-                    color: "#12121c"
-                    border.color: "#2f3542"
+                    color: "#242424"
+                    border.color: "#4a4a4a"
                 }
             }
         }
@@ -248,7 +305,7 @@ Item {
         Column {
             spacing: 2
             Text {
-                color: "#8f93a5"
+                color: "#b0b0b0"
                 font.pixelSize: 10
                 text: "STACK"
             }
@@ -281,12 +338,7 @@ Item {
             }
         }
 
-        Text {
-            anchors.verticalCenter: parent.verticalCenter
-            color: "#6a6f80"
-            font.pixelSize: 11
-            text: "drag a box · corners resize · Tab next box · arrows nudge 1px, Ctrl 10px"
-        }
+
     }
 
     /*
@@ -299,13 +351,18 @@ Item {
      * override back. Fields commit on focus-out and snap back on a
      * refusal, exactly like the box fields beside them.
      */
-    Column {
-        id: stylePanel
-        objectName: "stylePanel"
+    ScrollView {
+        id: styleScroll
         anchors.top: parent.top
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         width: 250
+        contentWidth: availableWidth
+        clip: true
+    Column {
+        id: stylePanel
+        objectName: "stylePanel"
+        width: styleScroll.availableWidth
         spacing: 10
 
         // The style the fields edit right now ("" = none anywhere).
@@ -424,7 +481,7 @@ Item {
         }
 
         Text {
-            color: "#8f93a5"
+            color: "#b0b0b0"
             font.pixelSize: 10
             text: "STYLE"
         }
@@ -479,7 +536,7 @@ Item {
             Column {
                 spacing: 2
                 Text {
-                    color: "#8f93a5"
+                    color: "#b0b0b0"
                     font.pixelSize: 10
                     text: "TEXT COLOUR"
                 }
@@ -493,7 +550,7 @@ Item {
             Column {
                 spacing: 2
                 Text {
-                    color: "#8f93a5"
+                    color: "#b0b0b0"
                     font.pixelSize: 10
                     text: "BACKGROUND"
                 }
@@ -514,7 +571,7 @@ Item {
             spacing: 2
             width: stylePanel.width
             Text {
-                color: "#8f93a5"
+                color: "#b0b0b0"
                 font.pixelSize: 10
                 text: "BACKGROUND GRADIENT (EMPTY = FLAT)"
             }
@@ -531,7 +588,7 @@ Item {
             Column {
                 spacing: 2
                 Text {
-                    color: "#8f93a5"
+                    color: "#b0b0b0"
                     font.pixelSize: 10
                     text: "FONT"
                 }
@@ -545,7 +602,7 @@ Item {
             Column {
                 spacing: 2
                 Text {
-                    color: "#8f93a5"
+                    color: "#b0b0b0"
                     font.pixelSize: 10
                     text: "SIZE"
                 }
@@ -580,7 +637,7 @@ Item {
             Column {
                 spacing: 2
                 Text {
-                    color: "#8f93a5"
+                    color: "#b0b0b0"
                     font.pixelSize: 10
                     text: "LINE SPACING"
                 }
@@ -594,7 +651,7 @@ Item {
         }
 
         Text {
-            color: "#8f93a5"
+            color: "#b0b0b0"
             font.pixelSize: 10
             text: "BACKGROUND IMAGE"
         }
@@ -624,7 +681,7 @@ Item {
         // itself at the reference's 0.3 (6.17c2 — refused on a video
         // background, and the sync below snaps the combo back).
         Text {
-            color: "#8f93a5"
+            color: "#b0b0b0"
             font.pixelSize: 10
             text: "BACKGROUND FIT"
         }
@@ -642,5 +699,6 @@ Item {
                 }
             }
         }
+    }
     }
 }

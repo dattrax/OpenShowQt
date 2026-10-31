@@ -1,5 +1,26 @@
 # FreeShow 1.6.7 operator reference
 
+The FreeShow measurements below remain historical behaviour evidence. As of
+2026-10-31, the main workspace layout/palette follows the user-supplied
+ProPresenter image in `third_party/cache/propresenter-visuals/`; Show presents
+slides, while Edit owns text/slide authoring.
+
+The accompanying [Renewed Vision UI guide](https://support.renewedvision.com/hc/en-us/articles/360041345954-Understanding-The-ProPresenter-User-Interface)
+is the structural reference for further workspace work:
+
+- Fixed toolbar for search, modes and media visibility.
+- Left sidebar: library/playlist outline above the selected collection's contents.
+- Centre: presentation or playlist slides, with view and thumbnail-size controls.
+- Bottom: media bin, with collections and media cues.
+- Right: audience preview, adjacent layer clears, transport below, then Show Controls.
+
+The current workspace is an initial approximation. Its duplicated bottom show
+library should become the media bin; the left outline/detail split, playlist-wide
+slide view and right-hand control arrangement need further work. These are open
+layout differences, not completed acceptance checks. Existing deferred features
+remain deferred, and the user's Edit-only authoring requirement takes precedence
+over ProPresenter's inline authoring controls.
+
 Derived from the source clone, not from the running application. FreeShow 1.6.7,
 commit `436d4b634878ba723da1d1373637384ec700ce16` at `/home/jim/FreeShow`.
 Electron main process plus a **Svelte** renderer (547 `.svelte`, 466 `.ts`).

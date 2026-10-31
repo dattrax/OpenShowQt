@@ -197,6 +197,29 @@ if(OPENSHOW_BUILD_UI)
   # nothing about loading. The two negatives are the same script against a
   # process that exits at once, and against the output a broken shell really
   # produced when this task's rows first loaded.
+  # Exercise the actual workspace: hover must not resize docks, navigation
+  # must preserve geometry, and authoring shortcuts must stay in Edit.
+  find_package(Qt6 REQUIRED COMPONENTS Test)
+  qt_policy(SET QTP0001 NEW)
+  foreach(qml IN LISTS OPENSHOW_WORKSPACE_QML_FILES)
+    get_filename_component(qmlName ${qml} NAME)
+    set_source_files_properties(${qml} PROPERTIES QT_RESOURCE_ALIAS ${qmlName})
+  endforeach()
+  qt_add_executable(workspace_ui_tests workspace_ui_tests.cpp)
+  qt_add_qml_module(workspace_ui_tests
+    URI OpenShow
+    VERSION 1.0
+    QML_FILES ${OPENSHOW_WORKSPACE_QML_FILES}
+    SOURCES ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.h
+            ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.cpp
+  )
+  target_link_libraries(workspace_ui_tests PRIVATE openshow::ui-core
+    Qt6::Quick Qt6::QuickControls2 Qt6::Test)
+  add_test(NAME workspace_ui_tests COMMAND workspace_ui_tests)
+  set_tests_properties(workspace_ui_tests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    TIMEOUT 30)
+
   add_test(NAME ui_loads
     COMMAND ${CMAKE_COMMAND}
             -DTARGET=$<TARGET_FILE:openshow-ui>
