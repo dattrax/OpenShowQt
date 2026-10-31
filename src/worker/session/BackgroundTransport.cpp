@@ -808,7 +808,7 @@ void BackgroundTransport::applyStandaloneOps() {
     // hand nothing off — the swap is DEFERRED, 6.22d's policy for the same
     // shape of wait. The latest intent wins: the slot is refilled only if
     // nothing newer arrived in the meantime (a fresher selection outranks
-    // this deferred one, exactly as in the background's PendingTransition),
+    // this deferred one, exactly as in the session's pending scene),
     // and the lane's wake brings the retry. While deferred, the live track
     // keeps playing and the mirror keeps describing it — the honest
     // requested-vs-presented pair. A claim of a SILENT placeholder does
@@ -1114,7 +1114,7 @@ std::vector<BackgroundTransport::ScheduledOp> BackgroundTransport::parseSchedule
     return ops;
 }
 
-bool BackgroundTransport::applyTransportOps() {
+void BackgroundTransport::applyTransportOps() {
     // The transport's thread: AvPlayer's fan-out walks the attached-pipeline
     // list, which only the thread swapping transports may touch (6.6b's
     // rule). Since task 6.22e4 (review A5) a seek does NOT block this pass:
@@ -1200,32 +1200,8 @@ bool BackgroundTransport::applyTransportOps() {
             applied = true;
         }
     }
-    // The deferred transition (task 6.22d, review A4), LAST so it keeps the
-    // production order — an op applied to the transport still in service is
-    // cleared by the swap exactly as the session's own applySnapshot would
-    // clear it. The reap above emptied the slot (only this thread starts
-    // retirements, so it cannot refill before the call); the lane's wake is
-    // what brought this pass home. Cleared BEFORE the call: the retry owns
-    // the ask now, and sameIdentity or a fresh deferral inside writes the
-    // slot afresh rather than finding a half-applied one.
-    bool started = false;
-    if (fPendingTransition) {
-        PendingTransition deferred = std::move(*fPendingTransition);
-        fPendingTransition.reset();
-        if (applyBackground(deferred.wanted, deferred.handles, deferred.imageResident)) {
-            started = true;
-            applied = true;
-        }
-        // Only a transition that was ever deferred logs; the ordinary pass
-        // stays silent (this function runs every frame-loop iteration).
-        std::fprintf(stderr, "openshow-worker: deferred background retried after %.1f ms: %s\n",
-                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
-                                                               deferred.requestedAt)
-                         .count(),
-                     started ? "started" : "re-deferred or unchanged");
-    }
     if (!applied) {
-        return started;
+        return;
     }
     // An op the operator issued is an op status must report on this pass. A
     // held transport presents nothing after the hold — and the per-frame
@@ -1235,7 +1211,7 @@ bool BackgroundTransport::applyTransportOps() {
     // wearing a different hat).
     std::lock_guard<std::mutex> lock(fMutex);
     refreshMediaStateLocked();
-    return started;
+    return;
 }
 
 void BackgroundTransport::applyTransportOp(int op, double seconds) {
@@ -1459,7 +1435,16 @@ bool BackgroundTransport::primeAudio(const std::string& path,
     return parked;
 }
 
-bool BackgroundTransport::applyBackground(
+bool BackgroundTransport::backgroundChangeBlocked(
+    const openshow::scene::Background& wanted) const {
+    const bool same = fAppliedBackground.hasImage == wanted.hasImage &&
+                      fAppliedBackground.isVideo == wanted.isVideo &&
+                      fAppliedBackground.assetId == wanted.assetId &&
+                      fAppliedBackground.assetPath == wanted.assetPath;
+    return fBackground && !same && inFlightRetirement() != nullptr;
+}
+
+BackgroundTransport::BackgroundApply BackgroundTransport::applyBackground(
     const openshow::scene::Background& wanted, const GpuHandles& handles,
     const std::function<bool(const std::string&)>& imageResident) {
     // The identity rule (M3 continuity): same asset id, same path, same
@@ -1472,39 +1457,15 @@ bool BackgroundTransport::applyBackground(
         fAppliedBackground.assetId == wanted.assetId &&
         fAppliedBackground.assetPath == wanted.assetPath;
     if (sameIdentity) {
-        // The wanted background is what is ALREADY on screen
-        // (fAppliedBackground is the transport in service, even while a
-        // deferral holds a newer ask). Normally a pure no-op. It is
-        // meaningful during a deferral: an operator return to this background
-        // outranks the pending transition, which was the older ask — a
-        // re-present must be able to undo a deferral, so the pending slot
-        // goes and the transport stays exactly as it is (6.22d).
-        fPendingTransition.reset();
-        return false;
+        // Returning to the current identity needs no retirement capacity.
+        // The session can cancel an older pending scene immediately.
+        return BackgroundApply::kApplied;
     }
-    // Capacity rule (task 6.22d, review A4): one retirement slot, and this
-    // is the realtime caller that must never block on it. Reap first — a
-    // retirement whose lane finished must not read as busy, and teardown
-    // would reap here anyway — then defer: keep the latest wanted
-    // background (a burst of operator changes coalesces into this one),
-    // return false (nothing new to present — the scene keeps drawing the
-    // seam's held frames of the background still on screen, which is
-    // exactly the requested-vs-presented distinction the review names), and
-    // let applyTransportOps() retry once the lane reports in. The check is
-    // gated on fBackground because only a video transport's teardown ever
-    // HANDS OFF: swapping a still pays no slot and may proceed beside a
-    // retiring clip (6.21c2's allowed overlap). There is deliberately no
-    // queue: capacity overflow is a LATEST-WINS policy, and the scene store
-    // keeps everything older than this transition.
+    // Only this thread changes transports. The session retains the whole
+    // scene when the bounded retirement slot is occupied, and retries it
+    // after the lane's wake; no media-only transition can overtake it.
     reapRetirement();
-    if (fBackground != nullptr && inFlightRetirement()) {
-        fPendingTransition = PendingTransition{
-            wanted, handles, imageResident, std::chrono::steady_clock::now()};
-        std::fprintf(stderr, "openshow-worker: background swap deferred, "
-                             "retirement in flight: %s\n",
-                     wanted.hasImage ? wanted.assetPath.c_str() : "<clear>");
-        return false;
-    }
+    if (backgroundChangeBlocked(wanted)) return BackgroundApply::kDeferred;
     teardownBackgroundTransport();
     fAppliedBackground = wanted;
     if (!wanted.hasImage || !wanted.isVideo) {
@@ -1558,7 +1519,7 @@ bool BackgroundTransport::applyBackground(
             fMedia.error.clear();
             fMediaFault.reset();
         }
-        return false;
+        return brokenStill ? BackgroundApply::kFailed : BackgroundApply::kApplied;
     }
 
     std::string error;
@@ -1621,7 +1582,7 @@ bool BackgroundTransport::applyBackground(
             std::fprintf(stderr, "openshow-worker: background video %s: %s\n",
                          wanted.assetPath.c_str(), error.c_str());
             mediaFailed(MediaFault::kVideo, wanted.assetPath, "background video: " + error);
-            return false;  // the colour fill stands; the scene stays legible
+            return BackgroundApply::kFailed;  // the colour fill stands; the scene stays legible
         }
     }
 
@@ -1727,7 +1688,7 @@ bool BackgroundTransport::applyBackground(
         retireAudioInstance();  // 6.21c1: the adopted player goes out of service here
         fBackground->close();
         fBackground.reset();
-        return false;
+        return BackgroundApply::kFailed;
     }
     // The video transport is up. The audio's bad news (if any) is recorded
     // on top of the success, in that order: mediaPlaying clears the previous
@@ -1773,7 +1734,7 @@ bool BackgroundTransport::applyBackground(
         std::fprintf(stderr, "openshow-worker: %zu test transport ops armed for %s\n",
                      fScheduledOps.size(), wanted.assetPath.c_str());
     }
-    return true;  // the head frame arrives soon; the loop owes a present
+    return BackgroundApply::kVideoStarted;  // the head frame arrives soon; the loop owes a present
 }
 
 void BackgroundTransport::teardownBackgroundTransport() {

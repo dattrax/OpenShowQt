@@ -110,6 +110,7 @@ class WorkerController : public QObject {
     // clip will honour, and mediaSources lists the registered audio
     // identities as [{id, gain, muted}] — a source the transport does
     // not have is absent, never falsely listed at default gain.
+    Q_PROPERTY(QString mediaPath READ mediaPath NOTIFY mediaChanged)
     Q_PROPERTY(bool mediaOnAir READ mediaOnAir NOTIFY mediaChanged)
     Q_PROPERTY(double mediaPosition READ mediaPosition NOTIFY mediaChanged)
     Q_PROPERTY(double mediaDuration READ mediaDuration NOTIFY mediaChanged)
@@ -303,6 +304,7 @@ public:
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
+    QString mediaPath() const { return fMediaPath; }
     bool mediaOnAir() const { return fMediaLive; }
     double mediaPosition() const { return fMediaPosition; }
     double mediaDuration() const { return fMediaDuration; }
@@ -401,6 +403,7 @@ private:
     PreviewConsumer* fPreview = nullptr;
     bool fMediaPlaying = false;
     QString fMediaError;
+    QString fMediaPath;
     // The lane as the worker last reported it (task 6.7c); "none" is also
     // the answer for a worker too old to send the field.
     QString fMediaAudio = QStringLiteral("none");

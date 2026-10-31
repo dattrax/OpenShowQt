@@ -533,7 +533,12 @@ private:
     void housekeep();
     void applyPendingLayerChanges(const FrameSnapshot& snapshot);
     void applyPendingDisplayChange(const FrameSnapshot& snapshot);
-    void applyPendingSceneChange(const FrameSnapshot& snapshot);
+    bool applyPendingSceneChange(const FrameSnapshot& snapshot);
+    uint64_t fDeferredSceneRevision = 0;  // render thread; suppress only this blocked command
+    uint64_t fLandedFrameRevision = 0;    // complete commands actually staged for drawing
+    // Transaction backup while media has switched but no frame has committed.
+    // Status keeps the old background until the same commit publishes the scene.
+    std::optional<MediaStatus> fSceneMediaBeforeApply;  // guarded by fMutex
     // The one preview handoff the loop makes (task 6.18a2): wraps the frame
     // this pass put on the panel (or the last presented one when it presented
     // nothing) with the video the audience's transport is showing, the

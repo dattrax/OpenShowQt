@@ -169,9 +169,9 @@ void testStillsAndIdentity(BackgroundTransport& transport) {
     FakePresenter presenter;
     transport.setVideoPresenter(&presenter);
     const std::string path = "/media/broken-still.png";
-    bool started = transport.applyBackground(stillBackground(path),
+    bool started = (transport.applyBackground(stillBackground(path),
                                              openshow::worker::GpuHandles{},
-                                             [](const std::string&) { return false; });
+                                             [](const std::string&) { return false; }) == BackgroundTransport::BackgroundApply::kVideoStarted);
     check(!started, "still: no video transport, no present owed");
     openshow::worker::MediaStatus media = transport.mediaStatus();
     check(media.path == path, "still: media.path names the asset on air");
@@ -185,8 +185,8 @@ void testStillsAndIdentity(BackgroundTransport& transport) {
 
     // Re-present the SAME asset: the alreadyReported gate must not notify
     // the same degradation again, and the sticky error stays paired.
-    started = transport.applyBackground(stillBackground(path), openshow::worker::GpuHandles{},
-                                        [](const std::string&) { return false; });
+    started = (transport.applyBackground(stillBackground(path), openshow::worker::GpuHandles{},
+                                        [](const std::string&) { return false; }) == BackgroundTransport::BackgroundApply::kVideoStarted);
     check(!started, "still: a re-present still starts nothing");
     check(!transport.takeMediaError(&reported),
           "still: the same broken asset does not notify twice");
@@ -194,15 +194,15 @@ void testStillsAndIdentity(BackgroundTransport& transport) {
 
     // The asset repaired: the same prepare that decodes it clears the
     // error (the recovery clears its own fault).
-    transport.applyBackground(stillBackground(path), openshow::worker::GpuHandles{},
-                              [](const std::string&) { return true; });
+    (transport.applyBackground(stillBackground(path), openshow::worker::GpuHandles{},
+                              [](const std::string&) { return true; }) == BackgroundTransport::BackgroundApply::kVideoStarted);
     media = transport.mediaStatus();
     check(media.error.empty(), "still: a decoded asset clears the error");
     check(media.path == path, "still: the healthy asset is still NAMED on air");
 
     // A plain colour fill: no asset, no story.
-    transport.applyBackground(openshow::scene::Background{}, openshow::worker::GpuHandles{},
-                              [](const std::string&) { return false; });
+    (transport.applyBackground(openshow::scene::Background{}, openshow::worker::GpuHandles{},
+                              [](const std::string&) { return false; }) == BackgroundTransport::BackgroundApply::kVideoStarted);
     media = transport.mediaStatus();
     check(media.path.empty() && media.error.empty(),
           "colour fill: no asset on air means nothing to report");
@@ -399,7 +399,7 @@ void testRetiredAudioGoesSilentAtHandoff() {
     handles.context = gr.get();
     const auto resident = [](const std::string&) { return true; };
 
-    check(transport.applyBackground(videoBackground(clip), handles, resident),
+    check((transport.applyBackground(videoBackground(clip), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
           "the audio-bearing background transport starts");
 
     // Audible first: the lane reads live and the position climbs (the same
@@ -421,7 +421,7 @@ void testRetiredAudioGoesSilentAtHandoff() {
     // sleeps 700 ms, and applyBackground returning in milliseconds is half
     // of what A3 asks for.
     const auto began = std::chrono::steady_clock::now();
-    transport.applyBackground(openshow::scene::Background{}, handles, resident);
+    (transport.applyBackground(openshow::scene::Background{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted);
     const double handoffMs = std::chrono::duration<double, std::milli>(
                                  std::chrono::steady_clock::now() - began)
                                  .count();
@@ -548,18 +548,21 @@ void testSwapDefersBehindSlowRetirement() {
     {
         BackgroundTransport transport;
         transport.noteRunStart(kEpoch);
-        check(transport.applyBackground(videoBackground(clipA), handles, resident),
+        check((transport.applyBackground(videoBackground(clipA), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
               "A starts (the clip whose retirement will be scripted slow)");
-        check(transport.applyBackground(videoBackground(clipB), handles, resident),
+        check((transport.applyBackground(videoBackground(clipB), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
               "B starts beside the retiring A (6.21c2's allowed overlap)");
 
         const auto began = std::chrono::steady_clock::now();
-        const bool startedC = transport.applyBackground(videoBackground(clipC), handles,
-                                                        resident);
+        const bool startedC = (transport.applyBackground(videoBackground(clipC), handles,
+                                                        resident) == BackgroundTransport::BackgroundApply::kVideoStarted);
         const double thirdMs = std::chrono::duration<double, std::milli>(
                                    std::chrono::steady_clock::now() - began)
                                    .count();
         check(!startedC, "the C swap defers rather than waiting on A's lane");
+        check(transport.applyBackground(videoBackground(clipC), handles, resident) ==
+                  BackgroundTransport::BackgroundApply::kDeferred,
+              "the caller receives an explicit deferred outcome");
         check(thirdMs < 100.0, "the deferred call returned in milliseconds");
 
         // Requested vs presented, kept distinct: the transport still in
@@ -570,6 +573,7 @@ void testSwapDefersBehindSlowRetirement() {
               "while deferred, status honestly reports the live B transport");
 
         const int pass = pumpUntil(transport, [&] {
+            transport.applyBackground(videoBackground(clipC), handles, resident);
             transport.refreshMediaState();
             return transport.mediaStatus().path == clipC;
         });
@@ -585,14 +589,14 @@ void testSwapDefersBehindSlowRetirement() {
     {
         BackgroundTransport transport;
         transport.noteRunStart(kEpoch);
-        check(transport.applyBackground(videoBackground(clipA), handles, resident),
+        check((transport.applyBackground(videoBackground(clipA), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
               "A starts again (clear scenario)");
-        check(transport.applyBackground(videoBackground(clipB), handles, resident),
+        check((transport.applyBackground(videoBackground(clipB), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
               "B starts beside the retiring A");
 
         const auto began = std::chrono::steady_clock::now();
         const bool startedClear =
-            transport.applyBackground(openshow::scene::Background{}, handles, resident);
+            (transport.applyBackground(openshow::scene::Background{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted);
         const double clearMs = std::chrono::duration<double, std::milli>(
                                    std::chrono::steady_clock::now() - began)
                                    .count();
@@ -603,6 +607,7 @@ void testSwapDefersBehindSlowRetirement() {
               "a deferred clear still reports B live until it lands");
 
         const int pass = pumpUntil(transport, [&] {
+            transport.applyBackground(openshow::scene::Background{}, handles, resident);
             transport.refreshMediaState();
             return !transport.mediaTransportLive() && transport.mediaStatus().path.empty();
         });
@@ -963,7 +968,7 @@ void testSeekCompletesOffTheFrameTick() {
     handles.uploadQueue = vk.uploadQueue();
     handles.context = gr.get();
     const auto resident = [](const std::string&) { return true; };
-    check(transport.applyBackground(videoBackground(clip), handles, resident),
+    check((transport.applyBackground(videoBackground(clip), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
           "the audio-bearing background transport starts for the seek flight");
 
     bool audible = false;
@@ -1023,7 +1028,7 @@ void testSeekCompletesOffTheFrameTick() {
     transport.requestMediaSeek(1.0);
     transport.applyTransportOps();  // flight #2, waiting
     const auto swapBegan = std::chrono::steady_clock::now();
-    transport.applyBackground(openshow::scene::Background{}, handles, resident);
+    (transport.applyBackground(openshow::scene::Background{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted);
     const double swapMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - swapBegan)
             .count();

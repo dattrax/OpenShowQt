@@ -802,6 +802,14 @@ OutputSession::Status OutputSession::status() const {
     // reading of its owner, never a session-side mirror that could be
     // advanced out of step.
     snapshot.media = fTransport.mediaStatus();
+    if (fSceneMediaBeforeApply) {
+        const auto current = std::move(snapshot.media);
+        snapshot.media = *fSceneMediaBeforeApply;
+        snapshot.media.standalone = current.standalone;
+        std::erase_if(snapshot.media.sources, [](const auto& source) { return source.name == "standalone"; });
+        for (const auto& source : current.sources)
+            if (source.name == "standalone") snapshot.media.sources.push_back(source);
+    }
     // The store-owned fields (task 6.18a): revision, layerMask, monitor and
     // scene.active/pending/transitioning/prepared do not live in fStatus at
     // all — they are SceneStore's published set, copied in here so a caller's
@@ -897,10 +905,17 @@ void OutputSession::applyPendingDisplayChange(const FrameSnapshot& snapshot) {
     // commit block: a moved window is on air when its frame presents.
 }
 
-void OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
+bool OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
     const uint64_t desired = snapshot.scene;
     if (desired == fStore.landedScene()) {
-        return;
+        fDeferredSceneRevision = 0;
+        return true;
+    }
+    const auto wanted = snapshot.content ? snapshot.content->background
+                                         : openshow::scene::Background{};
+    if (fBackgroundMedia && fTransport.backgroundChangeBlocked(wanted)) {
+        fDeferredSceneRevision = snapshot.revision;
+        return false;
     }
     // Fault injection (task 6.4): real applies take time — opening a
     // background transport really runs hundreds of ms. The fixture uses
@@ -914,40 +929,28 @@ void OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
     if (faults().scenePresentFails > 0) {
         faults().armedPresents = faults().scenePresentFails;
     }
-    // Task 3.1: the landed scene is what the production layers draw. The
-    // store may evict its entry later, so a copy shared with the
-    // composition keeps the on-air scene alive as long as it is drawn —
-    // here that copy is the snapshot's pin, so what is applied is exactly
-    // what the run loop captured, whatever commands arrived since.
-    fStore.landScene(desired);
-    // Task 5.5: the render thread keeps its own handle on the on-air scene
-    // (the composition gets a copy) — the draw path and the background
-    // transport both read the same thing from here.
-    fRenderScene = snapshot.content;
-    fScene->setActiveScene(snapshot.content, snapshot.kind);
     if (fBackgroundMedia) {
-        // The transport follows the scene in the same breath — and this
-        // whole function runs ahead of frame()'s graphics queue lock
-        // precisely because the swap's join() waits on threads that may be
-        // blocked acquiring it (deadlock otherwise). Since task 6.18b the
-        // identity rule, the quiesce order and the broken-still report all
-        // belong to BackgroundTransport: the session hands it the device it
-        // paints with and the cache answer it cannot read itself, and the
-        // one fact the loop needs — a video transport started, so a present
-        // is owed — comes back as the return value.
-        const bool started = fTransport.applyBackground(
-            snapshot.content ? snapshot.content->background : openshow::scene::Background{},
-            gpuHandles(),
+        {
+            std::lock_guard<std::mutex> lock(fMutex);
+            if (!fSceneMediaBeforeApply) fSceneMediaBeforeApply = fTransport.mediaStatus();
+        }
+        const auto result = fTransport.applyBackground(wanted, gpuHandles(),
             [this](const std::string& path) {
                 return fScene != nullptr && fScene->imageCache()->has(path);
             });
-        if (started) {
-            fNeedsPresent = true;  // the head frame arrives soon; redraw when it does
+        if (result == BackgroundTransport::BackgroundApply::kDeferred) {
+            fDeferredSceneRevision = snapshot.revision;
+            return false;
         }
+        if (result == BackgroundTransport::BackgroundApply::kVideoStarted) fNeedsPresent = true;
+        // Failed media has an explicit colour-fill fallback and named fault;
+        // it still belongs to this scene. Only deferral keeps the old scene.
     }
-    // active/revision are NOT published here (task 6.4, review R4): the
-    // apply only stages the scene. The commit after a successful present
-    // is what tells callers the scene is on air.
+    fStore.landScene(desired);
+    fRenderScene = snapshot.content;
+    fScene->setActiveScene(snapshot.content, snapshot.kind);
+    fDeferredSceneRevision = 0;
+    return true;
 }
 
 void OutputSession::syncScenePins() {
@@ -1383,6 +1386,7 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
         // the only thing that can move what a caller sees.
         if (presentedFrame) {
             fStore.commit(snapshot.revision, fScene && fScene->transitionRunning());
+            fSceneMediaBeforeApply.reset();
             // Task 6.10: once the fade has settled, the scene it faded
             // FROM is no longer drawn and its still stops being sacred
             // (unless the store still holds it, which the sync re-derives
@@ -1452,16 +1456,9 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
     while (running() && !(abort && *abort)) {
         glfwPollEvents();
         const auto now = std::chrono::steady_clock::now();
-        // Transport control first (task 6.7d): a seek or a hold the audience
-        // asked for changes what this pass must decide, and the apply belongs
-        // on this thread (see BackgroundTransport::applyTransportOps for the
-        // discipline). Since 6.22d the pass can also START a transport — the
-        // retry of a background transition deferred behind a slow retirement
-        // — and a started transport owes its head frame a present, exactly
-        // like the scene-driven call in applySnapshot.
-        if (fTransport.applyTransportOps()) {
-            fNeedsPresent = true;
-        }
+        // Controls and retirement reaping precede the scene decision. The
+        // session retries a blocked scene only when its transport can join it.
+        fTransport.applyTransportOps();
 
         bool presentNow = false;
         bool previewDue = false;
@@ -1476,7 +1473,11 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             // section, so the decision and the capture are one instant.
             SceneStore::Decision decision;
             fStore.decide(&decision);
-            presentNow = decision.commandsDue || decision.destinationDue ||
+            const bool deferred = fDeferredSceneRevision != 0 &&
+                fDeferredSceneRevision == decision.snapshot.revision &&
+                fTransport.backgroundChangeBlocked(decision.snapshot.content
+                    ? decision.snapshot.content->background : openshow::scene::Background{});
+            presentNow = (decision.commandsDue && !deferred) || decision.destinationDue ||
                          fPreview.streamChangePending() ||
                          fNeedsPresent || fWindow->framebufferResized();
             // The revision this frame represents, captured in the same
@@ -1559,7 +1560,11 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             // Composition and transport still switch together, directly
             // ahead of the draw — both from the same snapshot the frame
             // draws and gets credited for (task 6.4).
-            applyPendingSceneChange(snapshot);
+            if (applyPendingSceneChange(snapshot)) {
+                fLandedFrameRevision = snapshot.revision;
+            } else {
+                snapshot.revision = fLandedFrameRevision;
+            }
             frame(snapshot);
             continue;
         }

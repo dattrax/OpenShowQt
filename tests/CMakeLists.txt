@@ -310,6 +310,13 @@ if(OPENSHOW_BUILD_UI)
   # clears, a restore that re-prepares across the 16-deep store pruning,
   # adoption of moved plates with the restore drawing from the new paths,
   # and a real missing-picture fault reaching (and leaving) the operator.
+  add_executable(async_integration_tests async_integration_tests.cpp)
+  target_link_libraries(async_integration_tests PRIVATE openshow::ui-core)
+  add_test(NAME async_integration_tests
+    COMMAND async_integration_tests $<TARGET_FILE:openshow-worker>)
+  set_tests_properties(async_integration_tests PROPERTIES LABELS display TIMEOUT 180
+    SKIP_RETURN_CODE 77)
+
   add_executable(frontend_journey_tests frontend_journey_tests.cpp)
   target_link_libraries(frontend_journey_tests PRIVATE openshow::ui-core openshow::protocol)
   add_test(NAME frontend_journey_tests

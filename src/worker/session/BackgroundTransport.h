@@ -310,14 +310,14 @@ public:
     // imageResident answers "is the still for this path in the decoded
     // cache" (a lookup the session's renderer owns, consulted under NO
     // lock); a picture that is not is a degradation the operator must see
-    // (task 6.7c, review R18). Returns true when a video transport started
-    // (the loop owes a present for its head frame). Since task 6.22d a call
-    // that arrives while a retirement is in flight STARTS nothing and
-    // returns false: the wanted transition becomes the single pending ask
-    // (latest wins) and applyTransportOps() retries it when the lane
-    // reports in — the realtime thread never waits on a slow join, and the
-    // output keeps drawing the background still on screen meanwhile.
-    bool applyBackground(const openshow::scene::Background& wanted, const GpuHandles& handles,
+    // (task 6.7c, review R18). Failure names the colour-fill fallback;
+    // deferral leaves the current transport untouched.
+    enum class BackgroundApply { kApplied, kVideoStarted, kDeferred, kFailed };
+    // The caller retains the entire scene transaction on kDeferred and
+    // retries it after retirement wakes the loop. The transport never retries
+    // a background independently of its scene.
+    bool backgroundChangeBlocked(const openshow::scene::Background& wanted) const;
+    BackgroundApply applyBackground(const openshow::scene::Background& wanted, const GpuHandles& handles,
                          const std::function<bool(const std::string&)>& imageResident);
     // Prepare-time transport prime (task 6.9b, review R10). Runs a video
     // transport's FILE half — openFile: container, streams, decoder — on the
@@ -410,12 +410,9 @@ public:
     // The render loop's transport pass (task 6.7d): the pending intent and
     // any due scheduled op, then the mode/mix slots, then the standalone
     // swap, then a status refresh if anything was applied. Called by the
-    // loop ahead of its present decision. Since task 6.22d it also reaps a
-    // completed retirement and retries any deferred background transition
-    // (PendingTransition); returns true when that retry STARTED a transport
-    // — the loop then owes a present for its head frame, exactly as if the
-    // scene had driven applyBackground itself.
-    bool applyTransportOps();
+    // loop ahead of its present decision. Reaps completed retirement lanes;
+    // scene-driven background retries belong to OutputSession (6.23b).
+    void applyTransportOps();
 
     // Parses the test schedule (see fScheduledOps): "seek@900:0.6,
     // pause@2400,play@3200", milliseconds after the transport opened.
@@ -568,24 +565,6 @@ private:
     std::unique_ptr<PlaybackPipeline> fBackground;
     openshow::scene::Background fAppliedBackground;    // identity in service
 
-    // The deferred background transition (task 6.22d, review A4): when
-    // applyBackground is asked for a new background while the ONE retirement
-    // slot is still occupied, the transition is stored here — latest wins,
-    // a burst of operator changes coalesces into the newest ask — and the
-    // call returns without waiting. applyTransportOps() retries it on the
-    // pass whose reap emptied the slot (the lane's wake makes that pass
-    // prompt). Render-thread-only, like everything beside fAppliedBackground; a re-present of the background still in service cancels
-    // it (the operator outranked it), and shutdown simply drops it (the
-    // session is going away with its scene). No unbounded queue: capacity
-    // overflow is this one slot plus the store's own newest-wins truth.
-    struct PendingTransition {
-        openshow::scene::Background wanted;
-        GpuHandles handles;
-        std::function<bool(const std::string&)> imageResident;
-        std::chrono::steady_clock::time_point requestedAt;
-    };
-    std::optional<PendingTransition> fPendingTransition;
-
     // The in-flight seek (task 6.22e4, review A5). AvPlayer's seek wait —
     // up to 500 ms per feeder, a poll deadline rather than a promise from
     // the container — used to be paid on the frame tick. Now the pass
@@ -597,7 +576,7 @@ private:
     // pause, play and a newer seek hold their turn behind the seek, the
     // order the synchronous code enforced — while gain, mute and loop are
     // independent slots and proceed. Render-thread-owned like everything
-    // beside fPendingTransition; retirement MOVES the flight into its
+    // beside fBackground; retirement MOVES the flight into its
     // Retirement and joins the worker there BEFORE the player's stop,
     // because the worker waits on feeders the retired player owns.
     struct SeekFlight {
@@ -623,7 +602,7 @@ private:
     // REACH alive until the lane reports done and reapRetirement() closes
     // the GPU half on the render thread. One at a time: since task 6.22d a
     // second transition while the lane waits is DEFERRED by its caller
-    // (PendingTransition below) rather than blocking this thread, so a
+    // (the session retains the pending scene) rather than blocking this thread, so a
     // teardown reached with the slot occupied is a logged invariant
     // violation, not an overflow policy. The render thread owns the
     // slot; the lane holds a shared reference for the duration, so the

@@ -222,6 +222,7 @@ void WorkerController::onRpcDisconnected() {
     fPresent->reset();
     fRpc.clearPending();
     fMediaPlaying = false;
+    fMediaPath.clear();
     fMediaError.clear();  // the media state describes a worker we lost
     fMediaAudio = QStringLiteral("none");
     emit mediaChanged();
@@ -245,6 +246,7 @@ void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exit
     fPresent->reset();
     fRpc.clearPending();
     fMediaPlaying = false;
+    fMediaPath.clear();
     fMediaError.clear();
     fMediaAudio = QStringLiteral("none");
     emit mediaChanged();
@@ -477,6 +479,8 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         if (payload.contains("media") && payload.at("media").is_object()) {
             const boost::json::object& media = payload.at("media").as_object();
             fMediaPlaying = media.at("playing").as_bool();
+            if (const auto path = media.find("path"); path != media.end() && path->value().is_string())
+                fMediaPath = QString::fromStdString(std::string(path->value().as_string()));
             fMediaError =
                 QString::fromStdString(std::string(media.at("error").as_string()));
             // Optional even within minor 5's spirit: a worker that does not
