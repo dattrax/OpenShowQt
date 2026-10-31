@@ -947,6 +947,77 @@ void testStandaloneClaimReservesRetirement() {
     unsetenv("OPENSHOW_FAULT_PLAYER_STOP_MATCH");
 }
 
+// 6.23e: a superseded successful player, or a failed obsolete stage, is
+// silent bookkeeping. A genuine failure of the current intent stays visible.
+void testStandaloneStageOutcomes() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) return;
+    openshow::media::PipeWireSink probe;
+    std::string error;
+    if (!probe.start(48000, &error)) {
+        std::printf("   skipped stage outcomes (no PipeWire: %s)\n", error.c_str());
+        return;
+    }
+    probe.stop();
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string a = "transport-fixtures/outcome-a.m4a";
+    const std::string b = "transport-fixtures/outcome-b.m4a";
+    const std::string c = "transport-fixtures/outcome-c.m4a";
+    for (const auto& path : {a, b, c}) {
+        const auto command = std::string("ffmpeg -v error -nostdin -y -f lavfi -i ")
+            + "anullsrc=channel_layout=stereo:sample_rate=48000 -t 2 -c:a aac " + path;
+        if (std::system(command.c_str()) != 0) { check(false, "outcome fixtures generated"); return; }
+    }
+    setenv("OPENSHOW_FAULT_AUDIO_START_MS", "700", 1);
+    setenv("OPENSHOW_FAULT_AUDIO_START_MATCH", "outcome-a.m4a", 1);
+    {
+        BackgroundTransport transport;
+        check(transport.requestStandaloneAudio(a, &error), "outcome: A validates");
+        transport.applyTransportOps();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        transport.armStandaloneTrack(b);
+        check(pumpUntil(transport, [&] {
+            return transport.standaloneLive() && transport.mediaStatus().standalone.path == b;
+        }) > 0, "outcome: healthy B supersedes the held A");
+        openshow::worker::MediaError failure;
+        check(!transport.takeMediaError(&failure) && transport.mediaStatus().standalone.error.empty(),
+              "outcome: successful supersession emits no media error");
+        transport.shutdown();
+    }
+    unsetenv("OPENSHOW_FAULT_AUDIO_START_MS");
+    unsetenv("OPENSHOW_FAULT_AUDIO_START_MATCH");
+    {
+        BackgroundTransport transport;
+        bool superseded = false;
+        setenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL", "1", 1);
+        transport.setStandaloneStageClaimHook([&] {
+            if (!superseded) {
+                superseded = true;
+                unsetenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL");
+                transport.armStandaloneTrack(b);
+            }
+        });
+        check(transport.requestStandaloneAudio(a, &error), "outcome: soon-obsolete A validates");
+        check(pumpUntil(transport, [&] {
+            return transport.standaloneLive() && transport.mediaStatus().standalone.path == b;
+        }) > 0, "outcome: B replaces an obsolete failed stage");
+        openshow::worker::MediaError failure;
+        check(!transport.takeMediaError(&failure), "outcome: obsolete failure does not fault the current intent");
+        transport.setStandaloneStageClaimHook({});
+        setenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL", "1", 1);
+        transport.armStandaloneTrack(c);
+        check(pumpUntil(transport, [&] {
+            const auto media = transport.mediaStatus().standalone;
+            return media.path == c && !media.error.empty();
+        }) > 0, "outcome: current C's genuine start failure is visible");
+        check(transport.takeMediaError(&failure) && failure.path == c &&
+                  failure.message.find("injected mixer failure") != std::string::npos,
+              "outcome: the genuine notification carries its own path and reason");
+        check(!transport.takeMediaError(&failure), "outcome: genuine failure is not duplicated");
+        unsetenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL");
+        transport.shutdown();
+    }
+}
+
 /* --- task 6.22e4 (review A5): the seek-completion wait off the loop -------
    AvPlayer::seekTo fanned the jump out and then waited up to 500 ms PER
    FEEDER for the container's acknowledgment — inline, on the transport
@@ -1250,6 +1321,7 @@ int main() {
     testStandaloneDurationTravelsWithStage();
     testStandaloneStopRunsOnLane();
     testStandaloneClaimReservesRetirement();
+    testStandaloneStageOutcomes();
     testSeekCompletesOffTheFrameTick();
     testStandaloneStatusTracksReplacement();
 

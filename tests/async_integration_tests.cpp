@@ -219,6 +219,46 @@ void continuedSeekPlayback(const std::string& clip) {
     qunsetenv("OPENSHOW_FAULT_SEEK_ACK_MS");
     qunsetenv("OPENSHOW_FAULT_SEEK_ACK_MATCH");
 }
+// 6.23e: observe transient notifications as well as settled status. A
+// later healthy poll must not hide an earlier false supersession fault.
+void stageNotifications(const std::string& a, const std::string& b) {
+    qputenv("OPENSHOW_FAULT_AUDIO_START_MS", "700");
+    qputenv("OPENSHOW_FAULT_AUDIO_START_MATCH", "intent-a.m4a");
+    {
+        WorkerController worker;
+        bool faultSeen = false;
+        QObject::connect(&worker, &WorkerController::mediaChanged, [&] {
+            faultSeen = faultSeen || !worker.mediaError().isEmpty() || !worker.standaloneError().isEmpty();
+        });
+        worker.start();
+        check(waitUntil([&] { return worker.outputLive() && worker.previewActive(); }),
+              "stage outcome: worker connects");
+        worker.selectStandaloneTrack(QString::fromStdString(a));
+        settle(150);
+        worker.selectStandaloneTrack(QString::fromStdString(b));
+        check(waitUntil([&] { return worker.standaloneOnAir()
+                                    && worker.standalonePath().toStdString() == b; }),
+              "stage outcome: the newest track becomes live");
+        check(!faultSeen, "stage outcome: successful supersession never notifies the frontend of failure");
+        worker.shutdownNow();
+    }
+    qunsetenv("OPENSHOW_FAULT_AUDIO_START_MS");
+    qunsetenv("OPENSHOW_FAULT_AUDIO_START_MATCH");
+    qputenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL", "1");
+    {
+        WorkerController worker;
+        worker.start();
+        check(waitUntil([&] { return worker.outputLive() && worker.previewActive(); }),
+              "stage failure: worker connects");
+        worker.selectStandaloneTrack(QString::fromStdString(a));
+        check(waitUntil([&] { return !worker.standaloneOnAir()
+            && worker.standalonePath().toStdString() == a
+            && worker.standaloneError().contains("injected mixer failure"); }),
+            "stage failure: genuine current failure reaches the frontend with its path");
+        worker.shutdownNow();
+    }
+    qunsetenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -256,5 +296,6 @@ int main(int argc, char** argv) {
           "-t 8 -c:v libx264 -pix_fmt yuv420p -c:a aac '" + seekClip + "'";
     if (std::system(seekCommand.c_str()) != 0) return 1;
     continuedSeekPlayback(seekClip);
+    stageNotifications(intentA, intentB);
     return failures ? 1 : 0;
 }

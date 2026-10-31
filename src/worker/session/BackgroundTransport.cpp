@@ -757,27 +757,13 @@ void BackgroundTransport::applyStandaloneOps() {
             }
             stage = std::move(fStandaloneStage);
         }
-        std::unique_ptr<AvPlayer> abandoned;
-        {
-            // This is the decision made while claiming the stage. A later
-            // request is the next swap, not a reason to change this outcome
-            // after its retirement capacity has already been reserved.
-            if (superseded) {
-                // A newer selection arrived mid-bring-up: this player is
-                // for a request the operator has already replaced. It
-                // started HELD — nothing was ever audible — and its joins
-                // now go to the retirement lane (task 6.22e3): the pass
-                // that abandons it stays as fast as the pass that never
-                // had a stage. The pending intent gets its own stage once
-                // this one's slot is clear.
-                abandoned = std::move(stage->player);
-            }
-        }
-        if (abandoned != nullptr) {
-            // The claim reserved this slot before consuming the held player.
-            retireStandaloneInstance(std::move(abandoned), reservation);
-        }
-        if (abandoned == nullptr && !stage->player) {
+        if (superseded) {
+            // Supersession is a terminal outcome, including an obsolete
+            // failed start. Ownership moves must never turn it into failure
+            // of the current intent or produce a media.error notification.
+            if (stage->player)
+                retireStandaloneInstance(std::move(stage->player), reservation);
+        } else if (!stage->player) {
             // A failed bring-up: the block's story, told under fMutex as
             // the old swap told it (sticky error, path pairing, dedupe).
             std::lock_guard<std::mutex> lock(fMutex);
@@ -788,9 +774,10 @@ void BackgroundTransport::applyStandaloneOps() {
                                                          : stage->error));
             std::fprintf(stderr, "openshow-worker: standalone track %s: %s\n",
                          stage->path.c_str(), stage->error.c_str());
-        } else if (abandoned == nullptr) {
+        } else {
             std::lock_guard<std::mutex> lock(fMutex);
-            fStandalonePlayer = std::move(stage->player);            // Release the hold: the transport comes up exactly where the
+            fStandalonePlayer = std::move(stage->player);
+            // Release the hold: the transport comes up exactly where the
             // old swap's start() left it — position 0, playing, lane
             // honest — and the refresh promotes the block's fields as
             // before. play() touches only this player's own sink and

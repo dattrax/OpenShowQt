@@ -5,7 +5,7 @@ Current checkpoint and verification: [PROGRESS.md](PROGRESS.md).
 Current code boundaries and open differences: [docs/architecture.md](docs/architecture.md).
 Detailed completed-task evidence: [history](docs/history/README.md).
 Post-M6 conformance review: [original findings](docs/reviews/M6-conformance-2026-10-30.md).
-Current architecture review: [after 6.22](docs/reviews/M6-post-6.22-review-2026-10-31.md).
+Architecture review: [after 6.22](docs/reviews/M6-post-6.22-review-2026-10-31.md); [6.23 closure evidence](docs/reviews/M6-6.23-verification-2026-10-31.md).
 
 ## Goal and reference
 
@@ -251,10 +251,10 @@ Checkpoint: `M5: integrate synchronized video and audio playback`.
 ### M6 — Code review remediation and architecture
 
 The [original review](docs/M6-code-review.md) introduced R1–R19; productization
-moved to M7. Recorded completion through 6.22 remains historical DONE. The
-[post-6.22 review](docs/reviews/M6-post-6.22-review-2026-10-31.md) at `db406f7`
-identifies five remaining issues; complete 6.23 before full conformance is claimed.
-Historical 6.1–6.4 reliability references mean 7.1–7.4.
+moved to M7. Recorded completion through 6.23 remains DONE. The
+[post-6.22 review](docs/reviews/M6-post-6.22-review-2026-10-31.md) introduced five
+async integration findings, closed by 6.23 with [regression evidence](docs/reviews/M6-6.23-verification-2026-10-31.md).
+M7 release gates remain open. Historical 6.1–6.4 reliability references mean 7.1–7.4.
 
 | ID | Status | Focused work | Acceptance / review finding |
 |---|---|---|---|
@@ -360,7 +360,7 @@ and archived 6.22 handoff. The current post-6.22 findings are B1–B5 below.
 | 6.23b | DONE | Commit deferred scenes and media as one output transaction | Real-session A→B→C/clear retains truthful pending/active state and matching preview pixels; B2 |
 | 6.23c | DONE | Invalidate old standalone probes when a newer intent removes audio | Removal during one or several queued probes cannot resurrect playback; B3 |
 | 6.23d | DONE | Pair seek completion with video deadline and clock generations | Delayed forward/backward seeks continue presenting without stale-clock stalls; B4 |
-| 6.23e | TODO | Distinguish superseded audio stages from failed ones | Successful supersession emits no media error; genuine current-stage failures remain visible; B5 |
+| 6.23e | DONE | Distinguish superseded audio stages from failed ones | Successful supersession emits no media error; genuine current-stage failures remain visible; B5 |
 
 ### M7 — Productization, reliability and installable alpha
 

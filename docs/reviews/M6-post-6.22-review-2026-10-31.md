@@ -1,5 +1,8 @@
 # Review after architecture follow-up 6.22
 
+Historical findings at `db406f7`. Their 6.23 fixes and final verification are
+recorded in the [closure evidence](M6-6.23-verification-2026-10-31.md).
+
 Reviewed 2026-10-31 (Europe/London), clean code commit `db406f7` (6.22g),
 against the implementation since `afa63e9`. Production code and existing tests
 are unchanged by this review. Five issues remain: four P1 and one P2.
