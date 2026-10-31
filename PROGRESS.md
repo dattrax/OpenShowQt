@@ -1,14 +1,14 @@
 # OpenShowQt progress and handoff
 
 Updated: 2026-10-30 (Europe/London). Reviewed code: `8402e69` (6.21g); **6.22a**
-through **6.22d** and **6.22e1–e2** have landed since.
+through **6.22d** and **6.22e1–e3** have landed since.
 
 ## Current checkpoint
 
 The [architecture re-review](docs/reviews/M6-architecture-follow-up-2026-10-30.md)
 found seven remaining issues. **6.22a (A1)**, **6.22b (A2)**, **6.22c (A3)**
 and **6.22d (A4)** are DONE — all four P1s are closed — and **6.22e** is in
-progress with its recorded split: **6.22e1–e2 DONE**, **6.22e3–e4** and
+progress with its recorded split: **6.22e1–e3 DONE**, **6.22e4** and
 **6.22f–g** remain in [PLAN.md](PLAN.md) before claiming full conformance or
 advancing to M7. Preserve the recorded 6.21 DONE checkpoints.
 
@@ -31,6 +31,33 @@ wake makes prompt) reaps and retries it, and a started retry makes the loop
 owe a present exactly like the scene-driven call did.
 
 ## Leaf records
+
+**6.22e3.** A replaced or abandoned standalone player was destroyed on the
+render thread — `~AvPlayer` joins the feeders, mixer and PipeWire sink,
+and the review rightly called "normally milliseconds" an unproven
+contract. The track now has its OWN one-deep retirement lane (deliberately
+not shared with the background transport's: a hung audio server must not
+defer the audience's pictures, nor vice versa). The hand-off pauses the
+outgoing player — silent here, 6.22c's rule for the other player — and the
+lane runs `stop()` while the player stays visible in the slot, so the new
+`retiringStandaloneDelivery()` seam can watch the whole wait (its three
+reads are atomics by construction; the object outlives them via the slot).
+Capacity mirrors 6.22d: a swap arriving behind a busy lane is DEFERRED —
+the latest intent back into `fStandaloneSwap` unless something newer
+already rode it — and the lane's wake brings the retry; a superseded
+staged player parks in its (held, silent) stage rather than dying inline;
+a silent placeholder never occupies the lane so its swap never defers;
+shutdown drains the lane with the other waits. New fault seam
+`OPENSHOW_FAULT_PLAYER_STOP_MS/_MATCH` sleeps inside `stop()` after the
+exits open — the stalled-server shape — and pays exactly once per player
+(the reap's destructor re-enters `stop()`; the joins it would re-simulate
+already ran). The fixture scripts A's death at 700 ms: the swap pass takes
+1.4 ms, the seam shows paused-and-frozen immediately, B publishes beside
+the dying lane, and a removal inside the window defers at 0.1 ms with the
+mirror still honestly naming live B, landing on pass 27 of the 20 ms pump
+(≈ the scripted window — capacity-bound, not lucky). Negative controls:
+inline destruction fails the timing and both seam checks at 708 ms; no
+deferral pays the lane inside the removal pass (536 ms).
 
 **6.22e2.** `media.standalone` was the last RPC verb that opened a file on
 the RPC thread before answering — one cold track delayed status, display
@@ -121,6 +148,14 @@ crosses threads by hand-off but exactly one thread may paint it at a time
 
 ## Verification and retained evidence
 
+6.22e3: the new fixture passed five consecutive runs, identically
+(hand-off 1.4–1.7 ms, delivery frozen at 12288 frames, removal deferred
+0.0–0.1 ms and landed on pass 27 — evidence lines in both presets' logs);
+negative controls fail exactly the A5-route checks (inline destruction:
+708.2 ms swap pass, seam absent; deferral removed: 536 ms removal pass).
+Gates: desktop **55/55** (291.13 s, 14 display-labelled), headless
+**32/32** (58.47 s); both trees build clean.
+
 6.22e2: the new scenario passes; the negative control (handler reverted to
 the synchronous probe) fails exactly the two status-responsiveness checks
 (608 ms worst RTT against the 600 ms seam). Gates: desktop **55/55**
@@ -157,15 +192,16 @@ are preserved in [history](docs/history/PROGRESS-through-6.21g.md).
 
 ## Next action
 
-**6.22e3**: the replaced standalone player is destroyed on the render
-thread (`retiring.reset()`/`abandoned` in `applyStandaloneOps`,
-`BackgroundTransport.cpp` ~757) — its `~AvPlayer` joins feeders, mixer and
-PipeWire sink with no contract bounding them. Hand off like 6.22c: silent
-`pause()` at the swap (no joins), then the stop/join on a lane; needs a
-slow-stop fault seam and a fixture with a real PipeWire track. Then
-**6.22e4** (the seek-completion wait off the render thread behind a
-generation-tagged completion — `AvPlayer::seek`'s `waitSeekApplied(500)`
-per feeder) and **6.22f** (standalone ownership pending/live mirror,
+**6.22e4**: move the seek-completion wait off the render thread.
+`AvPlayer::seek` (src/worker/playback/AvPlayer.cpp ~383) fans the seek out
+then `waitSeekApplied(500)`s per feeder — on the transport pass — so a
+slow feeder acknowledgment holds the frame loop up to half a second per
+input. The shape: begin the seek on the render thread, wait and flush on
+a control-lane completion tagged with the transport generation, hold
+later transport intents in their existing slots while a seek runs, let
+retirement join the seek worker before stopping the player, and add a
+slow-ack fault seam so the fixture measures the wait wherever it is paid.
+Then **6.22f** (standalone ownership pending/live mirror,
 `BackgroundTransport.cpp` ~723/792) and **6.22g** (thumbnail completion
 carries generation/extent, `PreviewProducer.cpp` ~338/502/620). When a–g
 are DONE: align the PLAN header and this handoff with the re-review

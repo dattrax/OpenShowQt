@@ -75,6 +75,10 @@ bool AvPlayer::start(const Config& config, std::string* error) {
     }
 
     const bool wantVideo = !config.videoAudioPath.empty();
+    // Who dies slowly (task 6.22e3): stop() consults this string, so the
+    // names must be recorded where the Config is still in hand.
+    fFaultPaths = config.videoAudioPath + " " + config.secondAudioPath;
+
     const bool wantSecond = !config.secondAudioPath.empty();
     // What this transport EXPECTS (task 6.7c, review R18). Written before
     // anything can fail and kept set when a start dies halfway: the lane of
@@ -266,6 +270,28 @@ bool AvPlayer::start(const Config& config, std::string* error) {
 void AvPlayer::stop() {
     for (FeederSlot& slot : fFeeders) {
         slot.feeder->requestStop();
+    }
+    // Test seam (task 6.22e3, review A5): a death that really waits. The
+    // joins below are normally milliseconds — the feeder and mixer loops
+    // watch their stop flags between blocks, and the sink's teardown is a
+    // server call — but "normally" is not the contract a frame tick can
+    // rest on: a stalled PipeWire server stretches them without bound.
+    // A fixture names the file (substring) and how long its stop sleeps
+    // AFTER the exits are opened but BEFORE the joins, which is exactly
+    // the shape of a hang there.
+    if (const char* stopMs = std::getenv("OPENSHOW_FAULT_PLAYER_STOP_MS")) {
+        const int milliseconds = std::atoi(stopMs);
+        const char* match = std::getenv("OPENSHOW_FAULT_PLAYER_STOP_MATCH");
+        if (milliseconds > 0 && match != nullptr && *match != '\0' &&
+            fFaultPaths.find(match) != std::string::npos &&
+            !fStopFaultPaid.test_and_set()) {
+            std::fprintf(stderr, "openshow-worker: scripted slow player stop: %d ms for %s\n",
+                         milliseconds, match);
+            for (int elapsed = 0; elapsed < milliseconds; elapsed += 20) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(
+                    std::min(20, milliseconds - elapsed)));
+            }
+        }
     }
     for (FeederSlot& slot : fFeeders) {
         slot.feeder->join();

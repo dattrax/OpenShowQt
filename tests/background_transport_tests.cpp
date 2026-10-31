@@ -711,6 +711,129 @@ void testStandaloneDurationTravelsWithStage() {
     unsetenv("OPENSHOW_FAULT_STANDALONE_PROBE_MATCH");
 }
 
+/* --- task 6.22e3 (review A5): the replaced standalone player dies on a lane --
+   Replacing or abandoning a standalone track destroyed its AvPlayer on the
+   render thread — feeder, mixer and sink joins whose "normally milliseconds"
+   the review rightly refused to accept as a contract. The hand-off now
+   SILENCES the outgoing track (pause(), no joins — 6.22c's rule for the
+   other player) and hands the stop to a one-deep lane; a swap arriving
+   while that lane still runs is DEFERRED rather than waited: the latest
+   intent wins, the live track keeps playing and keeps being reported.
+   OPENSHOW_FAULT_PLAYER_STOP_MS/_MATCH sleeps inside the dying player's
+   stop() after its exits have been opened — the shape of a stalled server,
+   which delaying start() cannot detect.
+
+   With a 700 ms scripted death: the swap pass returns in milliseconds and
+   the retiring A is already paused with its server delivery frozen (seam);
+   B publishes BESIDE A's dying lane; a removal inside the same window
+   defers with B still live and still honestly named, and lands on a pass
+   after the lane reports in. Restoring the inline destruction fails the
+   hand-off timing and both seam checks; removing the deferral pays the
+   lane inside the removal pass. */
+void testStandaloneStopRunsOnLane() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) {
+        std::printf("   skipped the standalone-stop lane fixtures (no ffmpeg)\n");
+        return;
+    }
+    openshow::media::PipeWireSink probe;
+    std::string probeError;
+    if (!probe.start(48000, &probeError)) {
+        std::printf("   skipped the standalone-stop lane fixtures (no PipeWire daemon: %s)\n",
+                    probeError.c_str());
+        return;
+    }
+    probe.stop();
+
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string trackA = "transport-fixtures/stop-a.m4a";
+    const std::string trackB = "transport-fixtures/stop-b.m4a";
+    const auto makeTrack = [](const std::string& path) {
+        return std::system(("ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+                            "anullsrc=channel_layout=stereo:sample_rate=48000 -t 2 -c:a aac " +
+                            path)
+                               .c_str()) == 0;
+    };
+    if (!makeTrack(trackA) || !makeTrack(trackB)) {
+        check(false, "the standalone-stop fixture tracks are generated");
+        return;
+    }
+    setenv("OPENSHOW_FAULT_PLAYER_STOP_MS", "700", 1);
+    setenv("OPENSHOW_FAULT_PLAYER_STOP_MATCH", "stop-a.m4a", 1);
+
+    BackgroundTransport transport;
+    transport.noteRunStart(kEpoch);
+    std::string refusal;
+    check(transport.requestStandaloneAudio(trackA, &refusal), "track A is accepted");
+    check(pumpUntil(transport, [&] { return transport.standaloneLive(); }) > 0,
+          "A is live before its scripted death");
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));  // let delivery accrue
+
+    // The swap. The pass that claims A must not pay A's death.
+    const auto began = std::chrono::steady_clock::now();
+    check(transport.requestStandaloneAudio(trackB, &refusal), "the swap to B is accepted");
+    transport.applyTransportOps();  // the claim-and-hand-off pass
+    const double handoffMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - began)
+                                 .count();
+    check(handoffMs < 100.0, "the swap pass did not pay A's scripted stop");
+
+    // The retiring player is observable AND silent now — paused is the
+    // state the hand-off established, and no new delivery can follow it.
+    const auto delivery = transport.retiringStandaloneDelivery();
+    check(delivery.has_value() && delivery->paused && !delivery->sinkActive,
+          "the retired track is paused at the hand-off, before the lane stops it");
+    // One in-flight server callback may still complete after the
+    // deactivation (6.22c's settle): the freeze is measured from the
+    // settled count, not from mid-callback.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const auto settled = transport.retiringStandaloneDelivery();
+    const uint64_t framesAtHandoff = settled ? settled->deliveredFrames : 0;
+
+    // B publishes beside the dying lane — retirement holds the old track's
+    // death, not the new one's birth.
+    bool bLive = false;
+    for (int pass = 0; pass < 100 && !bLive; ++pass) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        transport.applyTransportOps();
+        bLive = transport.standaloneLive();
+    }
+    check(bLive, "B published while A's scripted stop still ran on the lane");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    const auto frozen = transport.retiringStandaloneDelivery();
+    const bool frozenOk = frozen.has_value() && frozen->deliveredFrames == framesAtHandoff;
+    check(frozenOk, "the retired track's server delivery stayed frozen across the window");
+    std::fprintf(stderr,
+                 "6.22e3: hand-off %.1f ms; retiring delivery frozen at %llu frames across "
+                 "120 ms of the scripted 700 ms exit\n",
+                 handoffMs,
+                 static_cast<unsigned long long>(framesAtHandoff));
+
+    // The removal inside the same scripted window: deferred, not waited.
+    // B keeps playing and the mirror keeps naming it — requested-vs-
+    // presented stays honest while the lane drains.
+    const auto removalBegan = std::chrono::steady_clock::now();
+    check(transport.requestStandaloneAudio("", &refusal), "the removal request is accepted");
+    transport.applyTransportOps();
+    const double removalMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - removalBegan)
+                                 .count();
+    check(removalMs < 100.0, "the deferred removal returned in milliseconds");
+    transport.refreshMediaState();
+    check(transport.standaloneLive() && transport.mediaStatus().standalone.live &&
+              transport.mediaStatus().standalone.path == trackB,
+          "while deferred, status honestly reports the live B");
+
+    const int landed = pumpUntil(transport, [&] { return !transport.standaloneLive(); });
+    check(landed > 0, "the deferred removal landed on a later pass once the lane reported");
+    std::fprintf(stderr, "6.22e3: removal deferred %.1f ms then landed on pass %d\n", removalMs,
+                 landed);
+
+    transport.shutdown();  // drains both lanes; must not hang
+    unsetenv("OPENSHOW_FAULT_PLAYER_STOP_MS");
+    unsetenv("OPENSHOW_FAULT_PLAYER_STOP_MATCH");
+}
+
 }  // namespace
 
 int main() {
@@ -732,6 +855,7 @@ int main() {
     testRetiredAudioGoesSilentAtHandoff();
     testSwapDefersBehindSlowRetirement();
     testStandaloneDurationTravelsWithStage();
+    testStandaloneStopRunsOnLane();
 
     BackgroundTransport shutdownTransport;
     testShutdown(shutdownTransport);

@@ -219,6 +219,17 @@ private:
 
     std::atomic<bool> fAudioLive{false};
     std::atomic<bool> fSinkActive{false};
+    // The fault matcher's copy of this transport's file names (task 6.22e3,
+    // review A5): written by start() where the Config is, read by stop() —
+    // possibly on another thread, but every hand-off of player ownership
+    // (staging lane → render → retirement lane) passes through a mutex or
+    // the stage's done flag, so a reader always sees the written string.
+    std::string fFaultPaths;
+    // The slow-stop seam pays exactly once (task 6.22e3): what it stands
+    // in for — the joins — really do happen once. A second stop() of an
+    // already-stopped player has nothing left to wait for, and the reap's
+    // destructor path re-enters stop(), so the seam must not sleep twice.
+    std::atomic_flag fStopFaultPaid = ATOMIC_FLAG_INIT;
     // What this transport EXPECTED (task 6.7c): an audio source at all,
     // and an output to play it through. start() writes them, stop() clears
     // the expectation, and a start that failed halfway leaves the

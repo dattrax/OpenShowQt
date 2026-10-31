@@ -441,6 +441,16 @@ public:
     };
     std::optional<RetiringAudioDelivery> retiringAudioDelivery() const;
 
+    // Bench seam (task 6.22e3, review A5): the same truth for a RETIRED
+    // STANDALONE instance while its own lane still holds it. A5 names the
+    // route — replacing or abandoning a standalone player destroyed its
+    // AvPlayer on the render thread, whose joins "are normally
+    // milliseconds" without any contract saying so. The hand-off now
+    // pauses the outgoing track silent and hands the stop/joins to a
+    // one-deep lane; this seam is what the fixture can read to tell
+    // silent-at-hand-off from merely-deferred-death. Safe from any thread.
+    std::optional<RetiringAudioDelivery> retiringStandaloneDelivery() const;
+
 private:
     // Bring the background transport down in the R6 order (quiesce, then
     // the seam slots, then the players) and forget the applied identity.
@@ -496,6 +506,18 @@ private:
     // two keep their caller-holds-fMutex contract.
     void applyStandaloneOps();
     void reapStandaloneStage();
+    // The standalone retirement lane (task 6.22e3, review A5). Hand-off
+    // precondition is an EMPTY slot — the callers defer the swap (latest
+    // intent back into fStandaloneSwap) or keep the superseded stage
+    // parked instead of destroying it, so the render thread never waits
+    // here and no BUG path exists. The lane stop()s the player while it
+    // still sits in the slot (the delivery seam watches the whole wait;
+    // the seam's reads are atomics by construction), outside fMutex;
+    // destruction follows the join, on the reaping thread, like every
+    // other player death. reapStandaloneRetirement() runs on the render
+    // thread (the loop's pass) and drained for shutdown.
+    void retireStandaloneInstance(std::unique_ptr<AvPlayer> player);
+    void reapStandaloneRetirement();
     // The track's duration read, seam and all (task 6.22e1): called on the
     // bring-up lane, never on the render thread. -1 when the container
     // says nothing.
@@ -643,6 +665,31 @@ private:
         std::thread worker;
     };
     std::shared_ptr<StandaloneStage> fStandaloneStage;  // render thread
+    // The standalone track's OWN retirement lane (task 6.22e3, review A5).
+    // It mirrors the background transport's Retirement and deliberately
+    // does NOT share its slot: a bed change and a background change are
+    // independent operator decisions, and serialising their deaths behind
+    // one another would let a hung audio server defer the audience's
+    // PICTURES (or vice versa) — the coupling 6.22d closed one door on.
+    // The AvPlayer has no GPU half, so the lane stops the player outright
+    // and the reap only closes the thread; the slot is one deep with the
+    // same latest-wins deferral (applyStandaloneOps puts the swap back and
+    // the lane's wake brings the retry), and the fStandaloneStage above is
+    // what a superseded staged player is kept in while the slot is busy —
+    // a held player is silent, so waiting costs the audience nothing.
+    struct StandaloneRetirement {
+        std::unique_ptr<AvPlayer> player;  // paused at the hand-off; stopped on the lane
+        std::atomic<bool> laneDone{false};
+        std::thread worker;                // the lane itself
+    };
+    std::shared_ptr<StandaloneRetirement> fStandaloneRetirement;  // rides fMutex
+    // The in-flight standalone retirement read under fMutex: the pointer
+    // itself is shared with the seam's thread, exactly like the background
+    // slot since 6.22c.
+    std::shared_ptr<StandaloneRetirement> inFlightStandaloneRetirement() const {
+        const std::lock_guard<std::mutex> lock(fMutex);
+        return fStandaloneRetirement;
+    }
     std::mutex fStandaloneSwapMutex;                   // guards fStandaloneSwap
     std::optional<std::string> fStandaloneSwap;        // path to apply ("" = remove)
     std::atomic<bool> fStandaloneLive{false};          // any thread (the swap writes)
