@@ -844,17 +844,34 @@ void BackgroundTransport::applyStandaloneOps() {
                                std::memory_order_release);
         rebuildMediaSourcesLocked();
         fStandalonePath = *swap;
-        if (swap->empty()) {
-            // A removal: the block goes idle — except the error, which
-            // stays sticky beside the path it describes (the operator
-            // still needs to read what broke).
-            fMedia.standalone.live = false;
-            fMedia.standalone.playing = false;
-            fMedia.standalone.position = -1.0;
-            fMedia.standalone.duration = -1.0;
-            fMedia.standalone.audio = "none";
-            fMedia.standalone.loops = 0;
+        // Ownership, command gate and mirror move together (task 6.22f,
+        // review A6). From this moment no player is up — for a removal OR
+        // behind a successor's slow bring-up alike — and the block says
+        // so: live/playing/position/duration/lane described the instance
+        // that just left, the refresh cannot fix them while live is false
+        // (it early-returns; the swap owns the block), and reporting a
+        // removed player as current is a missing transition, not a
+        // sampling delay.
+        fMedia.standalone.live = false;
+        fMedia.standalone.playing = false;
+        fMedia.standalone.position = -1.0;
+        fMedia.standalone.duration = -1.0;
+        fMedia.standalone.audio = "none";
+        fMedia.standalone.loops = 0;
+        if (!swap->empty()) {
+            // A replacement: the block names the NEW selection with
+            // live=false — requested-not-yet-presented, the pair the
+            // operator's other controls already agree with (the gain/mute
+            // gate refuses exactly what this mirror shows). The sticky
+            // error goes with the instance that produced it: beside a new
+            // path it would tell a story this selection never had, and a
+            // fresh failure writes its own.
+            fMedia.standalone.path = *swap;
+            fMedia.standalone.error.clear();
         }
+        // A removal keeps the path and the error together: what broke, and
+        // where, is the story the operator still needs to read, and nothing
+        // new is being asked of the block.
     }
     if (hadLive) {
         retireStandaloneInstance(std::move(retiring));  // pause here, joins on the lane
@@ -986,7 +1003,13 @@ BackgroundTransport::retiringStandaloneDelivery() const {
 void BackgroundTransport::refreshStandaloneMediaLocked() {
     MediaStatus::Standalone& standalone = fMedia.standalone;
     if (!fStandaloneLive.load(std::memory_order_relaxed)) {
-        return;  // while no player is up, the swap owns the block's fields
+        // While no player is up the swap owns the block's fields — and
+        // since 6.22f (review A6) it owns them COMPLETELY: the claim
+        // publishes the pending-selection state (new path, live=false) for
+        // a replacement as well as a removal, so this early return can
+        // never preserve a removed player's live/playing/position as if it
+        // were still current.
+        return;
     }
     const AvPlayer::AudioLane lane = fStandalonePlayer->audioLaneState();
     standalone.audio = AvPlayer::laneName(lane);

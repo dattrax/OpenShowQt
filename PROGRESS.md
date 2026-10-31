@@ -1,22 +1,21 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-10-30 (Europe/London). Reviewed code: `8402e69` (6.21g); **6.22a**
-through **6.22d** and **6.22e1–e4** have landed since.
+Updated: 2026-10-31 (Europe/London). Reviewed code: `8402e69` (6.21g); **6.22a**
+through **6.22f** have landed since.
 
 ## Current checkpoint
 
 The [architecture re-review](docs/reviews/M6-architecture-follow-up-2026-10-30.md)
 found seven remaining issues. **6.22a (A1)**, **6.22b (A2)**, **6.22c (A3)**,
-**6.22d (A4)** and **6.22e (A5, all four leaves)** are DONE — all four P1s
-are closed and the blocking-media finding is closed — while
-**6.22f–g** remain in [PLAN.md](PLAN.md) before claiming full conformance or
-advancing to M7. Preserve the recorded 6.21 DONE checkpoints.
+**6.22d (A4)**, **6.22e (A5, all four leaves)** and **6.22f (A6)** are DONE —
+all four P1s are closed, and so are the blocking-media and the stale-status
+findings — while **6.22g** remains in [PLAN.md](PLAN.md) before claiming full
+conformance or advancing to M7. Preserve the recorded 6.21 DONE checkpoints.
 
 ## Review summary
 
-Two P2 issues remain: stale standalone status (A6, **6.22f**) and thumbnail
-completion compatibility (A7, **6.22g**). Source locations and proposed
-contracts are in the review.
+One P2 issue remains: thumbnail completion compatibility (A7, **6.22g**).
+Source locations and proposed contracts are in the review.
 
 The P1s are closed. Shared mutable font resolution: `SceneTextEngine` builds
 no shared `FontCollection`; one per threading context over the shared
@@ -28,9 +27,43 @@ the one-deep retirement slot no longer blocks the frame loop —
 `applyBackground()` with a busy slot stores the latest wanted transition and
 returns in microseconds; the next `applyTransportOps()` pass (which the lane's
 wake makes prompt) reaps and retries it, and a started retry makes the loop
-owe a present exactly like the scene-driven call did.
+owe a present exactly like the scene-driven call did. And the standalone
+mirror no longer outlives its player: the swap's claim publishes the pending
+selection (new path, `live=false`, no position, replacement error cleared),
+so status and the command gate agree throughout a slow replacement.
 
 ## Leaf records
+
+**6.22f.** Replacing an ACTIVE standalone track removed the old player,
+cleared the command gate and took the instance down, but only the empty-path
+removal also updated the published block: `refreshStandaloneMediaLocked()`
+early-returns while no player is up ("the swap owns the block"), and until
+now the swap had said nothing at all for a replacement. So through the
+successor's entire bring-up `media.standalone` reported the GONE player as
+live and playing at the position where it froze, while `requestMediaGain`/
+`requestMediaMute` were already refusing with "no standalone track is
+playing" — controls that look alive and are refused. That is a missing state
+transition, not a sampling delay. The claim now publishes the pending
+selection for both cases: live=false, playing=false, position and duration
+-1, lane "none", loops 0, and for a replacement the block also names the NEW
+selection and drops the outgoing instance's sticky error (it belongs to the
+player that just left; beside a new path it would tell a story this selection
+never had, and a fresh failure writes its own). A removal keeps path and
+error together — what broke, and where, is still the story the operator needs
+and nothing new is being asked of the block. Requested-not-yet-presented is
+then exactly what the gate refuses. The fixture brings A up to live, playing
+and advancing, scripts
+B's bring-up at 700 ms (`OPENSHOW_FAULT_AUDIO_START_MS/_MATCH`) so the
+intermediate window dominates the swap, and reads the block on the claim pass
+and again five passes later: not live, not playing, B's path, no position —
+and the gain command refused with the same truth — before B comes live and
+advancing on pass 32 of the 20 ms pump. A second leg pins the error's owner:
+with the mixer fault set, a selection's bring-up fails and writes its own path
+and sticky error (pass 2), and the next claim names its new path with the
+error gone. The negative control (the field reset back under the
+`swap->empty()` guard) reports `live=1 playing=1` at a frozen 0.06 s beside
+the OLD path and keeps the dead selection's error beside the new one: the
+finding's exact symptom, five checks.
 
 **6.22e4.** The transport pass contained the seek's wait: `AvPlayer::seekTo`
 fanned the jump out and then `waitSeekApplied(500)`-ed every feeder inline,
@@ -183,6 +216,19 @@ crosses threads by hand-off but exactly one thread may paint it at a time
 
 ## Verification and retained evidence
 
+6.22f: the new fixture passed five consecutive runs, identically (mid-
+replacement status `live=0 playing=0 position=-1.00`, B published on pass 32
+of the 20 ms pump after its scripted 700 ms start, a failed bring-up writing
+its own path and error on pass 2 and the next claim naming the new path with
+an empty error — evidence lines in both presets' logs); the negative control
+(field reset restored to the empty-path branch only) fails exactly the five
+A6 checks and prints `live=1 playing=1 position=0.06` mid-replacement, i.e.
+the gone player reported as current, plus the stale error beside a new path.
+`background_media_tests` passes unchanged (its removal and swap scenarios read
+live/playing/position, which the pending state agrees with). Gates: desktop
+**55/55** (293.03 s, 14 display-labelled), headless **32/32** (60.61 s); both
+trees build clean.
+
 6.22e4: the new fixture passed five consecutive runs, identically (seek
 pass 0.1–0.2 ms against the 300 ms scripted ack, completion and held pause
 at pass 15–16 at 2.33 s, mid-flight swap 0.1 ms — evidence lines in both
@@ -239,20 +285,18 @@ are preserved in [history](docs/history/PROGRESS-through-6.21g.md).
 
 ## Next action
 
-**6.22f** (review A6): replacing an ACTIVE standalone track with a new path
-removes the old player and clears `fStandaloneLive`, but the mirrored
-`fMedia.standalone` block (live, playing, path, position, lane) is reset
-only for an empty-path removal — so through the successor's whole slow
-stage status keeps reporting the gone player as live, while the atomic
-command gate already refuses gain/mute as "no standalone track is playing"
-(`BackgroundTransport.cpp` ~723/~792, `applyStandaloneOps`/`refresh-
-StandaloneMediaLocked`). Publish ownership, command availability and the
-mirror together — an explicit pending-selection state, or retain the old
-player until the replacement is ready — and verify the INTERMEDIATE status
-during a slow replacement, not only the eventual new path. Then **6.22g**
-(review A7): the thumbnail completion must carry generation and decode
-extent (`PreviewProducer.cpp` ~338/502/620) so extent changes and stream
-restarts reject incompatible in-flight results. When a–g are DONE: align
-the PLAN header and this handoff with the re-review evidence. M7
-recovery, budgets, packaging and hardware/long-service acceptance remain
-TODO.
+**6.22g** (review A7, the last open finding): the thumbnail lane captures the
+requested width/height for its decode but publishes only a path and an image,
+and the completion is then adopted unconditionally — into whichever renderer
+is current, settling matching paths in whatever batch is current too. So a
+160×90 decode still in flight can satisfy a newer 512×288 request without a
+new decode (and the reverse lets a small-extent cache inherit a larger
+allocation). Carry stream/request or cache-generation identity and the decode
+extent with the completion and accept it only for a compatible destination;
+reuse across batches stays valid when those properties match. The review asks
+for both races under a delayed decode — extent replaced, and stop/start of the
+stream — noting the existing slow-decode checks establish RPC responsiveness,
+not completion compatibility (`PreviewProducer.cpp` ~338/~502/~620). When that
+lands a–g are all DONE: align the PLAN header and this handoff with the
+re-review evidence and restate the conformance claim. M7 recovery, budgets,
+packaging and hardware/long-service acceptance remain TODO.

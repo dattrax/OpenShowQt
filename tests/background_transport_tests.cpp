@@ -976,6 +976,141 @@ void testSeekCompletesOffTheFrameTick() {
     unsetenv("OPENSHOW_FAULT_SEEK_ACK_MATCH");
 }
 
+/* --- task 6.22f (review A6): the mirror retires with the player -----------
+   Replacing an ACTIVE standalone track removed the old player, cleared the
+   command gate and took it down — but only the empty-path removal also
+   updated the published block. Through the successor's whole bring-up,
+   media.standalone therefore kept reporting the GONE player as live and
+   playing at a frozen position (the refresh early-returns while no player
+   is up: the swap owns the block, and until 6.22f it had said nothing for
+   a replacement), while gain and mute were already being refused as "no
+   standalone track is playing" — controls that look alive and are refused,
+   a missing state transition rather than a sampling delay. The claim now
+   publishes the pending-selection state for BOTH cases: the block names
+   the wanted path with live=false and no position it does not have —
+   requested-not-yet-presented, agreeing with the gate.
+   OPENSHOW_FAULT_AUDIO_START_MS makes B's bring-up hold for 700 ms so the
+   intermediate window is measured, not hoped; reverting the claim to
+   removal-only fields leaves the removed instance live in status and
+   fails the intermediate checks. The leg after it pins the error's owner: a
+   failed bring-up writes its own path and sticky error, and the next claim
+   drops that error beside its new path — a story belongs to the instance
+   that lived it. */
+void testStandaloneStatusTracksReplacement() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) {
+        std::printf("   skipped the replacement-status fixture (no ffmpeg)\n");
+        return;
+    }
+    openshow::media::PipeWireSink probe;
+    std::string probeError;
+    if (!probe.start(48000, &probeError)) {
+        std::printf("   skipped the replacement-status fixture (no PipeWire daemon: %s)\n",
+                    probeError.c_str());
+        return;
+    }
+    probe.stop();
+
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string trackA = "transport-fixtures/mirror-a.m4a";
+    const std::string trackB = "transport-fixtures/mirror-slowb.m4a";
+    const auto makeTrack = [](const std::string& path) {
+        return std::system(("ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+                            "anullsrc=channel_layout=stereo:sample_rate=48000 -t 2 -c:a aac " +
+                            path)
+                               .c_str()) == 0;
+    };
+    if (!makeTrack(trackA) || !makeTrack(trackB)) {
+        check(false, "the replacement-status fixture tracks are generated");
+        return;
+    }
+
+    BackgroundTransport transport;
+    transport.noteRunStart(kEpoch);
+    std::string refusal;
+    check(transport.requestStandaloneAudio(trackA, &refusal), "track A is accepted");
+    const int up = pumpUntil(transport, [&] {
+        transport.refreshMediaState();
+        const auto block = transport.mediaStatus().standalone;
+        return block.live && block.playing && block.position > 0.05;
+    });
+    check(up > 0, "A is live and advancing before the replacement");
+
+    // The replacement. B's bring-up is scripted slow, so the intermediate
+    // window is the majority of the swap: what does the block say while no
+    // player exists?
+    setenv("OPENSHOW_FAULT_AUDIO_START_MS", "700", 1);
+    setenv("OPENSHOW_FAULT_AUDIO_START_MATCH", "mirror-slowb", 1);
+    check(transport.requestStandaloneAudio(trackB, &refusal), "the swap to B is accepted");
+    transport.applyTransportOps();  // the claim-and-stage pass
+    transport.refreshMediaState();
+    const auto pending = transport.mediaStatus().standalone;
+    check(!pending.live && !pending.playing,
+          "the claim took the removed player out of status at once");
+    check(pending.path == trackB, "the pending block names the wanted track");
+    check(pending.position < 0.0, "the pending block presents no position it does not have");
+    std::string gainError;
+    check(!transport.requestMediaGain(AudioSource::kStandalone, 0.5, &gainError),
+          "and the command gate refuses what the mirror already shows");
+
+    // Through the bring-up window: the early-returning refresh preserves
+    // the pending state, it does not resurrect A.
+    for (int pass = 0; pass < 5; ++pass) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        transport.applyTransportOps();
+        transport.refreshMediaState();
+    }
+    const auto midflight = transport.mediaStatus().standalone;
+    check(!midflight.live && !midflight.playing && midflight.path == trackB &&
+              midflight.position < 0.0,
+          "the pending state holds through the slow bring-up");
+    std::fprintf(stderr, "6.22f: mid-replacement status: live=%d playing=%d position=%.2f\n",
+                 midflight.live ? 1 : 0, midflight.playing ? 1 : 0, midflight.position);
+
+    const int landed = pumpUntil(transport, [&] {
+        transport.refreshMediaState();
+        const auto block = transport.mediaStatus().standalone;
+        return block.live && block.playing && block.position > 0.0;
+    });
+    check(landed > 0, "the successor comes live, playing and advancing behind the window");
+    std::fprintf(stderr, "6.22f: B published on pass %d of the pump after its 700 ms start\n",
+                 landed);
+    unsetenv("OPENSHOW_FAULT_AUDIO_START_MS");
+    unsetenv("OPENSHOW_FAULT_AUDIO_START_MATCH");
+
+    // The other half of the contract: the error belongs to the instance that
+    // wrote it. A bring-up that fails tells its story in this block (path
+    // and sticky error, live=false); the NEXT selection must not inherit it,
+    // because beside a new path it describes a track that never had that
+    // failure. So the claim clears it — and a removal still keeps it, which
+    // the existing scenarios read (the operator needs to know what broke).
+    setenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL", "1", 1);
+    const std::string trackC = "transport-fixtures/mirror-fails.m4a";
+    if (!makeTrack(trackC)) {
+        check(false, "the failing-bring-up fixture track is generated");
+    }
+    check(transport.requestStandaloneAudio(trackC, &refusal), "the doomed selection is accepted");
+    const int failed = pumpUntil(transport, [&] {
+        transport.refreshMediaState();
+        return transport.mediaStatus().standalone.path == trackC &&
+               !transport.mediaStatus().standalone.live &&
+               !transport.mediaStatus().standalone.error.empty();
+    });
+    check(failed > 0, "a failed bring-up writes its own path and error into the block");
+    unsetenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL");
+    check(transport.requestStandaloneAudio(trackB, &refusal),
+          "and a new selection is accepted beside that error");
+    transport.applyTransportOps();  // the claim-and-stage pass again
+    transport.refreshMediaState();
+    const auto after = transport.mediaStatus().standalone;
+    check(after.path == trackB && !after.live && after.error.empty(),
+          "the new claim leaves the removed instance's error behind");
+    std::fprintf(stderr, "6.22f: failed bring-up wrote an error on pass %d; the next claim: "
+                         "live=%d error=\"%s\"\n",
+                 failed, after.live ? 1 : 0, after.error.c_str());
+
+    transport.shutdown();
+}
+
 }  // namespace
 
 int main() {
@@ -999,6 +1134,7 @@ int main() {
     testStandaloneDurationTravelsWithStage();
     testStandaloneStopRunsOnLane();
     testSeekCompletesOffTheFrameTick();
+    testStandaloneStatusTracksReplacement();
 
     BackgroundTransport shutdownTransport;
     testShutdown(shutdownTransport);
