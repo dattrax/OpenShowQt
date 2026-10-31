@@ -1,5 +1,8 @@
 # Architecture review after 6.21
 
+Historical findings at 6.21g. The [review after 6.22](M6-post-6.22-review-2026-10-31.md)
+assesses their implementations and records the current remaining issues.
+
 Reviewed 2026-10-30 (Europe/London), clean commit `8402e69` (6.21g), against
 the changes since `602958d`. This is a source and design review: no build,
 runtime probe, test suite, audio capture or hardware test was run in this pass.
