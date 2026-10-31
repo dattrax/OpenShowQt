@@ -137,7 +137,7 @@ triggering remain separate paths; `+` and the reorder handles stay behind
 `editingEnabled`. Gates: desktop 57/57 (339.21 s, 15 display), headless
 32/32 (66.02 s); both trees build clean.
 
-### UI.3 — Presentation-oriented slide workspace
+### UI.3 — Presentation-oriented slide workspace — CLOSED 2026-10-31
 
 Implement independently: **UI.3a** provides the read-only cue projection and
 arbitrary-show compilation; **UI.3b** defines triggers, navigation and live markers;
@@ -167,7 +167,6 @@ from the projection alone while `currentSongId`/`currentSlide` do not move —
 paid for in `compileSlideJson`, which now resolves the slide's OWNING show
 (current show first) instead of silently failing on any other. Gates: desktop
 57/57 (339.83 s, 15 display), headless 32/32 (65.92 s); both trees build clean.
-UI.3c remains TODO.
 
 Verification (UI.3b, 2026-10-31): the middle of Show is now the running order —
 the grid renders the flattened cue rows of `runningOrderCues()` (group caption
@@ -195,6 +194,41 @@ sequence string "PageDown" as `Key_unknown`, so the presenter's PageUp/PageDown
 never worked — the map now spells them "Page Down"/"Page Up" and the offscreen
 walk holds the keys to it. Gates: desktop 57/57 (342.71 s, 15 display), headless
 32/32 (65.75 s); both trees build clean.
+
+Verification (UI.3c, 2026-10-31): the Show heading carries the one view control
+the page can honour — `operatorThumbSize`'s −/+ `PanelButton`s step the cell
+through `[120, 150, 190, 240, 300]`, step 2 being the 190-pixel cell the grid
+had before the control existed, so nothing moves until the operator asks. The
+level persists as `AppSettings.showThumbLevel` (`showThumbLevel` in the
+settings file, clamped to `kMinThumbLevel`..`kMaxThumbLevel` on read and on
+write, so a hand-edited ini or a caller with no idea of the step table still
+lands on a step the page can draw — `workspace_panels_tests` pins both ends).
+`GridView.columns` divides by that step and the ask follows the tile:
+`bandPixels()` is 16:9 at the tile's picture width, held inside the envelope
+this build's wire accepts — every dimension in 32..512 and small enough for the
+640×360 slot `preview.start` asks for, checked with
+`thumbnailExtentFits`/`previewSlotStrideBytes` instead of asserted, so no size
+the operator can pick is ever refused on the way out. Scheduling is three
+pieces now: `slideBand()` (the pure window — first visible row to one past the
+viewport, deduplicated by slide id so a show listed twice asks for one picture,
+capped at the worker's 32-scene batch, and re-anchored off the BOTTOM edge
+whenever the cap bites so a grid scrolled to the end never finds its own rows
+outside the band), `bandPixels()`, and `requestSlideBand()` behind the one
+`thumbnailAsk` timer (80 ms) that every trigger restarts. `workspace_ui_tests`
+deepens the order to 335 cues (a forty-slide presentation listed twice, plus a
+third Welcome for dedupe material) and pins the schedule off the wire: the ask
+tracks the picture width at both ends of the stepper and floors at 160 px, the
+band hits the cap exactly at 32 (with the unclamped viewport rows measured to
+show the clamp is what buys it), a band across the repeated cycle dedupes to 19
+distinct keys with Welcome asked once, five jumps inside the timer window ask
+for nothing at all and the sixth fires once with the last cue in it, the level
+survives an ini read-back, and the buttons are `Qt.NoFocus` so Page Down still
+walks the order afterwards. That last check caught a second product bug: Qt
+does not take the active focus from an item whose page is only hidden, so
+typing in Edit then switching to Show left the invisible lyric box owning every
+keystroke and the presenter gates dead — `Main.onPageChanged` now releases what
+the leaving page held before the window takes focus back. Gates: desktop 57/57
+(343.51 s, 15 display), headless 32/32 (65.71 s); both trees build clean.
 
 ### UI.4 — Dedicated media bin
 
@@ -244,7 +278,7 @@ completion. Run workspace/controller tests and relevant live frontend journeys.
 
 ## Completion rule
 
-UI.1–UI.3b are closed (verification recorded above); UI.3c–6 remain TODO
+UI.1–UI.3c are closed (verification recorded above); UI.4–6 remain TODO
 until implemented and checked.
 A colour change or one screenshot does not close the layout work. Keep the short
 ledger in PLAN.md; store audit details and later capture evidence alongside this

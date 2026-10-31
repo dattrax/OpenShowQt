@@ -31,7 +31,17 @@ Window {
 
     // Explicit modes separate presenting from content authoring.
     property string page: "show"
-    onPageChanged: contentItem.forceActiveFocus()
+    // Switching modes has to hand the keyboard over. Qt does not take the
+    // active focus from an item whose page is only hidden, so the lyric box
+    // the operator was typing in would go on owning every keystroke — the
+    // presenter's included — from a page nobody can see (UI.3c found it:
+    // Page Up/Down dead after Edit). Release whatever the leaving page held,
+    // then let the window take focus back so the presenter gates are live.
+    onPageChanged: {
+        const held = activeFocusItem
+        if (held) held.focus = false
+        contentItem.forceActiveFocus()
+    }
 
     // True while a text field holds the focus — the plain-arrow nudges
     // must not steal keystrokes from someone typing.

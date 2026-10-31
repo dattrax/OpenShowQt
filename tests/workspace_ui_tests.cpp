@@ -9,11 +9,13 @@
 #include <QPointer>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QtMath>
 
 #include "AppSettings.h"
 #include "DocumentController.h"
 #include "WorkerController.h"
 #include "WorkspacePanels.h"
+#include "openshow/protocol/preview_wire.h"
 
 #include <cstdio>
 #include <functional>
@@ -467,6 +469,215 @@ int main(int argc, char** argv) {
     QTest::qWait(80);
     panels.resizeDrawer(300, window->height() - 364);
     QTest::qWait(50);
+    {
+        // UI.3c: the thumbnail size control and the bounded band schedule it
+        // re-triggers. To pin the schedule off the wire, deepen the running
+        // order far past the ask envelope: one more Welcome beside its two
+        // earlier copies (dedupe material) and a forty-slide presentation
+        // listed twice (unique ids to push the band into the 32-scene cap).
+        auto* bigger = findNamed(window->contentItem(), "operatorThumbLarger");
+        auto* smaller = findNamed(window->contentItem(), "operatorThumbSmaller");
+        check(bigger != nullptr && smaller != nullptr,
+              "the Show heading carries the thumbnail size control");
+        check(settings.showThumbLevel() == 2, "the size control starts at the middle step");
+        const int rowsBefore = showPageItem->property("cueRows").toList().size();
+        bool grew = docs.createSong("Festival");
+        for (int i = 0; i < 40 && grew; ++i) grew = docs.addSlide();
+        check(grew, "the band fixture authors a forty-slide presentation");
+        const QString festivalId = docs.currentSongId();
+        QString welcomeId;
+        for (const auto& song : docs.songs())
+            if (song.toMap().value("name").toString() == QLatin1String("Welcome"))
+                welcomeId = song.toMap().value("id").toString();
+        check(docs.addShowToPlaylist(welcomeId) && docs.addShowToPlaylist(festivalId)
+                  && docs.addShowToPlaylist(festivalId),
+              "the order takes another Welcome and two forty-slide entries");
+        docs.selectSong(songId);
+        docs.selectSlide(0);
+        QTest::qWait(60);
+        int deepRows = 0;
+        for (const auto& entry : docs.playlistEntries())
+            deepRows += docs.slidesOf(entry.toMap().value("showId").toString()).size();
+        const QVariantList rows = showPageItem->property("cueRows").toList();
+        check(rows.size() == deepRows && deepRows >= 32 * 6,
+              "the running order now runs far past any ask envelope");
+
+        // Growing the cells: three clicks in a burst walk to the largest
+        // step (the third lands on the now-disabled button), the step is
+        // remembered, and the asks coalesce instead of chasing every click.
+        const qreal cellBefore = cueGrid->property("cellHeight").toReal();
+        const QSize sizeBefore = window->size();
+        const int asksBefore = showPageItem->property("bandRequests").toInt();
+        const QPoint bump = bigger->mapToScene(QPointF(10, 12)).toPoint();
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, bump);
+        QTest::qWait(6);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, bump);
+        QTest::qWait(6);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, bump);
+        QTest::qWait(160);
+        check(settings.showThumbLevel() == 4, "the size control stops at the largest step");
+        check(!bigger->property("enabled").toBool(), "the largest step disables its own button");
+        check(cueGrid->property("cellHeight").toReal() > cellBefore,
+              "larger thumbnails really grow the cells");
+        const int zoomAsks = showPageItem->property("bandRequests").toInt() - asksBefore;
+        check(zoomAsks >= 1 && zoomAsks <= 2, "the zoom burst is one coalesced band ask");
+        {
+            const QSettings persisted(QString::fromStdString((base / "app.ini").string()),
+                                      QSettings::IniFormat);
+            check(persisted.value(QStringLiteral("showThumbLevel")).toInt() == 4,
+                  "the size step is written to the settings file");
+        }
+        // The page's own two scheduling functions are what's under test, and
+        // a QML function's answer comes back through QVariant - so the suite
+        // calls them rather than reimplementing the arithmetic here.
+        auto pageCall = [showPageItem](const char* name) {
+            QVariant answer;
+            QMetaObject::invokeMethod(showPageItem, name, Q_RETURN_ARG(QVariant, answer));
+            return answer;
+        };
+        // The ask size tracks the tile's picture and stays inside the
+        // envelope the wire accepts at the stream size this app starts.
+        const QVariantMap px = pageCall("bandPixels").toMap();
+        int askW = px.value(QStringLiteral("w")).toInt();
+        const int askH = px.value(QStringLiteral("h")).toInt();
+        check(askW >= 160 && askH >= 90
+                  && askW == qBound(160, qRound(cueGrid->property("cellWidth").toReal() - 18.0),
+                                    512)
+                  && askH == qRound(askW * 9.0 / 16.0),
+              "the ask follows the picture width and keeps 16:9");
+        check(askW >= 32 && askW <= 512 && askH >= 32 && askH <= 512
+                  && openshow::protocol::thumbnailExtentFits(
+                         static_cast<std::uint32_t>(askW), static_cast<std::uint32_t>(askH),
+                         openshow::protocol::previewSlotStrideBytes(640, 360)),
+              "every size the control picks fits the preview slot this app streams at");
+
+        // Shrinking to the smallest step: the ask clamps at its floor rather
+        // than asking the worker for postage stamps.
+        window->resize(1680, 1150);
+        QTest::qWait(120);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          smaller->mapToScene(QPointF(10, 12)).toPoint());
+        QTest::qWait(6);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          smaller->mapToScene(QPointF(10, 12)).toPoint());
+        QTest::qWait(6);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          smaller->mapToScene(QPointF(10, 12)).toPoint());
+        QTest::qWait(6);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          smaller->mapToScene(QPointF(10, 12)).toPoint());
+        QTest::qWait(160);
+        check(settings.showThumbLevel() == 0 && !smaller->property("enabled").toBool(),
+              "the smallest step disables its own button");
+        askW = pageCall("bandPixels").toMap().value("w").toInt();
+        check(askW == 160, "the smallest cell still asks the 160-pixel floor");
+
+        // Extent, cap and dedupe at this size. First prove the viewport
+        // alone would overrun the cap without the clamp.
+        const int cols = cueGrid->property("columns").toInt();
+        const qreal cellH = cueGrid->property("cellHeight").toReal();
+        const int viewportRows = (qCeil(cueGrid->property("height").toReal() / cellH) + 1) * cols;
+        check(viewportRows > 32, "the tall viewport would overrun the cap without the clamp");
+        int festivalStart = 0;
+        while (festivalStart < rows.size()
+               && rows[festivalStart].toMap().value("showId").toString() != festivalId)
+            ++festivalStart;
+        const int bandStart = qCeil((festivalStart + 1.0) / cols) * cols;
+        cueGrid->setProperty("contentY", (bandStart / cols) * cellH);
+        QTest::qWait(30);
+        QStringList bandKeys;
+        for (const auto& entry : pageCall("slideBand").toList())
+            bandKeys << entry.toMap().value(QStringLiteral("key")).toString();
+        check(bandKeys.size() == 32 && bandKeys.size() == QSet(bandKeys.cbegin(),
+                                                               bandKeys.cend()).size()
+                  && bandKeys.first() == rows[bandStart].toMap().value("slideId").toString()
+                  && bandKeys.last() == rows[bandStart + 31].toMap().value("slideId").toString(),
+              "inside unique slides the band hits the 32-scene cap and stops there");
+        // Back at the top the window spans the show's cycle twice, so the
+        // band dedupes to the distinct pictures: eighteen Good Grace slides
+        // and one Welcome, no key asked twice.
+        cueGrid->setProperty("contentY", 0);
+        QTest::qWait(30);
+        bandKeys.clear();
+        for (const auto& entry : pageCall("slideBand").toList())
+            bandKeys << entry.toMap().value(QStringLiteral("key")).toString();
+        int welcomeAsks = 0;
+        for (const auto& key : bandKeys)
+            if (key == rows[18].toMap().value("slideId").toString()) ++welcomeAsks;
+        check(bandKeys.size() == 19 && welcomeAsks == 1
+                  && bandKeys.size() == QSet(bandKeys.cbegin(), bandKeys.cend()).size()
+                  && bandKeys.first() == rows[0].toMap().value("slideId").toString(),
+              "a band across repeated entries asks once per distinct picture");
+
+        // Coalescing with the destination kept: five jumps inside the timer
+        // window ask for nothing at all, and the one ask that follows
+        // describes the END of the burst — with the cap anchored off the
+        // bottom edge, the last cue is in it.
+        const int asksMid = showPageItem->property("bandRequests").toInt();
+        const qreal maxY = cueGrid->property("contentHeight").toReal()
+                         - cueGrid->property("height").toReal();
+        for (int i = 1; i <= 5; ++i) {
+            cueGrid->setProperty("contentY", maxY * i / 5.0);
+            QTest::qWait(6);
+        }
+        check(showPageItem->property("bandRequests").toInt() == asksMid,
+              "five jumps inside the timer window still ask for nothing");
+        QTest::qWait(200);
+        check(showPageItem->property("bandRequests").toInt() - asksMid == 1,
+              "the burst coalesces into exactly one ask");
+        bandKeys.clear();
+        for (const auto& entry : pageCall("slideBand").toList())
+            bandKeys << entry.toMap().value(QStringLiteral("key")).toString();
+        check(!bandKeys.isEmpty()
+                  && bandKeys.size() <= 32
+                  && bandKeys.contains(rows.last().toMap().value("slideId").toString()),
+              "the coalesced ask covers the scroll destination, not the burst start");
+
+        // The size buttons are Qt.NoFocus: the presenter's keys still walk
+        // the order after clicking them, and nothing above moved the cursor.
+        // The Edit section ran before this one, so it is also the pin for the
+        // mode switch handing the keyboard back: a hidden page's text field
+        // must not go on owning the presenter's keystrokes.
+        check(!window->property("typingIntoField").toBool()
+                  && !window->property("squattedFocus").toBool(),
+              "leaving Edit releases the lyric box and the gates are live");
+        showPageItem->setProperty("cueIndex", 17);
+        QTest::qWait(30);
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QTest::qWait(30);
+        check(showPageItem->property("cueIndex").toInt() == 18,
+              "the size buttons leave the presenter keys free");
+        check(docs.currentSongId() == songId && docs.currentSlide() == 0,
+              "sizing and scrolling never move the editing cursor");
+
+        // Hand the later sections their fixture back: the entries added here
+        // removed, the default step, the window it arrived with, the grid
+        // scrolled to the top so the live-mode check's slides are in the
+        // first band.
+        const QVariantList finalEntries = docs.playlistEntries();
+        QStringList doomed;
+        QString extraWelcome;
+        for (const auto& entry : finalEntries) {
+            const QVariantMap row = entry.toMap();
+            const QString show = row.value(QStringLiteral("showId")).toString();
+            if (show == festivalId)
+                doomed << row.value(QStringLiteral("entryId")).toString();
+            else if (show == welcomeId)
+                extraWelcome = row.value(QStringLiteral("entryId")).toString();
+        }
+        doomed << extraWelcome;  // the last Welcome entry is the one added here
+        bool shed = true;
+        for (const auto& entryId : doomed) shed = docs.removePlaylistEntry(entryId) && shed;
+        settings.setShowThumbLevel(2);
+        window->resize(sizeBefore);
+        QTest::qWait(120);
+        cueGrid->setProperty("contentY", 0);
+        QTest::qWait(140);
+        const int rowsAfter = showPageItem->property("cueRows").toList().size();
+        const qreal cellAfter = cueGrid->property("cellHeight").toReal();
+        check(shed && rowsAfter == rowsBefore && qFuzzyCompare(cellAfter, cellBefore),
+              "the fixture shrinks back to what the later sections expect");
+    }
     if (qEnvironmentVariableIsSet("OPENSHOW_WORKSPACE_LIVE")) {
         worker.start();
         QElapsedTimer timeout;

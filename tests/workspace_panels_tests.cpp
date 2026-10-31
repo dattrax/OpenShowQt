@@ -125,20 +125,29 @@ void exerciseDrawer(const std::filesystem::path& settingsPath) {
 
 void exerciseAppSettings(const std::filesystem::path& settingsPath) {
     // Task 4.5: the settings page's persisted toggles. Defaults follow
-    // the reference: number keys off, windowed.
+    // the reference: number keys off, windowed. Task UI.3c adds the Show
+    // page's thumbnail size step: middle of five, clamped in both
+    // directions so no caller can park it on a step the page cannot draw.
     AppSettings settings(nullptr, settingsPath);
     check(!settings.numberKeysPresent() && !settings.fullscreen(),
           "app settings default to number keys off and windowed");
+    check(settings.showThumbLevel() == 2, "thumbnails start at the middle step");
     settings.setNumberKeysPresent(true);
     settings.setFullscreen(true);
+    settings.setShowThumbLevel(9);  // the clamp belongs to the setting, not the caller
     const AppSettings reopened(nullptr, settingsPath);
     check(reopened.numberKeysPresent() && reopened.fullscreen(),
           "both toggles are remembered by a fresh session");
+    check(reopened.showThumbLevel() == AppSettings::kMaxThumbLevel,
+          "an over-high size step is remembered clamped to the largest");
     AppSettings back(nullptr, settingsPath);
     back.setFullscreen(false);
+    back.setShowThumbLevel(-3);
     const AppSettings again(nullptr, settingsPath);
     check(!again.fullscreen() && again.numberKeysPresent(),
           "switching one toggle back is remembered without disturbing the other");
+    check(again.showThumbLevel() == AppSettings::kMinThumbLevel,
+          "an under-low size step lands on the smallest instead");
 }
 
 int main(int argc, char* argv[]) {

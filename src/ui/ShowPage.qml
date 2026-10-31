@@ -25,6 +25,19 @@ Rectangle {
     // slidesOf() is a call rather than a tracked property.
     property int cueRowsTick: 0
 
+    // UI.3c: the operator sizes the thumbnails; the choice is remembered in
+    // AppSettings like the panel widths. Five steps — step 2 is the 190-pixel
+    // cell the grid has always had, so the default view does not move until
+    // the operator asks for one.
+    readonly property var thumbSteps: [120, 150, 190, 240, 300]
+    readonly property int thumbLevel: appSettings.showThumbLevel
+    readonly property int thumbCellWidth:
+        thumbSteps[Math.max(0, Math.min(thumbSteps.length - 1, thumbLevel))]
+    // Scheduling telemetry: how many times the band timer below has fired.
+    // Scroll, zoom and document churn all push through that one timer, so a
+    // burst costs one run rather than one per tick — the UI.3c suite pins it.
+    property int bandRequests: 0
+
     readonly property var cueRows: {
         showPage.cueRowsTick
         const groups = []
@@ -82,28 +95,59 @@ Rectangle {
     }
     function jumpToCue(at) { showPage.presentCue(at) }
 
-    // Request the visible rows plus one ahead, within the worker's 32-slide
-    // cap. Repeated entries share their slide's picture, so the band lists
-    // each slide id once. Scrolling, resizing and stepping all move this band.
-    function requestSlideBand() {
-        if (!visible || !worker.thumbnailSupported) return
+    // Rows within the ask envelope (UI.3c): from the first visible row to one
+    // row past the viewport, deduplicated by slide id — a show listed twice
+    // shares one picture — and capped at the worker's 32-scene batch. When
+    // the cap bites, the window anchors off the BOTTOM edge instead, so a
+    // scrolled-to-end grid never finds its visible rows outside the band.
+    // Pure function of the current geometry, so the offscreen suite can pin
+    // the extent, the cap and the dedupe without a worker on the wire.
+    function slideBand() {
         const rows = showPage.cueRows
-        if (rows.length === 0) { worker.clearThumbnails(); return }
+        if (rows.length === 0) return []
         const first = Math.max(0, Math.floor(slideGrid.contentY / slideGrid.cellHeight))
                       * slideGrid.columns
         const count = Math.min(32, (Math.ceil(slideGrid.height / slideGrid.cellHeight) + 1)
                                   * slideGrid.columns)
+        const lastVisible = Math.min(rows.length,
+                                     (first / slideGrid.columns
+                                      + Math.ceil(slideGrid.height / slideGrid.cellHeight))
+                                     * slideGrid.columns)
+        const start = lastVisible >= rows.length
+                      ? Math.max(0, rows.length - count) : first
         const band = []
         const seen = ({})
-        for (let i = first; i < Math.min(rows.length, first + count); ++i) {
+        for (let i = start; i < Math.min(rows.length, start + count); ++i) {
             const id = rows[i].slideId
             if (seen[id]) continue
             seen[id] = true
             band.push({key: id, scene: docs.sceneJsonForSlide(id)})
         }
-        worker.requestThumbnails(band, 320, 180)
+        return band
+    }
+    // The ask tracks the cell (UI.3c): 16:9 at the tile's picture width, held
+    // inside the envelope every 640x360 preview slot accepts — the protocol
+    // caps each dimension at 32..512, and 512x288 is the largest 16:9 frame
+    // whose pixels fit the slot this app starts the stream at, so a size this
+    // control picks can never be refused on the wire.
+    function bandPixels() {
+        const w = Math.max(160, Math.min(512, Math.round(slideGrid.cellWidth - 18)))
+        return {w: w, h: Math.round(w * 9 / 16)}
+    }
+    // Ask for the band. Every trigger — scroll, zoom, stepping, a document
+    // edit, the page becoming visible — restarts the one timer below, so a
+    // burst of wheel ticks costs one ask at the destination, not one per
+    // tick, and the ask always describes where the grid ended up.
+    function requestSlideBand() {
+        ++showPage.bandRequests
+        if (!visible || !worker.thumbnailSupported) return
+        const rows = showPage.cueRows
+        if (rows.length === 0) { worker.clearThumbnails(); return }
+        const px = showPage.bandPixels()
+        worker.requestThumbnails(showPage.slideBand(), px.w, px.h)
     }
     Timer { id: thumbnailAsk; interval: 80; onTriggered: showPage.requestSlideBand() }
+    onThumbCellWidthChanged: thumbnailAsk.restart()
     Connections {
         target: docs
         function onDocumentsChanged() { showPage.cueRowsTick++ }
@@ -147,6 +191,31 @@ Rectangle {
             color: "#aaaaaa"; font.pixelSize: 11
             text: showPage.cueRows.length + (showPage.cueRows.length === 1 ? " cue" : " cues")
         }
+        // The only view control the page has, because it is the only one it
+        // can honour (UI.3c): the two buttons resize the cells, and the
+        // re-ask follows automatically through the band timer. PanelButton is
+        // Qt.NoFocus, so the presenter keeps its keys after every click.
+        Row {
+            id: thumbSize
+            objectName: "operatorThumbSize"
+            anchors.right: slideCount.left; anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 4
+            PanelButton {
+                objectName: "operatorThumbSmaller"
+                text: "\u2212"
+                enabled: showPage.thumbLevel > 0
+                Accessible.name: "Smaller thumbnails"
+                onClicked: appSettings.showThumbLevel = showPage.thumbLevel - 1
+            }
+            PanelButton {
+                objectName: "operatorThumbLarger"
+                text: "+"
+                enabled: showPage.thumbLevel < showPage.thumbSteps.length - 1
+                Accessible.name: "Larger thumbnails"
+                onClicked: appSettings.showThumbLevel = showPage.thumbLevel + 1
+            }
+        }
     }
 
     GridView {
@@ -161,7 +230,7 @@ Rectangle {
         // as navigation, and Space/arrows must keep walking cues after any
         // click inside the grid.
         keyNavigationEnabled: false
-        readonly property int columns: Math.max(1, Math.floor(width / 190))
+        readonly property int columns: Math.max(1, Math.floor(width / showPage.thumbCellWidth))
         cellWidth: width / columns
         cellHeight: (cellWidth - 12) * 9 / 16 + 48
         model: showPage.cueRows
