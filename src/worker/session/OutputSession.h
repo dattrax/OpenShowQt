@@ -481,6 +481,20 @@ public:
     // always accepts. Accepted paths ride to the render thread's swap and
     // output.status.media.standalone answers.
     bool requestStandaloneAudio(const std::string& path, std::string* error);
+    // Task 6.22e2 (review A5): the RPC-shaped route of the same request,
+    // where the probe must not wait on the caller's thread. The verdict
+    // runs on the prepare executor under `jobId` and `done` answers it
+    // exactly once — inline for a removal (nothing to probe), on the
+    // executor thread otherwise, or with a refusal naming the retirement
+    // when the job is cancelled before it ran. Accepted probes arm the
+    // track from the executor; a REFUSED one never does, so the old track
+    // keeps playing exactly as the synchronous rule promised. Returns
+    // false only when the job could not be scheduled (stopped, or the
+    // queue is at capacity): the caller answers that refusal itself, the
+    // same shape scene.prepare keeps.
+    bool requestStandaloneAudioDeferred(const std::string& path, uint64_t jobId,
+                                        std::function<void(bool accepted,
+                                                           const std::string& refusal)> done);
     // Any thread: the standalone transport is up (between a swap that
     // started it and one that stopped it, or teardown).
     bool standaloneLive() const { return fTransport.standaloneLive(); }

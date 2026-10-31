@@ -951,12 +951,17 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
         }
     } else if (name == proto::kMethodMediaStandalone) {
         // The independent production track (task 6.15b, review R15). The
-        // path is a string, "" is the removal; the session PROBEs before
-        // accepting, so "nothing readable at that path" is answered here
-        // and now — the old track keeps playing and the caller hears why.
-        // An accepted path swaps on the transport's thread, and status's
-        // standalone block is the acknowledgement: live, path, playing,
-        // position, the lane, and the track's own sticky error.
+        // path is a string, "" is the removal; the request is PROBED
+        // before it is accepted, so "nothing readable at that path" is
+        // answered with the reason and the old track keeps playing. Since
+        // task 6.22e2 (review A5) that probe is no longer paid on this
+        // thread: the answer travels as a deferred reply from the prepare
+        // executor — the same route scene.prepare's ack took in 6.9a — and
+        // a slow or stalled file leaves the RPC loop answering status,
+        // releases and shutdown the whole while. An accepted path swaps on
+        // the transport's thread, and status's standalone block is the
+        // acknowledgement: live, path, playing, position, the lane, and
+        // the track's own sticky error.
         if (!given.is_object()) {
             proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
                                                 "media.standalone requires params"),
@@ -971,17 +976,31 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
                                    outbound);
             } else {
                 const std::string wanted(path->value().as_string());
-                std::string refusal;
-                if (!fSession.requestStandaloneAudio(wanted, &refusal)) {
+                const bool scheduled = fSession.requestStandaloneAudioDeferred(
+                    wanted, static_cast<std::uint64_t>(id),
+                    [defer = fDefer, id, wanted](bool accepted, const std::string& refusal) {
+                        // A removal (and a session with no media) answers
+                        // this inline, before schedule returned; a probed
+                        // request answers it from the executor thread, and
+                        // the connection's bag plus self-wake make either
+                        // thread safe.
+                        boost::json::value frame =
+                            accepted ? proto::makeResult(id, boost::json::object{
+                                                                    {"pending", true},
+                                                                    {"path", wanted}})
+                                     : proto::makeError(id, proto::kInvalidParams,
+                                                        refusal.empty() ? "standalone track refused"
+                                                                        : refusal);
+                        defer(std::move(frame));
+                    });
+                if (!scheduled) {
+                    // Closing, or the prepare queue is at capacity: the
+                    // honest answer is a refusal the caller can retry,
+                    // here, because nothing was scheduled to answer later.
                     proto::appendFrame(
-                        proto::makeError(id, proto::kInvalidParams,
-                                         refusal.empty() ? "standalone track refused" : refusal),
+                        proto::makeError(id, proto::kInternalError,
+                                         "media.standalone could not schedule its probe"),
                         outbound);
-                } else {
-                    proto::appendFrame(proto::makeResult(id, boost::json::object{
-                                                                 {"pending", true},
-                                                                 {"path", wanted}}),
-                                       outbound);
                 }
             }
         }

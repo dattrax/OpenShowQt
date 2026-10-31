@@ -708,6 +708,48 @@ bool OutputSession::requestStandaloneAudio(const std::string& path, std::string*
     return fTransport.requestStandaloneAudio(path, error);
 }
 
+bool OutputSession::requestStandaloneAudioDeferred(
+    const std::string& path, uint64_t jobId,
+    std::function<void(bool accepted, const std::string& refusal)> done) {
+    // A removal has nothing to probe, and a session with no background
+    // media has no executor running (6.9a's rule): both answer inline, the
+    // way scene.prepare answers when there is no file work to await.
+    if (path.empty() || !fBackgroundMedia) {
+        std::string refusal;
+        const bool accepted = fTransport.requestStandaloneAudio(path, &refusal);
+        done(accepted, refusal);
+        return true;
+    }
+    // The verdict must survive the hand from work to completion: the work
+    // runs the probe and the accept rules (the seam inside names the slow
+    // file for the fixture), arms only when they pass, and the completion
+    // relays the outcome — or the retirement, which is a refusal that
+    // armed nothing.
+    struct Verdict {
+        bool accepted = false;
+        std::string refusal;
+    };
+    auto verdict = std::make_shared<Verdict>();
+    return fPrepares.submit(
+        jobId,
+        [this, path, verdict](const std::atomic<bool>& cancelled) {
+            if (cancelled.load(std::memory_order_acquire)) {
+                return;  // the completion reports the retirement; nothing arms
+            }
+            verdict->accepted = fTransport.validateStandaloneTrack(path, &verdict->refusal);
+            if (verdict->accepted) {
+                fTransport.armStandaloneTrack(path);
+            }
+        },
+        [verdict, done = std::move(done)](bool cancelled) {
+            if (cancelled) {
+                done(false, "media.standalone was retired before its probe ran");
+            } else {
+                done(verdict->accepted, verdict->refusal);
+            }
+        });
+}
+
 GpuHandles OutputSession::gpuHandles() const {
     GpuHandles handles;
     if (fVk) {

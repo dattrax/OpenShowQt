@@ -529,25 +529,25 @@ bool BackgroundTransport::requestMediaMute(AudioSource source, bool muted, std::
 
 // --- standalone production track (task 6.15b, review R15) ---
 
-bool BackgroundTransport::requestStandaloneAudio(const std::string& path, std::string* error) {
-    // A removal always accepts, even with a broken track on file: taking
-    // the track down is the operator's last resort, and the sticky error
-    // stays paired with the path it describes (5.5d's rule, read inside
-    // this block).
-    if (path.empty()) {
-        {
-            std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
-            fStandaloneSwap = path;
+bool BackgroundTransport::validateStandaloneTrack(const std::string& path,
+                                                  std::string* error) const {
+    // The same probe scene.prepare runs, under no lock: a file that is not
+    // decodable audio at that path is a REFUSED request that changes
+    // nothing — the old track, if any, keeps playing, and the operator
+    // hears the reason rather than waiting after an accepted bring-up for
+    // news no one asked for. (A file that vanishes between here and the
+    // swap is the bring-up's bad news, named through the block's own
+    // error.) Task 6.22e2 moved the WAITING on this probe off the RPC
+    // thread; the verdict's content is exactly what it always was.
+    const Faults& f = faults();
+    if (f.delaysStandaloneProbe(path)) {
+        std::fprintf(stderr, "openshow-worker: scripted slow standalone probe: %d ms for %s\n",
+                     f.standaloneProbeDelayMs, path.c_str());
+        for (int elapsed = 0; elapsed < f.standaloneProbeDelayMs; elapsed += 20) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(std::min(20, f.standaloneProbeDelayMs - elapsed)));
         }
-        wakeRenderThread();
-        return true;
     }
-    // The same probe scene.prepare runs, on the caller's thread and under
-    // no lock: a file that is not decodable audio at that path is a
-    // REFUSED request that changes nothing — the old track, if any, keeps
-    // playing, and the operator hears the reason now rather than after an
-    // accepted bring-up. (A file that vanishes between here and the swap
-    // is the bring-up's bad news, named through the block's own error.)
     openshow::media::MediaInfo info;
     std::string probeError;
     switch (openshow::media::probeMedia(path, &info, &probeError)) {
@@ -578,11 +578,30 @@ bool BackgroundTransport::requestStandaloneAudio(const std::string& path, std::s
         }
         return false;
     }
+    return true;
+}
+
+void BackgroundTransport::armStandaloneTrack(const std::string& path) {
     {
         std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
         fStandaloneSwap = path;
     }
     wakeRenderThread();
+}
+
+bool BackgroundTransport::requestStandaloneAudio(const std::string& path, std::string* error) {
+    // A removal always accepts, even with a broken track on file: taking
+    // the track down is the operator's last resort, and the sticky error
+    // stays paired with the path it describes (5.5d's rule, read inside
+    // this block).
+    if (path.empty()) {
+        armStandaloneTrack(path);
+        return true;
+    }
+    if (!validateStandaloneTrack(path, error)) {
+        return false;
+    }
+    armStandaloneTrack(path);
     return true;
 }
 

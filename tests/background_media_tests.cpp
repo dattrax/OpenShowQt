@@ -49,6 +49,7 @@
 #include <deque>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -152,7 +153,93 @@ bool messageHasId(const boost::json::value& message, std::int64_t id) {
            found->value().as_uint64() == static_cast<std::uint64_t>(id);
 }
 
+// Replies to a request the harness is NOT waiting on right now land here
+// (task 6.22e2): media.standalone now answers as a deferred frame, which
+// can surface inside any other request's poll, and discarding an answer
+// would strand the very verdict a fixture has to read. Ids are this
+// harness's own monotonic sequence, so a stashed reply belongs to exactly
+// one outstanding request.
+std::map<std::int64_t, boost::json::value> gPendingReplies;
+
+bool idOfMessage(const boost::json::value& message, std::int64_t* idOut) {
+    const auto found = message.as_object().find("id");
+    if (found == message.as_object().end()) {
+        return false;
+    }
+    if (found->value().is_int64()) {
+        *idOut = found->value().as_int64();
+        return true;
+    }
+    if (found->value().is_uint64()) {
+        *idOut = static_cast<std::int64_t>(found->value().as_uint64());
+        return true;
+    }
+    return false;
+}
+
 std::int64_t gNextId = 1;
+
+// Send without waiting (task 6.22e2): the deferred route is only testable
+// if the harness can have a request in flight while it asks other things.
+std::int64_t sendRequest(int fd, const char* method, boost::json::object params) {
+    const std::int64_t id = gNextId++;
+    std::string wire;
+    proto::appendFrame(proto::makeRequest(id, method, std::move(params)), &wire);
+    if (::send(fd, wire.data(), wire.size(), MSG_NOSIGNAL) < 0) {
+        return -1;
+    }
+    return id;
+}
+
+// Wait for THE reply to `id` — reading it from the stash if an earlier
+// poll already received it — routing notifications and stashing foreign
+// replies on the way, exactly like call() does for its own.
+bool awaitReply(int fd, std::int64_t id, int timeoutMs, boost::json::value* reply) {
+    auto stashed = gPendingReplies.find(id);
+    if (stashed != gPendingReplies.end()) {
+        *reply = std::move(stashed->second);
+        gPendingReplies.erase(stashed);
+        return true;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        pollfd pfd{fd, POLLIN, 0};
+        const int ready = ::poll(&pfd, 1, 50);
+        if (ready < 0 && errno != EINTR) {
+            return false;
+        }
+        if (ready > 0) {
+            char buffer[64 * 1024];
+            const ssize_t got = ::recv(fd, buffer, sizeof(buffer), 0);
+            if (got <= 0) {
+                return false;
+            }
+            gDecoder.feed(std::string_view(buffer, static_cast<size_t>(got)));
+        }
+        boost::json::value message;
+        std::string decodeError;
+        while (gDecoder.next(&message, &decodeError)) {
+            if (!message.is_object()) {
+                continue;
+            }
+            if (message.as_object().contains("method")) {
+                routeNotification(message);
+            } else if (messageHasId(message, id)) {
+                *reply = std::move(message);
+                return true;
+            } else {
+                std::int64_t otherId = 0;
+                if (idOfMessage(message, &otherId)) {
+                    gPendingReplies[otherId] = std::move(message);
+                }
+            }
+        }
+        if (gDecoder.failed()) {
+            return false;
+        }
+    }
+    return false;
+}
 
 bool call(int fd, const char* method, boost::json::object params,
           boost::json::value* reply) {
@@ -188,6 +275,13 @@ bool call(int fd, const char* method, boost::json::object params,
             } else if (messageHasId(message, id)) {
                 *reply = std::move(message);
                 return true;
+            } else {
+                // Not ours, but an answer: stash it for its own awaiter
+                // (6.22e2) rather than eating a deferred reply.
+                std::int64_t otherId = 0;
+                if (idOfMessage(message, &otherId)) {
+                    gPendingReplies[otherId] = std::move(message);
+                }
             }
         }
         if (gDecoder.failed()) {
@@ -2375,6 +2469,145 @@ void exerciseStandaloneSwapOffLoop(const std::string& videoB, const std::string&
     retireScopedWorker(fd, worker, socket, "the standalone-swap worker answers shutdown");
 }
 
+/* --- task 6.22e2 (review A5): media.standalone's probe off the RPC thread ---
+   The selection used to probe the file ON the RPC thread before answering:
+   a cold or stalled file delayed every other request behind it — status,
+   display changes, release, shutdown — the one route R10's rule had never
+   reached. The request now travels the scene.prepare path: the verdict
+   runs on the prepare executor and the answer arrives as a deferred
+   frame. With OPENSHOW_FAULT_STANDALONE_PROBE_MS=600 armed for both
+   fixture names, the difference is measured, not hoped:
+
+     - the accepted path's reply lands AFTER its scripted probe (so the
+       probe really ran and the reply really is its verdict), while four
+       status round trips through the window stay free;
+     - the missing path is refused with the probe's own reason, also after
+       the wait, and the live track is untouched — a refused selection
+       still changes nothing;
+     - the removal ("") has nothing to probe and answers inline.
+
+   Reverting the handler to the synchronous call (negative control) parks
+   the RPC thread back inside the seam: the window's status RTTs blow the
+   bound and the fixture fails exactly there. */
+void exerciseStandaloneProbeOffRpc(const std::string& dir) {
+    const std::string slowTrack = dir + "/probe-e2-track.m4a";
+    const std::string missing = dir + "/probe-e2-missing.m4a";
+    ::unlink(missing.c_str());
+    if (!generate("ffmpeg -hide_banner -loglevel error -nostdin -y "
+                  "-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 "
+                  "-t 2 -c:a aac " +
+                  slowTrack) ||
+        !std::filesystem::exists(slowTrack)) {
+        std::printf("   skipped the standalone-probe scenario (no audio fixture)\n");
+        return;
+    }
+    std::string socket;
+    pid_t worker = -1;
+    const int fd = spawnScopedWorker(
+        "standaloneprobe",
+        {"OPENSHOW_FAULT_STANDALONE_PROBE_MS=600",
+         "OPENSHOW_FAULT_STANDALONE_PROBE_MATCH=probe-e2-"},
+        &socket, &worker);
+    if (fd < 0) {
+        check(false, "the standalone-probe worker could be spawned with its slow probe");
+        return;
+    }
+    boost::json::value reply;
+
+    // The accepted path: SEND, and do not wait. Four status round trips
+    // run across the probe window; pre-fix every one of these queued
+    // behind the RPC thread's probe of this same file.
+    const auto sent = std::chrono::steady_clock::now();
+    const std::int64_t selectId =
+        sendRequest(fd, proto::kMethodMediaStandalone, boost::json::object{{"path", slowTrack}});
+    double worstStatusMs = 0.0;
+    for (int probe = 0; probe < 4; ++probe) {
+        const auto began = std::chrono::steady_clock::now();
+        static_cast<void>(status(fd));
+        worstStatusMs = std::max(worstStatusMs,
+                                 std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - began)
+                                     .count());
+        sleepMs(40);
+    }
+    check(worstStatusMs < 100.0,
+          "status answered every request through the standalone probe window");
+
+    // The deferred answer: nothing else answers this request, and it must
+    // arrive LATE — an accept that beat the scripted wait would mean the
+    // verdict arrived without the probe.
+    bool answered = awaitReply(fd, selectId, 4000, &reply);
+    const double answerMs = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - sent)
+                                .count();
+    check(answered && reply.as_object().contains("result") &&
+              reply.at("result").as_object().at("pending").as_bool(),
+          "the deferred media.standalone reply accepts the probeable track");
+    check(answerMs > 400.0, "the accept rode its own probe rather than answering early");
+    std::fprintf(stderr,
+                 "6.22e2: deferred accept %.0f ms against a 600 ms scripted probe; worst "
+                 "status RTT through the window %.1f ms\n",
+                 answerMs, worstStatusMs);
+
+    // The armed path rides the render thread's swap and the bring-up lane
+    // (whose own duration probe hits the same seam) to live truth.
+    check(waitMedia(fd,
+                    [&](const boost::json::object& media) {
+                        return standaloneLiveAs(media, slowTrack);
+                    },
+                    6000),
+          "the probed-off-RPC track arms and comes live");
+
+    // The refused path (deliberately missing, same seam match): the answer
+    // still travels deferred — the refusal IS the probe's verdict — names
+    // the file, and leaves the live track exactly as it was.
+    const auto refusedSent = std::chrono::steady_clock::now();
+    const std::int64_t missingId =
+        sendRequest(fd, proto::kMethodMediaStandalone, boost::json::object{{"path", missing}});
+    const auto guardBegan = std::chrono::steady_clock::now();
+    static_cast<void>(status(fd));
+    const double statusDuringRefusalMs = std::chrono::duration<double, std::milli>(
+                                             std::chrono::steady_clock::now() - guardBegan)
+                                             .count();
+    check(statusDuringRefusalMs < 100.0, "status stayed free through the refused probe too");
+    answered = awaitReply(fd, missingId, 4000, &reply);
+    const double refusalMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - refusedSent)
+                                 .count();
+    const bool namesReason =
+        answered && reply.as_object().contains("error") &&
+        reply.at("error").as_object().contains("message") &&
+        reply.at("error").as_object().at("message").as_string().find("probe-e2-missing") !=
+            std::string::npos;
+    check(namesReason, "the missing file is refused with its probe's own reason");
+    check(refusalMs > 400.0, "the refusal also rode the probe — it is the probe's verdict");
+    check(standaloneLiveAs(mediaOf(status(fd)), slowTrack),
+          "the refused selection left the live track untouched");
+    std::fprintf(stderr, "6.22e2: refusal answered %.0f ms after its probe window\n", refusalMs);
+
+    // The removal has nothing to probe: inline and immediate even with the
+    // seam armed (the empty path never reaches the validation).
+    const auto removalSent = std::chrono::steady_clock::now();
+    check(call(fd, proto::kMethodMediaStandalone, boost::json::object{{"path", ""}}, &reply) &&
+              reply.at("result").as_object().at("pending").as_bool(),
+          "the removal is accepted");
+    check(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                    removalSent)
+                  .count() < 100.0,
+          "the removal answered inline — nothing to probe");
+    check(waitMedia(fd,
+                    [](const boost::json::object& media) {
+                        const boost::json::object track = standaloneOf(media);
+                        const auto live = track.find("live");
+                        return live == track.end() ||
+                               (live->value().is_bool() && !live->value().as_bool());
+                    },
+                    4000),
+          "the removed track reports down");
+    retireScopedWorker(fd, worker, socket, "the standalone-probe worker answers shutdown");
+    ::unlink(slowTrack.c_str());
+}
+
 // The schedule below, in milliseconds after the transport opened. Keeping the
 // numbers here means the assertions and the worker's script cannot drift.
 constexpr double kForwardMs = 1200.0;
@@ -3828,6 +4061,11 @@ int main(int argc, char** argv) {
     } else {
         std::printf("   skipped the standalone-swap scenario (no audio fixture)\n");
     }
+
+    // --- task 6.22e2 (review A5): media.standalone's probe off the RPC
+    // thread. Owns its worker (the probe seam is read at spawn) and its own
+    // fixture files, so it needs neither audioOk nor a scene.
+    exerciseStandaloneProbeOffRpc(dir);
 
     ::unlink(corrupt.c_str());
     if (!bigStill.empty()) {

@@ -383,8 +383,20 @@ public:
     // "" is a removal, not a probe candidate: it always accepts, and the
     // swap takes the track down. Since 6.21c2 the swap itself is cheap on
     // the render thread (claim, stage, publish) — the bring-up's waits
-    // belong to a lane.
+    // belong to a lane. Task 6.22e2 (review A5): production runs the probe
+    // half of this on the prepare executor behind a deferred reply
+    // (OutputSession::requestStandaloneAudioDeferred); this composition —
+    // validateStandaloneTrack() then armStandaloneTrack() — stays for the
+    // bench, which owns its calling thread and answers nothing.
     bool requestStandaloneAudio(const std::string& path, std::string* error);
+    // The verdict half, with no state to touch: probe + the accept rules
+    // above. True accepts. The scripted slow-probe seam
+    // (OPENSHOW_FAULT_STANDALONE_PROBE_MS/_MATCH) waits HERE, so a fixture
+    // measures which thread pays for the file read (6.22e2).
+    bool validateStandaloneTrack(const std::string& path, std::string* error) const;
+    // The accept half: newest selection wins into the swap slot ("" removes)
+    // and the render thread wakes to apply it. No probe, no wait.
+    void armStandaloneTrack(const std::string& path);
     // Any thread: the standalone transport is up (between a swap that
     // started it and one that stopped it, or teardown).
     bool standaloneLive() const { return fStandaloneLive.load(); }

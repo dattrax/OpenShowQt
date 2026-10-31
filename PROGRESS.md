@@ -1,14 +1,14 @@
 # OpenShowQt progress and handoff
 
 Updated: 2026-10-30 (Europe/London). Reviewed code: `8402e69` (6.21g); **6.22a**
-through **6.22d** and **6.22e1** have landed since.
+through **6.22d** and **6.22e1–e2** have landed since.
 
 ## Current checkpoint
 
 The [architecture re-review](docs/reviews/M6-architecture-follow-up-2026-10-30.md)
 found seven remaining issues. **6.22a (A1)**, **6.22b (A2)**, **6.22c (A3)**
 and **6.22d (A4)** are DONE — all four P1s are closed — and **6.22e** is in
-progress with its recorded split: **6.22e1 DONE**, **6.22e2–e4** and
+progress with its recorded split: **6.22e1–e2 DONE**, **6.22e3–e4** and
 **6.22f–g** remain in [PLAN.md](PLAN.md) before claiming full conformance or
 advancing to M7. Preserve the recorded 6.21 DONE checkpoints.
 
@@ -32,6 +32,31 @@ owe a present exactly like the scene-driven call did.
 
 ## Leaf records
 
+**6.22e2.** `media.standalone` was the last RPC verb that opened a file on
+the RPC thread before answering — one cold track delayed status, display
+changes, release and shutdown behind it. The transport split into
+`validateStandaloneTrack()` (probe + verdict, const, carries the
+`OPENSHOW_FAULT_STANDALONE_PROBE` seam) and `armStandaloneTrack()` (the
+newest-wins slot write, no probe); the sync `requestStandaloneAudio()`
+composition stays for the bench. `OutputSession::requestStandaloneAudioDeferred`
+submits the verdict to `fPrepares` under the request's id — the executor's
+one-thread FIFO keeps both the reply order and the arm order correct with a
+single swap slot — and the RPC handler answers through `fDefer`, the
+`scene.prepare` route: removals and no-media sessions answer inline, a job
+cancelled before it ran answers as a refusal naming the retirement, and a
+submit refusal (stopped/full) answers `kInternalError` synchronously
+because nothing exists yet to answer later. No supersede machinery: two
+selections in flight arm newest-last and answer in id order. The socket
+fixture sends `media.standalone` raw and measures four status round trips
+across the 600 ms scripted probe window (0.2–0.8 ms each), then awaits the
+deferred reply (612 ms — the verdict rode its probe), refuses a missing
+file with its probe's own reason after the window while the live track
+stays live, and takes the removal inline. The test client gained
+`sendRequest`/`awaitReply` plus a stash in `call()` (a deferred reply can
+surface inside another request's poll; discarding it would strand the
+verdict). Reverting the handler to the synchronous call (negative control)
+fails exactly the two responsiveness checks with a 608 ms status RTT.
+
 **6.22e1.** The standalone publish re-opened the container for its duration
 on the render thread inside `fMutex`; the bring-up lane now probes once and
 the staged value rides `StandaloneStage::duration` (release/acquire with the
@@ -41,9 +66,7 @@ stage's `done` flag) into the status mirror. New fault seam
 WHERE the probe is paid: with 500 ms scripted, the worst transport pass and
 a concurrent `mediaStatus()` reader measured 0 ms; restoring the inline
 probe under the lock (negative control) measured 516 ms on both — the exact
-A5 symptom. **6.22e2** is next (probe the RPC-thread `media.standalone`
-validation via the prepare executor and a deferred reply), then **e3**
-(standalone stop on a lane) and **e4** (seek-completion wait off the loop).
+A5 symptom.
 
 **6.22d.** The old overflow policy was an untimed sleep at the head of
 `teardownBackgroundTransport` — the second ordinary operator change behind a
@@ -98,6 +121,15 @@ crosses threads by hand-off but exactly one thread may paint it at a time
 
 ## Verification and retained evidence
 
+6.22e2: the new scenario passes; the negative control (handler reverted to
+the synchronous probe) fails exactly the two status-responsiveness checks
+(608 ms worst RTT against the 600 ms seam). Gates: desktop **55/55**
+(292.46 s, 14 display-labelled), headless **32/32** (57.66 s); both trees
+build clean. Fixture evidence lines (desktop; the scenario is
+display-labelled and spawns a real worker): deferred accept 612–613 ms
+against a 600 ms scripted probe, worst status RTT through the window
+0.2–0.8 ms, refusal answered 606–611 ms after its probe window.
+
 6.22e1: the new fixture passes; the negative control (inline probe restored
 under `fMutex`) fails both timing checks at ~516 ms against the scripted
 500 ms. Gates: desktop **55/55** (288.45 s, 14 display-labelled), headless
@@ -125,16 +157,17 @@ are preserved in [history](docs/history/PROGRESS-through-6.21g.md).
 
 ## Next action
 
-**6.22e2**: move the `media.standalone` validation probe off the RPC thread
-— schedule it on the session's prepare executor and answer with a deferred
-reply (the `scene.prepare` pattern and its `fDefer` bag), keeping accept,
-refuse and removal semantics; a socket fixture with the probe seam armed
-must show status answering while a slow standalone probe runs. Then
-**6.22e3** (the replaced standalone player's stop/join on a lane, silent at
-hand-off like 6.22c) and **6.22e4** (the seek-completion wait off the render
-thread behind a generation-tagged completion). Then **6.22f** (standalone
-ownership pending/live mirror, `BackgroundTransport.cpp` ~723/792) and
-**6.22g** (thumbnail completion carries generation/extent,
-`PreviewProducer.cpp` ~338/502/620). When a–g are DONE: align the PLAN header
-and this handoff with the re-review evidence. M7 recovery, budgets, packaging
-and hardware/long-service acceptance remain TODO.
+**6.22e3**: the replaced standalone player is destroyed on the render
+thread (`retiring.reset()`/`abandoned` in `applyStandaloneOps`,
+`BackgroundTransport.cpp` ~757) — its `~AvPlayer` joins feeders, mixer and
+PipeWire sink with no contract bounding them. Hand off like 6.22c: silent
+`pause()` at the swap (no joins), then the stop/join on a lane; needs a
+slow-stop fault seam and a fixture with a real PipeWire track. Then
+**6.22e4** (the seek-completion wait off the render thread behind a
+generation-tagged completion — `AvPlayer::seek`'s `waitSeekApplied(500)`
+per feeder) and **6.22f** (standalone ownership pending/live mirror,
+`BackgroundTransport.cpp` ~723/792) and **6.22g** (thumbnail completion
+carries generation/extent, `PreviewProducer.cpp` ~338/502/620). When a–g
+are DONE: align the PLAN header and this handoff with the re-review
+evidence. M7 recovery, budgets, packaging and hardware/long-service
+acceptance remain TODO.
