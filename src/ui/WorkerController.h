@@ -144,6 +144,12 @@ class WorkerController : public QObject {
     Q_PROPERTY(bool wordsOnAir READ wordsOnAir NOTIFY sceneChanged)
     Q_PROPERTY(bool backgroundOnAir READ backgroundOnAir NOTIFY sceneChanged)
     Q_PROPERTY(bool canRestore READ canRestore NOTIFY sceneChanged)
+    // Cue markers (task UI.3b): liveCueKey names the running-order cue the
+    // worker has on air ("" when the active revision belongs to no cue),
+    // pendingCueKey the cue whose go is still owed that acknowledgement.
+    // A refused go lights neither; browsing lights nothing at all.
+    Q_PROPERTY(QString liveCueKey READ liveCueKey NOTIFY sceneChanged)
+    Q_PROPERTY(QString pendingCueKey READ pendingCueKey NOTIFY sceneChanged)
     // Foreground pictures the worker could not decode (task 6.21f, review
     // F6): the bounded [{path, error}, ...] list from the last status poll
     // and the worker's lifetime failure-event count beside it. Their own
@@ -181,6 +187,9 @@ public:
     // acknowledges (task 3.3: the lyric panel presents real slides with
     // one call; the revision, as ever, is the worker's to hand out).
     Q_INVOKABLE void presentSceneJson(const QString& sceneJson);
+    // The cue lane (task UI.3b): the same one-step go tagged with the
+    // operator's cue identity; see PresentationModel for the rules.
+    Q_INVOKABLE void presentCueJson(const QString& cueKey, const QString& sceneJson);
 
     // The editor's off-air picture (task 6.16a, review R16): prepare this
     // scene and ask the worker to draw it into the preview stream WITHOUT
@@ -268,6 +277,8 @@ public:
     // The output model (task 6.19a3): the truth is PresentationModel's; these
     // are the reads the QML properties point at.
     qint64 sceneActive() const { return fPresent->sceneActive(); }
+    QString liveCueKey() const { return fPresent->liveCueKey(); }
+    QString pendingCueKey() const { return fPresent->pendingCueKey(); }
     qint64 scenePending() const { return fPresent->scenePending(); }
     qint64 scenePrepared() const { return fPresent->scenePrepared(); }
     bool wordsOnAir() const { return fPresent->wordsOnAir(); }

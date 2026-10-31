@@ -74,10 +74,18 @@ public:
     // ---- the operations the UI calls --------------------------------------
     // Stage a compiled scene in the worker's store without presenting it.
     void prepareScene(const QString& sceneJson);
-    // Present a revision the store has already handed out.
-    void presentScene(qint64 revision);
+    // Present a revision the store has already handed out. fromGoIntent is
+    // true only for the present a cue's own prepare-ack triggers; any other
+    // explicit present retargets the audience off a nameable cue (UI.3b).
+    void presentScene(qint64 revision, bool fromGoIntent = false);
     // Prepare this JSON and present it on the acknowledgement.
     void presentSceneJson(const QString& sceneJson);
+    // The cue lane (task UI.3b): the same one-step go, tagged with the
+    // operator's cue identity (which running-order entry's which slide).
+    // The tag attaches only if the go actually reaches the transport; it is
+    // reported as LIVE once the worker acknowledges the revision on air, so
+    // an indicator cannot light from a request the worker never took.
+    void presentCueJson(const QString& cueKey, const QString& sceneJson);
     // The same one-step go for a scene this build compiled itself (the demo
     // fixture), which is therefore not re-read against the authoring budgets.
     void presentCompiledScene(const boost::json::object& scene);
@@ -108,6 +116,15 @@ public:
     qint64 sceneActive() const { return fSceneActive; }
     qint64 scenePending() const { return fScenePending; }
     qint64 scenePrepared() const { return fScenePrepared; }
+    // The cue markers (task UI.3b). LIVE is the cue the worker has on air —
+    // "" when the active revision is one the cue lane cannot name (a demo, a
+    // foreign present, a fresh connection). PENDING is the newest cue go not
+    // yet acknowledged; a refused go leaves neither marker lit, because the
+    // audience stayed where it was.
+    QString liveCueKey() const { return fLiveCueKey; }
+    QString pendingCueKey() const {
+        return fLatestGoId != 0 ? fGoCueKey : fPendingPresent.cueKey;
+    }
     bool wordsOnAir() const { return fSceneContent.words; }
     bool backgroundOnAir() const { return fSceneContent.background; }
     bool canRestore() const { return !fRestoreJson.isEmpty(); }
@@ -144,6 +161,28 @@ private:
     bool readableScene(const QString& sceneJson, const char* verb, boost::json::value& parsed);
 
     Outbound fOut;
+
+    // Cue identity (task UI.3b). fGoCueKey belongs to the newest go that can
+    // still move the audience (fLatestGoId); fPendingPresent records the
+    // revision that go's present named, and the request still owed its
+    // answer. A present/clear/restore the cue lane did not ask for
+    // invalidates both: after that the audience is on a revision no cue owns,
+    // which the markers must say honestly by showing nothing.
+    struct CueGo {
+        qint64 revision = 0;
+        std::int64_t presentId = 0;
+        QString cueKey;
+    };
+    void invalidateCue() {
+        fGoCueKey.clear();
+        fPendingPresent = CueGo{};
+    }
+    CueGo fPendingPresent;
+    QString fGoCueKey;
+    // The acknowledged cue and the revision it was confirmed for, so a poll
+    // naming that same revision again changes nothing.
+    QString fLiveCueKey;
+    qint64 fLiveCueRevision = 0;
 
     // Output controls (task 3.4): the JSON each revision was prepared with, so
     // a clear can derive from what is actually on air and the live indicators

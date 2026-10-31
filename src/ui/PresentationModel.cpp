@@ -49,15 +49,24 @@ void PresentationModel::prepareScene(const QString& sceneJson) {
     armPrepare(id, parsed.as_object(), /*autoPresent=*/false);
 }
 
-void PresentationModel::presentScene(qint64 revision) {
+void PresentationModel::presentScene(qint64 revision, bool fromGoIntent) {
     if (!fOut.live()) {
         return;
+    }
+    if (!fromGoIntent) {
+        // A present the cue lane did not pull moves the audience to a
+        // revision no cue owns (UI.3b); the go's own present keeps the tag.
+        invalidateCue();
     }
     // An explicit present re-targets the logical presentation: later
     // clears derive from what this revision was prepared with (task 6.3b).
     fDesiredSceneJson = fSceneJson.value(revision);
-    fOut.request("scene.present",
-                 boost::json::object{{"revision", static_cast<std::uint64_t>(revision)}});
+    const std::int64_t id = fOut.request(
+        "scene.present",
+        boost::json::object{{"revision", static_cast<std::uint64_t>(revision)}});
+    if (fromGoIntent) {
+        fPendingPresent.presentId = id;  // a refused present un-pends its cue (UI.3b)
+    }
 }
 
 void PresentationModel::presentSceneJson(const QString& sceneJson) {
@@ -73,6 +82,23 @@ void PresentationModel::presentSceneJson(const QString& sceneJson) {
     fRestoreJson.clear();
     fRestoreArmedGo = 0;
     fRestoreDoneRevision = 0;
+    invalidateCue();  // an untagged present moves to a revision the cue markers cannot name
+}
+
+void PresentationModel::presentCueJson(const QString& cueKey, const QString& sceneJson) {
+    // The cue lane (task UI.3b): same go as presentSceneJson, tagged. The
+    // tag attaches only once the request is on its way — a dead session or
+    // an unreadable scene marks no cue pending, because no cue was asked of
+    // the worker.
+    const std::int64_t id = presentSceneInternal(sceneJson);
+    if (id == 0) {
+        return;
+    }
+    fRestoreJson.clear();  // a fresh go retires the restore point, tag or not
+    fRestoreArmedGo = 0;
+    fRestoreDoneRevision = 0;
+    fGoCueKey = cueKey;  // armPrepare just made this the newest go
+    fPendingPresent = CueGo{};
 }
 
 // The demo fixture's go: the payload is this build's own compiler's output,
@@ -83,6 +109,7 @@ void PresentationModel::presentCompiledScene(const boost::json::object& scene) {
     if (!fOut.live()) {
         return;
     }
+    invalidateCue();  // a compiled-scene go is not one the cue lane named (UI.3b)
     fRestoreJson.clear();  // a fresh go retires any clear's restore point
     fRestoreArmedGo = 0;
     fRestoreDoneRevision = 0;
@@ -125,7 +152,9 @@ void PresentationModel::clearSlide() {
     if (fRestoreJson.isEmpty()) {
         fRestoreJson = source;
     }
-    presentSceneInternal(cleared);
+    if (presentSceneInternal(cleared) != 0) {
+        invalidateCue();  // the audience is owed the cleared scene, not a named cue (UI.3b)
+    }
 }
 
 void PresentationModel::clearBackground() {
@@ -140,7 +169,9 @@ void PresentationModel::clearBackground() {
     if (fRestoreJson.isEmpty()) {
         fRestoreJson = source;
     }
-    presentSceneInternal(cleared);
+    if (presentSceneInternal(cleared) != 0) {
+        invalidateCue();  // the audience is owed the cleared scene, not a named cue (UI.3b)
+    }
 }
 
 void PresentationModel::clearAll() {
@@ -155,7 +186,9 @@ void PresentationModel::clearAll() {
     if (fRestoreJson.isEmpty()) {
         fRestoreJson = source;
     }
-    presentSceneInternal(cleared);
+    if (presentSceneInternal(cleared) != 0) {
+        invalidateCue();  // the audience is owed the cleared scene, not a named cue (UI.3b)
+    }
 }
 
 void PresentationModel::restoreOutput() {
@@ -172,6 +205,7 @@ void PresentationModel::restoreOutput() {
     const std::int64_t id = presentSceneInternal(fRestoreJson);
     if (id != 0) {
         fRestoreArmedGo = id;
+        invalidateCue();  // the audience is owed the restored scene, not a named cue (UI.3b)
     }
 }
 
@@ -296,7 +330,13 @@ void PresentationModel::handlePrepareAck(std::int64_t requestId, const ScenePrep
     // regress the audience off the newer slide already intended.
     if (intent.autoPresent && requestId == fLatestGoId) {
         fLatestGoId = 0;
-        presentScene(revision);
+        fPendingPresent = CueGo{};
+        presentScene(revision, /*fromGoIntent=*/true);
+        // This revision went out for the newest go; if a cue tagged it,
+        // the cue becomes LIVE when a poll names this revision active, and
+        // reads as PENDING until then (task UI.3b).
+        fPendingPresent.revision = revision;
+        fPendingPresent.cueKey = fGoCueKey;
         if (requestId == fRestoreArmedGo) {
             // The restore's own go moved the audience; its snapshot
             // retires once a status poll confirms this revision on
@@ -314,6 +354,16 @@ void PresentationModel::handleRefusal(std::int64_t requestId) {
     // in-flight marker clears, so the retry is available.
     if (requestId == fRestoreArmedGo) {
         fRestoreArmedGo = 0;
+    }
+    // A failed go leaves nothing pending (task UI.3b): the audience stayed
+    // on the last acknowledged cue, the status line carries the reason, and
+    // the next click starts clean.
+    if (requestId == fLatestGoId) {
+        fLatestGoId = 0;
+        fGoCueKey.clear();
+    }
+    if (requestId == fPendingPresent.presentId) {
+        fPendingPresent = CueGo{};
     }
 }
 
@@ -338,6 +388,18 @@ void PresentationModel::updateFromStatus(const boost::json::object& payload) {
     // revision was prepared with, so a clear or present lights the
     // indicator when the output has it, not when it was requested.
     fSceneContent = sceneContent(fSceneJson.value(fSceneActive));
+    // The cue markers are acknowledgement-backed (task UI.3b): a cue turns
+    // LIVE only when the worker names the revision that cue's present went
+    // out for, and an active revision the cue lane cannot name (a demo, a
+    // foreign present, a restarted worker) marks no cue live.
+    if (fPendingPresent.revision != 0 && fSceneActive == fPendingPresent.revision) {
+        fLiveCueKey = fPendingPresent.cueKey;
+        fLiveCueRevision = fSceneActive;
+        fPendingPresent = CueGo{};
+    } else if (fSceneActive != fLiveCueRevision) {
+        fLiveCueKey.clear();
+        fLiveCueRevision = fSceneActive;
+    }
     // The per-item foreground faults (task 6.21f, review F6). Replaced
     // wholesale from this poll, exactly as the worker replaced them: an
     // entry whose path a later prepare decoded successfully is simply not
@@ -390,6 +452,11 @@ void PresentationModel::reset() {
     fRestoreDoneRevision = 0;
     fDesiredSceneJson.clear();
     fLatestGoId = 0;
+    // The cue lane starts unnameable too: the first status poll after a
+    // reconnect decides what is live again (task UI.3b).
+    invalidateCue();
+    fLiveCueKey.clear();
+    fLiveCueRevision = 0;
     // The three revisions are the worker's own counters, "as last reported".
     // They survive here exactly as they survived the connection before this
     // class existed: a reconnect re-confirms them with the first status poll,

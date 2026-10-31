@@ -40,6 +40,7 @@ int main(int argc, char** argv) {
     }
     docs.addShowToPlaylist(songId);
     docs.createSong("Welcome");
+    docs.addSlide();
     docs.setSlideText("Welcome\nWe are glad you are here");
     docs.flushText();
     docs.addShowToPlaylist(docs.currentSongId());
@@ -155,7 +156,7 @@ int main(int argc, char** argv) {
         QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, start + QPoint(160, -30));
         check(row && row->position() == position, "library row remains in place after a drag");
     }
-    // --- task UI.2: one collection outline, one detail view --------------
+    // --- task UI.3b: cue triggers, running-order stepping and markers ------
     std::function<QQuickItem*(QQuickItem*, const char*)> findNamed =
         [&](QQuickItem* item, const char* name) -> QQuickItem* {
             if (item->objectName() == QLatin1String(name)) return item;
@@ -168,6 +169,112 @@ int main(int argc, char** argv) {
             if (item->objectName() == QLatin1String(name)) out.append(item);
             for (auto* child : item->childItems()) collectNamed(child, name, out);
         };
+    auto* showPageItem = window->findChild<QQuickItem*>("showPage");
+    auto* cueGrid = window->findChild<QQuickItem*>("operatorSlideGrid");
+    check(showPageItem && cueGrid, "the Show page and its cue grid are in the operator shell");
+    {
+        // The running order is Good Grace (18 cues) then Welcome (1): the
+        // grid renders the ORDER, not whatever the editing cursor sits on.
+        const QVariantList rows = showPageItem->property("cueRows").toList();
+        QStringList groupsInOrder;
+        for (const QVariant& row : rows) {
+            const QString name = row.toMap().value("showName").toString();
+            if (groupsInOrder.isEmpty() || groupsInOrder.last() != name)
+                groupsInOrder << name;
+        }
+        check(rows.size() == 19 &&
+                  groupsInOrder == (QStringList{"Good Grace", "Welcome"}),
+              "the grid shows the running order's cues, not just the edited show");
+        // The implicit follow-arming state is gone from the operator screen.
+        std::function<bool(QQuickItem*)> followArmed = [&](QQuickItem* item) {
+            if (item->property("text").toString() == QLatin1String("Follow selection"))
+                return true;
+            for (auto* child : item->childItems())
+                if (followArmed(child)) return true;
+            return false;
+        };
+        check(!followArmed(window->contentItem()),
+              "no follow-arming control remains on Show");
+        // Clicking a cue picks it and asks the worker; with no acknowledgement
+        // available nothing may light, and the editing cursor may not move.
+        QList<QQuickItem*> tiles;
+        collectNamed(cueGrid, "operatorCueTile", tiles);
+        QQuickItem* firstTile = nullptr;
+        for (auto* tile : tiles)
+            if (tile->property("index").toInt() == 0) firstTile = tile;
+        check(firstTile != nullptr, "the first cue is on screen");
+        if (firstTile != nullptr) {
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                              firstTile->mapToScene(QPointF(25, 25)).toPoint());
+            QTest::qWait(30);
+            check(showPageItem->property("cueIndex").toInt() == 0,
+                  "clicking a cue picks that cue");
+            check(docs.currentSongId() == songId && docs.currentSlide() == 0,
+                  "triggering a cue never moves the editing cursor");
+            check(firstTile->property("rowSelected").toBool()
+                      && !firstTile->property("rowLive").toBool(),
+                  "a click selects without claiming anything is live");
+            check(worker.liveCueKey().isEmpty() && worker.pendingCueKey().isEmpty(),
+                  "a go the worker never received leaves no marker pending");
+        }
+        // The presenter keys walk the running order ACROSS the presentation
+        // boundary (cue 18 of Good Grace into Welcome) and clamp at the ends.
+        // The cue tiles never take focus, so the window's presenter
+        // shortcuts keep receiving keys after a click inside the grid.
+        showPageItem->setProperty("cueIndex", 17);
+        QTest::qWait(30);
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QTest::qWait(30);
+        check(showPageItem->property("cueIndex").toInt() == 18 &&
+                  rows[18].toMap().value("showName").toString() == QLatin1String("Welcome"),
+              "Next crosses the boundary into the following presentation");
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QTest::qWait(20);
+        check(showPageItem->property("cueIndex").toInt() == 18,
+              "stepping at the end stays at the end");
+        QTest::keyClick(window, Qt::Key_PageUp);
+        QTest::qWait(30);
+        check(showPageItem->property("cueIndex").toInt() == 17,
+              "Previous crosses back into the first presentation");
+        check(docs.currentSongId() == songId && docs.currentSlide() == 0,
+              "the whole walk leaves the editing cursor untouched");
+        // The Welcome cue at the end of the order is clickable once the
+        // grid has scrolled to it (delegates only exist on screen).
+        QMetaObject::invokeMethod(cueGrid, "positionViewAtEnd");
+        QTest::qWait(40);
+        QList<QQuickItem*> tailTiles;
+        collectNamed(cueGrid, "operatorCueTile", tailTiles);
+        QQuickItem* welcomeTile = nullptr;
+        for (auto* tile : tailTiles)
+            if (tile->property("modelData").toMap().value("showName").toString() ==
+                QLatin1String("Welcome"))
+                welcomeTile = tile;
+        check(welcomeTile != nullptr, "the last presentation's cue is reachable by scrolling");
+        int liveCount = 0;
+        for (auto* tile : tailTiles)
+            if (tile->property("rowLive").toBool()) ++liveCount;
+        check(liveCount == 0, "nothing is marked live without an acknowledgement");
+        // Browsing a presentation from the library re-sources the middle of
+        // the screen off air — still no cursor move, still nothing live.
+        QString welcomeId;
+        for (const auto& song : docs.songs())
+            if (song.toMap().value("name").toString() == QLatin1String("Welcome"))
+                welcomeId = song.toMap().value("id").toString();
+        showPageItem->setProperty("sourceShowId", welcomeId);
+        QTest::qWait(40);
+        QList<QQuickItem*> browsed;
+        collectNamed(cueGrid, "operatorCueTile", browsed);
+        check(browsed.size() == 1
+                  && browsed.first()->property("modelData").toMap().value("showName")
+                         .toString() == QLatin1String("Welcome")
+                  && !browsed.first()->property("rowLive").toBool(),
+              "browsing a presentation shows only its slides and presents nothing");
+        check(docs.currentSongId() == songId, "browsing never moves the editing cursor");
+        showPageItem->setProperty("sourceShowId", QString());
+        QTest::qWait(40);
+    }
+
+    // --- task UI.2: one collection outline, one detail view --------------
     auto* outline = findNamed(window->contentItem(), "collectionOutline");
     auto* libraryList = findNamed(window->contentItem(), "collectionLibraryList");
     auto* playlistList = findNamed(window->contentItem(), "collectionPlaylistList");

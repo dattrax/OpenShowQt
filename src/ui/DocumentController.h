@@ -144,6 +144,10 @@ public:
     QVariantList playlists() const;
     QVariantList collectionOutline() const;
     QVariantList runningOrderCues() const;
+    // The slide rows of any show in the library (UI.3b): the Show view
+    // renders a browsed presentation's group while the editing cursor stays
+    // on its own work. Read-only, through DocumentViews like every row.
+    Q_INVOKABLE QVariantList slidesOf(const QString& showId) const;
     QVariantList playlistEntries() const;
     QVariantList assets() const;
     QVariantList styles() const;

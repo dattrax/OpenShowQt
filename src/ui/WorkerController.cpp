@@ -662,6 +662,10 @@ void WorkerController::presentSceneJson(const QString& sceneJson) {
     fPresent->presentSceneJson(sceneJson);
 }
 
+void WorkerController::presentCueJson(const QString& cueKey, const QString& sceneJson) {
+    fPresent->presentCueJson(cueKey, sceneJson);
+}
+
 void WorkerController::adoptAssetPaths(const QVariantMap& pathMap) {
     fPresent->adoptAssetPaths(pathMap);
 }

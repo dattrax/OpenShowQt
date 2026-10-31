@@ -373,7 +373,7 @@ and authoring in Edit. [Detailed scope, control audit and acceptance](docs/ui/op
 | UI.2 | DONE | Sidebar collection outline and selected contents | One outline (Library + playlists, counts) above one detail view; selection, duplicate entries, long names, scrolling and drag/drop keep stable entry identities, and the wire proves browsing never goes live |
 | UI.3 | TODO | Presentation/playlist slide workspace | Parent closes when UI.3a–c pass |
 | UI.3a | DONE | Read-only running-order cue projection | Cue groups per entry (duplicate shows are two entry ids over shared slides); arbitrary-show compilation resolves the owning show and never moves the editing cursor |
-| UI.3b | TODO | Consistent Show cue triggers and live markers | Click/keyboard presentation follows the running order; markers wait for acknowledgements |
+| UI.3b | DONE | Consistent Show cue triggers and live markers | Grid walks the running order across presentation boundaries (keys clamped at the ends, "Page Down"/"Page Up" spelling fix makes PgUp/PgDn real); click/key presents, browse never does; PENDING/LIVE markers wait for the worker's acknowledgement and the journey test ties LIVE to the acknowledged pixels |
 | UI.3c | TODO | Thumbnail sizing and supported view controls | Coalesced visible-band requests respect the existing cue/cache limits |
 | UI.4 | TODO | Dedicated bottom media bin | Parent closes when UI.4a–b pass |
 | UI.4a | TODO | Media collection/cue browsing and type metadata | Bottom media replaces duplicated show browsing; unsupported assets remain identifiable |

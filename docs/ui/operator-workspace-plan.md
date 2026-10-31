@@ -167,7 +167,34 @@ from the projection alone while `currentSongId`/`currentSlide` do not move —
 paid for in `compileSlideJson`, which now resolves the slide's OWNING show
 (current show first) instead of silently failing on any other. Gates: desktop
 57/57 (339.83 s, 15 display), headless 32/32 (65.92 s); both trees build clean.
-UI.3b and UI.3c remain TODO.
+UI.3c remains TODO.
+
+Verification (UI.3b, 2026-10-31): the middle of Show is now the running order —
+the grid renders the flattened cue rows of `runningOrderCues()` (group caption
+on the first tile of each entry, LIVE/GO… chips on the markers), and picking a
+presentation from the library (`Main.browsedShowId`) re-sources the same grid to
+that one presentation OFF air: no present, no marker, no cursor move. Triggers
+are consistent: a tile click calls `showPage.presentCue(index)`, Present acts on
+the picked cue, Previous/Next and the presenter keys walk the same flattened
+order across presentation boundaries and clamp at the ends, and the implicit
+follow-arming control is gone. The markers are acknowledgement-backed:
+`PresentationModel::presentCueJson(cueKey, json)` tags the newest go, the cue
+reads PENDING until a status poll names the revision its present went out for
+ACTIVE, a refused go un-pends it, and any untagged present, clear, restore or
+reset invalidates the lane — `WorkerController` mirrors this as
+`liveCueKey`/`pendingCueKey`. Cue tiles are Item + MouseArea delegates, not
+buttons: an AbstractButton takes press focus and squats the presenter's keys.
+`workspace_ui_tests` pins the grid at 19 rows spanning two shows, a click that
+selects without claiming air, the boundary walk (cue 18 of the first show into
+the second) and the browse-shows-one-off-air group; `frontend_journey_tests` §7
+is the real-worker proof the acceptance demanded: pending synchronously, LIVE
+only after the ack, the LIVE marker's cue owning the pixels on the preview
+stream, the old cue holding air mid-go, and an unreadable scene marking nothing.
+That test also caught a product bug no run had ever exercised: Qt parses the
+sequence string "PageDown" as `Key_unknown`, so the presenter's PageUp/PageDown
+never worked — the map now spells them "Page Down"/"Page Up" and the offscreen
+walk holds the keys to it. Gates: desktop 57/57 (342.71 s, 15 display), headless
+32/32 (65.75 s); both trees build clean.
 
 ### UI.4 — Dedicated media bin
 
@@ -217,7 +244,7 @@ completion. Run workspace/controller tests and relevant live frontend journeys.
 
 ## Completion rule
 
-UI.1, UI.2 and UI.3a are closed (verification recorded above); UI.3b–6 remain TODO
+UI.1–UI.3b are closed (verification recorded above); UI.3c–6 remain TODO
 until implemented and checked.
 A colour change or one screenshot does not close the layout work. Keep the short
 ledger in PLAN.md; store audit details and later capture evidence alongside this

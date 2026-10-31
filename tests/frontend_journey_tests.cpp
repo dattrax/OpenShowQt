@@ -33,6 +33,10 @@
  *      foregroundErrors (path + reason from the real worker's decode) without
  *      failing the go, and writing the file back and going again repairs the
  *      notice and draws the box, with the failure event still counted.
+ *   7. the cue lane (UI.3b): a tagged go is pending synchronously and LIVE
+ *      only once the worker names its revision active — the LIVE cue owns
+ *      the pixels on the preview stream — and a go that never reaches the
+ *      worker marks nothing.
  *
  * Needs a display (the worker opens its output window) and ffmpeg (the plates
  * are real PNGs through the real decode path). Desktop preset, label display.
@@ -491,9 +495,57 @@ int main(int argc, char* argv[]) {
               return nearColor(rgbAt(frame, kPicU, kPicV), kMagenta) && whitePixels(frame) > 20;
           }),
           "repair: the picture draws where the fault line used to be");
+
+    // --- 7. cue markers are acknowledgement-backed (task UI.3b) --------------
+    // The Show page lights a cue LIVE only because THIS worker said the
+    // revision that cue's go went out for is active. Ask for a cue: it is
+    // PENDING the moment the go leaves, and nothing is LIVE yet.
+    controller.presentCueJson(QStringLiteral("cue-a"), sceneAlpha(goldPath, magentaPath));
+    check(controller.pendingCueKey() == QStringLiteral("cue-a") &&
+              controller.liveCueKey().isEmpty(),
+          "cue: the go is pending before any acknowledgement");
+    if (!check(waitUntil([&controller] {
+                   return controller.liveCueKey() == QStringLiteral("cue-a") &&
+                          controller.pendingCueKey().isEmpty() && controller.scenePending() == 0;
+               }),
+               "cue: the acknowledgement turns cue-a live")) {
+        controller.shutdownNow();
+        return 1;
+    }
+    // The LIVE claim means the audience sees THAT cue's picture — the same
+    // gold-and-magenta stack cue-a carried, read off the preview stream.
+    check(pixelsSettled(controller, [](const QImage& frame) {
+              return nearColor(rgbAt(frame, kBgU, kBgV), kGold) &&
+                     nearColor(rgbAt(frame, kPicU, kPicV), kMagenta) && whitePixels(frame) > 20;
+          }),
+          "cue: the live marker names the cue whose pixels are actually on air");
+    // Going to a second cue: mid-go the old cue keeps the air claim and the
+    // new one waits; the ack moves the claim, in order.
+    controller.presentCueJson(QStringLiteral("cue-b"), sceneGraded());
+    check(controller.pendingCueKey() == QStringLiteral("cue-b") &&
+              controller.liveCueKey() == QStringLiteral("cue-a"),
+          "cue: mid-go the previous cue still claims the air and the new one is pending");
+    check(waitUntil([&controller] {
+              return controller.liveCueKey() == QStringLiteral("cue-b") &&
+                     controller.pendingCueKey().isEmpty();
+          }),
+          "cue: the second acknowledgement moves the live marker cue-a -> cue-b");
+    // A scene the controller cannot even send asks nothing of the worker, so
+    // no cue may claim pending for it — and the settled markers survive the
+    // polls that follow.
+    controller.presentCueJson(QStringLiteral("cue-c"), QStringLiteral("{not a scene"));
+    check(controller.pendingCueKey().isEmpty() &&
+              controller.liveCueKey() == QStringLiteral("cue-b"),
+          "cue: an unreadable scene marks no cue pending");
+    settle(300);
+    check(controller.pendingCueKey().isEmpty() &&
+              controller.liveCueKey() == QStringLiteral("cue-b"),
+          "cue: the refused go leaves the settled markers unchanged");
+
     std::printf("frontend_journey: go/gradient/composed clears/restore across a 16-deep prune, "
-                "adoption of both plates with restore from the new paths, and a real missing-"
-                "picture fault (%s) repaired — all in status AND in the copied frame\n",
+                "adoption of both plates with restore from the new paths, a real missing-"
+                "picture fault (%s) repaired, and a cue lane whose live marker only lights for "
+                "the cue the worker acknowledged — all in status AND in the copied frame\n",
                 faultReason.toUtf8().constData());
 
     controller.shutdownNow();

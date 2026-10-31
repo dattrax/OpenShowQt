@@ -25,6 +25,11 @@ SidePanel {
     // and never the output.
     property string outlineKind: "playlist"
     property string outlinePlaylistId: docs.currentPlaylistId
+    // Told upward when the operator picks something to look at (UI.3b): a
+    // playlist returns the middle of the screen to the running order, a
+    // library row browses that presentation. Selection only — the audience
+    // never moves from here.
+    signal sourceChosen(string kind, string id)
     // The entry row the operator last clicked. Keyed by ENTRY id, so a show
     // that appears twice in the order shows one selection, not two.
     property string selectedEntryId: ""
@@ -184,8 +189,13 @@ SidePanel {
                         anchors.fill: parent
                         hoverEnabled: true
                         acceptedButtons: Qt.LeftButton
-                        onClicked: playlistPanel.selectOutline(outlineRow.modelData.kind,
-                                                               outlineRow.modelData.id)
+                        onClicked: {
+                            playlistPanel.selectOutline(outlineRow.modelData.kind,
+                                                        outlineRow.modelData.id)
+                            if (outlineRow.modelData.kind === "playlist") {
+                                playlistPanel.sourceChosen("playlist", "")
+                            }
+                        }
                     }
                     // A library row dragged onto a playlist prepares that
                     // playlist — it becomes the one being prepared and takes
@@ -311,7 +321,10 @@ SidePanel {
                         // Selection and preparation only: choosing a row here
                         // changes what is inspected; double-click prepares it
                         // into the running order. Nothing reaches the worker.
-                        onClicked: docs.selectSong(libraryRow.modelData.id)
+                        onClicked: {
+                            docs.selectSong(libraryRow.modelData.id)
+                            playlistPanel.sourceChosen("show", libraryRow.modelData.id)
+                        }
                         onDoubleClicked: docs.addShowToPlaylist(libraryRow.modelData.id)
                         onReleased: {
                             if (libraryDragProxy.Drag.active) libraryDragProxy.Drag.drop()

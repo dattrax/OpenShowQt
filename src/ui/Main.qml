@@ -39,12 +39,10 @@ Window {
         && (activeFocusItem instanceof TextField || activeFocusItem instanceof TextArea
             || activeFocusItem instanceof TextInput)
 
-    function presentCurrentSlide() {
-        const json = docs.currentSceneJson()
-        if (json !== "") {
-            worker.presentSceneJson(json)
-        }
-    }
+    // What the middle of the screen shows (UI.3b): "" follows the running
+    // order under preparation; a presentation browsed from the sidebar shows
+    // its slides off air. Browsing selects, it never presents.
+    property string browsedShowId: ""
 
     // A focused button or combo eats Space and the arrow keys themselves;
     // the presenter gates stand down for it (task 4.5, AbstractButton is
@@ -63,20 +61,14 @@ Window {
     // stack step — are the edit page's, since only its EditCanvas tracks
     // the live rectangle (task 6.19b7).
 
-    // Task 4.5: the presenter's steps walk the same navigation a Present
-    // click armed, so a service runs from the keyboard alone.
+    // Task 4.5 (rewritten by UI.3b): the presenter's keys walk the CHOSEN
+    // running order — across presentation boundaries and repeated entries —
+    // and every step is a go. The editing cursor stays where it was.
     function presenterStep(delta) {
-        if (docs.slides.length === 0) {
-            return
-        }
-        docs.stepSlide(delta)
-        root.presentCurrentSlide()
+        showPage.stepCue(delta)
     }
     function presenterJump(index) {
-        if (index >= 0 && index < docs.slides.length) {
-            docs.selectSlide(index)
-            root.presentCurrentSlide()
-        }
+        showPage.jumpToCue(index)
     }
 
     // One shortcut owner for each key, with authoring gated to Edit.
@@ -88,6 +80,7 @@ Window {
         boxSelected: editPage.boxSelected
         currentBox: docs.currentBox
         slideCount: docs.slides.length
+        cueCount: showPage.cueRows.length
         wordsOnAir: worker.wordsOnAir
         backgroundOnAir: worker.backgroundOnAir
         canRestore: worker.canRestore
@@ -136,6 +129,7 @@ Window {
         anchors.left: parent.left
         anchors.top: topBar.bottom
         anchors.bottom: libraryDrawer.top
+        onSourceChosen: (kind, id) => root.browsedShowId = kind === "show" ? id : ""
     }
 
     OutputPanel {
@@ -149,6 +143,8 @@ Window {
     }
 
     ShowPage {
+        id: showPage
+        objectName: "showPage"
         visible: root.page === "show"
         anchors.left: leftDock.right
         anchors.right: rightDock.left
@@ -156,7 +152,7 @@ Window {
         anchors.bottom: libraryDrawer.top
         anchors.margins: 0
 
-        onPresentRequested: root.presentCurrentSlide()
+        sourceShowId: root.browsedShowId
         onEditRequested: root.page = "edit"
     }
 

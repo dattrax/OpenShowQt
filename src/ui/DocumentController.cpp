@@ -945,6 +945,10 @@ QVariantList DocumentController::runningOrderCues() const {
     return fViews.runningOrderCues(fCurrentPlaylistId);
 }
 
+QVariantList DocumentController::slidesOf(const QString& showId) const {
+    return fViews.slides(showId.toStdString());
+}
+
 QVariantList DocumentController::playlistEntries() const {
     return fViews.playlistEntries(fCurrentPlaylistId);
 }

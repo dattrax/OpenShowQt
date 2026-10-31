@@ -47,6 +47,7 @@ Item {
     property bool boxSelected: false        // the canvas's handles are on
     property int currentBox: -1             // docs.currentBox
     property int slideCount: 0
+    property int cueCount: 0              // the running order's cues (UI.3b)
     property bool wordsOnAir: false
     property bool backgroundOnAir: false
     property bool canRestore: false
@@ -83,9 +84,9 @@ Item {
                                         && !typingIntoField
     readonly property bool presenterTyping: typingIntoField || drawerFocused
                                             || squattedFocus
-    readonly property bool presenterNav: page === "show" && !presenterTyping && slideCount > 0
+    readonly property bool presenterNav: page === "show" && !presenterTyping && cueCount > 0
     readonly property bool numberKeys: numberKeysPresent && !presenterTyping
-                                       && page === "show" && slideCount > 0
+                                       && page === "show" && cueCount > 0
 
     // Task 3.4: the reference's presenter keys. Escape clears all — and
     // restores when the output is already clear, matching the button's
@@ -241,7 +242,9 @@ Item {
         onActivated: presenterStepRequested(1)
     }
     Shortcut {
-        sequence: "PageDown"
+        // "Page Down"/"Page Up" are the spellings QKeySequence parses;
+        // one-word "PageDown" silently degrades to Key_unknown.
+        sequence: "Page Down"
         enabled: shortcutMap.presenterNav
         onActivated: presenterStepRequested(1)
     }
@@ -251,7 +254,7 @@ Item {
         onActivated: presenterStepRequested(1)
     }
     Shortcut {
-        sequence: "PageUp"
+        sequence: "Page Up"
         enabled: shortcutMap.presenterNav
         onActivated: presenterStepRequested(-1)
     }
@@ -273,7 +276,7 @@ Item {
     Shortcut {
         sequence: "End"
         enabled: shortcutMap.presenterNav
-        onActivated: presenterJumpRequested(slideCount - 1)
+        onActivated: presenterJumpRequested(cueCount - 1)
     }
     Shortcut {
         sequence: "."
