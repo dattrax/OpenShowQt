@@ -636,6 +636,30 @@ void BackgroundTransport::rebuildMediaSourcesLocked() {
 // intent addresses the mixer that is going away — and the publish-then-ops
 // order of applyTransportOps still lands a same-pass gain on the NEW
 // player's mixer.
+double BackgroundTransport::probeStandaloneDuration(const std::string& path) {
+    // The seam sits with the file read itself (task 6.22e1), so a fixture
+    // measures WHERE this probe is paid: on the bring-up lane it delays the
+    // publish by nothing the loop can feel; anywhere under fMutex it stops
+    // audience frames and status readers for the whole wait.
+    const Faults& f = faults();
+    if (f.delaysStandaloneProbe(path)) {
+        std::fprintf(stderr, "openshow-worker: scripted slow standalone probe: %d ms for %s\n",
+                     f.standaloneProbeDelayMs, path.c_str());
+        for (int elapsed = 0; elapsed < f.standaloneProbeDelayMs; elapsed += 20) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(std::min(20, f.standaloneProbeDelayMs - elapsed)));
+        }
+    }
+    openshow::media::MediaInfo info;
+    std::string error;
+    if (openshow::media::probeMedia(path, &info, &error) ==
+            openshow::media::ProbeStatus::kOk &&
+        info.durationSeconds > 0.0) {
+        return info.durationSeconds;
+    }
+    return -1.0;
+}
+
 void BackgroundTransport::applyStandaloneOps() {
     // Publish first, if a stage has finished: same-pass gains land on it.
     if (fStandaloneStage && fStandaloneStage->done.load(std::memory_order_acquire)) {
@@ -666,8 +690,7 @@ void BackgroundTransport::applyStandaloneOps() {
                          stage->path.c_str(), stage->error.c_str());
         } else if (abandoned == nullptr) {
             std::lock_guard<std::mutex> lock(fMutex);
-            fStandalonePlayer = std::move(stage->player);
-            // Release the hold: the transport comes up exactly where the
+            fStandalonePlayer = std::move(stage->player);            // Release the hold: the transport comes up exactly where the
             // old swap's start() left it — position 0, playing, lane
             // honest — and the refresh promotes the block's fields as
             // before. play() touches only this player's own sink and
@@ -694,15 +717,11 @@ void BackgroundTransport::applyStandaloneOps() {
             fMedia.standalone.audio = AvPlayer::laneName(fStandalonePlayer->audioLaneState());
             // A fresh transport has not wrapped; the count is THIS file's story.
             fMedia.standalone.loops = 0;
-            double duration = -1.0;
-            openshow::media::MediaInfo info;
-            std::string probeError;
-            if (openshow::media::probeMedia(stage->path, &info, &probeError) ==
-                    openshow::media::ProbeStatus::kOk &&
-                info.durationSeconds > 0.0) {
-                duration = info.durationSeconds;
-            }
-            fMedia.standalone.duration = duration;
+            // The duration travels with the bring-up's result (task 6.22e1,
+            // review A5): the file was read for it on the lane, so nothing
+            // under this lock touches the disk. -1 is the container not
+            // saying — the same value the old inline probe left behind.
+            fMedia.standalone.duration = stage->duration;
             rebuildMediaSourcesLocked();
             std::fprintf(stderr, "openshow-worker: standalone track %s (%s clock)\n",
                          stage->path.c_str(),
@@ -769,6 +788,13 @@ void BackgroundTransport::applyStandaloneOps() {
     config.loop = true;
     config.startHeld = true;  // silent while the wait runs (6.21c1's hold)
     stage->worker = std::thread([this, stage, config] {
+        // The metadata half of the bring-up's result (task 6.22e1): read on
+        // this thread, published with the player, so the render thread's
+        // publish consumes a staged value instead of opening the container
+        // under fMutex. A probe that fails or says nothing leaves the -1
+        // the old inline probe left — the file's audibility is the
+        // bring-up's story, the duration is colour.
+        stage->duration = probeStandaloneDuration(stage->path);
         auto player = std::make_unique<AvPlayer>();
         if (!player->start(config, &stage->error)) {
             stage->player.reset();  // a failed start has self-cleaned (6.7a)

@@ -484,6 +484,10 @@ private:
     // two keep their caller-holds-fMutex contract.
     void applyStandaloneOps();
     void reapStandaloneStage();
+    // The track's duration read, seam and all (task 6.22e1): called on the
+    // bring-up lane, never on the render thread. -1 when the container
+    // says nothing.
+    double probeStandaloneDuration(const std::string& path);
     void refreshStandaloneMediaLocked();
     void standaloneFailedLocked(const std::string& message);
     // Rebuilds media.sources from BOTH transports' registrations: "video"
@@ -617,6 +621,12 @@ private:
         std::unique_ptr<AvPlayer> player;  // staged held player when done; null on failure
         std::string error;                 // bring-up failure (empty = ok)
         std::string path;                  // the request this stage answers
+        // The track's duration, probed on the bring-up lane as part of its
+        // result (task 6.22e1, review A5): publish consumes it as staged
+        // metadata instead of re-reading the file under fMutex, where both
+        // audience frames and status readers would wait on the container.
+        // Written before done releases; read after it acquires.
+        double duration = -1.0;
         std::atomic<bool> done{false};
         std::thread worker;
     };

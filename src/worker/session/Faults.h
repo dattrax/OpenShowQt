@@ -57,6 +57,12 @@ struct Faults {
     // every other picture is the yardstick.
     int thumbnailDecodeDelayMs = 0;  // OPENSHOW_FAULT_THUMBNAIL_DECODE_MS
     std::string thumbnailDecodeMatch;  // OPENSHOW_FAULT_THUMBNAIL_DECODE_MATCH
+    // Task 6.22e1 (review A5): a standalone duration probe that really
+    // waits, so the fixture measures WHERE the probe is paid rather than
+    // hoping containers are quick. Named by path substring like every other
+    // knob: the slow file is the subject, everything else the yardstick.
+    int standaloneProbeDelayMs = 0;  // OPENSHOW_FAULT_STANDALONE_PROBE_MS
+    std::string standaloneProbeMatch;  // OPENSHOW_FAULT_STANDALONE_PROBE_MATCH
     Faults() {
         const auto read = [](const char* name) {
             const char* value = std::getenv(name);
@@ -75,6 +81,10 @@ struct Faults {
         if (const char* match = std::getenv("OPENSHOW_FAULT_THUMBNAIL_DECODE_MATCH")) {
             thumbnailDecodeMatch = match;
         }
+        standaloneProbeDelayMs = read("OPENSHOW_FAULT_STANDALONE_PROBE_MS");
+        if (const char* match = std::getenv("OPENSHOW_FAULT_STANDALONE_PROBE_MATCH")) {
+            standaloneProbeMatch = match;
+        }
     }
 
     // True when THIS video's bring-up owes the injected wait.
@@ -87,6 +97,13 @@ struct Faults {
     bool delaysThumbnailDecode(const std::string& path) const {
         return thumbnailDecodeDelayMs > 0 && !thumbnailDecodeMatch.empty() &&
                path.find(thumbnailDecodeMatch) != std::string::npos;
+    }
+
+    // True when THIS standalone track's duration probe owes the injected
+    // wait (task 6.22e1).
+    bool delaysStandaloneProbe(const std::string& path) const {
+        return standaloneProbeDelayMs > 0 && !standaloneProbeMatch.empty() &&
+               path.find(standaloneProbeMatch) != std::string::npos;
     }
 };
 

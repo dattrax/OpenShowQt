@@ -22,6 +22,8 @@
  * whatever is missing.
  */
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -614,6 +616,101 @@ void testSwapDefersBehindSlowRetirement() {
     unsetenv("OPENSHOW_FAULT_PACING_EXIT_MATCH");
 }
 
+/* --- task 6.22e1 (review A5): the duration is metadata, not a frame wait --
+   Publishing a staged standalone player used to open the container AGAIN
+   for its duration — on the render thread, INSIDE fMutex, where every
+   audience frame and every status reader waits behind it. The staged
+   player's own lane reads the file once and the publish consumes the
+   staged value; the seam scripts a probe slow enough that the difference
+   is a measurement, not a hope. Restoring the inline probe (negative
+   control) makes both the publish pass and a concurrent mediaStatus()
+   reader pay the scripted wait. */
+void testStandaloneDurationTravelsWithStage() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) {
+        std::printf("   skipped the standalone-duration fixture (no ffmpeg)\n");
+        return;
+    }
+    openshow::media::PipeWireSink probe;
+    std::string probeError;
+    if (!probe.start(48000, &probeError)) {
+        std::printf("   skipped the standalone-duration fixture (no PipeWire daemon: %s)\n",
+                    probeError.c_str());
+        return;
+    }
+    probe.stop();
+
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string track = "transport-fixtures/stage-duration.wav";
+    if (std::system(("ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+                     "sine=frequency=330:sample_rate=48000 -t 2 " + track)
+                        .c_str()) != 0) {
+        check(false, "the standalone fixture track is generated");
+        return;
+    }
+    setenv("OPENSHOW_FAULT_STANDALONE_PROBE_MS", "500", 1);
+    setenv("OPENSHOW_FAULT_STANDALONE_PROBE_MATCH", "stage-duration.wav", 1);
+
+    BackgroundTransport transport;
+    std::string refusal;
+    check(transport.requestStandaloneAudio(track, &refusal),
+          "the duration-probed standalone request is accepted");
+
+    // A status reader running through the whole bring-up and publish: the
+    // pre-fix probe ran under fMutex, so this reader felt the scripted
+    // wait even though it only wanted the mirror.
+    std::atomic<bool> reading{true};
+    std::atomic<double> worstStatusMs{0.0};
+    std::thread reader([&] {
+        while (reading.load(std::memory_order_acquire)) {
+            const auto began = std::chrono::steady_clock::now();
+            static_cast<void>(transport.mediaStatus());
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - began)
+                                  .count();
+            double prior = worstStatusMs.load(std::memory_order_relaxed);
+            while (ms > prior &&
+                   !worstStatusMs.compare_exchange_weak(prior, ms, std::memory_order_relaxed)) {
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    });
+
+    // The render thread's own view: no single transport pass may approach
+    // the scripted probe cost.
+    double worstPassMs = 0.0;
+    bool live = false;
+    for (int pass = 0; pass < 400 && !live; ++pass) {
+        const auto began = std::chrono::steady_clock::now();
+        transport.applyTransportOps();
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - began)
+                              .count();
+        worstPassMs = std::max(worstPassMs, ms);
+        live = transport.standaloneLive();
+        if (!live) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    reading.store(false, std::memory_order_release);
+    reader.join();
+
+    check(live, "the standalone track published after the slow-probe bring-up");
+    check(worstPassMs < 100.0, "no transport pass paid the duration probe");
+    check(worstStatusMs.load() < 100.0, "the status reader never waited behind the probe");
+    transport.refreshMediaState();
+    const openshow::worker::MediaStatus media = transport.mediaStatus();
+    check(media.standalone.duration > 1.5 && media.standalone.duration < 3.0,
+          "the staged duration reached the status block");
+    std::fprintf(stderr,
+                 "6.22e1: scripted 500 ms probe; worst transport pass %.1f ms, worst status "
+                 "read %.1f ms, duration %.3f s\n",
+                 worstPassMs, worstStatusMs.load(), media.standalone.duration);
+
+    transport.shutdown();
+    unsetenv("OPENSHOW_FAULT_STANDALONE_PROBE_MS");
+    unsetenv("OPENSHOW_FAULT_STANDALONE_PROBE_MATCH");
+}
+
 }  // namespace
 
 int main() {
@@ -634,6 +731,7 @@ int main() {
 
     testRetiredAudioGoesSilentAtHandoff();
     testSwapDefersBehindSlowRetirement();
+    testStandaloneDurationTravelsWithStage();
 
     BackgroundTransport shutdownTransport;
     testShutdown(shutdownTransport);
