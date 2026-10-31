@@ -75,7 +75,7 @@ operation; it must not be relabelled as an output-enable switch.
 
 ## Work order and acceptance
 
-### UI.1 — Establish the Show boundary
+### UI.1 — Establish the Show boundary — CLOSED 2026-10-31
 
 Move audience configuration to Settings, replace the audio-path form, remove
 normal protocol/path diagnostics from Show, and make Settings scroll correctly.
@@ -87,6 +87,20 @@ or writable fields other than library search in Show. Settings contains the
 configuration controls. Local filenames containing spaces, `#` and Unicode reach
 the controller correctly; non-local URLs cannot alter the current track/library.
 The shell loads without QML errors and remains usable at the three capture sizes.
+
+Verification (2026-10-31): the boundary shipped in `5ad557c`/`6051572`.
+`workspace_ui_tests` walks the live visible tree on Show (destination picker
+hidden, no content-layer settings, the only writable field is
+`librarySearchField` — audited with the drawer open and with search focused),
+shows the routing picker on Settings, keeps the text editor off Show, and
+re-audits all three capture sizes with zero QML warnings.
+`worker_controller_tests` selects a picker URL `/tmp/Walk in #1 — café.m4a` and
+reads the decoded local path on the wire, then an `https:` URL which is refused
+with the live track and status attention left correct;
+`document_controller_tests` registers `loop #1.mp4` by decoded name/path and
+refuses a non-local URL without creating a library entry. `ui_loads` plus its
+two guard negatives pass. Gates: desktop 57/57 (338.55 s, 15 display-labelled),
+headless 32/32 (65.92 s); both trees build clean.
 
 ### UI.2 — One sidebar outline and one detail view
 
@@ -168,7 +182,8 @@ completion. Run workspace/controller tests and relevant live frontend journeys.
 
 ## Completion rule
 
-UI.1 is an immediate cleanup; UI.2–6 remain TODO until implemented and checked.
+UI.1 is closed (verification recorded above); UI.2–6 remain TODO until
+implemented and checked.
 A colour change or one screenshot does not close the layout work. Keep the short
 ledger in PLAN.md; store audit details and later capture evidence alongside this
 plan. M6's completed async fixes remain DONE, and M7 release gates remain open.

@@ -4,9 +4,11 @@ Updated: 2026-10-31 (Europe/London).
 
 ## Current checkpoint
 
-Current UI work: **UI.1 IN PROGRESS**. The [main-display plan](docs/ui/operator-workspace-plan.md)
-now audits every current control and defines UI.2–6 before further layout work.
-Audience setup is moving to Settings; Show retains runtime cues and concise status.
+Current UI work: **UI.1 DONE**, verified 2026-10-31 (visible-tree audit,
+Settings coverage, picker-URL regressions, three sizes; gates 57/57 and 32/32).
+The [main-display plan](docs/ui/operator-workspace-plan.md)
+audits every current control and defines UI.2–6 before further layout work;
+the next leaf is **UI.2** (sidebar outline and detail view).
 
 
 **M6 async integration follow-ups 6.23a–e are DONE**, with one fix commit per item.
@@ -27,6 +29,7 @@ completed seek-clock epoch; supersession and failure have distinct outcomes.
 | Full headless suite with local GPU/PipeWire access | 32/32 PASS, 65.98 s; live-audio cases executed |
 | Full desktop suite with local-session access | 57/57 PASS, 335.62 s; all 15 display-labelled checks |
 | New focused regressions | Retirement claim race; deferred replacement/clear/cancellation with frontend preview pixels; removal during queued probes and shutdown; continued/paused seek playback; stage outcomes and transient notifications |
+| UI.1 acceptance (2026-10-31) | `workspace_ui_tests` visible-tree audit (Show: no setup controls, only `librarySearchField` writable; Settings exposes routing), picker-URL regressions in `worker_controller_tests`/`document_controller_tests`, `ui_loads` + guards; evidence in [the plan](docs/ui/operator-workspace-plan.md) |
 | Documentation | Current links, historical archive integrity and whitespace checked |
 
 Presets ran sequentially. Frame/position progress was measured; acoustic offset,
@@ -46,4 +49,5 @@ control arrangement remain UI follow-ups in [the reference](docs/reference.md).
 Keep PLAN.md updates to concise task summaries. Implementation and verification
 details belong in the review documents; older detailed records remain in
 [history](docs/history/README.md), including the unchanged [6.22g handoff](docs/history/PROGRESS-through-6.22g.md).
-Current priority is UI.1 followed by UI.2–6. M7 remains the release milestone.
+Next is UI.2 (sidebar outline and detail view); UI.3–6 follow. M7 remains the
+release milestone.
