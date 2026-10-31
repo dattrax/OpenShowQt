@@ -5,7 +5,7 @@ Current checkpoint and verification: [PROGRESS.md](PROGRESS.md).
 Current code boundaries and open differences: [docs/architecture.md](docs/architecture.md).
 Detailed completed-task evidence: [history](docs/history/README.md).
 Post-M6 conformance review: [original findings](docs/reviews/M6-conformance-2026-10-30.md).
-Current architecture review: [6.21 follow-up](docs/reviews/M6-architecture-follow-up-2026-10-30.md).
+Current architecture review: [after 6.22](docs/reviews/M6-post-6.22-review-2026-10-31.md).
 
 ## Goal and reference
 
@@ -15,6 +15,11 @@ audio, operator previews and one audience display.
 
 Reference: `/home/jim/FreeShow`, FreeShow 1.6.7 at
 `436d4b634878ba723da1d1373637384ec700ce16`. Leave that clone unchanged.
+Main-screen visual reference (2026-10-31): `third_party/cache/propresenter-visuals/`.
+Layout behaviour: [ProPresenter UI guide](https://support.renewedvision.com/hc/en-us/articles/360041345954-Understanding-The-ProPresenter-User-Interface), with notes in [the reference](docs/reference.md).
+Use charcoal/blue, library and running order left, slides centre, audience right.
+Show presents; slide authoring and destructive document shortcuts belong to Edit.
+
 The normal operator setup uses the second display for the projector; when it is
 unplugged, physical-output checks remain open. The original 12–16 engineer-week
 estimate is historical; re-estimate remaining work before productization.
@@ -246,11 +251,10 @@ Checkpoint: `M5: integrate synchronized video and audio playback`.
 ### M6 — Code review remediation and architecture
 
 The [original review](docs/M6-code-review.md) introduced R1–R19; productization
-moved to M7. Recorded completion through 6.20e and 6.21a–g remains historical DONE.
-The [architecture re-review](docs/reviews/M6-architecture-follow-up-2026-10-30.md)
-at `8402e69` identifies seven remaining gaps; all seven closed as **6.22a–g** on
-2026-10-31, and full conformance is claimed on that evidence. Historical 6.1–6.4
-reliability references mean 7.1–7.4.
+moved to M7. Recorded completion through 6.22 remains historical DONE. The
+[post-6.22 review](docs/reviews/M6-post-6.22-review-2026-10-31.md) at `db406f7`
+identifies five remaining issues; complete 6.23 before full conformance is claimed.
+Historical 6.1–6.4 reliability references mean 7.1–7.4.
 
 | ID | Status | Focused work | Acceptance / review finding |
 |---|---|---|---|
@@ -332,21 +336,31 @@ Checkpoint: `M6: close code review and graduate production architecture`.
 
 ### M6 follow-up — Architecture re-review (6.22)
 
-Source findings A1–A7 and future verification are in the linked current review;
-no runtime verification was performed in this review pass.
+Historical A1–A7 and their fixes are recorded in the previous architecture review
+and archived 6.22 handoff. The current post-6.22 findings are B1–B5 below.
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| 6.22a | DONE | Give mutable text-shaping resources safe thread ownership | Per-thread `FontCollection` over the shared font manager; ownership, six-context cold-resolution and prepare→frame hand-off fixtures in `scene_render_tests`; paint-completion rule recorded (a handle crosses threads, one painter per handle); A1 |
-| 6.22b | DONE | Synchronize retired GPU reclamation with successor uploads | `graphicsQueueMutex()` now held at all three device-teardown sites (`GpuYuvUploader::destroy`, `Swapchain::destroy`, `VulkanContext::destroy`); ordering and overlapped-retirement fixtures in `gpu_decode_tests` (deterministic without the guard); fence-based per-slot retirement deferred to M7.1b with timeout/device-loss; A2 |
-| 6.22c | DONE | Deactivate outgoing audio before waiting for video retirement | Hand-off pauses the outgoing player (sink deactivation, clock latch) before the retirement lane exists; `retiringAudioDelivery()` seam plus a real-delivery fixture in `background_transport_tests` (audio-bearing clip, scripted slow exit, frozen server consumption; fails deterministically without the pause); A3 |
-| 6.22d | DONE | Defer/coalesce swaps when retirement capacity is occupied | A busy retirement slot defers the newest transition (`fPendingTransition`, latest wins, returned in 0.0 ms) and the next `applyTransportOps()` pass retries it after the reap; teardown's wait is a logged invariant violation, shutdown drains before and after its own hand-off; A→B→C and A→B→clear fixtures in `background_transport_tests` (scripted 800 ms exit; fails deterministically without the deferral); A4 |
-| 6.22e1 | DONE | Carry the standalone duration with the staging result | The bring-up lane probes the track once and publishes `StandaloneStage::duration` as part of its result; publish consumes it with no disk read under `fMutex` (fixture: scripted 500 ms probe costs the worst transport pass and a concurrent status reader 0 ms; restored inline probe costs both ~516 ms); A5 |
-| 6.22e2 | DONE | Probe `media.standalone` off the RPC thread | The handler defers: `validateStandaloneTrack`/`armStandaloneTrack` run on the prepare executor and the answer travels as a deferred reply (`scene.prepare`'s route); removal and no-media sessions answer inline; a socket fixture with the 600 ms probe seam armed shows the accept/refusal landing after their probes while status RTTs hold ≤ 0.8 ms (negative control: 608 ms RTT parked in the probe); A5 |
-| 6.22e3 | DONE | Stop the replaced standalone player on a lane | The hand-off pauses the outgoing track and a dedicated one-deep lane runs `stop()`'s joins; swaps behind a busy lane DEFER (latest intent back into the swap slot, the lane's wake retries), a superseded stage parks held rather than dying inline; seam plus fixture (scripted 700 ms stop: hand-off 1.4 ms, delivery frozen, removal deferred 0.1 ms and landed on pass 27; controls fail at 708 ms and 536 ms); A5 |
-| 6.22e4 | DONE | Move the seek-completion wait off the render thread | `beginSeekTo` fans out on the pass, a lane worker holds the wait, the completing pass runs the finish half and the fault report (one flight at a time — it retires with its transport, the lane joining the worker before the player stops); momentary ops hold their turn behind a flight; slow-ack seam and fixture (seek pass 0.1 ms against a 300 ms ack, held pause lands behind the completion; controls fail at 307.6 ms and on the hold); A5 |
-| 6.22f | DONE | Publish standalone ownership and pending/live status together | The swap's claim publishes the pending-selection state for a replacement as well as a removal (wanted path, `live=false`, position/duration cleared, outgoing error dropped); fixture holds B's bring-up at 700 ms and reads the intermediate block live=0 playing=0 position=-1 with the gate refusing the same way, then pins the error's owner (failed bring-up writes its own path+error, the next claim's path is clean); the removal-only control fails five checks, reporting the gone player live at a frozen position; A6 |
-| 6.22g | DONE | Validate thumbnail completion generation and decode extent | The lane carries its destination — companion cache generation plus decode extent, captured at the hand-off — and the collect installs only into a matching one; fixture holds a decode at 600 ms across an extent swap and across a stop/start at the same extent, leaving the cache byte-exact for the destination that asked (the controls install the wrong size and the retired destination's picture); A7 |
+| 6.22a | DONE | Give mutable shaping resources safe thread ownership | Per-thread FontCollection and concurrent shaping/handoff fixtures; A1 |
+| 6.22b | DONE | Synchronize GPU teardown with queue submissions | Shared queue guard at all three device-wait sites; GPU ordering fixtures; A2; fence retirement remains M7.1b |
+| 6.22c | DONE | Deactivate outgoing audio at retirement handoff | Paused sink and frozen-delivery fixture across slow retirement; A3 |
+| 6.22d | DONE | Defer background swaps when retirement capacity is occupied | Transport-level overlap fixtures; session publication follow-up 6.23b; A4 |
+| 6.22e1 | DONE | Carry standalone duration with the staging result | Slow metadata-probe fixture; no publish-time file read; A5 |
+| 6.22e2 | DONE | Probe standalone selections off the RPC thread | Deferred accept/refusal and RPC responsiveness fixtures; removal ordering follow-up 6.23c; A5 |
+| 6.22e3 | DONE | Retire replaced standalone players off rendering | Silent handoff, slow-stop and capacity fixtures; ownership/outcome follow-ups 6.23a/e; A5 |
+| 6.22e4 | DONE | Wait for audio seeks off rendering | Single-flight completion/retirement fixture; continuing-playback clock follow-up 6.23d; A5 |
+| 6.22f | DONE | Publish standalone ownership and pending status together | Slow replacement and fault-owner fixtures; A6 |
+| 6.22g | DONE | Match thumbnail completions to their destination | Generation/extent compatibility across resize and stream restart; A7 |
+
+### M6 follow-up — Async integration review (6.23)
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| 6.23a | TODO | Make standalone supersession and retirement reservation one decision | Controlled request-arrival race cannot overwrite a busy lane or lose a joinable thread; B1 |
+| 6.23b | TODO | Commit deferred scenes and media as one output transaction | Real-session A→B→C/clear retains truthful pending/active state and matching preview pixels; B2 |
+| 6.23c | TODO | Invalidate old standalone probes when a newer intent removes audio | Removal during one or several queued probes cannot resurrect playback; B3 |
+| 6.23d | TODO | Pair seek completion with video deadline and clock generations | Delayed forward/backward seeks continue presenting without stale-clock stalls; B4 |
+| 6.23e | TODO | Distinguish superseded audio stages from failed ones | Successful supersession emits no media error; genuine current-stage failures remain visible; B5 |
 
 ### M7 — Productization, reliability and installable alpha
 
