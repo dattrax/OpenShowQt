@@ -5,6 +5,7 @@
  * The window is always borderless (GLFW_DECORATED false). Under Wayland
  * decorations are the compositor's, and a fullscreen toplevel is borderless
  * by definition, so "fullscreen on monitor N" is the reliable audience mode.
+ * Losing input focus to the operator UI must leave the audience output visible.
  */
 
 #pragma once

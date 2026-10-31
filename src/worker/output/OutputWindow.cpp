@@ -55,6 +55,10 @@ bool OutputWindow::open(const Options& options) {
     glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    // The operator UI owns input focus during a service. GLFW otherwise
+    // minimizes a fullscreen window when it loses focus, hiding the audience
+    // output whenever the operator clicks the separate frontend window.
+    glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
 
     fWindow = glfwCreateWindow(options.width, options.height, options.title,
                                nullptr, nullptr);
