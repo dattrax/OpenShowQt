@@ -1,10 +1,22 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 
 // The audience picture stays in place; only the controls below it scroll.
 SidePanel {
     id: outputPanel
     side: "right"
+    function fileName(path) { return String(path).split(/[\\/]/).pop() || "Unknown file" }
+    readonly property string destinationName: worker.currentMonitor < 0 ? "Windowed"
+        : (worker.displays.filter(d => d.index === worker.currentMonitor).map(d => d.name).join("") || "Audience display")
+    FileDialog {
+        id: audioPicker
+        title: "Play audio"
+        modality: Qt.ApplicationModal
+        acceptLabel: "Play"
+        nameFilters: ["Audio files (*.mp3 *.wav *.ogg *.m4a *.aac *.flac *.opus)", "All files (*)"]
+        onAccepted: worker.selectStandaloneFile(selectedFile)
+    }
     width: panels.rightWidth
     onDraggedTo: candidate => panels.resizeRight(candidate)
     onStripClicked: panels.clickRight()
@@ -39,8 +51,9 @@ SidePanel {
             width: parent.width
             color: worker.outputLive ? "#b8d7b0" : "#d89b9b"
             font.pixelSize: 11
-            text: !worker.outputLive ? worker.status
-                : worker.wordsOnAir || worker.backgroundOnAir ? "\u25cf  Output active" : "\u25cb  Output clear"
+            text: !worker.outputLive ? "Audience output unavailable"
+                : (worker.wordsOnAir || worker.backgroundOnAir ? "\u25cf  Output active" : "\u25cb  Output clear")
+                  + " · " + outputPanel.destinationName
             elide: Text.ElideRight
         }
         ScrollView {
@@ -70,7 +83,7 @@ SidePanel {
                     width: parent.width
                     visible: worker.foregroundErrors.length > 0
                     wrapMode: Text.WordWrap; color: "#d9a441"; font.pixelSize: 11
-                    text: worker.foregroundErrors.map(f => "Picture not drawn: " + f.path + " — " + f.error).join("\n")
+                    text: worker.foregroundErrors.map(f => "Slide image unavailable: " + outputPanel.fileName(f.path)).join("\n")
                 }
                 Rectangle { width: parent.width; height: 1; color: "#505050" }
                 Text { text: "MEDIA"; color: "#bbbbbb"; font.pixelSize: 11; font.bold: true }
@@ -78,7 +91,8 @@ SidePanel {
                     width: parent.width
                     wrapMode: Text.WordWrap; color: "#d9a441"; font.pixelSize: 11
                     visible: worker.mediaError !== "" || worker.mediaAudio === "degraded" || worker.mediaAudio === "no-output"
-                    text: worker.mediaError || ("Audio: " + worker.mediaAudio)
+                    text: worker.mediaError !== "" ? "Cannot play media: " + outputPanel.fileName(worker.mediaPath)
+                          : "Media audio is unavailable"
                 }
                 Column {
                     width: parent.width; spacing: 6
@@ -124,7 +138,7 @@ SidePanel {
                         id: sourceRow
                         required property var modelData
                         width: parent.width
-                        Text { text: sourceRow.modelData.id; color: "#b0b0b0"; font.pixelSize: 11 }
+                        Text { text: sourceRow.modelData.id === "video" ? "Video audio" : "Audio track"; color: "#b0b0b0"; font.pixelSize: 11 }
                         Row {
                             width: parent.width; spacing: 6
                             Slider {
@@ -149,20 +163,16 @@ SidePanel {
                     }
                 }
                 Text { text: "AUDIO TRACK"; color: "#bbbbbb"; font.pixelSize: 11; font.bold: true }
-                PanelField {
-                    id: standaloneField
-                    width: parent.width
-                    placeholderText: "Audio file path"
-                }
                 Row {
                     spacing: 6
                     PanelButton {
-                        text: "Set track"
-                        enabled: standaloneField.text.trim().length > 0
-                        onClicked: worker.selectStandaloneTrack(standaloneField.text.trim())
+                        objectName: "playAudioButton"
+                        text: "Play audio…"
+                        onClicked: audioPicker.open()
                     }
                     PanelButton {
-                        text: "Remove track"; enabled: worker.standaloneOnAir
+                        objectName: "stopAudioButton"
+                        text: "Stop audio"; enabled: worker.standaloneOnAir
                         onClicked: worker.selectStandaloneTrack("")
                     }
                 }
@@ -170,33 +180,11 @@ SidePanel {
                     width: parent.width
                     wrapMode: Text.WordWrap; font.pixelSize: 11
                     color: worker.standaloneError.length > 0 ? "#d9a441" : "#929292"
-                    text: worker.standaloneError || (worker.standaloneOnAir
-                        ? worker.standalonePath + (worker.standalonePosition >= 0 ? " · " + worker.standalonePosition.toFixed(1) + " s" : "")
+                    text: worker.standaloneError !== "" ? "Cannot play audio: " + outputPanel.fileName(worker.standalonePath)
+                        : (worker.standaloneOnAir ? outputPanel.fileName(worker.standalonePath) + (worker.standalonePosition >= 0 ? " · " + worker.standalonePosition.toFixed(1) + " s" : "")
                         : "No audio track selected")
                 }
-                Rectangle { width: parent.width; height: 1; color: "#505050" }
-                Text { text: "OUTPUT"; color: "#bbbbbb"; font.pixelSize: 11; font.bold: true }
-                ComboBox {
-                    id: destination
-                    width: parent.width
-                    model: [{value: -1, label: "Windowed"}].concat(
-                        worker.displays.map(d => ({value: d.index, label: d.name + " — " + d.size})))
-                    textRole: "label"; valueRole: "value"
-                    currentIndex: destination.indexOfValue(worker.currentMonitor)
-                    onActivated: worker.selectDisplay(currentValue)
-                }
-                Flow {
-                    width: parent.width; spacing: 4
-                    Repeater {
-                        model: ["background", "images", "words", "aux", "clock"]
-                        delegate: CheckBox {
-                            required property string modelData
-                            text: modelData; font.pixelSize: 11
-                            checked: worker.layers[modelData] === true
-                            onToggled: worker.setLayerEnabled(modelData, checked)
-                        }
-                    }
-                }
+
             }
         }
     }

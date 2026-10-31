@@ -156,6 +156,7 @@ FocusScope {
 
             TextField {
                 id: searchField
+                objectName: "librarySearchField"
                 visible: drawer.searchActive
                 width: 290
                 height: 36
@@ -238,8 +239,8 @@ FocusScope {
                     text: drawer.tab === "shows"
                           ? (docs.slides.length + " slides \u00b7 "
                              + "click selects \u00b7 double-click adds to the playlist")
-                          : (docs.assets.filter(a => a.id === drawer.selectedAssetId)
-                                    .map(a => a.sourcePath).join("") || " ")
+                          : (drawer.editingEnabled ? docs.assets.filter(a => a.id === drawer.selectedAssetId)
+                                    .map(a => a.sourcePath).join("") : "Select media to inspect it")
                 }
             }
         }
@@ -379,7 +380,7 @@ FocusScope {
                         visible: showList.count === 0
                         color: "#929292"
                         font.pixelSize: 13
-                        text: drawer.query === "" ? "no songs \u2014 create one above"
+                        text: drawer.query === "" ? (drawer.editingEnabled ? "No presentations — create one above" : "No presentations — open Edit to create one")
                                                   : "nothing matches \u201c" + drawer.query + "\u201d"
                     }
                 }
@@ -464,7 +465,7 @@ FocusScope {
                             anchors.left: parent.left
                             anchors.leftMargin: 8
                             anchors.verticalCenter: parent.verticalCenter
-                            width: assetRow.width - 200
+                            width: Math.max(0, assetRow.width - (drawer.editingEnabled ? 200 : 16))
                             elide: Text.ElideRight
                             font.pixelSize: 13
                             color: assetRow.modelData.id === drawer.selectedAssetId ? "#ffffff" : "#eeeeee"
@@ -479,6 +480,7 @@ FocusScope {
                             elide: Text.ElideMiddle
                             font.pixelSize: 11
                             color: assetRow.modelData.id === drawer.selectedAssetId ? "#d9ebff" : "#b0b0b0"
+                            visible: drawer.editingEnabled
                             text: assetRow.modelData.sourcePath
                         }
 
@@ -512,12 +514,13 @@ FocusScope {
             FileDialog {
                 id: mediaDialog
                 title: "Import media"
+                modality: Qt.ApplicationModal
                 nameFilters: [
                     "Media files (*.jpg *.jpeg *.png *.webp *.gif *.mp4 *.mov *.mkv "
                     + "*.mp3 *.wav *.ogg)",
                     "All files (*)"
                 ]
-                onAccepted: docs.importMediaFile(selectedFile.toLocalFile())
+                onAccepted: docs.importMediaUrl(selectedFile)
             }
         }
     }

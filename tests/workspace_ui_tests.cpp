@@ -75,6 +75,26 @@ int main(int argc, char** argv) {
     auto* editor = window->findChild<QQuickItem*>("slideTextEditor");
     auto* preview = window->findChild<QQuickItem*>("audiencePreview");
     if (!left || !right || !drawer || !grid || !editor || !preview) return 1;
+    auto* destination = window->findChild<QQuickItem*>("audienceDestinationPicker");
+    check(destination && !destination->isVisible(), "Show hides audience routing configuration");
+    // Walk the actual visible tree: destination/layer setup and arbitrary
+    // writable fields cannot leak back into the operator screen.
+    std::function<void(QQuickItem*)> auditOperator = [&](QQuickItem* item) {
+        if (item->isVisible()) {
+            check(item->objectName() != "audienceContentSetting", "Show hides audience content configuration");
+            const bool input = item->property("cursorPosition").isValid()
+                && item->property("readOnly").isValid() && !item->property("readOnly").toBool();
+            check(!input || item->objectName() == "librarySearchField",
+                  "Show permits search input but no raw paths or slide authoring fields");
+        }
+        for (auto* child : item->childItems()) auditOperator(child);
+    };
+    auditOperator(window->contentItem());
+    window->setProperty("page", "settings");
+    QTest::qWait(20);
+    check(destination && destination->isVisible(), "Settings exposes audience routing");
+    window->setProperty("page", "show");
+    QTest::qWait(20);
     check(!editor->isVisible(), "Show has no visible text editor");
     const qreal leftWidth = panels.leftWidth();
     const qreal rightWidth = panels.rightWidth();
@@ -137,6 +157,7 @@ int main(int argc, char** argv) {
     }
     QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
     QTest::qWait(20);
+    auditOperator(window->contentItem());
     QTest::keyClick(window, Qt::Key_2, Qt::ControlModifier);
     check(window->property("page").toString() == "show"
           && drawer->property("tab").toString() == "media",
@@ -190,6 +211,9 @@ int main(int argc, char** argv) {
         window->setProperty("page", "edit");
         QTest::qWait(50);
         window->grabWindow().save(capture + ".edit.png");
+        window->setProperty("page", "settings");
+        QTest::qWait(50);
+        window->grabWindow().save(capture + ".settings.png");
     }
     worker.shutdownNow();
     for (const auto& warning : warnings) {

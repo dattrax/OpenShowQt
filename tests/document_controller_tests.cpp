@@ -551,12 +551,16 @@ void exercisePlaylistAndLibrary(const std::filesystem::path& root) {
     check(docs.playlistEntries().size() == 2,
           "playlist rows naming a deleted show go with it");
 
-    // Media library: registered by file name, undoable, removable.
-    const QString mediaPath = QString::fromStdWString((root / "loop.mp4").wstring());
-    check(docs.importMediaFile(mediaPath) && docs.assets().size() == 1 &&
-              docs.assets().front().toMap().value(QStringLiteral("name")) ==
-                  QStringLiteral("loop.mp4"),
-          "import registers media under its file name");
+    // File picker URLs must preserve spaces and fragment characters as
+    // local file names, rather than passing an encoded URL to storage.
+    const QString mediaPath = QString::fromStdWString((root / "loop #1.mp4").wstring());
+    check(docs.importMediaUrl(QUrl::fromLocalFile(mediaPath)) && docs.assets().size() == 1 &&
+              docs.assets().front().toMap().value(QStringLiteral("name")) == QStringLiteral("loop #1.mp4") &&
+              docs.assets().front().toMap().value(QStringLiteral("sourcePath")) == mediaPath,
+          "file picker import registers the decoded local path and file name");
+    check(!docs.importMediaUrl(QUrl(QStringLiteral("https://example.invalid/media.mp4")))
+              && docs.assets().size() == 1,
+          "a non-local picker URL cannot create a library entry");
     docs.undo();
     check(docs.assets().isEmpty(), "undo takes the import back");
     docs.redo();

@@ -314,9 +314,7 @@ SidePanel {
             wrapMode: Text.WordWrap
             color: docs.dirty ? "#d8c07a" : "#b0b0b0"
             font.pixelSize: 11
-            text: (docs.dirty ? "\u25cf unsaved  \u00b7  " : "")
-                  + (docs.status !== "" ? docs.status + "  \u00b7  " : "")
-                  + docs.serviceDirectory
+            text: docs.dirty ? "\u25cf Unsaved changes" : "No unsaved changes"
         }
     }
 }

@@ -188,7 +188,7 @@ void WorkerController::start() {
             ? QCoreApplication::applicationDirPath() + QStringLiteral("/openshow-worker")
             : programOverride;
 #endif
-    setStatus(QStringLiteral("starting worker..."));
+    setConnectionStatus(QStringLiteral("starting worker..."));
     QStringList arguments{QStringLiteral("--socket"), fRpc.socketPath()};
     // Development hook, e.g. OPENSHOW_WORKER_EXTRA_ARGS="--monitor 1" to
     // send the audience output to the second display while debugging.
@@ -206,7 +206,7 @@ void WorkerController::start() {
 void WorkerController::onRpcConnected() {
     fConnected = true;
     fStatusRequestId = 0;  // the ledger is the transport's, and it started empty
-    setStatus(QStringLiteral("handshaking..."));
+    setConnectionStatus(QStringLiteral("handshaking..."));
     boost::json::object params = proto::helloParams("openshow-ui", proto::kProtocolMajor,
                                                     proto::kProtocolMinor);
     sendRequest("hello", std::move(params));
@@ -252,7 +252,7 @@ void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exit
     emit mediaChanged();
     emit stateChanged();
     if (fShutdownRequested) {
-        setStatus(QStringLiteral("worker stopped (exit %1)").arg(exitCode));
+        setConnectionStatus(QStringLiteral("worker stopped (exit %1)").arg(exitCode));
     } else if (exitStatus == QProcess::CrashExit) {
         setStatus(QStringLiteral("worker crashed"));
     } else if (fRpc.endedByWriteStall()) {
@@ -350,7 +350,7 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         // worker would answer with a method it has not agreed to speak.
         fPreview->setSessionLive(true);
         const boost::json::object& negotiated = payload.at("protocol").as_object();
-        setStatus(QStringLiteral("connected to worker %1 (protocol %2.%3)")
+        setConnectionStatus(QStringLiteral("connected to worker %1 (protocol %2.%3)")
                       .arg(QString::fromStdString(
                                std::string(payload.at("version").as_string())),
                            QString::number(static_cast<qlonglong>(
@@ -765,6 +765,14 @@ void WorkerController::setMediaMute(const QString& source, bool muted) {
                 boost::json::object{{"source", source.toStdString()}, {"mute", muted}});
 }
 
+void WorkerController::selectStandaloneFile(const QUrl& file) {
+    if (!file.isLocalFile() || file.toLocalFile().isEmpty()) {
+        setStatus(QStringLiteral("Choose an audio file on this computer"));
+        return;
+    }
+    selectStandaloneTrack(file.toLocalFile());
+}
+
 void WorkerController::selectStandaloneTrack(const QString& path) {
     if (!fConnected || !fHandshakeDone) {
         return;
@@ -840,10 +848,17 @@ void WorkerController::shutdownNow() {
             fProcess.waitForFinished(1000);
         }
     }
-    setStatus(QStringLiteral("worker stopped"));
+    setConnectionStatus(QStringLiteral("worker stopped"));
 }
 
 void WorkerController::setStatus(const QString& text) {
+    fStatusNeedsAttention = true;
+    fStatusText = text;
+    emit stateChanged();
+}
+
+void WorkerController::setConnectionStatus(const QString& text) {
+    fStatusNeedsAttention = false;
     fStatusText = text;
     emit stateChanged();
 }

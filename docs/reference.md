@@ -14,12 +14,11 @@ is the structural reference for further workspace work:
 - Bottom: media bin, with collections and media cues.
 - Right: audience preview, adjacent layer clears, transport below, then Show Controls.
 
-The current workspace is an initial approximation. Its duplicated bottom show
-library should become the media bin; the left outline/detail split, playlist-wide
-slide view and right-hand control arrangement need further work. These are open
-layout differences, not completed acceptance checks. Existing deferred features
-remain deferred, and the user's Edit-only authoring requirement takes precedence
-over ProPresenter's inline authoring controls.
+The [main-display implementation plan](ui/operator-workspace-plan.md) defines the
+current control audit, ownership boundaries, task order and visual acceptance.
+The initial workspace remains an approximation; its remaining layout tasks stay
+open until their acceptance checks pass. The user's Edit-only authoring rule
+continues to take precedence over inline authoring in the external reference.
 
 Derived from the source clone, not from the running application. FreeShow 1.6.7,
 commit `436d4b634878ba723da1d1373637384ec700ce16` at `/home/jim/FreeShow`.

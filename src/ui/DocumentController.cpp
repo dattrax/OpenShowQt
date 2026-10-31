@@ -1057,6 +1057,14 @@ QVariantList DocumentController::searchShows(const QString& query) const {
     return fViews.searchShows(query);
 }
 
+bool DocumentController::importMediaUrl(const QUrl& file) {
+    if (!file.isLocalFile() || file.toLocalFile().isEmpty()) {
+        setStatus(QStringLiteral("Choose a media file on this computer"));
+        return false;
+    }
+    return importMediaFile(file.toLocalFile());
+}
+
 bool DocumentController::importMediaFile(const QString& filePath) {
     flushText();
     const QString name = QFileInfo(filePath).fileName();

@@ -27,6 +27,7 @@
 #include <QImage>
 #include <QProcess>
 #include <QTimer>
+#include <QUrl>
 #include <QVariantMap>
 
 #include <chrono>
@@ -46,6 +47,7 @@ class PreviewConsumer;
 
 class WorkerController : public QObject {
     Q_OBJECT
+    Q_PROPERTY(bool statusNeedsAttention READ statusNeedsAttention NOTIFY stateChanged)
     Q_PROPERTY(QString status READ statusText NOTIFY stateChanged)
     Q_PROPERTY(bool connected READ isConnected NOTIFY stateChanged)
     Q_PROPERTY(bool outputLive READ outputLive NOTIFY stateChanged)
@@ -225,6 +227,7 @@ public:
     // any) was never touched. When the track is up, its own story is the
     // standalone* properties, mirrored from status and nothing else.
     Q_INVOKABLE void selectStandaloneTrack(const QString& path);
+    Q_INVOKABLE void selectStandaloneFile(const QUrl& file);
 
     // Adoption after a save moves an asset's bytes (task 6.12, review R7).
     // pathMap names each move old-path -> new-path. Every scene payload this
@@ -253,6 +256,7 @@ public:
     Q_INVOKABLE void restoreOutput();
 
     QString statusText() const { return fStatusText; }
+    bool statusNeedsAttention() const { return fStatusNeedsAttention; }
     bool isConnected() const { return fConnected; }
     bool outputLive() const { return fConnected && !fOutputStopped; }
     qint64 frames() const { return fFrames; }
@@ -353,6 +357,7 @@ private:
                              std::shared_ptr<void> intent = nullptr);
     void sendNotification(const char* method, boost::json::object params);
     void setStatus(const QString& text);
+    void setConnectionStatus(const QString& text);
     // Runs the worker's own reader over a scene BEFORE anything is written to
     // the socket (task 6.8a, review R11): returns true when the payload may go
     // on the wire, and otherwise sets the status line to the reason the
@@ -379,6 +384,7 @@ private:
     bool fShutdownRequested = false;
 
     QString fStatusText = QStringLiteral("worker not started");
+    bool fStatusNeedsAttention = false;
     qint64 fFrames = 0;
     qint64 fRevision = 0;
     QString fDevice;

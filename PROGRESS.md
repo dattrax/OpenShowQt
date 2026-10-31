@@ -4,6 +4,11 @@ Updated: 2026-10-31 (Europe/London).
 
 ## Current checkpoint
 
+Current UI work: **UI.1 IN PROGRESS**. The [main-display plan](docs/ui/operator-workspace-plan.md)
+now audits every current control and defines UI.2–6 before further layout work.
+Audience setup is moving to Settings; Show retains runtime cues and concise status.
+
+
 **M6 async integration follow-ups 6.23a–e are DONE**, with one fix commit per item.
 [Verification and regressions](docs/reviews/M6-6.23-verification-2026-10-31.md)
 close the five historical findings in the [post-6.22 review](docs/reviews/M6-post-6.22-review-2026-10-31.md).
@@ -41,4 +46,4 @@ control arrangement remain UI follow-ups in [the reference](docs/reference.md).
 Keep PLAN.md updates to concise task summaries. Implementation and verification
 details belong in the review documents; older detailed records remain in
 [history](docs/history/README.md), including the unchanged [6.22g handoff](docs/history/PROGRESS-through-6.22g.md).
-The next planned milestone is M7; the remaining UI layout work is recorded separately.
+Current priority is UI.1 followed by UI.2–6. M7 remains the release milestone.

@@ -33,6 +33,7 @@
 #include <QObject>
 #include <QString>
 #include <QTimer>
+#include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
 
@@ -283,6 +284,7 @@ public:
     // Media tab: register a file (bytes are copied by save(), the
     // domain's rule) and remove one from the library.
     Q_INVOKABLE bool importMediaFile(const QString& filePath);
+    Q_INVOKABLE bool importMediaUrl(const QUrl& file);
     Q_INVOKABLE bool removeAsset(const QString& assetId);
 
     // --- presentation hand-off ---

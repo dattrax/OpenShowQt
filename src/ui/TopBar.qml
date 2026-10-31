@@ -92,14 +92,17 @@ Rectangle {
             Text {
                 width: Math.min(260, bar.width * 0.25)
                 elide: Text.ElideRight
-                color: worker.mediaError !== "" || worker.mediaAudio === "degraded"
+                color: worker.statusNeedsAttention || worker.mediaError !== "" || worker.mediaAudio === "degraded"
                        || worker.mediaAudio === "no-output" ? "#e0a030" : "#cccccc"
                 font.pixelSize: 11
-                text: worker.mediaError !== "" ? worker.mediaError
-                    : worker.mediaAudio === "degraded" || worker.mediaAudio === "no-output"
-                        ? "Audio: " + worker.mediaAudio : worker.status
+                text: worker.mediaError !== "" || worker.standaloneError !== ""
+                      || worker.foregroundErrors.length > 0 || worker.mediaAudio === "degraded"
+                      || worker.mediaAudio === "no-output" ? "Media needs attention"
+                    : worker.statusNeedsAttention ? "Action needs attention"
+                    : !worker.outputLive ? "Output unavailable"
+                    : worker.previewActive ? "Ready" : "Starting output"
                 ToolTip.visible: statusHover.containsMouse
-                ToolTip.text: text
+                ToolTip.text: "Connection and media details are available in Settings"
                 MouseArea { id: statusHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
             }
         }

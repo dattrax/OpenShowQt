@@ -3211,6 +3211,15 @@ void scenarioMediaTransport() {
     check(controller.mediaSources().size() == 1 && !controller.standaloneOnAir(),
           "media: a gain for the removed track is refused, not queued onto anything");
 
+    const QString pickedPath = QString::fromUtf8("/tmp/Walk in #1 — café.m4a");
+    controller.selectStandaloneFile(QUrl::fromLocalFile(pickedPath));
+    check(waitUntil([&] { return controller.standaloneOnAir() && controller.standalonePath() == pickedPath; }),
+          "media: file picker URL reaches the wire as a decoded local path");
+    controller.selectStandaloneFile(QUrl(QStringLiteral("https://example.invalid/audio.m4a")));
+    digestThenRefresh(controller, 200);
+    check(controller.standalonePath() == pickedPath && controller.statusNeedsAttention(),
+          "media: non-local selection is reported without replacing the current track");
+
     controller.shutdownNow();
 
     const boost::json::object counts = readReport(report);
@@ -3272,9 +3281,10 @@ void scenarioMediaTransport() {
                 selected.push_back(frame.at("params").as_object().at("path"));
             }
         }
-        check(selected.size() == 3 && selected[0].as_string() == "fake-bed.m4a" &&
+        check(selected.size() == 4 && selected[0].as_string() == "fake-bed.m4a" &&
                   selected[1].as_string() == "/tmp/missing-bed.m4a" &&
-                  selected[2].as_string().empty(),
+                  selected[2].as_string().empty() &&
+                  std::string(selected[3].as_string()) == pickedPath.toStdString(),
               "media: the selection, the refused path and the removal all rode the wire verbatim");
     }
 }

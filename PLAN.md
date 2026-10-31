@@ -362,6 +362,25 @@ and archived 6.22 handoff. The current post-6.22 findings are B1–B5 below.
 | 6.23d | DONE | Pair seek completion with video deadline and clock generations | Delayed forward/backward seeks continue presenting without stale-clock stalls; B4 |
 | 6.23e | DONE | Distinguish superseded audio stages from failed ones | Successful supersession emits no media error; genuine current-stage failures remain visible; B5 |
 
+### Operator workspace — Main-display layout (UI)
+
+Current priority: match the supplied operator layout, keeping setup in Settings
+and authoring in Edit. [Detailed scope, control audit and acceptance](docs/ui/operator-workspace-plan.md).
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| UI.1 | IN PROGRESS | Remove setup and diagnostic forms from Show | Routing/content setup in Settings; runtime controls retained; visible-tree and file-picker regressions |
+| UI.2 | TODO | Sidebar collection outline and selected contents | Stable library/playlist navigation, sections and drag/drop without going live |
+| UI.3 | TODO | Presentation/playlist slide workspace | Parent closes when UI.3a–c pass |
+| UI.3a | TODO | Read-only running-order cue projection | Stable repeated-entry identities and arbitrary-show compilation without moving the editing cursor |
+| UI.3b | TODO | Consistent Show cue triggers and live markers | Click/keyboard presentation follows the running order; markers wait for acknowledgements |
+| UI.3c | TODO | Thumbnail sizing and supported view controls | Coalesced visible-band requests respect the existing cue/cache limits |
+| UI.4 | TODO | Dedicated bottom media bin | Parent closes when UI.4a–b pass |
+| UI.4a | TODO | Media collection/cue browsing and type metadata | Bottom media replaces duplicated show browsing; unsupported assets remain identifiable |
+| UI.4b | TODO | Explicit media cue activation | Import, presentation and authored slide changes remain separate; worker validates playback |
+| UI.5 | TODO | Runtime preview, clear rail, transport and audio area | Supported controls only; acknowledged state; no audience setup |
+| UI.6 | TODO | Toolbar, responsive layout and visual acceptance | Working search/bin controls; reference comparison at three sizes; keyboard/fault/empty-state checks |
+
 ### M7 — Productization, reliability and installable alpha
 
 These release gates remain open regardless of historical milestone tags.
