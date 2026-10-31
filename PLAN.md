@@ -31,7 +31,8 @@ estimate is historical; re-estimate remaining work before productization.
   SkParagraph with real ICU text support, FFmpeg decode/conversion/resampling.
 - **Scheduling:** decoding, RPC and rendering have separate execution contexts.
   Files, decode, IPC and preview consumers must not block presentation or audio
-  callbacks. Remaining handoff and scheduling gaps are tracked in 6.22.
+  callbacks. The handoff and scheduling gaps tracked in 6.22 closed on 2026-10-31
+  (6.22a–g all DONE).
 - **RPC:** length-prefixed JSON-RPC 2.0 on Unix-domain sockets; Qt local sockets
   in the frontend and a raw socket/poll loop in the worker. Version/capability
   negotiation, request IDs, structured errors and acknowledged revisions. Traffic
@@ -99,7 +100,8 @@ remain **7.3**. Do not use old machine paths as current dependency configuration
 
 1. Work in milestone/dependency order. Preserve recorded DONE checkpoints;
    later reviews add focused follow-up tasks rather than rewriting earlier evidence.
-   Complete the current architecture follow-ups (6.22) before advancing to M7.
+   The architecture follow-ups (6.22) closed 2026-10-31 (6.22a–g all DONE); M7
+   work is no longer gated on them.
 2. Aim for half a day to two days per leaf; split larger tasks before starting.
    A parent is DONE only when every child passes its acceptance.
 3. Use TODO, IN PROGRESS, BLOCKED and DONE. Separate authored work, passing tests
@@ -246,8 +248,9 @@ Checkpoint: `M5: integrate synchronized video and audio playback`.
 The [original review](docs/M6-code-review.md) introduced R1–R19; productization
 moved to M7. Recorded completion through 6.20e and 6.21a–g remains historical DONE.
 The [architecture re-review](docs/reviews/M6-architecture-follow-up-2026-10-30.md)
-at `8402e69` identifies seven remaining gaps. Complete 6.22 before claiming full
-conformance. Historical 6.1–6.4 reliability references mean 7.1–7.4.
+at `8402e69` identifies seven remaining gaps; all seven closed as **6.22a–g** on
+2026-10-31, and full conformance is claimed on that evidence. Historical 6.1–6.4
+reliability references mean 7.1–7.4.
 
 | ID | Status | Focused work | Acceptance / review finding |
 |---|---|---|---|
@@ -343,7 +346,7 @@ no runtime verification was performed in this review pass.
 | 6.22e3 | DONE | Stop the replaced standalone player on a lane | The hand-off pauses the outgoing track and a dedicated one-deep lane runs `stop()`'s joins; swaps behind a busy lane DEFER (latest intent back into the swap slot, the lane's wake retries), a superseded stage parks held rather than dying inline; seam plus fixture (scripted 700 ms stop: hand-off 1.4 ms, delivery frozen, removal deferred 0.1 ms and landed on pass 27; controls fail at 708 ms and 536 ms); A5 |
 | 6.22e4 | DONE | Move the seek-completion wait off the render thread | `beginSeekTo` fans out on the pass, a lane worker holds the wait, the completing pass runs the finish half and the fault report (one flight at a time — it retires with its transport, the lane joining the worker before the player stops); momentary ops hold their turn behind a flight; slow-ack seam and fixture (seek pass 0.1 ms against a 300 ms ack, held pause lands behind the completion; controls fail at 307.6 ms and on the hold); A5 |
 | 6.22f | DONE | Publish standalone ownership and pending/live status together | The swap's claim publishes the pending-selection state for a replacement as well as a removal (wanted path, `live=false`, position/duration cleared, outgoing error dropped); fixture holds B's bring-up at 700 ms and reads the intermediate block live=0 playing=0 position=-1 with the gate refusing the same way, then pins the error's owner (failed bring-up writes its own path+error, the next claim's path is clean); the removal-only control fails five checks, reporting the gone player live at a frozen position; A6 |
-| 6.22g | TODO | Validate thumbnail completion generation and decode extent | Extent changes and stream restart reject incompatible in-flight results; A7 |
+| 6.22g | DONE | Validate thumbnail completion generation and decode extent | The lane carries its destination — companion cache generation plus decode extent, captured at the hand-off — and the collect installs only into a matching one; fixture holds a decode at 600 ms across an extent swap and across a stop/start at the same extent, leaving the cache byte-exact for the destination that asked (the controls install the wrong size and the retired destination's picture); A7 |
 
 ### M7 — Productization, reliability and installable alpha
 

@@ -1,21 +1,29 @@
 # OpenShowQt progress and handoff
 
 Updated: 2026-10-31 (Europe/London). Reviewed code: `8402e69` (6.21g); **6.22a**
-through **6.22f** have landed since.
+through **6.22g** have landed since.
 
 ## Current checkpoint
 
 The [architecture re-review](docs/reviews/M6-architecture-follow-up-2026-10-30.md)
-found seven remaining issues. **6.22a (A1)**, **6.22b (A2)**, **6.22c (A3)**,
-**6.22d (A4)**, **6.22e (A5, all four leaves)** and **6.22f (A6)** are DONE —
-all four P1s are closed, and so are the blocking-media and the stale-status
-findings — while **6.22g** remains in [PLAN.md](PLAN.md) before claiming full
-conformance or advancing to M7. Preserve the recorded 6.21 DONE checkpoints.
+found seven remaining issues; **all seven are DONE** — **6.22a (A1)**,
+**6.22b (A2)**, **6.22c (A3)**, **6.22d (A4)**, **6.22e (A5, all four leaves)**,
+**6.22f (A6)** and **6.22g (A7)**. The four P1s, the blocking-media finding, the
+stale-status finding and the thumbnail-compatibility finding are closed, each
+with its own fixture, and the conformance claim in
+[architecture.md](docs/architecture.md) is restated on that evidence. Preserve
+the recorded 6.21 DONE checkpoints. The next milestone is M7 — recovery,
+budgets, packaging and hardware/long-service acceptance.
 
 ## Review summary
 
-One P2 issue remains: thumbnail completion compatibility (A7, **6.22g**).
-Source locations and proposed contracts are in the review.
+No finding of the re-review remains open. The last one, thumbnail completion
+compatibility (A7, **6.22g**), closed as a destination identity: the decode lane
+now carries the companion cache generation and the decode extent it was started
+for, and the collect installs a finished picture only into a destination that
+still matches both — extent changes and stream restarts during a delayed decode
+discard the stale result and re-decode, while reuse across bands at an
+unchanged destination stays valid.
 
 The P1s are closed. Shared mutable font resolution: `SceneTextEngine` builds
 no shared `FontCollection`; one per threading context over the shared
@@ -30,9 +38,49 @@ wake makes prompt) reaps and retries it, and a started retry makes the loop
 owe a present exactly like the scene-driven call did. And the standalone
 mirror no longer outlives its player: the swap's claim publishes the pending
 selection (new path, `live=false`, no position, replacement error cleared),
-so status and the command gate agree throughout a slow replacement.
+so status and the command gate agree throughout a slow replacement. And a
+thumbnail completion is no longer adopted by whichever list happens to exist:
+it names the companion generation and extent its pixels were scaled for, and
+a destination that has moved since the hand-off refuses it and re-decodes.
 
 ## Leaf records
+
+**6.22g.** A thumbnail decode is derived data: the pixels are scaled into the
+batch's accepted extent, and while the codec runs the batch can be replaced at
+a new extent, stood down, or swept away by a stream stop/start — the request
+path already built a fresh companion and cache for each of those, and the old
+completion then installed its image into WHICHEVER renderer was current and
+settled matching paths in whatever batch was current. A 160×90 decode in flight
+could therefore satisfy a newer 512×288 request without a decode of its own,
+and the reverse let a small-extent cache inherit the larger allocation. Path
+identity was the only thing the completion carried. The destination is now an
+identity: the pair (companion renderer, accepted extent), versioned by
+`fThumbnailCacheGeneration` and published through one helper,
+`setThumbnailDestinationLocked()` — all four sites that move the destination
+(request, stop, the stream-state stand-down, and the slot-bound stand-down in
+`publishThumbnailFrame`, which now drops the renderer too) go through it, and
+it bumps the generation whenever the renderer pointer or the extent changes.
+Handing back the standing renderer at the same extent deliberately does NOT
+bump it: reuse across bands at one destination is the feature the review asked
+to keep. The lane captures generation and extent at the hand-off; the collect
+installs and settles only when the current destination still matches both, and
+otherwise prints what was discarded and falls through to hand the same path to
+the lane against the CURRENT destination — the re-decode is the cost of the
+change, paid once, not every frame. `syncThumbnailCountersLocked()` zeroes the
+pool counters when there is no renderer, so status cannot report bytes that
+belong to a retired companion. The fixture (`completionCarriesItsDestination`,
+`preview_producer_tests`) arms the decode seam at 600 ms for its own file
+(`OPENSHOW_FAULT_THUMBNAIL_DECODE_MS/_MATCH`, set at the top of `main` because
+the faults singleton parses once and its first reader is the decode thread),
+and drives both races the review named: a 64→256 extent swap mid-decode leaves
+the cache holding exactly the 256×256 picture (262,144 bytes, one entry — the
+64×64 result discarded, the re-decode installed); a stop/start at the SAME
+extent — where only the generation can catch anything — leaves a restarted
+list's cache with exactly its own 64×64 picture. Two negative controls show
+both halves are load-bearing: a gate reduced to "some renderer exists" installs
+16 KiB for the 256 ask and a second entry for the retired destination, and a
+gate with extent but no generation passes the first leg and still fails the
+second.
 
 **6.22f.** Replacing an ACTIVE standalone track removed the old player,
 cleared the command gate and took the instance down, but only the empty-path
@@ -216,6 +264,21 @@ crosses threads by hand-off but exactly one thread may paint it at a time
 
 ## Verification and retained evidence
 
+6.22g: the new fixture passed five consecutive runs, identically (extent-swap
+leg leaves `entries=1 bytes=262144`, stop/start leg leaves `entries=1
+bytes=16384`, two "thumbnail decode discarded" lines per run — evidence lines
+in both presets' logs); the full-control negative (gate reduced to "a renderer
+exists") fails exactly the two new checks with the finding's numbers — 16,384
+bytes installed for the 256 ask, and `entries=2 bytes=32768` for the restarted
+list — and the extent-only control (no generation) passes the first leg and
+still fails the second, so both halves of the identity are pinned as
+load-bearing. The preview suite regressed clean on the change:
+`preview_producer_tests`, `preview_stream_tests`, `preview_ownership_tests`,
+`preview_budget_tests` and the live `preview_selection_tests` (its cross-band
+reuse, budget and stand-down scenarios all agree with the destination rule).
+Gates: desktop **55/55** (297.01 s, 14 display-labelled), headless **32/32**
+(62.87 s); both trees build clean.
+
 6.22f: the new fixture passed five consecutive runs, identically (mid-
 replacement status `live=0 playing=0 position=-1.00`, B published on pass 32
 of the 20 ms pump after its scripted 700 ms start, a failed bring-up writing
@@ -285,18 +348,10 @@ are preserved in [history](docs/history/PROGRESS-through-6.21g.md).
 
 ## Next action
 
-**6.22g** (review A7, the last open finding): the thumbnail lane captures the
-requested width/height for its decode but publishes only a path and an image,
-and the completion is then adopted unconditionally — into whichever renderer
-is current, settling matching paths in whatever batch is current too. So a
-160×90 decode still in flight can satisfy a newer 512×288 request without a
-new decode (and the reverse lets a small-extent cache inherit a larger
-allocation). Carry stream/request or cache-generation identity and the decode
-extent with the completion and accept it only for a compatible destination;
-reuse across batches stays valid when those properties match. The review asks
-for both races under a delayed decode — extent replaced, and stop/start of the
-stream — noting the existing slow-decode checks establish RPC responsiveness,
-not completion compatibility (`PreviewProducer.cpp` ~338/~502/~620). When that
-lands a–g are all DONE: align the PLAN header and this handoff with the
-re-review evidence and restate the conformance claim. M7 recovery, budgets,
-packaging and hardware/long-service acceptance remain TODO.
+The architecture re-review is closed: **6.22a–g are all DONE**, the PLAN rows
+and the conformance qualification in
+[architecture.md](docs/architecture.md) carry the evidence, and nothing from
+that review gates M7. The next milestone is **M7** — recovery (device loss and
+restart behaviour, where M7.1b also owns the fence-based per-slot GPU
+retirement deferred in 6.22b), budgets, packaging, and the hardware/long-service
+acceptance recorded as TODO in [PLAN.md](PLAN.md).

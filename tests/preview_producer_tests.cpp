@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
@@ -492,6 +493,105 @@ void lookaheadAndDecodes(SceneRenderer* audience) {
           "a failed picture is settled, not pending");
 }
 
+/* --- task 6.22g (review A7): a completion belongs to a destination ---------
+   The lane captures the requested extent for its decode and used to publish
+   a path and an image alone. When a newer batch changed the extent, request
+   handling correctly built a fresh renderer and cache — and the old
+   completion then installed its image into whichever renderer was current
+   and settled matching paths in the new batch: a 160x90 decode in flight
+   satisfied a new 512x288 request without a decode of its own, and the
+   reverse let a small-extent cache inherit the larger allocation. Path
+   identity is not enough for DERIVED pixels. The lane therefore carries the
+   destination it was started for — the companion's generation and the extent
+   its pixels were scaled into — and the collect accepts the picture only
+   into that destination; anything else is discarded and the path stays owed,
+   so the batch gets its own decode.
+
+   The bytes distinguish the two answers exactly, which is why the source PNG
+   is bigger than either extent: 64x64 accounts 16 KiB, 256x256 256 KiB. The
+   seam (armed for "completion-identity-slow" only, at the top of main) holds
+   each of those decodes for 600 ms so the swap lands mid-file rather than
+   racing it. */
+void completionCarriesItsDestination(SceneRenderer* audience) {
+    PreviewProducer producer;
+    producer.attachRenderer(nullptr, audience);
+    std::string error;
+    PreviewProducer::ThumbnailAck ack;
+
+    const std::string dir = "/tmp/opencode/preview-producer-tests";
+    ::mkdir(dir.c_str(), 0755);
+    const std::string slow = dir + "/completion-identity-slow.png";
+    const std::string other = dir + "/completion-identity-other.png";
+    if (!writePng(slow, 512, 0xFF224466u) || !writePng(other, 512, 0xFF664422u)) {
+        check(false, "the completion-identity fixture PNGs are written");
+        return;
+    }
+    const auto imageBatch = [](const std::string& path) {
+        std::vector<PreviewProducer::ThumbnailEntry> batch;
+        PreviewProducer::ThumbnailEntry entry;
+        entry.key = path;
+        entry.scene = makeImageScene(path, path);
+        batch.push_back(std::move(entry));
+        return batch;
+    };
+    // Pumps until the standing batch owes no decode. With the gate in place
+    // that can take two seam windows — the refused picture, then the one the
+    // destination actually asked for — so the bound is generous and the
+    // ASSERTION is about the bytes the settle left behind, never about time.
+    const auto pumpUntilSettled = [](PreviewProducer& target, int timeoutMs = 8000) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (target.status().thumbnails.decodePending == 0) {
+                return true;
+            }
+            target.pumpThumbnailDecode();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return false;
+    };
+
+    check(producer.start(640, 360, 15, nullptr, &error), "start accepted (640x360)");
+    producer.applyStreamState();
+
+    // --- the extent changes while the file is open ---
+    check(producer.requestThumbnails(imageBatch(slow), 64, 64, 1, &ack, &error),
+          "the 64x64 band is accepted");
+    check(!producer.pumpThumbnailDecode(), "the lane takes the slow file and the pump returns");
+    check(producer.status().thumbnails.decodePending == 1, "one decode is in flight");
+    check(producer.requestThumbnails(imageBatch(slow), 256, 256, 2, &ack, &error),
+          "a 256x256 band replaces it mid-decode");
+    check(pumpUntilSettled(producer), "the list is settled by the end of it");
+    const PreviewProducer::PreviewStatus resized = producer.status();
+    check(resized.thumbnails.entries == 1 &&
+              resized.thumbnails.decodedBytes == 256u * 256u * 4u,
+          "the 64x64 result is refused: the cache holds the new extent's picture only");
+    std::fprintf(stderr, "6.22g: extent swap 64->256 left entries=%llu bytes=%llu (want 262144)\n",
+                 static_cast<unsigned long long>(resized.thumbnails.entries),
+                 static_cast<unsigned long long>(resized.thumbnails.decodedBytes));
+
+    // --- the stream is torn down and rebuilt at the SAME extent ---
+    // The extent matches, so only the destination's identity can catch this
+    // one: the companion the decode was scaled for no longer exists.
+    check(producer.requestThumbnails(imageBatch(slow), 64, 64, 3, &ack, &error),
+          "a 64x64 band over the same file is accepted");
+    check(!producer.pumpThumbnailDecode(), "its slow decode is in flight");
+    check(producer.stop(), "the stream is stopped mid-decode");
+    check(producer.start(640, 360, 15, nullptr, &error), "and started again");
+    producer.applyStreamState();
+    check(producer.requestThumbnails(imageBatch(other), 64, 64, 1, &ack, &error),
+          "a restarted list asks for a different picture at the same extent");
+    check(pumpUntilSettled(producer), "the restarted batch is settled");
+    const PreviewProducer::PreviewStatus restarted = producer.status();
+    check(restarted.thumbnails.entries == 1 &&
+              restarted.thumbnails.decodedBytes == 64u * 64u * 4u,
+          "the retired destination's decode never lands in the new cache");
+    std::fprintf(stderr,
+                 "6.22g: stop/start at 64x64 left entries=%llu bytes=%llu (want 16384)\n",
+                 static_cast<unsigned long long>(restarted.thumbnails.entries),
+                 static_cast<unsigned long long>(restarted.thumbnails.decodedBytes));
+}
+
 void shrinkStandsTheBatchDown(SceneRenderer* audience) {
     PreviewProducer producer;
     producer.attachRenderer(nullptr, audience);
@@ -517,6 +617,15 @@ void shrinkStandsTheBatchDown(SceneRenderer* audience) {
 }  // namespace
 
 int main() {
+    // Task 6.22g (review A7): the completion-identity fixture needs a decode
+    // that REALLY waits, so the swap lands while the file is open. The knob
+    // is parsed once into the process-wide Faults singleton, so it is armed
+    // here, before anything reads a thumbnail; the match name belongs to this
+    // fixture's own file, so every other picture in this binary decodes at
+    // full speed and no other scenario pays for it.
+    ::setenv("OPENSHOW_FAULT_THUMBNAIL_DECODE_MS", "600", 1);
+    ::setenv("OPENSHOW_FAULT_THUMBNAIL_DECODE_MATCH", "completion-identity-slow", 1);
+
     geometryLimits();
     streamLifecycle();
     selectionGate();
@@ -536,6 +645,7 @@ int main() {
 
     thumbnailGatesAndCoalescing(renderer.get());
     lookaheadAndDecodes(renderer.get());
+    completionCarriesItsDestination(renderer.get());
     shrinkStandsTheBatchDown(renderer.get());
 
     if (gFailures > 0) {

@@ -177,9 +177,10 @@ bool PreviewProducer::stop() {
     // caller's pin re-derivation has only the selection's still to learn.
     fThumbnailQueue.clear();
     fThumbnailRequest = 0;
-    fThumbnailWidth = 0;
-    fThumbnailHeight = 0;
-    fThumbnailScene.reset();
+    // The destination goes with the batch (task 6.22g, review A7): a decode
+    // in flight for the renderer that is about to die is refused by the next
+    // pump rather than installed into whatever comes after it.
+    setThumbnailDestinationLocked(nullptr, 0, 0);
     fStatus.thumbnails = PreviewStatus::Thumbnails{};
     return true;
 }
@@ -411,12 +412,17 @@ bool PreviewProducer::requestThumbnails(const std::vector<ThumbnailEntry>& batch
         }
         fThumbnailQueue.push_back(std::move(job));
     }
-    if (built) {
-        fThumbnailScene = std::move(built);
-    }
+    // The destination is published as a PAIR (task 6.22g, review A7): the
+    // companion and the extent a decode was scaled for travel together, and
+    // an extent change retires the cache whose pixels were sized for the old
+    // ask even when this batch is empty and no renderer is needed yet —
+    // otherwise the next band at the new extent finds `built` null, keeps the
+    // old companion, and its cache answers a 512-pixel request with a
+    // 160-pixel picture without a decode ever being asked.
+    setThumbnailDestinationLocked(built ? std::move(built)
+                                        : (extentChanged ? nullptr : fThumbnailScene),
+                                  width, height);
     fThumbnailRequest = request;
-    fThumbnailWidth = width;
-    fThumbnailHeight = height;
     // The accept, not the draw: this stream now owes a band.
     fStatus.thumbnails.active = !fThumbnailQueue.empty();
     fStatus.thumbnails.request = request;
@@ -451,7 +457,34 @@ void PreviewProducer::syncThumbnailCountersLocked() {
         fStatus.thumbnails.entries = images.entries;
         fStatus.thumbnails.evictions = images.evictions;
         fStatus.thumbnails.budget = images.budget;
+    } else {
+        // No destination, no decoded pictures (task 6.22g, review A7): the
+        // bytes belonged to a companion that is gone — an extent change or a
+        // stand-down retires them — and reporting them beside a list that
+        // holds none would be the same lie as installing their pixels.
+        fStatus.thumbnails.decodedBytes = 0;
+        fStatus.thumbnails.entries = 0;
+        fStatus.thumbnails.evictions = 0;
+        fStatus.thumbnails.budget = 0;
     }
+}
+
+void PreviewProducer::setThumbnailDestinationLocked(std::shared_ptr<SceneRenderer> renderer,
+                                                    std::uint32_t width,
+                                                    std::uint32_t height) {
+    // The pair (companion, extent) is what a lane decode's pixels were made
+    // for, so any change to it is a new generation and every decode in flight
+    // for the old pair becomes refuseable. Note what is NOT a change: the
+    // same renderer handed back at the same extent, which is a band replacing
+    // another over pictures both bands want — reuse, and the reason the
+    // identity is the destination rather than the batch's request number.
+    if (renderer != fThumbnailScene || width != fThumbnailWidth || height != fThumbnailHeight) {
+        ++fThumbnailCacheGeneration;
+    }
+    fThumbnailScene = std::move(renderer);
+    fThumbnailWidth = width;
+    fThumbnailHeight = height;
+    syncThumbnailCountersLocked();
 }
 
 PreviewProducer::ThumbnailJob* PreviewProducer::thumbnailHeadLocked() {
@@ -505,42 +538,85 @@ bool PreviewProducer::pumpThumbnailDecode() {
         }
         const std::string path = std::move(fThumbnailDecode->path);
         sk_sp<SkImage> image = std::move(fThumbnailDecode->image);
+        // The destination this picture was read FOR (task 6.22g, review A7).
+        // Taken at the hand-off, before the worker started: the generation of
+        // the companion whose cache was to hold it, and the extent its pixels
+        // were scaled into.
+        const std::uint64_t generation = fThumbnailDecode->cacheGeneration;
+        const std::uint32_t decodeWidth = fThumbnailDecode->width;
+        const std::uint32_t decodeHeight = fThumbnailDecode->height;
         fThumbnailDecode->worker.join();  // done means it returned; this reaps
         fThumbnailDecode.reset();
+        bool compatible = false;
+        std::uint32_t wantWidth = 0;
+        std::uint32_t wantHeight = 0;
+        std::uint64_t wantGeneration = 0;
         {
             std::lock_guard<std::mutex> lock(fMutex);
-            if (fThumbnailScene != nullptr) {
+            wantWidth = fThumbnailWidth;
+            wantHeight = fThumbnailHeight;
+            wantGeneration = fThumbnailCacheGeneration;
+            // THE COMPATIBILITY GATE. Path identity alone is not enough for
+            // derived pixels: the batch, the companion and the extent can all
+            // have moved while the codec ran, and a 160x90 picture is not a
+            // 512x288 one. So the completion is accepted only into the
+            // destination it names — the same companion generation AND the
+            // same extent, the extent checked as well so a future site that
+            // changed one without the other still cannot inherit. A batch
+            // replaced at the SAME extent over the same renderer stays
+            // compatible: reuse across bands is the feature, and this gate is
+            // what keeps it honest rather than wholesale.
+            compatible = fThumbnailScene != nullptr &&
+                         fThumbnailCacheGeneration == generation &&
+                         fThumbnailWidth == decodeWidth && fThumbnailHeight == decodeHeight;
+            if (compatible) {
                 // Installs (or remembers the failure) into the LIST's cache and
                 // nothing else: the audience's pinned budget is not a place a
                 // thumbnail's pixels ever go.
                 fThumbnailScene->imageCache()->install(path, image);
-            }
-            // Settle by path, not by position: the batch may have been replaced
-            // while the codec ran, and a new band that wants the same picture
-            // finds it already installed (the next pump settles it for free),
-            // while one that no longer names it has lost nothing. A job only
-            // becomes drawn-ready when its LAST path settled — a slide with a
-            // background and a foreground picture shows both or is not owed a
-            // frame yet (task 6.17b).
-            for (ThumbnailJob& job : fThumbnailQueue) {
-                if (job.decoded) {
-                    continue;
-                }
-                bool complete = true;
-                for (std::size_t i = 0; i < job.imagePaths.size(); ++i) {
-                    if (!job.pathSettled[i]) {
-                        if (job.imagePaths[i] == path) {
-                            job.pathSettled[i] = true;
-                        } else {
-                            complete = false;
+                // Settle by path, not by position: the batch may have been
+                // replaced while the codec ran, and a new band that wants the
+                // same picture finds it already installed (the next pump
+                // settles it for free), while one that no longer names it has
+                // lost nothing. A job only becomes drawn-ready when its LAST
+                // path settled — a slide with a background and a foreground
+                // picture shows both or is not owed a frame yet (task 6.17b).
+                for (ThumbnailJob& job : fThumbnailQueue) {
+                    if (job.decoded) {
+                        continue;
+                    }
+                    bool complete = true;
+                    for (std::size_t i = 0; i < job.imagePaths.size(); ++i) {
+                        if (!job.pathSettled[i]) {
+                            if (job.imagePaths[i] == path) {
+                                job.pathSettled[i] = true;
+                            } else {
+                                complete = false;
+                            }
                         }
                     }
+                    job.decoded = complete;
                 }
-                job.decoded = complete;
             }
             syncThumbnailCountersLocked();
         }
-        return true;
+        if (compatible) {
+            return true;
+        }
+        // Discarded, and nothing settles for it: a picture for a destination
+        // that no longer exists describes no slide the operator is waiting
+        // for, and settling a job on it would have the draw show pixels of the
+        // wrong size or a failure the codec never reported. The path stays
+        // owed, so the pass below hands it to the lane again against the
+        // CURRENT destination — the re-decode is the cost of the change, and
+        // it is paid once, not every frame.
+        std::fprintf(stderr,
+                     "openshow-worker: thumbnail decode discarded: %s was read for %ux%u of "
+                     "generation %llu, the list now wants %ux%u of %llu\n",
+                     path.c_str(), decodeWidth, decodeHeight,
+                     static_cast<unsigned long long>(generation), wantWidth, wantHeight,
+                     static_cast<unsigned long long>(wantGeneration));
+        // FALLS THROUGH: this call can start the decode the list does want.
     }
 
     // No lane running: settle what needs no codec (free, so a whole band of
@@ -548,6 +624,7 @@ bool PreviewProducer::pumpThumbnailDecode() {
     std::string path;
     uint32_t width = 0;
     uint32_t height = 0;
+    std::uint64_t generation = 0;
     bool settled = false;
     {
         std::lock_guard<std::mutex> lock(fMutex);
@@ -597,6 +674,10 @@ bool PreviewProducer::pumpThumbnailDecode() {
                 path = job.imagePaths[i];
                 width = fThumbnailWidth;
                 height = fThumbnailHeight;
+                // The destination this decode is for, read with the extent it
+                // was scaled to (task 6.22g, review A7): the collect below
+                // asks for both back.
+                generation = fThumbnailCacheGeneration;
                 break;  // exactly one path handed to the lane
             }
             if (!path.empty()) {
@@ -619,6 +700,11 @@ bool PreviewProducer::pumpThumbnailDecode() {
     // which is the memory growth this task's acceptance names.
     fThumbnailDecode = std::make_unique<ThumbnailDecodeLane>();
     fThumbnailDecode->path = path;
+    // The destination travels with the request (6.22g): whatever the batch
+    // looks like when the file comes back, the picture belongs to THIS pair.
+    fThumbnailDecode->cacheGeneration = generation;
+    fThumbnailDecode->width = width;
+    fThumbnailDecode->height = height;
     ThumbnailDecodeLane* lane = fThumbnailDecode.get();
     lane->worker = std::thread([lane, path, width, height] {
         lane->image = decodeThumbnailFile(path, width, height, &lane->error);
@@ -753,9 +839,8 @@ void PreviewProducer::applyStreamState() {
                                            fStream->bytesPerSlot())) {
             fThumbnailQueue.clear();
             fThumbnailRequest = 0;
-            fThumbnailWidth = 0;
-            fThumbnailHeight = 0;
-            fThumbnailScene.reset();
+            setThumbnailDestinationLocked(nullptr, 0, 0);  // 6.22g: with its
+                                                           // in-flight decode
             fThumbnailSurface.reset();
             fStatus.thumbnails = PreviewStatus::Thumbnails{};
         }
@@ -1177,8 +1262,12 @@ bool PreviewProducer::publishThumbnailFrame(const DrawInput& input) {
         std::lock_guard<std::mutex> lock(fMutex);
         fThumbnailQueue.clear();
         fThumbnailRequest = 0;
-        fThumbnailWidth = 0;
-        fThumbnailHeight = 0;
+        // The destination goes too (task 6.22g): the pixels the standing
+        // companion holds were sized for a batch this stream can no longer
+        // carry, and a decode in flight for it must be refused rather than
+        // installed hereafter. `renderer` above keeps the object alive until
+        // this pass is done with it.
+        setThumbnailDestinationLocked(nullptr, 0, 0);
         fStatus.thumbnails = PreviewStatus::Thumbnails{};
         return false;
     }

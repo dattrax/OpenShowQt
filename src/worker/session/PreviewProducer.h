@@ -216,8 +216,12 @@ public:
     // (review F5) even the command thread does not read the file inline:
     // one call at most HANDS one path to the lane (a single worker thread,
     // the bound this feature keeps), collects a finished decode and settles
-    // it, and never waits. Settled-without-codec work (nothing to decode, or
-    // already cached) still completes on the spot. Returns true when a call
+    // it, and never waits. A completion is installed only into the
+    // destination it was read for — same companion generation, same extent
+    // (task 6.22g, review A7); a picture whose destination changed mid-file
+    // is discarded and the path stays owed to the CURRENT one. Settled-without-
+    // codec work (nothing to decode, or already cached) still completes on
+    // the spot. Returns true when a call
     // settled at least one job (so the caller wakes the render thread); a
     // lane mid-file answers false and the caller keeps serving commands —
     // the whole point, since one slow cold file used to hold status,
@@ -426,6 +430,17 @@ private:
     // "idle with a list it will never draw".
     void syncThumbnailCountersLocked();
 
+    // Publishes the list's decoded-picture destination (task 6.22g, review
+    // A7): the companion renderer to hold and the extent its cached pixels
+    // belong to. Handing over the standing renderer keeps the generation —
+    // reuse across bands at one extent is the feature, not an accident —
+    // while a new renderer, a reset or an extent change retires every decode
+    // in flight for the old pair. Callers hold fMutex (and in
+    // requestThumbnails', the replacement is published AFTER the companion
+    // has been built outside the lock).
+    void setThumbnailDestinationLocked(std::shared_ptr<SceneRenderer> renderer,
+                                       std::uint32_t width, std::uint32_t height);
+
     // What one draw-and-readback did to the stream (task 6.16a). Every
     // target shares this body, so the audience's cost policy — the reason
     // a preview exists without owning the frame it is drawn out of — is
@@ -534,6 +549,16 @@ private:
     std::uint32_t fThumbnailWidth = 0;      // fMutex, the accepted extent
     std::uint32_t fThumbnailHeight = 0;     // fMutex
 
+    // The identity of the list's decoded-picture DESTINATION (task 6.22g,
+    // review A7): the companion renderer AND this extent are what a lane
+    // decode's pixels were made for, and either can change while the file is
+    // open. setThumbnailDestinationLocked() bumps it whenever either does —
+    // including a fresh renderer at the SAME extent (a stop/start), because
+    // the allocation the decode was scaled for is gone even when the numbers
+    // match again. A completion is installed only into the destination it
+    // names: see pumpThumbnailDecode()'s collect.
+    std::uint64_t fThumbnailCacheGeneration = 0;  // fMutex
+
     // The decode lane (task 6.21d, review F5). ONE worker thread, at most
     // one file in flight: the pump hands it a path, never waits, and the
     // NEXT pump call publishes the finished picture (install + settle by
@@ -544,8 +569,19 @@ private:
     // `done` (release), so the publishing read is ordered. No producer lock
     // is held across the file: that is the whole finding. Shutdown joins
     // the lane (a decode is bounded by the file), publishing nothing.
+    //
+    // Task 6.22g (review A7) added the DESTINATION the lane was started for:
+    // the cache generation and the extent the decode was scaled into. Both
+    // are read at the hand-off under fMutex and never written again, so the
+    // collect can ask whether that destination still exists. They are not
+    // decoration: the pixels are derived data — a 160x90 decode is not a
+    // 512x288 picture — and the batch, the companion renderer and the extent
+    // can all change while the file is open.
     struct ThumbnailDecodeLane {
         std::string path;             // the file this lane reads (command thread)
+        std::uint64_t cacheGeneration = 0;  // the destination's identity at hand-off
+        std::uint32_t width = 0;      // and the extent its pixels were
+        std::uint32_t height = 0;     // scaled for (6.22g, review A7)
         sk_sp<SkImage> image;         // the worker's answer; null on failure
         std::string error;            // and what the codec said, if anything
         std::atomic<bool> done{false};
