@@ -156,6 +156,19 @@ playlist entries. Visible-band requests remain bounded by the existing 32-cue
 limit; zoom/scroll coalesce work and retain the destination/extent guarantees.
 A real worker test checks the live marker against acknowledged content and pixels.
 
+Verification (UI.3a, 2026-10-31): `DocumentViews::runningOrderCues()` authors
+the cue groups — one per playlist entry `[{entryId, showId, showName, section,
+entryIndex, slides}]` — exposed as `DocumentController::runningOrderCues` over
+the playlist under preparation; a show listed twice is two cues with two entry
+ids whose groups list the same slide rows, and a moved or neighbour-removed cue
+keeps its entry id. `document_controller_tests` pins that projection and the
+cursor rule: with show B selected, compiling every cue of every group succeeds
+from the projection alone while `currentSongId`/`currentSlide` do not move —
+paid for in `compileSlideJson`, which now resolves the slide's OWNING show
+(current show first) instead of silently failing on any other. Gates: desktop
+57/57 (339.83 s, 15 display), headless 32/32 (65.92 s); both trees build clean.
+UI.3b and UI.3c remain TODO.
+
 ### UI.4 — Dedicated media bin
 
 Implement independently: **UI.4a** provides collection/cue browsing and trustworthy
@@ -204,8 +217,8 @@ completion. Run workspace/controller tests and relevant live frontend journeys.
 
 ## Completion rule
 
-UI.1 and UI.2 are closed (verification recorded above); UI.3–6 remain TODO until
-implemented and checked.
+UI.1, UI.2 and UI.3a are closed (verification recorded above); UI.3b–6 remain TODO
+until implemented and checked.
 A colour change or one screenshot does not close the layout work. Keep the short
 ledger in PLAN.md; store audit details and later capture evidence alongside this
 plan. M6's completed async fixes remain DONE, and M7 release gates remain open.

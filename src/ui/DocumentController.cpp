@@ -941,6 +941,10 @@ QVariantList DocumentController::collectionOutline() const {
     return fViews.collectionOutline();
 }
 
+QVariantList DocumentController::runningOrderCues() const {
+    return fViews.runningOrderCues(fCurrentPlaylistId);
+}
+
 QVariantList DocumentController::playlistEntries() const {
     return fViews.playlistEntries(fCurrentPlaylistId);
 }
@@ -1113,13 +1117,24 @@ void DocumentController::anchorPlaylistNavigation() {
 }
 
 QString DocumentController::compileSlideJson(const openshow::domain::Id& slideId) const {
+    // A slide compiles in its OWNING show's context (UI.3a). Thumbnails and
+    // cues read slides of any show in the library, so compilation may not
+    // depend on the editing cursor; slide ids are unique across the
+    // document, so the owner is simply whoever contains the id. The current
+    // show answers first because it answers most calls.
     openshow::scene::Scene scene;
     std::string error;
-    if (!openshow::scene::compileSlide(fDocuments, fCurrentSongId, slideId, &scene, &error)) {
-        return QString();
+    if (openshow::scene::compileSlide(fDocuments, fCurrentSongId, slideId, &scene, &error)) {
+        const boost::json::value json = openshow::scene::toJson(scene);
+        return QString::fromStdString(boost::json::serialize(json));
     }
-    const boost::json::value json = openshow::scene::toJson(scene);
-    return QString::fromStdString(boost::json::serialize(json));
+    for (const openshow::domain::Id& showId : fDocuments.showIds()) {
+        if (openshow::scene::compileSlide(fDocuments, showId, slideId, &scene, &error)) {
+            const boost::json::value json = openshow::scene::toJson(scene);
+            return QString::fromStdString(boost::json::serialize(json));
+        }
+    }
+    return QString();
 }
 
 QString DocumentController::currentSceneJson() {

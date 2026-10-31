@@ -108,6 +108,14 @@ public:
     // cursor's playlist with each entry's show resolved (name and slide
     // count, or "?" and 0 for a row pointing at nothing).
     QVariantList playlistEntries(const openshow::domain::Id& playlistId) const;
+    // The UI.3 cue projection: the playlist's entries as cue GROUPS in
+    // running order. Every entry gets its own group — a show that appears
+    // twice is two cues with two entry ids — while both groups list the
+    // same slides, because they ARE the same slides. [{entryId, showId,
+    // showName, section, entryIndex, slides}] with slides the rows of
+    // slides(showId), so compiling or thumbnailing a cue of any show needs
+    // no cursor and moves none. Read-only like every other row.
+    QVariantList runningOrderCues(const openshow::domain::Id& playlistId) const;
     QVariantList assets() const;
     // The drawer's search: the reference's normalise-and-every-word-matches
     // filter over show name and all box lines, projected to the drawer's

@@ -321,6 +321,30 @@ QVariantList DocumentViews::playlistEntries(const openshow::domain::Id& playlist
     return list;
 }
 
+QVariantList DocumentViews::runningOrderCues(const openshow::domain::Id& playlistId) const {
+    QVariantList list;
+    const openshow::domain::Playlist* playlist = fDocuments.findPlaylist(playlistId);
+    if (playlist == nullptr) {
+        return list;
+    }
+    int index = 0;
+    for (const openshow::domain::PlaylistEntry& row : playlist->entries) {
+        const openshow::domain::Show* show = fDocuments.findShow(row.showId);
+        QVariantMap group;
+        group.insert(QStringLiteral("entryId"), QString::fromStdString(row.id));
+        group.insert(QStringLiteral("showId"), QString::fromStdString(row.showId));
+        group.insert(QStringLiteral("showName"),
+                     show != nullptr ? QString::fromStdString(show->name) : QStringLiteral("?"));
+        group.insert(QStringLiteral("section"), QString::fromStdString(row.section));
+        group.insert(QStringLiteral("entryIndex"), index++);
+        // The stale row (its show gone) reads as a cue with no slides — the
+        // operator sees the broken cue rather than it quietly vanishing.
+        group.insert(QStringLiteral("slides"), slides(row.showId));
+        list.append(group);
+    }
+    return list;
+}
+
 QVariantList DocumentViews::assets() const {
     QVariantList list;
     for (const openshow::domain::Id& id : fDocuments.assetIds()) {

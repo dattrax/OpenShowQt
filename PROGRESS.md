@@ -4,12 +4,12 @@ Updated: 2026-10-31 (Europe/London).
 
 ## Current checkpoint
 
-Current UI work: **UI.2 DONE**, verified 2026-10-31 (sidebar outline over one
-detail view, entry-id selection, long names, scrolling, drag-to-playlist, and a
-wire proof that browsing never goes live; gates 57/57 and 32/32). The
+Current UI work: **UI.3a DONE**, verified 2026-10-31 (cue groups per entry with
+stable repeated-entry ids, arbitrary-show compilation that never moves the
+editing cursor; gates 57/57 and 32/32). The
 [main-display plan](docs/ui/operator-workspace-plan.md)
-audits every current control and defines UI.3–6 before further layout work;
-the next leaf is **UI.3a** (the running-order cue projection).
+audits every current control and defines the remaining leaves; the next leaf is
+**UI.3b** (Show triggers, running-order navigation and live markers).
 
 **M6 async integration follow-ups 6.23a–e are DONE**, with one fix commit per item.
 [Verification and regressions](docs/reviews/M6-6.23-verification-2026-10-31.md)
@@ -31,6 +31,7 @@ completed seek-clock epoch; supersession and failure have distinct outcomes.
 | New focused regressions | Retirement claim race; deferred replacement/clear/cancellation with frontend preview pixels; removal during queued probes and shutdown; continued/paused seek playback; stage outcomes and transient notifications |
 | UI.1 acceptance (2026-10-31) | `workspace_ui_tests` visible-tree audit (Show: no setup controls, only `librarySearchField` writable; Settings exposes routing), picker-URL regressions in `worker_controller_tests`/`document_controller_tests`, `ui_loads` + guards; evidence in [the plan](docs/ui/operator-workspace-plan.md) |
 | UI.2 acceptance (2026-10-31) | `workspace_ui_tests` outline/detail interactions (duplicate entry ids, 180-char names, scrolling identities, drag onto a playlist row) and `document_present_tests` browsing-never-goes-live on the wire; evidence in [the plan](docs/ui/operator-workspace-plan.md) |
+| UI.3a acceptance (2026-10-31) | `document_controller_tests` cue-group projection (duplicate shows, move/remove identity stability) and arbitrary-show compilation leaving the editing cursor fixed; evidence in [the plan](docs/ui/operator-workspace-plan.md) |
 | Documentation | Current links, historical archive integrity and whitespace checked |
 
 Presets ran sequentially. Frame/position progress was measured; acoustic offset,
@@ -51,5 +52,5 @@ and right-hand control arrangement remain UI follow-ups in
 Keep PLAN.md updates to concise task summaries. Implementation and verification
 details belong in the review documents; older detailed records remain in
 [history](docs/history/README.md), including the unchanged [6.22g handoff](docs/history/PROGRESS-through-6.22g.md).
-Next is UI.3 (presentation-oriented slide workspace, starting with UI.3a);
-UI.4–6 follow. M7 remains the release milestone.
+Next is UI.3b (Show triggers, running-order navigation and live markers), then
+UI.3c and UI.4–6. M7 remains the release milestone.

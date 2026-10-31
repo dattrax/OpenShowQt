@@ -545,6 +545,72 @@ void exercisePlaylistAndLibrary(const std::filesystem::path& root) {
               docs.playlistEntries().size() == static_cast<std::size_t>(before),
           "each playlist keeps its own running order");
 
+    // --- task UI.3a: the read-only cue projection -------------------------
+    {
+        check(docs.createPlaylist("Cues") && docs.runningOrderCues().isEmpty(),
+              "the cue projection follows the playlist under preparation");
+        check(docs.addShowToPlaylist(first) && docs.addShowToPlaylist(second) &&
+                  docs.addShowToPlaylist(first),
+              "the running order takes the first show twice");
+        const QVariantList cues = docs.runningOrderCues();
+        const std::vector<std::string> cueEntryIds = mapEntryIds(cues);
+        check(cues.size() == 3 && cueEntryIds[0] != cueEntryIds[2] &&
+                  cues[0].toMap().value(QStringLiteral("showId")).toString() == first &&
+                  cues[2].toMap().value(QStringLiteral("showId")).toString() == first &&
+                  cues[1].toMap().value(QStringLiteral("showId")).toString() == second,
+              "every entry is its own cue group, duplicates included");
+        check(cues[0].toMap().value(QStringLiteral("entryIndex")).toInt() == 0 &&
+                  cues[2].toMap().value(QStringLiteral("entryIndex")).toInt() == 2 &&
+                  cues[0].toMap().value(QStringLiteral("showName")).toString() ==
+                      QStringLiteral("Amazing Grace") &&
+                  cues[0].toMap().contains(QStringLiteral("section")),
+              "cue groups carry their position, show name and section");
+        const auto slideIds = [](const QVariantList& rows) {
+            QStringList ids;
+            for (const QVariant& row : rows) {
+                ids.append(row.toMap().value(QStringLiteral("id")).toString());
+            }
+            return ids;
+        };
+        const QStringList firstSlides = slideIds(
+            cues[0].toMap().value(QStringLiteral("slides")).toList());
+        check(!firstSlides.isEmpty() &&
+                  firstSlides ==
+                      slideIds(cues[2].toMap().value(QStringLiteral("slides")).toList()),
+              "the two cues of one show list exactly the same slides");
+
+        // Editing B while A runs twice: compiling every cue of every group
+        // reads the projection alone and never moves the editing cursor.
+        docs.selectSong(second);
+        docs.selectSlide(0);
+        const QString cursorSong = docs.currentSongId();
+        const int cursorSlide = docs.currentSlide();
+        bool compiled = !firstSlides.isEmpty();
+        for (const QVariant& group : docs.runningOrderCues()) {
+            for (const QVariant& slide : group.toMap().value(QStringLiteral("slides")).toList()) {
+                compiled = compiled && !docs.sceneJsonForSlide(
+                                           slide.toMap().value(QStringLiteral("id")).toString())
+                                           .isEmpty();
+            }
+        }
+        check(compiled, "every cue of the running order compiles from the projection alone");
+        check(docs.currentSongId() == cursorSong && docs.currentSlide() == cursorSlide,
+              "compiling an arbitrary show never moves the editing cursor");
+
+        // Surviving cues keep their identities across a move and a removal.
+        const QString lastEntry = cues[2].toMap().value(QStringLiteral("entryId")).toString();
+        const QString middleEntry = cues[1].toMap().value(QStringLiteral("entryId")).toString();
+        check(docs.movePlaylistEntry(lastEntry, 0) &&
+                  QString::fromStdString(mapEntryIds(docs.runningOrderCues())[0]) == lastEntry,
+              "a moved cue keeps its entry id");
+        check(docs.removePlaylistEntry(middleEntry) &&
+                  docs.runningOrderCues().size() == 2 &&
+                  mapEntryIds(docs.runningOrderCues()) ==
+                      std::vector<std::string>{cueEntryIds[2], cueEntryIds[0]},
+              "removing one cue leaves the other cues' identities alone");
+        docs.selectPlaylist(service);
+    }
+
     // The domain rule: removing a show drops the entries naming it.
     docs.selectSong(second);
     check(docs.removeCurrentSong(), "the show is removed");
@@ -585,7 +651,8 @@ void exercisePlaylistAndLibrary(const std::filesystem::path& root) {
     check(docs.save(), "the service saves");
     {
         DocumentController reloaded(nullptr, root);
-        check(reloaded.playlists().size() == 2 && reloaded.playlistEntries().size() == 2,
+        // Three by now: the service, Evening, and the UI.3a cue fixture.
+        check(reloaded.playlists().size() == 3 && reloaded.playlistEntries().size() == 2,
               "playlists and their rows persist through save/load");
     }
 }

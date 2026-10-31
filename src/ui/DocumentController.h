@@ -95,6 +95,12 @@ class DocumentController : public QObject {
     // playlist — [{kind, id, name, count}]. A projection through
     // DocumentViews like every other row shape.
     Q_PROPERTY(QVariantList collectionOutline READ collectionOutline NOTIFY documentsChanged)
+    // The cue groups of the playlist under preparation (UI.3a):
+    // [{entryId, showId, showName, section, entryIndex, slides}] — one group
+    // per entry, so a show listed twice is two cues with two entry ids while
+    // both name the same slides. Read-only: compiling or thumbnailing these
+    // cues needs no cursor change and makes none.
+    Q_PROPERTY(QVariantList runningOrderCues READ runningOrderCues NOTIFY documentsChanged)
     Q_PROPERTY(QString currentPlaylistId READ currentPlaylistId NOTIFY navigationChanged)
     // The media library (drawer Media tab): [{id, name, sourcePath}],
     // import order. save() is where the bytes join the package.
@@ -137,6 +143,7 @@ public:
     QVariantList slides() const;
     QVariantList playlists() const;
     QVariantList collectionOutline() const;
+    QVariantList runningOrderCues() const;
     QVariantList playlistEntries() const;
     QVariantList assets() const;
     QVariantList styles() const;
