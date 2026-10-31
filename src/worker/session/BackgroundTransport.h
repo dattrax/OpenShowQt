@@ -403,6 +403,23 @@ public:
     };
     static std::vector<ScheduledOp> parseScheduledOps(const std::string& spec);
 
+    // Bench seam (task 6.22c, review A3): the RETIRED audio's delivery
+    // truth while the retirement lane still holds it, empty when no
+    // retirement is in flight. A3's contract is that the outgoing audio
+    // goes inaudible at the hand-off, not when the lane finishes its join
+    // — and the status mirror cannot show the difference, because the live
+    // seam has already reported the fresh silent instance. Only the
+    // in-flight retirement itself can: paused (the state the hand-off
+    // established), sinkActive (whether the server still consumes the old
+    // stream), and deliveredFrames (what it actually consumed). Safe from
+    // any thread.
+    struct RetiringAudioDelivery {
+        bool paused = false;
+        bool sinkActive = false;
+        uint64_t deliveredFrames = 0;
+    };
+    std::optional<RetiringAudioDelivery> retiringAudioDelivery() const;
+
 private:
     // Bring the background transport down in the R6 order (quiesce, then
     // the seam slots, then the players) and forget the applied identity.
@@ -511,7 +528,19 @@ private:
         std::atomic<bool> laneDone{false};           // join and audio stop finished
         std::thread worker;                          // the lane itself
     };
-    std::shared_ptr<Retirement> fRetirement;         // render thread
+    std::shared_ptr<Retirement> fRetirement;         // render thread owns
+                                                     // the hand-off; the
+                                                     // pointer itself rides
+                                                     // fMutex since 6.22c
+    // The in-flight retirement, taken under fMutex (task 6.22c): every
+    // touch of the shared_ptr itself is locked, because the retiring-audio
+    // seam reads it from bench threads. The objects inside keep their own
+    // rules — laneDone is atomic, and the lane moves `audio` out under
+    // this same lock before stopping it outside.
+    std::shared_ptr<Retirement> inFlightRetirement() const {
+        const std::lock_guard<std::mutex> lock(fMutex);
+        return fRetirement;
+    }
 
     // Prepare-time prime (task 6.9b, review R10): a video transport whose
     // FILE half (container + decoder) is open but whose GPU half is not,

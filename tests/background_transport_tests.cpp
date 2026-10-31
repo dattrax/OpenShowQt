@@ -9,25 +9,36 @@
  * replaced-before-drawn submission with its sequence as proof, and the
  * idempotent shutdown.
  *
- * No GPU here: opening a video transport belongs to the live fixtures
- * (background_media_tests owns the real bring-up, the fault-injection
- * scripts and the A/V continuity rules against a real present). What lives
- * here is everything the transport decides WITHOUT decoding — the policy
- * the extraction moved — driven through the same public surface the session
- * drives it through, which is exactly what R10 asked production and bench
- * to share.
+ * No decoding policy lives here: opening a video transport belongs to the
+ * live fixtures (background_media_tests owns the real bring-up, the
+ * fault-injection scripts and the A/V continuity rules against a real
+ * present). What lives here is everything the transport decides WITHOUT
+ * decoding — the policy the extraction moved — driven through the same
+ * public surface the session drives it through, which is exactly what R10
+ * asked production and bench to share. The one exception is the 6.22c
+ * retirement fixture: review A3's promise is about real audio delivery
+ * during a real slow retirement, which nothing but a real device, a real
+ * PipeWire stream and a real clip can measure; it skips cleanly with
+ * whatever is missing.
  */
 
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <GLFW/glfw3.h>
 
 #include "include/core/SkImage.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/vk/GrVkDirectContext.h"
 
+#include "media/PipeWireSink.h"
+#include "output/VulkanContext.h"
 #include "session/BackgroundTransport.h"
 
 namespace {
@@ -313,6 +324,144 @@ void testShutdown(BackgroundTransport& transport) {
     check(!transport.heldVideo(), "shutdown: the seam forgets its slots");
 }
 
+/* --- task 6.22c (review A3): retired audio goes silent at the hand-off ----
+   A3: teardown handed the OLD pipeline to the retirement lane and only
+   stopped its audio player AFTER joining the pacing thread — so for as long
+   as the exit took, the retired clip's mixer kept feeding a live PipeWire
+   stream, and the audience heard a background that status had already
+   removed. The contract: the hand-off establishes the outgoing audio's
+   intended state without waiting for the join; the lane owes destruction,
+   never audible lifetime.
+
+   Proving that needs three things no stand-in can fake together: a clip
+   whose audio is REALLY delivered (a real sink, real server consumption),
+   a retirement whose join is REALLY slow (6.21c2's scripted pacing exit),
+   and a view INTO the in-flight retirement (retiringAudioDelivery) — the
+   status mirror reports the fresh silent instance, so it cannot tell
+   silent-because-handed-off from silent-because-destroyed. The fixture
+   skips with whatever of ffmpeg, the PipeWire daemon, or a headless Vulkan
+   device is missing. */
+void testRetiredAudioGoesSilentAtHandoff() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) {
+        std::printf("   skipped the retired-audio handoff (no ffmpeg)\n");
+        return;
+    }
+    openshow::media::PipeWireSink probe;
+    std::string probeError;
+    if (!probe.start(48000, &probeError)) {
+        std::printf("   skipped the retired-audio handoff (no PipeWire daemon: %s)\n",
+                    probeError.c_str());
+        return;
+    }
+    probe.stop();
+    openshow::worker::VulkanContext vk;
+    if (!vk.createHeadless()) {
+        std::printf("   skipped the retired-audio handoff (no headless Vulkan device)\n");
+        return;
+    }
+    auto gr = GrDirectContexts::MakeVulkan(vk.backendContext());
+    if (!gr) {
+        std::printf("   skipped the retired-audio handoff (no Ganesh context)\n");
+        return;
+    }
+
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string clip = "transport-fixtures/retire-audio-a.mp4";
+    const std::string command =
+        "ffmpeg -hide_banner -loglevel error -nostdin -y "
+        "-f lavfi -i nullsrc=s=160x96:r=12 "
+        "-f lavfi -i sine=frequency=440:sample_rate=48000 "
+        "-t 2 -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac " + clip;
+    if (std::system(command.c_str()) != 0) {
+        check(false, "the audio-bearing fixture clip is generated");
+        return;
+    }
+
+    // Script the slow exit BEFORE the transport opens: 6.21c2's pacing seam
+    // sleeps 700 ms when the named clip's pacing thread leaves its loop —
+    // a window during which the retirement lane is provably still waiting.
+    // The match name is fixture-specific, so no other pipeline in this
+    // binary trips it; the environment is cleared again at the end.
+    setenv("OPENSHOW_FAULT_PACING_EXIT_MS", "700", 1);
+    setenv("OPENSHOW_FAULT_PACING_EXIT_MATCH", "retire-audio-a.mp4", 1);
+
+    BackgroundTransport transport;
+    transport.noteRunStart(kEpoch);
+    openshow::worker::GpuHandles handles;
+    handles.device = vk.device();
+    handles.physicalDevice = vk.physicalDevice();
+    handles.graphicsQueueIndex = vk.queueIndex();
+    handles.uploadQueueIndex = vk.uploadQueueIndex();
+    handles.uploadQueue = vk.uploadQueue();
+    handles.context = gr.get();
+    const auto resident = [](const std::string&) { return true; };
+
+    check(transport.applyBackground(videoBackground(clip), handles, resident),
+          "the audio-bearing background transport starts");
+
+    // Audible first: the lane reads live and the position climbs (the same
+    // proof status gives the operator — without it the delivery check below
+    // has nothing to silence).
+    bool audible = false;
+    for (int attempt = 0; attempt < 100 && !audible; ++attempt) {
+        transport.refreshMediaState();
+        const openshow::worker::MediaStatus media = transport.mediaStatus();
+        audible = media.playing && media.audio == "live" && media.position > 0.05;
+        if (!audible) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+    check(audible, "the old clip's audio is really being delivered");
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));  // consumption owns the clock
+
+    // The clear. The hand-off must not pay the join: the scripted exit
+    // sleeps 700 ms, and applyBackground returning in milliseconds is half
+    // of what A3 asks for.
+    const auto began = std::chrono::steady_clock::now();
+    transport.applyBackground(openshow::scene::Background{}, handles, resident);
+    const double handoffMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - began)
+                                 .count();
+    check(handoffMs < 150.0, "the clear lands while the retired producer is still exiting");
+
+    // And the retired player was ALREADY silenced while the lane waits: one
+    // 50 ms settle (the server may finish one in-flight callback), then two
+    // samples across a window the pre-fix code spent playing. paused() is
+    // the state the hand-off established; frozen deliveredFrames is what it
+    // did to the server — the actual old-source delivery the review asked
+    // to capture.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const auto first = transport.retiringAudioDelivery();
+    check(first.has_value(), "the retirement lane still holds the outgoing player");
+    check(first->paused && !first->sinkActive,
+          "the outgoing audio was deactivated at the hand-off, not at the join");
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    const auto second = transport.retiringAudioDelivery();
+    check(second.has_value() && second->deliveredFrames == first->deliveredFrames,
+          "the retired stream delivered nothing more to the server across the window");
+    std::fprintf(stderr,
+                 "6.22c: hand-off %.1f ms; retired delivery %llu frames frozen across 200 ms "
+                 "of the scripted 700 ms exit\n",
+                 handoffMs,
+                 first.has_value() ? static_cast<unsigned long long>(first->deliveredFrames) : 0);
+
+    // The seam already forgot the transport — the mirror's story is the
+    // successor's silence. When the lane's sleep ends the reap rides the
+    // same render-thread pass a frame loop uses.
+    check(!transport.mediaTransportLive(), "status reports no background after the clear");
+    for (int attempt = 0; attempt < 100 && transport.retiringAudioDelivery().has_value();
+         ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));  // the scripted exit
+    }
+    transport.applyTransportOps();
+    check(!transport.retiringAudioDelivery().has_value(),
+          "the render-thread pass reaped the completed retirement");
+
+    transport.shutdown();
+    unsetenv("OPENSHOW_FAULT_PACING_EXIT_MS");
+    unsetenv("OPENSHOW_FAULT_PACING_EXIT_MATCH");
+}
+
 }  // namespace
 
 int main() {
@@ -330,6 +479,8 @@ int main() {
     testStillsAndIdentity(transport);
     testSeam(transport);
     testScheduleGrammar();
+
+    testRetiredAudioGoesSilentAtHandoff();
 
     BackgroundTransport shutdownTransport;
     testShutdown(shutdownTransport);

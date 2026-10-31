@@ -55,8 +55,8 @@ void BackgroundTransport::shutdown() {
     // a player, or unreleased GPU leases outliving it. reapRetirement()
     // closes the GPU half on this thread (which it has been since 6.9c's
     // order: the transport dies before the GPU resources it references).
-    if (fRetirement) {
-        while (!fRetirement->laneDone.load(std::memory_order_acquire)) {
+    if (auto prior = inFlightRetirement()) {
+        while (!prior->laneDone.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         reapRetirement();
@@ -1474,8 +1474,8 @@ void BackgroundTransport::teardownBackgroundTransport() {
     // running — the hung-producer overlap — and that wait is paid here
     // rather than growing a queue. Normal retirements never meet it: the
     // lane returns in milliseconds once the stop flag is seen.
-    if (fRetirement) {
-        while (!fRetirement->laneDone.load(std::memory_order_acquire)) {
+    if (auto prior = inFlightRetirement()) {
+        while (!prior->laneDone.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         reapRetirement();
@@ -1487,6 +1487,17 @@ void BackgroundTransport::teardownBackgroundTransport() {
     // attach list belongs to the thread that swaps transports (6.6b) — so
     // it happens here, before the hand-off, never on the lane.
     fAudio->detachPipeline(fBackground.get());
+    // Task 6.22c (review A3): the outgoing audio goes SILENT here, at the
+    // hand-off — what the retirement holds is the objects' lifetime, not a
+    // licence to keep playing. pause() deactivates the sink stream (server
+    // consumption stops inside one slice) and latches the clock, and it
+    // joins no thread at all: the feeder/mixer/sink shutdown stays the
+    // lane's audio.reset() work below. Before this, the retired clip stayed
+    // AUDIBLE for as long as its producer's join took — a slow exit
+    // stretched the lifetime, and a successor that released its staged
+    // audio did so beside it. The fan-out touches no pipeline: detach just
+    // emptied the attach list, so this is the audio half alone.
+    fAudio->pause();
     auto retirement = std::make_shared<Retirement>();
     retirement->pipeline = std::move(fBackground);
     {
@@ -1503,14 +1514,30 @@ void BackgroundTransport::teardownBackgroundTransport() {
     }
     retirement->worker = std::thread([this, r = retirement] {
         r->pipeline->join();  // THE wait this task moved off the frame tick
-        r->audio.reset();     // ~AvPlayer stops: joins feeder, mixer, sink threads
+        // The player's DESTRUCTION is lane work (~AvPlayer joins its
+        // feeder, mixer and sink threads), but its availability rides
+        // fMutex (task 6.22c): move it out under the lock so the retiring
+        // audio's delivery seam sees the player or sees nothing, never a
+        // dying AvPlayer — then stop it outside the lock, as every other
+        // player death does.
+        std::unique_ptr<AvPlayer> audio;
+        {
+            const std::lock_guard<std::mutex> lock(fMutex);
+            audio = std::move(r->audio);
+        }
+        audio.reset();
         r->laneDone.store(true, std::memory_order_release);
         // The render thread owes the GPU half a close. This wake is the
         // reap's prompt, so even a loop sleeping an idle slide comes back
         // for it: nothing from the old transport outlives the next pass.
         wakeRenderThread();
     });
-    fRetirement = std::move(retirement);
+    {
+        // The slot itself rides fMutex since 6.22c — the seam reads it from
+        // bench threads, and a shared_ptr is not its own synchronisation.
+        const std::lock_guard<std::mutex> lock(fMutex);
+        fRetirement = std::move(retirement);
+    }
     fAppliedBackground = openshow::scene::Background{};
 }
 
@@ -1518,21 +1545,38 @@ void BackgroundTransport::reapRetirement() {
     // Render thread only (the loop's pass, applyBackground's head, and the
     // shutdown drain): the close is a Ganesh release and must keep the
     // device's owner thread.
-    if (!fRetirement) {
+    const std::shared_ptr<Retirement> retirement = inFlightRetirement();
+    if (!retirement) {
         return;
     }
-    if (!fRetirement->laneDone.load(std::memory_order_acquire)) {
+    if (!retirement->laneDone.load(std::memory_order_acquire)) {
         return;  // the lane wakes this thread when it is done
     }
     // Close follows the join (R6's order kept): no producer can be uploading
     // into a slot this releases. The unique_ptr itself goes with the slot's
     // last reference — which is here, after the worker is reaped, so the
     // (post-close, GPU-quiet) destructor runs on this thread.
-    if (fRetirement->pipeline) {
-        fRetirement->pipeline->close();
+    if (retirement->pipeline) {
+        retirement->pipeline->close();
     }
-    fRetirement->worker.join();
+    retirement->worker.join();
+    const std::lock_guard<std::mutex> lock(fMutex);
     fRetirement.reset();
+}
+
+std::optional<BackgroundTransport::RetiringAudioDelivery>
+BackgroundTransport::retiringAudioDelivery() const {
+    // fMutex is the whole synchronisation surface: the lane moves the
+    // player out under it, the reap resets the slot under it, and the
+    // sink's counters are atomics by construction — the status mirror
+    // reads a LIVE player's the same way, from this same lock.
+    const std::lock_guard<std::mutex> lock(fMutex);
+    if (!fRetirement || !fRetirement->audio) {
+        return std::nullopt;
+    }
+    const AvPlayer& audio = *fRetirement->audio;
+    return RetiringAudioDelivery{audio.paused(), audio.sinkActive(),
+                                 audio.sinkStats().deliveredFrames};
 }
 
 void BackgroundTransport::retireAudioInstance() {
