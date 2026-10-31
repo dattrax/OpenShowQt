@@ -234,6 +234,7 @@ void PlaybackPipeline::runPacing() {
     // noticed none of it still owes the audience the target frame (task 6.7d,
     // review R19).
     uint64_t offeredGen = seekGen;
+    uint64_t pacedEpoch = fClockEpoch.load(std::memory_order_acquire);
     // Everything a landed seek costs this thread. Both places that notice one
     // — the head of the loop, and a hold broken mid-frame — have to do all of
     // it: resetting the wrap base here is the whole difference between the
@@ -252,6 +253,11 @@ void PlaybackPipeline::runPacing() {
         anchorNext = true;
     };
     while (!fStop.load()) {
+        uint64_t clockEpoch = fClockEpoch.load(std::memory_order_acquire);
+        if (clockEpoch != pacedEpoch) {
+            pacedEpoch = clockEpoch;
+            anchorNext = true;
+        }
         const uint64_t seekWanted = fSource.seekRequested();
         const uint64_t seekNow = fSource.seekGeneration();
         if (seekNow != seekGen) {  // a seek landed since the last pass
@@ -265,7 +271,7 @@ void PlaybackPipeline::runPacing() {
         // transport shows where the media is now rather than the frame it froze
         // on. The offer is also what frees the presentation slot a producer may
         // be waiting on, so the hold always has a way out (task 6.7d, R19).
-        const bool scrub = fPaused.load() && seekOwed;
+        bool scrub = fPaused.load() && seekOwed;
         if (fPaused.load() && !seekOwed) {
             // Frozen: stop polling, so the ring fills and the producer
             // parks on it — the queue's own bound is the pause parking
@@ -300,6 +306,34 @@ void PlaybackPipeline::runPacing() {
             returnFrame(frame, /*submitted=*/false);
             continue;
         }
+        // The decoder reached the current target. Retain this ring slot
+        // while the audio clock settles, rather than discarding an entire
+        // clip under producer-abort. Owning one target frame guarantees the
+        // old displayed lease can be replaced when the clock is released.
+        clockEpoch = fClockEpoch.load(std::memory_order_acquire);
+        if (clockEpoch & 1) {
+            // beginClockSeek marks the epoch before posting the decoder
+            // request. Never park a pre-seek frame in that short interval.
+            if (fClockSeekGeneration.load(std::memory_order_acquire) != seekGen) {
+                returnFrame(frame, false);
+                continue;
+            }
+            fSource.setSeekAbandoned(false);
+            while (!fStop.load() && (fClockEpoch.load(std::memory_order_acquire) & 1) &&
+                   fSource.seekRequested() == seekGen)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            clockEpoch = fClockEpoch.load(std::memory_order_acquire);
+            if (fStop.load()) { returnFrame(frame, false); break; }
+            if (fSource.seekGeneration() != seekGen ||
+                fSource.seekRequested() != fSource.seekGeneration()) {
+                returnFrame(frame, false);
+                continue;
+            }
+            anchorNext = true;
+        }
+        if (clockEpoch != pacedEpoch) anchorNext = true;
+        pacedEpoch = clockEpoch;
+        scrub = fPaused.load() && seekGen != offeredGen;
         if (lastPts >= 0.0 && frame.ptsSeconds + 0.5 < lastPts && fClipSeconds > 0.0) {
             loopBase += fClipSeconds;  // the decoder rewound; pts restarts
         }
@@ -329,7 +363,8 @@ void PlaybackPipeline::runPacing() {
                 // against the OLD position's deadline — and a seek that moves
                 // the clock (the sinkless fallback rebases to the target) then
                 // left it waiting seconds for a deadline nobody owns.
-                if (fPaused.load() || fSource.seekRequested() != fSource.seekGeneration() ||
+                if (!acceptsClockEpoch(clockEpoch) || fPaused.load() ||
+                    fSource.seekRequested() != fSource.seekGeneration() ||
                     fSource.seekGeneration() != seekGen) {
                     abandoned = true;  // a control op arrived; this frame is history
                     break;
@@ -351,6 +386,7 @@ void PlaybackPipeline::runPacing() {
                 break;
             }
         }
+        abandoned = abandoned || !acceptsClockEpoch(clockEpoch);
         if (!abandoned) {
             {
                 std::lock_guard<std::mutex> lock(fStatsMutex);
@@ -373,6 +409,7 @@ void PlaybackPipeline::runPacing() {
             submission.ptsSeconds = pts;        // the media position (R19)
             submission.deadlineSeconds = deadline;  // the clock's own domain
             submission.sequence = frame.sequence;
+            submission.clockEpoch = clockEpoch;
             fSubmit(submission);
             // The audience has the frame this seek asked for: the session now
             // releases the one it replaced, so a producer may wait for a slot
@@ -380,6 +417,7 @@ void PlaybackPipeline::runPacing() {
             offeredGen = fSource.seekGeneration();
             fSource.setSeekAbandoned(false);
         } else {
+            anchorNext = true;  // a control invalidated this frame's deadline
             // Re-check like a fresh poll would: a seek that landed while
             // holding must still flush and re-anchor — and it must forget the
             // wrap base too, which is exactly what this branch used to skip by
@@ -469,6 +507,7 @@ void PlaybackPipeline::join() {
 void PlaybackPipeline::close() {
     requestStop();
     join();
+    fClockEpoch.store(0, std::memory_order_release);
     fSubmit = nullptr;
     {
         std::lock_guard<std::mutex> lock(fStatsMutex);
@@ -580,6 +619,19 @@ void PlaybackPipeline::play() {
 
 void PlaybackPipeline::pause() {
     fPaused.store(true);
+}
+
+void PlaybackPipeline::beginClockSeek(double seconds) {
+    fClockSeekGeneration.store(UINT64_MAX, std::memory_order_relaxed);
+    fClockEpoch.fetch_add(1, std::memory_order_acq_rel);
+    seekTo(seconds);
+    fClockSeekGeneration.store(fSource.seekRequested(), std::memory_order_release);
+}
+
+void PlaybackPipeline::completeClockSeek() {
+    // The shared clock is stable. Its even epoch permits the retained
+    // decoder generation to anchor and publish the requested target.
+    fClockEpoch.fetch_add(1, std::memory_order_release);
 }
 
 void PlaybackPipeline::seekTo(double seconds) {

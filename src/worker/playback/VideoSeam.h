@@ -34,6 +34,7 @@ struct VideoSubmission {
     double ptsSeconds = 0.0;        // media position, in media seconds
     double deadlineSeconds = 0.0;   // present time, in transport-clock seconds
     uint64_t sequence = 0;
+    uint64_t clockEpoch = 0;  // deadline belongs to this completed clock seek
 };
 
 // The session's present gate for one submission, in one place so pacing and
@@ -65,6 +66,9 @@ inline bool videoSubmissionDue(const VideoSubmission& submission, double clockSe
 class VideoPresenter {
 public:
     virtual ~VideoPresenter() = default;
+    // A clock rebase invalidates undrawn deadlines. Presenters without an
+    // external seek clock retain the ordinary seam behaviour.
+    virtual bool acceptsClockEpoch(uint64_t) const { return true; }
     // Render thread: the image to sample for this token, drawn under the
     // graphics-queue lock. Wrapping belongs here — every Skia call stays
     // on the render thread. Returning null (bad token, failed wrap, or a

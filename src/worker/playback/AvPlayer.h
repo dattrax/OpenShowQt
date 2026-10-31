@@ -165,9 +165,9 @@ public:
     // wait on a lane instead, through the halves.
     bool seekTo(double targetSeconds, std::string* error = nullptr);
     // The seek's three halves (task 6.22e4, review A5). beginSeekTo() fans
-    // the jump out — every feeder's request queue and every pipeline's
-    // asynchronous seek — and waits for NOTHING. waitSeekTo() is the whole
-    // cost: it blocks until each feeder settles its request, bounded per
+    // decoder requests out and gates video deadlines, without waiting.
+    // Video retains its target until finishSeekTo completes the clock rebase.
+    // waitSeekTo() is the whole cost: it blocks until each feeder settles its request, bounded per
     // feeder by timeoutMs, ended early when `abort` is set (the transport
     // retired around the waiter). finishSeekTo() moves the sink queue, the
     // clock and the fallback position, and belongs to the thread that owns

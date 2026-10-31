@@ -393,16 +393,13 @@ void AvPlayer::pause() {
 }
 
 void AvPlayer::beginSeekTo(double targetSeconds) {
-    // Fan out (all seeks are asynchronous): every feeder's request queue
-    // and every pipeline's own seek. Nothing waits here — the wait is
-    // waitSeekTo()'s, and since 6.22e4 the transport runs it on a lane
-    // worker rather than on the frame tick.
-    for (FeederSlot& slot : fFeeders) {
-        slot.feeder->requestSeek(targetSeconds);
-    }
+    // Mark the old deadline domain invalid before either decoder jumps.
+    // Video retains one target frame, without anchoring or offering it,
+    // until finishSeekTo rebases the clock and releases its epoch.
     for (PlaybackPipeline* pipeline : fPipelines) {
-        pipeline->seekTo(targetSeconds);
+        pipeline->beginClockSeek(targetSeconds);
     }
+    for (FeederSlot& slot : fFeeders) slot.feeder->requestSeek(targetSeconds);
 }
 
 bool AvPlayer::waitSeekTo(int timeoutMs, const std::atomic<bool>* abort, std::string* error) {
@@ -455,6 +452,9 @@ void AvPlayer::finishSeekTo(double targetSeconds, bool applied) {
         fFallbackBaseNs.store(targetNs, std::memory_order_relaxed);
         fFallbackAnchorNs.store(steadyNowNs(), std::memory_order_relaxed);
     }
+    for (PlaybackPipeline* pipeline : fPipelines)
+        pipeline->completeClockSeek();
+
 }
 
 bool AvPlayer::seekTo(double targetSeconds, std::string* error) {

@@ -139,9 +139,11 @@ bool cpuHealthyDrain(const std::string& path) {
     // Drain means paced-out, not just decoded: EOF can settle while frames
     // are still flowing to the sink.
     const bool drained = waitFor([&] { return pipeline.stats().submitted >= 60; }, 15000);
-    const auto stats = pipeline.stats();
     pipeline.requestStop();
     pipeline.join();
+    // submitted is incremented before the sink callback. Join the final
+    // callback before inspecting its onPresented counter.
+    const auto stats = pipeline.stats();
 
     bool ok = drained && stats.submitted == 60;
     ok = check(ok, "all 60 frames of the 2 s x 30 fps fixture pace out") && ok;
@@ -207,7 +209,10 @@ bool cpuFrozenClockStall(const std::string& path) {
 
     // Release the clock: the whole clip still has to arrive, in order.
     fakeClock.store(1.0e6);
-    const bool delivered = waitFor([&] { return pipeline.stats().submitted >= 100; }, 20000);
+    const bool delivered = waitFor([&] {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        return state.count >= 100;
+    }, 20000);
     const auto stats = pipeline.stats();
     ok = check(delivered && stats.submitted == 100 && stats.eof && stats.decoded == 100,
                "after the stall every frame of the 100-frame clip is delivered") && ok;
@@ -363,9 +368,9 @@ bool gpuHealthyDrain(const std::string& path, openshow::worker::VulkanContext& v
         return false;
     }
     const bool drained = waitFor([&] { return pipeline.stats().submitted >= 24; }, 20000);
-    const auto stats = pipeline.stats();
     pipeline.requestStop();
     pipeline.join();
+    const auto stats = pipeline.stats();
 
     bool ok = drained && stats.submitted == 24;
     ok = check(ok, "the 24-frame fixture paces out (GPU mode)") && ok;

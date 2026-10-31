@@ -1171,6 +1171,8 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
         // what makes releasing here safe for the producer.
         const BackgroundTransport::VideoTurnover turn =
             fTransport.takeDueVideo(std::chrono::steady_clock::now());
+        if (turn.dropped && videoPresenter)
+            videoPresenter->onDropped(turn.dropped->token, turn.dropped->sequence);
         if (turn.replaced && videoPresenter && turn.toDraw &&
             turn.replaced->token != turn.toDraw->token) {
             videoPresenter->onReplaced(turn.replaced->token, turn.replaced->sequence);

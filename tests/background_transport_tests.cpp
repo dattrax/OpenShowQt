@@ -67,6 +67,11 @@ bool check(bool condition, const char* what) {
 // session-side acquire of a real slot belongs to the live gates).
 class FakePresenter : public VideoPresenter {
 public:
+    bool checkClockEpoch = false;
+    uint64_t clockEpoch = 0;
+    bool acceptsClockEpoch(uint64_t epoch) const override {
+        return !checkClockEpoch || (!(epoch & 1) && epoch == clockEpoch);
+    }
     SkImage* acquireImage(unsigned, uint64_t) override { return nullptr; }
     void onPresented(unsigned token, VkSemaphore) override {
         ++presented;
@@ -160,6 +165,37 @@ void testStandaloneProbe(BackgroundTransport& transport) {
     check(!transport.standaloneLive(), "standalone: refusal started nothing");
     check(transport.requestStandaloneAudio("", &error),
           "standalone: a removal always accepts");
+}
+
+// A queued deadline from before a clock rebase must release its lease,
+// preserve the displayed picture, and never sleep against the new clock.
+void testClockEpochDropsUndrawnDeadlines() {
+    BackgroundTransport transport;
+    FakePresenter presenter;
+    presenter.checkClockEpoch = true;
+    transport.setVideoPresenter(&presenter);
+    transport.noteRunStart(kEpoch);
+    transport.setVideoClock([] { return 1.0; });
+    VideoSubmission first{1, 0.0, 0.0, 11, 0};
+    transport.submitVideo(first);
+    check(transport.takeDueVideo(kEpoch).toDraw.has_value(), "epoch: first frame is displayed");
+    transport.submitVideo(VideoSubmission{2, 1.0, 50.0, 22, 0});
+    presenter.clockEpoch = 1;
+    check(transport.submissionWake(kEpoch).due, "epoch: obsolete future deadline wakes for disposal");
+    const auto turn = transport.takeDueVideo(kEpoch);
+    check(turn.dropped && turn.dropped->sequence == 22 && !turn.toDraw,
+          "epoch: pending old deadline is returned with its release proof");
+    check(transport.heldVideo() && transport.heldVideo()->sequence == 11,
+          "epoch: the audience retains its held picture during the seek");
+    transport.submitVideo(VideoSubmission{3, 2.0, 0.0, 33, 0});
+    check(presenter.dropped == 1 && presenter.lastDroppedSequence == 33,
+          "epoch: a late in-flight submission is rejected while clock seek is pending");
+    presenter.clockEpoch = 2;
+    transport.submitVideo(VideoSubmission{4, 2.0, 0.0, 44, 0});
+    check(presenter.dropped == 2, "epoch: old clock deadlines stay invalid after completion");
+    transport.submitVideo(VideoSubmission{5, 0.2, 0.2, 55, 2});
+    check(transport.takeDueVideo(kEpoch).toDraw.has_value(), "epoch: completed clock accepts its own frames");
+    transport.setVideoPresenter(nullptr);
 }
 
 void testStandaloneIntentGeneration() {
@@ -1024,9 +1060,10 @@ void testSeekCompletesOffTheFrameTick() {
     // the held pause then lands behind it, two facts one after the other.
     const int landed = pumpUntil(transport, [&] {
         transport.refreshMediaState();
-        return !transport.mediaStatus().playing;
+        const auto media = transport.mediaStatus();
+        return !media.playing && media.position > 1.4 && media.position < 3.2;
     });
-    check(landed > 0, "the completion landed and the held pause applied behind it");
+    check(landed > 0, "the completion, held pause and target picture land in order");
     const double position = transport.mediaStatus().position;
     check(position > 1.4 && position < 3.2,
           "the seek finished at its target with the clock rebased");
@@ -1203,6 +1240,7 @@ int main() {
     testRefusals(transport);
     testStandaloneProbe(transport);
     testStandaloneIntentGeneration();
+    testClockEpochDropsUndrawnDeadlines();
     testStillsAndIdentity(transport);
     testSeam(transport);
     testScheduleGrammar();

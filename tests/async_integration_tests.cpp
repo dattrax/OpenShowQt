@@ -5,6 +5,7 @@
 #include <QTemporaryDir>
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -170,6 +171,54 @@ void removedIntent(const std::string& current, const std::string& a,
     qunsetenv("OPENSHOW_FAULT_STANDALONE_PROBE_MS");
     qunsetenv("OPENSHOW_FAULT_STANDALONE_PROBE_MATCH");
 }
+// 6.23d: keep playing after delayed seek acknowledgement. An immediate
+// pause would hide the stale deadline domain found by the review.
+void continuedSeekPlayback(const std::string& clip) {
+    qputenv("OPENSHOW_FAULT_SEEK_ACK_MS", "300");
+    qputenv("OPENSHOW_FAULT_SEEK_ACK_MATCH", "epoch-seek.mp4");
+    WorkerController worker;
+    worker.start();
+    if (!check(waitUntil([&] { return worker.outputLive() && worker.previewActive(); }),
+               "seek epoch: worker connects")) { worker.shutdownNow(); return; }
+    worker.presentSceneJson(videoScene(clip));
+    if (!check(waitUntil([&] { return worker.mediaPlaying() && worker.mediaPosition() > 2.0; }),
+               "seek epoch: audible clip is advancing before backward seek")) {
+        worker.shutdownNow(); return;
+    }
+    for (const double target : {0.2, 4.0}) {
+        worker.mediaSeek(target);
+        if (!check(waitUntil([&] {
+            return worker.mediaPlaying() && worker.mediaError().isEmpty()
+                && worker.mediaPosition() >= target && worker.mediaPosition() < target + 1.2;
+        }, 2500), "seek epoch: delayed seek lands near its requested target")) break;
+        const auto frames = worker.frames();
+        const auto position = worker.mediaPosition();
+        settle(900);
+        check(worker.frames() >= frames + 10, "seek epoch: video frames keep presenting after completion");
+        check(worker.mediaPlaying() && worker.mediaError().isEmpty()
+              && worker.mediaPosition() > position + 0.35
+              && worker.mediaPosition() < position + 1.6,
+              "seek epoch: media position advances at playback speed in the completed clock domain");
+    }
+    worker.mediaPause();
+    check(waitUntil([&] { return !worker.mediaPlaying(); }), "seek epoch: pause is acknowledged");
+    const QImage beforeScrub = worker.previewImage();
+    worker.mediaSeek(1.0);
+    check(waitUntil([&] {
+        return !worker.mediaPlaying() && worker.mediaPosition() >= 1.0 && worker.mediaPosition() < 1.4
+            && worker.previewImage() != beforeScrub;
+    }), "seek epoch: paused seek displays its new target without resuming");
+    const auto pausedPosition = worker.mediaPosition();
+    settle(400);
+    check(std::abs(worker.mediaPosition() - pausedPosition) < 0.1,
+          "seek epoch: scrubbed target remains paused");
+    worker.mediaPlay();
+    check(waitUntil([&] { return worker.mediaPlaying() && worker.mediaPosition() > pausedPosition + 0.35; }),
+          "seek epoch: playing resumes after a paused seek");
+    worker.shutdownNow();
+    qunsetenv("OPENSHOW_FAULT_SEEK_ACK_MS");
+    qunsetenv("OPENSHOW_FAULT_SEEK_ACK_MATCH");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -201,5 +250,11 @@ int main(int argc, char** argv) {
     removedIntent(current, intentA, intentB, false, false);
     removedIntent(current, intentA, intentB, true, false);
     removedIntent(current, intentA, intentB, false, true);
+    const auto seekClip = scratch.path().toStdString() + "/epoch-seek.mp4";
+    const auto seekCommand = std::string("ffmpeg -v error -nostdin -y -f lavfi -i ")
+        + "testsrc2=size=320x180:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 "
+          "-t 8 -c:v libx264 -pix_fmt yuv420p -c:a aac '" + seekClip + "'";
+    if (std::system(seekCommand.c_str()) != 0) return 1;
+    continuedSeekPlayback(seekClip);
     return failures ? 1 : 0;
 }

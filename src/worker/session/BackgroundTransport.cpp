@@ -136,6 +136,10 @@ BackgroundTransport::VideoWake BackgroundTransport::submissionWake(
         return wake;
     }
     wake.pending = true;
+    if (!fPresenter.load()->acceptsClockEpoch(fPendingVideo->clockEpoch)) {
+        wake.due = true;  // wake once to return the obsolete undrawn lease
+        return wake;
+    }
     // The seam's own gate (task 6.7d, review R19): a frame is due against
     // its DEADLINE in the clock's domain, never against its media pts —
     // those two disagree by a pause, a seek offset or a loop wrap, and
@@ -154,6 +158,11 @@ BackgroundTransport::VideoTurnover BackgroundTransport::takeDueVideo(
     std::chrono::steady_clock::time_point now) {
     std::lock_guard<std::mutex> lock(fMutex);
     VideoTurnover turn;
+    if (fPendingVideo && fPresenter &&
+        !fPresenter.load()->acceptsClockEpoch(fPendingVideo->clockEpoch)) {
+        turn.dropped = std::move(fPendingVideo);
+        fPendingVideo.reset();
+    }
     if (fPendingVideo && fPresenter &&
         videoSubmissionDue(*fPendingVideo, videoClockSecondsLocked(now))) {
         turn.replaced = fDrawnVideo;
@@ -425,6 +434,7 @@ void BackgroundTransport::submitVideo(VideoSubmission submission) {
 void BackgroundTransport::submitVideo(VideoSubmission submission,
                                       PlaybackPipeline* producer) {
     std::optional<VideoSubmission> dropped;
+    VideoPresenter* rejected = nullptr;
     {
         std::lock_guard<std::mutex> lock(fMutex);
         // The retirement generation filter (task 6.21c2, review F3). With
@@ -432,16 +442,23 @@ void BackgroundTransport::submitVideo(VideoSubmission submission,
         // transport in service?" — and a submission from one the seam no
         // longer names is retired work: dropped, because that pipeline is
         // stopping and its close() releases every slot it held, this
-        // frame's included. The bench seam (nullptr) predates pipelines and
-        // keeps the old "always accepted" behaviour.
+        // frame's included. Clock-epoch validation also applies to the
+        // bench seam, whose presenter owns the same deadline contract.
         if (producer != nullptr &&
             fPresenter.load(std::memory_order_relaxed) != producer) {
             return;
         }
-        if (fPendingVideo) {
-            dropped = fPendingVideo;
+        auto* presenter = fPresenter.load(std::memory_order_relaxed);
+        if (presenter && !presenter->acceptsClockEpoch(submission.clockEpoch)) {
+            rejected = presenter;
+        } else {
+            if (fPendingVideo) dropped = fPendingVideo;
+            fPendingVideo = submission;
         }
-        fPendingVideo = submission;
+    }
+    if (rejected) {
+        rejected->onDropped(submission.token, submission.sequence);
+        return;
     }
     // A slot replaced before ever being drawn goes back now, with no GPU
     // semaphore: nothing ever sampled it. The release carries the

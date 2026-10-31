@@ -260,6 +260,7 @@ public:
     struct VideoTurnover {
         std::optional<VideoSubmission> toDraw;
         std::optional<VideoSubmission> replaced;
+        std::optional<VideoSubmission> dropped;  // undrawn deadline from an obsolete clock epoch
     };
     VideoTurnover takeDueVideo(std::chrono::steady_clock::time_point now);
     // The frame the audience is currently shown (drawn under the lease

@@ -163,6 +163,13 @@ public:
     void pause();
     bool paused() const { return fPaused.load(); }
     void seekTo(double seconds);
+    // Odd epochs hold pacing while an external clock seek is unresolved.
+    // Release the next even epoch only after the clock has been rebased.
+    void beginClockSeek(double seconds);
+    void completeClockSeek();
+    bool acceptsClockEpoch(uint64_t epoch) const override {
+        return !(epoch & 1) && epoch == fClockEpoch.load(std::memory_order_acquire);
+    }
     void setLoop(bool enabled);
     // Whether this transport is supposed to never end (task 6.7c: an EOF
     // that arrives anyway is then a fault rather than a finished clip).
@@ -257,6 +264,8 @@ private:
 
     std::thread fPacing;
     std::atomic<bool> fStop{false};
+    std::atomic<uint64_t> fClockEpoch{0};
+    std::atomic<uint64_t> fClockSeekGeneration{0};
     std::atomic<bool> fPaused{false};  // task 5.2 control
     bool fDecodeStarted = false;
     double fPositionPts = -1.0;  // fStatsMutex: last submitted media pts
