@@ -1047,6 +1047,73 @@ int main(int argc, char** argv) {
         check(shed && rowsAfter == rowsBefore && qFuzzyCompare(cellAfter, cellBefore),
               "the fixture shrinks back to what the later sections expect");
     }
+    // --- task UI.5: monitor, clear strip, transport and audio area --------
+    // The rail now arranges itself as the plan draws it, and every control
+    // on it reports acknowledged state only: with no worker there is no
+    // output to clear, nothing on the transport, and a cue with nowhere to
+    // go. The interim file chooser is gone; the audio area knows the
+    // service's prepared cues, by kind, and browsing one of them sends
+    // nothing anywhere.
+    {
+        auto* preview = findNamed(window->contentItem(), "audiencePreview");
+        auto* clears = findNamed(window->contentItem(), "clearControls");
+        check(preview && clears && clears->isVisible(),
+              "the rail carries the audience monitor and its clear strip");
+        const QPointF previewTopLeft = preview->mapToScene(QPointF(0, 0));
+        const QPointF previewRight = preview->mapToScene(QPointF(preview->width(), 0));
+        const QPointF stripTopLeft = clears->mapToScene(QPointF(0, 0));
+        check(stripTopLeft.x() >= previewRight.x()
+                  && qAbs(stripTopLeft.y() - previewTopLeft.y()) < 1.0,
+              "the compact clears sit beside the preview, not beneath it");
+        check(findNamed(window->contentItem(), "playAudioButton") == nullptr,
+              "the interim file chooser is gone from the rail");
+
+        auto* clearSlide = findNamed(window->contentItem(), "clearSlideControl");
+        auto* clearBackground = findNamed(window->contentItem(), "clearBackgroundControl");
+        auto* clearAll = findNamed(window->contentItem(), "clearAllButton");
+        check(clearSlide && clearBackground && clearAll
+                  && !clearSlide->property("enabled").toBool()
+                  && !clearBackground->property("enabled").toBool()
+                  && !clearAll->property("enabled").toBool(),
+              "clears and restore wait for a live output instead of eating clicks");
+        check(clearAll->property("text").toString() == QLatin1String("Clear all"),
+              "with nothing cleared there is no restore to offer");
+
+        auto* transportPlay = findNamed(window->contentItem(), "transportPlayButton");
+        auto* transportIdle = findNamed(window->contentItem(), "transportIdleNote");
+        check(transportPlay && !transportPlay->isVisible()
+                  && transportIdle && transportIdle->isVisible(),
+              "the transport names its emptiness and offers no controls for nothing");
+
+        auto* combo = findNamed(window->contentItem(), "audioCueCombo");
+        auto* play = findNamed(window->contentItem(), "audioPlayButton");
+        auto* stop = findNamed(window->contentItem(), "audioStopButton");
+        auto* audioNote = findNamed(window->contentItem(), "audioStatusLine");
+        check(combo && combo->isVisible() && play && play->isVisible() && stop && audioNote,
+              "the audio area offers its cues, an explicit Play and a Stop");
+        QStringList cueNames;
+        for (const QVariant& cue : combo->property("model").toList())
+            cueNames << cue.toMap().value(QStringLiteral("name")).toString();
+        check(cueNames == (QStringList{"hymn.mp3", "ghost.mp3"}),
+              "the area is populated by prepared AUDIO only — no video, no file paths");
+        // Picking from the list is browsing. The bin's cue lesson, at the
+        // rail: nothing until an explicit press, and even the press only
+        // asks — here there is not even an output to receive the ask.
+        combo->setProperty("currentIndex", 1);
+        QTest::qWait(30);
+        check(worker.standalonePath().isEmpty() && !worker.standaloneOnAir()
+                  && worker.standaloneRefusal().isEmpty() && worker.sceneActive() == 0,
+              "picking a cue from the list sends nothing to any output");
+        check(!play->property("enabled").toBool() && !stop->property("enabled").toBool(),
+              "Play waits for an output and Stop for a track actually on air");
+        check(audioNote->property("text").toString().contains("no output connected"),
+              "the area names what stands between the cue and sound");
+        auto* offlineNote = findNamed(window->contentItem(), "previewOfflineNote");
+        check(offlineNote && offlineNote->isVisible() && !worker.outputLive(),
+              "no cue and no combo choice makes the monitor claim air it does not have");
+        combo->setProperty("currentIndex", 0);
+        QTest::qWait(20);
+    }
     if (qEnvironmentVariableIsSet("OPENSHOW_WORKSPACE_LIVE")) {
         worker.start();
         QElapsedTimer timeout;

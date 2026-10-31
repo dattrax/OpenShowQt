@@ -28,7 +28,7 @@ stage, scripture, streaming, cloud or multi-output scope.
 | Background/images/words routing switches | Remove | Settings → Audience content, with user-facing labels |
 | Raw aux/clock renderer switches | Remove | No public controls until corresponding product features exist |
 | Audience preview and current destination name | Keep, read-only | Right monitor; this reports the destination and does not configure it |
-| Clear slide/background/all, restore | Keep | Runtime cues; later arrange beside the preview |
+| Clear slide/background/all, restore | Keep | Runtime cues, arranged beside the preview in UI.5 |
 | Present / Previous / Next / Follow selection | Keep as interim runtime controls | UI.3b replaces implicit follow-arming with consistent Show triggers |
 | Play/pause, seek, loop, gain and mute | Keep when applicable | Transport and audio show controls, bound to worker acknowledgements |
 | Typed audio path / Set track form | Remove | Cue activation from the bin (UI.4b); UI.5 replaces the interim chooser in the rail |
@@ -333,9 +333,9 @@ and reports its own clock, a file of garbage is refused naming that file while
 the bed carries on, a go moves none of it, and the removal is the stop. Losing
 the worker now takes the standalone mirror down with the rest of the media
 state, so no row can still read ON AIR after the process it describes has
-gone. The rail's interim file chooser stays until UI.5 replaces it with the
-prepared-audio area; both drive the same command and read the same
-acknowledged block, so the two cannot disagree about what is playing.
+gone. The rail's interim file chooser stayed for this leaf and was retired
+with UI.5; while both existed they drove the same command and read the same
+acknowledged block, so the two could not disagree about what was playing.
 Gates: desktop 57/57 (346.07 s, 15 display), headless 32/32 (65.71 s); both
 trees build clean.
 
@@ -349,9 +349,57 @@ the interim direct file chooser. Use native asset metadata/type validation rathe
 than guessing audio eligibility from file extensions.
 
 Acceptance: live preview is always distinct from selection previews. Clears,
-restore, seek, loop, gain, mute and audio selection continue using acknowledged
-state. No monitor-routing or renderer-layer setup reappears. Independent audio
-survives slide/background changes, using the existing transport contracts.
+restore, seek, loop, gain, mute and audio selection continue using
+acknowledged state. No monitor-routing or renderer-layer setup reappears.
+Independent audio survives slide/background changes, using the existing
+transport contracts.
+
+Verification (UI.5, 2026-10-31): `OutputPanel.qml` is now the arrangement the
+diagram draws. The audience picture keeps the outer edge and a compact strip
+of clears sits beside it in the reference's shape — a small red action over
+its label, one pair per layer the product clears, the pair dead while its own
+layer is empty and the label lit while that layer carries the audience — with
+Clear all / Restore under them. The global `enabled: worker.outputLive` gate
+that used to sleep the whole dock is gone: each control now answers for
+itself, so clears wait for the output while the audio cue below waits only
+for a connection to receive it. Beneath the monitor sits the TRANSPORT
+section: the on-air slide's video play/pause, loop, clock and seek, with its
+own source's gain and mute, and the sentence "nothing on the transport" while
+no video is on air.
+
+The AUDIO TRACK area replaces the interim chooser. Its list is the service's
+prepared audio — the bin rows whose kind the domain's one name rule calls
+audio — so no dialog's list of extensions decides what is playable, and
+eligibility for a particular file remains the worker's probe's verdict. Picking
+from the list sends nothing: selection is browsing, and only the explicit
+Play puts a cue on the production track, exactly as the bin's row control
+does, through `selectStandaloneTrack` and nothing else; Stop is the removal.
+Play is disabled for a cue that is already the live track — that is Stop's
+business, not a re-send — and the status sentence keeps the operator's order:
+a track that died mid-air first, then what is on air with its clock and its
+muted state, then what stands between the selection and sound. Show names the
+file; the worker's full refusal sentence stays in the bin's Edit details.
+`selectStandaloneFile` left with the chooser: with no picker in the product,
+every path that reaches the track now comes from the document, and the
+scripted peer confirms it — three selection frames rode the wire for that
+scenario, exactly the three the operator can cause.
+
+`workspace_ui_tests` pins the arrangement off the wire: the strip beside the
+preview (scene-position, not just presence), no `playAudioButton` anywhere in
+the tree, all three clear controls disabled with no output and the button
+saying "Clear all", the transport offering no controls while naming its
+emptiness, the combo holding audio names only — no video, no paths — and
+picking one sending nothing to any output while Play and Stop stay disabled
+and the monitor's "Output disconnected" note survives the picking. The
+positive half — that those same worker properties drive the same controls
+when an output exists — is pinned where the acknowledgements originate:
+`worker_controller_tests`'s transport scenario (every control follows the
+status echo, refused changes snap back) and the journey's section 8 (a real
+bed on air through this command, a real refusal naming its file, a go moving
+none of it). No routing, layer or renderer control reappeared, which the
+existing visible-tree audit on Show re-checks at all three capture sizes.
+Gates: desktop 57/57 (344.29 s, 15 display), headless 32/32 (65.64 s); both
+trees build clean.
 
 ### UI.6 — Toolbar, layout and visual acceptance
 
@@ -370,8 +418,8 @@ completion. Run workspace/controller tests and relevant live frontend journeys.
 
 ## Completion rule
 
-UI.1–UI.3c and UI.4 (both leaves) are closed, verification recorded above;
-UI.5–6 remain TODO until implemented and checked.
+UI.1–UI.3c, UI.4 (both leaves) and UI.5 are closed, verification recorded
+above; UI.6 remains TODO until implemented and checked.
 A colour change or one screenshot does not close the layout work. Keep the short
 ledger in PLAN.md; store audit details and later capture evidence alongside this
 plan. M6's completed async fixes remain DONE, and M7 release gates remain open.

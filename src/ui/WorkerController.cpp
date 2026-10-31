@@ -803,14 +803,6 @@ void WorkerController::setMediaMute(const QString& source, bool muted) {
                 boost::json::object{{"source", source.toStdString()}, {"mute", muted}});
 }
 
-void WorkerController::selectStandaloneFile(const QUrl& file) {
-    if (!file.isLocalFile() || file.toLocalFile().isEmpty()) {
-        setStatus(QStringLiteral("Choose an audio file on this computer"));
-        return;
-    }
-    selectStandaloneTrack(file.toLocalFile());
-}
-
 void WorkerController::selectStandaloneTrack(const QString& path) {
     // A new selection — the removal included — supersedes the last verdict:
     // until the worker answers THIS ask the bin has nothing honest to say

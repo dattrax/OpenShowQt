@@ -27,7 +27,6 @@
 #include <QImage>
 #include <QProcess>
 #include <QTimer>
-#include <QUrl>
 #include <QVariantMap>
 
 #include <chrono>
@@ -249,8 +248,11 @@ public:
     // the answer is the worker's, and the probe runs in the worker's file
     // thread, never in this process. When the track is up, its own story is
     // the standalone* properties, mirrored from status and nothing else.
+    // Both cue surfaces — the bin's Play and the rail's — call exactly this
+    // with a prepared asset's path; the product has no arbitrary-file picker
+    // any more (UI.5 retired the interim chooser, and with it the URL entry
+    // point: a cue's path now comes only from the document).
     Q_INVOKABLE void selectStandaloneTrack(const QString& path);
-    Q_INVOKABLE void selectStandaloneFile(const QUrl& file);
 
     // Adoption after a save moves an asset's bytes (task 6.12, review R7).
     // pathMap names each move old-path -> new-path. Every scene payload this
