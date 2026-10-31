@@ -5,9 +5,10 @@ Updated: 2026-10-31 (Europe/London). Reviewed code: `db406f7` (6.22g).
 ## Current checkpoint
 
 The [post-6.22 review](docs/reviews/M6-post-6.22-review-2026-10-31.md) introduced
-**6.23a–e**. **6.23a–b are DONE**; c–e remain open. Retirement claims
+**6.23a–e**. **6.23a–c are DONE**; d–e remain open. Retirement claims
 reserve capacity before consuming a stage; deferred scenes retain their media,
-revision and pixels until the complete transaction can land. Current evidence: [6.23 verification](docs/reviews/M6-6.23-verification-2026-10-31.md).
+revision and pixels until the complete transaction can land. Standalone request
+generations prevent delayed probes from undoing a newer removal. Current evidence: [6.23 verification](docs/reviews/M6-6.23-verification-2026-10-31.md).
 
 Manual output fix: disabled GLFW's fullscreen auto-iconify on focus loss, so
 activating the operator UI does not ask Wayland to minimize the audience window.

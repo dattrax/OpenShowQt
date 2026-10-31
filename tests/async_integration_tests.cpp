@@ -132,6 +132,44 @@ void deferredScene(const std::string& a, const std::string& b, const std::string
     qunsetenv("OPENSHOW_FAULT_PACING_EXIT_MS");
     qunsetenv("OPENSHOW_FAULT_PACING_EXIT_MATCH");
 }
+// 6.23c: inline removal outranks every older validation job, including
+// multiple queued requests and a repeated path. Teardown must drain a probe.
+void removedIntent(const std::string& current, const std::string& a,
+                   const std::string& b, bool queued, bool shutdown) {
+    qputenv("OPENSHOW_FAULT_STANDALONE_PROBE_MS", "600");
+    qputenv("OPENSHOW_FAULT_STANDALONE_PROBE_MATCH", "intent-");
+    WorkerController worker;
+    worker.start();
+    if (!check(waitUntil([&] { return worker.outputLive() && worker.previewActive(); }),
+               "intent: worker connects")) { worker.shutdownNow(); return; }
+    worker.selectStandaloneTrack(QString::fromStdString(current));
+    if (!check(waitUntil([&] { return worker.standaloneOnAir(); }),
+               "intent: initial audio is live")) { worker.shutdownNow(); return; }
+    worker.selectStandaloneTrack(QString::fromStdString(a));
+    if (queued) {
+        worker.selectStandaloneTrack(QString::fromStdString(b));
+        worker.selectStandaloneTrack(QString::fromStdString(a));
+    }
+    settle(100);  // first validation is inside its 600 ms delay
+    if (shutdown) {
+        worker.shutdownNow();
+        check(!worker.outputLive(), "intent: shutdown during validation retires the worker");
+    } else {
+        worker.selectStandaloneTrack("");
+        check(waitUntil([&] { return !worker.standaloneOnAir(); }),
+              "intent: removal is acknowledged while probes remain unfinished");
+        bool stayedRemoved = true;
+        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(2800);
+        while (std::chrono::steady_clock::now() < end) {
+            settle(20);
+            stayedRemoved = stayedRemoved && !worker.standaloneOnAir();
+        }
+        check(stayedRemoved, "intent: old probes cannot resurrect removed playback");
+        worker.shutdownNow();
+    }
+    qunsetenv("OPENSHOW_FAULT_STANDALONE_PROBE_MS");
+    qunsetenv("OPENSHOW_FAULT_STANDALONE_PROBE_MATCH");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -152,5 +190,16 @@ int main(int argc, char** argv) {
         if (std::system(command.c_str()) != 0) return 1;
     }
     for (int ending = 0; ending < 3; ++ending) deferredScene(a, b, c, ending);
+    const auto current = scratch.path().toStdString() + "/current.m4a";
+    const auto intentA = scratch.path().toStdString() + "/intent-a.m4a";
+    const auto intentB = scratch.path().toStdString() + "/intent-b.m4a";
+    for (const auto& path : {current, intentA, intentB}) {
+        const auto command = std::string("ffmpeg -v error -nostdin -y -f lavfi -i ")
+            + "anullsrc=channel_layout=stereo:sample_rate=48000 -t 2 -c:a aac '" + path + "'";
+        if (std::system(command.c_str()) != 0) return 1;
+    }
+    removedIntent(current, intentA, intentB, false, false);
+    removedIntent(current, intentA, intentB, true, false);
+    removedIntent(current, intentA, intentB, false, true);
     return failures ? 1 : 0;
 }

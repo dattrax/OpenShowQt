@@ -711,12 +711,14 @@ bool OutputSession::requestStandaloneAudio(const std::string& path, std::string*
 bool OutputSession::requestStandaloneAudioDeferred(
     const std::string& path, uint64_t jobId,
     std::function<void(bool accepted, const std::string& refusal)> done) {
+    const auto intent = fTransport.beginStandaloneIntent();
     // A removal has nothing to probe, and a session with no background
     // media has no executor running (6.9a's rule): both answer inline, the
     // way scene.prepare answers when there is no file work to await.
     if (path.empty() || !fBackgroundMedia) {
         std::string refusal;
-        const bool accepted = fTransport.requestStandaloneAudio(path, &refusal);
+        const bool accepted = path.empty() || fTransport.validateStandaloneTrack(path, &refusal);
+        if (accepted) fTransport.armStandaloneTrack(path, intent);
         done(accepted, refusal);
         return true;
     }
@@ -732,18 +734,18 @@ bool OutputSession::requestStandaloneAudioDeferred(
     auto verdict = std::make_shared<Verdict>();
     return fPrepares.submit(
         jobId,
-        [this, path, verdict](const std::atomic<bool>& cancelled) {
+        [this, path, intent, verdict](const std::atomic<bool>& cancelled) {
             if (cancelled.load(std::memory_order_acquire)) {
                 return;  // the completion reports the retirement; nothing arms
             }
             verdict->accepted = fTransport.validateStandaloneTrack(path, &verdict->refusal);
-            if (verdict->accepted) {
-                fTransport.armStandaloneTrack(path);
+            if (verdict->accepted && !cancelled.load(std::memory_order_acquire)) {
+                fTransport.armStandaloneTrack(path, intent);
             }
         },
         [verdict, done = std::move(done)](bool cancelled) {
             if (cancelled) {
-                done(false, "media.standalone was retired before its probe ran");
+                done(false, "media.standalone was retired before its probe completed");
             } else {
                 done(verdict->accepted, verdict->refusal);
             }

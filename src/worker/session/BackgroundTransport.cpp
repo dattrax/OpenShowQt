@@ -592,27 +592,41 @@ bool BackgroundTransport::validateStandaloneTrack(const std::string& path,
     return true;
 }
 
-void BackgroundTransport::armStandaloneTrack(const std::string& path) {
+BackgroundTransport::StandaloneIntent BackgroundTransport::beginStandaloneIntent() {
+    std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
+    fStandaloneSwap.reset();
+    return ++fStandaloneIntent;
+}
+
+bool BackgroundTransport::armStandaloneTrack(const std::string& path, StandaloneIntent intent) {
     {
         std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
-        fStandaloneSwap = path;
+        if (intent != fStandaloneIntent) return false;
+        fStandaloneSwap = StandaloneSelection{path, intent};
     }
     wakeRenderThread();
+    return true;
+}
+
+void BackgroundTransport::armStandaloneTrack(const std::string& path) {
+    const auto intent = beginStandaloneIntent();
+    armStandaloneTrack(path, intent);
 }
 
 bool BackgroundTransport::requestStandaloneAudio(const std::string& path, std::string* error) {
+    const auto intent = beginStandaloneIntent();
     // A removal always accepts, even with a broken track on file: taking
     // the track down is the operator's last resort, and the sticky error
     // stays paired with the path it describes (5.5d's rule, read inside
     // this block).
     if (path.empty()) {
-        armStandaloneTrack(path);
+        armStandaloneTrack(path, intent);
         return true;
     }
     if (!validateStandaloneTrack(path, error)) {
         return false;
     }
-    armStandaloneTrack(path);
+    armStandaloneTrack(path, intent);
     return true;
 }
 
@@ -705,22 +719,27 @@ void BackgroundTransport::applyStandaloneOps() {
         // brings the retry. Abandoning inline (the old way) destroyed the
         // player right here: feeder, mixer and sink joins on the frame
         // tick, uncontracted by anything.
+        // done publishes the result before the worker's final wake. Reap
+        // outside the intent lock; a parked stage may already be joined.
+        if (fStandaloneStage->worker.joinable()) fStandaloneStage->worker.join();
         if (fStandaloneStageClaimHook) {
             fStandaloneStageClaimHook();
         }
         bool superseded = false;
         std::shared_ptr<StandaloneRetirement> reservation;
         std::shared_ptr<StandaloneStage> stage;
+        // Keep request receipt ordered against publication as well as the
+        // reservation. No later removal can be acknowledged and then have
+        // this older player released from its hold.
+        std::unique_lock<std::mutex> swapLock(fStandaloneSwapMutex);
         {
-            std::lock_guard<std::mutex> swapLock(fStandaloneSwapMutex);
-            superseded = fStandaloneSwap && *fStandaloneSwap != fStandaloneStage->path;
+            superseded = fStandaloneStage->intent != fStandaloneIntent;
             if (superseded && fStandaloneStage->player) {
                 reservation = reserveStandaloneRetirement();
                 if (!reservation) return;  // keep the held player and its lane owned
             }
             stage = std::move(fStandaloneStage);
         }
-        stage->worker.join();  // the job returned with its store; this only reaps
         std::unique_ptr<AvPlayer> abandoned;
         {
             // This is the decision made while claiming the stage. A later
@@ -795,7 +814,7 @@ void BackgroundTransport::applyStandaloneOps() {
     if (fStandaloneStage) {
         return;  // one bring-up at a time; the lane wakes this loop when done
     }
-    std::optional<std::string> swap;
+    std::optional<StandaloneSelection> swap;
     {
         std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
         swap.swap(fStandaloneSwap);
@@ -818,12 +837,12 @@ void BackgroundTransport::applyStandaloneOps() {
     const auto reservation = needsRetirement ? reserveStandaloneRetirement() : nullptr;
     if (needsRetirement && !reservation) {
         std::lock_guard<std::mutex> lock(fStandaloneSwapMutex);
-        if (!fStandaloneSwap) {
+        if (!fStandaloneSwap && swap->intent == fStandaloneIntent) {
             fStandaloneSwap = swap;
         }
         std::fprintf(stderr,
                      "openshow-worker: standalone swap deferred, retirement in flight: %s\n",
-                     swap->empty() ? "<remove>" : swap->c_str());
+                     swap->path.empty() ? "<remove>" : swap->path.c_str());
         return;
     }
     // A queued intent for THIS identity addresses the mixer of the track
@@ -851,7 +870,7 @@ void BackgroundTransport::applyStandaloneOps() {
         fMediaSourceMask.store(fMediaSourceMask.load(std::memory_order_relaxed) & ~2,
                                std::memory_order_release);
         rebuildMediaSourcesLocked();
-        fStandalonePath = *swap;
+        fStandalonePath = swap->path;
         // Ownership, command gate and mirror move together (task 6.22f,
         // review A6). From this moment no player is up — for a removal OR
         // behind a successor's slow bring-up alike — and the block says
@@ -866,7 +885,7 @@ void BackgroundTransport::applyStandaloneOps() {
         fMedia.standalone.duration = -1.0;
         fMedia.standalone.audio = "none";
         fMedia.standalone.loops = 0;
-        if (!swap->empty()) {
+        if (!swap->path.empty()) {
             // A replacement: the block names the NEW selection with
             // live=false — requested-not-yet-presented, the pair the
             // operator's other controls already agree with (the gain/mute
@@ -874,7 +893,7 @@ void BackgroundTransport::applyStandaloneOps() {
             // error goes with the instance that produced it: beside a new
             // path it would tell a story this selection never had, and a
             // fresh failure writes its own.
-            fMedia.standalone.path = *swap;
+            fMedia.standalone.path = swap->path;
             fMedia.standalone.error.clear();
         }
         // A removal keeps the path and the error together: what broke, and
@@ -886,7 +905,7 @@ void BackgroundTransport::applyStandaloneOps() {
     } else {
         retiring.reset();  // never started: no threads, no wait, no lane
     }
-    if (swap->empty()) {
+    if (swap->path.empty()) {
         std::fprintf(stderr, "openshow-worker: standalone track removed\n");
         return;
     }
@@ -894,9 +913,10 @@ void BackgroundTransport::applyStandaloneOps() {
     // (FreeShow's rule): the removal is the stop, and a walk-in track
     // that falls silent at its EOF mid-service is its own surprise.
     auto stage = std::make_shared<StandaloneStage>();
-    stage->path = *swap;
+    stage->path = swap->path;
+    stage->intent = swap->intent;
     AvPlayer::Config config;
-    config.secondAudioPath = *swap;
+    config.secondAudioPath = swap->path;
     config.loop = true;
     config.startHeld = true;  // silent while the wait runs (6.21c1's hold)
     stage->worker = std::thread([this, stage, config] {
@@ -934,7 +954,7 @@ void BackgroundTransport::reapStandaloneStage() {
     while (!fStandaloneStage->done.load(std::memory_order_acquire)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    fStandaloneStage->worker.join();
+    if (fStandaloneStage->worker.joinable()) fStandaloneStage->worker.join();
     fStandaloneStage->player.reset();
     fStandaloneStage.reset();
 }

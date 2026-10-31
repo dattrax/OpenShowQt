@@ -162,6 +162,20 @@ void testStandaloneProbe(BackgroundTransport& transport) {
           "standalone: a removal always accepts");
 }
 
+void testStandaloneIntentGeneration() {
+    BackgroundTransport transport;
+    const auto older = transport.beginStandaloneIntent();
+    const auto removal = transport.beginStandaloneIntent();
+    check(transport.armStandaloneTrack("", removal), "intent: newest removal arms");
+    check(!transport.armStandaloneTrack("unused-older-track", older),
+          "intent: old validation cannot replace the removal");
+    const auto latest = transport.beginStandaloneIntent();
+    check(!transport.armStandaloneTrack("", removal), "intent: even removal carries its generation");
+    check(transport.armStandaloneTrack("", latest), "intent: latest request retains ownership");
+    transport.applyTransportOps();
+    check(!transport.standaloneLive(), "intent: stale work starts no player");
+}
+
 void testStillsAndIdentity(BackgroundTransport& transport) {
     // The broken still (R18): the picture the audience should be seeing is
     // not in the cache, and the colour fill they get is a degradation the
@@ -1188,6 +1202,7 @@ int main() {
     testIdle(transport);
     testRefusals(transport);
     testStandaloneProbe(transport);
+    testStandaloneIntentGeneration();
     testStillsAndIdentity(transport);
     testSeam(transport);
     testScheduleGrammar();

@@ -402,6 +402,11 @@ public:
     bool validateStandaloneTrack(const std::string& path, std::string* error) const;
     // The accept half: newest selection wins into the swap slot ("" removes)
     // and the render thread wakes to apply it. No probe, no wait.
+    using StandaloneIntent = uint64_t;
+    // Stamp at request receipt, before asynchronous validation. Removal
+    // invalidates older probes and held stages even when their paths match.
+    StandaloneIntent beginStandaloneIntent();
+    bool armStandaloneTrack(const std::string& path, StandaloneIntent intent);
     void armStandaloneTrack(const std::string& path);
     // Any thread: the standalone transport is up (between a swap that
     // started it and one that stopped it, or teardown).
@@ -675,6 +680,7 @@ private:
         std::unique_ptr<AvPlayer> player;  // staged held player when done; null on failure
         std::string error;                 // bring-up failure (empty = ok)
         std::string path;                  // the request this stage answers
+        StandaloneIntent intent = 0;
         // The track's duration, probed on the bring-up lane as part of its
         // result (task 6.22e1, review A5): publish consumes it as staged
         // metadata instead of re-reading the file under fMutex, where both
@@ -711,8 +717,13 @@ private:
         const std::lock_guard<std::mutex> lock(fMutex);
         return fStandaloneRetirement;
     }
-    std::mutex fStandaloneSwapMutex;                   // guards fStandaloneSwap
-    std::optional<std::string> fStandaloneSwap;        // path to apply ("" = remove)
+    struct StandaloneSelection {
+        std::string path;  // empty removes the track
+        StandaloneIntent intent;
+    };
+    std::mutex fStandaloneSwapMutex;  // intent, pending selection and publication
+    StandaloneIntent fStandaloneIntent = 0;
+    std::optional<StandaloneSelection> fStandaloneSwap;
     std::atomic<bool> fStandaloneLive{false};          // any thread (the swap writes)
     std::string fStandalonePath;                       // transport thread; "" = none
 
