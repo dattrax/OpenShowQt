@@ -397,6 +397,8 @@ show default → built-in. [Detailed model, format 6 and acceptance](docs/ui/the
 | TH.4 | DONE | More ⋯ menu and Theme Editor mode with live sample preview | `workspace_ui_tests`, `ui_loads`; browsing never writes to the worker |
 | TH.5 | DONE | Apply/restore surfaces and Edit customization badges | `workspace_ui_tests` + controller regressions; bulk ops undo once — header selector sets the VIEWED show's default, cue and library right-clicks theme and restore, Edit fields write per-slide customizations with per-field revert badges and never restyle the shared theme |
 | TH.6 | DONE | Captures and documentation | Three-width captures themed and customized; architecture.md updated — captures carry the Loud show default, the slide wearing House and exactly two live badges (the focus-out-is-not-an-edit guard this check found ships with it); a Themes section in architecture.md and the plan record the model, chain, surfaces and Qt 6.12 shapes |
+| TH.7 | DONE | Themes carry the lyric-box placement (amendment) | `domain_tests` placement chain matrix (customization > current > slide > show > authored), validation and storage round-trip/refusals on format 6; `scene_tests`: the themed rectangle drives the FIRST TEXT item only — extra boxes and images keep theirs |
+| TH.8 | TODO | Placement surfaces: Theme Editor canvas, Edit routing | `workspace_ui_tests`: theme-editor drag commits one placement, sample moves, Edit drag on a themed slide customizes (badge, revert returns it to the theme), untuned slides keep authored edits; captures show the uniform placement; docs updated |
 
 ### M7 — Productization, reliability and installable alpha
 

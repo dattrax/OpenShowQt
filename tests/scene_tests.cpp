@@ -766,6 +766,167 @@ void exerciseChainCompile() {
           "deleting the current theme re-skins back, it does not blank");
 }
 
+// The themes plan amendment (2026-11-01): a theme that carries a placement
+// moves ONE box on a wearing slide — its PRIMARY lyric box, the first TEXT
+// item in draw order — and leaves every other box, words or picture, at the
+// geometry it was authored with. With no layer speaking, nothing moves at
+// all, which is what every theme written before the amendment means.
+void exercisePlacementCompile() {
+    std::string error;
+    Documents docs;
+    const Id show = docs.createShow("Placed");
+    const Id slide = docs.appendSlide(show);
+    const Id stacked = docs.appendSlide(show);
+    const Id asset = docs.addAsset("plate.jpg", "/services/svc/assets/plate.jpg");
+    openshow::domain::SlideItem title;
+    title.lines = {"Title"};
+    title.x = 100.0;
+    title.y = 40.0;
+    title.width = 800.0;
+    title.height = 120.0;
+    openshow::domain::SlideItem picture;
+    picture.kind = openshow::domain::ItemKind::Image;
+    picture.assetId = asset;
+    picture.x = 1000.0;
+    picture.y = 80.0;
+    picture.width = 800.0;
+    picture.height = 450.0;
+    openshow::domain::SlideItem credit;
+    credit.lines = {"credit"};
+    credit.x = 1200.0;
+    credit.y = 900.0;
+    credit.width = 600.0;
+    credit.height = 100.0;
+    const Id titleId = docs.addItem(show, stacked, title, &error);
+    const Id pictureId = docs.addItem(show, stacked, picture, &error);
+    const Id creditId = docs.addItem(show, stacked, credit, &error);
+    // Draw order becomes picture, default box, title, credit: the lyric box
+    // is no longer first in the list, and the theme must still find it.
+    check(!titleId.empty() && !pictureId.empty() && !creditId.empty() &&
+              docs.moveItem(show, stacked, pictureId, 0, &error) &&
+              docs.findShow(show)->slides[1].items[0].id == pictureId,
+          "a four-item slide is authored with a picture on top of the stack");
+    check(docs.setSlideLines(show, slide, {"Placed"}), "the lyric box has a word to place");
+
+    // The authored rectangles, read back rather than repeated, so a change
+    // to the built-in lyric box cannot quietly make this check mean
+    // something else.
+    const openshow::domain::SlideItem& authoredLyric = docs.findShow(show)->slides[0].items[0];
+    const double lyricX = authoredLyric.x;
+    const double lyricY = authoredLyric.y;
+    const double lyricW = authoredLyric.width;
+    const double lyricH = authoredLyric.height;
+
+    const Id showTheme = docs.createTheme("Show", "#111111", "#222222", "", "Show Serif",
+                                          40.0, "left", 1.1, &error);
+    const Id slideTheme = docs.createTheme("Slide", "#333333", "#444444", "", "Slide Serif",
+                                           50.0, "right", 1.3, &error);
+    const Id current = docs.createTheme("Current", "#555555", "#666666", "", "Current Sans",
+                                        60.0, "center", 1.5, &error);
+    check(!showTheme.empty() && !slideTheme.empty() && !current.empty() &&
+              docs.setShowDefaultTheme(show, showTheme) &&
+              docs.setSlideTheme(show, slide, slideTheme),
+          "three themes with no placement are worn");
+
+    scene::Scene out;
+    check(scene::compileSlide(docs, show, slide, &out, &error) && out.items[0].x == lyricX &&
+              out.items[0].y == lyricY && out.items[0].width == lyricW &&
+              out.items[0].height == lyricH,
+          "with no placement anywhere the authored lyric box draws where it was authored");
+
+    openshow::domain::BoxRect themed;
+    themed.x = 320.0;
+    themed.y = 640.0;
+    themed.width = 1280.0;
+    themed.height = 320.0;
+    check(docs.setThemePlacement(slideTheme, themed, &error) &&
+              scene::compileSlide(docs, show, slide, &out, &error) &&
+              out.items[0].x == 320.0 && out.items[0].y == 640.0 &&
+              out.items[0].width == 1280.0 && out.items[0].height == 320.0,
+          "the slide's theme places its lyric box, overriding the authored rectangle");
+    check(out.items[0].lines.size() == 1 && out.items[0].color == 0x333333u &&
+              out.items[0].fontSize == 50.0,
+          "and the box keeps its own words and the chain's look — placement is geometry only");
+
+    // A theme with no placement is silent, not zero-sized: the fall
+    // continues to the layer below.
+    check(docs.setSlideTheme(show, slide, current, &error) &&
+              scene::compileSlide(docs, show, slide, &out, &error) &&
+              out.items[0].x == lyricX && out.items[0].width == lyricW,
+          "a theme with no placement does not move the box and does not fall to zero");
+    openshow::domain::BoxRect banner;
+    banner.x = 80.0;
+    banner.y = 900.0;
+    banner.width = 1760.0;
+    banner.height = 120.0;
+    check(docs.setThemePlacement(current, banner, &error) &&
+              scene::compileSlide(docs, show, slide, &out, &error) &&
+              out.items[0].x == 80.0 && out.items[0].y == 900.0 && out.items[0].height == 120.0,
+          "the current theme's rectangle outranks the slide theme's");
+
+    // The slide's own placement customization beats every theme, and
+    // reverting it hands the box straight back.
+    openshow::domain::SlideCustomization changed;
+    changed.placement = themed;
+    check(docs.setSlideCustomizations(show, slide, changed, &error) &&
+              scene::compileSlide(docs, show, slide, &out, &error) && out.items[0].x == 320.0 &&
+              out.items[0].y == 640.0,
+          "a slide that customized its placement keeps its own spot over the theme");
+    check(docs.removeSlideCustomizations(show, slide, &error) &&
+              scene::compileSlide(docs, show, slide, &out, &error) && out.items[0].x == 80.0,
+          "reverting the placement hands the box back to the current theme");
+
+    // Only the primary lyric box moves. On the stacked slide — picture,
+    // default box, title, credit — the theme places the first TEXT item and
+    // the picture and the deliberate extras stay exactly where they were.
+    check(docs.setThemePlacement(showTheme, themed, &error) &&
+              scene::compileSlide(docs, show, stacked, &out, &error) && out.items.size() == 4,
+          "the stacked slide compiles with the show default's placement");
+    check(out.items[0].isImage && out.items[0].x == 1000.0 && out.items[0].y == 80.0 &&
+              out.items[0].width == 800.0 && out.items[0].height == 450.0,
+          "the picture on top keeps its authored box — a theme places words, not pictures");
+    check(out.items[1].x == 320.0 && out.items[1].y == 640.0 && out.items[1].width == 1280.0 &&
+              out.items[1].height == 320.0,
+          "the first TEXT item is the lyric box, even with a picture stacked over it");
+    check(out.items[2].x == 100.0 && out.items[2].y == 40.0 && out.items[2].width == 800.0 &&
+                  out.items[2].height == 120.0 && out.items[3].x == 1200.0 &&
+                  out.items[3].y == 900.0 && out.items[3].width == 600.0 &&
+                  out.items[3].height == 100.0,
+          "every additional box keeps its authored rectangle — a stacked slide does not collapse");
+
+    // Taking the placements off, layer by layer, sends the slides back to
+    // their authored geometry with colours and words untouched.
+    check(docs.clearThemePlacement(current, &error) &&
+              scene::compileSlide(docs, show, slide, &out, &error) &&
+              out.items[0].x == 320.0 && out.items[0].y == 640.0,
+          "taking the current theme's placement off drops the slide to the show default's");
+    check(docs.clearThemePlacement(showTheme, &error) &&
+              scene::compileSlide(docs, show, stacked, &out, &error) &&
+              out.items[1].x == lyricX && out.items[1].y == lyricY &&
+              scene::compileSlide(docs, show, slide, &out, &error) &&
+              out.items[0].x == lyricX && out.items[0].color == 0x555555u,
+          "with no placing theme left every slide draws its authored box, still skinned");
+
+    // A slide with nothing but a picture has no lyric box to place, and the
+    // compile does not invent one.
+    check(docs.setThemePlacement(showTheme, themed, &error),
+          "the show default places once more");
+    const Id onlyPicture = docs.appendSlide(show);
+    docs.removeItem(show, onlyPicture, docs.findShow(show)->slides[2].items[0].id, &error);
+    openshow::domain::SlideItem alone;
+    alone.kind = openshow::domain::ItemKind::Image;
+    alone.assetId = asset;
+    alone.x = 20.0;
+    alone.y = 20.0;
+    alone.width = 400.0;
+    alone.height = 300.0;
+    const Id aloneId = docs.addItem(show, onlyPicture, alone, &error);
+    check(!aloneId.empty() &&
+              scene::compileSlide(docs, show, onlyPicture, &out, &error) &&
+              out.items.size() == 1 && out.items[0].isImage && out.items[0].x == 20.0,
+          "a picture-only slide keeps its picture at its own box under a placing theme");
+}
+
 void exerciseClearedScene() {
     const scene::Scene black = scene::clearedScene();
     check(black.items.empty() && black.background.color == scene::kBlack &&
@@ -1430,6 +1591,7 @@ int main() {
     exerciseBackgroundFit();
     exerciseBackgroundGradient();
     exerciseChainCompile();
+    exercisePlacementCompile();
     exerciseMeasuredSizes(fx);
     exerciseClearedScene();
     exerciseDemoFixture();

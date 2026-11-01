@@ -441,6 +441,55 @@ bool wantCustomNumber(const boost::json::object& obj, const char* key,
     return true;
 }
 
+// The lyric-box placement on the wire (themes plan amendment 2026-11-01).
+// A theme's placement and a slide's placement CUSTOMIZATION are the same
+// shape — {x,y,width,height} in the 1920x1080 authored canvas — and both
+// are OPTIONAL: an absent key is the statement "no opinion about where
+// words go", never a zero-sized box. A present rectangle gets the authored
+// box's own vetting at load time, because a box this build could not place
+// must fail at load naming its owner rather than at present time.
+boost::json::object boxRectJson(const BoxRect& rect) {
+    boost::json::object out;
+    out.emplace("x", rect.x);
+    out.emplace("y", rect.y);
+    out.emplace("width", rect.width);
+    out.emplace("height", rect.height);
+    return out;
+}
+
+bool wantBoxRect(const boost::json::object& obj, const char* key, const std::string& owner,
+                 std::optional<BoxRect>* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;  // no opinion, and that is a complete answer
+    }
+    if (!value->is_object()) {
+        fail(error, "service.json: " + owner + " carries \"placement\" that is not an object");
+        return false;
+    }
+    const boost::json::object& jsonRect = value->as_object();
+    BoxRect rect;
+    double* parts[4] = {&rect.x, &rect.y, &rect.width, &rect.height};
+    const char* const names[4] = {"x", "y", "width", "height"};
+    for (size_t i = 0; i < 4; ++i) {
+        const boost::json::value* part = field(jsonRect, names[i]);
+        if (part == nullptr || !part->is_number()) {
+            fail(error, "service.json: " + owner + " placement needs a number \"" + names[i] +
+                            "\"");
+            return false;
+        }
+        *parts[i] = part->to_number<double>();
+    }
+    if (!std::isfinite(rect.x) || !std::isfinite(rect.y) || !std::isfinite(rect.width) ||
+        !std::isfinite(rect.height) || rect.width <= 0.0 || rect.height <= 0.0) {
+        fail(error, "service.json: " + owner + " placement cannot be placed: it needs finite "
+                        "coordinates and positive width and height");
+        return false;
+    }
+    *out = rect;
+    return true;
+}
+
 bool wantStringArray(const boost::json::object& obj, const char* key,
                      std::vector<std::string>* out, std::string* error) {
     const boost::json::value* value = field(obj, key);
@@ -586,6 +635,12 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             if (changed.lineSpacing.has_value()) {
                 customizations.emplace("lineSpacing", *changed.lineSpacing);
             }
+            // One unit, four numbers (amendment 2026-11-01): a slide that
+            // dragged its lyric box owns the whole rectangle, and reverting
+            // hands the whole rectangle back to the theme.
+            if (changed.placement.has_value()) {
+                customizations.emplace("placement", boxRectJson(*changed.placement));
+            }
             slideJson.emplace("customizations", std::move(customizations));
             slideJson.emplace("backgroundAssetId", slide.backgroundAssetId);
             // Fit on EVERY slide, cover included — 6.17b1's rule for the
@@ -616,6 +671,15 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
         // for themes written before it existed.
         entry.emplace("align", theme.align);
         entry.emplace("lineSpacing", theme.lineSpacing);
+        // Placement is the ONE theme member that stays absent rather than
+        // spelling its silence (amendment 2026-11-01): "this theme has no
+        // opinion about where the words go" is what every theme written
+        // before it meant, and an explicit null would make the reader
+        // guess between two kinds of nothing. Present, it is the rectangle
+        // a wearing slide's PRIMARY lyric box lands in.
+        if (theme.placement.has_value()) {
+            entry.emplace("placement", boxRectJson(*theme.placement));
+        }
         themes.push_back(std::move(entry));
     }
     root.emplace("themes", std::move(themes));
@@ -961,7 +1025,9 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                     !wantCustomString(changedObject, "fontFamily", &c.fontFamily, error) ||
                     !wantCustomNumber(changedObject, "fontSize", &c.fontSize, error) ||
                     !wantCustomString(changedObject, "align", &c.align, error) ||
-                    !wantCustomNumber(changedObject, "lineSpacing", &c.lineSpacing, error)) {
+                    !wantCustomNumber(changedObject, "lineSpacing", &c.lineSpacing, error) ||
+                    !wantBoxRect(changedObject, "placement", "slide '" + slide.id + "'",
+                                 &c.placement, error)) {
                     return false;
                 }
                 for (const auto& entry : changedObject) {
@@ -1077,6 +1143,24 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                                 " does not exist");
                 return false;
             }
+        }
+        // Placement (amendment 2026-11-01) is a format-6 member and the
+        // only OPTIONAL one: absent is exactly what every theme written
+        // before it meant, so its absence is not a hand-edit and needs no
+        // inference. A "placement" in a pre-6 file is another build's
+        // meaning of a key this build's writer never emitted there, and is
+        // refused naming it — the backgroundGradient rule, applied again.
+        if (themeNamed) {
+            if (!wantBoxRect(jsonTheme, "placement", "theme '" + theme.id + "'", &theme.placement,
+                             error)) {
+                return false;
+            }
+        } else if (jsonTheme.contains("placement")) {
+            fail(error, "service.json: theme '" + theme.id +
+                            "' carries \"placement\" in a format " +
+                            std::to_string(format) + " file, where that key"
+                            " does not exist");
+            return false;
         }
         // "align" arrived after the first services: wantOptionalString
         // blanks an absent key, and blank is how a pre-typography theme

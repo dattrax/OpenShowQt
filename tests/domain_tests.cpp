@@ -52,6 +52,7 @@ using Playlist = openshow::domain::Playlist;
 using Show = openshow::domain::Show;
 using Slide = openshow::domain::Slide;
 using Theme = openshow::domain::Theme;
+using BoxRect = openshow::domain::BoxRect;
 using SlideCustomization = openshow::domain::SlideCustomization;
 using ResolvedAppearance = openshow::domain::ResolvedAppearance;
 using SlideItem = openshow::domain::SlideItem;
@@ -879,7 +880,11 @@ bool sameService(const Documents& a, const Documents& b) {
             xa->textColor != xb->textColor || xa->backgroundColor != xb->backgroundColor ||
             xa->backgroundGradient != xb->backgroundGradient ||
             xa->fontFamily != xb->fontFamily || xa->fontSize != xb->fontSize ||
-            xa->align != xb->align || xa->lineSpacing != xb->lineSpacing) {
+            xa->align != xb->align || xa->lineSpacing != xb->lineSpacing ||
+            // The lyric-box placement is theme state too (amendment
+            // 2026-11-01): a round trip that dropped it would compare equal
+            // while quietly moving every wearing slide's words.
+            xa->placement != xb->placement) {
             return false;
         }
     }
@@ -1992,6 +1997,119 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                     R"("themes":[],"assets":[],"playlists":[]})",
                 "current theme 'theme9' is unknown",
                 "a current theme the service does not have is refused");
+
+    // --- placement on the wire (themes plan amendment 2026-11-01) ---
+    // A theme's rectangle and a slide's placement customization round-trip,
+    // absence stays absence, and a rectangle nobody could draw is refused
+    // at the load naming its owner.
+    {
+        Documents placed;
+        const Id show = placed.createShow("Placed", &error);
+        const Id slide = placed.appendSlide(show, &error);
+        const Id follow = placed.appendSlide(show, &error);
+        const Id wide = placed.createTheme("Wide", "#ffffff", "#000000", "", "DejaVu Serif",
+                                           64.0, "center", kDefaultLineSpacing, &error);
+        const Id mute = placed.createTheme("Mute", "#eeeeee", "#101010", "", "DejaVu Serif",
+                                           48.0, "left", kDefaultLineSpacing, &error);
+        openshow::domain::BoxRect rect;
+        rect.x = 240.5;
+        rect.y = -30.0;
+        rect.width = 1440.0;
+        rect.height = 480.25;
+        openshow::domain::BoxRect own;
+        own.x = 10.0;
+        own.y = 20.0;
+        own.width = 300.0;
+        own.height = 200.0;
+        check(!wide.empty() && !mute.empty() &&
+                  placed.setThemePlacement(wide, rect, &error) &&
+                  placed.setShowDefaultTheme(show, wide) &&
+                  placed.setSlideTheme(show, slide, mute),
+              "a placing theme, a theme without one and two slides are authored");
+        SlideCustomization changed;
+        changed.placement = own;
+        check(placed.setSlideCustomizations(show, slide, changed, &error),
+              "one slide customizes its placement");
+
+        const fs::path dir = tempRoot / "placement";
+        check(openshow::domain::saveService(placed, dir, &error), "the placed service saves");
+        const std::string manifest = readFile(dir / "service.json");
+        // The four numbers are boost's shortest spelling of each double, so
+        // the shape is what this asserts — an object under the key, exactly
+        // two of them in the file (the theme's and the slide's, no more).
+        // The values themselves are pinned where they belong: on the reload.
+        auto countPlacementObjects = [&manifest]() {
+            int found = 0;
+            for (size_t at = manifest.find("\"placement\":{"); at != std::string::npos;
+                 at = manifest.find("\"placement\":{", at + 1)) {
+                ++found;
+            }
+            return found;
+        };
+        check(countPlacementObjects() == 2,
+              "the theme's rectangle and the slide's customized one are each written once");
+        Documents back;
+        check(openshow::domain::loadService(&back, dir, &error) && sameService(placed, back),
+              "placement round-trips field by field and the services compare equal");
+        check(back.findTheme(wide)->placement == std::optional<openshow::domain::BoxRect>(rect) &&
+                  back.findTheme(mute)->placement == std::nullopt,
+              "the placing theme keeps its rectangle and the silent one stays silent");
+        check(back.findShow(show)->slides[0].customizations.placement ==
+                      std::optional<openshow::domain::BoxRect>(own) &&
+                  back.findShow(show)->slides[1].customizations.placement == std::nullopt,
+              "the customization lands on its slide alone");
+        const fs::path again = tempRoot / "placement-again";
+        check(openshow::domain::saveService(back, again, &error) &&
+                  readFile(again / "service.json") == manifest,
+              "re-saving a placed service writes a byte-identical manifest");
+
+        // The one theme member whose ABSENCE is the answer: every theme
+        // written before the amendment means "no opinion", so a file with
+        // no placement key is not a hand-edit and nothing moves.
+        refusesJson(R"({"format":6,"nextOrdinal":99,"currentThemeId":"","shows":[],)"
+                        R"("themes":[{"id":"theme1","name":"Placed","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"","fontFamily":"",)"
+                        R"("fontSize":64,"placement":[]}],"assets":[],"playlists":[]})",
+                    "not an object",
+                    "a theme placement that is not an object is refused");
+        refusesJson(R"({"format":6,"nextOrdinal":99,"currentThemeId":"","shows":[],)"
+                        R"("themes":[{"id":"theme1","name":"Half","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"","fontFamily":"",)"
+                        R"("fontSize":64,"placement":{"x":1,"y":2,"width":3}}],)"
+                        R"("assets":[],"playlists":[]})",
+                    R"(placement needs a number "height")",
+                    "a theme placement missing a corner is refused naming it");
+        refusesJson(R"({"format":6,"nextOrdinal":99,"currentThemeId":"","shows":[],)"
+                        R"("themes":[{"id":"theme1","name":"Flat","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"","fontFamily":"",)"
+                        R"("fontSize":64,"placement":{"x":1,"y":2,"width":0,"height":3}}],)"
+                        R"("assets":[],"playlists":[]})",
+                    "cannot be placed",
+                    "a zero-width theme rectangle is refused at the load");
+        refusesJson(R"({"format":5,"nextOrdinal":99,"shows":[],)"
+                        R"("styles":[{"id":"style1","name":"Old","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"",)"
+                        R"("fontFamily":"","fontSize":64,"placement":)"
+                        R"({"x":1,"y":2,"width":3,"height":4}}],"assets":[],)"
+                        R"("playlists":[]})",
+                    "does not exist",
+                    "a hand-bumped \"placement\" in a format-5 file is refused naming the era");
+        refusesJson(R"JSON({"format":6,"nextOrdinal":99,"currentThemeId":"","shows":[
+            {"id":"show1","name":"Bad","slides":[
+                {"id":"slide1","group":"","items":[],"notes":"","themeId":"","fit":"cover",
+                 "backgroundAssetId":"","customizations":
+                     {"placement":{"x":1,"y":2,"width":300,"height":0}}}]}],
+            "themes":[],"assets":[],"playlists":[]})JSON",
+                "cannot be placed",
+                "a customized rectangle with nothing in it is refused at the load");
+        refusesJson(R"JSON({"format":6,"nextOrdinal":99,"currentThemeId":"","shows":[
+            {"id":"show1","name":"Bad","slides":[
+                {"id":"slide1","group":"","items":[],"notes":"","themeId":"","fit":"cover",
+                 "backgroundAssetId":"","customizations":{"placement":"everywhere"}}]}],
+            "themes":[],"assets":[],"playlists":[]})JSON",
+                "not an object",
+                "a customized placement of the wrong shape is refused naming its owner");
+    }
 }
 
 // The full appearance chain (task TH.2, themes plan): what one slide draws
@@ -2167,6 +2285,197 @@ void exerciseThemeChain() {
     check(nothing.textColor.empty() && nothing.fontSize == 0.0 &&
               nothing.align.empty() && nothing.lineSpacing == kDefaultLineSpacing,
           "an unknown slide resolves to silence, which the scene compile fills");
+}
+
+// The themes plan amendment (2026-11-01): a theme carries the PRIMARY
+// lyric box's rectangle and the chain resolves it exactly like every other
+// property — the slide's placement customization, then the current theme,
+// then the slide's theme, then the show default. Silence here is an empty
+// optional rather than "" or 0, because a rectangle has no honest zero:
+// with no layer speaking the slide draws the box it was authored with.
+void exerciseThemePlacement() {
+    std::string error;
+    Documents docs;
+    const Id show = docs.createShow("Placed");
+    const Id slide = docs.appendSlide(show);
+    const Id follower = docs.appendSlide(show);
+    const Id showTheme = docs.createTheme("Show", "#111111", "#222222", "", "Show Serif",
+                                          40.0, "left", 1.1, &error);
+    const Id slideTheme = docs.createTheme("Slide", "#333333", "#444444", "", "Slide Serif",
+                                           50.0, "right", 1.3, &error);
+    const Id current = docs.createTheme("Current", "#555555", "#666666", "", "Current Sans",
+                                        60.0, "center", 1.5, &error);
+    check(!showTheme.empty() && !slideTheme.empty() && !current.empty() &&
+              docs.setShowDefaultTheme(show, showTheme) &&
+              docs.setSlideTheme(show, slide, slideTheme),
+          "a show, two slides and three themes exist to carry placement");
+
+    // A theme with no placement has no opinion; the model says so with an
+    // empty optional, and no layer may read that as a zero-sized box.
+    check(docs.findTheme(showTheme)->placement == std::nullopt &&
+              docs.appearanceForSlide(show, slide).placement == std::nullopt &&
+              docs.appearanceForSlide(show, follower).placement == std::nullopt,
+          "with no placement anywhere every slide keeps its authored box");
+
+    // The vetting is the authored box's own, applied to the theme's rect.
+    BoxRect rect;
+    rect.x = 240.0;
+    rect.y = 300.0;
+    rect.width = 1440.0;
+    rect.height = 480.0;
+    check(!docs.setThemePlacement("theme-gone", rect, &error) &&
+              error.find("does not exist") != std::string::npos,
+          "placing a theme that is not there is refused");
+    BoxRect flat = rect;
+    flat.width = 0.0;
+    check(!docs.setThemePlacement(slideTheme, flat, &error) &&
+              error.find("positive width") != std::string::npos &&
+              docs.findTheme(slideTheme)->placement == std::nullopt,
+          "a zero-width rectangle is refused and the theme keeps no placement");
+    BoxRect off = rect;
+    off.height = -12.0;
+    check(!docs.setThemePlacement(slideTheme, off, &error),
+          "a negative height is refused — there would be nothing to draw");
+    BoxRect nan = rect;
+    nan.x = std::nan("");
+    check(!docs.setThemePlacement(slideTheme, nan, &error),
+          "a NaN coordinate is refused, exactly as an authored box refuses one");
+    check(docs.setThemePlacement(slideTheme, rect, &error) &&
+              docs.findTheme(slideTheme)->placement == rect,
+          "a real rectangle lands on the theme");
+
+    // Negative x and y are legitimate: a box may hang off the canvas's top
+    // left, and the reference editor's own default boxes do.
+    BoxRect edge;
+    edge.x = -60.0;
+    edge.y = -60.0;
+    edge.width = 100.0;
+    edge.height = 100.0;
+    check(docs.setThemePlacement(showTheme, edge, &error),
+          "a rectangle hanging off the canvas is a placement, not an error");
+
+    // The chain, layer by layer. The slide's own theme speaks first.
+    ResolvedAppearance a = docs.appearanceForSlide(show, slide);
+    check(a.placement == std::optional<BoxRect>(rect),
+          "the slide's theme places its lyric box");
+    a = docs.appearanceForSlide(show, follower);
+    check(a.placement == std::optional<BoxRect>(edge),
+          "a slide following the show takes the show default's placement");
+
+    // A theme without placement is SILENT, not an answer: the fall
+    // continues past it to the next layer that carries a rectangle.
+    const Id mute = docs.createTheme("Mute", "#abcdef", "#000000", "", "Mute Serif", 44.0,
+                                     "center", kDefaultLineSpacing, &error);
+    check(!mute.empty() && docs.setSlideTheme(show, slide, mute, &error) &&
+              docs.appearanceForSlide(show, slide).placement == std::optional<BoxRect>(edge),
+          "a slide theme with no placement falls through to the show default");
+    check(docs.setSlideTheme(show, slide, slideTheme, &error),
+          "and putting the placing theme back on brings its rectangle back");
+
+    // The current theme is worn over both, placement included.
+    check(docs.setCurrentTheme(current), "the service wears a current theme");
+    check(docs.appearanceForSlide(show, slide).placement == std::optional<BoxRect>(rect) &&
+              docs.appearanceForSlide(show, follower).placement == std::optional<BoxRect>(edge),
+          "a current theme with no placement changes nobody's geometry");
+    BoxRect wide;
+    wide.x = 100.0;
+    wide.y = 700.0;
+    wide.width = 1720.0;
+    wide.height = 220.0;
+    check(docs.setThemePlacement(current, wide, &error), "and then it learns a placement");
+    a = docs.appearanceForSlide(show, slide);
+    check(a.placement == std::optional<BoxRect>(wide),
+          "the current theme outranks the slide theme and the show default");
+    check(docs.appearanceForSlide(show, follower).placement == std::optional<BoxRect>(wide),
+          "and it places the followers too");
+
+    // A slide that wants its own spot customizes placement: one unit,
+    // beating every layer, and the rest of the look still comes through.
+    BoxRect own;
+    own.x = 800.0;
+    own.y = 100.0;
+    own.width = 300.0;
+    own.height = 200.0;
+    SlideCustomization changed;
+    changed.placement = own;
+    check(docs.setSlideCustomizations(show, slide, changed, &error),
+          "a slide customizes its placement as one field");
+    a = docs.appearanceForSlide(show, slide);
+    check(a.placement == std::optional<BoxRect>(own) && a.textColor == "#555555" &&
+              a.fontSize == 60.0,
+          "the slide keeps its own spot and the current theme's colours");
+    check(docs.appearanceForSlide(show, follower).placement == std::optional<BoxRect>(wide),
+          "the next slide still follows the theme — placement is per slide");
+
+    // It is a field in every sense the other fields have.
+    check(docs.findShow(show)->slides[0].customizations.hasField("placement") &&
+              openshow::domain::isCustomizableField("placement"),
+          "\"placement\" is a known customization field");
+    check(!docs.findShow(show)->slides[0].customizations.hasField("x"),
+          "and the rectangle is not seven revertable fields, it is one");
+    SlideCustomization half;
+    half.placement = BoxRect{};  // the default rect is 0x0: nothing to draw
+    check(!docs.setSlideCustomizations(show, slide, half, &error) &&
+              docs.findShow(show)->slides[0].customizations.placement ==
+                  std::optional<BoxRect>(own),
+          "a zero-sized customized rectangle is refused and the old one survives");
+
+    // Reverting one field, and restoring the whole slide, both hand the
+    // box back to the themes.
+    SlideCustomization reverted = docs.findShow(show)->slides[0].customizations;
+    reverted.clearField("placement");
+    check(!reverted.placement.has_value() && reverted.empty(),
+          "clearing the only customized field leaves an empty set");
+    check(docs.setSlideCustomizations(show, slide, reverted, &error) &&
+              docs.appearanceForSlide(show, slide).placement == std::optional<BoxRect>(wide),
+          "reverting the placement sends the slide back to the theme's rectangle");
+    changed.placement = own;
+    check(docs.setSlideCustomizations(show, slide, changed, &error) &&
+              docs.removeSlideCustomizations(show, slide, &error) &&
+              docs.appearanceForSlide(show, slide).placement == std::optional<BoxRect>(wide),
+          "removing the whole set restores the themed placement too");
+    check(docs.setSlideCustomizations(show, slide, changed, &error) &&
+              docs.setSlideCustomizations(show, follower, changed, &error) &&
+              docs.removeShowCustomizations(show, &error) &&
+              docs.findShow(show)->slides[0].customizations.empty() &&
+              docs.findShow(show)->slides[1].customizations.empty(),
+          "restoring the show clears placement on every slide in one call");
+
+    // Taking a theme's placement off stops it placing, colours and all.
+    check(docs.clearThemePlacement(current, &error) &&
+              docs.findTheme(current)->placement == std::nullopt &&
+              docs.findTheme(current)->textColor == "#555555" &&
+              docs.appearanceForSlide(show, slide).placement == std::optional<BoxRect>(rect),
+          "a theme without placement stops placing and the layer below speaks");
+    check(!docs.clearThemePlacement(current, &error) &&
+              error.find("no placement to remove") != std::string::npos,
+          "removing a placement that was never there is refused — a change that "
+          "changed nothing must not exist in the history");
+    check(docs.setCurrentTheme("") && docs.setShowDefaultTheme(show, "") &&
+              docs.setSlideTheme(show, slide, "") &&
+              docs.appearanceForSlide(show, slide).placement == std::nullopt,
+          "with every placing layer gone the slide keeps its authored box");
+
+    // Undo wraps it like everything else: History snapshots whole states.
+    History history(&docs);
+    check(history.apply([&] { return docs.setThemePlacement(slideTheme, wide, &error); }) &&
+              docs.findTheme(slideTheme)->placement == std::optional<BoxRect>(wide),
+          "a placement set through history is live");
+    check(history.undo(&error) && docs.findTheme(slideTheme)->placement == rect,
+          "undo puts the theme's own rectangle back");
+    check(history.apply([&] { return docs.clearThemePlacement(slideTheme, &error); }) &&
+              docs.findTheme(slideTheme)->placement == std::nullopt &&
+              history.undo(&error) && docs.findTheme(slideTheme)->placement == rect,
+          "undoing the removal puts the placement back");
+
+    // Removing a theme that placed slides takes the placement with it:
+    // nothing wears a ghost rectangle.
+    check(docs.setSlideTheme(show, slide, slideTheme, &error) &&
+              docs.appearanceForSlide(show, slide).placement == std::optional<BoxRect>(rect) &&
+              docs.removeTheme(slideTheme, &error) && docs.findTheme(slideTheme) == nullptr,
+          "the slide wears the placing theme once more, and that theme is deleted");
+    check(docs.appearanceForSlide(show, slide).placement == std::nullopt,
+          "and its slide keeps its authored box rather than a ghost");
 }
 
 void exerciseHistory() {
@@ -2919,6 +3228,7 @@ int main() {
     exerciseGroups();
     exerciseStyles();
     exerciseThemeChain();
+    exerciseThemePlacement();
     exercisePlaylists();
     exerciseFailureLeavesNoTrace();
 

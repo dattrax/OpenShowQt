@@ -224,6 +224,23 @@ struct SlideItem {
 // surface at present time.
 inline constexpr std::size_t kMaxSlideItems = 8;
 
+// A rectangle in the 1920x1080 authored canvas (docs/reference.md §7),
+// spelled the way a SlideItem spells its own box. The theme placement
+// (amendment 2026-11-01, themes plan) is one of these: where the slide's
+// PRIMARY lyric box lands. Absent is a real answer meaning "no opinion" —
+// the slide's authored box then draws where it was authored.
+struct BoxRect {
+    double x = 0.0;
+    double y = 0.0;
+    double width = 0.0;
+    double height = 0.0;
+
+    bool operator==(const BoxRect& other) const {
+        return x == other.x && y == other.y && width == other.width &&
+               height == other.height;
+    }
+};
+
 // What one slide's operator changed for itself (task TH.2, themes plan).
 // Sparse by construction: a field is present exactly when the slide
 // customized it, and resolution falls through per property — a slide that
@@ -240,18 +257,24 @@ struct SlideCustomization {
     std::optional<double> fontSize;
     std::optional<std::string> align;
     std::optional<double> lineSpacing;
+    // Where THIS slide's primary lyric box goes, whatever the themes say
+    // (amendment 2026-11-01). One unit — a half-placed box is not a thing
+    // an operator drags.
+    std::optional<BoxRect> placement;
 
     bool operator==(const SlideCustomization& other) const {
         return textColor == other.textColor && backgroundColor == other.backgroundColor &&
                backgroundGradient == other.backgroundGradient &&
                fontFamily == other.fontFamily && fontSize == other.fontSize &&
-               align == other.align && lineSpacing == other.lineSpacing;
+               align == other.align && lineSpacing == other.lineSpacing &&
+               placement == other.placement;
     }
 
     bool empty() const {
         return !textColor.has_value() && !backgroundColor.has_value() &&
                !backgroundGradient.has_value() && !fontFamily.has_value() &&
-               !fontSize.has_value() && !align.has_value() && !lineSpacing.has_value();
+               !fontSize.has_value() && !align.has_value() && !lineSpacing.has_value() &&
+               !placement.has_value();
     }
     // Remove one customized field; reverting "this thing" is a key away.
     void clearField(const std::string& field) {
@@ -269,6 +292,8 @@ struct SlideCustomization {
             align.reset();
         } else if (field == "lineSpacing") {
             lineSpacing.reset();
+        } else if (field == "placement") {
+            placement.reset();
         }
     }
     bool hasField(const std::string& field) const {
@@ -293,15 +318,22 @@ struct SlideCustomization {
         if (field == "lineSpacing") {
             return lineSpacing.has_value();
         }
+        if (field == "placement") {
+            return placement.has_value();
+        }
         return false;
     }
 };
 
 // The names the customization keys — and the UI's per-field revert — use.
+// "placement" (amendment 2026-11-01) is one name for the whole rectangle:
+// dragging a box changes four numbers, and reverting half a box is not a
+// thing an operator wants or storage should carry.
 inline bool isCustomizableField(const std::string& field) {
     return field == "textColor" || field == "backgroundColor" ||
            field == "backgroundGradient" || field == "fontFamily" ||
-           field == "fontSize" || field == "align" || field == "lineSpacing";
+           field == "fontSize" || field == "align" || field == "lineSpacing" ||
+           field == "placement";
 }
 
 // One slide of a show: a stack of items over a background.
@@ -386,6 +418,12 @@ struct Theme {
     // renderer applies (its own default, 1.25, is kDefaultLineSpacing).
     std::string align = "center";
     double lineSpacing = kDefaultLineSpacing;
+    // Where a slide wearing this theme puts its PRIMARY lyric box
+    // (amendment 2026-11-01, themes plan). Absent is no opinion: wearing
+    // this theme never moves a slide's words. When set, the rectangle
+    // travels the same chain as every other property — a slide that wants
+    // its own spot customizes its placement and reverts it to follow again.
+    std::optional<BoxRect> placement;
 };
 
 // One slide's appearance after the whole chain has been walked
@@ -403,6 +441,12 @@ struct ResolvedAppearance {
     double fontSize = 0.0;
     std::string align;   // empty means "no layer said"; the compile centres
     double lineSpacing = kDefaultLineSpacing;
+    // The primary lyric box's rectangle, resolved like the rest: the slide's
+    // placement customization beats a themed rectangle, and a themed
+    // rectangle beats the slide's authored box. Empty means no layer spoke,
+    // so the slide draws its own authored box (the built-in lyric default
+    // where the slide is untouched).
+    std::optional<BoxRect> placement;
 };
 
 // One media file belonging to the service. The model records only the
@@ -556,6 +600,17 @@ public:
                      const std::string& backgroundGradient, const std::string& fontFamily,
                      double fontSize, const std::string& align, double lineSpacing,
                      std::string* error = nullptr);
+    // Give a theme a lyric-box placement (amendment 2026-11-01, themes
+    // plan). The rectangle is vetted like a SlideItem's box: finite, with
+    // positive extent. Setting it never moves a slide on its own; it
+    // changes what the chain resolves for slides that follow this theme
+    // and have not customized their own placement.
+    bool setThemePlacement(const Id& themeId, const BoxRect& rect, std::string* error = nullptr);
+    // Take the placement back: the theme keeps its colours and typography
+    // but stops placing words, so wearing slides return to their authored
+    // boxes (unless they customized placement). Refuses a theme that has
+    // no placement to remove.
+    bool clearThemePlacement(const Id& themeId, std::string* error = nullptr);
     // Points a show's default (and therefore its un-themed slides) at a
     // theme; "" clears back to none.
     bool setShowDefaultTheme(const Id& showId, const Id& themeId, std::string* error = nullptr);

@@ -414,13 +414,33 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
                         std::to_string(kMaxSceneItems));
         return false;
     }
+    // The themed rectangle places exactly one box (themes plan amendment
+    // 2026-11-01): the slide's PRIMARY lyric box, which is the first TEXT
+    // item in draw order. Images and every additional box keep the
+    // geometry they were authored with, so a deliberately stacked slide
+    // does not collapse into a pile when a themed placement arrives.
+    bool placementTaken = false;
     for (const domain::SlideItem& source : slide->items) {
         SceneItem item;
-        // The authored box travels unchanged (task 4.3), either kind.
-        item.x = source.x;
-        item.y = source.y;
-        item.width = source.width;
-        item.height = source.height;
+        // The authored box travels unchanged (task 4.3), either kind —
+        // unless the chain resolved a placement for this slide, in which
+        // case the primary lyric box lands in the theme's rectangle and
+        // the authored one stays where it is for the day the theme stops
+        // placing (reverting the customization hands it back).
+        const bool themed =
+            look.placement.has_value() && !placementTaken && source.kind != domain::ItemKind::Image;
+        if (themed) {
+            placementTaken = true;
+            item.x = look.placement->x;
+            item.y = look.placement->y;
+            item.width = look.placement->width;
+            item.height = look.placement->height;
+        } else {
+            item.x = source.x;
+            item.y = source.y;
+            item.width = source.width;
+            item.height = source.height;
+        }
         if (source.kind == domain::ItemKind::Image) {
             // A foreground picture (task 6.17b): resolve asset -> path with
             // the same discipline as the background below, so an item that

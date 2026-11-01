@@ -694,6 +694,37 @@ bool Documents::updateTheme(const Id& themeId, const std::string& textColor,
     return true;
 }
 
+bool Documents::setThemePlacement(const Id& themeId, const BoxRect& rect, std::string* error) {
+    Theme* theme = findTheme_mut(themeId);
+    if (theme == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    // The same vetting a SlideItem's box gets (task 4.3): the renderer
+    // would either not place the box or collapse it.
+    if (!placeableBox(rect.x, rect.y, rect.width, rect.height)) {
+        fail(error, "theme '" + themeId +
+                        "' needs a finite placement with positive width and height");
+        return false;
+    }
+    theme->placement = rect;
+    return true;
+}
+
+bool Documents::clearThemePlacement(const Id& themeId, std::string* error) {
+    Theme* theme = findTheme_mut(themeId);
+    if (theme == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    if (!theme->placement.has_value()) {
+        fail(error, "theme '" + themeId + "' carries no placement to remove");
+        return false;
+    }
+    theme->placement.reset();
+    return true;
+}
+
 bool Documents::setShowDefaultTheme(const Id& showId, const Id& themeId, std::string* error) {
     Show* show = findShow_mut(showId);
     if (show == nullptr) {
@@ -787,6 +818,14 @@ bool Documents::validCustomizations(const SlideCustomization& c, std::string* er
     if (c.lineSpacing.has_value() &&
         (!std::isfinite(*c.lineSpacing) || *c.lineSpacing < 0.25 || *c.lineSpacing > 8.0)) {
         fail(error, "line spacing must be a finite multiplier within 0.25..8");
+        return false;
+    }
+    // A customized rectangle is vetted exactly like a theme's and like an
+    // authored box — one rule for every box a slide can end up drawing.
+    if (c.placement.has_value() &&
+        !placeableBox(c.placement->x, c.placement->y, c.placement->width, c.placement->height)) {
+        fail(error, "a customized placement needs finite coordinates and "
+                    "positive width and height");
         return false;
     }
     return true;
@@ -969,6 +1008,22 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
         out.lineSpacing = layers[0]->lineSpacing;
     } else {
         out.lineSpacing = kDefaultLineSpacing;  // no layer spoke
+    }
+    // Placement (amendment 2026-11-01) resolves on the same walk. A
+    // customized rectangle is an answer; otherwise the first theme that
+    // CARRIES one places the words, and a theme without a rectangle is
+    // silent rather than zero-sized. When no layer speaks the optional
+    // stays empty, and the compile draws the slide's own authored box —
+    // so nothing moves for documents and themes made before this existed.
+    if (c.placement.has_value()) {
+        out.placement = c.placement;
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            if (layers[i]->placement.has_value()) {
+                out.placement = layers[i]->placement;
+                break;
+            }
+        }
     }
     return out;
 }

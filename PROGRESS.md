@@ -4,7 +4,15 @@ Updated: 2026-11-01 (Europe/London).
 
 ## Current checkpoint
 
-Current work: **the Themes milestone (TH.1–TH.6) is DONE**, verified
+Current work: **the Themes amendment TH.7 is DONE** — a theme now carries the
+PRIMARY lyric box's rectangle, so "the same look" means the same place too.
+Placement resolves on the existing chain (slide placement customization →
+current theme → slide theme → show default), drives the **first text item**
+only, and is absent-by-default so no existing document or theme moves. The
+surface leaf **TH.8** (Theme Editor placement canvas, Edit drag routing and
+badge, captures and docs) is next.
+
+Earlier in this milestone, **Themes TH.1–TH.6 are DONE**, verified
 2026-11-01 with one pushed commit per leaf. Appearance is one Theme entity
 (the former Style) in storage format 6 — readers still take formats 1–5 and
 refuse files that mix the spellings — and every slide resolves per property
@@ -65,6 +73,7 @@ completed seek-clock epoch; supersession and failure have distinct outcomes.
 | UI.5 acceptance (2026-10-31) | `workspace_ui_tests` rail section (clear strip beside the preview by scene position, all three clear controls disabled and saying "Clear all" with no output, transport nameless-empty with no controls, the audio combo holding audio names only — no video, no paths — picking sending nothing while Play/Stop stay disabled and the monitor keeps saying "Output disconnected", and no `playAudioButton` anywhere in the tree); `worker_controller_tests` transport scenario now confirms the three selection frames the operator can actually cause (the picker's URL half retired with the chooser); visible-tree audit on Show re-passes with the combo at all three capture sizes; evidence in [the plan](docs/ui/operator-workspace-plan.md) |
 | UI.6 acceptance (2026-10-31) | `workspace_ui_tests` toolbar section (header offers Search, both operator pages, media visibility and Settings; the bin toggle closes the bin and re-opens with the bin's own bar agreeing both ways; toolbar Search takes focus to `librarySearchField`, Escape hands the keyboard back and the presenter's PgDn walk steps again; Settings/Show tab clicks switch modes and move the underline, and no header control hides on another page; a press released in place on a panel handle resizes nothing and a collapsed dock restores from its strip); deterministic captures at 1680/1380/1000 in both bin states, a one-row kind filter counting "1 shown", the fully-removed library ("no media — import a file" with the rail's "no prepared audio"), a long cue name whole at 1680 and elided narrower, and the disconnected bar/rail — all inspected, with the remaining reference differences recorded in [the plan](docs/ui/operator-workspace-plan.md) |
 | Themes TH.1–TH.6 acceptance (2026-11-01) | `domain_tests` format-6 round-trip, 1–5 migration and mix-spelling refusals, and the per-property precedence matrix across customization/current/slide/show/built-in with the answered empties; `scene_tests`, `document_present_tests` and `frontend_journey_tests` re-skin to acknowledged pixels through the chain; `document_controller_tests` exercises the whole TH.5 surface API over real fixtures (cross-show theming, bulk-undo-once, refusal statuses); `workspace_ui_tests` drives the shipped UI (header menu names the viewed show's default and reopens checked, flat cue/library menus theme and restore by real clicks, badges appear per customized field and revert only their own, refusing values snap back with the domain's wording, and a page switch commits nothing); captures at 1680/1380/1000 inspected themed — Loud as the header default, the edited slide wearing House with exactly the flat-gradient and size-44 badges; 57/57 desktop and 43/43 headless; evidence in [the plan](docs/ui/themes-plan.md) and [the architecture](docs/architecture.md) |
+| Themes TH.7 acceptance (2026-11-01) | `domain_tests` placement matrix — a theme without a rectangle is silent (never zero-sized), customization beats current beats slide beats show beats authored, one revert unit, undo, ghost-free theme deletion — plus format-6 round-trip (byte-stable, absence stays absence) and refusals for a non-object, a missing corner, a zero extent and a hand-bumped key in a format-5 file; `scene_tests` prove the themed rectangle drives the FIRST TEXT item only: a picture stacked on top and every additional box keep their authored geometry, and a picture-only slide gets no invented box; 57/57 desktop and 43/43 headless |
 | Documentation | Current links, historical archive integrity and whitespace checked |
 
 Presets ran sequentially. Frame/position progress was measured; acoustic offset,
@@ -101,4 +110,11 @@ customize-not-restyle Edit inspector (TH.5), and the themed captures with the
 architecture write-up (TH.6). The model decision the operator confirmed —
 customization > current theme > slide theme > show default > built-in,
 appearance-only themes (template slides deferred) — is what shipped.
-Next action: M7 in PLAN.md.
+
+**Themes amendment TH.7 DONE 2026-11-01**: the operator found appearance-only
+half an answer, so a theme carries one `placement` rectangle for the PRIMARY
+lyric box, resolved on the same chain and compiled onto the slide's first text
+item only. Storage stays format 6 — `placement` is an optional member of a
+theme entry and of a slide's customizations, and pre-6 files that carry the
+key are refused. **TH.8**, the surfaces (Theme Editor placement canvas, Edit
+drag routing and badge, captures, docs), is next; **M7** follows.

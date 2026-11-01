@@ -141,6 +141,47 @@ the audience output; every mutation is an acknowledged document edit through
 the single history owner; with the worker disconnected the documents stay
 editable and the live preview is honestly blank, as elsewhere.
 
+## Amendment (2026-11-01): themes carry placement
+
+The operator found the shipped milestone half an answer: a theme recoloured
+every slide wearing it but left the words wherever each slide's own box
+happened to sit. Placement is part of what a theme *is* — "the same look"
+means the same place too. Decisions taken with the operator:
+
+- **Theme placement** is one rectangle — the primary lyric box — in the
+  1920×1080 authored canvas. Absent (the default, and every theme written
+  before this amendment) means the theme has no placement opinion and every
+  slide draws its own authored box exactly as today, so no existing document
+  moves on open or on migration.
+- **Chain**: placement resolves per the same walk as appearance — slide
+  placement customization first, then the current theme, then the slide's
+  theme, then the show default. With no layer speaking, the slide's own
+  authored rectangle is the answer (which for untouched slides is the
+  built-in lyric box). The theme rectangle drives the slide's FIRST TEXT
+  ITEM only; additional boxes and every image item keep their authored
+  positions — a deliberate stacked slide does not collapse.
+- **Theme wins over the authored rectangle**: applying a themed placement
+  lines up every wearing slide immediately (this is what "text in the same
+  place for each slide" means). A slide that drags its box or types
+  coordinates records a placement CUSTOMIZATION (one unit: x, y, w, h) and
+  keeps its own spot, with the usual revert that hands the box back to the
+  theme. Geometry edits to a box the theme does not drive keep writing the
+  authored rectangle exactly as before.
+- **Theme Editor** gets the slide editor's placement idiom: the sample
+  preview wears the theme's rectangle as a draggable, corner-resizable box
+  (same chrome, tolerance and floors as the Edit canvas) committing one
+  placement per gesture, plus X/Y/W/H fields and a "no placement" clear in
+  the inspector. Browsing a theme with placement moves the sample's box,
+  still with no word of it reaching the worker output.
+- **Storage** stays format 6: `placement` is an optional member of a theme
+  entry and of a slide's `customizations` (a `{x,y,width,height}` object,
+  vetted like an authored box — finite, positive extent). Absent is
+  meaningful: no opinion, nothing moves.
+
+Leaves: **TH.7** (domain, storage, compile: the rectangle through the chain)
+and **TH.8** (the surfaces: Theme Editor canvas, Edit routing, badge,
+captures, documentation).
+
 ## Task order
 
 TH.1 → TH.2 → TH.3 run in sequence (naming before model before compile);
