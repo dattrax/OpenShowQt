@@ -698,6 +698,111 @@ bool DocumentController::createThemeFromCurrent(const QString& name) {
     return true;
 }
 
+// --- theme service (task TH.4, themes plan) --------------------------------
+
+QString DocumentController::wornThemeId() const {
+    return QString::fromStdString(fDocuments.currentThemeId());
+}
+
+bool DocumentController::useThemeAsCurrent(const QString& themeId) {
+    flushText();
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setCurrentTheme(themeId.toStdString(), &error);
+        })) {
+        setStatus(QStringLiteral("current theme: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::createBlankTheme(const QString& name) {
+    flushText();
+    std::string error;
+    if (!edit([&] {
+            // The built-in look is the compile's own floor, not the panel's
+            // guess: white on black, platform font, renderer size, centred.
+            return !fDocuments.createTheme(name.toStdString(), "#ffffff", "#000000", "", "",
+                                           0.0, "center",
+                                           openshow::domain::kDefaultLineSpacing,
+                                           &error)
+                            .empty();
+        })) {
+        setStatus(QStringLiteral("new theme: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::duplicateTheme(const QString& themeId) {
+    flushText();
+    std::string error;
+    if (!edit([&] {
+            const openshow::domain::Theme* source =
+                fDocuments.findTheme(themeId.toStdString());
+            if (source == nullptr) {
+                error = "no theme '" + themeId.toStdString() + "'";
+                return false;
+            }
+            return !fDocuments.createTheme(source->name + " copy", source->textColor,
+                                           source->backgroundColor, source->backgroundGradient,
+                                           source->fontFamily, source->fontSize, source->align,
+                                           source->lineSpacing, &error)
+                            .empty();
+        })) {
+        setStatus(QStringLiteral("duplicate theme: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::deleteTheme(const QString& themeId) {
+    flushText();
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.removeTheme(themeId.toStdString(), &error);
+        })) {
+        setStatus(QStringLiteral("delete theme: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+QString DocumentController::themeSampleSceneJson(const QString& themeId) const {
+    const openshow::domain::Theme* source = fDocuments.findTheme(themeId.toStdString());
+    if (source == nullptr) {
+        return QString();
+    }
+    // A throwaway service holding nothing but the sample: a show, a slide,
+    // and a twin of the theme being sampled. The compile runs its FULL
+    // chain — the twin arrives through the same accessor the worker's scenes
+    // do, so the preview shows exactly what a slide wearing this theme
+    // draws — and the fixture is dropped on the floor: nothing is recorded,
+    // nothing is presented, and no document ever sees it.
+    openshow::domain::Documents fixture;
+    const openshow::domain::Id show = fixture.createShow("Theme sample");
+    const openshow::domain::Id slide = fixture.appendSlide(show);
+    std::string error;
+    const openshow::domain::Id twin = fixture.createTheme(
+        source->name, source->textColor, source->backgroundColor, source->backgroundGradient,
+        source->fontFamily, source->fontSize, source->align, source->lineSpacing, &error);
+    if (twin.empty()) {
+        return QString();
+    }
+    fixture.setSlideTheme(show, slide, twin);
+    // One word to read the colour and face in, one scale line to read the
+    // tracking and the wrap, one blank to read the line box.
+    fixture.setSlideLines(show, slide,
+                          {source->name,
+                           "The quick brown fox jumps over the lazy dog 0123456789",
+                           ""});
+    openshow::scene::Scene scene;
+    if (!openshow::scene::compileSlide(fixture, show, slide, &scene)) {
+        return QString();
+    }
+    return QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
+}
+
 bool DocumentController::setSlideBackground(const QString& assetId) {
     flushText();
     const openshow::domain::Id slideId = currentSlideId();

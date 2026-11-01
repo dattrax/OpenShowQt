@@ -223,6 +223,10 @@ QVariantList DocumentViews::themes() const {
         entry.insert(QStringLiteral("textColor"), QString::fromStdString(theme->textColor));
         entry.insert(QStringLiteral("backgroundColor"),
                      QString::fromStdString(theme->backgroundColor));
+        // The gradient rides the list row (task TH.4) so the Theme Editor's
+        // inspector and its keep-the-rest edits see every field of the row.
+        entry.insert(QStringLiteral("backgroundGradient"),
+                     QString::fromStdString(theme->backgroundGradient));
         entry.insert(QStringLiteral("fontFamily"), QString::fromStdString(theme->fontFamily));
         entry.insert(QStringLiteral("fontSize"), theme->fontSize);
         entry.insert(QStringLiteral("align"), QString::fromStdString(theme->align));

@@ -120,6 +120,49 @@ Rectangle {
             checked: bar.drawerOpen
             onClicked: bar.drawerToggleRequested()
         }
+        // The themes entry (task TH.4, themes plan): ProPresenter's home for
+        // themes is a header submenu, so the current theme is ONE click from
+        // every page — the list with the worn one checked (clicking it takes
+        // it off), and below a separator the Theme Editor mode. The menu
+        // reads docs only: opening it sets and presents nothing.
+        ToolTab {
+            id: moreTab
+            objectName: "toolbarMore"
+            Accessible.name: "Themes"
+            glyph: "\u22ef"
+            label: "More"
+            selected: bar.page === "themes"
+            Menu {
+                id: themeMenu
+                objectName: "themeMenu"
+                Repeater {
+                    model: docs.themes
+                    MenuItem {
+                        required property var modelData
+                        objectName: "themeMenuItem"
+                        text: (docs.wornThemeId === modelData.id ? "\u2713 " : "")
+                              + modelData.name
+                        // Worn check: clicking the checked row takes it off
+                        // (the same set-or-clear the editor header offers).
+                        onTriggered: docs.useThemeAsCurrent(
+                                    docs.wornThemeId === modelData.id ? "" : modelData.id)
+                    }
+                }
+                MenuItem {
+                    objectName: "themeMenuEmpty"
+                    visible: docs.themes.length === 0
+                    enabled: false
+                    text: "No themes yet"
+                }
+                MenuSeparator {}
+                MenuItem {
+                    objectName: "themeMenuEditor"
+                    text: "Theme Editor\u2026"
+                    onTriggered: bar.pageSelected("themes")
+                }
+            }
+            onClicked: themeMenu.popup()
+        }
     }
 
     Row {

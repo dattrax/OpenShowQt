@@ -1194,6 +1194,240 @@ int main(int argc, char** argv) {
         QTest::qWait(60);
         check(panels.rightWidth() > 200.0, "a click on the collapsed strip restores it");
     }
+
+    // --- task TH.4: the More ⋯ theme menu and the Theme Editor mode --------
+    // The header submenu is the operator's one-click access to the current
+    // theme from every page (worn row checked, click sets or clears), and
+    // its editor entry opens a page whose New/Duplicate/Rename/Delete and
+    // inspector are ordinary document edits — one entry each, undoable, with
+    // refusals landing on the status line instead of in the data. Browsing
+    // the editor must never move the audience: this fixture has no worker
+    // started, so any output at all would be a presentation.
+    {
+        auto clickAt = [window](QQuickItem* item, qreal x, qreal y) {
+            if (item) {
+                QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                  item->mapToScene(QPointF(x, y)).toPoint());
+            }
+        };
+        // The menu opens and closes through Material transitions, so its
+        // state is waited for, never assumed: a fixed sleep is how the next
+        // click lands on an item that is fading out instead of one that is
+        // up. Rows collected from the overlay only exist while it is open.
+        auto waitFor = [](const std::function<bool()>& predicate, int budgetMs = 2000) {
+            QElapsedTimer timer;
+            timer.start();
+            while (!predicate() && timer.elapsed() < budgetMs) QTest::qWait(25);
+            return predicate();
+        };
+        auto menuRowsWith = [&](int expected) {
+            QList<QQuickItem*> rows;
+            QPointF lastScene;
+            bool stableOnce = false;
+            // Settle means two consecutive samples of the SAME scene
+            // position: the Material menu slides in through an enter
+            // transition, and an item collected mid-slide is a click away
+            // from nothing.
+            const bool settled = waitFor([&] {
+                rows.clear();
+                collectNamed(window->contentItem(), "themeMenuItem", rows);
+                if (rows.size() != expected) {
+                    stableOnce = false;
+                    return false;
+                }
+                const QPointF scene = rows.first()->mapToScene(QPointF(0, 0));
+                if (scene != lastScene) {
+                    lastScene = scene;
+                    stableOnce = false;
+                    return false;
+                }
+                if (!stableOnce) {
+                    stableOnce = true;
+                    return false;
+                }
+                return true;
+            });
+            return settled ? rows : QList<QQuickItem*>{};
+        };
+        auto* more = findNamed(window->contentItem(), "toolbarMore");
+        auto* menu = window->findChild<QObject*>("themeMenu");
+        check(more && more->isVisible() && menu && !menu->property("visible").toBool(),
+              "the header carries the themes entry and its menu starts closed");
+
+        clickAt(more, 33, 26);
+        QTest::qWait(120);
+        auto* emptyRow = findNamed(window->contentItem(), "themeMenuEmpty");
+        auto* editorEntry = findNamed(window->contentItem(), "themeMenuEditor");
+        check(menu->property("visible").toBool() && emptyRow && emptyRow->isVisible()
+                  && editorEntry && editorEntry->isVisible(),
+              "More opens the menu, which says so when the service has no themes "
+              "and still offers the editor");
+
+        check(docs.createBlankTheme("Alpha") && docs.createBlankTheme("Beta"),
+              "two themes exist for the menu to name");
+        QList<QQuickItem*> menuRows = menuRowsWith(2);
+        check(!menuRows.isEmpty(), "every theme is a row in the open menu");
+        const QString alphaId = docs.themes().at(0).toMap().value(QStringLiteral("id")).toString();
+        clickAt(menuRows.first(), 40, menuRows.first()->height() / 2);
+        check(waitFor([&] { return docs.wornThemeId() == alphaId; })
+                  && waitFor([&] { return !menu->property("visible").toBool(); }),
+              "clicking a theme row wears it and closes the menu");
+        clickAt(more, 33, 26);
+        QList<QQuickItem*> menuRows2 = menuRowsWith(2);
+        check(!menuRows2.isEmpty()
+                  && menuRows2.first()->property("text").toString().startsWith(QChar(0x2713)),
+              "the worn theme is the checked one in the list");
+        clickAt(menuRows2.first(), 40, menuRows2.first()->height() / 2);
+        check(waitFor([&] { return docs.wornThemeId().isEmpty(); }),
+              "clicking the worn row again takes it off");
+        waitFor([&] { return !menu->property("visible").toBool(); });
+
+        clickAt(more, 33, 26);
+        QTest::qWait(120);
+        auto* editorEntry2 = findNamed(window->contentItem(), "themeMenuEditor");
+        clickAt(editorEntry2, 40, editorEntry2->height() / 2);
+        QTest::qWait(150);
+        auto* editorPage = findNamed(window->contentItem(), "themeEditorPage");
+        check(window->property("page").toString() == QLatin1String("themes")
+                  && editorPage && editorPage->isVisible(),
+              "Theme Editor… opens the editor mode");
+        auto* newButton = findNamed(window->contentItem(), "themeEditorNew");
+        auto* dupButton = findNamed(window->contentItem(), "themeEditorDuplicate");
+        auto* deleteButton = findNamed(window->contentItem(), "themeEditorDelete");
+        auto* useToggle = findNamed(window->contentItem(), "themeEditorUseToggle");
+        auto* previewFrame = findNamed(window->contentItem(), "themeEditorPreview");
+        check(newButton && dupButton && deleteButton && useToggle && previewFrame
+                  && newButton->isVisible() && previewFrame->isVisible(),
+              "the editor lists themes beside a preview and offers New, Duplicate, Delete and Use");
+
+        const int themesBefore = docs.themes().size();
+        clickAt(newButton, newButton->width() / 2, newButton->height() / 2);
+        QTest::qWait(80);
+        check(docs.themes().size() == themesBefore + 1, "New adds a theme");
+        docs.undo();
+        QTest::qWait(80);
+        check(docs.themes().size() == themesBefore, "one undo removes the new theme again");
+
+        QList<QQuickItem*> listRows;
+        collectNamed(window->contentItem(), "themeEditorRow", listRows);
+        const QString betaId = docs.themes().at(1).toMap().value(QStringLiteral("id")).toString();
+        check(listRows.size() == 2 && editorPage->property("selectedId").toString() == alphaId,
+              "the list shows one row per theme and selection prefers the first");
+        clickAt(listRows.at(1), 30, listRows.at(1)->height() / 2);
+        QTest::qWait(80);
+        check(editorPage->property("selectedId").toString() == betaId,
+              "clicking a row selects that theme");
+        clickAt(dupButton, dupButton->width() / 2, dupButton->height() / 2);
+        QTest::qWait(80);
+        bool copyNamed = false;
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("name")).toString()
+                    == QStringLiteral("Beta copy")) {
+                copyNamed = true;
+            }
+        }
+        check(docs.themes().size() == themesBefore + 1 && copyNamed,
+              "Duplicate copies the selection under a copy name");
+        clickAt(deleteButton, deleteButton->width() / 2, deleteButton->height() / 2);
+        QTest::qWait(80);
+        check(docs.themes().size() == themesBefore, "Delete removes the selected theme");
+        docs.undo();
+        QTest::qWait(80);
+        check(docs.themes().size() == themesBefore + 1,
+              "one undo brings the theme and its references back");
+
+        // Deleting Beta moved the selection (reconcile picks a living row);
+        // undo restores the theme, not the click. Ask for Beta by name so
+        // the toggle below wears exactly what this check selects.
+        QList<QQuickItem*> preToggleRows;
+        collectNamed(window->contentItem(), "themeEditorRow", preToggleRows);
+        for (int i = 0; i < docs.themes().size(); ++i) {
+            if (docs.themes().at(i).toMap().value(QStringLiteral("id")).toString() == betaId) {
+                clickAt(preToggleRows.at(i), 30, preToggleRows.at(i)->height() / 2);
+            }
+        }
+        QTest::qWait(80);
+        check(editorPage->property("selectedId").toString() == betaId,
+              "the restored theme can be selected again by row");
+
+        clickAt(useToggle, useToggle->width() / 2, useToggle->height() / 2);
+        QTest::qWait(80);
+        check(docs.wornThemeId() == betaId && useToggle->property("checked").toBool(),
+              "Use as current theme wears the selected theme");
+        clickAt(useToggle, useToggle->width() / 2, useToggle->height() / 2);
+        QTest::qWait(80);
+        check(docs.wornThemeId().isEmpty() && !useToggle->property("checked").toBool(),
+              "unchecking takes the current theme off again");
+
+        // Double-click renames in place; the commit writes through the model.
+        QList<QQuickItem*> listRows2;
+        collectNamed(window->contentItem(), "themeEditorRow", listRows2);
+        QTest::mouseDClick(window, Qt::LeftButton, Qt::NoModifier,
+                           listRows2.at(1)->mapToScene(QPointF(30, 12)).toPoint());
+        QTest::qWait(80);
+        // Every delegate carries a rename field; only the edited row's is
+        // up, so the visible one is the interesting one.
+        QList<QQuickItem*> renameFields;
+        collectNamed(window->contentItem(), "themeEditorRenameField", renameFields);
+        QQuickItem* renameField = nullptr;
+        for (auto* f : renameFields) {
+            if (f->property("visible").toBool()) renameField = f;
+        }
+        check(renameField && renameField->isVisible(),
+              "double-clicking a row puts its name into an inline field");
+        renameField->setProperty("text", "Renamed");
+        QMetaObject::invokeMethod(renameField, "editingFinished");
+        QTest::qWait(80);
+        check(docs.themes().at(1).toMap().value(QStringLiteral("name")).toString()
+                      == QStringLiteral("Renamed"),
+              "committing the field renames the theme");
+
+        auto* colourField = findNamed(window->contentItem(), "themeEditorColourField");
+        check(colourField && colourField->property("text").toString().startsWith("#"),
+              "the inspector opens holding the selection's own values");
+        colourField->setProperty("text", "#abcdef");
+        QMetaObject::invokeMethod(colourField, "editingFinished");
+        QTest::qWait(80);
+        check(docs.themes().at(1).toMap().value(QStringLiteral("textColor")).toString()
+                      == QStringLiteral("#abcdef"),
+              "typing a colour into the inspector edits the theme in place");
+        colourField->setProperty("text", "green");
+        QMetaObject::invokeMethod(colourField, "editingFinished");
+        QTest::qWait(80);
+        check(docs.themes().at(1).toMap().value(QStringLiteral("textColor")).toString()
+                      == QStringLiteral("#abcdef")
+                  && docs.status().contains(QStringLiteral("colour")),
+              "a refused colour lands on the status line, not in the theme");
+
+        // Browsing never touches the audience: rows clicked through with no
+        // worker started — a presentation would need one, and nothing here
+        // started or was refused one.
+        QList<QQuickItem*> listRows3;
+        collectNamed(window->contentItem(), "themeEditorRow", listRows3);
+        clickAt(listRows3.at(0), 30, 12);
+        QTest::qWait(60);
+        clickAt(listRows3.last(), 30, 12);
+        QTest::qWait(60);
+        check(!worker.outputLive() && worker.frames() == 0,
+              "clicking through themes asks no output and moves no audience");
+
+        // The honest empty service: delete everything, controls disable.
+        if (!docs.wornThemeId().isEmpty()) {
+            docs.useThemeAsCurrent(QString());
+        }
+        while (!docs.themes().isEmpty()) {
+            docs.deleteTheme(docs.themes().last().toMap().value(QStringLiteral("id")).toString());
+        }
+        QTest::qWait(80);
+        check(!dupButton->property("enabled").toBool()
+                  && !deleteButton->property("enabled").toBool()
+                  && !useToggle->property("enabled").toBool()
+                  && newButton->property("enabled").toBool(),
+              "with no theme left every targeted control disables and New stays live");
+        window->setProperty("page", "show");
+        QTest::qWait(60);
+    }
+
     if (qEnvironmentVariableIsSet("OPENSHOW_WORKSPACE_LIVE")) {
         worker.start();
         QElapsedTimer timeout;

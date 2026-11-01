@@ -251,6 +251,32 @@ public:
     // Creates a theme wearing whatever the current slide draws now
     // (resolved theme or built-in defaults) and overrides only that slide.
     Q_INVOKABLE bool createThemeFromCurrent(const QString& name);
+
+    // --- theme service (task TH.4, themes plan) ---
+
+    // The one theme the whole service wears right now; "" is none. The
+    // More menu checks against it and the Theme Editor's header toggles it.
+    Q_PROPERTY(QString wornThemeId READ wornThemeId NOTIFY documentsChanged)
+    QString wornThemeId() const;
+    // Wear one theme service-wide — over every slide's own assignment — or
+    // take it all off with "". One history entry; an unknown theme is
+    // refused naming itself.
+    Q_INVOKABLE bool useThemeAsCurrent(const QString& themeId);
+    // New, from the editor: a theme wearing the built-in look (white on
+    // black, renderer defaults) that the operator then restyles.
+    Q_INVOKABLE bool createBlankTheme(const QString& name);
+    // Duplicate: a copy under "<name> copy" — a starting point to edit,
+    // not a linked second reference to the source.
+    Q_INVOKABLE bool duplicateTheme(const QString& themeId);
+    // Delete. The model clears every reference to the theme (show defaults,
+    // slide assignments, the worn id), and this is one history entry.
+    Q_INVOKABLE bool deleteTheme(const QString& themeId);
+    // The built-in sample cue compiled as that theme wears it — the Theme
+    // Editor's centre preview payload. The sample is a fixture, never a
+    // document: nothing is recorded and nothing is presented, so browsing
+    // every theme in the service cannot touch the audience's picture.
+    // Unknown id: empty string.
+    Q_INVOKABLE QString themeSampleSceneJson(const QString& themeId) const;
     // Layering: an image behind the current slide's words; "" clears it
     // back to the theme's background colour.
     Q_INVOKABLE bool setSlideBackground(const QString& assetId);
