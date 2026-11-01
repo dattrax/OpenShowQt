@@ -32,6 +32,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -223,6 +224,86 @@ struct SlideItem {
 // surface at present time.
 inline constexpr std::size_t kMaxSlideItems = 8;
 
+// What one slide's operator changed for itself (task TH.2, themes plan).
+// Sparse by construction: a field is present exactly when the slide
+// customized it, and resolution falls through per property — a slide that
+// tweaked only the background still takes the current theme's font. The
+// empty strings mean different things per field, and only where they are
+// answers: backgroundGradient "" is "explicitly flat over a graded theme"
+// and fontFamily "" is "no family, whatever the renderer picks"; an empty
+// text colour, align or number is a hand-edit, refused.
+struct SlideCustomization {
+    std::optional<std::string> textColor;
+    std::optional<std::string> backgroundColor;
+    std::optional<std::string> backgroundGradient;
+    std::optional<std::string> fontFamily;
+    std::optional<double> fontSize;
+    std::optional<std::string> align;
+    std::optional<double> lineSpacing;
+
+    bool operator==(const SlideCustomization& other) const {
+        return textColor == other.textColor && backgroundColor == other.backgroundColor &&
+               backgroundGradient == other.backgroundGradient &&
+               fontFamily == other.fontFamily && fontSize == other.fontSize &&
+               align == other.align && lineSpacing == other.lineSpacing;
+    }
+
+    bool empty() const {
+        return !textColor.has_value() && !backgroundColor.has_value() &&
+               !backgroundGradient.has_value() && !fontFamily.has_value() &&
+               !fontSize.has_value() && !align.has_value() && !lineSpacing.has_value();
+    }
+    // Remove one customized field; reverting "this thing" is a key away.
+    void clearField(const std::string& field) {
+        if (field == "textColor") {
+            textColor.reset();
+        } else if (field == "backgroundColor") {
+            backgroundColor.reset();
+        } else if (field == "backgroundGradient") {
+            backgroundGradient.reset();
+        } else if (field == "fontFamily") {
+            fontFamily.reset();
+        } else if (field == "fontSize") {
+            fontSize.reset();
+        } else if (field == "align") {
+            align.reset();
+        } else if (field == "lineSpacing") {
+            lineSpacing.reset();
+        }
+    }
+    bool hasField(const std::string& field) const {
+        if (field == "textColor") {
+            return textColor.has_value();
+        }
+        if (field == "backgroundColor") {
+            return backgroundColor.has_value();
+        }
+        if (field == "backgroundGradient") {
+            return backgroundGradient.has_value();
+        }
+        if (field == "fontFamily") {
+            return fontFamily.has_value();
+        }
+        if (field == "fontSize") {
+            return fontSize.has_value();
+        }
+        if (field == "align") {
+            return align.has_value();
+        }
+        if (field == "lineSpacing") {
+            return lineSpacing.has_value();
+        }
+        return false;
+    }
+};
+
+// The names the customization keys — and the UI's per-field revert — use.
+inline bool isCustomizableField(const std::string& field) {
+    return field == "textColor" || field == "backgroundColor" ||
+           field == "backgroundGradient" || field == "fontFamily" ||
+           field == "fontSize" || field == "align" || field == "lineSpacing";
+}
+
 // One slide of a show: a stack of items over a background.
 struct Slide {
     Id id;
@@ -242,6 +323,10 @@ struct Slide {
     std::string notes;
     // Theme override; empty follows the show's default theme.
     Id themeId;
+    // What this slide's operator changed for itself (task TH.2). Sparse —
+    // only the tweaked fields — and it wins over every theme layer, field
+    // by field, until it is removed.
+    SlideCustomization customizations;
     // Background image asset; empty means no background.
     Id backgroundAssetId;
     // How that picture sits on the canvas (6.17c1). The field belongs to the
@@ -300,6 +385,23 @@ struct Theme {
     // box ("left" | "center" | "right") and the line-box multiplier the
     // renderer applies (its own default, 1.25, is kDefaultLineSpacing).
     std::string align = "center";
+    double lineSpacing = kDefaultLineSpacing;
+};
+
+// One slide's appearance after the whole chain has been walked
+// (task TH.2): per-slide customization first, then the service's current
+// theme, then the slide's theme, then the show's default theme. A property
+// no layer defined comes back empty ("" for strings, 0.0 for the size and
+// the renderer's own line-box marker for lineSpacing): the scene compile's
+// built-in defaults fill those, so the domain never has to claim to know
+// what the renderer's white or font is.
+struct ResolvedAppearance {
+    std::string textColor;
+    std::string backgroundColor;
+    std::string backgroundGradient;
+    std::string fontFamily;
+    double fontSize = 0.0;
+    std::string align;   // empty means "no layer said"; the compile centres
     double lineSpacing = kDefaultLineSpacing;
 };
 
@@ -466,6 +568,43 @@ public:
     // show default, else nullptr.
     const Theme* themeForSlide(const Id& showId, const Id& slideId) const;
 
+    // --- themes: current theme, customization and the full chain
+    // (task TH.2, themes plan) ---
+
+    // The one theme the whole service wears right now; "" means none and
+    // slides fall back to their own themes. The theme must exist.
+    bool setCurrentTheme(const Id& themeId, std::string* error = nullptr);
+    const Id& currentThemeId() const { return fCurrentThemeId; }
+
+    // Customization: what a slide's operator changed for itself.
+    // setSlideCustomizations REPLACES the whole set — a field the caller
+    // leaves unset is not customized — so the UI edits one field by
+    // reading the set, changing one key and writing it back. Values are
+    // vetted by the same rules a theme's are; the one empty string that
+    // means something is a backgroundGradient "" (explicitly flat over a
+    // graded theme) or a fontFamily "" (no family). removeSlideCustomizations
+    // restores one slide and refuses when it carried none;
+    // removeShowCustomizations clears every slide of a show and refuses
+    // when no slide carried any — an undo step costs what it changes.
+    bool setSlideCustomizations(const Id& showId, const Id& slideId,
+                                const SlideCustomization& customizations,
+                                std::string* error = nullptr);
+    bool removeSlideCustomizations(const Id& showId, const Id& slideId,
+                                   std::string* error = nullptr);
+    bool removeShowCustomizations(const Id& showId, std::string* error = nullptr);
+
+    // One mutation naming every slide it touches (task TH.5's apply): the
+    // theme (or "" to follow the show again) lands on exactly the slides
+    // named, and the whole move is one undoable change. Every id must be
+    // a slide of THIS show; an empty list refuses — a bulk that names
+    // nothing is a wrong click, not a success.
+    bool applyThemeToSlides(const Id& showId, const std::vector<Id>& slideIds,
+                            const Id& themeId, std::string* error = nullptr);
+
+    // The whole chain walked for one slide: customization -> current theme
+    // -> slide theme -> show default -> (nobody) — see ResolvedAppearance.
+    ResolvedAppearance appearanceForSlide(const Id& showId, const Id& slideId) const;
+
     // --- assets ---
 
     // Records a media file. Neither name nor path is touched on disk —
@@ -535,10 +674,17 @@ private:
     static int findItemIndex(const Slide& slide, const Id& itemId);
     // "#rgb"/"#rrggbb" only; error names the bad value.
     static bool validColor(const std::string& color, std::string* error);
+    // The customization fields a caller writes are vetted by the same
+    // rules a theme's are (task TH.2); the empty strings that mean
+    // something (a flat gradient, no family) pass.
+    static bool validCustomizations(const SlideCustomization& customizations,
+                                    std::string* error);
     Id nextId(const char* kind);
 
     std::vector<Show> fShows;
     std::vector<Theme> fThemes;
+    // The service's one current theme (task TH.2); "" is none.
+    Id fCurrentThemeId;
     std::vector<Asset> fAssets;
     std::vector<Playlist> fPlaylists;
     unsigned long long fNextOrdinal = 1;  // store-wide, ids never recycle

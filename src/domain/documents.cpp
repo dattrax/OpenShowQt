@@ -636,6 +636,12 @@ bool Documents::removeTheme(const Id& themeId, std::string* error) {
             }
         }
     }
+    // The current theme is a reference like any other (task TH.2): with
+    // the theme gone there is nothing to wear, and the service is honestly
+    // back to per-slide themes.
+    if (fCurrentThemeId == themeId) {
+        fCurrentThemeId.clear();
+    }
     return true;
 }
 
@@ -751,6 +757,220 @@ const Theme* Documents::themeForSlide(const Id& showId, const Id& slideId) const
         return findTheme(slide.themeId);  // cleared references mean none
     }
     return show->defaultThemeId.empty() ? nullptr : findTheme(show->defaultThemeId);
+}
+
+// --- themes: current, customization, the full chain (task TH.2) ----------
+
+bool Documents::validCustomizations(const SlideCustomization& c, std::string* error) {
+    // Every check is the theme's own check on the same field, so a slide
+    // can never customize itself into an appearance a theme could not
+    // carry. The two empties that ARE answers — a flat gradient over a
+    // graded theme, no family over a named one — are allowed exactly there.
+    if (c.textColor.has_value() && !validColor(*c.textColor, error)) {
+        return false;
+    }
+    if (c.backgroundColor.has_value() && !validColor(*c.backgroundColor, error)) {
+        return false;
+    }
+    if (c.backgroundGradient.has_value() && !c.backgroundGradient->empty() &&
+        !validColor(*c.backgroundGradient, error)) {
+        return false;
+    }
+    if (c.fontSize.has_value() && (!std::isfinite(*c.fontSize) || *c.fontSize < 0.0)) {
+        fail(error, "a customized font size must be finite and >= 0 (0 means renderer default)");
+        return false;
+    }
+    if (c.align.has_value() && !isThemeAlign(*c.align)) {
+        fail(error, "align must be \"left\", \"center\" or \"right\" (got '" + *c.align + "')");
+        return false;
+    }
+    if (c.lineSpacing.has_value() &&
+        (!std::isfinite(*c.lineSpacing) || *c.lineSpacing < 0.25 || *c.lineSpacing > 8.0)) {
+        fail(error, "line spacing must be a finite multiplier within 0.25..8");
+        return false;
+    }
+    return true;
+}
+
+bool Documents::setCurrentTheme(const Id& themeId, std::string* error) {
+    if (!themeId.empty() && findTheme(themeId) == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    fCurrentThemeId = themeId;
+    return true;
+}
+
+bool Documents::setSlideCustomizations(const Id& showId, const Id& slideId,
+                                       const SlideCustomization& customizations,
+                                       std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    const int index = findSlideIndex(*show, slideId);
+    if (index < 0) {
+        fail(error, idError("slide", slideId));
+        return false;
+    }
+    if (!validCustomizations(customizations, error)) {
+        return false;
+    }
+    show->slides[static_cast<size_t>(index)].customizations = customizations;
+    return true;
+}
+
+bool Documents::removeSlideCustomizations(const Id& showId, const Id& slideId,
+                                          std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    const int index = findSlideIndex(*show, slideId);
+    if (index < 0) {
+        fail(error, idError("slide", slideId));
+        return false;
+    }
+    Slide& slide = show->slides[static_cast<size_t>(index)];
+    if (slide.customizations.empty()) {
+        fail(error, "slide '" + slideId + "' carries no customizations to remove");
+        return false;
+    }
+    slide.customizations = SlideCustomization{};
+    return true;
+}
+
+bool Documents::removeShowCustomizations(const Id& showId, std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    size_t cleared = 0;
+    for (Slide& slide : show->slides) {
+        if (!slide.customizations.empty()) {
+            slide.customizations = SlideCustomization{};
+            ++cleared;
+        }
+    }
+    if (cleared == 0) {
+        // "Nothing was customized" is a wrong click worth reporting: an
+        // undo step must not exist for a change that changed nothing
+        // (dissolveGroup states the same rule for groups).
+        fail(error, "show '" + showId + "' has no customized slides to restore");
+        return false;
+    }
+    return true;
+}
+
+bool Documents::applyThemeToSlides(const Id& showId, const std::vector<Id>& slideIds,
+                                   const Id& themeId, std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    if (slideIds.empty()) {
+        fail(error, "applying a theme names no slides");
+        return false;
+    }
+    if (!themeId.empty() && findTheme(themeId) == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    // Resolve every target before touching any: a list with one dead id
+    // changes nothing rather than half-applying.
+    std::vector<size_t> targets;
+    targets.reserve(slideIds.size());
+    for (const Id& id : slideIds) {
+        const int index = findSlideIndex(*show, id);
+        if (index < 0) {
+            fail(error, idError("slide", id));
+            return false;
+        }
+        targets.push_back(static_cast<size_t>(index));
+    }
+    for (const size_t index : targets) {
+        show->slides[index].themeId = themeId;
+    }
+    return true;
+}
+
+ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& slideId) const {
+    ResolvedAppearance out;
+    const Show* show = findShow(showId);
+    if (show == nullptr) {
+        return out;
+    }
+    const int index = findSlideIndex(*show, slideId);
+    if (index < 0) {
+        return out;
+    }
+    const Slide& slide = show->slides[static_cast<size_t>(index)];
+    const SlideCustomization& c = slide.customizations;
+    // The theme layers under the customization, in the fixed priority:
+    // current theme first, then the slide's own, then the show's. A
+    // reference to a vanished theme is no layer at all, the same
+    // degradation themeForSlide has always applied.
+    const Theme* layers[3] = {nullptr, nullptr, nullptr};
+    size_t count = 0;
+    if (!fCurrentThemeId.empty()) {
+        if (const Theme* t = findTheme(fCurrentThemeId)) {
+            layers[count++] = t;
+        }
+    }
+    if (!slide.themeId.empty()) {
+        if (const Theme* t = findTheme(slide.themeId)) {
+            layers[count++] = t;
+        }
+    }
+    if (!show->defaultThemeId.empty()) {
+        if (const Theme* t = findTheme(show->defaultThemeId)) {
+            layers[count++] = t;
+        }
+    }
+    // Per property, the first layer with something to say wins; a layer
+    // silent on a property (an empty string, a size of 0) falls through.
+    auto pickString = [&](const std::optional<std::string>& own,
+                          const std::string Theme::*field) -> std::string {
+        if (own.has_value()) {
+            return *own;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            if (!(layers[i]->*field).empty()) {
+                return layers[i]->*field;
+            }
+        }
+        return std::string();
+    };
+    out.textColor = pickString(c.textColor, &Theme::textColor);
+    out.backgroundColor = pickString(c.backgroundColor, &Theme::backgroundColor);
+    out.backgroundGradient = pickString(c.backgroundGradient, &Theme::backgroundGradient);
+    out.fontFamily = pickString(c.fontFamily, &Theme::fontFamily);
+    out.align = pickString(c.align, &Theme::align);
+    // A customized number is an ANSWER, even 0 — "renderer default" over
+    // a sized theme is a thing an operator means. Only an absent field
+    // falls through to the layers.
+    if (c.fontSize.has_value()) {
+        out.fontSize = *c.fontSize;
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            if (layers[i]->fontSize != 0.0) {
+                out.fontSize = layers[i]->fontSize;
+                break;
+            }
+        }
+    }
+    if (c.lineSpacing.has_value()) {
+        out.lineSpacing = *c.lineSpacing;
+    } else if (count > 0) {
+        out.lineSpacing = layers[0]->lineSpacing;
+    } else {
+        out.lineSpacing = kDefaultLineSpacing;  // no layer spoke
+    }
+    return out;
 }
 
 // --- assets ----------------------------------------------------------------

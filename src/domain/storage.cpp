@@ -410,6 +410,37 @@ bool wantOptionalNumber(const boost::json::object& obj, const char* key, double*
     return true;
 }
 
+// Sparse-field readers for the customization set (task TH.2): absent is
+// "not customized", present is that slide's own answer — even "" — and
+// anything of the wrong shape is refused naming the field.
+bool wantCustomString(const boost::json::object& obj, const char* key,
+                      std::optional<std::string>* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;
+    }
+    if (!value->is_string()) {
+        fail(error, std::string("service.json: customization '") + key + "' must be a string");
+        return false;
+    }
+    *out = std::string(value->as_string());
+    return true;
+}
+
+bool wantCustomNumber(const boost::json::object& obj, const char* key,
+                      std::optional<double>* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;
+    }
+    if (!value->is_number()) {
+        fail(error, std::string("service.json: customization '") + key + "' must be a number");
+        return false;
+    }
+    *out = value->to_number<double>();
+    return true;
+}
+
 bool wantStringArray(const boost::json::object& obj, const char* key,
                      std::vector<std::string>* out, std::string* error) {
     const boost::json::value* value = field(obj, key);
@@ -478,6 +509,10 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
     boost::json::object root;
     root.emplace("format", kServiceFormat);
     root.emplace("nextOrdinal", documents.fNextOrdinal);
+    // The service's one current theme (task TH.2). Written even when it is
+    // "" — "no current theme" is today's answer to tomorrow's question,
+    // not a key to be missed.
+    root.emplace("currentThemeId", documents.fCurrentThemeId);
 
     boost::json::array shows;
     for (const Show& show : documents.fShows) {
@@ -523,6 +558,35 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             slideJson.emplace("items", std::move(boxes));
             slideJson.emplace("notes", slide.notes);
             slideJson.emplace("themeId", slide.themeId);
+            // The customization set (task TH.2): the object is ALWAYS
+            // there — it answers "what did this slide change for itself" —
+            // and a field is in it exactly when the slide customized that
+            // field. The empty object is a complete answer ("nothing"),
+            // read with no inference, the fit's and kind's own discipline.
+            boost::json::object customizations;
+            const SlideCustomization& changed = slide.customizations;
+            if (changed.textColor.has_value()) {
+                customizations.emplace("textColor", *changed.textColor);
+            }
+            if (changed.backgroundColor.has_value()) {
+                customizations.emplace("backgroundColor", *changed.backgroundColor);
+            }
+            if (changed.backgroundGradient.has_value()) {
+                customizations.emplace("backgroundGradient", *changed.backgroundGradient);
+            }
+            if (changed.fontFamily.has_value()) {
+                customizations.emplace("fontFamily", *changed.fontFamily);
+            }
+            if (changed.fontSize.has_value()) {
+                customizations.emplace("fontSize", *changed.fontSize);
+            }
+            if (changed.align.has_value()) {
+                customizations.emplace("align", *changed.align);
+            }
+            if (changed.lineSpacing.has_value()) {
+                customizations.emplace("lineSpacing", *changed.lineSpacing);
+            }
+            slideJson.emplace("customizations", std::move(customizations));
             slideJson.emplace("backgroundAssetId", slide.backgroundAssetId);
             // Fit on EVERY slide, cover included — 6.17b1's rule for the
             // item kind: leaving the default to inference is how a future
@@ -646,6 +710,22 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                         otherThemeKey + "\", not both");
         return false;
     };
+    if (!refuseMixedNaming(root, themeNamed ? "styles" : "themes", "the package")) {
+        return false;
+    }
+    // The service's one current theme (task TH.2) is format-6's to carry.
+    // It is read before anything that could report a later problem first:
+    // an era violation outranks a missing key, and the naming says which.
+    Id currentThemeId;
+    if (themeNamed) {
+        if (!wantString(root, "currentThemeId", &currentThemeId, error)) {
+            return false;
+        }
+    } else if (root.contains("currentThemeId")) {
+        fail(error, "service.json: \"currentThemeId\" is present in a format " +
+                        std::to_string(format) + " file, where that key does not exist");
+        return false;
+    }
     unsigned long long nextOrdinal = 0;
     if (!wantInteger(root, "nextOrdinal", &nextOrdinal, error)) {
         return false;
@@ -849,6 +929,60 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             }
             if (!refuseMixedNaming(jsonSlide, themeNamed ? "styleId" : "themeId",
                                    "slide '" + slide.id + "'")) {
+                return false;
+            }
+            // The customization set (task TH.2): a format-6 slide names
+            // it — the writer always writes it, so its absence from a 6
+            // file is a hand-edit, the backgroundGradient's rule — and a
+            // pre-6 file cannot hold one at all. Inside, each field is
+            // present exactly when the slide customized it; the slide's
+            // answers then face the theme's own contract, so no file can
+            // customize itself into an appearance no theme could carry.
+            if (themeNamed) {
+                const boost::json::value* changed = field(jsonSlide, "customizations");
+                if (changed == nullptr) {
+                    fail(error, "service.json: slide '" + slide.id + "' carries no "
+                                    "\"customizations\"; this build's writer always "
+                                    "writes it, so its absence is a hand-edit");
+                    return false;
+                }
+                if (!changed->is_object()) {
+                    fail(error, "service.json: slide '" + slide.id +
+                                    "' customizations must be an object");
+                    return false;
+                }
+                const boost::json::object& changedObject = changed->as_object();
+                SlideCustomization& c = slide.customizations;
+                if (!wantCustomString(changedObject, "textColor", &c.textColor, error) ||
+                    !wantCustomString(changedObject, "backgroundColor", &c.backgroundColor,
+                                      error) ||
+                    !wantCustomString(changedObject, "backgroundGradient", &c.backgroundGradient,
+                                      error) ||
+                    !wantCustomString(changedObject, "fontFamily", &c.fontFamily, error) ||
+                    !wantCustomNumber(changedObject, "fontSize", &c.fontSize, error) ||
+                    !wantCustomString(changedObject, "align", &c.align, error) ||
+                    !wantCustomNumber(changedObject, "lineSpacing", &c.lineSpacing, error)) {
+                    return false;
+                }
+                for (const auto& entry : changedObject) {
+                    if (!isCustomizableField(std::string(entry.key()))) {
+                        fail(error, "service.json: slide '" + slide.id + "' carries "
+                                        "customization '" + std::string(entry.key()) +
+                                        "', which is not a field");
+                        return false;
+                    }
+                }
+                std::string detail;
+                if (!Documents::validCustomizations(c, &detail)) {
+                    fail(error, "service.json: slide '" + slide.id + "' carries a "
+                                    "customization the renderer cannot honour: " + detail);
+                    return false;
+                }
+            } else if (jsonSlide.contains("customizations")) {
+                fail(error, "service.json: slide '" + slide.id +
+                                "' carries \"customizations\" in a format " +
+                                std::to_string(format) + " file, where that key"
+                                " does not exist");
                 return false;
             }
             // The fit (task 6.17c1): a format-4-or-newer slide names it,
@@ -1085,8 +1219,17 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         return false;
     }
 
+    // The service's one current theme (task TH.2) must be one the service
+    // actually has: an unknown name is the same lie as a show defaulting
+    // to one, only stated at the top of the file.
+    if (!currentThemeId.empty() && themeIds.count(currentThemeId) == 0) {
+        fail(error, "service.json: the current theme '" + currentThemeId + "' is unknown");
+        return false;
+    }
+
     out->fShows = std::move(shows);
     out->fThemes = std::move(themes);
+    out->fCurrentThemeId = std::move(currentThemeId);
     out->fAssets = std::move(assets);
     out->fPlaylists = std::move(playlists);
     out->fNextOrdinal = nextOrdinal;

@@ -52,6 +52,8 @@ using Playlist = openshow::domain::Playlist;
 using Show = openshow::domain::Show;
 using Slide = openshow::domain::Slide;
 using Theme = openshow::domain::Theme;
+using SlideCustomization = openshow::domain::SlideCustomization;
+using ResolvedAppearance = openshow::domain::ResolvedAppearance;
 using SlideItem = openshow::domain::SlideItem;
 using openshow::domain::assetPathLooksLikeVideo;
 using openshow::domain::assetKindName;
@@ -829,8 +831,9 @@ void buildSampleService(Documents* docs, const fs::path& assetSource) {
 
 // Field-by-field model comparison (the Documents API is the only view).
 bool sameService(const Documents& a, const Documents& b) {
-    if (a.showIds() != b.showIds() || a.themeIds() != b.themeIds() ||
-        a.playlistIds() != b.playlistIds() || a.assetIds() != b.assetIds()) {
+    if (a.currentThemeId() != b.currentThemeId() || a.showIds() != b.showIds() ||
+        a.themeIds() != b.themeIds() || a.playlistIds() != b.playlistIds() ||
+        a.assetIds() != b.assetIds()) {
         return false;
     }
     for (const Id& showId : a.showIds()) {
@@ -845,7 +848,8 @@ bool sameService(const Documents& a, const Documents& b) {
             const Slide& x = sa->slides[i];
             const Slide& y = sb->slides[i];
             if (x.id != y.id || x.group != y.group || x.notes != y.notes ||
-                x.themeId != y.themeId || x.backgroundAssetId != y.backgroundAssetId) {
+                x.themeId != y.themeId || x.customizations != y.customizations ||
+                x.backgroundAssetId != y.backgroundAssetId) {
                 return false;
             }
             // A slide's boxes are compared IN ORDER, id and geometry included
@@ -1887,8 +1891,9 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                         R"("assets":[],"playlists":[]})",
                     "not both",
                     "a format-6 file carrying both array names is refused");
-        refusesJson(R"({"format":6,"nextOrdinal":99,"shows":[{"id":"show1","name":"Mix",)"
-                        R"("slides":[{"id":"slide1","group":"","items":[],"notes":"",)"
+        refusesJson(R"({"format":6,"nextOrdinal":99,"currentThemeId":"",)"
+                    R"("shows":[{"id":"show1","name":"Mix",)"
+                    R"("slides":[{"id":"slide1","group":"","items":[],"notes":"",)"
                         R"("themeId":"","styleId":"","backgroundAssetId":""}]}],)"
                         R"("themes":[],"assets":[],"playlists":[]})",
                     "not both",
@@ -1899,6 +1904,269 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                     "not both",
                     "a format-5 file carrying the new show key is refused naming both");
     }
+
+    // --- current theme and customization in the file (task TH.2) ---
+    {
+        Documents themed;
+        const fs::path worn = tempRoot / "worn";
+        const Id home = themed.createShow("Worn");
+        const Id house = themed.createTheme("House", "#ffd23f", "#101828", "#000000",
+                                            "DejaVu Serif", 64.0, "left", 1.6, &error);
+        const Id first = themed.appendSlide(home);
+        const Id second = themed.appendSlide(home);
+        SlideCustomization changed;
+        changed.textColor = "#abcdef";
+        changed.backgroundGradient = "";  // explicitly flat over the graded theme
+        changed.fontSize = 0.0;           // explicitly the renderer's default
+        changed.lineSpacing = 2.5;
+        check(themed.setCurrentTheme(house) &&
+                  themed.setSlideCustomizations(home, first, changed, &error),
+              "a current theme and a customized slide are authored");
+        check(openshow::domain::saveService(themed, worn, &error), "the worn service saves");
+        const std::string manifest = readFile(worn / "service.json");
+        check(manifest.find("\"currentThemeId\":\"" + house + "\"") != std::string::npos,
+              "the file names the service's current theme");
+        check(manifest.find("\"textColor\":\"#abcdef\"") != std::string::npos &&
+                  manifest.find("\"backgroundGradient\":\"\"") != std::string::npos &&
+                  manifest.find("\"fontSize\":0") != std::string::npos &&
+                  manifest.find("\"lineSpacing\":2.5") != std::string::npos,
+              "the customized fields are written with their sparse keys");
+        check(manifest.find("\"customizations\":{}") != std::string::npos,
+              "the untouched slide carries the empty answer, not a missing key");
+        Documents back;
+        check(openshow::domain::loadService(&back, worn, &error) && sameService(themed, back),
+              "current theme and customizations round-trip field by field");
+        check(back.findShow(home)->slides[0].customizations.textColor ==
+                      std::optional<std::string>("#abcdef") &&
+                  back.findShow(home)->slides[0].customizations.fontSize ==
+                      std::optional<double>(0.0) &&
+                  back.findShow(home)->slides[1].customizations.empty(),
+              "the customization lands on its slide alone");
+    }
+
+    // Era and shape refusals: the keys belong to format 6 and only format 6,
+    // and inside the object every field is the shape its theme twin has.
+    const std::string minimalSlide =
+        R"({"id":"slide1","group":"","items":[],"notes":"","themeId":"","fit":"cover",)";
+    refusesJson(R"({"format":6,"nextOrdinal":99,"shows":[],"themes":[],)"
+                    R"("assets":[],"playlists":[]})",
+                "currentThemeId",
+                "a format-6 file with no currentThemeId is refused — the writer "
+                "always writes it, so absence is a hand-edit");
+    refusesJson(R"({"format":5,"nextOrdinal":99,"currentThemeId":"","shows":[],)"
+                    R"("styles":[],"assets":[],"playlists":[]})",
+                "does not exist",
+                "a currentThemeId in a format-5 file is refused — that era had none");
+    refusesJson(R"({"format":5,"nextOrdinal":99,"shows":[{"id":"show1","name":"Old",)"
+                    R"("slides":[{"id":"slide1","group":"","items":[],"notes":"",)"
+                      R"("fit":"cover","styleId":"","backgroundAssetId":"",)"
+                      R"("customizations":{}}]}],"styles":[],"assets":[],)"
+                      R"("playlists":[]})",
+                "does not exist",
+                "a customizations key in a format-5 file is refused naming the era");
+    refusesJson(R"({"format":6,"nextOrdinal":99,"currentThemeId":"","shows":[)"
+                    R"({"id":"show1","name":"Bare","slides":[)" + minimalSlide +
+                    R"("backgroundAssetId":""}]}],"themes":[],"assets":[],)"
+                    R"("playlists":[]})",
+                "hand-edit",
+                "a format-6 slide with no customizations key is refused as a hand-edit");
+    refusesJson(R"({"format":6,"nextOrdinal":99,"currentThemeId":"","shows":[)"
+                    R"({"id":"show1","name":"Wrong","slides":[)" + minimalSlide +
+                    R"("backgroundAssetId":"","customizations":{"fontSize":"big"}}]}],)"
+                    R"("themes":[],"assets":[],"playlists":[]})",
+                "must be a number",
+                "a customization of the wrong shape is refused naming its field");
+    refusesJson(R"({"format":6,"nextOrdinal":99,"currentThemeId":"","shows":[)"
+                    R"({"id":"show1","name":"Alien","slides":[)" + minimalSlide +
+                    R"("backgroundAssetId":"","customizations":{"bold":true}}]}],)"
+                    R"("themes":[],"assets":[],"playlists":[]})",
+                "not a field",
+                "a customization naming no known field is refused naming the key");
+    refusesJson(R"({"format":6,"nextOrdinal":99,"currentThemeId":"","shows":[)"
+                    R"({"id":"show1","name":"Green","slides":[)" + minimalSlide +
+                    R"("backgroundAssetId":"","customizations":{"textColor":"green"}}]}],)"
+                    R"("themes":[],"assets":[],"playlists":[]})",
+                "cannot honour",
+                "a customization no theme could carry is refused at the load");
+    refusesJson(R"({"format":6,"nextOrdinal":99,"currentThemeId":"theme9","shows":[],)"
+                    R"("themes":[],"assets":[],"playlists":[]})",
+                "current theme 'theme9' is unknown",
+                "a current theme the service does not have is refused");
+}
+
+// The full appearance chain (task TH.2, themes plan): what one slide draws
+// is its own customization first, then the service's current theme, then
+// the slide's theme, then the show's default — property by property, so a
+// slide that tweaked only the background still takes the current theme's
+// font. Below every layer sit the scene compile's built-ins, which this
+// layering reports as silence ("" and 0) rather than guessing.
+void exerciseThemeChain() {
+    std::string error;
+    Documents docs;
+    const Id show = docs.createShow("Chained");
+    const Id slide = docs.appendSlide(show);
+    const Id other = docs.appendSlide(show);
+    const Id showTheme = docs.createTheme("Show", "#111111", "#222222", "", "Show Serif",
+                                          40.0, "left", 1.1, &error);
+    const Id slideTheme = docs.createTheme("Slide", "#333333", "#444444", "", "Slide Serif",
+                                           50.0, "right", 1.3, &error);
+    const Id current = docs.createTheme("Current", "#555555", "#666666", "#777777",
+                                        "Current Sans", 60.0, "center", 1.5, &error);
+    check(!show.empty() && !slide.empty() && !other.empty() && !showTheme.empty() &&
+              !slideTheme.empty() && !current.empty() &&
+              docs.setShowDefaultTheme(show, showTheme) &&
+              docs.setSlideTheme(show, slide, slideTheme),
+          "a show default, a slide theme and a candidate current theme exist");
+
+    // With no current theme the chain is the two layers the service always had.
+    ResolvedAppearance a = docs.appearanceForSlide(show, slide);
+    check(a.textColor == "#333333" && a.backgroundColor == "#444444" &&
+              a.backgroundGradient.empty() && a.fontFamily == "Slide Serif" &&
+              a.fontSize == 50.0 && a.align == "right" && a.lineSpacing == 1.3,
+          "with no current theme the slide theme speaks every property");
+    a = docs.appearanceForSlide(show, other);
+    check(a.textColor == "#111111" && a.fontSize == 40.0 && a.align == "left",
+          "a slide following the show resolves the show default");
+
+    // The current theme is worn over both: every property it names is its own.
+    check(docs.setCurrentTheme(current) && docs.currentThemeId() == current,
+          "setting the current theme names it service-wide");
+    a = docs.appearanceForSlide(show, slide);
+    check(a.textColor == "#555555" && a.backgroundColor == "#666666" &&
+              a.backgroundGradient == "#777777" && a.fontFamily == "Current Sans" &&
+              a.fontSize == 60.0 && a.align == "center" && a.lineSpacing == 1.5,
+          "the current theme outranks the slide theme and the show default");
+
+    // Unknown themes are refused and change nothing; clearing is "" and always fits.
+    check(!docs.setCurrentTheme("theme-gone", &error) && docs.currentThemeId() == current &&
+                  error.find("theme") != std::string::npos,
+              "an unknown current theme is refused and the current one survives");
+    check(docs.setCurrentTheme("") && docs.currentThemeId().empty(),
+          "the empty id takes the current theme off");
+    a = docs.appearanceForSlide(show, slide);
+    check(a.textColor == "#333333", "with the current theme off the slide theme speaks again");
+    check(docs.setCurrentTheme(current), "and it can go back on");
+
+    // Customization, per property.
+    SlideCustomization changed;
+    changed.textColor = "#eeeeee";
+    check(docs.setSlideCustomizations(show, slide, changed, &error),
+          "a slide customizes one colour");
+    a = docs.appearanceForSlide(show, slide);
+    check(a.textColor == "#eeeeee" && a.backgroundColor == "#666666" &&
+              a.fontFamily == "Current Sans" && a.fontSize == 60.0,
+          "the customized field wins and every other still comes from the chain");
+
+    // The empties and zeroes that ARE answers: flat over graded, default over sized.
+    changed.backgroundGradient = "";
+    changed.fontSize = 0.0;
+    check(docs.setSlideCustomizations(show, slide, changed, &error),
+          "an empty gradient and a size of 0 are accepted as answers");
+    a = docs.appearanceForSlide(show, slide);
+    check(a.backgroundGradient.empty() && a.fontSize == 0.0 && a.textColor == "#eeeeee",
+          "flat-over-graded and renderer-default-over-sized resolve as asked");
+
+    // setSlideCustomizations REPLACES: the last write is the whole set.
+    SlideCustomization onlyAlign;
+    onlyAlign.align = "left";
+    check(docs.setSlideCustomizations(show, slide, onlyAlign, &error) &&
+              docs.findShow(show)->slides[0].customizations.textColor ==
+                  std::nullopt,
+          "writing the set replaces it — an unset field is not customized");
+    a = docs.appearanceForSlide(show, slide);
+    check(a.align == "left" && a.textColor == "#555555",
+          "the replaced set resolves its own field and re-inherits the rest");
+
+    // Refusals: a slide can never customize itself into an appearance no theme could carry.
+    SlideCustomization badColor;
+    badColor.textColor = "green";
+    check(!docs.setSlideCustomizations(show, slide, badColor, &error),
+          "a bad customized colour is refused");
+    SlideCustomization emptyText;
+    emptyText.textColor = "";
+    check(!docs.setSlideCustomizations(show, slide, emptyText, &error),
+          "an empty text colour is a hand-edit, not an answer");
+    SlideCustomization badAlign;
+    badAlign.align = "middle";
+    check(!docs.setSlideCustomizations(show, slide, badAlign, &error),
+          "an unknown alignment is refused");
+    SlideCustomization badSpacing;
+    badSpacing.lineSpacing = 20.0;
+    check(!docs.setSlideCustomizations(show, slide, badSpacing, &error),
+          "a line multiplier out of range is refused");
+    check(docs.findShow(show)->slides[0].customizations == onlyAlign,
+          "every refusal left the previous set exactly as it was");
+    check(!docs.setSlideCustomizations(show, "slide-gone", onlyAlign, &error) &&
+              !docs.setSlideCustomizations("show-gone", slide, onlyAlign, &error),
+          "customizing an unknown show or slide is refused");
+
+    // Removing restores one slide — and refuses when there was nothing to restore.
+    check(docs.removeSlideCustomizations(show, slide, &error) &&
+              docs.findShow(show)->slides[0].customizations.empty(),
+          "removing a slide's customizations sends it back to the themes");
+    check(!docs.removeSlideCustomizations(show, slide, &error) &&
+              error.find("no customizations") != std::string::npos,
+          "removing twice refuses — a restore that restored nothing is a wrong click");
+
+    // Bulk restore for a whole show: one call clears every customized slide.
+    SlideCustomization tint;
+    tint.backgroundColor = "#123456";
+    check(docs.setSlideCustomizations(show, slide, tint, &error) &&
+              docs.setSlideCustomizations(show, other, tint, &error),
+          "both slides of the show are customized");
+    check(docs.removeShowCustomizations(show, &error) &&
+              docs.findShow(show)->slides[0].customizations.empty() &&
+              docs.findShow(show)->slides[1].customizations.empty(),
+          "restoring the show clears every slide in one call");
+    check(!docs.removeShowCustomizations(show, &error) &&
+              !docs.removeShowCustomizations("show-gone", &error),
+          "restoring a clean show, or no show, is refused");
+
+    // Bulk apply (TH.5's surface, domain today): one mutation, all-or-nothing.
+    const Id redo = docs.createTheme("Redo", "#abcdef", "#000000", "", "DejaVu Serif",
+                                     64.0, "center", kDefaultLineSpacing, &error);
+    check(docs.applyThemeToSlides(show, {slide}, redo, &error) &&
+              docs.findShow(show)->slides[0].themeId == redo &&
+              docs.findShow(show)->slides[1].themeId.empty(),
+          "applying to named slides touches exactly those slides");
+    check(docs.applyThemeToSlides(show, {slide, other}, "", &error) &&
+              docs.findShow(show)->slides[0].themeId.empty() &&
+              docs.findShow(show)->slides[1].themeId.empty(),
+          "the empty theme sends the whole list back to following the show");
+    check(!docs.applyThemeToSlides(show, {}, redo, &error),
+          "a bulk that names no slides is a wrong click, not a success");
+    check(!docs.applyThemeToSlides(show, {slide, "slide-gone"}, redo, &error) &&
+              docs.findShow(show)->slides[0].themeId.empty() &&
+              docs.findShow(show)->slides[1].themeId.empty(),
+          "one dead id in the list applies nothing — no half-applied bulk");
+    check(!docs.applyThemeToSlides(show, {slide}, "theme-gone", &error),
+          "applying a vanished theme is refused");
+
+    // Undo wraps these operations exactly as it wraps everything else:
+    // History snapshots whole states, and wearing and customization are
+    // part of the state — TH.4's buttons get undo by inheritance, not
+    // by special handling.
+    History history(&docs);
+    check(history.apply([&] { return docs.setSlideCustomizations(show, slide, tint, &error); }) &&
+              docs.findShow(show)->slides[0].customizations.backgroundColor ==
+                  std::optional<std::string>("#123456"),
+          "a customization applied through history is live");
+    check(history.undo(&error) && docs.findShow(show)->slides[0].customizations.empty(),
+          "undo puts the customization back where it was — absent");
+    check(history.apply([&] { return docs.setCurrentTheme(""); }) &&
+                  docs.currentThemeId().empty() && history.undo(&error) &&
+                  docs.currentThemeId() == current,
+          "undoing the current theme puts it back on");
+
+    // Removing the current theme removes the reference: nothing wears a ghost.
+    check(docs.removeTheme(current, &error) && docs.currentThemeId().empty(),
+          "removing the current theme clears it rather than stranding it");
+
+    // Silence below the floor: an id that resolves to no slide says nothing.
+    const ResolvedAppearance nothing = docs.appearanceForSlide(show, "slide-gone");
+    check(nothing.textColor.empty() && nothing.fontSize == 0.0 &&
+              nothing.align.empty() && nothing.lineSpacing == kDefaultLineSpacing,
+          "an unknown slide resolves to silence, which the scene compile fills");
 }
 
 void exerciseHistory() {
@@ -2650,6 +2918,7 @@ int main() {
     exerciseImageItems();
     exerciseGroups();
     exerciseStyles();
+    exerciseThemeChain();
     exercisePlaylists();
     exerciseFailureLeavesNoTrace();
 
