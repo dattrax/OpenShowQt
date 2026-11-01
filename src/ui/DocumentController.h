@@ -277,6 +277,39 @@ public:
     // every theme in the service cannot touch the audience's picture.
     // Unknown id: empty string.
     Q_INVOKABLE QString themeSampleSceneJson(const QString& themeId) const;
+
+    // --- theme surfaces (task TH.5, themes plan) ---
+
+    // The current slide through the whole chain, per property: the value
+    // it draws and whether the SLIDE customized that property (the badge
+    // the inspector carries). Field edits here write customizations, so a
+    // shared theme is never silently restyled again. Empty map with no
+    // current slide.
+    Q_PROPERTY(QVariantMap slideAppearance READ slideAppearance NOTIFY documentsChanged)
+    QVariantMap slideAppearance() const;
+    // One appearance field of the current slide becomes a customization
+    // (the gradient's "" is the explicit flat, the family's "" the platform
+    // answer); the theme entity is left alone. The domain vets the value
+    // by the theme's own contract.
+    Q_INVOKABLE bool customizeCurrentSlide(const QString& field, const QVariant& value);
+    // One customized property goes back to the themes: nothing customized
+    // under that name is refused — a revert that reverted nothing is a
+    // wrong click, and the status line says so.
+    Q_INVOKABLE bool revertCurrentSlideField(const QString& field);
+    // The whole slide back at the themes, one history entry.
+    Q_INVOKABLE bool removeCurrentSlideCustomizations();
+    // Cue-grid apply: the slide with this id wears that theme ("" follows
+    // the show). Tiles browse any show in the library, so the owning show
+    // is found from the slide, not from the editing cursor.
+    Q_INVOKABLE bool applyThemeToSlide(const QString& slideId, const QString& themeId);
+    // Bulk apply and bulk restore for a whole show: one mutation over
+    // every slide, so the operator's one undo undoes the whole bulk.
+    Q_INVOKABLE bool applyThemeToShow(const QString& showId, const QString& themeId);
+    Q_INVOKABLE bool removeSlideCustomizationsFor(const QString& slideId);
+    Q_INVOKABLE bool removeShowCustomizationsFor(const QString& showId);
+    // The show page's header selector: the default of the show BEING
+    // VIEWED, which while browsing is not the show under edit.
+    Q_INVOKABLE bool setShowDefaultThemeFor(const QString& showId, const QString& themeId);
     // Layering: an image behind the current slide's words; "" clears it
     // back to the theme's background colour.
     Q_INVOKABLE bool setSlideBackground(const QString& assetId);

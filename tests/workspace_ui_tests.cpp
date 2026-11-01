@@ -1428,6 +1428,409 @@ int main(int argc, char** argv) {
         QTest::qWait(60);
     }
 
+    // --- task TH.5: apply surfaces and the customize-not-restyle inspector --
+    // The show page header owns the DEFAULT of the show on screen; the cue
+    // tile's right-click themes ONE slide and puts its customizations back;
+    // the sidebar row's right-click bulks over a whole presentation as ONE
+    // undo step; and the Edit panel's fields write per-slide customizations
+    // — a shared theme entity is never restyled from a slide. Refusals land
+    // on the status line (a refusal edits nothing, so nothing overwrites
+    // it); successes are read off the views, never off a remembered click.
+    {
+        auto clickAt = [window](QQuickItem* item, qreal x, qreal y) {
+            if (item) {
+                QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                  item->mapToScene(QPointF(x, y)).toPoint());
+            }
+        };
+        auto rightClickAt = [window](QQuickItem* item, qreal x, qreal y) {
+            if (item) {
+                QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier,
+                                  item->mapToScene(QPointF(x, y)).toPoint());
+            }
+        };
+        auto waitFor = [](const std::function<bool()>& predicate, int budgetMs = 2000) {
+            QElapsedTimer timer;
+            timer.start();
+            while (!predicate() && timer.elapsed() < budgetMs) QTest::qWait(25);
+            return predicate();
+        };
+        // Menu rows slide in through the Material enter transition; settled
+        // means the expected rows exist AND hold the same scene position
+        // twice running, so the next click cannot land on nothing.
+        auto settledRows = [&](const char* name, int expected) {
+            QList<QQuickItem*> rows;
+            QPointF lastScene;
+            bool stableOnce = false;
+            const bool settled = waitFor([&] {
+                rows.clear();
+                collectNamed(window->contentItem(), name, rows);
+                if (rows.size() != expected) {
+                    stableOnce = false;
+                    return false;
+                }
+                const QPointF scene = rows.first()->mapToScene(QPointF(0, 0));
+                if (scene != lastScene) {
+                    lastScene = scene;
+                    stableOnce = false;
+                    return false;
+                }
+                if (!stableOnce) {
+                    stableOnce = true;
+                    return false;
+                }
+                return true;
+            });
+            return settled ? rows : QList<QQuickItem*>{};
+        };
+        auto closeMenu = [window](const char* name) {
+            if (auto* menu = window->findChild<QObject*>(name))
+                QMetaObject::invokeMethod(menu, "close");
+        };
+        auto themeIdNamed = [&docs](const QString& name) {
+            for (const QVariant& theme : docs.themes()) {
+                if (theme.toMap().value(QStringLiteral("name")).toString() == name)
+                    return theme.toMap().value(QStringLiteral("id")).toString();
+            }
+            return QString();
+        };
+        auto songRow = [&docs](const QString& id) {
+            for (const QVariant& song : docs.songs()) {
+                if (song.toMap().value(QStringLiteral("id")).toString() == id)
+                    return song.toMap();
+            }
+            return QVariantMap();
+        };
+
+        check(docs.createBlankTheme("House") && docs.createBlankTheme("Loud"),
+              "two themes serve the apply surfaces");
+        const QString house = themeIdNamed(QStringLiteral("House"));
+        const QString loud = themeIdNamed(QStringLiteral("Loud"));
+        check(docs.editTheme(loud, QStringLiteral("Loud"), QStringLiteral("#ff0000"),
+                             QStringLiteral("#100000"), QString(), QString(), 0.0,
+                             QStringLiteral("center"), 1.25),
+              "Loud is restyled so which slide wears it is visible in the views");
+
+        // --- the header selector sets the DEFAULT of the show on screen ---
+        const QString viewed = docs.currentSongId();
+        auto* selector = findNamed(window->contentItem(), "showThemeSelector");
+        check(selector && selector->isVisible()
+                  && selector->property("text").toString()
+                         .contains(QStringLiteral("no show default")),
+              "the show header names the viewed show with no default set");
+        clickAt(selector, selector->width() / 2, selector->height() / 2);
+        auto* defaultMenu = window->findChild<QObject*>("showDefaultThemeMenu");
+        QList<QQuickItem*> defaultRows;
+        const bool opened = defaultMenu && waitFor([&] {
+                          return defaultMenu->property("visible").toBool();
+                      });
+        defaultRows = settledRows("showDefaultThemeItem", 2);
+        check(opened && !defaultRows.isEmpty(),
+              "the header opens a menu naming every theme");
+        QQuickItem* loudRow = nullptr;
+        for (auto* row : defaultRows) {
+            if (row->property("text").toString() == QStringLiteral("Loud"))
+                loudRow = row;
+        }
+        check(loudRow != nullptr, "the header menu names Loud");
+        clickAt(loudRow, 40, loudRow->height() / 2);
+        check(waitFor([&] {
+                  return songRow(viewed).value(QStringLiteral("defaultThemeId"))
+                             .toString() == loud;
+              })
+                  && waitFor([&] {
+                         return selector->property("text").toString()
+                                == QStringLiteral("Loud");
+                     }),
+              "picking Loud in the header makes it the viewed show's default");
+        // Reopening needs the exit transition finished: a click that
+        // arrives while the closing menu still holds the grab is eaten.
+        waitFor([&] { return !defaultMenu->property("visible").toBool(); });
+        clickAt(selector, selector->width() / 2, selector->height() / 2);
+        QList<QQuickItem*> defaultRows2 = settledRows("showDefaultThemeItem", 2);
+        QQuickItem* loudRow2 = nullptr;
+        for (auto* row : defaultRows2) {
+            if (row->property("text").toString().contains(QStringLiteral("Loud")))
+                loudRow2 = row;
+        }
+        check(loudRow2 != nullptr
+                  && loudRow2->property("text").toString().startsWith(QChar(0x2713)),
+              "the worn default is the checked row when the header reopens");
+        closeMenu("showDefaultThemeMenu");
+        waitFor([&] { return !defaultMenu->property("visible").toBool(); });
+        docs.undo();
+        check(waitFor([&] {
+                  return songRow(viewed).value(QStringLiteral("defaultThemeId"))
+                             .toString().isEmpty();
+              }),
+              "one undo takes the show default back off");
+
+        // --- cue tiles: the right-click themes ONE slide ---
+        QList<QQuickItem*> tiles;
+        collectNamed(window->contentItem(), "operatorCueTile", tiles);
+        check(tiles.size() >= 2, "the cue grid has tiles to theme");
+        rightClickAt(tiles.at(1), 40, 20);
+        auto* cueMenu = window->findChild<QObject*>("cueThemeMenu");
+        check(cueMenu && waitFor([&] { return cueMenu->property("visible").toBool(); })
+                  && !settledRows("cueApplyThemeItem", 2).isEmpty()
+                  && !settledRows("cueRemoveCustomizationItem", 1).isEmpty(),
+              "right-clicking a cue opens the theme menu on it");
+        QList<QQuickItem*> themeRows = settledRows("cueApplyThemeItem", 2);
+        QQuickItem* loudCueRow = nullptr;
+        for (auto* row : themeRows) {
+            if (row->property("text").toString() == QStringLiteral("Loud"))
+                loudCueRow = row;
+        }
+        check(loudCueRow != nullptr, "the menu names Loud");
+        clickAt(loudCueRow, 40, loudCueRow->height() / 2);
+        check(waitFor([&] {
+                  return docs.slides().at(1).toMap().value(QStringLiteral("themeId"))
+                             .toString() == loud;
+              }),
+              "the picked slide wears Loud");
+        check(docs.slides().at(0).toMap().value(QStringLiteral("themeId")).toString()
+                      .isEmpty(),
+              "and only the clicked tile's slide — its neighbour follows the show still");
+        closeMenu("cueThemeMenu");
+        waitFor([&] { return !cueMenu->property("visible").toBool(); });
+
+        // Remove from a clean slide is a wrong click, honestly refused.
+        waitFor([&] { return !cueMenu->property("visible").toBool(); });
+        rightClickAt(tiles.at(0), 40, 20);
+        check(waitFor([&] { return cueMenu->property("visible").toBool(); }),
+              "the menu opens on a second tile too");
+        QList<QQuickItem*> removeRows = settledRows("cueRemoveCustomizationItem", 1);
+        check(!removeRows.isEmpty(), "the menu carries the restore row");
+        clickAt(removeRows.first(), 40, removeRows.first()->height() / 2);
+        check(waitFor([&] { return docs.status().contains(QStringLiteral("restore")); }),
+              "removing customizations a clean slide never made is refused on the status line");
+        closeMenu("cueThemeMenu");
+        waitFor([&] { return !cueMenu->property("visible").toBool(); });
+
+        // And from a customized slide it restores — while the worn theme stays.
+        docs.selectSlide(1);
+        check(docs.customizeCurrentSlide(QStringLiteral("textColor"),
+                                         QStringLiteral("#123456")),
+              "the slide customizes before the menu restores it");
+        waitFor([&] { return !cueMenu->property("visible").toBool(); });
+        rightClickAt(tiles.at(1), 40, 20);
+        check(waitFor([&] { return cueMenu->property("visible").toBool(); }),
+              "the menu opens over the customized tile");
+        QList<QQuickItem*> removeRows2 = settledRows("cueRemoveCustomizationItem", 1);
+        clickAt(removeRows2.value(0), 40,
+                removeRows2.value(0)->height() / 2);
+        check(waitFor([&] {
+                  const QVariantMap row = docs.slides().at(1).toMap();
+                  return !row.value(QStringLiteral("customized")).toBool()
+                         && row.value(QStringLiteral("themeId")).toString() == loud;
+              }),
+              "the menu restore clears the customizations and keeps the worn theme");
+        closeMenu("cueThemeMenu");
+        waitFor([&] { return !cueMenu->property("visible").toBool(); });
+
+        // Follow show gives the slide's own theme back.
+        waitFor([&] { return !cueMenu->property("visible").toBool(); });
+        rightClickAt(tiles.at(1), 40, 20);
+        check(waitFor([&] { return cueMenu->property("visible").toBool(); }),
+              "the menu is up for the follow row");
+        QList<QQuickItem*> followRows = settledRows("cueFollowShowItem", 1);
+        clickAt(followRows.value(0), 40, followRows.value(0)->height() / 2);
+        check(waitFor([&] {
+                  return docs.slides().at(1).toMap().value(QStringLiteral("themeId"))
+                             .toString().isEmpty();
+              }),
+              "follow show takes the slide's theme off again");
+        closeMenu("cueThemeMenu");
+        waitFor([&] { return !cueMenu->property("visible").toBool(); });
+
+        // --- sidebar row: the bulk over a whole presentation, one undo ---
+        QList<QQuickItem*> outlineRows;
+        collectNamed(outline, "collectionOutlineRow", outlineRows);
+        if (left->property("outlineKind").toString() != QLatin1String("library")) {
+            clickAt(outlineRows.first(), 20, 14);
+            QTest::qWait(60);
+        }
+        QString welcomeId;
+        for (const QVariant& song : docs.songs()) {
+            if (song.toMap().value(QStringLiteral("name")).toString()
+                    == QStringLiteral("Welcome"))
+                welcomeId = song.toMap().value(QStringLiteral("id")).toString();
+        }
+        QQuickItem* welcomeRow = nullptr;
+        QList<QQuickItem*> libraryRows;
+        collectNamed(window->contentItem(), "collectionLibraryRow", libraryRows);
+        for (auto* row : libraryRows) {
+            if (row->property("modelData").toMap().value(QStringLiteral("id")).toString()
+                    == welcomeId)
+                welcomeRow = row;
+        }
+        check(welcomeRow != nullptr, "the library lists Welcome for the bulk menu");
+        rightClickAt(welcomeRow, 30, 14);
+        auto* showMenu = window->findChild<QObject*>("showThemeMenu");
+        check(showMenu && waitFor([&] { return showMenu->property("visible").toBool(); })
+                  && !settledRows("showApplyThemeItem", 2).isEmpty()
+                  && !settledRows("showRemoveAllItem", 1).isEmpty(),
+              "right-clicking the library row opens the show-wide theme menu");
+        QList<QQuickItem*> bulkRows = settledRows("showApplyThemeItem", 2);
+        QQuickItem* bulkLoudRow = nullptr;
+        for (auto* row : bulkRows) {
+            if (row->property("text").toString() == QStringLiteral("Loud"))
+                bulkLoudRow = row;
+        }
+        check(bulkLoudRow != nullptr, "the bulk menu names Loud");
+        clickAt(bulkLoudRow, 40, bulkLoudRow->height() / 2);
+        check(waitFor([&] {
+                  for (const QVariant& slide : docs.slidesOf(welcomeId)) {
+                      if (slide.toMap().value(QStringLiteral("themeId")).toString() != loud)
+                          return false;
+                  }
+                  return true;
+              }),
+              "Apply theme to show puts Loud on EVERY slide of the presentation");
+        docs.undo();
+        check(waitFor([&] {
+                  for (const QVariant& slide : docs.slidesOf(welcomeId)) {
+                      if (!slide.toMap().value(QStringLiteral("themeId")).toString().isEmpty())
+                          return false;
+                  }
+                  return true;
+              }),
+              "one undo removes the WHOLE bulk, not just the last slide");
+        waitFor([&] { return !showMenu->property("visible").toBool(); });
+        rightClickAt(welcomeRow, 30, 14);
+        check(waitFor([&] { return showMenu->property("visible").toBool(); }),
+              "the menu opens for the restore row");
+        QList<QQuickItem*> removeAllRows = settledRows("showRemoveAllItem", 1);
+        clickAt(removeAllRows.value(0), 60, removeAllRows.value(0)->height() / 2);
+        check(waitFor([&] { return docs.status().contains(QStringLiteral("restore")); }),
+              "restoring a show nobody customized is refused on the status line");
+        closeMenu("showThemeMenu");
+        waitFor([&] { return !showMenu->property("visible").toBool(); });
+
+        // --- the Edit inspector: customize, badge, restore; never restyle ---
+        docs.selectSong(viewed);
+        docs.selectSlide(0);
+        window->setProperty("page", "edit");
+        QTest::qWait(120);
+        check(docs.applyThemeToCurrentSlide(house),
+              "the slide under edit wears House");
+        auto* colourField = findNamed(window->contentItem(), "themeColourField");
+        auto* gradientField = findNamed(window->contentItem(), "themeBackGradientField");
+        auto* removeButton = findNamed(window->contentItem(), "removeCustomizationsButton");
+        auto* badge = findNamed(window->contentItem(), "customizeBadgeTextColor");
+        auto* wornName = findNamed(window->contentItem(), "themeWornName");
+        check(colourField && gradientField && removeButton && badge && wornName,
+              "the inspector carries its fields, badges and the restore");
+        check(colourField->property("text").toString() == QLatin1String("#ffffff")
+                  && !removeButton->property("enabled").toBool(),
+              "the fields open showing the worn theme's resolved values and nothing is customized");
+        check(!badge->property("visible").toBool(), "a clean field carries no badge");
+
+        // House gains a gradient, so the slide's "" has a theme to override.
+        check(docs.editTheme(house, QStringLiteral("House"), QStringLiteral("#ffffff"),
+                             QStringLiteral("#000000"), QStringLiteral("#333333"),
+                             QString(), 0.0, QStringLiteral("center"), 1.25),
+              "House is restyled graded in the Theme Editor's way");
+        check(waitFor([&] {
+                  return gradientField->property("text").toString()
+                         == QLatin1String("#333333");
+              }),
+              "the gradient field follows the worn theme through the binding");
+
+        // Typing a colour customizes the SLIDE; the entity is untouched.
+        colourField->setProperty("text", "#00ff00");
+        QMetaObject::invokeMethod(colourField, "editingFinished");
+        check(waitFor([&] {
+                  const QVariantMap entry
+                      = docs.slideAppearance().value(QStringLiteral("textColor")).toMap();
+                  return entry.value(QStringLiteral("customized")).toBool()
+                         && entry.value(QStringLiteral("value")).toString()
+                                == QStringLiteral("#00ff00");
+              }),
+              "committing a colour customizes the slide's own appearance");
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("id")).toString() == house) {
+                check(theme.toMap().value(QStringLiteral("textColor")).toString()
+                          == QLatin1String("#ffffff"),
+                      "the shared House entity keeps its white — no silent restyle");
+            }
+        }
+        check(waitFor([&] { return badge->property("visible").toBool(); }),
+              "the customized field grows its badge");
+
+        // "" on the gradient is the explicit flat, badge and all.
+        gradientField->setProperty("text", "");
+        QMetaObject::invokeMethod(gradientField, "editingFinished");
+        check(waitFor([&] {
+                  return docs.slideAppearance().value(QStringLiteral("backgroundGradient"))
+                             .toMap().value(QStringLiteral("customized")).toBool();
+              }),
+              "committing the empty gradient customizes the slide explicitly flat");
+
+        // The badge reverts its own field, and only its own field. The
+        // click starts where an operator's does — in the field they were
+        // just typing in — so the panel holds focus when the badge is hit.
+        clickAt(colourField, 20, colourField->height() / 2);
+        QTest::qWait(60);
+        clickAt(badge, badge->width() / 2, badge->height() / 2);
+        QTest::qWait(120);
+        check(waitFor([&] {
+                  return !docs.slideAppearance().value(QStringLiteral("textColor")).toMap()
+                              .value(QStringLiteral("customized")).toBool();
+              })
+                  && waitFor([&] { return !badge->property("visible").toBool(); }),
+              "clicking the badge puts textColor back to the themes, badge and all");
+        check(docs.slideAppearance().value(QStringLiteral("backgroundGradient")).toMap()
+                      .value(QStringLiteral("customized")).toBool(),
+              "the other customization survived the badge — per-field really means per-field");
+
+        // A bad value is refused with the status line's reason, and the
+        // field snaps back to what the model says.
+        colourField->setProperty("text", "green");
+        QMetaObject::invokeMethod(colourField, "editingFinished");
+        check(waitFor([&] { return docs.status().contains(QStringLiteral("colour")); })
+                  && !docs.slideAppearance().value(QStringLiteral("textColor")).toMap()
+                            .value(QStringLiteral("customized")).toBool()
+                  && colourField->property("text").toString() == QLatin1String("#ffffff"),
+              "a bad colour is refused, the field snaps back, and the theme speaks again");
+
+        // The whole-slide restore, one step, undone one step.
+        check(removeButton->property("enabled").toBool(),
+              "the restore button wakes while the slide is customized");
+        clickAt(removeButton, removeButton->width() / 2, removeButton->height() / 2);
+        check(waitFor([&] {
+                  return !docs.slideAppearance().value(QStringLiteral("backgroundGradient"))
+                              .toMap().value(QStringLiteral("customized")).toBool();
+              }),
+              "Remove customizations sends the slide back to its themes");
+        check(!removeButton->property("enabled").toBool(),
+              "the button sleeps again on a clean slide");
+        docs.undo();
+        check(waitFor([&] {
+                  return docs.slideAppearance().value(QStringLiteral("backgroundGradient"))
+                             .toMap().value(QStringLiteral("customized")).toBool();
+              }),
+              "one undo brings the whole restore back");
+
+        // The worn name is a read-out, and New forks without disturbing it.
+        check(wornName->property("text").toString().contains(QStringLiteral("House")),
+              "the panel names the theme the slide wears");
+        const int themesBefore = docs.themes().size();
+        auto* newButton = findNamed(window->contentItem(), "themeNewButton");
+        clickAt(newButton, newButton->width() / 2, newButton->height() / 2);
+        check(waitFor([&] { return docs.themes().size() == themesBefore + 1; }),
+              "New forks the worn look into a fresh theme");
+        check(themeIdNamed(QStringLiteral("House fork")) != QLatin1String("")
+                  && docs.slides().at(0).toMap().value(QStringLiteral("themeId"))
+                             .toString() == themeIdNamed(QStringLiteral("House fork")),
+              "only this slide moves onto the fork");
+        docs.undo();
+        check(waitFor([&] { return docs.themes().size() == themesBefore; }),
+              "one undo removes the fork too");
+        window->setProperty("page", "show");
+        QTest::qWait(60);
+    }
+
     if (qEnvironmentVariableIsSet("OPENSHOW_WORKSPACE_LIVE")) {
         worker.start();
         QElapsedTimer timeout;

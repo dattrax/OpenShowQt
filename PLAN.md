@@ -395,7 +395,7 @@ show default → built-in. [Detailed model, format 6 and acceptance](docs/ui/the
 | TH.2 | DONE | `currentThemeId`, sparse slide customizations, full-chain resolution, undo | `domain_tests` precedence matrix per property |
 | TH.3 | DONE | Compiler/controller follow the chain | `scene_tests`, `document_present_tests`, `frontend_journey_tests` re-skin to acknowledged pixels |
 | TH.4 | DONE | More ⋯ menu and Theme Editor mode with live sample preview | `workspace_ui_tests`, `ui_loads`; browsing never writes to the worker |
-| TH.5 | TODO | Apply/restore surfaces and Edit customization badges | `workspace_ui_tests` + controller regressions; bulk ops undo once |
+| TH.5 | DONE | Apply/restore surfaces and Edit customization badges | `workspace_ui_tests` + controller regressions; bulk ops undo once — header selector sets the VIEWED show's default, cue and library right-clicks theme and restore, Edit fields write per-slide customizations with per-field revert badges and never restyle the shared theme |
 | TH.6 | TODO | Captures and documentation | Three-width captures themed and customized; architecture.md updated |
 
 ### M7 — Productization, reliability and installable alpha

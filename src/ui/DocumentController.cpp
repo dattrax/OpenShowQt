@@ -803,6 +803,289 @@ QString DocumentController::themeSampleSceneJson(const QString& themeId) const {
     return QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
 }
 
+// --- theme surfaces (task TH.5, themes plan) --------------------------------
+
+namespace {
+
+// The show that owns a slide. Cue tiles browse the whole library, so a
+// theme asked for on a tile belongs to whoever holds that slide — never
+// assumed from the editing cursor.
+openshow::domain::Id ownerShowOf(const openshow::domain::Documents& documents,
+                                 const openshow::domain::Id& slideId) {
+    for (const openshow::domain::Id& showId : documents.showIds()) {
+        const openshow::domain::Show* show = documents.findShow(showId);
+        if (show == nullptr) {
+            continue;
+        }
+        for (const openshow::domain::Slide& slide : show->slides) {
+            if (slide.id == slideId) {
+                return showId;
+            }
+        }
+    }
+    return {};
+}
+
+} // namespace
+
+QVariantMap DocumentController::slideAppearance() const {
+    QVariantMap map;
+    const openshow::domain::Id slideId = currentSlideId();
+    if (slideId.empty()) {
+        return map;
+    }
+    // Values through the chain — customization, worn theme, the slide's
+    // own, the show's — and the flags straight from the slide's sparse
+    // set, which is what says WHICH property the operator touched.
+    const openshow::domain::ResolvedAppearance look =
+        fDocuments.appearanceForSlide(fCurrentSongId, slideId);
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    const openshow::domain::SlideCustomization* touched = nullptr;
+    if (show != nullptr) {
+        for (const openshow::domain::Slide& slide : show->slides) {
+            if (slide.id == slideId) {
+                touched = &slide.customizations;
+                break;
+            }
+        }
+    }
+    const auto field = [&map](const char* key, const QVariant& value, bool customized) {
+        QVariantMap entry;
+        entry.insert(QStringLiteral("value"), value);
+        entry.insert(QStringLiteral("customized"), customized);
+        map.insert(QLatin1String(key), entry);
+    };
+    const auto has = [touched](const char* key) {
+        if (touched == nullptr) {
+            return false;
+        }
+        const std::string name(key);
+        if (name == "textColor") return touched->textColor.has_value();
+        if (name == "backgroundColor") return touched->backgroundColor.has_value();
+        if (name == "backgroundGradient") return touched->backgroundGradient.has_value();
+        if (name == "fontFamily") return touched->fontFamily.has_value();
+        if (name == "fontSize") return touched->fontSize.has_value();
+        if (name == "align") return touched->align.has_value();
+        return touched->lineSpacing.has_value();
+    };
+    field("textColor", QString::fromStdString(look.textColor), has("textColor"));
+    field("backgroundColor", QString::fromStdString(look.backgroundColor),
+          has("backgroundColor"));
+    field("backgroundGradient", QString::fromStdString(look.backgroundGradient),
+          has("backgroundGradient"));
+    field("fontFamily", QString::fromStdString(look.fontFamily), has("fontFamily"));
+    field("fontSize", look.fontSize, has("fontSize"));
+    field("align", QString::fromStdString(look.align), has("align"));
+    field("lineSpacing", look.lineSpacing, has("lineSpacing"));
+    return map;
+}
+
+bool DocumentController::customizeCurrentSlide(const QString& field, const QVariant& value) {
+    flushText();
+    const openshow::domain::Id slideId = currentSlideId();
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    const openshow::domain::SlideCustomization* previous = nullptr;
+    if (slideId.empty() || show == nullptr) {
+        setStatus(QStringLiteral("customize: no current slide"));
+        return false;
+    }
+    for (const openshow::domain::Slide& slide : show->slides) {
+        if (slide.id == slideId) {
+            previous = &slide.customizations;
+            break;
+        }
+    }
+    openshow::domain::SlideCustomization changed = *previous;
+    const std::string name = field.toStdString();
+    if (name == "fontSize" || name == "lineSpacing") {
+        bool ok = false;
+        const double number = value.toDouble(&ok);
+        if (!ok) {
+            setStatus(QStringLiteral("customize: %1 must be a number")
+                          .arg(field));
+            return false;
+        }
+        (name == "fontSize" ? changed.fontSize : changed.lineSpacing) = number;
+    } else if (name == "textColor" || name == "backgroundColor" ||
+               name == "backgroundGradient" || name == "fontFamily" || name == "align") {
+        (name == "textColor"          ? changed.textColor
+         : name == "backgroundColor"  ? changed.backgroundColor
+         : name == "backgroundGradient" ? changed.backgroundGradient
+         : name == "fontFamily"       ? changed.fontFamily
+                                      : changed.align)
+            = value.toString().toStdString();
+    } else {
+        setStatus(QStringLiteral("customize: %1 is not an appearance field").arg(field));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setSlideCustomizations(fCurrentSongId, slideId, changed, &error);
+        })) {
+        setStatus(QStringLiteral("customize: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::revertCurrentSlideField(const QString& field) {
+    flushText();
+    const openshow::domain::Id slideId = currentSlideId();
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    const openshow::domain::SlideCustomization* previous = nullptr;
+    if (slideId.empty() || show == nullptr) {
+        setStatus(QStringLiteral("revert: no current slide"));
+        return false;
+    }
+    for (const openshow::domain::Slide& slide : show->slides) {
+        if (slide.id == slideId) {
+            previous = &slide.customizations;
+            break;
+        }
+    }
+    openshow::domain::SlideCustomization changed = *previous;
+    const std::string name = field.toStdString();
+    bool wasCustomized = false;
+    if (name == "fontSize") {
+        wasCustomized = changed.fontSize.has_value();
+        changed.fontSize.reset();
+    } else if (name == "lineSpacing") {
+        wasCustomized = changed.lineSpacing.has_value();
+        changed.lineSpacing.reset();
+    } else if (name == "textColor" || name == "backgroundColor" ||
+               name == "backgroundGradient" || name == "fontFamily" || name == "align") {
+        std::optional<std::string>& slot =
+            name == "textColor"            ? changed.textColor
+            : name == "backgroundColor"    ? changed.backgroundColor
+            : name == "backgroundGradient" ? changed.backgroundGradient
+            : name == "fontFamily"         ? changed.fontFamily
+                                           : changed.align;
+        wasCustomized = slot.has_value();
+        slot.reset();
+    } else {
+        setStatus(QStringLiteral("revert: %1 is not an appearance field").arg(field));
+        return false;
+    }
+    if (!wasCustomized) {
+        setStatus(QStringLiteral("revert: this slide has no %1 customization to revert")
+                      .arg(field));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setSlideCustomizations(fCurrentSongId, slideId, changed, &error);
+        })) {
+        setStatus(QStringLiteral("revert: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::removeCurrentSlideCustomizations() {
+    flushText();
+    const openshow::domain::Id slideId = currentSlideId();
+    if (slideId.empty()) {
+        setStatus(QStringLiteral("restore: no current slide"));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.removeSlideCustomizations(fCurrentSongId, slideId, &error);
+        })) {
+        setStatus(QStringLiteral("restore: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::applyThemeToSlide(const QString& slideId, const QString& themeId) {
+    flushText();
+    const openshow::domain::Id owner = ownerShowOf(fDocuments, slideId.toStdString());
+    if (owner.empty()) {
+        setStatus(QStringLiteral("theme: no slide '%1' to theme").arg(slideId));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.applyThemeToSlides(owner, {slideId.toStdString()},
+                                                 themeId.toStdString(), &error);
+        })) {
+        setStatus(QStringLiteral("theme: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::applyThemeToShow(const QString& showId, const QString& themeId) {
+    flushText();
+    const openshow::domain::Show* show = fDocuments.findShow(showId.toStdString());
+    if (show == nullptr) {
+        setStatus(QStringLiteral("theme: no show '%1'").arg(showId));
+        return false;
+    }
+    std::vector<openshow::domain::Id> slideIds;
+    slideIds.reserve(show->slides.size());
+    for (const openshow::domain::Slide& slide : show->slides) {
+        slideIds.push_back(slide.id);
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.applyThemeToSlides(showId.toStdString(), slideIds,
+                                                 themeId.toStdString(), &error);
+        })) {
+        setStatus(QStringLiteral("theme: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::removeSlideCustomizationsFor(const QString& slideId) {
+    flushText();
+    const openshow::domain::Id owner = ownerShowOf(fDocuments, slideId.toStdString());
+    if (owner.empty()) {
+        setStatus(QStringLiteral("restore: no slide '%1'").arg(slideId));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.removeSlideCustomizations(owner, slideId.toStdString(), &error);
+        })) {
+        setStatus(QStringLiteral("restore: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::removeShowCustomizationsFor(const QString& showId) {
+    flushText();
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.removeShowCustomizations(showId.toStdString(), &error);
+        })) {
+        setStatus(QStringLiteral("restore: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::setShowDefaultThemeFor(const QString& showId,
+                                                const QString& themeId) {
+    flushText();
+    if (showId.isEmpty()) {
+        setStatus(QStringLiteral("theme: no show selected"));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setShowDefaultTheme(showId.toStdString(),
+                                                  themeId.toStdString(), &error);
+        })) {
+        setStatus(QStringLiteral("theme: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
 bool DocumentController::setSlideBackground(const QString& assetId) {
     flushText();
     const openshow::domain::Id slideId = currentSlideId();

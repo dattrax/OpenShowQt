@@ -78,6 +78,57 @@ Rectangle {
         return list ? list.name : ""
     }
 
+    // The show whose cues are on screen (task TH.5): the browsed
+    // presentation, or the one under preparation when the grid follows the
+    // running order. The header's theme selector reads and sets THIS
+    // show's default — browsing Beta must never restyle Alpha.
+    readonly property string viewedShowId:
+        showPage.sourceShowId !== "" ? showPage.sourceShowId : docs.currentSongId
+    // The default as the model spells it, and as the header button names it.
+    function showDefaultId() {
+        const row = docs.songs.filter(s => s.id === showPage.viewedShowId)[0]
+        return row ? (row.defaultThemeId || "") : ""
+    }
+    function showDefaultName() {
+        const theme = docs.themes.filter(t => t.id === showPage.showDefaultId())[0]
+        return theme ? theme.name : "\u2014 no show default \u2014"
+    }
+    // The tile a right-click opened the context menu on: the menu acts on
+    // the slide it was asked for, not on whatever the cursor says later.
+    property string contextSlideId: ""
+
+    // The cue tile's context menu (task TH.5): theme the one slide, or
+    // put its customizations back. Flat rows under a separator — nested
+    // submenus cannot hover themselves open for a keyboard, a test, or a
+    // slow operator. Both actions are ordinary document edits on the
+    // slide's own show, refused on the status line when the names have
+    // died between the click and the trigger.
+    Menu {
+        id: cueThemeMenu
+        objectName: "cueThemeMenu"
+        MenuItem {
+            objectName: "cueFollowShowItem"
+            text: "\u2014 follow show default \u2014"
+            onTriggered: docs.applyThemeToSlide(showPage.contextSlideId, "")
+        }
+        Repeater {
+            model: docs.themes
+            MenuItem {
+                required property var modelData
+                objectName: "cueApplyThemeItem"
+                text: modelData.name
+                onTriggered: docs.applyThemeToSlide(showPage.contextSlideId,
+                                                    modelData.id)
+            }
+        }
+        MenuSeparator { objectName: "cueMenuSeparator" }
+        MenuItem {
+            objectName: "cueRemoveCustomizationItem"
+            text: "Remove customizations"
+            onTriggered: docs.removeSlideCustomizationsFor(showPage.contextSlideId)
+        }
+    }
+
     // Triggering happens here and only here: compile the cue's slide (never
     // moving the editing cursor, UI.3a), then tag the go with the cue's key so
     // the worker's acknowledgement decides which tile lights.
@@ -178,7 +229,7 @@ Rectangle {
         color: "#141414"
         Text {
             anchors.left: parent.left; anchors.leftMargin: 14
-            anchors.right: slideCount.left; anchors.rightMargin: 12
+            anchors.right: showThemeSelector.left; anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             text: showPage.sourceName || "Nothing selected"
             color: "#eeeeee"; font.pixelSize: 14; font.bold: true
@@ -190,6 +241,65 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             color: "#aaaaaa"; font.pixelSize: 11
             text: showPage.cueRows.length + (showPage.cueRows.length === 1 ? " cue" : " cues")
+        }
+        // The show default selector (task TH.5): which theme the cues
+        // that follow the show draw when they wear nothing closer. It is
+        // the VIEWED show's default — while browsing the library this is
+        // that presentation's own setting, not the editing cursor's.
+        // A button over a menu, like the header's More tab: the Show
+        // screen keeps no text entry, and the menu lists what the model
+        // has, the worn default checked.
+        // A plain AbstractButton with an explicit popup, exactly like the
+        // header's More tab: the Show screen keeps no text entry, and the
+        // menu lists what the model has, the worn default checked.
+        AbstractButton {
+            id: showThemeSelector
+            objectName: "showThemeSelector"
+            anchors.right: thumbSize.left; anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.min(220, label.implicitWidth + 20)
+            height: 28
+            padding: 0
+            focusPolicy: Qt.NoFocus
+            enabled: showPage.viewedShowId !== ""
+            text: showPage.showDefaultName()
+            Accessible.name: "Show default theme"
+            onClicked: showDefaultThemeMenu.popup()
+            background: Rectangle {
+                radius: 3
+                color: showThemeSelector.hovered ? "#575757" : "#454545"
+                border.color: "#606060"
+            }
+            contentItem: Text {
+                id: label
+                text: showThemeSelector.text
+                color: showThemeSelector.enabled ? "#eeeeee" : "#888888"
+                font.pixelSize: 12
+                verticalAlignment: Text.AlignVCenter
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+            }
+            Menu {
+                id: showDefaultThemeMenu
+                objectName: "showDefaultThemeMenu"
+                MenuItem {
+                    objectName: "showDefaultNoneItem"
+                    text: (showPage.showDefaultId() === "" ? "\u2713 " : "")
+                          + "\u2014 no show default \u2014"
+                    onTriggered: docs.setShowDefaultThemeFor(showPage.viewedShowId, "")
+                }
+                Repeater {
+                    model: docs.themes
+                    MenuItem {
+                        required property var modelData
+                        objectName: "showDefaultThemeItem"
+                        text: (showPage.showDefaultId() === modelData.id ? "\u2713 " : "")
+                              + modelData.name
+                        onTriggered: docs.setShowDefaultThemeFor(showPage.viewedShowId,
+                                                                 modelData.id)
+                    }
+                }
+            }
         }
         // The only view control the page has, because it is the only one it
         // can honour (UI.3c): the two buttons resize the cells, and the
@@ -331,8 +441,18 @@ Rectangle {
                 id: tileMouse
                 anchors.fill: parent
                 hoverEnabled: true
-                acceptedButtons: Qt.LeftButton
-                onClicked: showPage.presentCue(index)
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: function (mouse) {
+                    if (mouse.button === Qt.RightButton) {
+                        // The menu acts on the tile that was clicked, at
+                        // the moment it was clicked — capture then.
+                        showPage.contextSlideId = tile.modelData.slideId
+                        const at = tile.mapToItem(showPage, mouse.x, mouse.y)
+                        cueThemeMenu.popup(at.x, at.y)
+                    } else {
+                        showPage.presentCue(index)
+                    }
+                }
             }
         }
     }

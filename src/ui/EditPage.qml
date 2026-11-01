@@ -342,14 +342,17 @@ Flickable {
     }
 
     /*
-     * The theme panel (task 4.4): one theme object is under edit —
-     * the one the current slide resolves through, override or show
-     * default. Editing it changes every slide that follows it, which
-     * is the reuse the reference gives its themes; New forks the
-     * look for this slide alone, Show default hands it to every
-     * un-overridden slide, and Follow show (the empty id) gives the
-     * override back. Fields commit on focus-out and snap back on a
-     * refusal, exactly like the box fields beside them.
+     * The theme panel (tasks 4.4, TH.5): the fields show the RESOLVED
+     * appearance of the current slide — customization over the current
+     * theme over the slide's own theme over the show default over the
+     * built-in look. An edit here customizes THIS SLIDE only: the shared
+     * theme entity is edited in the Theme Editor alone, so restyling one
+     * lyric can never repaint every other slide wearing the same theme
+     * — the footgun the themes plan names and removes. A customized
+     * field carries a revert badge, and "Remove customizations" sends
+     * the whole slide back to its themes in one undo step. Refusals land
+     * on the status line and the field snaps back, like the box fields
+     * beside them.
      */
     ScrollView {
         id: themeScroll
@@ -365,9 +368,42 @@ Flickable {
         width: themeScroll.availableWidth
         spacing: 10
 
-        // The theme the fields edit right now ("" = none anywhere).
-        function targetId() {
-            return docs.currentTheme.id || ""
+        // The appearance fields in model spelling: the badge rules, the
+        // restore button's enabled state and the sync below all read it.
+        readonly property var fieldNames: ["textColor", "backgroundColor",
+                                           "backgroundGradient", "fontFamily",
+                                           "fontSize", "align", "lineSpacing"]
+
+        // One resolved value with the built-in look behind it, so the
+        // panel is never blank between slides or before any theme exists.
+        function valueOf(field, fallback) {
+            const entry = docs.slideAppearance[field]
+            if (entry === undefined || entry.value === undefined) {
+                return fallback
+            }
+            return entry.value
+        }
+        function isCustomized(field) {
+            const entry = docs.slideAppearance[field]
+            return entry !== undefined && entry.customized === true
+        }
+        function customizedAny() {
+            for (var i = 0; i < fieldNames.length; ++i) {
+                if (isCustomized(fieldNames[i])) {
+                    return true
+                }
+            }
+            return false
+        }
+        // Focus-out commit: ONE customization for ONE field, never a
+        // write to the shared entity. The domain vets the value by the
+        // theme's own contract — "" is a real answer for the gradient
+        // (explicitly flat, 6.17c3) and the family (whatever the
+        // platform picks) — and a bad value snaps the field back.
+        function commit(field, value) {
+            if (!docs.customizeCurrentSlide(field, value)) {
+                themePanel.sync()
+            }
         }
         // Combo row 0 is "follow show" (the empty id); the rest name
         // the themes view's rows in order.
@@ -378,67 +414,33 @@ Flickable {
             var i = index - 1
             return i < docs.themes.length ? docs.themes[i].id : ""
         }
-        // Name, colours, font and typography commit as one edit.
-        // A slide following nothing creates its theme on first edit.
-        function commit(newAlign) {
-            const size = parseFloat(fieldThemeSize.text)
-            const spacing = parseFloat(fieldLineSpacing.text)
-            const align = newAlign !== undefined ? newAlign
-                                                 : (docs.currentTheme.align || "center")
-            const name = fieldThemeName.text.trim() || "Theme"
-            const colour = fieldTextColor.text.trim()
-            const back = fieldBackColour.text.trim()
-            // "" is a real answer here, not a missing value: it is how
-            // the operator says the background stays flat (6.17c3).
-            const gradient = fieldBackGradient.text.trim()
-            const family = fieldFontFamily.text.trim()
-            const spacingValue = Number.isFinite(spacing) ? spacing : 1.25
-            const sizeValue = Number.isFinite(size) && size >= 0 ? size : 0
-            if (targetId() === "") {
-                if (!docs.createThemeFromCurrent(name)) {
-                    themePanel.sync()
-                    return
-                }
-                // The creation took the built-in look; carry the
-                // operator's values onto it, undoing the creation too
-                // if the domain refuses them.
-                if (!docs.editTheme(targetId(), name, colour, back, gradient, family,
-                                    sizeValue, align, spacingValue)) {
-                    docs.undo()
-                    themePanel.sync()
-                }
-                return
-            }
-            if (!docs.editTheme(targetId(), name, colour, back, gradient, family,
-                                sizeValue, align, spacingValue)) {
-                themePanel.sync()
-            }
+        // The theme the slide wears through the chain ("" = nowhere).
+        function targetId() {
+            return docs.currentTheme.id || ""
         }
+        // Re-derive every field from the model. Editing a field broke
+        // its binding; this is what puts the binding back, so the next
+        // navigation or document change repaints the panel again.
         function sync() {
-            fieldThemeName.text = Qt.binding(function () {
-                return docs.currentTheme.name || ""
-            })
             fieldTextColor.text = Qt.binding(function () {
-                return docs.currentTheme.textColor || "#ffffff"
+                return themePanel.valueOf("textColor", "#ffffff")
             })
             fieldBackColour.text = Qt.binding(function () {
-                return docs.currentTheme.backgroundColor || "#000000"
+                return themePanel.valueOf("backgroundColor", "#000000")
             })
-            // Flat shows empty, not a colour: the field IS the "" that
-            // commit passes back (6.17c3).
+            // Flat shows empty, not a colour: the field IS the "" a
+            // customization stores (6.17c3).
             fieldBackGradient.text = Qt.binding(function () {
-                return docs.currentTheme.backgroundGradient || ""
+                return themePanel.valueOf("backgroundGradient", "")
             })
             fieldFontFamily.text = Qt.binding(function () {
-                return docs.currentTheme.fontFamily || ""
+                return themePanel.valueOf("fontFamily", "")
             })
             fieldThemeSize.text = Qt.binding(function () {
-                const size = docs.currentTheme.fontSize
-                return size === undefined ? "0" : String(size)
+                return String(themePanel.valueOf("fontSize", 0))
             })
             fieldLineSpacing.text = Qt.binding(function () {
-                const spacing = docs.currentTheme.lineSpacing
-                return spacing === undefined ? "1.25" : String(spacing)
+                return String(themePanel.valueOf("lineSpacing", 1.25))
             })
             // The combo names the followed default as its first row;
             // an override selects its own theme instead.
@@ -480,6 +482,40 @@ Flickable {
             function onVisibleChanged() { if (editPage.visible) themePanel.sync() }
         }
 
+        // A customized field's badge: only up while that property is
+        // customized, and one click puts it back to the themes. A revert
+        // with nothing under it is a wrong click, refused on the status
+        // line — the badge's own visibility normally prevents that.
+        component RevertBadge: Rectangle {
+            id: badge
+            required property string field
+            objectName: "customizeBadge" + field.charAt(0).toUpperCase()
+                        + field.substring(1)
+            Accessible.name: "Revert " + field + " customization"
+            width: 24
+            height: 30 // the PanelField's height, so a Row lines them up
+            radius: 4
+            visible: themePanel.isCustomized(field)
+            color: badgeArea.containsMouse ? "#565659" : "#3a3a3c"
+            border.color: "#6a6a6d"
+            Text {
+                anchors.centerIn: parent
+                color: "#ffd666"
+                font.pixelSize: 13
+                text: "\u21ba"
+            }
+            MouseArea {
+                id: badgeArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    if (!docs.revertCurrentSlideField(badge.field))
+                        themePanel.sync()
+                }
+            }
+        }
+
         Text {
             color: "#b0b0b0"
             font.pixelSize: 10
@@ -506,9 +542,10 @@ Flickable {
             PanelButton {
                 objectName: "themeNewButton"
                 text: "New"
-                // Forks what the slide draws now for this slide only.
+                // Forks what the slide draws now — customizations and all —
+                // into a fresh theme worn by this slide alone.
                 onClicked: docs.createThemeFromCurrent(
-                               fieldThemeName.text.trim() || "Theme")
+                               (docs.currentTheme.name || "Theme") + " fork")
             }
             PanelButton {
                 objectName: "themeDefaultButton"
@@ -524,11 +561,18 @@ Flickable {
             }
         }
 
-        PanelField {
+        // The theme this slide wears through the chain — a name the
+        // operator READS here. The entity itself lives in the Theme
+        // Editor; editing it from this page would restyle every slide
+        // wearing it, which is exactly what TH.5 took away.
+        Text {
             id: fieldThemeName
-            objectName: "themeNameField"
+            objectName: "themeWornName"
             width: parent.width
-            onEditingFinished: themePanel.commit()
+            color: "#e6e6e6"
+            font.pixelSize: 12
+            elide: Text.ElideRight
+            text: docs.currentTheme.name || "Built-in look"
         }
 
         Row {
@@ -540,11 +584,16 @@ Flickable {
                     font.pixelSize: 10
                     text: "TEXT COLOUR"
                 }
-                PanelField {
-                    id: fieldTextColor
-                    objectName: "themeColourField"
-                    width: 116
-                    onEditingFinished: themePanel.commit()
+                Row {
+                    spacing: 2
+                    PanelField {
+                        id: fieldTextColor
+                        objectName: "themeColourField"
+                        width: 94
+                        onEditingFinished: themePanel.commit("textColor",
+                                                             text.trim())
+                    }
+                    RevertBadge { field: "textColor" }
                 }
             }
             Column {
@@ -554,19 +603,24 @@ Flickable {
                     font.pixelSize: 10
                     text: "BACKGROUND"
                 }
-                PanelField {
-                    id: fieldBackColour
-                    objectName: "themeBackField"
-                    width: 116
-                    onEditingFinished: themePanel.commit()
+                Row {
+                    spacing: 2
+                    PanelField {
+                        id: fieldBackColour
+                        objectName: "themeBackField"
+                        width: 94
+                        onEditingFinished: themePanel.commit("backgroundColor",
+                                                             text.trim())
+                    }
+                    RevertBadge { field: "backgroundColor" }
                 }
             }
         }
 
         // The background's second colour (task 6.17c3): empty keeps
         // the flat fill above; a #rgb paints the gradient's bottom.
-        // Its own full-width row — the two colour fields above fill
-        // the panel between them.
+        // Customizing it to "" is the slide saying "flat, whatever the
+        // theme grades" — the answer-empty the model stores.
         Column {
             spacing: 2
             width: themePanel.width
@@ -575,11 +629,16 @@ Flickable {
                 font.pixelSize: 10
                 text: "BACKGROUND GRADIENT (EMPTY = FLAT)"
             }
-            PanelField {
-                id: fieldBackGradient
-                objectName: "themeBackGradientField"
-                width: parent.width
-                onEditingFinished: themePanel.commit()
+            Row {
+                spacing: 2
+                PanelField {
+                    id: fieldBackGradient
+                    objectName: "themeBackGradientField"
+                    width: themePanel.width - 26
+                    onEditingFinished: themePanel.commit("backgroundGradient",
+                                                         text.trim())
+                }
+                RevertBadge { field: "backgroundGradient" }
             }
         }
 
@@ -592,11 +651,18 @@ Flickable {
                     font.pixelSize: 10
                     text: "FONT"
                 }
-                PanelField {
-                    id: fieldFontFamily
-                    objectName: "themeFontField"
-                    width: 156
-                    onEditingFinished: themePanel.commit()
+                Row {
+                    spacing: 2
+                    PanelField {
+                        id: fieldFontFamily
+                        objectName: "themeFontField"
+                        width: 122
+                        // "" is an answer: no family, whatever the
+                        // renderer picks.
+                        onEditingFinished: themePanel.commit("fontFamily",
+                                                             text.trim())
+                    }
+                    RevertBadge { field: "fontFamily" }
                 }
             }
             Column {
@@ -606,11 +672,25 @@ Flickable {
                     font.pixelSize: 10
                     text: "SIZE"
                 }
-                PanelField {
-                    id: fieldThemeSize
-                    objectName: "themeSizeField"
-                    width: 60
-                    onEditingFinished: themePanel.commit()
+                Row {
+                    spacing: 2
+                    PanelField {
+                        id: fieldThemeSize
+                        objectName: "themeSizeField"
+                        width: 60
+                        // 0 is an answer (the renderer's own size);
+                        // garbage is not — the field snaps back.
+                        onEditingFinished: {
+                            const value = parseFloat(text)
+                            if (text.trim() === "")
+                                themePanel.commit("fontSize", 0)
+                            else if (Number.isFinite(value))
+                                themePanel.commit("fontSize", value)
+                            else
+                                themePanel.sync()
+                        }
+                    }
+                    RevertBadge { field: "fontSize" }
                 }
             }
         }
@@ -629,11 +709,15 @@ Flickable {
                         required property var modelData
                         objectName: "themeAlign" + modelData.key
                         text: modelData.label
-                        highlighted: (docs.currentTheme.align || "center") === modelData.key
-                        onClicked: themePanel.commit(modelData.key)
+                        highlighted: String(themePanel.valueOf("align", "center"))
+                                     === modelData.key
+                        onClicked: themePanel.commit("align", modelData.key)
                     }
                 }
             }
+            // The align trio needs its own revert too; it wears the same
+            // badge as any field, visible only while align is customized.
+            RevertBadge { field: "align" }
             Column {
                 spacing: 2
                 Text {
@@ -641,13 +725,33 @@ Flickable {
                     font.pixelSize: 10
                     text: "LINE SPACING"
                 }
-                PanelField {
-                    id: fieldLineSpacing
-                    objectName: "themeSpacingField"
-                    width: 60
-                    onEditingFinished: themePanel.commit()
+                Row {
+                    spacing: 2
+                    PanelField {
+                        id: fieldLineSpacing
+                        objectName: "themeSpacingField"
+                        width: 52
+                        onEditingFinished: {
+                            const value = parseFloat(text)
+                            if (Number.isFinite(value))
+                                themePanel.commit("lineSpacing", value)
+                            else
+                                themePanel.sync()
+                        }
+                    }
+                    RevertBadge { field: "lineSpacing" }
                 }
             }
+        }
+
+        // The whole slide back at its themes in one undo step — the
+        // plan's quick restore. It refuses honestly when the slide was
+        // never customized, so no empty history entry exists.
+        PanelButton {
+            objectName: "removeCustomizationsButton"
+            text: "Remove customizations"
+            enabled: themePanel.customizedAny()
+            onClicked: docs.removeCurrentSlideCustomizations()
         }
 
         Text {

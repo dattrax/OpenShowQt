@@ -62,6 +62,10 @@ QVariantList DocumentViews::songs() const {
         entry.insert(QStringLiteral("id"), QString::fromStdString(id));
         entry.insert(QStringLiteral("name"), QString::fromStdString(show->name));
         entry.insert(QStringLiteral("slideCount"), static_cast<int>(show->slides.size()));
+        // The show default (task TH.5): the Show page's header selector
+        // shows and sets this layer for the show it is browsing.
+        entry.insert(QStringLiteral("defaultThemeId"),
+                     QString::fromStdString(show->defaultThemeId));
         list.append(entry);
     }
     return list;
@@ -101,6 +105,11 @@ QVariantList DocumentViews::slides(const openshow::domain::Id& showId) const {
         entry.insert(QStringLiteral("backgroundFit"),
                      QString::fromLatin1(
                          openshow::domain::backgroundFitName(slide.backgroundFit)));
+        // The slide's own theme layer and whether it has customized
+        // anything (task TH.5): the cue surfaces and the tests read the
+        // result of an apply or a restore straight off the row.
+        entry.insert(QStringLiteral("themeId"), QString::fromStdString(slide.themeId));
+        entry.insert(QStringLiteral("customized"), !slide.customizations.empty());
         list.append(entry);
     }
     return list;

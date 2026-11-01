@@ -39,6 +39,38 @@ SidePanel {
     // that appears twice in the order shows one selection, not two.
     property string selectedEntryId: ""
 
+    // The library row's context menu (task TH.5): a theme over the whole
+    // presentation, or its customizations all put back. ONE menu object
+    // serves every row — the right-click names the show, and each item
+    // acts on that id, so a menu left open across a document change still
+    // targets what was clicked. Bulks land as one undo step.
+    property string contextShowId: ""
+    Menu {
+        id: showThemeMenu
+        objectName: "showThemeMenu"
+        MenuItem {
+            objectName: "showFollowShowItem"
+            text: "\u2014 follow show default \u2014"
+            onTriggered: docs.applyThemeToShow(playlistPanel.contextShowId, "")
+        }
+        Repeater {
+            model: docs.themes
+            MenuItem {
+                required property var modelData
+                objectName: "showApplyThemeItem"
+                text: modelData.name
+                onTriggered: docs.applyThemeToShow(playlistPanel.contextShowId,
+                                                   modelData.id)
+            }
+        }
+        MenuSeparator { objectName: "showMenuSeparator" }
+        MenuItem {
+            objectName: "showRemoveAllItem"
+            text: "Remove all customizations in show"
+            onTriggered: docs.removeShowCustomizationsFor(playlistPanel.contextShowId)
+        }
+    }
+
     // Search (UI.4a), moved here with presentation browsing: this is the one
     // panel that lists presentations, so it is the one that filters them.
     // The reference's rule is unchanged — a blank query is the whole Library,
@@ -420,21 +452,38 @@ SidePanel {
                         anchors.fill: parent
                         hoverEnabled: true
                         drag.target: libraryDragProxy
-                        acceptedButtons: Qt.LeftButton
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        // The row drags out, so only a LEFT press may arm a
+                        // drop; a right-click opens the menu instead.
+                        property bool leftHeld: false
                         // Selection and preparation only: choosing a row here
                         // changes what is inspected; double-click prepares it
                         // into the running order. Nothing reaches the worker.
-                        onClicked: {
+                        onClicked: function (mouse) {
+                            if (mouse.button === Qt.RightButton) {
+                                playlistPanel.contextShowId = libraryRow.modelData.id
+                                const at = libraryRow.mapToItem(playlistPanel,
+                                                                mouse.x, mouse.y)
+                                showThemeMenu.popup(at.x, at.y)
+                                return
+                            }
                             docs.selectSong(libraryRow.modelData.id)
                             playlistPanel.sourceChosen("show", libraryRow.modelData.id)
                         }
+                        onPressed: rowMouse.leftHeld = mouse.button === Qt.LeftButton
                         onDoubleClicked: docs.addShowToPlaylist(libraryRow.modelData.id)
                         onReleased: {
-                            if (libraryDragProxy.Drag.active) libraryDragProxy.Drag.drop()
+                            if (rowMouse.leftHeld && libraryDragProxy.Drag.active)
+                                libraryDragProxy.Drag.drop()
+                            rowMouse.leftHeld = false
                             libraryDragProxy.x = 0
                             libraryDragProxy.y = 0
                         }
-                        onCanceled: { libraryDragProxy.x = 0; libraryDragProxy.y = 0 }
+                        onCanceled: {
+                            rowMouse.leftHeld = false
+                            libraryDragProxy.x = 0
+                            libraryDragProxy.y = 0
+                        }
                     }
                     // The row drags out to a playlist outline row as
                     // text/plain "show:<id>" — the drop side reads it back.

@@ -2260,6 +2260,194 @@ void exerciseMediaBinViews(const std::filesystem::path& root) {
           "and does not offer a name the bin would have to call other");
 }
 
+// Task TH.5's surfaces, at the controller the QML binds: field edits on
+// the Edit page write per-slide customizations and leave the shared theme
+// entity untouched (the footgun the plan names and removes); the badge's
+// revert and the slide's restore refuse when there is nothing to restore;
+// and the cue-grid / sidebar bulks are each a single mutation the single
+// undo undoes whole.
+void exerciseThemeSurfaces(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong("Alpha");
+    docs.addSlide();
+    docs.addSlide();
+    docs.addSlide();
+    docs.selectSlide(0);
+    const QString showA = docs.currentSongId();
+
+    check(docs.createBlankTheme("House") && docs.createBlankTheme("Loud"),
+          "two blank themes exist");
+    QString house;
+    QString loud;
+    for (const QVariant& theme : docs.themes()) {
+        if (theme.toMap().value(QStringLiteral("name")).toString() == QStringLiteral("House")) {
+            house = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+        if (theme.toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Loud")) {
+            loud = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    // Loud gets colours of its own so "which layer is drawing" is visible
+    // in the compiled scene however bare the slide is. (House keeps the
+    // blank white-on-black.)
+    check(docs.editTheme(loud, QStringLiteral("Loud"), QStringLiteral("#ff0000"),
+                         QStringLiteral("#100000"), QString(), QString(), 0.0,
+                         QStringLiteral("center"), 1.25),
+          "Loud is restyled red-on-maroon through the entity edit");
+    check(docs.applyThemeToCurrentSlide(house), "the first slide wears House");
+
+    // --- customization, not entity restyle (the plan's footgun, gone) ---
+    check(docs.customizeCurrentSlide(QStringLiteral("textColor"),
+                                     QStringLiteral("#00ff00")),
+          "the Edit page customizes the slide's text colour");
+    QVariantMap look = docs.slideAppearance();
+    check(look.value(QStringLiteral("textColor")).toMap().value(QStringLiteral("value"))
+                  .toString() == QStringLiteral("#00ff00") &&
+              look.value(QStringLiteral("textColor")).toMap()
+                  .value(QStringLiteral("customized")).toBool() &&
+              !look.value(QStringLiteral("fontSize")).toMap()
+                   .value(QStringLiteral("customized")).toBool(),
+          "the appearance view shows the drawn value and flags the touched field only");
+    for (const QVariant& theme : docs.themes()) {
+        if (theme.toMap().value(QStringLiteral("id")).toString() == house) {
+            check(theme.toMap().value(QStringLiteral("textColor")).toString() ==
+                      QStringLiteral("#ffffff"),
+                  "the shared House entity is untouched — no silent restyle of its other slides");
+        }
+    }
+    docs.undo();
+    look = docs.slideAppearance();
+    check(!look.value(QStringLiteral("textColor")).toMap()
+                 .value(QStringLiteral("customized")).toBool() &&
+              look.value(QStringLiteral("textColor")).toMap()
+                  .value(QStringLiteral("value")).toString() == QStringLiteral("#ffffff"),
+          "one undo removes the customization and the theme speaks again");
+
+    // Answer-empties and refusals at the panel's level.
+    check(docs.customizeCurrentSlide(QStringLiteral("backgroundGradient"), QString()) &&
+              docs.customizeCurrentSlide(QStringLiteral("fontSize"), 77.0),
+          "an explicit flat and a size are customized");
+    look = docs.slideAppearance();
+    check(look.value(QStringLiteral("backgroundGradient")).toMap()
+                 .value(QStringLiteral("customized")).toBool() &&
+              look.value(QStringLiteral("fontSize")).toMap()
+                  .value(QStringLiteral("value")).toDouble() == 77.0,
+          "the empties that ARE answers customize like any value");
+    check(docs.revertCurrentSlideField(QStringLiteral("fontSize")) &&
+              !docs.slideAppearance()
+                   .value(QStringLiteral("fontSize")).toMap()
+                   .value(QStringLiteral("customized")).toBool(),
+          "the badge reverts its own field");
+    check(!docs.revertCurrentSlideField(QStringLiteral("fontSize")) &&
+              docs.status().contains(QStringLiteral("revert")),
+          "reverting a field that was never customized is refused on the status line");
+    check(!docs.customizeCurrentSlide(QStringLiteral("textColor"),
+                                      QStringLiteral("green")) &&
+              !docs.customizeCurrentSlide(QStringLiteral("bold"), true),
+          "an unusable colour and a field that does not exist are both refused");
+    check(docs.slideAppearance().value(QStringLiteral("backgroundGradient")).toMap()
+              .value(QStringLiteral("customized")).toBool(),
+          "the refusals changed nothing: the flat customization stands");
+
+    // --- the whole-slide restore ---
+    check(docs.removeCurrentSlideCustomizations() &&
+              docs.slideAppearance().value(QStringLiteral("backgroundGradient")).toMap()
+                  .value(QStringLiteral("customized"))
+                  .toBool() == false &&
+              docs.slideAppearance().isEmpty() == false,
+          "Remove customizations sends the slide back to its themes");
+    check(!docs.removeCurrentSlideCustomizations() &&
+              docs.status().contains(QStringLiteral("no customizations")),
+          "restoring a clean slide refuses — nothing was restored");
+
+    // --- cue-grid apply on a BROWSED show's slide ---
+    docs.createSong("Beta");
+    docs.addSlide();
+    docs.setSlideText(QStringLiteral("Beta one"));
+    docs.flushText();
+    docs.addSlide();
+    docs.setSlideText(QStringLiteral("Beta two"));
+    docs.flushText();
+    const QString showB = docs.currentSongId();
+    const QString bSlide1 =
+        docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+    const QString bSlide2 =
+        docs.slides().at(1).toMap().value(QStringLiteral("id")).toString();
+    check(docs.applyThemeToSlide(bSlide2, loud),
+          "a theme applied to one browsed slide is owned from the slide, not the cursor");
+    check(compiledFor(docs, bSlide2).items[0].color == 0xFF0000u,
+          "the chosen slide wears Loud while the cursor never moved");
+    docs.selectSong(showA);
+    check(docs.applyThemeToSlide(bSlide1, loud),
+          "the cue grid can theme the OTHER show while Alpha is under edit");
+    check(compiledFor(docs, bSlide1).items[0].color == 0xFF0000u, "and it took");
+
+    // --- bulks: one mutation, one undo ---
+    check(docs.applyThemeToShow(showB, house), "Apply theme to show themes every slide");
+    check(compiledFor(docs, bSlide1).items[0].color == 0xFFFFFFu &&
+              compiledFor(docs, bSlide2).items[0].color == 0xFFFFFFu,
+          "every slide of the show now follows House");
+    docs.undo();
+    check(compiledFor(docs, bSlide1).items[0].color == 0xFF0000u &&
+              compiledFor(docs, bSlide2).items[0].color == 0xFF0000u,
+          "one undo removed the WHOLE bulk — both slides are back at Loud, not one");
+
+    // A bulk over an empty show is a wrong click, refused.
+    docs.createSong("Empty");
+    check(!docs.applyThemeToShow(docs.currentSongId(), house) &&
+              !docs.applyThemeToShow(QStringLiteral("show-gone"), house),
+          "no slides and no show are both refused as bulks");
+
+    // --- sidebar restore: all customizations in a show, one undo ---
+    docs.selectSong(showA);
+    docs.selectSlide(0);
+    check(docs.customizeCurrentSlide(QStringLiteral("textColor"),
+                                     QStringLiteral("#123456")),
+          "Alpha's first slide customizes");
+    // Slide 2 needs words to compile with an item colour.
+    docs.selectSlide(1);
+    docs.setSlideText(QStringLiteral("Second"));
+    docs.flushText();
+    check(docs.customizeCurrentSlide(QStringLiteral("backgroundColor"),
+                                     QStringLiteral("#654321")),
+          "and the second slide customizes its own field");
+    check(docs.removeShowCustomizationsFor(showA) &&
+              docs.slideAppearance().value(QStringLiteral("backgroundColor")).toMap()
+                  .value(QStringLiteral("customized"))
+                  .toBool() == false,
+          "Remove all customizations in show clears every slide");
+    docs.selectSlide(0);
+    check(!docs.slideAppearance().value(QStringLiteral("textColor")).toMap()
+                .value(QStringLiteral("customized")).toBool(),
+          "the other slide's customization went too");
+    check(!docs.removeShowCustomizationsFor(showA) &&
+              docs.status().contains(QStringLiteral("restore")),
+          "restoring a clean show refuses");
+    docs.undo();
+    docs.selectSlide(0);
+    check(docs.slideAppearance().value(QStringLiteral("textColor")).toMap()
+              .value(QStringLiteral("customized")).toBool() &&
+              docs.slideAppearance().value(QStringLiteral("textColor")).toMap()
+                  .value(QStringLiteral("value")).toString() == QStringLiteral("#123456"),
+          "one undo brings the whole bulk restore back");
+
+    // --- header selector: the default of the show BEING VIEWED ---
+    docs.selectSong(showA);
+    check(docs.setShowDefaultThemeFor(showB, loud),
+          "the header sets a browsed show's default without touching the cursor");
+    QVariant rowB;
+    QVariant rowA;
+    for (const QVariant& song : docs.songs()) {
+        if (song.toMap().value(QStringLiteral("id")).toString() == showB) rowB = song;
+        if (song.toMap().value(QStringLiteral("id")).toString() == showA) rowA = song;
+    }
+    check(rowB.toMap().value(QStringLiteral("defaultThemeId")).toString() == loud &&
+              rowA.toMap().value(QStringLiteral("defaultThemeId")).toString().isEmpty(),
+          "only the browsed show's default changed — the view names it");
+    check(!docs.setShowDefaultThemeFor(QString(), house),
+          "no show selected is refused");
+}
+
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("openshow-document-tests"));
@@ -2276,6 +2464,7 @@ int main(int argc, char* argv[]) {
     exercisePlaylistAndLibrary(tempRoot / "playlist");
     exerciseThemePanel(tempRoot / "styles");
     exerciseWornChain(tempRoot / "wornchain");
+    exerciseThemeSurfaces(tempRoot / "surfaces");
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");
     exerciseClipboard(tempRoot / "clipboard");
