@@ -1039,6 +1039,78 @@ void exerciseMultiBoxSession(const std::filesystem::path& root) {
           "the pasted box-less slide is a new slide with still no boxes");
 }
 
+// Task TH.3: a service that ALREADY wears a current theme, with a slide
+// that carries its own customization, loads into a session whose panel and
+// compiled scenes follow the whole chain — not one layer's assignment.
+void writeWornService(const std::filesystem::path& service) {
+    std::filesystem::create_directories(service);
+    std::ofstream out(service / "service.json");
+    out << R"svc({"format":6,"nextOrdinal":90,"currentThemeId":"theme2","shows":[{"id":"show1","name":"Worn","notes":"","defaultThemeId":"theme1","slides":[{"id":"slide1","group":"","items":[{"id":"text1","kind":"text","lines":["Verse one"],"x":160,"y":100,"width":1600,"height":880}],"notes":"","themeId":"theme3","backgroundAssetId":"","fit":"cover","customizations":{"textColor":"#00ffff"}},{"id":"slide2","group":"","items":[{"id":"text2","kind":"text","lines":["Verse two"],"x":160,"y":100,"width":1600,"height":880}],"notes":"","themeId":"","backgroundAssetId":"","fit":"cover","customizations":{}}]}],"themes":[{"id":"theme1","name":"House","textColor":"#111111","backgroundColor":"#222222","backgroundGradient":"","fontFamily":"Show Serif","fontSize":40,"align":"left","lineSpacing":1.1},{"id":"theme2","name":"Current","textColor":"#ffe000","backgroundColor":"#200000","backgroundGradient":"#602020","fontFamily":"Current Sans","fontSize":72,"align":"center","lineSpacing":1.5},{"id":"theme3","name":"Own","textColor":"#ff0000","backgroundColor":"#00ff00","backgroundGradient":"","fontFamily":"Impact","fontSize":96,"align":"right","lineSpacing":1.25}],"assets":[],"playlists":[]})svc";
+    out.close();
+}
+
+void exerciseWornChain(const std::filesystem::path& root) {
+    const std::filesystem::path service = root / "service";
+    writeWornService(service);
+    DocumentController docs(nullptr, root);
+    check(docs.songs().size() == 1, "the worn service loads at startup");
+    docs.selectSong(QStringLiteral("show1"));
+    docs.selectSlide(0);
+    const QString slide1 = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+    const QString slide2 = docs.slides().at(1).toMap().value(QStringLiteral("id")).toString();
+
+    // The panel shows the chain's top live layer: the current theme, and
+    // the slide's own (silenced) themeId is no override.
+    const QVariantMap worn = docs.currentTheme();
+    check(worn.value(QStringLiteral("id")).toString() == QStringLiteral("theme2") &&
+              worn.value(QStringLiteral("name")).toString() == QStringLiteral("Current"),
+          "the panel shows the current theme, not the silenced slide theme");
+    check(!docs.currentThemeIsOverride(), "a silenced slide theme is not an override");
+
+    // The compile follows the chain: customization over current theme.
+    const openshow::scene::Scene a = compiledFor(docs, slide1);
+    check(a.items.size() == 1 && a.items[0].color == 0x00FFFFu &&
+              a.items[0].fontFamily == QStringLiteral("Current Sans") &&
+              a.items[0].fontSize == 72.0 && a.items[0].align == QStringLiteral("center"),
+          "the customized colour beats the current theme and the rest falls through");
+    check(a.background.color == 0x200000u && a.background.hasGradient &&
+              a.background.gradient == 0x602020u,
+          "and the current theme lays its ground under the customized word");
+    const openshow::scene::Scene b = compiledFor(docs, slide2);
+    check(b.items.size() == 1 && b.items[0].color == 0xFFE000u,
+          "the uncustomized slide wears the current theme whole");
+
+    docs.selectSlide(1);
+    check(!docs.currentThemeIsOverride() &&
+              docs.currentTheme().value(QStringLiteral("id")).toString() ==
+                  QStringLiteral("theme2"),
+          "the second slide reads the same current theme with no override");
+
+    // "New theme from current" snapshots the RESOLVED look (task TH.3), not
+    // one layer's fields: the customized colour and the worn ground travel
+    // into the created theme, and the slide's picture does not move.
+    docs.selectSlide(0);
+    check(docs.createThemeFromCurrent(QStringLiteral("FromChain")),
+          "a theme created from the customized slide is accepted");
+    QVariantMap made;
+    for (const QVariant& row : docs.themes()) {
+        if (row.toMap().value(QStringLiteral("name")).toString() ==
+            QStringLiteral("FromChain")) {
+            made = row.toMap();
+        }
+    }
+    check(made.value(QStringLiteral("textColor")).toString() == QStringLiteral("#00ffff") &&
+              made.value(QStringLiteral("backgroundColor")).toString() ==
+                  QStringLiteral("#200000") &&
+              made.value(QStringLiteral("fontFamily")).toString() ==
+                  QStringLiteral("Current Sans") &&
+              made.value(QStringLiteral("fontSize")).toDouble() == 72.0 &&
+              made.value(QStringLiteral("lineSpacing")).toDouble() == 1.5,
+          "the new theme snapshots the whole chain, customization included");
+    check(compiledFor(docs, slide1).items[0].color == 0x00FFFFu,
+          "the created theme wears what the slide already drew — the compile does not move");
+}
+
 void exerciseThemePanel(const std::filesystem::path& root) {
     DocumentController docs(nullptr, root);
     docs.createSong(QStringLiteral("Consistency"));
@@ -2203,6 +2275,7 @@ int main(int argc, char* argv[]) {
     exerciseRecoveredAssetOwnership(tempRoot / "adopt");
     exercisePlaylistAndLibrary(tempRoot / "playlist");
     exerciseThemePanel(tempRoot / "styles");
+    exerciseWornChain(tempRoot / "wornchain");
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");
     exerciseClipboard(tempRoot / "clipboard");

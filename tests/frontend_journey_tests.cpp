@@ -41,6 +41,9 @@
  *      production track reports it (with its own clock), a file it cannot use
  *      is refused naming that file while the live track carries on, a go moves
  *      none of it, and the removal is the stop.
+ *   9. the theme chain (TH.3): a domain-compiled slide, the service's current
+ *      theme over it, and an explicit-flat customization all reach the
+ *      operator's frame as acknowledgement-backed re-skins.
  *
  * Needs a display (the worker opens its output window) and ffmpeg (the plates
  * are real PNGs through the real decode path). Desktop preset, label display.
@@ -64,6 +67,7 @@
 #include <QImage>
 #include <QVariantMap>
 
+#include "openshow/domain/documents.h"
 #include "openshow/scene/scene.h"
 
 #include "WorkerController.h"
@@ -158,8 +162,26 @@ int whitePixels(const QImage& image) {
     return white;
 }
 
-bool uniformlyBlack(const QImage& image, int tolerance = 10) {
+// Yellow (#ffe000) words over dark grounds: a grid count in the middle band,
+// where a line of the chain test's 72 px text can land. (Task TH.3's chain
+// pixels are the first coloured words this fixture paints.)
+int yellowPixels(const QImage& image) {
     if (image.isNull()) {
+        return 0;
+    }
+    int yellow = 0;
+    for (int y = image.height() / 5; y < image.height() * 4 / 5; y += 2) {
+        for (int x = 0; x < image.width(); x += 2) {
+            const QRgb pixel = image.pixel(x, y);
+            if (qRed(pixel) > 190 && qGreen(pixel) > 150 && qBlue(pixel) < 110) {
+                ++yellow;
+            }
+        }
+    }
+    return yellow;
+}
+
+bool uniformlyBlack(const QImage& image, int tolerance = 10) {    if (image.isNull()) {
         return false;
     }
     for (double u : {0.02, 0.25, 0.5, 0.75, 0.98}) {
@@ -617,10 +639,82 @@ int main(int argc, char* argv[]) {
     check(controller.standaloneRefusal().isEmpty() && controller.standaloneRefusalPath().isEmpty(),
           "media cue: the new selection retires the verdict the last one left");
 
+    // --- 9. the chain re-skins the on-air slide (task TH.3) ------------------
+    // A slide COMPILED FROM THE DOMAIN — not a hand-built payload — goes on
+    // air, and then the service's current theme and a slide's explicit-flat
+    // customization travel the same controller present path an operator's
+    // edit takes. The operator's own frame must show each layer's answer,
+    // after the acknowledgement that promises it.
+    {
+        openshow::domain::Documents chain;
+        const openshow::domain::Id worn = chain.createShow("ChainJourney");
+        const openshow::domain::Id cue = chain.appendSlide(worn);
+        chain.setSlideLines(worn, cue, {"CHAINED"});
+        const openshow::domain::Id house = chain.createTheme(
+            "House", "#ffffff", "#101820", "", "", 64.0, "center", 1.25);
+        const openshow::domain::Id bright = chain.createTheme(
+            "Bright", "#ffe000", "#200000", "#602020", "", 72.0, "center", 1.25);
+        const auto chainJson = [&chain, &worn, &cue]() {
+            openshow::scene::Scene compiled;
+            if (!openshow::scene::compileSlide(chain, worn, cue, &compiled)) {
+                return QString();
+            }
+            return serialized(compiled);
+        };
+        check(chain.setSlideTheme(worn, cue, house), "chain: the slide follows its house theme");
+        const auto revision = controller.sceneActive();
+        controller.presentSceneJson(chainJson());
+        check(waitUntil([&controller, revision] {
+                  return controller.scenePending() == 0 &&
+                         controller.sceneActive() != revision && controller.wordsOnAir() &&
+                         controller.backgroundOnAir();
+              }),
+              "chain: the domain-compiled slide is acknowledged with both layers on air");
+        check(pixelsSettled(controller, [](const QImage& frame) {
+                  return nearColor(rgbAt(frame, 0.02, 0.03), 0x101820u, 12) &&
+                         whitePixels(frame) > 20;
+              }),
+              "chain: the house theme paints its dark ground and white words");
+
+        check(chain.setCurrentTheme(bright), "chain: the service puts on the current theme");
+        const auto revisionWorn = controller.sceneActive();
+        controller.presentSceneJson(chainJson());
+        check(waitUntil([&controller, revisionWorn] {
+                  return controller.scenePending() == 0 &&
+                         controller.sceneActive() != revisionWorn;
+              }),
+              "chain: the current theme's re-skin is acknowledged");
+        check(pixelsSettled(controller, [](const QImage& frame) {
+                  return nearColor(rgbAt(frame, 0.02, 0.03), 0x200000u, 12) &&
+                         nearColor(rgbAt(frame, 0.02, 0.97), 0x602020u, 24) &&
+                         yellowPixels(frame) > 10;
+              }),
+              "chain: the audience sees the current theme's graded ground and yellow words");
+
+        openshow::domain::SlideCustomization flat;
+        flat.backgroundGradient = "";  // the slide says flat OVER the graded current theme
+        check(chain.setSlideCustomizations(worn, cue, flat),
+              "chain: the slide customizes itself flat");
+        const auto revisionFlat = controller.sceneActive();
+        controller.presentSceneJson(chainJson());
+        check(waitUntil([&controller, revisionFlat] {
+                  return controller.scenePending() == 0 &&
+                         controller.sceneActive() != revisionFlat;
+              }),
+              "chain: the customized flat answer is acknowledged");
+        check(pixelsSettled(controller, [](const QImage& frame) {
+                  return nearColor(rgbAt(frame, 0.02, 0.03), 0x200000u, 12) &&
+                         nearColor(rgbAt(frame, 0.02, 0.97), 0x200000u, 12) &&
+                         yellowPixels(frame) > 10;
+              }),
+              "chain: the floor holds the ground colour — the ramp is gone, the words stay");
+    }
+
     std::printf("frontend_journey: go/gradient/composed clears/restore across a 16-deep prune, "
                 "adoption of both plates with restore from the new paths, a real missing-"
-                "picture fault (%s) repaired, and a cue lane whose live marker only lights for "
-                "the cue the worker acknowledged — all in status AND in the copied frame\n",
+                "picture fault (%s) repaired, a cue lane whose live marker only lights for "
+                "the cue the worker acknowledged, and a theme chain whose re-skins land as "
+                "acknowledged pixels — all in status AND in the copied frame\n",
                 faultReason.toUtf8().constData());
 
     controller.shutdownNow();

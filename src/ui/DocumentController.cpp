@@ -660,20 +660,23 @@ bool DocumentController::createThemeFromCurrent(const QString& name) {
         setStatus(QStringLiteral("new theme: no current slide"));
         return false;
     }
-    // Snapshot what the slide draws now — resolved theme or the built-in
-    // defaults the renderer would reach without one — before history runs.
-    const openshow::domain::Theme* base = fDocuments.themeForSlide(fCurrentSongId, slideId);
-    const std::string text = base != nullptr ? base->textColor : "#ffffff";
-    const std::string background = base != nullptr ? base->backgroundColor : "#000000";
+    // Snapshot what the slide draws now — the whole resolved chain, from the
+    // slide's own customizations down, or the built-in defaults the renderer
+    // would reach where no layer spoke — before history runs (task TH.3:
+    // "wear what this slide draws" is the chain's answer, not one layer's).
+    const openshow::domain::ResolvedAppearance base =
+        fDocuments.appearanceForSlide(fCurrentSongId, slideId);
+    const std::string text = base.textColor.empty() ? "#ffffff" : base.textColor;
+    const std::string background = base.backgroundColor.empty() ? "#000000"
+                                                                : base.backgroundColor;
     // A theme made from a gradient slide starts WITH the gradient: "wear
     // whatever the current slide draws now" includes its second colour
     // (task 6.17c3), and a built-in default has never had one.
-    const std::string gradient = base != nullptr ? base->backgroundGradient : "";
-    const std::string family = base != nullptr ? base->fontFamily : "";
-    const double size = base != nullptr ? base->fontSize : 0.0;
-    const std::string alignment = base != nullptr ? base->align : "center";
-    const double spacing =
-        base != nullptr ? base->lineSpacing : openshow::domain::kDefaultLineSpacing;
+    const std::string gradient = base.backgroundGradient;
+    const std::string family = base.fontFamily;
+    const double size = base.fontSize;
+    const std::string alignment = base.align.empty() ? "center" : base.align;
+    const double spacing = base.lineSpacing;
     std::string error;
     openshow::domain::Id created;
     if (!edit([&] {

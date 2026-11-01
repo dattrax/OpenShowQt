@@ -193,10 +193,11 @@ bool operator!=(const Scene& a, const Scene& b);
 // The scene a restart begins on: black, empty, no provenance.
 Scene clearedScene();
 
-// Compiles one slide. The theme resolution chain is the model's
-// (themeForSlide: override → show default → none); with no theme the
-// built-in defaults are white text on black, platform font, renderer
-// size. A slide's background asset becomes the scene's image
+// Compiles one slide. The full appearance chain is the model's
+// (appearanceForSlide: customization → current theme → slide theme → show
+// default); a property no layer spoke keeps the built-in default — white
+// text on black, platform font, renderer size. A slide's background asset
+// becomes the scene's image
 // background with the path recorded in the model at compile time —
 // whether that file still exists is the renderer's problem, matching
 // the model's own stance (task 2.2: save is where bytes are checked).

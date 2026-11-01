@@ -680,6 +680,92 @@ void exerciseBackgroundGradient() {
     }
 }
 
+// Task TH.3 (themes plan): the compile walks the FULL chain — the slide's
+// customization, then the service's current theme, then the slide's theme,
+// then the show default — so the scene carries the resolution, not one
+// layer's assignment. Silence anywhere in the chain still means the
+// compile's own built-ins.
+void exerciseChainCompile() {
+    std::string error;
+    Documents docs;
+    const Id show = docs.createShow("Worn");
+    const Id assigned = docs.appendSlide(show);
+    const Id follower = docs.appendSlide(show);
+    const Id showTheme = docs.createTheme("Show", "#111111", "#222222", "", "Show Serif",
+                                          40.0, "left", 1.1, &error);
+    const Id slideTheme = docs.createTheme("Slide", "#ff0000", "#00ff00", "", "Slide Serif",
+                                           50.0, "right", 1.3, &error);
+    const Id current = docs.createTheme("Current", "#ffff00", "#202020", "#606060",
+                                        "Current Sans", 60.0, "center", 1.5, &error);
+    check(!showTheme.empty() && !slideTheme.empty() && !current.empty() &&
+              docs.setShowDefaultTheme(show, showTheme) &&
+              docs.setSlideTheme(show, assigned, slideTheme),
+          "a show default and a slide theme are authored");
+    docs.setSlideLines(show, assigned, {"Worn"});
+    docs.setSlideLines(show, follower, {"Follows"});
+
+    scene::Scene out;
+    check(scene::compileSlide(docs, show, assigned, &out, &error) &&
+              out.items[0].color == 0xFF0000u && out.background.color == 0x00FF00u,
+          "before anything is worn the two-layer chain compiles as it always did");
+
+    // The current theme is worn OVER both layers — assigned slides and
+    // followers alike — colours, gradient, font, size, typography.
+    check(docs.setCurrentTheme(current), "the service puts on the current theme");
+    check(scene::compileSlide(docs, show, assigned, &out, &error) &&
+              out.items[0].color == 0xFFFF00u && out.items[0].fontFamily == "Current Sans" &&
+              out.items[0].fontSize == 60.0 && out.items[0].align == "center" &&
+              out.items[0].lineSpacing == 1.5 && out.background.color == 0x202020u &&
+              out.background.hasGradient && out.background.gradient == 0x606060u,
+          "the current theme re-skins the slide that had its own theme");
+    check(scene::compileSlide(docs, show, follower, &out, &error) &&
+              out.items[0].color == 0xFFFF00u && out.background.gradient == 0x606060u,
+          "and the slide that only followed the show");
+
+    // Customization wins field by field; the empties and zeroes that ARE
+    // answers — flat over graded, renderer default over sized, platform
+    // font over named — stop the fall exactly where the model said they do.
+    openshow::domain::SlideCustomization changed;
+    changed.textColor = "#0000ff";
+    changed.backgroundGradient = "";
+    changed.fontSize = 0.0;
+    changed.fontFamily = "";
+    check(docs.setSlideCustomizations(show, assigned, changed, &error),
+          "the slide customizes colour, flatness, size and family");
+    check(scene::compileSlide(docs, show, assigned, &out, &error) &&
+              out.items[0].color == 0x0000FFu && out.items[0].fontSize == 0.0 &&
+              out.items[0].fontFamily.empty() && !out.background.hasGradient &&
+              out.background.color == 0x202020u && out.items[0].align == "center" &&
+              out.items[0].lineSpacing == 1.5,
+          "customized fields win and the rest still comes through the chain");
+    check(scene::compileSlide(docs, show, follower, &out, &error) &&
+              out.background.hasGradient,
+          "the other slide wears the gradient — customization is per slide");
+
+    // Restoring sends the slide back to the chain; clearing the current
+    // theme returns each layer to its old voice.
+    check(docs.removeSlideCustomizations(show, assigned, &error) &&
+              scene::compileSlide(docs, show, assigned, &out, &error) &&
+              out.items[0].color == 0xFFFF00u && out.background.hasGradient &&
+              out.items[0].fontSize == 60.0,
+          "removing the customizations puts the current theme's whole look back");
+    check(docs.setCurrentTheme("") &&
+              scene::compileSlide(docs, show, assigned, &out, &error) &&
+              out.items[0].color == 0xFF0000u && out.background.color == 0x00FF00u &&
+              !out.background.hasGradient,
+          "with the current theme off the slide theme speaks again");
+    check(scene::compileSlide(docs, show, follower, &out, &error) &&
+              out.items[0].color == 0x111111u && out.background.color == 0x222222u,
+          "and the follower follows the show default again");
+
+    // A vanished current theme cannot haunt the compile: removeTheme clears
+    // the reference, and the chain walks on without it.
+    check(docs.setCurrentTheme(current) && docs.removeTheme(current, &error) &&
+              scene::compileSlide(docs, show, assigned, &out, &error) &&
+              out.items[0].color == 0xFF0000u,
+          "deleting the current theme re-skins back, it does not blank");
+}
+
 void exerciseClearedScene() {
     const scene::Scene black = scene::clearedScene();
     check(black.items.empty() && black.background.color == scene::kBlack &&
@@ -1343,6 +1429,7 @@ int main() {
     exerciseImageWire(fx);
     exerciseBackgroundFit();
     exerciseBackgroundGradient();
+    exerciseChainCompile();
     exerciseMeasuredSizes(fx);
     exerciseClearedScene();
     exerciseDemoFixture();

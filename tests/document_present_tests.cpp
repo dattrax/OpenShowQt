@@ -34,6 +34,8 @@
 #include <QCoreApplication>
 
 #include "openshow/protocol/protocol.h"
+#include "openshow/domain/documents.h"
+#include "openshow/scene/scene.h"
 
 #include "DocumentController.h"
 #include "SceneEdit.h"
@@ -453,6 +455,66 @@ int main(int argc, char* argv[]) {
             }
             check(unchanged, "importing and removing media never present, prepare or clear");
         }
+    }
+
+    // --- task TH.3: the resolved chain reaches the real worker -------------
+    // The full chain — the service's current theme worn over the slide's
+    // own, the slide's customization over both — exists only inside the
+    // scene compile, and it must arrive over the real socket as ordinary
+    // edits: every appearance change is a NEW acknowledged revision, and
+    // every answer of the chain (the worn colour, the explicit flat over a
+    // graded theme) is visible in the payload the worker accepted.
+    {
+        openshow::domain::Documents chain;
+        const openshow::domain::Id worn = chain.createShow("Worn");
+        const openshow::domain::Id lyric = chain.appendSlide(worn);
+        chain.setSlideLines(worn, lyric, {"Chain on air"});
+        const openshow::domain::Id loud = chain.createTheme(
+            "Loud", "#ff0000", "#00ff00", "", "Impact", 96.0, "right", 1.5);
+        const openshow::domain::Id bright = chain.createTheme(
+            "Bright", "#ffe000", "#200000", "#602020", "DejaVu Serif", 72.0, "center", 1.25);
+        chain.setSlideTheme(worn, lyric, loud);
+        openshow::scene::Scene compiled;
+        const auto compileChain = [&chain, &worn, &lyric, &compiled]() {
+            return openshow::scene::compileSlide(chain, worn, lyric, &compiled)
+                       ? QString::fromStdString(
+                             boost::json::serialize(openshow::scene::toJson(compiled)))
+                       : QString();
+        };
+        const auto itemColor = [](const QString& json) {
+            return numberValue(boost::json::parse(json.toStdString())
+                                   .at("items").as_array()[0].as_object().at("color"));
+        };
+
+        const QString plainJson = compileChain();
+        check(itemColor(plainJson) == 0xFF0000u, "before anything is worn the slide draws its own theme");
+        const std::uint64_t revLoud = presentJson(fd, nextId, plainJson);
+        check(revLoud != 0, "the chain-resolved slide is presented on the real worker");
+
+        check(chain.setCurrentTheme(bright), "the service puts on the current theme");
+        const QString wornJson = compileChain();
+        const boost::json::value wornPayload = boost::json::parse(wornJson.toStdString());
+        check(numberValue(wornPayload.at("items").as_array()[0].as_object().at("color")) ==
+                      0xFFE000u &&
+                  numberValue(wornPayload.at("backgroundColor")) == 0x200000u &&
+                  numberValue(wornPayload.at("background").as_object().at("gradient")) ==
+                      0x602020u,
+              "the compiled payload wears the current theme: colour, background, gradient");
+        const std::uint64_t revBright = presentJson(fd, nextId, wornJson);
+        check(revBright != 0 && revBright != revLoud,
+              "the re-skin is a new revision the worker acknowledges");
+
+        openshow::domain::SlideCustomization flat;
+        flat.backgroundGradient = "";  // explicitly flat over the graded current theme
+        check(chain.setSlideCustomizations(worn, lyric, flat),
+              "the slide customizes itself flat");
+        const QString flatJson = compileChain();
+        check(!boost::json::parse(flatJson.toStdString()).at("background").as_object()
+                   .contains("gradient") &&
+                  itemColor(flatJson) == 0xFFE000u,
+              "the flat answer drops the gradient key and keeps the worn text colour");
+        check(presentJson(fd, nextId, flatJson) != 0,
+              "and the customized revision goes on air acknowledged");
     }
 
     call(fd, nextId++, "shutdown", {}, &reply);

@@ -350,42 +350,52 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         return false;
     }
 
-    // The theme chain is the model's; nullptr means built-in defaults.
-    const domain::Theme* theme = documents.themeForSlide(showId, slideId);
+    // The full appearance chain is the model's (task TH.3): the slide's own
+    // customization, then the service's current theme, then the slide's
+    // theme, then the show's default. A property no layer spoke comes back
+    // silent — "" or 0 — and the silence is exactly this compile's built-in:
+    // white text on black, platform font, renderer size.
+    const domain::ResolvedAppearance look = documents.appearanceForSlide(showId, slideId);
 
     Scene scene;
     scene.showId = showId;
     scene.slideId = slideId;
     Color textColor = kWhite;
     Color backgroundColor = kBlack;
-    std::string fontFamily;
-    double fontSize = kRendererDefaultFontSize;
-    if (theme != nullptr) {
-        if (!parseColor(theme->textColor, &textColor)) {
-            fail(error, "theme '" + theme->id + "' text colour '" + theme->textColor +
+    std::string fontFamily = look.fontFamily;  // "" is the platform font
+    double fontSize = look.fontSize;           // 0 is the renderer's default size
+    // A spoken colour must parse even though its authors vet it: the two
+    // libraries are compiled separately, and the one file path that skips
+    // the model's contract — a hand-edit storage let through uncoloured —
+    // is refused here, before a single pixel of the show is promised to
+    // the audience. The slide is named because the property may arrive from
+    // a customization, which has no theme of its own to name.
+    if (!look.textColor.empty()) {
+        if (!parseColor(look.textColor, &textColor)) {
+            fail(error, "slide '" + slideId + "' text colour '" + look.textColor +
                             "' is not #rgb or #rrggbb");
             return false;
         }
-        if (!parseColor(theme->backgroundColor, &backgroundColor)) {
-            fail(error, "theme '" + theme->id + "' background colour '" +
-                            theme->backgroundColor + "' is not #rgb or #rrggbb");
+    }
+    if (!look.backgroundColor.empty()) {
+        if (!parseColor(look.backgroundColor, &backgroundColor)) {
+            fail(error, "slide '" + slideId + "' background colour '" +
+                            look.backgroundColor + "' is not #rgb or #rrggbb");
             return false;
         }
-        // The gradient's second colour (task 6.17c3): empty is the whole
-        // answer — flat — and anything else must parse, by the same rule
-        // and in the same words as the two colours beside it. A theme
-        // whose gradient the renderer cannot parse is refused at compile,
-        // before a single pixel of the show is promised to the audience.
-        if (!theme->backgroundGradient.empty()) {
-            if (!parseColor(theme->backgroundGradient, &scene.background.gradient)) {
-                fail(error, "theme '" + theme->id + "' background gradient '" +
-                                theme->backgroundGradient + "' is not #rgb or #rrggbb");
-                return false;
-            }
-            scene.background.hasGradient = true;
+    }
+    // The gradient's second colour (task 6.17c3, chain by task TH.3):
+    // empty is the whole answer — flat, whether because no layer chose a
+    // gradient or because the slide customized itself flat over a graded
+    // theme — and anything else must parse, by the same rule and in the
+    // same words as the two colours beside it.
+    if (!look.backgroundGradient.empty()) {
+        if (!parseColor(look.backgroundGradient, &scene.background.gradient)) {
+            fail(error, "slide '" + slideId + "' background gradient '" +
+                            look.backgroundGradient + "' is not #rgb or #rrggbb");
+            return false;
         }
-        fontFamily = theme->fontFamily;
-        fontSize = theme->fontSize;
+        scene.background.hasGradient = true;
     }
 
     // One wire item per authored box, in the model's DRAW order (task 6.17a,
@@ -441,13 +451,14 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         item.color = textColor;
         item.fontFamily = fontFamily;
         item.fontSize = fontSize;
-        // Typography: the resolved theme's alignment and line box (task 4.4),
-        // falling back to the item defaults when the slide carries no theme.
-        // Boxes on one slide share its theme — per-box typography is a later
-        // slice of R17, and inventing a field the editor cannot set yet is how
-        // a file gets a meaning nothing can write.
-        item.align = theme != nullptr ? theme->align : std::string("center");
-        item.lineSpacing = theme != nullptr ? theme->lineSpacing : domain::kDefaultLineSpacing;
+        // Typography: the chain's resolved alignment and line box (task 4.4,
+        // chain by TH.3), falling back to the built-in centre and the
+        // renderer's line multiplier when no layer spoke. Boxes on one slide
+        // share its resolved appearance — per-box typography is a later slice
+        // of R17, and inventing a field the editor cannot set yet is how a
+        // file gets a meaning nothing can write.
+        item.align = look.align.empty() ? std::string("center") : look.align;
+        item.lineSpacing = look.lineSpacing;
         scene.items.push_back(std::move(item));
     }
 

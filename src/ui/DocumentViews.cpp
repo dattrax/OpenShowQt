@@ -235,11 +235,22 @@ QVariantList DocumentViews::themes() const {
 QVariantMap DocumentViews::currentTheme(const Cursor& cursor) const {
     QVariantMap map;
     // The slide is resolved by the cursor's POSITION, exactly as the
-    // controller's currentSlideId() did: navigation owns that index, and
-    // themeForSlide takes the id it names.
+    // controller's currentSlideId() did: navigation owns that index. The
+    // theme the panel shows is the chain's top LIVE layer (task TH.3):
+    // the service's current theme when one is worn, else the slide's own,
+    // else the show's. The panel edits the theme entity, so it names the
+    // entity the slide is actually wearing; field-level customizations
+    // surface on top of this view when the inspector grows them (TH.5).
     const openshow::domain::Slide* slide = cursorSlide(cursor);
-    const openshow::domain::Theme* theme = fDocuments.themeForSlide(
-        cursor.showId, slide == nullptr ? openshow::domain::Id{} : slide->id);
+    const openshow::domain::Theme* theme = nullptr;
+    if (!fDocuments.currentThemeId().empty()) {
+        theme = fDocuments.findTheme(fDocuments.currentThemeId());
+    }
+    if (theme == nullptr) {
+        theme = fDocuments.themeForSlide(cursor.showId,
+                                         slide == nullptr ? openshow::domain::Id{}
+                                                          : slide->id);
+    }
     if (theme == nullptr) {
         return map;
     }
@@ -259,8 +270,12 @@ QVariantMap DocumentViews::currentTheme(const Cursor& cursor) const {
 }
 
 bool DocumentViews::themeIsOverride(const Cursor& cursor) const {
+    // A slide's own theme is an override only while it is the chain's top
+    // LIVE layer (task TH.3): a worn current theme speaks first, and a
+    // panel showing the current theme must not claim the slide overrides.
     const openshow::domain::Slide* slide = cursorSlide(cursor);
-    return slide != nullptr && !slide->themeId.empty();
+    return fDocuments.currentThemeId().empty() && slide != nullptr &&
+           !slide->themeId.empty();
 }
 
 QVariantList DocumentViews::playlists() const {
