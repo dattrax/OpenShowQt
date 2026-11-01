@@ -250,7 +250,7 @@ int main(int argc, char* argv[]) {
 
     // --- task 3.4: independent clears and restore, on the live worker ---
     // A freshly typed slide is words over black — which is exactly why
-    // the background clear would sit disabled. A style's colour puts a
+    // the background clear would sit disabled. A theme's colour puts a
     // background on air the way compileSlide produces one; from there
     // each clear derives a scene from the JSON on air (what
     // WorkerController's per-revision mirror holds) and presents it, so
@@ -265,8 +265,8 @@ int main(int argc, char* argv[]) {
           "a typed slide is words over a black background");
 
     const QString styled = withColor(second);
-    const std::uint64_t revStyled = presentJson(fd, nextId, styled);
-    check(revStyled != 0, "the styled slide (words + background) is on air");
+    const std::uint64_t revThemed = presentJson(fd, nextId, styled);
+    check(revThemed != 0, "the styled slide (words + background) is on air");
     check(openshow::ui::sceneContent(styled).words &&
               openshow::ui::sceneContent(styled).background,
           "the styled slide's content flags name both layers");
@@ -287,7 +287,7 @@ int main(int argc, char* argv[]) {
     // the clear sequence cut from — the store still holds it.
     check(presentJson(fd, nextId, openshow::ui::clearedSceneJson()) != 0,
           "clear-all presents the empty scene cleanly");
-    check(presentRevision(fd, nextId, revStyled) == revStyled,
+    check(presentRevision(fd, nextId, revThemed) == revThemed,
           "restore re-presents the remembered revision; it reports itself on air");
 
     // Undo rolls the typing back; the slide then compiles its pre-typing

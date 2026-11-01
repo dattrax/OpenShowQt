@@ -24,25 +24,25 @@ domain::Documents demoDocuments() {
     // A show default for lyric body text, and an override for the title
     // card, so the fixture exercises both resolution branches.
     const domain::Id lyric =
-        documents.createStyle("Lyric", "#ffffff", kBackdrop, "", "", 72.0, "center",
+        documents.createTheme("Lyric", "#ffffff", kBackdrop, "", "", 72.0, "center",
                               domain::kDefaultLineSpacing);
     const domain::Id title =
-        documents.createStyle("Title", "#ffffff", kBackdrop, "", "", 110.0, "center",
+        documents.createTheme("Title", "#ffffff", kBackdrop, "", "", 110.0, "center",
                               domain::kDefaultLineSpacing);
     const domain::Id subtitle =
-        documents.createStyle("Subtitle", "#c5cfe4", kBackdrop, "", "", 40.0, "center",
+        documents.createTheme("Subtitle", "#c5cfe4", kBackdrop, "", "", 40.0, "center",
                               domain::kDefaultLineSpacing);
 
     const domain::Id show = documents.createShow("OpenShowQt demo");
-    documents.setShowDefaultStyle(show, lyric);
+    documents.setShowDefaultTheme(show, lyric);
 
     // Slide 0: the title card — heading over the two lines the first
-    // milestone drew, styled through per-slide overrides.
+    // milestone drew, themed through per-slide overrides.
     const domain::Id titleCard = documents.appendSlide(show);
     documents.setSlideLines(show, titleCard,
                             {"OpenShowQt", "Task 2.4 · documents compiled to scenes",
                              "\xce\xa9 \xce\xb2 \xcf\x80 \xc2\xbd \xe2\x80\x94 caf\xc3\xa9 na\xc3\xafve"});
-    documents.setSlideStyle(show, titleCard, title);
+    documents.setSlideTheme(show, titleCard, title);
 
     // Slide 1: a lyric stanza under the show default (no override).
     const domain::Id stanza = documents.appendSlide(show);
@@ -54,7 +54,7 @@ domain::Documents demoDocuments() {
     // Slide 2: a section-cue slide under the Subtitle override.
     const domain::Id cue = documents.appendSlide(show);
     documents.setSlideLines(show, cue, {"Reading"});
-    documents.setSlideStyle(show, cue, subtitle);
+    documents.setSlideTheme(show, cue, subtitle);
 
     // Slide 3: the black interlude — no lines, so it compiles to an
     // empty scene that still fills the backdrop.

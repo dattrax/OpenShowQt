@@ -42,7 +42,7 @@ std::string clipForError(std::string_view text, std::size_t maxBytes = 64) {
 }
 
 // The one hex-colour parser, matching the domain's accepted syntax
-// exactly: "#rgb" and "#rrggbb" (createStyle has already vetted model
+// exactly: "#rgb" and "#rrggbb" (createTheme has already vetted model
 // colours; fromJson re-vets anything arriving over the socket).
 bool parseColor(const std::string& text, Color* out) {
     if (text.size() != 4 && text.size() != 7) {
@@ -350,8 +350,8 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         return false;
     }
 
-    // The style chain is the model's; nullptr means built-in defaults.
-    const domain::Style* style = documents.styleForSlide(showId, slideId);
+    // The theme chain is the model's; nullptr means built-in defaults.
+    const domain::Theme* theme = documents.themeForSlide(showId, slideId);
 
     Scene scene;
     scene.showId = showId;
@@ -360,32 +360,32 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
     Color backgroundColor = kBlack;
     std::string fontFamily;
     double fontSize = kRendererDefaultFontSize;
-    if (style != nullptr) {
-        if (!parseColor(style->textColor, &textColor)) {
-            fail(error, "style '" + style->id + "' text colour '" + style->textColor +
+    if (theme != nullptr) {
+        if (!parseColor(theme->textColor, &textColor)) {
+            fail(error, "theme '" + theme->id + "' text colour '" + theme->textColor +
                             "' is not #rgb or #rrggbb");
             return false;
         }
-        if (!parseColor(style->backgroundColor, &backgroundColor)) {
-            fail(error, "style '" + style->id + "' background colour '" +
-                            style->backgroundColor + "' is not #rgb or #rrggbb");
+        if (!parseColor(theme->backgroundColor, &backgroundColor)) {
+            fail(error, "theme '" + theme->id + "' background colour '" +
+                            theme->backgroundColor + "' is not #rgb or #rrggbb");
             return false;
         }
         // The gradient's second colour (task 6.17c3): empty is the whole
         // answer — flat — and anything else must parse, by the same rule
-        // and in the same words as the two colours beside it. A style
+        // and in the same words as the two colours beside it. A theme
         // whose gradient the renderer cannot parse is refused at compile,
         // before a single pixel of the show is promised to the audience.
-        if (!style->backgroundGradient.empty()) {
-            if (!parseColor(style->backgroundGradient, &scene.background.gradient)) {
-                fail(error, "style '" + style->id + "' background gradient '" +
-                                style->backgroundGradient + "' is not #rgb or #rrggbb");
+        if (!theme->backgroundGradient.empty()) {
+            if (!parseColor(theme->backgroundGradient, &scene.background.gradient)) {
+                fail(error, "theme '" + theme->id + "' background gradient '" +
+                                theme->backgroundGradient + "' is not #rgb or #rrggbb");
                 return false;
             }
             scene.background.hasGradient = true;
         }
-        fontFamily = style->fontFamily;
-        fontSize = style->fontSize;
+        fontFamily = theme->fontFamily;
+        fontSize = theme->fontSize;
     }
 
     // One wire item per authored box, in the model's DRAW order (task 6.17a,
@@ -441,13 +441,13 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         item.color = textColor;
         item.fontFamily = fontFamily;
         item.fontSize = fontSize;
-        // Typography: the resolved style's alignment and line box (task 4.4),
-        // falling back to the item defaults when the slide carries no style.
-        // Boxes on one slide share its style — per-box typography is a later
+        // Typography: the resolved theme's alignment and line box (task 4.4),
+        // falling back to the item defaults when the slide carries no theme.
+        // Boxes on one slide share its theme — per-box typography is a later
         // slice of R17, and inventing a field the editor cannot set yet is how
         // a file gets a meaning nothing can write.
-        item.align = style != nullptr ? style->align : std::string("center");
-        item.lineSpacing = style != nullptr ? style->lineSpacing : domain::kDefaultLineSpacing;
+        item.align = theme != nullptr ? theme->align : std::string("center");
+        item.lineSpacing = theme != nullptr ? theme->lineSpacing : domain::kDefaultLineSpacing;
         scene.items.push_back(std::move(item));
     }
 

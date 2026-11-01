@@ -1,5 +1,5 @@
 /*
- * Checks the compiled scene type (task 2.4a): the compiler's style
+ * Checks the compiled scene type (task 2.4a): the compiler's theme
  * resolution and background handling, the immutability of an already
  * compiled scene against later edits, and the strictness of the wire
  * codec that scene.prepare will rely on. Task 6.8a (review R11) added
@@ -43,14 +43,14 @@ namespace scene = openshow::scene;
 namespace proto = openshow::protocol;
 
 // A small service exercising every resolution branch: one slide under a
-// show default, one under a per-slide override, one with no style at
+// show default, one under a per-slide override, one with no theme at
 // all, and one carrying a background asset.
 struct Fixture {
     Documents docs;
-    Id show;      // the show carrying the default style
-    Id defaulted;   // slide under the show default style
+    Id show;      // the show carrying the default theme
+    Id defaulted;   // slide under the show default theme
     Id overridden;  // slide with its own override
-    Id unstyled;    // slide with no style anywhere
+    Id unstyled;    // slide with no theme anywhere
     Id backed;      // slide with the asset as background
     Id videoBacked;  // slide with the video asset as background (task 5.5)
     Id asset;
@@ -60,21 +60,21 @@ struct Fixture {
 Fixture buildFixture() {
     Fixture fx;
     const Id house =
-        fx.docs.createStyle("House", "#ffffff", "#202040", "", "DejaVu Serif", 64.0, "center",
+        fx.docs.createTheme("House", "#ffffff", "#202040", "", "DejaVu Serif", 64.0, "center",
                             kDefaultLineSpacing);
     const Id loud =
-        fx.docs.createStyle("Loud", "#ff0", "#000", "", "Impact", 96.0, "right", 1.5);
+        fx.docs.createTheme("Loud", "#ff0", "#000", "", "Impact", 96.0, "right", 1.5);
     fx.asset = fx.docs.addAsset("stage loop.jpg", "/services/svc/assets/asset-loop.jpg");
     fx.videoAsset =
         fx.docs.addAsset("Stage Loop.MP4", "/services/svc/assets/asset-loop.mp4");
 
     const Id show = fx.docs.createShow("Order");
-    fx.docs.setShowDefaultStyle(show, house);
+    fx.docs.setShowDefaultTheme(show, house);
     fx.defaulted = fx.docs.appendSlide(show);
     fx.overridden = fx.docs.appendSlide(show);
     fx.unstyled = fx.docs.appendSlide(show);
     fx.backed = fx.docs.appendSlide(show);
-    fx.docs.setSlideStyle(show, fx.overridden, loud);
+    fx.docs.setSlideTheme(show, fx.overridden, loud);
     fx.docs.setSlideBackground(show, fx.backed, fx.asset);
     fx.docs.setSlideLines(show, fx.backed, {"Background lyric"});
     fx.videoBacked = fx.docs.appendSlide(show);
@@ -82,7 +82,7 @@ Fixture buildFixture() {
     fx.docs.setSlideLines(show, fx.videoBacked, {"Video stays"});
     fx.docs.setSlideLines(show, fx.defaulted, {"Come, all people", "", "Sing"});
 
-    // The unstyled slide lives in a show without a default style.
+    // The unstyled slide lives in a show without a default theme.
     const Id bare = fx.docs.createShow("Bare");
     fx.unstyled = fx.docs.appendSlide(bare);
     fx.docs.setSlideLines(bare, fx.unstyled, {"Plain"});
@@ -118,7 +118,7 @@ void exerciseCompile(const Fixture& fx) {
     check(out.items[0].align == "right" && out.items[0].lineSpacing == 1.5,
           "the resolved style's typography (task 4.4) is baked into the text item");
 
-    // No style anywhere: the built-in white on black.
+    // No theme anywhere: the built-in white on black.
     // find the Bare show: the unstyled slide's show
     Id bareId;
     for (const Id& id : fx.docs.showIds()) {
@@ -207,7 +207,7 @@ void exerciseMultiBox(Fixture& fx) {
     check(out.items[1].lines == std::vector<std::string>({"Title line"}) &&
               out.items[2].lines == std::vector<std::string>({"small", "credit"}),
           "words stay in the box they were written in, blank lines and all");
-    // Style is per slide today (R17's later slices own per-box typography), so
+    // Theme is per slide today (R17's later slices own per-box typography), so
     // what every box must do is agree: same colour, same face, same typography.
     check(out.items[0].color == out.items[1].color &&
               out.items[1].fontFamily == out.items[2].fontFamily &&
@@ -259,7 +259,7 @@ void exerciseImmutability(Fixture& fx) {
 
     // Edit the model every way a live session would.
     fx.docs.setSlideLines(fx.show, fx.defaulted, {"Replaced"});
-    fx.docs.createStyle("Newer", "#123456", "#000000", "", "Newer Font", 12.0, "center",
+    fx.docs.createTheme("Newer", "#123456", "#000000", "", "Newer Font", 12.0, "center",
                         kDefaultLineSpacing);
 
     check(compiled == before, "an already compiled scene does not follow later edits");
@@ -551,16 +551,16 @@ void exerciseBackgroundFit() {
 }
 
 void exerciseBackgroundGradient() {
-    // Task 6.17c3 (review R17): the style's second background colour, from
+    // Task 6.17c3 (review R17): the theme's second background colour, from
     // the model through the wire to the reader's discipline on the key.
     std::string error;
     Documents docs;
     const Id show = docs.createShow("Graded");
     const Id slide = docs.appendSlide(show);
-    const Id style = docs.createStyle("Sunset", "#ffffff", "#301020", "#c05020",
+    const Id theme = docs.createTheme("Sunset", "#ffffff", "#301020", "#c05020",
                                       "DejaVu Serif", 64.0, "center",
                                       openshow::domain::kDefaultLineSpacing, &error);
-    check(!style.empty() && docs.setSlideStyle(show, slide, style),
+    check(!theme.empty() && docs.setSlideTheme(show, slide, theme),
           "a slide follows a style with a second colour");
     scene::Scene out;
     check(scene::compileSlide(docs, show, slide, &out, &error) &&
@@ -568,17 +568,17 @@ void exerciseBackgroundGradient() {
               out.background.color == 0x301020u,
           "the compile carries the pair: top colour, bottom colour, flag set");
     // The empty string is FLAT, not "a gradient to nothing": the flag
-    // stays down, so every pre-6.17c3 style compiles to the byte-exact
+    // stays down, so every pre-6.17c3 theme compiles to the byte-exact
     // scene it compiled to before the field existed.
-    const Id plain = docs.createStyle("Plain", "#ffffff", "#000000", "", "DejaVu Serif",
+    const Id plain = docs.createTheme("Plain", "#ffffff", "#000000", "", "DejaVu Serif",
                                       64.0, "center", openshow::domain::kDefaultLineSpacing,
                                       &error);
     const Id plainSlide = docs.appendSlide(show);
-    check(!plain.empty() && docs.setSlideStyle(show, plainSlide, plain),
+    check(!plain.empty() && docs.setSlideTheme(show, plainSlide, plain),
           "a second slide follows a style with no second colour");
-    scene::Scene flatStyleOut;
-    check(scene::compileSlide(docs, show, plainSlide, &flatStyleOut, &error) &&
-              !flatStyleOut.background.hasGradient,
+    scene::Scene flatThemeOut;
+    check(scene::compileSlide(docs, show, plainSlide, &flatThemeOut, &error) &&
+              !flatThemeOut.background.hasGradient,
           "the empty style string compiles with the flag DOWN — not a ramp to black");
 
     // The wire writes the key when — and only when — there is a gradient.
@@ -649,7 +649,7 @@ void exerciseBackgroundGradient() {
 
     // The chain the domain does NOT police: a stored service may hold a
     // colour string the compile cannot parse (storage never validates
-    // colours — the compile refuses once, naming the style). Reach it the
+    // colours — the compile refuses once, naming the theme). Reach it the
     // way an operator would: a hand-edited file on disk.
     {
         namespace fs = std::filesystem;

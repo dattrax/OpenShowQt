@@ -241,7 +241,7 @@ void testHello() {
             check(hasBlurFit, "capabilities name scene.background-fit-blur.v1");
         }
         {  // And 6.17c3's background gradient names its own: a frontend may
-           // only send a styled gradient to a worker whose hello carries
+           // only send a themed gradient to a worker whose hello carries
            // this, because an older worker refuses the key outright.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasGradient = std::any_of(

@@ -51,7 +51,7 @@ Item {
     property point dragOrigin
     property rect startBox
 
-    readonly property color canvasColor: docs.currentStyle.backgroundColor || "#000000"
+    readonly property color canvasColor: docs.currentTheme.backgroundColor || "#000000"
 
     function clamp(v, lo, hi) {
         return Math.max(lo, Math.min(hi, v))

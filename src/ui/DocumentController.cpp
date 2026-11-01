@@ -569,56 +569,56 @@ bool DocumentController::placeAssetOnSlide(const QString& assetId) {
     return true;
 }
 
-// --- style panel (task 4.4) -------------------------------------------------
+// --- theme panel (task 4.4) -------------------------------------------------
 
-QVariantList DocumentController::styles() const {
-    return fViews.styles();
+QVariantList DocumentController::themes() const {
+    return fViews.themes();
 }
 
-QVariantMap DocumentController::currentStyle() const {
-    return fViews.currentStyle(viewCursor());
+QVariantMap DocumentController::currentTheme() const {
+    return fViews.currentTheme(viewCursor());
 }
 
-bool DocumentController::currentStyleIsOverride() const {
-    return fViews.styleIsOverride(viewCursor());
+bool DocumentController::currentThemeIsOverride() const {
+    return fViews.themeIsOverride(viewCursor());
 }
 
-bool DocumentController::applyStyleToCurrentSlide(const QString& styleId) {
+bool DocumentController::applyThemeToCurrentSlide(const QString& themeId) {
     flushText();
     const openshow::domain::Id slideId = currentSlideId();
     if (slideId.empty()) {
-        setStatus(QStringLiteral("style: no current slide"));
+        setStatus(QStringLiteral("theme: no current slide"));
         return false;
     }
     std::string error;
     if (!edit([&] {
-            return fDocuments.setSlideStyle(fCurrentSongId, slideId, styleId.toStdString(),
+            return fDocuments.setSlideTheme(fCurrentSongId, slideId, themeId.toStdString(),
                                             &error);
         })) {
-        setStatus(QStringLiteral("style: %1").arg(QString::fromStdString(error)));
+        setStatus(QStringLiteral("theme: %1").arg(QString::fromStdString(error)));
         return false;
     }
     return true;
 }
 
-bool DocumentController::setShowDefaultStyle(const QString& styleId) {
+bool DocumentController::setShowDefaultTheme(const QString& themeId) {
     flushText();
     if (fCurrentSongId.empty()) {
-        setStatus(QStringLiteral("style: no current song"));
+        setStatus(QStringLiteral("theme: no current song"));
         return false;
     }
     std::string error;
     if (!edit([&] {
-            return fDocuments.setShowDefaultStyle(fCurrentSongId, styleId.toStdString(),
+            return fDocuments.setShowDefaultTheme(fCurrentSongId, themeId.toStdString(),
                                                   &error);
         })) {
-        setStatus(QStringLiteral("style: %1").arg(QString::fromStdString(error)));
+        setStatus(QStringLiteral("theme: %1").arg(QString::fromStdString(error)));
         return false;
     }
     return true;
 }
 
-bool DocumentController::editStyle(const QString& styleId, const QString& name,
+bool DocumentController::editTheme(const QString& themeId, const QString& name,
                                    const QString& textColor, const QString& backgroundColor,
                                    const QString& backgroundGradient,
                                    const QString& fontFamily, double fontSize,
@@ -626,46 +626,46 @@ bool DocumentController::editStyle(const QString& styleId, const QString& name,
     flushText();
     const std::string cleanName = name.trimmed().toStdString();
     if (cleanName.empty()) {
-        setStatus(QStringLiteral("edit style: a style needs a name"));
+        setStatus(QStringLiteral("edit theme: a theme needs a name"));
         return false;
     }
     std::string error;
     if (!edit([&] {
             // Appearance first: it is the part the renderer cannot honour
             // a lie about, and its refusal must leave the name alone too.
-            if (!fDocuments.updateStyle(styleId.toStdString(), textColor.toStdString(),
+            if (!fDocuments.updateTheme(themeId.toStdString(), textColor.toStdString(),
                                         backgroundColor.toStdString(),
                                         backgroundGradient.toStdString(),
                                         fontFamily.toStdString(),
                                         fontSize, align.toStdString(), lineSpacing, &error)) {
                 return false;
             }
-            const openshow::domain::Style* style =
-                fDocuments.findStyle(styleId.toStdString());
-            if (style != nullptr && style->name != cleanName) {
-                return fDocuments.renameStyle(styleId.toStdString(), cleanName, &error);
+            const openshow::domain::Theme* theme =
+                fDocuments.findTheme(themeId.toStdString());
+            if (theme != nullptr && theme->name != cleanName) {
+                return fDocuments.renameTheme(themeId.toStdString(), cleanName, &error);
             }
             return true;
         })) {
-        setStatus(QStringLiteral("edit style: %1").arg(QString::fromStdString(error)));
+        setStatus(QStringLiteral("edit theme: %1").arg(QString::fromStdString(error)));
         return false;
     }
     return true;
 }
 
-bool DocumentController::createStyleFromCurrent(const QString& name) {
+bool DocumentController::createThemeFromCurrent(const QString& name) {
     flushText();
     const openshow::domain::Id slideId = currentSlideId();
     if (slideId.empty()) {
-        setStatus(QStringLiteral("new style: no current slide"));
+        setStatus(QStringLiteral("new theme: no current slide"));
         return false;
     }
-    // Snapshot what the slide draws now — resolved style or the built-in
+    // Snapshot what the slide draws now — resolved theme or the built-in
     // defaults the renderer would reach without one — before history runs.
-    const openshow::domain::Style* base = fDocuments.styleForSlide(fCurrentSongId, slideId);
+    const openshow::domain::Theme* base = fDocuments.themeForSlide(fCurrentSongId, slideId);
     const std::string text = base != nullptr ? base->textColor : "#ffffff";
     const std::string background = base != nullptr ? base->backgroundColor : "#000000";
-    // A style made from a gradient slide starts WITH the gradient: "wear
+    // A theme made from a gradient slide starts WITH the gradient: "wear
     // whatever the current slide draws now" includes its second colour
     // (task 6.17c3), and a built-in default has never had one.
     const std::string gradient = base != nullptr ? base->backgroundGradient : "";
@@ -677,19 +677,19 @@ bool DocumentController::createStyleFromCurrent(const QString& name) {
     std::string error;
     openshow::domain::Id created;
     if (!edit([&] {
-            created = fDocuments.createStyle(name.toStdString(), text, background, gradient,
+            created = fDocuments.createTheme(name.toStdString(), text, background, gradient,
                                              family, size, alignment, spacing, &error);
             if (created.empty()) {
                 return false;
             }
-            if (!fDocuments.setSlideStyle(fCurrentSongId, slideId, created, &error)) {
+            if (!fDocuments.setSlideTheme(fCurrentSongId, slideId, created, &error)) {
                 // Nothing may survive a refused half of one history entry.
-                fDocuments.removeStyle(created, nullptr);
+                fDocuments.removeTheme(created, nullptr);
                 return false;
             }
             return true;
         })) {
-        setStatus(QStringLiteral("new style: %1").arg(QString::fromStdString(error)));
+        setStatus(QStringLiteral("new theme: %1").arg(QString::fromStdString(error)));
         return false;
     }
     return true;
@@ -783,7 +783,7 @@ bool DocumentController::copyCurrentSlide() {
             box.id.clear();  // a paste re-identifies (task 6.17a)
         }
         fClip.notes = slide.notes;
-        fClip.styleId = slide.styleId;
+        fClip.themeId = slide.themeId;
         fClip.backgroundAssetId = slide.backgroundAssetId;
         fClip.backgroundFit = slide.backgroundFit;
         emit stateChanged();  // canPaste
@@ -810,11 +810,11 @@ bool DocumentController::pasteClip(const SlideClip& clip) {
         return false;
     }
     const int at = fCurrentSlide >= 0 ? fCurrentSlide + 1 : 0;
-    // A style or asset deleted since the capture falls away rather than
+    // A theme or asset deleted since the capture falls away rather than
     // refusing the whole paste.
-    std::string styleId = clip.styleId;
-    if (!styleId.empty() && fDocuments.findStyle(styleId) == nullptr) {
-        styleId.clear();
+    std::string themeId = clip.themeId;
+    if (!themeId.empty() && fDocuments.findTheme(themeId) == nullptr) {
+        themeId.clear();
     }
     std::string background = clip.backgroundAssetId;
     if (!background.empty() && fDocuments.findAsset(background) == nullptr) {
@@ -839,7 +839,7 @@ bool DocumentController::pasteClip(const SlideClip& clip) {
             // dropped the id the clip held — that is what lets the same
             // slide be pasted twice) and enforces the kind rules the copied
             // stack already satisfies. An item whose asset was deleted since
-            // the capture falls away with it, like the style and the
+            // the capture falls away with it, like the theme and the
             // background reference do.
             if (ok) {
                 const openshow::domain::Show* made = fDocuments.findShow(song);
@@ -862,7 +862,7 @@ bool DocumentController::pasteClip(const SlideClip& clip) {
                 ok = !fDocuments.addItem(song, inserted, box, &error).empty();
             }
             if (ok) {
-                ok = fDocuments.setSlideStyle(song, inserted, styleId, &error);
+                ok = fDocuments.setSlideTheme(song, inserted, themeId, &error);
             }
             if (ok) {
                 ok = fDocuments.setSlideBackground(song, inserted, background, &error);
@@ -917,7 +917,7 @@ bool DocumentController::duplicateCurrentSlide() {
                     box.id.clear();  // the duplicate gets its own (task 6.17a)
                 }
                 clip.notes = slide.notes;
-                clip.styleId = slide.styleId;
+                clip.themeId = slide.themeId;
                 clip.backgroundAssetId = slide.backgroundAssetId;
                 found = true;
                 break;

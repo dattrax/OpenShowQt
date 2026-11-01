@@ -1,11 +1,11 @@
 /*
- * The document model (task 2.1): shows, slides, groups, styles and
+ * The document model (task 2.1): shows, slides, groups, themes and
  * playlists as plain data plus the operations every edit goes through.
  *
  * The vocabulary follows docs/reference.md's mapping table: a show is a
  * deck of slides, a group is a chorus/verse label carried by slides, a
  * playlist (FreeShow's "project") is an ordered run of shows with
- * optional section markers. Styles are named appearance records; 2.1
+ * optional section markers. Themes are named appearance records; 2.1
  * owns their content, scene compilation reads them later (2.4).
  *
  * Everything here is value-semantic standard-library data: no Qt, no
@@ -240,8 +240,8 @@ struct Slide {
     // multiple boxes existed describes.
     std::vector<SlideItem> items;
     std::string notes;
-    // Style override; empty follows the show's default style.
-    Id styleId;
+    // Theme override; empty follows the show's default theme.
+    Id themeId;
     // Background image asset; empty means no background.
     Id backgroundAssetId;
     // How that picture sits on the canvas (6.17c1). The field belongs to the
@@ -264,22 +264,22 @@ struct Show {
     std::string name;
     std::string notes;
     std::vector<Slide> slides;  // presentation order
-    // Style new slides implicitly use; empty means "no style yet".
-    Id defaultStyleId;
+    // Theme new slides implicitly use; empty means "no theme yet".
+    Id defaultThemeId;
 };
 
 // A named appearance. Colours are "#rgb" or "#rrggbb"; a zero font size
 // means "renderer default". Scene compilation (2.4) maps these onto
 // Skia paint state; 2.1 only validates syntax it can actually check.
 // The renderer's line-box factor doubles as the domain default, so a
-// style created before typography existed keeps drawing as it did.
+// theme created before typography existed keeps drawing as it did.
 inline constexpr double kDefaultLineSpacing = 1.25;
 
-inline bool isStyleAlign(const std::string& align) {
+inline bool isThemeAlign(const std::string& align) {
     return align == "left" || align == "center" || align == "right";
 }
 
-struct Style {
+struct Theme {
     Id id;
     std::string name;
     std::string textColor;
@@ -289,7 +289,7 @@ struct Style {
     // the background is a vertical gradient from backgroundColor at the
     // top to this colour at the bottom: OpenShow's reference editor makes
     // backgrounds with exactly two colours and a downward axis, and the
-    // field belongs to the STYLE because that is where the background
+    // field belongs to the THEME because that is where the background
     // colour lives (unlike the fit, which followed the picture onto the
     // slide). Same "#rgb"/"#rrggbb" form and same rule: the renderer
     // refuses a string it cannot parse rather than approximating it.
@@ -361,7 +361,7 @@ public:
 
     // Insert positions are slide indices; append accepts size().
     // Created ungrouped, with no lines, following the show's default
-    // style. Returns the new slide's Id, or "" on failure.
+    // theme. Returns the new slide's Id, or "" on failure.
     Id appendSlide(const Id& showId, std::string* error = nullptr);
     Id insertSlide(const Id& showId, size_t index, std::string* error = nullptr);
     bool removeSlide(const Id& showId, const Id& slideId, std::string* error = nullptr);
@@ -434,37 +434,37 @@ public:
     // Slides of one group, presentation order; empty when unknown.
     std::vector<Id> slidesInGroup(const Id& showId, const std::string& group) const;
 
-    // --- styles ---
+    // --- themes ---
 
     // Colours must be "#rgb" or "#rrggbb" (hex); backgroundGradient is
     // that or empty for a flat background (6.17c3 — it is a whole new
     // statement about the background, so every caller states it); fontSize
     // must be finite and >= 0; align one of "left"/"center"/"right";
     // lineSpacing a finite line-box multiplier in 0.25..8. Returns the new
-    // style's Id, or "" on failure.
-    Id createStyle(const std::string& name, const std::string& textColor,
+    // theme's Id, or "" on failure.
+    Id createTheme(const std::string& name, const std::string& textColor,
                    const std::string& backgroundColor,
                    const std::string& backgroundGradient, const std::string& fontFamily,
                    double fontSize, const std::string& align, double lineSpacing,
                    std::string* error = nullptr);
-    bool removeStyle(const Id& styleId, std::string* error = nullptr);
-    bool renameStyle(const Id& styleId, const std::string& name, std::string* error = nullptr);
-    bool updateStyle(const Id& styleId, const std::string& textColor,
+    bool removeTheme(const Id& themeId, std::string* error = nullptr);
+    bool renameTheme(const Id& themeId, const std::string& name, std::string* error = nullptr);
+    bool updateTheme(const Id& themeId, const std::string& textColor,
                      const std::string& backgroundColor,
                      const std::string& backgroundGradient, const std::string& fontFamily,
                      double fontSize, const std::string& align, double lineSpacing,
                      std::string* error = nullptr);
-    // Points a show's default (and therefore its unstyled slides) at a
-    // style; "" clears back to none.
-    bool setShowDefaultStyle(const Id& showId, const Id& styleId, std::string* error = nullptr);
+    // Points a show's default (and therefore its un-themed slides) at a
+    // theme; "" clears back to none.
+    bool setShowDefaultTheme(const Id& showId, const Id& themeId, std::string* error = nullptr);
     // Assigns a per-slide override; "" follows the show default.
-    bool setSlideStyle(const Id& showId, const Id& slideId, const Id& styleId,
+    bool setSlideTheme(const Id& showId, const Id& slideId, const Id& themeId,
                        std::string* error = nullptr);
-    const Style* findStyle(const Id& styleId) const;
-    std::vector<Id> styleIds() const;  // creation order
+    const Theme* findTheme(const Id& themeId) const;
+    std::vector<Id> themeIds() const;  // creation order
     // Resolved appearance of one slide: its override when set, else the
     // show default, else nullptr.
-    const Style* styleForSlide(const Id& showId, const Id& slideId) const;
+    const Theme* themeForSlide(const Id& showId, const Id& slideId) const;
 
     // --- assets ---
 
@@ -526,7 +526,7 @@ private:
     friend class History;
 
     Show* findShow_mut(const Id& showId);
-    Style* findStyle_mut(const Id& styleId);
+    Theme* findTheme_mut(const Id& themeId);
     Playlist* findPlaylist_mut(const Id& playlistId);
     // Index of the slide/entry within its container, or -1.
     static int findSlideIndex(const Show& show, const Id& slideId);
@@ -538,7 +538,7 @@ private:
     Id nextId(const char* kind);
 
     std::vector<Show> fShows;
-    std::vector<Style> fStyles;
+    std::vector<Theme> fThemes;
     std::vector<Asset> fAssets;
     std::vector<Playlist> fPlaylists;
     unsigned long long fNextOrdinal = 1;  // store-wide, ids never recycle

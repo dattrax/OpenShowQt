@@ -22,8 +22,8 @@
 namespace openshow::scene {
 
 // Builds the demo service: one show reproducing the 1.x picture — the
-// "OpenShowQt" title slide, a lyric stanza styled through a show default,
-// and a black interlude — plus the styles they resolve through. Every
+// "OpenShowQt" title slide, a lyric stanza themed through a show default,
+// and a black interlude — plus the themes they resolve through. Every
 // slide is compiled with compileSlide like any real content.
 domain::Documents demoDocuments();
 

@@ -632,7 +632,7 @@ void testAuthoredBoxStackRenders() {
 }
 
 void testTypographyAlignsAndSpaces() {
-    // Task 4.4: the style's align places the lines inside the authored
+    // Task 4.4: the theme's align places the lines inside the authored
     // box, lineSpacing opens the line box, and an item that carries
     // neither still draws centred at the renderer's own line box.
     scene::Scene centred = singleItemScene({"Edge ink"}, 100.0);  // struct defaults
@@ -2141,7 +2141,7 @@ void testBackgroundFitBlurFade() {
     }
 }
 
-/* --- task 6.17c3 (review R17): the background GRADIENT — the style's second
+/* --- task 6.17c3 (review R17): the background GRADIENT — the theme's second
    colour, painting the canvas from the first at the top to the second at the
    bottom. Every fill is now a shader, so the fixtures measure the ramp where
    each fill site draws it: the bare canvas, the contain letterbox, the blur

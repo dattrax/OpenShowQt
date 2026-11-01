@@ -695,7 +695,7 @@ int main(int argc, char* argv[]) {
         // (task 6.21e, review F4). A black-to-colour ramp is exactly the
         // payload a flag that reads only the top colour calls empty, and its
         // clear used to leave the audience glowing amber along the floor
-        // while the panel said nothing was on air. The style's second colour
+        // while the panel said nothing was on air. The theme's second colour
         // is written into the slide's own payload the way the compiler writes
         // it, and BOTH halves of the claim are sampled off the live stream:
         // the ramp while it stands, black where it stood once cleared.

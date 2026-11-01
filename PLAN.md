@@ -391,7 +391,7 @@ show default → built-in. [Detailed model, format 6 and acceptance](docs/ui/the
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| TH.1 | TODO | Promote Style → Theme; storage format 6 with ≤ 5 migration | `domain_tests` round-trip and migration; call sites on new names |
+| TH.1 | DONE | Promote Style → Theme; storage format 6 with ≤ 5 migration | `domain_tests` round-trip and migration; call sites on new names |
 | TH.2 | TODO | `currentThemeId`, sparse slide customizations, full-chain resolution, undo | `domain_tests` precedence matrix per property |
 | TH.3 | TODO | Compiler/controller follow the chain | `scene_tests`, `document_present_tests`, `frontend_journey_tests` re-skin to acknowledged pixels |
 | TH.4 | TODO | More ⋯ menu and Theme Editor mode with live sample preview | `workspace_ui_tests`, `ui_loads`; browsing never writes to the worker |

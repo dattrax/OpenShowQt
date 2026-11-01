@@ -1,6 +1,6 @@
 /*
  * Checks the shared version string, then the document model (task 2.1):
- * shows, slides, groups, styles and playlists — every operation with its
+ * shows, slides, groups, themes and playlists — every operation with its
  * success path, its failure path, and the invariant the failure must not
  * have changed anything. Fails with a non-zero exit status so ctest
  * reports it.
@@ -51,7 +51,7 @@ using History = openshow::domain::History;
 using Playlist = openshow::domain::Playlist;
 using Show = openshow::domain::Show;
 using Slide = openshow::domain::Slide;
-using Style = openshow::domain::Style;
+using Theme = openshow::domain::Theme;
 using SlideItem = openshow::domain::SlideItem;
 using openshow::domain::assetPathLooksLikeVideo;
 using openshow::domain::assetKindName;
@@ -595,99 +595,99 @@ void exerciseStyles() {
     const Id show = docs.createShow("Deck", &error);
     const Id slide = docs.appendSlide(show, &error);
 
-    const Id style = docs.createStyle("House", "#ffffff", "#202040", "", "DejaVu Serif", 64.0,
+    const Id theme = docs.createTheme("House", "#ffffff", "#202040", "", "DejaVu Serif", 64.0,
                                       "center", kDefaultLineSpacing, &error);
-    check(!style.empty(), "createStyle returns an id");
-    check(docs.createStyle("Bad", "#12g456", "#000000", "", "x", 10, "center",
+    check(!theme.empty(), "createStyle returns an id");
+    check(docs.createTheme("Bad", "#12g456", "#000000", "", "x", 10, "center",
                            kDefaultLineSpacing, &error)
                   .empty() &&
               !error.empty(),
           "a non-hex text colour is refused");
-    check(docs.createStyle("Bad", "#fff", "white", "", "x", 10, "center", kDefaultLineSpacing,
+    check(docs.createTheme("Bad", "#fff", "white", "", "x", 10, "center", kDefaultLineSpacing,
                            &error)
                   .empty(),
           "a named background colour is refused too");
-    check(docs.createStyle("Bad", "#fff", "#fff", "", "x", -1, "center", kDefaultLineSpacing,
+    check(docs.createTheme("Bad", "#fff", "#fff", "", "x", -1, "center", kDefaultLineSpacing,
                            &error)
                   .empty(),
           "a negative font size is refused");
 
-    check(docs.setShowDefaultStyle(show, style, &error) &&
-              docs.styleForSlide(show, slide) != nullptr &&
-              docs.styleForSlide(show, slide)->id == style,
+    check(docs.setShowDefaultTheme(show, theme, &error) &&
+              docs.themeForSlide(show, slide) != nullptr &&
+              docs.themeForSlide(show, slide)->id == theme,
           "the show default style resolves for unstyled slides");
-    const Id other = docs.createStyle("Loud", "#ffff00", "#000000", "", "Impact", 96.0, "center",
+    const Id other = docs.createTheme("Loud", "#ffff00", "#000000", "", "Impact", 96.0, "center",
                                       kDefaultLineSpacing, &error);
-    check(docs.setSlideStyle(show, slide, other, &error) &&
-              docs.styleForSlide(show, slide)->id == other,
+    check(docs.setSlideTheme(show, slide, other, &error) &&
+              docs.themeForSlide(show, slide)->id == other,
           "a per-slide override beats the default");
-    check(docs.setSlideStyle(show, slide, "", &error) &&
-              docs.styleForSlide(show, slide)->id == style,
+    check(docs.setSlideTheme(show, slide, "", &error) &&
+              docs.themeForSlide(show, slide)->id == theme,
           "clearing the override falls back to the default");
-    check(!docs.setSlideStyle(show, slide, "style999", &error),
+    check(!docs.setSlideTheme(show, slide, "style999", &error),
           "an unknown override id is refused");
 
-    check(docs.updateStyle(other, "#ff0000", "#000", "", "Arial", 0.0, "left", 2.0, &error) &&
-              docs.findStyle(other)->textColor == "#ff0000" &&
-              docs.findStyle(other)->backgroundColor == "#000" &&
-              docs.findStyle(other)->fontSize == 0.0 &&
-              docs.findStyle(other)->align == "left" &&
-              docs.findStyle(other)->lineSpacing == 2.0,
+    check(docs.updateTheme(other, "#ff0000", "#000", "", "Arial", 0.0, "left", 2.0, &error) &&
+              docs.findTheme(other)->textColor == "#ff0000" &&
+              docs.findTheme(other)->backgroundColor == "#000" &&
+              docs.findTheme(other)->fontSize == 0.0 &&
+              docs.findTheme(other)->align == "left" &&
+              docs.findTheme(other)->lineSpacing == 2.0,
           "updateStyle replaces the appearance and typography (0 size = renderer default)");
-    check(!docs.updateStyle(other, "#ff0000", "#000", "", "Arial", 0.0, "middle",
+    check(!docs.updateTheme(other, "#ff0000", "#000", "", "Arial", 0.0, "middle",
                             kDefaultLineSpacing, &error),
           "an alignment outside left/center/right is refused");
-    check(!docs.updateStyle(other, "#ff0000", "#000", "", "Arial", 0.0, "center", 0.0, &error) &&
-              !docs.updateStyle(other, "#ff0000", "#000", "", "Arial", 0.0, "center", 99.0, &error),
+    check(!docs.updateTheme(other, "#ff0000", "#000", "", "Arial", 0.0, "center", 0.0, &error) &&
+              !docs.updateTheme(other, "#ff0000", "#000", "", "Arial", 0.0, "center", 99.0, &error),
           "line spacing outside 0.25..8 is refused");
-    check(docs.renameStyle(other, "Louder", &error) && docs.findStyle(other)->name == "Louder",
+    check(docs.renameTheme(other, "Louder", &error) && docs.findTheme(other)->name == "Louder",
           "styles rename");
 
     // The gradient's second colour (task 6.17c3): "" is a real answer —
-    // flat, what every style before the field was — any colour is legal,
+    // flat, what every theme before the field was — any colour is legal,
     // and a non-colour is refused naming the ROLE, not just "colour", so
     // an operator staring at the text field knows which one to fix.
-    const Id sunset = docs.createStyle("Sunset", "#ffffff", "#301020", "#c05020",
+    const Id sunset = docs.createTheme("Sunset", "#ffffff", "#301020", "#c05020",
                                        "DejaVu Serif", 64.0, "center", kDefaultLineSpacing,
                                        &error);
-    check(!sunset.empty() && docs.findStyle(sunset)->backgroundGradient == "#c05020",
+    check(!sunset.empty() && docs.findTheme(sunset)->backgroundGradient == "#c05020",
           "a style can name a second background colour");
-    check(docs.findStyle(style)->backgroundGradient.empty(),
+    check(docs.findTheme(theme)->backgroundGradient.empty(),
           "a style that names none stays flat");
     error.clear();
-    check(docs.createStyle("Bad", "#fff", "#000", "dusk", "x", 10, "center",
+    check(docs.createTheme("Bad", "#fff", "#000", "dusk", "x", 10, "center",
                            kDefaultLineSpacing, &error)
                   .empty() &&
               error.find("background gradient") != std::string::npos,
           "a named gradient colour is refused naming its role");
-    check(docs.updateStyle(sunset, "#ffffff", "#301020", "#20c050", "DejaVu Serif", 64.0,
+    check(docs.updateTheme(sunset, "#ffffff", "#301020", "#20c050", "DejaVu Serif", 64.0,
                            "center", kDefaultLineSpacing, &error) &&
-              docs.findStyle(sunset)->backgroundGradient == "#20c050",
+              docs.findTheme(sunset)->backgroundGradient == "#20c050",
           "updateStyle replaces the gradient too");
-    check(docs.updateStyle(sunset, "#ffffff", "#301020", "", "DejaVu Serif", 64.0, "center",
+    check(docs.updateTheme(sunset, "#ffffff", "#301020", "", "DejaVu Serif", 64.0, "center",
                            kDefaultLineSpacing, &error) &&
-              docs.findStyle(sunset)->backgroundGradient.empty(),
+              docs.findTheme(sunset)->backgroundGradient.empty(),
           "and the empty string paints it flat again");
     error.clear();
-    check(!docs.updateStyle(sunset, "#ffffff", "#301020", "noon", "DejaVu Serif", 64.0,
+    check(!docs.updateTheme(sunset, "#ffffff", "#301020", "noon", "DejaVu Serif", 64.0,
                             "center", kDefaultLineSpacing, &error) &&
               error.find("background gradient") != std::string::npos,
           "an update naming a non-colour is refused naming its role");
-    check(docs.findStyle(sunset)->backgroundGradient.empty(),
+    check(docs.findTheme(sunset)->backgroundGradient.empty(),
           "the refused update left the flat answer alone");
 
-    check(docs.setSlideStyle(show, slide, other, &error) &&
-              docs.setShowDefaultStyle(show, other, &error),
+    check(docs.setSlideTheme(show, slide, other, &error) &&
+              docs.setShowDefaultTheme(show, other, &error),
           "point both the override and the default at one style");
-    check(docs.removeStyle(other, &error) && docs.findStyle(other) == nullptr &&
-              docs.findShow(show)->defaultStyleId.empty() &&
-              docs.findShow(show)->slides[0].styleId.empty(),
+    check(docs.removeTheme(other, &error) && docs.findTheme(other) == nullptr &&
+              docs.findShow(show)->defaultThemeId.empty() &&
+              docs.findShow(show)->slides[0].themeId.empty(),
           "removing a style clears every reference to it");
-    check(docs.styleForSlide(show, slide) == nullptr,
+    check(docs.themeForSlide(show, slide) == nullptr,
           "a show whose default was cleared resolves to no style");
     // Sunset was only ever a value-holder, never a reference — removal
     // clears `other` and leaves the rest in creation order.
-    check(docs.styleIds() == std::vector<Id>({style, sunset}), "styleIds reflects removal");
+    check(docs.themeIds() == std::vector<Id>({theme, sunset}), "styleIds reflects removal");
 }
 
 void exercisePlaylists() {
@@ -788,18 +788,18 @@ bool replaceOnce(std::string& text, const std::string& from, const std::string& 
 }
 
 // Builds the "sample service": two shows with groups and notes, two
-// styles with default + override, a playlist with a repeat show and
+// themes with default + override, a playlist with a repeat show and
 // sections, and one background asset whose file lives outside the
 // package (created at assetSource).
 void buildSampleService(Documents* docs, const fs::path& assetSource) {
-    const Id house = docs->createStyle("House", "#ffffff", "#202040", "", "DejaVu Serif", 64.0,
+    const Id house = docs->createTheme("House", "#ffffff", "#202040", "", "DejaVu Serif", 64.0,
                                        "center", kDefaultLineSpacing);
-    const Id loud = docs->createStyle("Loud", "#ffff00", "#000000", "", "Impact", 96.0, "center",
+    const Id loud = docs->createTheme("Loud", "#ffff00", "#000000", "", "Impact", 96.0, "center",
                                       kDefaultLineSpacing);
     const Id asset = docs->addAsset("stage loop.jpg", assetSource.string());
 
     const Id order = docs->createShow("Service Order");
-    docs->setShowDefaultStyle(order, house);
+    docs->setShowDefaultTheme(order, house);
     const Id intro = docs->appendSlide(order);
     const Id psalm = docs->appendSlide(order);
     const Id chorus1 = docs->appendSlide(order);
@@ -819,7 +819,7 @@ void buildSampleService(Documents* docs, const fs::path& assetSource) {
     const Id finalVerse = docs->appendSlide(hymn);
     docs->setSlideLines(hymn, verse, {"Old 100th, line one"});
     docs->setSlideLines(hymn, finalVerse, {"Old 100th, amen"});
-    docs->setSlideStyle(hymn, finalVerse, loud);
+    docs->setSlideTheme(hymn, finalVerse, loud);
 
     const Id playlist = docs->createPlaylist("Sunday");
     docs->addPlaylistEntry(playlist, order, "Gathering");
@@ -829,7 +829,7 @@ void buildSampleService(Documents* docs, const fs::path& assetSource) {
 
 // Field-by-field model comparison (the Documents API is the only view).
 bool sameService(const Documents& a, const Documents& b) {
-    if (a.showIds() != b.showIds() || a.styleIds() != b.styleIds() ||
+    if (a.showIds() != b.showIds() || a.themeIds() != b.themeIds() ||
         a.playlistIds() != b.playlistIds() || a.assetIds() != b.assetIds()) {
         return false;
     }
@@ -837,7 +837,7 @@ bool sameService(const Documents& a, const Documents& b) {
         const Show* sa = a.findShow(showId);
         const Show* sb = b.findShow(showId);
         if (sa == nullptr || sb == nullptr || sa->name != sb->name ||
-            sa->notes != sb->notes || sa->defaultStyleId != sb->defaultStyleId ||
+            sa->notes != sb->notes || sa->defaultThemeId != sb->defaultThemeId ||
             sa->slides.size() != sb->slides.size()) {
             return false;
         }
@@ -845,7 +845,7 @@ bool sameService(const Documents& a, const Documents& b) {
             const Slide& x = sa->slides[i];
             const Slide& y = sb->slides[i];
             if (x.id != y.id || x.group != y.group || x.notes != y.notes ||
-                x.styleId != y.styleId || x.backgroundAssetId != y.backgroundAssetId) {
+                x.themeId != y.themeId || x.backgroundAssetId != y.backgroundAssetId) {
                 return false;
             }
             // A slide's boxes are compared IN ORDER, id and geometry included
@@ -868,9 +868,9 @@ bool sameService(const Documents& a, const Documents& b) {
             }
         }
     }
-    for (const Id& styleId : a.styleIds()) {
-        const Style* xa = a.findStyle(styleId);
-        const Style* xb = b.findStyle(styleId);
+    for (const Id& themeId : a.themeIds()) {
+        const Theme* xa = a.findTheme(themeId);
+        const Theme* xb = b.findTheme(themeId);
         if (xa == nullptr || xb == nullptr || xa->name != xb->name ||
             xa->textColor != xb->textColor || xa->backgroundColor != xb->backgroundColor ||
             xa->backgroundGradient != xb->backgroundGradient ||
@@ -951,9 +951,9 @@ void exercisePersistence(const fs::path& tempRoot) {
           "groups resolve identically after the round-trip");
     const Id hymn = source.showIds()[1];
     const Id amen = source.findShow(hymn)->slides[1].id;
-    check(reloaded.styleForSlide(hymn, amen) != nullptr &&
-              source.styleForSlide(hymn, amen) != nullptr &&
-              reloaded.styleForSlide(hymn, amen)->id == source.styleForSlide(hymn, amen)->id,
+    check(reloaded.themeForSlide(hymn, amen) != nullptr &&
+              source.themeForSlide(hymn, amen) != nullptr &&
+              reloaded.themeForSlide(hymn, amen)->id == source.themeForSlide(hymn, amen)->id,
           "style resolution survives (override and default)");
     const Asset* reloadedAsset = reloaded.findAsset(asset);
     check(reloadedAsset != nullptr && readFile(reloadedAsset->sourcePath) ==
@@ -1026,24 +1026,24 @@ void exercisePersistence(const fs::path& tempRoot) {
               "a slide whose box cannot be placed is refused on load");
     }
 
-    // --- typography (task 4.4): a style's align and line spacing
+    // --- typography (task 4.4): a theme's align and line spacing
     // round-trip; a service written before typography existed loads with
     // centred text at the renderer's line box; typography the renderer
-    // cannot honour is refused naming its style ---
+    // cannot honour is refused naming its theme ---
     {
         Documents typed;
-        const Id sharp = typed.createStyle("Sharp", "#ff8800", "#000000", "", "DejaVu Sans", 88.0,
+        const Id sharp = typed.createTheme("Sharp", "#ff8800", "#000000", "", "DejaVu Sans", 88.0,
                                            "right", 1.75, &error);
         check(!sharp.empty(), "createStyle accepts typography");
         const fs::path typeset = tempRoot / "typeset";
         Documents typeBack;
         check(openshow::domain::saveService(typed, typeset, &error) &&
                   openshow::domain::loadService(&typeBack, typeset, &error) &&
-                  typeBack.findStyle(sharp)->align == "right" &&
-                  typeBack.findStyle(sharp)->lineSpacing == 1.75,
+                  typeBack.findTheme(sharp)->align == "right" &&
+                  typeBack.findTheme(sharp)->lineSpacing == 1.75,
               "style typography round-trips through the manifest");
 
-        // A legacy manifest: the style entry simply lacks the two fields.
+        // A legacy manifest: the theme entry simply lacks the two fields.
         const fs::path oldType = tempRoot / "old-type";
         std::filesystem::create_directories(oldType);
         writeFile(oldType / "service.json",
@@ -1053,9 +1053,9 @@ void exercisePersistence(const fs::path& tempRoot) {
                   R"("assets":[],"playlists":[]})");
         Documents oldTypeBack;
         check(openshow::domain::loadService(&oldTypeBack, oldType, &error) &&
-                  oldTypeBack.findStyle("style1") != nullptr &&
-                  oldTypeBack.findStyle("style1")->align == "center" &&
-                  oldTypeBack.findStyle("style1")->lineSpacing == kDefaultLineSpacing,
+                  oldTypeBack.findTheme("style1") != nullptr &&
+                  oldTypeBack.findTheme("style1")->align == "center" &&
+                  oldTypeBack.findTheme("style1")->lineSpacing == kDefaultLineSpacing,
               "a manifest without typography loads centred at the default line box");
 
         const fs::path skewed = tempRoot / "skewed";
@@ -1152,7 +1152,7 @@ void exercisePersistence(const fs::path& tempRoot) {
     {
         const fs::path dir = tempRoot / "wrong-era";
         // Same push-the-written-number discipline as the format tamper
-        // above: this build writes 3 (task 6.17b), and anchoring on a
+        // above: this build writes 6 (task TH.1), and anchoring on a
         // literal would stop matching the day the format moves again.
         check(tamperedPackage(package, dir, [](std::string& m) {
                   const std::string key = "\"format\":";
@@ -1172,9 +1172,13 @@ void exercisePersistence(const fs::path& tempRoot) {
         // A package claiming the OLDER era is the dangerous lie: a format-1
         // reader looks for each slide's own "lines", and these slides keep
         // their words in boxes. The load must refuse rather than hand back a
-        // service whose every slide has gone blank (task 6.17a).
-        refuses(dir, "must be an array",
-                "a format-2 manifest claiming to be format 1 is refused, not read as blank");
+        // service whose every slide has gone blank (task 6.17a). Since task
+        // TH.1 the refusal lands one step earlier for this build's file: the
+        // box-era keys spell the appearance entity "style", and a manifest
+        // whose body carries the "theme" spellings is naming two eras at
+        // once — refused on the show's own key, still refused.
+        refuses(dir, "not both",
+                "a manifest from this build claiming an older era is refused, not read as blank");
     }
     {
         const fs::path dir = tempRoot / "dangling-show";
@@ -1187,19 +1191,19 @@ void exercisePersistence(const fs::path& tempRoot) {
     {
         const fs::path dir = tempRoot / "dangling-style";
         const Id loud = [&] {
-            for (const Id& id : source.styleIds()) {
-                if (source.findStyle(id)->name == "Loud") {
+            for (const Id& id : source.themeIds()) {
+                if (source.findTheme(id)->name == "Loud") {
                     return id;
                 }
             }
             return Id();
         }();
         check(tamperedPackage(package, dir, [&](std::string& m) {
-                  return replaceOnce(m, "\"styleId\":\"" + loud + "\"",
-                                     "\"styleId\":\"style-gone\"");
+                  return replaceOnce(m, "\"themeId\":\"" + loud + "\"",
+                                     "\"themeId\":\"theme-gone\"");
               }),
-              "test tamper anchors exist (styleId)");
-        refuses(dir, "unknown style", "a slide naming a vanished style is refused");
+              "test tamper anchors exist (themeId)");
+        refuses(dir, "unknown theme", "a slide naming a vanished theme is refused");
     }
     {
         const fs::path dir = tempRoot / "no-asset-bytes";
@@ -1729,18 +1733,18 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
               "a slide with no text boxes round-trips as a slide with no text boxes");
     }
 
-    // --- format 5 (task 6.17c3): every style carries a
+    // --- format 5 (task 6.17c3): every theme carries a
     //     "backgroundGradient", older files mean flat, and a hand-bumped
     //     key in one is refused naming itself ---
     {
         Documents graded;
         const Id show = graded.createShow("Graded", &error);
-        const Id sunset = graded.createStyle("Sunset", "#ffffff", "#301020", "#c05020",
+        const Id sunset = graded.createTheme("Sunset", "#ffffff", "#301020", "#c05020",
                                              "DejaVu Serif", 64.0, "center",
                                              kDefaultLineSpacing, &error);
-        const Id plain = graded.createStyle("Plain", "#ffffff", "#000000", "", "DejaVu Serif",
+        const Id plain = graded.createTheme("Plain", "#ffffff", "#000000", "", "DejaVu Serif",
                                             64.0, "center", kDefaultLineSpacing, &error);
-        check(!sunset.empty() && !plain.empty() && graded.setShowDefaultStyle(show, sunset),
+        check(!sunset.empty() && !plain.empty() && graded.setShowDefaultTheme(show, sunset),
               "a graded style and a flat one are created");
         const fs::path gradedDir = tempRoot / "v5-graded";
         Documents back;
@@ -1748,8 +1752,8 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         check(openshow::domain::saveService(graded, gradedDir, &error) &&
                   openshow::domain::loadService(&back, gradedDir, &error),
               "a service of graded styles saves and reloads");
-        check(back.findStyle(sunset)->backgroundGradient == "#c05020" &&
-                  back.findStyle(plain)->backgroundGradient.empty(),
+        check(back.findTheme(sunset)->backgroundGradient == "#c05020" &&
+                  back.findTheme(plain)->backgroundGradient.empty(),
               "the second colour survives the round trip, flat stays flat");
         check(sameService(graded, back), "the whole graded service compares field by field");
         const std::string manifest = readFile(gradedDir / "service.json");
@@ -1757,8 +1761,8 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                   manifest.find("\"backgroundGradient\":\"\"") != std::string::npos,
               "the gradient AND the flat are both written by name — leaving the "
               "default to an absent key is the rule this project refuses");
-        check(manifest.find("\"format\":5") != std::string::npos,
-              "the manifest says format 5");
+        check(manifest.find("\"format\":6") != std::string::npos,
+              "the manifest says format 6");
         check(openshow::domain::saveService(back, tempRoot / "v5-regraded", &error) &&
                   readFile(tempRoot / "v5-regraded" / "service.json") == manifest,
               "re-saving a graded service writes a byte-identical manifest");
@@ -1766,14 +1770,14 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         // The honest pre-5 file: the key appears nowhere, and flat is not
         // an inference but that file's own history — a gradient was the
         // one background those builds could not draw.
-        const std::string styleOld =
+        const std::string themeOld =
             R"({"id":"style1","name":"Old","textColor":"#ffffff","backgroundColor":"#000000",)"
             R"("fontFamily":"","fontSize":64})";
         for (unsigned long long era : {1ull, 2ull, 3ull, 4ull}) {
             const std::string head =
                 R"({"format":)" + std::to_string(era) +
                 R"(,"nextOrdinal":99,"shows":[],"styles":[)";
-            const std::string file = head + styleOld + R"(],"assets":[],"playlists":[]})";
+            const std::string file = head + themeOld + R"(],"assets":[],"playlists":[]})";
             const fs::path dir = tempRoot / ("v" + std::to_string(era) + "-ungraded");
             std::filesystem::create_directories(dir);
             writeFile(dir / "service.json", file);
@@ -1781,30 +1785,119 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
             error.clear();
             if (check(openshow::domain::loadService(&old, dir, &error),
                       "a pre-5 style with no gradient key loads")) {
-                check(old.findStyle("style1")->backgroundGradient.empty(),
+                check(old.findTheme("style1")->backgroundGradient.empty(),
                       "and reads flat — the only background that era drew");
             }
         }
 
-        // The lies: a format-5 style with no key (the writer always writes
+        // The lies: a format-5 theme with no key (the writer always writes
         // it, so its absence is a hand-edit), and a key hand-bumped into a
         // pre-5 file where it does not exist.
-        const std::string styleNoKey =
+        const std::string themeNoKey =
             R"({"id":"style1","name":"Kept","textColor":"#ffffff","backgroundColor":"#000000",)"
             R"("fontFamily":"","fontSize":64})";
-        refusesJson(R"({"format":5,"nextOrdinal":99,"shows":[],"styles":[)" + styleNoKey +
+        refusesJson(R"({"format":5,"nextOrdinal":99,"shows":[],"styles":[)" + themeNoKey +
                         R"(],"assets":[],"playlists":[]})",
                     "'backgroundGradient' must be a string",
                     "a format-5 style with no gradient key is refused: the writer "
                     "always writes it, so its absence is a hand-edit");
-        const std::string styleLied =
+        const std::string themeLied =
             R"({"id":"style1","name":"Lied","textColor":"#ffffff","backgroundColor":"#000000",)"
             R"("backgroundGradient":"#0000ff","fontFamily":"","fontSize":64})";
-        refusesJson(R"({"format":4,"nextOrdinal":99,"shows":[],"styles":[)" + styleLied +
+        refusesJson(R"({"format":4,"nextOrdinal":99,"shows":[],"styles":[)" + themeLied +
                         R"(],"assets":[],"playlists":[]})",
                     "where that key",
                     "a hand-bumped 'backgroundGradient' in a format-4 file is refused "
                     "rather than trusted — somebody else's build meant something by it");
+    }
+
+    // --- theme naming (task TH.1, themes plan) ---
+    //
+    // Format 6 spells the appearance entity THEME in three key names: the
+    // array is "themes", a slide's assignment "themeId" and a show's
+    // default "defaultThemeId". A 5-file spells all three "style" and
+    // still loads; a file that MIXES the spellings is refused naming both
+    // — half a rename is ambiguity, not intent (the gradient's rule).
+    {
+        Documents named;
+        const fs::path v6 = tempRoot / "v6-named";
+        const Id home = named.createShow("Named");
+        const Id house = named.createTheme("House", "#ffd23f", "#101828", "", "DejaVu Serif",
+                                           64.0, "left", 1.6, &error);
+        const Id bright = named.createTheme("Bright", "#ffffff", "#000000", "", "DejaVu Serif",
+                                            72.0, "center", kDefaultLineSpacing, &error);
+        const Id first = named.appendSlide(home);
+        const Id second = named.appendSlide(home);
+        check(!house.empty() && !bright.empty() && !first.empty() && !second.empty() &&
+                  named.setShowDefaultTheme(home, house) &&
+                  named.setSlideTheme(home, second, bright),
+              "a show with a default theme and one themed slide is authored");
+        check(openshow::domain::saveService(named, v6, &error), "the themed service saves");
+        const std::string manifest = readFile(v6 / "service.json");
+        check(manifest.find("\"themes\":[") != std::string::npos &&
+                  manifest.find("\"defaultThemeId\":\"" + house + "\"") != std::string::npos &&
+                  manifest.find("\"themeId\":\"" + bright + "\"") != std::string::npos,
+              "the writer names the entity theme in all three keys");
+        Documents back;
+        check(openshow::domain::loadService(&back, v6, &error) && sameService(named, back),
+              "a format-6 service round-trips through the new names");
+
+        // The 5-file: written by hand so the migration is what runs, not
+        // the writer. Every key the entity touches spells "style".
+        const fs::path v5 = tempRoot / "v5-named";
+        std::filesystem::create_directories(v5);
+        writeFile(v5 / "service.json",
+                  R"({"format":5,"nextOrdinal":99,"shows":[{"id":"show1","name":"Old",)"
+                  R"("defaultStyleId":"style1","slides":[)"
+                  R"({"id":"slide1","group":"","items":[],"notes":"","styleId":"",)"
+                  R"("backgroundAssetId":"","fit":"cover"},)"
+                  R"({"id":"slide2","group":"","items":[],"notes":"","styleId":"style2",)"
+                  R"("backgroundAssetId":"","fit":"cover"}]}],"styles":[)"
+                  R"({"id":"style1","name":"House","textColor":"#ffd23f",)"
+                  R"("backgroundColor":"#101828","backgroundGradient":"",)"
+                  R"("fontFamily":"DejaVu Serif","fontSize":64,"align":"left","lineSpacing":1.6},)"
+                  R"({"id":"style2","name":"Bright","textColor":"#ffffff",)"
+                  R"("backgroundColor":"#000000","backgroundGradient":"",)"
+                  R"("fontFamily":"DejaVu Serif","fontSize":72,"align":"center","lineSpacing":1.25}],)"
+                  R"("assets":[],"playlists":[]})");
+        Documents migrated;
+        error.clear();
+        if (check(openshow::domain::loadService(&migrated, v5, &error),
+                  "a format-5 file spelled 'style' still loads")) {
+            check(migrated.findTheme("style1") != nullptr &&
+                      migrated.findTheme("style1")->name == "House",
+                  "its 'styles' array reads as themes");
+            check(migrated.findShow("show1")->defaultThemeId == "style1" &&
+                      migrated.findShow("show1")->slides[1].themeId == "style2",
+                  "the show default and the slide assignment followed the old keys");
+            check(migrated.themeForSlide("show1", "slide1") != nullptr &&
+                      migrated.themeForSlide("show1", "slide1")->id == "style1" &&
+                      migrated.themeForSlide("show1", "slide2")->id == "style2",
+                  "resolution answers through the migrated chain");
+            const fs::path resaved = tempRoot / "v5-then-saved";
+            check(openshow::domain::saveService(migrated, resaved, &error) &&
+                      readFile(resaved / "service.json").find("\"themes\":[") !=
+                          std::string::npos,
+                  "the first save by this build re-spells the package to format 6");
+        }
+
+        // The mixes: a key from the other era, in either direction, is
+        // refused naming both spellings.
+        refusesJson(R"({"format":6,"nextOrdinal":99,"shows":[],"themes":[],"styles":[],)"
+                        R"("assets":[],"playlists":[]})",
+                    "not both",
+                    "a format-6 file carrying both array names is refused");
+        refusesJson(R"({"format":6,"nextOrdinal":99,"shows":[{"id":"show1","name":"Mix",)"
+                        R"("slides":[{"id":"slide1","group":"","items":[],"notes":"",)"
+                        R"("themeId":"","styleId":"","backgroundAssetId":""}]}],)"
+                        R"("themes":[],"assets":[],"playlists":[]})",
+                    "not both",
+                    "a slide spelled both ways is refused");
+        refusesJson(R"({"format":5,"nextOrdinal":99,"shows":[{"id":"show1","name":"Mix",)"
+                        R"("defaultThemeId":"","slides":[]}],"styles":[],"assets":[],)"
+                        R"("playlists":[]})",
+                    "not both",
+                    "a format-5 file carrying the new show key is refused naming both");
     }
 }
 

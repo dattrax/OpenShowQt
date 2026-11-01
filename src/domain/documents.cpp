@@ -60,7 +60,7 @@ bool validTypography(double fontSize, const std::string& align, double lineSpaci
         fail(error, "font size must be finite and >= 0 (0 means renderer default)");
         return false;
     }
-    if (!isStyleAlign(align)) {
+    if (!isThemeAlign(align)) {
         fail(error, "align must be \"left\", \"center\" or \"right\" (got '" + align + "')");
         return false;
     }
@@ -573,16 +573,16 @@ std::vector<Id> Documents::slidesInGroup(const Id& showId, const std::string& gr
     return ids;
 }
 
-// --- styles ----------------------------------------------------------------
+// --- themes ----------------------------------------------------------------
 
-Id Documents::createStyle(const std::string& name, const std::string& textColor,
+Id Documents::createTheme(const std::string& name, const std::string& textColor,
                           const std::string& backgroundColor,
                           const std::string& backgroundGradient, const std::string& fontFamily,
                           double fontSize, const std::string& align, double lineSpacing,
                           std::string* error) {
     const std::string clean = trimmed(name);
     if (clean.empty()) {
-        fail(error, "a style needs a name");
+        fail(error, "a theme needs a name");
         return {};
     }
     if (!validColor(textColor, error) || !validColor(backgroundColor, nullptr)) {
@@ -602,66 +602,66 @@ Id Documents::createStyle(const std::string& name, const std::string& textColor,
     if (!validTypography(fontSize, align, lineSpacing, error)) {
         return {};
     }
-    Style style;
-    style.id = nextId("style");
-    style.name = clean;
-    style.textColor = textColor;
-    style.backgroundColor = backgroundColor;
-    style.backgroundGradient = backgroundGradient;
-    style.fontFamily = fontFamily;
-    style.fontSize = fontSize;
-    style.align = align;
-    style.lineSpacing = lineSpacing;
-    fStyles.push_back(std::move(style));
-    return fStyles.back().id;
+    Theme theme;
+    theme.id = nextId("theme");
+    theme.name = clean;
+    theme.textColor = textColor;
+    theme.backgroundColor = backgroundColor;
+    theme.backgroundGradient = backgroundGradient;
+    theme.fontFamily = fontFamily;
+    theme.fontSize = fontSize;
+    theme.align = align;
+    theme.lineSpacing = lineSpacing;
+    fThemes.push_back(std::move(theme));
+    return fThemes.back().id;
 }
 
-bool Documents::removeStyle(const Id& styleId, std::string* error) {
-    const auto found = std::find_if(fStyles.begin(), fStyles.end(),
-                                    [&](const Style& s) { return s.id == styleId; });
-    if (found == fStyles.end()) {
-        fail(error, idError("style", styleId));
+bool Documents::removeTheme(const Id& themeId, std::string* error) {
+    const auto found = std::find_if(fThemes.begin(), fThemes.end(),
+                                    [&](const Theme& s) { return s.id == themeId; });
+    if (found == fThemes.end()) {
+        fail(error, idError("theme", themeId));
         return false;
     }
-    fStyles.erase(found);
-    // Dangling style references degrade to "no style" rather than
+    fThemes.erase(found);
+    // Dangling theme references degrade to "no theme" rather than
     // blocking the removal: clearing is the only consistent outcome.
     for (Show& show : fShows) {
-        if (show.defaultStyleId == styleId) {
-            show.defaultStyleId.clear();
+        if (show.defaultThemeId == themeId) {
+            show.defaultThemeId.clear();
         }
         for (Slide& slide : show.slides) {
-            if (slide.styleId == styleId) {
-                slide.styleId.clear();
+            if (slide.themeId == themeId) {
+                slide.themeId.clear();
             }
         }
     }
     return true;
 }
 
-bool Documents::renameStyle(const Id& styleId, const std::string& name, std::string* error) {
-    Style* style = findStyle_mut(styleId);
-    if (style == nullptr) {
-        fail(error, idError("style", styleId));
+bool Documents::renameTheme(const Id& themeId, const std::string& name, std::string* error) {
+    Theme* theme = findTheme_mut(themeId);
+    if (theme == nullptr) {
+        fail(error, idError("theme", themeId));
         return false;
     }
     const std::string clean = trimmed(name);
     if (clean.empty()) {
-        fail(error, "a style needs a name");
+        fail(error, "a theme needs a name");
         return false;
     }
-    style->name = clean;
+    theme->name = clean;
     return true;
 }
 
-bool Documents::updateStyle(const Id& styleId, const std::string& textColor,
+bool Documents::updateTheme(const Id& themeId, const std::string& textColor,
                             const std::string& backgroundColor,
                             const std::string& backgroundGradient, const std::string& fontFamily,
                             double fontSize, const std::string& align, double lineSpacing,
                             std::string* error) {
-    Style* style = findStyle_mut(styleId);
-    if (style == nullptr) {
-        fail(error, idError("style", styleId));
+    Theme* theme = findTheme_mut(themeId);
+    if (theme == nullptr) {
+        fail(error, idError("theme", themeId));
         return false;
     }
     if (!validColor(textColor, error) || !validColor(backgroundColor, nullptr)) {
@@ -678,31 +678,31 @@ bool Documents::updateStyle(const Id& styleId, const std::string& textColor,
     if (!validTypography(fontSize, align, lineSpacing, error)) {
         return false;
     }
-    style->textColor = textColor;
-    style->backgroundColor = backgroundColor;
-    style->backgroundGradient = backgroundGradient;
-    style->fontFamily = fontFamily;
-    style->fontSize = fontSize;
-    style->align = align;
-    style->lineSpacing = lineSpacing;
+    theme->textColor = textColor;
+    theme->backgroundColor = backgroundColor;
+    theme->backgroundGradient = backgroundGradient;
+    theme->fontFamily = fontFamily;
+    theme->fontSize = fontSize;
+    theme->align = align;
+    theme->lineSpacing = lineSpacing;
     return true;
 }
 
-bool Documents::setShowDefaultStyle(const Id& showId, const Id& styleId, std::string* error) {
+bool Documents::setShowDefaultTheme(const Id& showId, const Id& themeId, std::string* error) {
     Show* show = findShow_mut(showId);
     if (show == nullptr) {
         fail(error, idError("show", showId));
         return false;
     }
-    if (!styleId.empty() && findStyle(styleId) == nullptr) {
-        fail(error, idError("style", styleId));
+    if (!themeId.empty() && findTheme(themeId) == nullptr) {
+        fail(error, idError("theme", themeId));
         return false;
     }
-    show->defaultStyleId = styleId;
+    show->defaultThemeId = themeId;
     return true;
 }
 
-bool Documents::setSlideStyle(const Id& showId, const Id& slideId, const Id& styleId,
+bool Documents::setSlideTheme(const Id& showId, const Id& slideId, const Id& themeId,
                               std::string* error) {
     Show* show = findShow_mut(showId);
     if (show == nullptr) {
@@ -714,30 +714,30 @@ bool Documents::setSlideStyle(const Id& showId, const Id& slideId, const Id& sty
         fail(error, idError("slide", slideId));
         return false;
     }
-    if (!styleId.empty() && findStyle(styleId) == nullptr) {
-        fail(error, idError("style", styleId));
+    if (!themeId.empty() && findTheme(themeId) == nullptr) {
+        fail(error, idError("theme", themeId));
         return false;
     }
-    show->slides[static_cast<size_t>(index)].styleId = styleId;
+    show->slides[static_cast<size_t>(index)].themeId = themeId;
     return true;
 }
 
-const Style* Documents::findStyle(const Id& styleId) const {
-    const auto found = std::find_if(fStyles.begin(), fStyles.end(),
-                                    [&](const Style& s) { return s.id == styleId; });
-    return found == fStyles.end() ? nullptr : &*found;
+const Theme* Documents::findTheme(const Id& themeId) const {
+    const auto found = std::find_if(fThemes.begin(), fThemes.end(),
+                                    [&](const Theme& s) { return s.id == themeId; });
+    return found == fThemes.end() ? nullptr : &*found;
 }
 
-std::vector<Id> Documents::styleIds() const {
+std::vector<Id> Documents::themeIds() const {
     std::vector<Id> ids;
-    ids.reserve(fStyles.size());
-    for (const Style& style : fStyles) {
-        ids.push_back(style.id);
+    ids.reserve(fThemes.size());
+    for (const Theme& theme : fThemes) {
+        ids.push_back(theme.id);
     }
     return ids;
 }
 
-const Style* Documents::styleForSlide(const Id& showId, const Id& slideId) const {
+const Theme* Documents::themeForSlide(const Id& showId, const Id& slideId) const {
     const Show* show = findShow(showId);
     if (show == nullptr) {
         return nullptr;
@@ -747,10 +747,10 @@ const Style* Documents::styleForSlide(const Id& showId, const Id& slideId) const
         return nullptr;
     }
     const Slide& slide = show->slides[static_cast<size_t>(index)];
-    if (!slide.styleId.empty()) {
-        return findStyle(slide.styleId);  // cleared references mean none
+    if (!slide.themeId.empty()) {
+        return findTheme(slide.themeId);  // cleared references mean none
     }
-    return show->defaultStyleId.empty() ? nullptr : findStyle(show->defaultStyleId);
+    return show->defaultThemeId.empty() ? nullptr : findTheme(show->defaultThemeId);
 }
 
 // --- assets ----------------------------------------------------------------
@@ -782,7 +782,7 @@ bool Documents::removeAsset(const Id& assetId, std::string* error) {
         return false;
     }
     fAssets.erase(found);
-    // Backgrounds naming the asset degrade to none, mirroring styles. A
+    // Backgrounds naming the asset degrade to none, mirroring themes. A
     // FOREGROUND item cannot degrade the same way: an image item without
     // its picture is not a half-drawn item but a claim about the stack the
     // worker could never honour, so the item leaves with the asset — and
@@ -1030,10 +1030,10 @@ Show* Documents::findShow_mut(const Id& showId) {
     return found == fShows.end() ? nullptr : &*found;
 }
 
-Style* Documents::findStyle_mut(const Id& styleId) {
-    const auto found = std::find_if(fStyles.begin(), fStyles.end(),
-                                    [&](const Style& s) { return s.id == styleId; });
-    return found == fStyles.end() ? nullptr : &*found;
+Theme* Documents::findTheme_mut(const Id& themeId) {
+    const auto found = std::find_if(fThemes.begin(), fThemes.end(),
+                                    [&](const Theme& s) { return s.id == themeId; });
+    return found == fThemes.end() ? nullptr : &*found;
 }
 
 Playlist* Documents::findPlaylist_mut(const Id& playlistId) {

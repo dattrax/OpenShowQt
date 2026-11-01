@@ -5,7 +5,7 @@
  * The ownership split (PLAN.md) says the frontend owns the editable
  * documents and the worker owns output — the scene is the boundary.
  * Compilation resolves everything the renderer would otherwise have to
- * ask about: the style chain (slide override → show default → built-in
+ * ask about: the theme chain (slide override → show default → built-in
  * defaults) is collapsed into concrete colours and font choices, and an
  * image background names its asset and carries the path its bytes live
  * at. A Scene therefore depends on nothing: no Qt, no Vulkan, no files,
@@ -35,7 +35,7 @@
 
 namespace openshow::scene {
 
-// Packed 0xRRGGBB. Styles store "#rgb"/"#rrggbb" text; compilation
+// Packed 0xRRGGBB. Themes store "#rgb"/"#rrggbb" text; compilation
 // parses once so no renderer does.
 using Color = std::uint32_t;
 
@@ -43,7 +43,7 @@ inline constexpr Color kWhite = 0xFFFFFFu;
 inline constexpr Color kBlack = 0x000000u;
 
 // Font size 0 means "renderer default" — the same convention the
-// domain's styles use (task 2.1).
+// domain's themes use (task 2.1).
 inline constexpr double kRendererDefaultFontSize = 0.0;
 
 // Task 5.5's classification: whether a path's extension names a video
@@ -121,7 +121,7 @@ struct Background {
     // Second colour of a gradient background (task 6.17c3, review R17):
     // the canvas fills from `color` at the top to `gradient` at the bottom
     // when hasGradient, and paints flat `color` when it does not. The pair
-    // arrives from the STYLE; the empty style string compiles to
+    // arrives from the THEME; the empty theme string compiles to
     // hasGradient=false, so every scene a pre-6.17c3 file describes draws
     // exactly what it always drew.
     Color gradient = kBlack;
@@ -193,8 +193,8 @@ bool operator!=(const Scene& a, const Scene& b);
 // The scene a restart begins on: black, empty, no provenance.
 Scene clearedScene();
 
-// Compiles one slide. The style resolution chain is the model's
-// (styleForSlide: override → show default → none); with no style the
+// Compiles one slide. The theme resolution chain is the model's
+// (themeForSlide: override → show default → none); with no theme the
 // built-in defaults are white text on black, platform font, renderer
 // size. A slide's background asset becomes the scene's image
 // background with the path recorded in the model at compile time —
@@ -226,7 +226,7 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 // direction — frontend and worker ship together, and a payload whose
 // items mean something the reader has not validated must not draw.
 // "gradient" (task 6.17c3, review R17) is the exception that proves the
-// rule rather than breaking it: written only when the style names a second
+// rule rather than breaking it: written only when the theme names a second
 // background colour, and absent means flat — the payload's own history, not
 // a guess. It moves no format number; it is protocol MINOR 13's addition,
 // named by "scene.background-gradient.v1". The closed key set is what makes

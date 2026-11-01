@@ -4,7 +4,7 @@
  * DocumentController owns the editable documents, the navigation into them
  * and every mutation. This class owns the SHAPE of what the views display:
  * the song rows, a song's slide rows, the current slide's box rows, the
- * style list and the current slide's resolved style, the playlists and
+ * theme list and the current slide's resolved theme, the playlists and
  * their entries with each referenced show resolved, the media registry,
  * the library search, and the current box's kind and asset. A row's keys
  * have exactly one author here, so the running order, the drawer, the
@@ -89,14 +89,14 @@ public:
     // inspector's text and that comparison cannot disagree.
     static QString linesAsText(const std::vector<std::string>& lines);
 
-    // --- styles ---
-    QVariantList styles() const;
-    // The style cursor's slide actually renders with, resolved through the
+    // --- themes ---
+    QVariantList themes() const;
+    // The theme cursor's slide actually renders with, resolved through the
     // song and the default, plus the gradient the flat colours hide.
-    QVariantMap currentStyle(const Cursor& cursor) const;
-    // True when cursor's slide names a style of its own rather than
+    QVariantMap currentTheme(const Cursor& cursor) const;
+    // True when cursor's slide names a theme of its own rather than
     // inheriting.
-    bool styleIsOverride(const Cursor& cursor) const;
+    bool themeIsOverride(const Cursor& cursor) const;
 
     // --- playlists, media, search ---
     QVariantList playlists() const;

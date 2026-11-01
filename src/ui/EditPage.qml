@@ -7,7 +7,7 @@ import QtQuick.Controls
  * the topmost box, drag moves it, corners resize it, Tab walks the
  * stack, arrows nudge — with exact X/Y/W/H fields and
  * New/Delete/Back/Forward under it as the deterministic path, and the
- * style panel beside it. One undo entry per drag, per nudge, per field
+ * theme panel beside it. One undo entry per drag, per nudge, per field
  * commit, and per stack command.
  *
  * The canvas's live rectangle is the one fact here the window cannot
@@ -19,7 +19,7 @@ import QtQuick.Controls
  * Escape's deselect lands through the same alias. Everything else is
  * the page's own: the debounced ask for the worker's picture of the
  * slide under edit, the geometry fields, the stack commands and the
- * style editor, all addressing `docs` and `worker` directly.
+ * theme editor, all addressing `docs` and `worker` directly.
  */
 Flickable {
     id: editPage
@@ -58,7 +58,7 @@ Flickable {
     Flow {
         id: slideActions
         anchors.top: parent.top; anchors.left: parent.left
-        anchors.right: styleScroll.left; anchors.rightMargin: 12
+        anchors.right: themeScroll.left; anchors.rightMargin: 12
         spacing: 6
         ComboBox {
             width: Math.min(180, slideActions.width)
@@ -78,7 +78,7 @@ Flickable {
 
     ScrollView {
         id: lyricEditor
-        anchors.left: parent.left; anchors.right: styleScroll.left
+        anchors.left: parent.left; anchors.right: themeScroll.left
         anchors.rightMargin: 12
         anchors.bottom: boxFields.top; anchors.bottomMargin: 12
         height: 110
@@ -110,7 +110,7 @@ Flickable {
         anchors.top: slideActions.bottom
         anchors.topMargin: 12
         anchors.left: parent.left
-        anchors.right: styleScroll.left
+        anchors.right: themeScroll.left
         anchors.rightMargin: 12
         anchors.bottom: lyricEditor.top
         anchors.bottomMargin: 12
@@ -121,7 +121,7 @@ Flickable {
      * 6.16a, review R16). Debounced: one ask costs a scene.prepare and an
      * off-air draw, so a keystroke at a time would be renders nobody has
      * looked at yet. The triggers below are everything that can change
-     * what the canvas should show — text, style, geometry (a drag
+     * what the canvas should show — text, theme, geometry (a drag
      * commits on release, which is a document change), navigation and
      * page entry — and the payload is compiled at the tick, so the
      * render is of the slide as it ended up rather than as it was when
@@ -172,7 +172,7 @@ Flickable {
 
     Flow {
         id: boxFields
-        anchors.right: styleScroll.left
+        anchors.right: themeScroll.left
         anchors.rightMargin: 12
         anchors.bottom: parent.bottom
         anchors.left: parent.left
@@ -342,7 +342,7 @@ Flickable {
     }
 
     /*
-     * The style panel (task 4.4): one style object is under edit —
+     * The theme panel (task 4.4): one theme object is under edit —
      * the one the current slide resolves through, override or show
      * default. Editing it changes every slide that follows it, which
      * is the reuse the reference gives its themes; New forks the
@@ -352,7 +352,7 @@ Flickable {
      * refusal, exactly like the box fields beside them.
      */
     ScrollView {
-        id: styleScroll
+        id: themeScroll
         anchors.top: parent.top
         anchors.right: parent.right
         anchors.bottom: parent.bottom
@@ -360,32 +360,32 @@ Flickable {
         contentWidth: availableWidth
         clip: true
     Column {
-        id: stylePanel
-        objectName: "stylePanel"
-        width: styleScroll.availableWidth
+        id: themePanel
+        objectName: "themePanel"
+        width: themeScroll.availableWidth
         spacing: 10
 
-        // The style the fields edit right now ("" = none anywhere).
+        // The theme the fields edit right now ("" = none anywhere).
         function targetId() {
-            return docs.currentStyle.id || ""
+            return docs.currentTheme.id || ""
         }
         // Combo row 0 is "follow show" (the empty id); the rest name
-        // the styles view's rows in order.
-        function styleIdAt(index) {
+        // the themes view's rows in order.
+        function themeIdAt(index) {
             if (index <= 0) {
                 return ""
             }
             var i = index - 1
-            return i < docs.styles.length ? docs.styles[i].id : ""
+            return i < docs.themes.length ? docs.themes[i].id : ""
         }
         // Name, colours, font and typography commit as one edit.
-        // A slide following nothing creates its style on first edit.
+        // A slide following nothing creates its theme on first edit.
         function commit(newAlign) {
-            const size = parseFloat(fieldStyleSize.text)
+            const size = parseFloat(fieldThemeSize.text)
             const spacing = parseFloat(fieldLineSpacing.text)
             const align = newAlign !== undefined ? newAlign
-                                                 : (docs.currentStyle.align || "center")
-            const name = fieldStyleName.text.trim() || "Style"
+                                                 : (docs.currentTheme.align || "center")
+            const name = fieldThemeName.text.trim() || "Theme"
             const colour = fieldTextColor.text.trim()
             const back = fieldBackColour.text.trim()
             // "" is a real answer here, not a missing value: it is how
@@ -395,63 +395,63 @@ Flickable {
             const spacingValue = Number.isFinite(spacing) ? spacing : 1.25
             const sizeValue = Number.isFinite(size) && size >= 0 ? size : 0
             if (targetId() === "") {
-                if (!docs.createStyleFromCurrent(name)) {
-                    stylePanel.sync()
+                if (!docs.createThemeFromCurrent(name)) {
+                    themePanel.sync()
                     return
                 }
                 // The creation took the built-in look; carry the
                 // operator's values onto it, undoing the creation too
                 // if the domain refuses them.
-                if (!docs.editStyle(targetId(), name, colour, back, gradient, family,
+                if (!docs.editTheme(targetId(), name, colour, back, gradient, family,
                                     sizeValue, align, spacingValue)) {
                     docs.undo()
-                    stylePanel.sync()
+                    themePanel.sync()
                 }
                 return
             }
-            if (!docs.editStyle(targetId(), name, colour, back, gradient, family,
+            if (!docs.editTheme(targetId(), name, colour, back, gradient, family,
                                 sizeValue, align, spacingValue)) {
-                stylePanel.sync()
+                themePanel.sync()
             }
         }
         function sync() {
-            fieldStyleName.text = Qt.binding(function () {
-                return docs.currentStyle.name || ""
+            fieldThemeName.text = Qt.binding(function () {
+                return docs.currentTheme.name || ""
             })
             fieldTextColor.text = Qt.binding(function () {
-                return docs.currentStyle.textColor || "#ffffff"
+                return docs.currentTheme.textColor || "#ffffff"
             })
             fieldBackColour.text = Qt.binding(function () {
-                return docs.currentStyle.backgroundColor || "#000000"
+                return docs.currentTheme.backgroundColor || "#000000"
             })
             // Flat shows empty, not a colour: the field IS the "" that
             // commit passes back (6.17c3).
             fieldBackGradient.text = Qt.binding(function () {
-                return docs.currentStyle.backgroundGradient || ""
+                return docs.currentTheme.backgroundGradient || ""
             })
             fieldFontFamily.text = Qt.binding(function () {
-                return docs.currentStyle.fontFamily || ""
+                return docs.currentTheme.fontFamily || ""
             })
-            fieldStyleSize.text = Qt.binding(function () {
-                const size = docs.currentStyle.fontSize
+            fieldThemeSize.text = Qt.binding(function () {
+                const size = docs.currentTheme.fontSize
                 return size === undefined ? "0" : String(size)
             })
             fieldLineSpacing.text = Qt.binding(function () {
-                const spacing = docs.currentStyle.lineSpacing
+                const spacing = docs.currentTheme.lineSpacing
                 return spacing === undefined ? "1.25" : String(spacing)
             })
             // The combo names the followed default as its first row;
-            // an override selects its own style instead.
+            // an override selects its own theme instead.
             var index = 0
-            if (docs.currentStyleIsOverride) {
-                for (var i = 0; i < docs.styles.length; ++i) {
-                    if (docs.styles[i].id === stylePanel.targetId()) {
+            if (docs.currentThemeIsOverride) {
+                for (var i = 0; i < docs.themes.length; ++i) {
+                    if (docs.themes[i].id === themePanel.targetId()) {
                         index = i + 1
                         break
                     }
                 }
             }
-            styleCombo.currentIndex = index
+            themeCombo.currentIndex = index
             var background = ""
             if (docs.currentSlide >= 0 && docs.slides.length > docs.currentSlide) {
                 background = docs.slides[docs.currentSlide].backgroundAssetId || ""
@@ -472,31 +472,31 @@ Flickable {
         Component.onCompleted: sync()
         Connections {
             target: docs
-            function onDocumentsChanged() { stylePanel.sync() }
-            function onNavigationChanged() { stylePanel.sync() }
+            function onDocumentsChanged() { themePanel.sync() }
+            function onNavigationChanged() { themePanel.sync() }
         }
         Connections {
             target: editPage
-            function onVisibleChanged() { if (editPage.visible) stylePanel.sync() }
+            function onVisibleChanged() { if (editPage.visible) themePanel.sync() }
         }
 
         Text {
             color: "#b0b0b0"
             font.pixelSize: 10
-            text: "STYLE"
+            text: "THEME"
         }
 
         ComboBox {
-            id: styleCombo
-            objectName: "styleCombo"
+            id: themeCombo
+            objectName: "themeCombo"
             width: parent.width
             textRole: "name"
-            model: [{ id: "", name: "— show default —" }].concat(docs.styles)
-            // Choosing a style overrides the current slide with it;
+            model: [{ id: "", name: "— show default —" }].concat(docs.themes)
+            // Choosing a theme overrides the current slide with it;
             // the first row (empty id) hands the slide back.
             onActivated: function (index) {
-                if (!docs.applyStyleToCurrentSlide(stylePanel.styleIdAt(index))) {
-                    stylePanel.sync()
+                if (!docs.applyThemeToCurrentSlide(themePanel.themeIdAt(index))) {
+                    themePanel.sync()
                 }
             }
         }
@@ -504,31 +504,31 @@ Flickable {
         Row {
             spacing: 6
             PanelButton {
-                objectName: "styleNewButton"
+                objectName: "themeNewButton"
                 text: "New"
                 // Forks what the slide draws now for this slide only.
-                onClicked: docs.createStyleFromCurrent(
-                               fieldStyleName.text.trim() || "Style")
+                onClicked: docs.createThemeFromCurrent(
+                               fieldThemeName.text.trim() || "Theme")
             }
             PanelButton {
-                objectName: "styleDefaultButton"
+                objectName: "themeDefaultButton"
                 text: "Show default"
-                enabled: stylePanel.targetId() !== ""
-                onClicked: docs.setShowDefaultStyle(stylePanel.targetId())
+                enabled: themePanel.targetId() !== ""
+                onClicked: docs.setShowDefaultTheme(themePanel.targetId())
             }
             PanelButton {
-                objectName: "styleFollowButton"
+                objectName: "themeFollowButton"
                 text: "Follow show"
-                enabled: docs.currentStyleIsOverride
-                onClicked: docs.applyStyleToCurrentSlide("")
+                enabled: docs.currentThemeIsOverride
+                onClicked: docs.applyThemeToCurrentSlide("")
             }
         }
 
         PanelField {
-            id: fieldStyleName
-            objectName: "styleNameField"
+            id: fieldThemeName
+            objectName: "themeNameField"
             width: parent.width
-            onEditingFinished: stylePanel.commit()
+            onEditingFinished: themePanel.commit()
         }
 
         Row {
@@ -542,9 +542,9 @@ Flickable {
                 }
                 PanelField {
                     id: fieldTextColor
-                    objectName: "styleColourField"
+                    objectName: "themeColourField"
                     width: 116
-                    onEditingFinished: stylePanel.commit()
+                    onEditingFinished: themePanel.commit()
                 }
             }
             Column {
@@ -556,9 +556,9 @@ Flickable {
                 }
                 PanelField {
                     id: fieldBackColour
-                    objectName: "styleBackField"
+                    objectName: "themeBackField"
                     width: 116
-                    onEditingFinished: stylePanel.commit()
+                    onEditingFinished: themePanel.commit()
                 }
             }
         }
@@ -569,7 +569,7 @@ Flickable {
         // the panel between them.
         Column {
             spacing: 2
-            width: stylePanel.width
+            width: themePanel.width
             Text {
                 color: "#b0b0b0"
                 font.pixelSize: 10
@@ -577,9 +577,9 @@ Flickable {
             }
             PanelField {
                 id: fieldBackGradient
-                objectName: "styleBackGradientField"
+                objectName: "themeBackGradientField"
                 width: parent.width
-                onEditingFinished: stylePanel.commit()
+                onEditingFinished: themePanel.commit()
             }
         }
 
@@ -594,9 +594,9 @@ Flickable {
                 }
                 PanelField {
                     id: fieldFontFamily
-                    objectName: "styleFontField"
+                    objectName: "themeFontField"
                     width: 156
-                    onEditingFinished: stylePanel.commit()
+                    onEditingFinished: themePanel.commit()
                 }
             }
             Column {
@@ -607,10 +607,10 @@ Flickable {
                     text: "SIZE"
                 }
                 PanelField {
-                    id: fieldStyleSize
-                    objectName: "styleSizeField"
+                    id: fieldThemeSize
+                    objectName: "themeSizeField"
                     width: 60
-                    onEditingFinished: stylePanel.commit()
+                    onEditingFinished: themePanel.commit()
                 }
             }
         }
@@ -627,10 +627,10 @@ Flickable {
                     ]
                     delegate: PanelButton {
                         required property var modelData
-                        objectName: "styleAlign" + modelData.key
+                        objectName: "themeAlign" + modelData.key
                         text: modelData.label
-                        highlighted: (docs.currentStyle.align || "center") === modelData.key
-                        onClicked: stylePanel.commit(modelData.key)
+                        highlighted: (docs.currentTheme.align || "center") === modelData.key
+                        onClicked: themePanel.commit(modelData.key)
                     }
                 }
             }
@@ -643,9 +643,9 @@ Flickable {
                 }
                 PanelField {
                     id: fieldLineSpacing
-                    objectName: "styleSpacingField"
+                    objectName: "themeSpacingField"
                     width: 60
-                    onEditingFinished: stylePanel.commit()
+                    onEditingFinished: themePanel.commit()
                 }
             }
         }
@@ -668,7 +668,7 @@ Flickable {
                     assetId = docs.assets[index - 1].id
                 }
                 if (!docs.setSlideBackground(assetId)) {
-                    stylePanel.sync()
+                    themePanel.sync()
                 }
             }
         }
@@ -695,7 +695,7 @@ Flickable {
             onActivated: function (index) {
                 var name = index === 2 ? "blur" : (index === 1 ? "contain" : "cover")
                 if (!docs.setSlideBackgroundFit(name)) {
-                    stylePanel.sync()
+                    themePanel.sync()
                 }
             }
         }

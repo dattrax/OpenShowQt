@@ -210,57 +210,57 @@ QVariantMap DocumentViews::boxAsset(const openshow::domain::SlideItem* box) cons
     return map;
 }
 
-QVariantList DocumentViews::styles() const {
+QVariantList DocumentViews::themes() const {
     QVariantList list;
-    for (const openshow::domain::Id& id : fDocuments.styleIds()) {
-        const openshow::domain::Style* style = fDocuments.findStyle(id);
-        if (style == nullptr) {
+    for (const openshow::domain::Id& id : fDocuments.themeIds()) {
+        const openshow::domain::Theme* theme = fDocuments.findTheme(id);
+        if (theme == nullptr) {
             continue;
         }
         QVariantMap entry;
-        entry.insert(QStringLiteral("id"), QString::fromStdString(style->id));
-        entry.insert(QStringLiteral("name"), QString::fromStdString(style->name));
-        entry.insert(QStringLiteral("textColor"), QString::fromStdString(style->textColor));
+        entry.insert(QStringLiteral("id"), QString::fromStdString(theme->id));
+        entry.insert(QStringLiteral("name"), QString::fromStdString(theme->name));
+        entry.insert(QStringLiteral("textColor"), QString::fromStdString(theme->textColor));
         entry.insert(QStringLiteral("backgroundColor"),
-                     QString::fromStdString(style->backgroundColor));
-        entry.insert(QStringLiteral("fontFamily"), QString::fromStdString(style->fontFamily));
-        entry.insert(QStringLiteral("fontSize"), style->fontSize);
-        entry.insert(QStringLiteral("align"), QString::fromStdString(style->align));
-        entry.insert(QStringLiteral("lineSpacing"), style->lineSpacing);
+                     QString::fromStdString(theme->backgroundColor));
+        entry.insert(QStringLiteral("fontFamily"), QString::fromStdString(theme->fontFamily));
+        entry.insert(QStringLiteral("fontSize"), theme->fontSize);
+        entry.insert(QStringLiteral("align"), QString::fromStdString(theme->align));
+        entry.insert(QStringLiteral("lineSpacing"), theme->lineSpacing);
         list.append(entry);
     }
     return list;
 }
 
-QVariantMap DocumentViews::currentStyle(const Cursor& cursor) const {
+QVariantMap DocumentViews::currentTheme(const Cursor& cursor) const {
     QVariantMap map;
     // The slide is resolved by the cursor's POSITION, exactly as the
     // controller's currentSlideId() did: navigation owns that index, and
-    // styleForSlide takes the id it names.
+    // themeForSlide takes the id it names.
     const openshow::domain::Slide* slide = cursorSlide(cursor);
-    const openshow::domain::Style* style = fDocuments.styleForSlide(
+    const openshow::domain::Theme* theme = fDocuments.themeForSlide(
         cursor.showId, slide == nullptr ? openshow::domain::Id{} : slide->id);
-    if (style == nullptr) {
+    if (theme == nullptr) {
         return map;
     }
-    map.insert(QStringLiteral("id"), QString::fromStdString(style->id));
-    map.insert(QStringLiteral("name"), QString::fromStdString(style->name));
-    map.insert(QStringLiteral("textColor"), QString::fromStdString(style->textColor));
+    map.insert(QStringLiteral("id"), QString::fromStdString(theme->id));
+    map.insert(QStringLiteral("name"), QString::fromStdString(theme->name));
+    map.insert(QStringLiteral("textColor"), QString::fromStdString(theme->textColor));
     map.insert(QStringLiteral("backgroundColor"),
-               QString::fromStdString(style->backgroundColor));
+               QString::fromStdString(theme->backgroundColor));
     // "" means flat, and the UI's field shows itself empty for it (6.17c3).
     map.insert(QStringLiteral("backgroundGradient"),
-               QString::fromStdString(style->backgroundGradient));
-    map.insert(QStringLiteral("fontFamily"), QString::fromStdString(style->fontFamily));
-    map.insert(QStringLiteral("fontSize"), style->fontSize);
-    map.insert(QStringLiteral("align"), QString::fromStdString(style->align));
-    map.insert(QStringLiteral("lineSpacing"), style->lineSpacing);
+               QString::fromStdString(theme->backgroundGradient));
+    map.insert(QStringLiteral("fontFamily"), QString::fromStdString(theme->fontFamily));
+    map.insert(QStringLiteral("fontSize"), theme->fontSize);
+    map.insert(QStringLiteral("align"), QString::fromStdString(theme->align));
+    map.insert(QStringLiteral("lineSpacing"), theme->lineSpacing);
     return map;
 }
 
-bool DocumentViews::styleIsOverride(const Cursor& cursor) const {
+bool DocumentViews::themeIsOverride(const Cursor& cursor) const {
     const openshow::domain::Slide* slide = cursorSlide(cursor);
-    return slide != nullptr && !slide->styleId.empty();
+    return slide != nullptr && !slide->themeId.empty();
 }
 
 QVariantList DocumentViews::playlists() const {

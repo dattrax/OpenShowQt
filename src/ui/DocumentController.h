@@ -107,18 +107,18 @@ class DocumentController : public QObject {
     // "other") so the list can say what a row is. save() is where the bytes
     // join the package.
     Q_PROPERTY(QVariantList assets READ assets NOTIFY documentsChanged)
-    // The style panel (task 4.4): every style in the service, and the one
+    // The theme panel (task 4.4): every theme in the service, and the one
     // the current slide actually resolves through (override or show
-    // default; empty map when the slide has no style anywhere). The map
+    // default; empty map when the slide has no theme anywhere). The map
     // also depends on navigation, so views of it sync on both signals —
     // the same contract as the box fields.
-    Q_PROPERTY(QVariantList styles READ styles NOTIFY documentsChanged)
-    Q_PROPERTY(QVariantMap currentStyle READ currentStyle NOTIFY documentsChanged)
-    Q_PROPERTY(bool currentStyleIsOverride READ currentStyleIsOverride NOTIFY documentsChanged)
+    Q_PROPERTY(QVariantList themes READ themes NOTIFY documentsChanged)
+    Q_PROPERTY(QVariantMap currentTheme READ currentTheme NOTIFY documentsChanged)
+    Q_PROPERTY(bool currentThemeIsOverride READ currentThemeIsOverride NOTIFY documentsChanged)
     // How the current slide's background picture fits the canvas: "cover"
     // or "contain", "" with no slide (task 6.17c1). A document fact read
-    // through the style panel's combo; the combo also listens to navigation
-    // in QML, the same two-signal contract the style fields use.
+    // through the theme panel's combo; the combo also listens to navigation
+    // in QML, the same two-signal contract the theme fields use.
     Q_PROPERTY(QString currentBackgroundFit READ currentBackgroundFit
                NOTIFY documentsChanged)
     // Edit-since-explicit-save, and the directory save()/load() use.
@@ -152,9 +152,9 @@ public:
     Q_INVOKABLE QVariantList slidesOf(const QString& showId) const;
     QVariantList playlistEntries() const;
     QVariantList assets() const;
-    QVariantList styles() const;
-    QVariantMap currentStyle() const;
-    bool currentStyleIsOverride() const;
+    QVariantList themes() const;
+    QVariantMap currentTheme() const;
+    bool currentThemeIsOverride() const;
     QString currentBackgroundFit() const;
     QString currentPlaylistId() const {
         return QString::fromStdString(fCurrentPlaylistId);
@@ -228,31 +228,31 @@ public:
     // eight-item ceiling), which the status line names verbatim.
     Q_INVOKABLE bool placeAssetOnSlide(const QString& assetId);
 
-    // --- style panel (task 4.4) ---
+    // --- theme panel (task 4.4) ---
 
     // Every mutation here is one history entry, and every refusal lands a
     // status line without touching the model (the 2.1 contract).
-    // Points the current slide at a style — a per-slide override; the
+    // Points the current slide at a theme — a per-slide override; the
     // panel's "Follow show" hands it back with the empty id.
-    Q_INVOKABLE bool applyStyleToCurrentSlide(const QString& styleId);
-    // Makes a style the whole show's default: every slide that follows the
-    // show starts drawing it. This is the reuse half of "styles apply
+    Q_INVOKABLE bool applyThemeToCurrentSlide(const QString& themeId);
+    // Makes a theme the whole show's default: every slide that follows the
+    // show starts drawing it. This is the reuse half of "themes apply
     // consistently across slides".
-    Q_INVOKABLE bool setShowDefaultStyle(const QString& styleId);
-    // Edits one style in place — name, colours, font and typography — and
+    Q_INVOKABLE bool setShowDefaultTheme(const QString& themeId);
+    // Edits one theme in place — name, colours, font and typography — and
     // every slide using it changes at once. backgroundGradient is the
     // second colour of a gradient background or "" for flat (task 6.17c3):
     // stating it is mandatory because leaving it out would mean silently
     // flattening a gradient the operator authored.
-    Q_INVOKABLE bool editStyle(const QString& styleId, const QString& name,
+    Q_INVOKABLE bool editTheme(const QString& themeId, const QString& name,
                                const QString& textColor, const QString& backgroundColor,
                                const QString& backgroundGradient, const QString& fontFamily,
                                double fontSize, const QString& align, double lineSpacing);
-    // Creates a style wearing whatever the current slide draws now
-    // (resolved style or built-in defaults) and overrides only that slide.
-    Q_INVOKABLE bool createStyleFromCurrent(const QString& name);
+    // Creates a theme wearing whatever the current slide draws now
+    // (resolved theme or built-in defaults) and overrides only that slide.
+    Q_INVOKABLE bool createThemeFromCurrent(const QString& name);
     // Layering: an image behind the current slide's words; "" clears it
-    // back to the style's background colour.
+    // back to the theme's background colour.
     Q_INVOKABLE bool setSlideBackground(const QString& assetId);
     // How the current slide's background sits on the canvas (6.17c1): the
     // two names the model spells, one history entry; a name the domain does
@@ -263,7 +263,7 @@ public:
 
     // The reference's clipboard carries slides, not system text (text
     // fields keep their native copy & paste). Copy and cut capture the
-    // current slide's lines, notes, box, style and background; paste
+    // current slide's lines, notes, box, theme and background; paste
     // inserts a slide carrying them right after the current one and
     // selects it — one undo entry, and references that have since been
     // deleted fall away instead of refusing the paste. Duplicate works
@@ -418,7 +418,7 @@ private:
         // what a clip carries; identity is not copyable.
         std::vector<openshow::domain::SlideItem> boxes;
         std::string notes;
-        std::string styleId;
+        std::string themeId;
         std::string backgroundAssetId;
         // The clip fits its background the way the source slide did
         // (6.17c1) — the choice travels with the slide that authored it.

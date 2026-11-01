@@ -663,7 +663,7 @@ void exercisePlaylistAndLibrary(const std::filesystem::path& root) {
     }
 }
 
-// --- the style panel (task 4.4) ---------------------------------------------
+// --- the theme panel (task 4.4) ---------------------------------------------
 
 // The compiled wire scene for one slide, through the very path QML uses.
 openshow::scene::Scene compiledFor(DocumentController& docs, const QString& slideId) {
@@ -1039,7 +1039,7 @@ void exerciseMultiBoxSession(const std::filesystem::path& root) {
           "the pasted box-less slide is a new slide with still no boxes");
 }
 
-void exerciseStylePanel(const std::filesystem::path& root) {
+void exerciseThemePanel(const std::filesystem::path& root) {
     DocumentController docs(nullptr, root);
     docs.createSong(QStringLiteral("Consistency"));
     docs.addSlide();
@@ -1048,12 +1048,12 @@ void exerciseStylePanel(const std::filesystem::path& root) {
     const QString slideA = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
     const QString slideB = docs.slides().at(1).toMap().value(QStringLiteral("id")).toString();
 
-    check(docs.currentStyle().isEmpty() && !docs.currentStyleIsOverride(),
+    check(docs.currentTheme().isEmpty() && !docs.currentThemeIsOverride(),
           "a song with no styles has no current style to show");
 
-    check(docs.createStyleFromCurrent(QStringLiteral("Chorus")),
+    check(docs.createThemeFromCurrent(QStringLiteral("Chorus")),
           "a style is created from the current slide's built-in look");
-    const QVariantMap chorus = docs.currentStyle();
+    const QVariantMap chorus = docs.currentTheme();
     const QString chorusId = chorus.value(QStringLiteral("id")).toString();
     check(chorus.value(QStringLiteral("name")).toString() == QStringLiteral("Chorus") &&
               chorus.value(QStringLiteral("textColor")).toString() == QStringLiteral("#ffffff") &&
@@ -1062,17 +1062,17 @@ void exerciseStylePanel(const std::filesystem::path& root) {
               chorus.value(QStringLiteral("fontSize")).toDouble() == 0.0 &&
               chorus.value(QStringLiteral("align")).toString() == QStringLiteral("center") &&
               chorus.value(QStringLiteral("lineSpacing")).toDouble() == 1.25 &&
-              docs.currentStyleIsOverride(),
+              docs.currentThemeIsOverride(),
           "the new style wears the built-in look and overrides only this slide");
-    check(docs.styles().size() == 1, "the styles view lists the new style");
+    check(docs.themes().size() == 1, "the styles view lists the new style");
 
-    check(docs.setShowDefaultStyle(chorusId), "the style can become the show's default");
+    check(docs.setShowDefaultTheme(chorusId), "the style can become the show's default");
     docs.selectSlide(1);
-    check(!docs.currentStyleIsOverride() &&
-              docs.currentStyle().value(QStringLiteral("id")).toString() == chorusId,
+    check(!docs.currentThemeIsOverride() &&
+              docs.currentTheme().value(QStringLiteral("id")).toString() == chorusId,
           "the second slide follows the show default with no override of its own");
 
-    check(docs.editStyle(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
+    check(docs.editTheme(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
                          QStringLiteral("#101010"), QString(), QStringLiteral("DejaVu Serif"), 72.0,
                          QStringLiteral("left"), 1.5),
           "editing the style once is accepted");
@@ -1093,13 +1093,13 @@ void exerciseStylePanel(const std::filesystem::path& root) {
     check(compiledFor(docs, slideB).items[0].color == 0xFF0000u,
           "redo restyles both again");
 
-    // Per-slide override: fork the followed style for one slide.
-    check(docs.createStyleFromCurrent(QStringLiteral("Whisper")),
+    // Per-slide override: fork the followed theme for one slide.
+    check(docs.createThemeFromCurrent(QStringLiteral("Whisper")),
           "a slide can fork the style it follows into its own");
-    const QString whisperId = docs.currentStyle().value(QStringLiteral("id")).toString();
-    check(!whisperId.isEmpty() && whisperId != chorusId && docs.currentStyleIsOverride(),
+    const QString whisperId = docs.currentTheme().value(QStringLiteral("id")).toString();
+    check(!whisperId.isEmpty() && whisperId != chorusId && docs.currentThemeIsOverride(),
           "the fork overrides only this slide");
-    check(docs.editStyle(whisperId, QStringLiteral("Whisper"), QStringLiteral("#00ff00"),
+    check(docs.editTheme(whisperId, QStringLiteral("Whisper"), QStringLiteral("#00ff00"),
                          QStringLiteral("#000000"), QString(), QString(), 0.0, QStringLiteral("right"),
                          1.25),
           "the fork edits independently");
@@ -1111,7 +1111,7 @@ void exerciseStylePanel(const std::filesystem::path& root) {
     check(compiledFor(docs, slideB).items[0].color == 0xFF0000u,
           "undoing the fork edit returns the slide to the shared look");
     docs.undo();  // the fork itself back (creation + override were one entry)
-    check(docs.styles().size() == 1 && !docs.currentStyleIsOverride() &&
+    check(docs.themes().size() == 1 && !docs.currentThemeIsOverride() &&
               compiledFor(docs, slideB).items[0].color == 0xFF0000u,
           "undoing the fork removes the extra style and hands the slide back");
 
@@ -1119,76 +1119,76 @@ void exerciseStylePanel(const std::filesystem::path& root) {
     // colour, the panel's map and the compiled scene both carry it, undo
     // flattens it, a non-colour is refused naming its role, and a save
     // round trip keeps it.
-    check(docs.editStyle(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
+    check(docs.editTheme(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
                          QStringLiteral("#101010"), QStringLiteral("#20c050"), QString(),
                          72.0, QStringLiteral("left"), 1.5),
           "a style gains a second background colour");
-    check(docs.currentStyle().value(QStringLiteral("backgroundGradient")).toString() ==
+    check(docs.currentTheme().value(QStringLiteral("backgroundGradient")).toString() ==
               QStringLiteral("#20c050"),
-          "the currentStyle map carries it for the panel");
+          "the currentTheme map carries it for the panel");
     check(compiledFor(docs, slideA).background.hasGradient &&
               compiledFor(docs, slideA).background.gradient == 0x20C050u &&
               compiledFor(docs, slideA).background.color == 0x101010u,
           "the compiled scene carries the pair: top colour, bottom colour");
-    docs.undo();  // the gradient edit back — the style is flat again
+    docs.undo();  // the gradient edit back — the theme is flat again
     check(!compiledFor(docs, slideA).background.hasGradient &&
-              docs.currentStyle()
+              docs.currentTheme()
                   .value(QStringLiteral("backgroundGradient"))
                   .toString()
                   .isEmpty(),
           "undo flattens the background again, map included");
-    check(!docs.editStyle(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
+    check(!docs.editTheme(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
                           QStringLiteral("#101010"), QStringLiteral("dusk"), QString(), 72.0,
                           QStringLiteral("left"), 1.5) &&
               docs.status().contains(QStringLiteral("background gradient")),
           "a non-colour gradient is refused on the status line, naming its role");
     check(!compiledFor(docs, slideA).background.hasGradient,
           "the refused edit left the flat background alone");
-    check(docs.editStyle(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
+    check(docs.editTheme(chorusId, QStringLiteral("Chorus"), QStringLiteral("#ff0000"),
                          QStringLiteral("#101010"), QStringLiteral("#20c050"), QString(),
                          72.0, QStringLiteral("left"), 1.5),
           "the gradient set again, so the save below carries it");
     if (check(docs.save(), "saving a graded style succeeds")) {
         DocumentController reloaded(nullptr, root);
         check(reloaded.load() &&
-                  reloaded.currentStyle().value(QStringLiteral("backgroundGradient")).toString() ==
+                  reloaded.currentTheme().value(QStringLiteral("backgroundGradient")).toString() ==
                       QStringLiteral("#20c050"),
               "a reload returns the gradient through the controller");
     }
     // And a fork of a graded slide starts WITH the gradient — "wear what
     // the slide draws now" includes the second colour.
-    check(docs.createStyleFromCurrent(QStringLiteral("Shaded")),
+    check(docs.createThemeFromCurrent(QStringLiteral("Shaded")),
           "a slide wearing the graded style forks it");
-    check(docs.currentStyle().value(QStringLiteral("backgroundGradient")).toString() ==
+    check(docs.currentTheme().value(QStringLiteral("backgroundGradient")).toString() ==
               QStringLiteral("#20c050"),
-          "createStyleFromCurrent snapshots the gradient too");
+          "createThemeFromCurrent snapshots the gradient too");
     docs.undo();  // the fork (and its override) back
 
-    // Explicitly point a slide at a style, then hand it back (empty id).
-    check(docs.applyStyleToCurrentSlide(chorusId) && docs.currentStyleIsOverride(),
+    // Explicitly point a slide at a theme, then hand it back (empty id).
+    check(docs.applyThemeToCurrentSlide(chorusId) && docs.currentThemeIsOverride(),
           "a slide can be pinned to a style by id");
-    check(docs.applyStyleToCurrentSlide(QString()) && !docs.currentStyleIsOverride() &&
-              docs.currentStyle().value(QStringLiteral("id")).toString() == chorusId,
+    check(docs.applyThemeToCurrentSlide(QString()) && !docs.currentThemeIsOverride() &&
+              docs.currentTheme().value(QStringLiteral("id")).toString() == chorusId,
           "the empty id follows the show default again");
 
     // Refusals name themselves and leave everything alone.
-    check(!docs.editStyle(QStringLiteral("style999"), QStringLiteral("Ghost"),
+    check(!docs.editTheme(QStringLiteral("style999"), QStringLiteral("Ghost"),
                           QStringLiteral("#ffffff"), QStringLiteral("#000000"), QString(), QString(), 0.0,
                           QStringLiteral("center"), 1.25) &&
-              docs.status().contains(QStringLiteral("edit style")),
-          "editing an unknown style is refused on the status line");
-    check(!docs.editStyle(chorusId, QStringLiteral("   "), QStringLiteral("#ffffff"),
+              docs.status().contains(QStringLiteral("edit theme")),
+          "editing an unknown theme is refused on the status line");
+    check(!docs.editTheme(chorusId, QStringLiteral("   "), QStringLiteral("#ffffff"),
                           QStringLiteral("#000000"), QString(), QString(), 0.0,
                           QStringLiteral("center"), 1.25),
           "a blank name is refused before anything is recorded");
-    check(!docs.applyStyleToCurrentSlide(QStringLiteral("style999")) &&
-              !docs.currentStyleIsOverride(),
-          "an unknown style id is refused and the follow-show state survives");
-    check(!docs.setShowDefaultStyle(QStringLiteral("style999")) &&
-              docs.currentStyle().value(QStringLiteral("id")).toString() == chorusId,
+    check(!docs.applyThemeToCurrentSlide(QStringLiteral("style999")) &&
+              !docs.currentThemeIsOverride(),
+          "an unknown theme id is refused and the follow-show state survives");
+    check(!docs.setShowDefaultTheme(QStringLiteral("style999")) &&
+              docs.currentTheme().value(QStringLiteral("id")).toString() == chorusId,
           "an unknown show default is refused too");
-    check(!docs.applyStyleToCurrentSlide(QStringLiteral("Chorus")) &&
-              !docs.currentStyleIsOverride(),
+    check(!docs.applyThemeToCurrentSlide(QStringLiteral("Chorus")) &&
+              !docs.currentThemeIsOverride(),
           "styles are addressed by id — a name is refused and the state survives");
 
     // Layering: the background image lands on the current slide and its
@@ -1211,9 +1211,9 @@ void exerciseStylePanel(const std::filesystem::path& root) {
           "an unknown asset is refused for a background");
 
     DocumentController bare(nullptr, root / "bare");
-    check(!bare.createStyleFromCurrent(QStringLiteral("Orphan")) &&
+    check(!bare.createThemeFromCurrent(QStringLiteral("Orphan")) &&
               !bare.setSlideBackground(QString()) &&
-              !bare.editStyle(QStringLiteral("style1"), QStringLiteral("x"),
+              !bare.editTheme(QStringLiteral("style1"), QStringLiteral("x"),
                               QStringLiteral("#fff"), QStringLiteral("#000"), QString(), QString(), 0.0,
                               QStringLiteral("center"), 1.25),
           "with no current slide the style panel has nothing to act on");
@@ -1336,7 +1336,7 @@ void exerciseImageItemSession(const std::filesystem::path& root) {
 
     // A clip captured with a picture, pasted AFTER the asset is gone: the
     // paste is not refused — the operator's words still arrive — and the
-    // picture is what falls away, exactly as a deleted style or background
+    // picture is what falls away, exactly as a deleted theme or background
     // reference has since 4.5.
     docs.selectSlide(0);
     check(docs.copyCurrentSlide(), "the mixed slide is captured again");
@@ -1560,15 +1560,15 @@ void exerciseClipboard(const std::filesystem::path& root) {
     check(!docs.pasteSlide() && docs.status().contains(QStringLiteral("clipboard")),
           "pasting with an empty clipboard is refused and explains itself");
 
-    // Give slide 1 a full presentation: words, a box, a pinned style and
+    // Give slide 1 a full presentation: words, a box, a pinned theme and
     // a background image.
     docs.setSlideText(QStringLiteral("Amazing grace"));
     check(docs.setSlideGeometry(240.0, 120.0, 1400.0, 800.0),
           "the source slide carries a box");
-    check(docs.createStyleFromCurrent(QStringLiteral("Bright")),
+    check(docs.createThemeFromCurrent(QStringLiteral("Bright")),
           "the source slide gets a style of its own");
-    const QString styleId = docs.currentStyle().value(QStringLiteral("id")).toString();
-    check(docs.editStyle(styleId, QStringLiteral("Bright"), QStringLiteral("#ffd23f"),
+    const QString themeId = docs.currentTheme().value(QStringLiteral("id")).toString();
+    check(docs.editTheme(themeId, QStringLiteral("Bright"), QStringLiteral("#ffd23f"),
                          QStringLiteral("#101828"), QString(), QString(), 64.0,
                          QStringLiteral("left"), 1.5),
           "the style is edited into a distinctive look");
@@ -1597,8 +1597,8 @@ void exerciseClipboard(const std::filesystem::path& root) {
           "the pasted slide carries the box");
     check(pasted.value(QStringLiteral("backgroundAssetId")).toString() == assetId,
           "the pasted slide carries the background");
-    check(docs.currentStyleIsOverride() &&
-              docs.currentStyle().value(QStringLiteral("id")).toString() == styleId,
+    check(docs.currentThemeIsOverride() &&
+              docs.currentTheme().value(QStringLiteral("id")).toString() == themeId,
           "the pasted slide wears the same style override");
     const openshow::scene::Scene copyScene = compiledFor(docs, pastedId);
     check(copyScene.background.hasImage && copyScene.items[0].color == 0xFFD23Fu &&
@@ -1733,9 +1733,9 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
         std::ifstream manifest(root / "service" / "service.json");
         const std::string text{std::istreambuf_iterator<char>(manifest),
                                std::istreambuf_iterator<char>()};
-        check(text.find("\"format\":5") != std::string::npos &&
+        check(text.find("\"format\":6") != std::string::npos &&
                   text.find("\"fit\":\"contain\"") != std::string::npos,
-              "the manifest is this build's format (5 since 6.17c3) and spells the slide's fit");
+              "the manifest is this build's format (6 since TH.1) and spells the slide's fit");
     }
     {
         DocumentController reopened(nullptr, root);
@@ -1749,7 +1749,7 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
     }
 
     // The clipboard carries the fit the way it carries the box and the
-    // style: a pasted contain slide is a contain slide.
+    // theme: a pasted contain slide is a contain slide.
     check(docs.copyCurrentSlide() && docs.pasteSlide(),
           "copy and paste run on the fitted slide");
     check(docs.slides().at(1).toMap().value(QStringLiteral("backgroundFit")).toString() ==
@@ -2202,7 +2202,7 @@ int main(int argc, char* argv[]) {
     exercisePersistence(tempRoot / "persist");
     exerciseRecoveredAssetOwnership(tempRoot / "adopt");
     exercisePlaylistAndLibrary(tempRoot / "playlist");
-    exerciseStylePanel(tempRoot / "styles");
+    exerciseThemePanel(tempRoot / "styles");
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");
     exerciseClipboard(tempRoot / "clipboard");

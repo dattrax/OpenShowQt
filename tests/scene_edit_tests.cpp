@@ -5,7 +5,7 @@
  * The clear buttons derive a presentation from the scene JSON on air, so
  * the transforms must be wire-honest: the result must satisfy the strict
  * scene::fromJson validator the worker applies, remove exactly the layer
- * asked for, and leave everything else (provenance, style, the other
+ * asked for, and leave everything else (provenance, theme, the other
  * layer) byte-equivalent. The content flags answer the other half of the
  * acceptance — which clear buttons are enabled and which layers the live
  * indicators light — so they are pinned here too. Task 6.21e (review F4)

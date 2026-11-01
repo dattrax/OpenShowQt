@@ -43,23 +43,31 @@ namespace {
 // format-2 box — words, always — is that item with kind "text". Format 4
 // (task 6.17c1, review R17) gives every SLIDE a "fit": how its background
 // picture sits on the canvas, where cover is what every earlier file drew.
-// Format 5 (task 6.17c3, review R17) gives every STYLE a
+// Format 5 (task 6.17c3, review R17) gives every THEME a
 // "backgroundGradient": the second colour of a gradient background, where
-// the empty string is the flat fill every earlier file drew. The reader
-// still loads 1, 2, 3 and 4 and migrates them (none can hold a gradient,
-// and all four drew their backgrounds flat); the writer only ever emits
-// kServiceFormat, and a 5-file read by an older build refuses the whole
-// package rather than quietly drawing a gradient flat.
-constexpr unsigned long long kServiceFormat = 5;
+// the empty string is the flat fill every earlier file drew. Format 6
+// (task TH.1, themes plan) names the appearance entity THEME throughout:
+// the array is "themes", a slide's assignment is "themeId" and a show's
+// default is "defaultThemeId". The reader still loads 1 through 5 and
+// migrates them — a 5-file has no gradient to lose and a pre-6 file's
+// three old key names are chosen by the declared format — and it refuses
+// a file that MIXES the spellings: a document half-renamed in a text
+// editor is ambiguity to refuse, not intent to guess, the same rule the
+// gradient stated. The writer only ever emits kServiceFormat, and a
+// 6-file read by an older build refuses the whole package rather than
+// quietly drawing what it cannot name.
+constexpr unsigned long long kServiceFormat = 6;
 // The older versions this build reads: single-box slides (1), a stack whose
 // every item was necessarily text (2), a kinded stack whose slides had no
-// fit choice yet — cover was the only thing the worker knew (3) — and a
-// fitted stack whose styles had no gradient yet — flat was the only thing
-// it knew (4).
+// fit choice yet — cover was the only thing the worker knew (3) — a fitted
+// stack whose themes had no gradient yet — flat was the only thing it knew
+// (4) — and a gradient stack that still spelled the appearance entity
+// "style" in its key names (5).
 constexpr unsigned long long kServiceFormatLegacyBoxes = 1;
 constexpr unsigned long long kServiceFormatLegacyTextOnly = 2;
 constexpr unsigned long long kServiceFormatLegacyUnfit = 3;
 constexpr unsigned long long kServiceFormatLegacyFlat = 4;
+constexpr unsigned long long kServiceFormatLegacyStyleNamed = 5;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -477,7 +485,7 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
         entry.emplace("id", show.id);
         entry.emplace("name", show.name);
         entry.emplace("notes", show.notes);
-        entry.emplace("defaultStyleId", show.defaultStyleId);
+        entry.emplace("defaultThemeId", show.defaultThemeId);
         boost::json::array slides;
         for (const Slide& slide : show.slides) {
             boost::json::object slideJson;
@@ -514,7 +522,7 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             }
             slideJson.emplace("items", std::move(boxes));
             slideJson.emplace("notes", slide.notes);
-            slideJson.emplace("styleId", slide.styleId);
+            slideJson.emplace("themeId", slide.themeId);
             slideJson.emplace("backgroundAssetId", slide.backgroundAssetId);
             // Fit on EVERY slide, cover included — 6.17b1's rule for the
             // item kind: leaving the default to inference is how a future
@@ -527,26 +535,26 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
     }
     root.emplace("shows", std::move(shows));
 
-    boost::json::array styles;
-    for (const Style& style : documents.fStyles) {
+    boost::json::array themes;
+    for (const Theme& theme : documents.fThemes) {
         boost::json::object entry;
-        entry.emplace("id", style.id);
-        entry.emplace("name", style.name);
-        entry.emplace("textColor", style.textColor);
-        entry.emplace("backgroundColor", style.backgroundColor);
+        entry.emplace("id", theme.id);
+        entry.emplace("name", theme.name);
+        entry.emplace("textColor", theme.textColor);
+        entry.emplace("backgroundColor", theme.backgroundColor);
         // The gradient colour always travels (6.17c3): the empty string IS
-        // the statement "flat", so a flat style saved by this build reads
+        // the statement "flat", so a flat theme saved by this build reads
         // back flat instead of depending on an absent key.
-        entry.emplace("backgroundGradient", style.backgroundGradient);
-        entry.emplace("fontFamily", style.fontFamily);
-        entry.emplace("fontSize", style.fontSize);
+        entry.emplace("backgroundGradient", theme.backgroundGradient);
+        entry.emplace("fontFamily", theme.fontFamily);
+        entry.emplace("fontSize", theme.fontSize);
         // Typography (task 4.4) always travels; the loader defaults it
-        // for styles written before it existed.
-        entry.emplace("align", style.align);
-        entry.emplace("lineSpacing", style.lineSpacing);
-        styles.push_back(std::move(entry));
+        // for themes written before it existed.
+        entry.emplace("align", theme.align);
+        entry.emplace("lineSpacing", theme.lineSpacing);
+        themes.push_back(std::move(entry));
     }
-    root.emplace("styles", std::move(styles));
+    root.emplace("themes", std::move(themes));
 
     boost::json::array assets;
     for (const Asset& asset : documents.fAssets) {
@@ -600,27 +608,44 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     // way, its items gaining kind "text" on the way in (task 6.17b), and
     // format 3 — a kinded stack whose slides all drew their background
     // cover — gains fit "cover" the same way (task 6.17c1), and format 4 —
-    // a fitted stack whose styles all drew a flat background — gains
+    // a fitted stack whose themes all drew a flat background — gains
     // backgroundGradient "" the same way (task 6.17c3). A
     // future version is refused naming both numbers, because guessing at a
     // format means quietly dropping whatever the newer build's operator wrote.
     if (format != kServiceFormat && format != kServiceFormatLegacyBoxes &&
         format != kServiceFormatLegacyTextOnly && format != kServiceFormatLegacyUnfit &&
-        format != kServiceFormatLegacyFlat) {
+        format != kServiceFormatLegacyFlat && format != kServiceFormatLegacyStyleNamed) {
         fail(error, "service.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " + std::to_string(kServiceFormat) +
-                        ", and formats " + std::to_string(kServiceFormatLegacyBoxes) +
-                        ", " + std::to_string(kServiceFormatLegacyTextOnly) + ", " +
-                        std::to_string(kServiceFormatLegacyUnfit) + " and " +
-                        std::to_string(kServiceFormatLegacyFlat) +
+                        " and formats " + std::to_string(kServiceFormatLegacyBoxes) +
+                        " through " + std::to_string(kServiceFormatLegacyStyleNamed) +
                         " with their text boxes migrated to a kinded list, their"
-                        " backgrounds to cover and their styles to flat)");
+                        " backgrounds to cover and their themes to flat)");
         return false;
     }
     const bool singleBoxFile = format == kServiceFormatLegacyBoxes;
     // A format-2 file's items carry no "kind" — kind was format 3's
     // addition — so 2 means "every item is text, and saying so is lying".
     const bool unkindedList = format == kServiceFormatLegacyTextOnly;
+    // Format 6 (task TH.1) spells the appearance entity "theme" in three
+    // key names; every earlier file spelled it "style". The declared format
+    // picks the key set, and a file that mixes the spellings is refused:
+    // half a rename is ambiguity, not intent (the gradient's rule).
+    const bool themeNamed = format >= kServiceFormat;
+    const char* const themesKey = themeNamed ? "themes" : "styles";
+    const char* const slideThemeKey = themeNamed ? "themeId" : "styleId";
+    const char* const showDefaultThemeKey = themeNamed ? "defaultThemeId" : "defaultStyleId";
+    const char* const otherThemeKey = themeNamed ? "theme" : "style";
+    auto refuseMixedNaming = [&](const boost::json::object& obj, const char* key,
+                                 const std::string& where) -> bool {
+        if (!obj.contains(key)) {
+            return true;
+        }
+        fail(error, "service.json: " + where + " carries \"" + key + "\" — a format " +
+                        std::to_string(format) + " file names the appearance entity \"" +
+                        otherThemeKey + "\", not both");
+        return false;
+    };
     unsigned long long nextOrdinal = 0;
     if (!wantInteger(root, "nextOrdinal", &nextOrdinal, error)) {
         return false;
@@ -667,7 +692,11 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             return false;
         }
         if (!wantOptionalString(jsonShow, "notes", &show.notes, error) ||
-            !wantOptionalString(jsonShow, "defaultStyleId", &show.defaultStyleId, error)) {
+            !wantOptionalString(jsonShow, showDefaultThemeKey, &show.defaultThemeId, error)) {
+            return false;
+        }
+        if (!refuseMixedNaming(jsonShow, themeNamed ? "defaultStyleId" : "defaultThemeId",
+                               "show '" + show.id + "'")) {
             return false;
         }
         const boost::json::array* slideArray = nullptr;
@@ -813,9 +842,13 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             }
             if (!wantOptionalString(jsonSlide, "group", &slide.group, error) ||
                 !wantOptionalString(jsonSlide, "notes", &slide.notes, error) ||
-                !wantOptionalString(jsonSlide, "styleId", &slide.styleId, error) ||
+                !wantOptionalString(jsonSlide, slideThemeKey, &slide.themeId, error) ||
                 !wantOptionalString(jsonSlide, "backgroundAssetId",
                                     &slide.backgroundAssetId, error)) {
+                return false;
+            }
+            if (!refuseMixedNaming(jsonSlide, themeNamed ? "styleId" : "themeId",
+                                   "slide '" + slide.id + "'")) {
                 return false;
             }
             // The fit (task 6.17c1): a format-4-or-newer slide names it,
@@ -863,45 +896,48 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         shows.push_back(std::move(show));
     }
 
-    const boost::json::array* styleArray = nullptr;
-    if (!wantArray(root, "styles", &styleArray, error)) {
+    if (!refuseMixedNaming(root, themeNamed ? "styles" : "themes", "the package")) {
         return false;
     }
-    std::vector<Style> styles;
-    std::set<Id> styleIds;
-    for (const boost::json::value& element : *styleArray) {
+    const boost::json::array* themeArray = nullptr;
+    if (!wantArray(root, themesKey, &themeArray, error)) {
+        return false;
+    }
+    std::vector<Theme> themes;
+    std::set<Id> themeIds;
+    for (const boost::json::value& element : *themeArray) {
         if (!element.is_object()) {
-            fail(error, "service.json: 'styles' holds a non-object");
+            fail(error, "service.json: 'themes' holds a non-object");
             return false;
         }
-        const boost::json::object& jsonStyle = element.as_object();
-        Style style;
-        if (!wantString(jsonStyle, "id", &style.id, error) || !claimId(style.id, "style") ||
-            !wantString(jsonStyle, "name", &style.name, error) ||
-            !wantString(jsonStyle, "textColor", &style.textColor, error) ||
-            !wantString(jsonStyle, "backgroundColor", &style.backgroundColor, error) ||
-            !wantOptionalString(jsonStyle, "fontFamily", &style.fontFamily, error) ||
-            !wantNumber(jsonStyle, "fontSize", &style.fontSize, error) ||
-            !wantOptionalString(jsonStyle, "align", &style.align, error) ||
-            !wantOptionalNumber(jsonStyle, "lineSpacing", &style.lineSpacing, error)) {
+        const boost::json::object& jsonTheme = element.as_object();
+        Theme theme;
+        if (!wantString(jsonTheme, "id", &theme.id, error) || !claimId(theme.id, "theme") ||
+            !wantString(jsonTheme, "name", &theme.name, error) ||
+            !wantString(jsonTheme, "textColor", &theme.textColor, error) ||
+            !wantString(jsonTheme, "backgroundColor", &theme.backgroundColor, error) ||
+            !wantOptionalString(jsonTheme, "fontFamily", &theme.fontFamily, error) ||
+            !wantNumber(jsonTheme, "fontSize", &theme.fontSize, error) ||
+            !wantOptionalString(jsonTheme, "align", &theme.align, error) ||
+            !wantOptionalNumber(jsonTheme, "lineSpacing", &theme.lineSpacing, error)) {
             return false;
         }
-        // The gradient colour (task 6.17c3): a format-5 style names it,
-        // and "" is a real answer — flat. Its absence in a pre-5 file is
+        // The gradient colour (task 6.17c3): a format-5-or-newer theme names
+        // it, and "" is a real answer — flat. Its absence in a pre-5 file is
         // not an inference but that file's own history: flat was the only
         // background those builds could draw. A "backgroundGradient" in a
         // pre-5 file means somebody else's build meant something by it
         // (the format-2 "kind" rule, applied again), and the lie is
         // refused naming the key. The string itself is not colour-checked
         // here, exactly like backgroundColor one line up: a bad colour is
-        // the scene compile's to refuse, once, with the style named.
-        if (format == kServiceFormat) {
-            if (!wantString(jsonStyle, "backgroundGradient", &style.backgroundGradient, error)) {
+        // the scene compile's to refuse, once, with the theme named.
+        if (format >= kServiceFormatLegacyStyleNamed) {
+            if (!wantString(jsonTheme, "backgroundGradient", &theme.backgroundGradient, error)) {
                 return false;
             }
         } else {
-            if (jsonStyle.contains("backgroundGradient")) {
-                fail(error, "service.json: style '" + style.id +
+            if (jsonTheme.contains("backgroundGradient")) {
+                fail(error, "service.json: theme '" + theme.id +
                                 "' carries \"backgroundGradient\" in a format " +
                                 std::to_string(format) + " file, where that key"
                                 " does not exist");
@@ -909,23 +945,23 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             }
         }
         // "align" arrived after the first services: wantOptionalString
-        // blanks an absent key, and blank is how a pre-typography style
+        // blanks an absent key, and blank is how a pre-typography theme
         // says "centred", the only drawing it ever knew.
-        if (style.align.empty()) {
-            style.align = "center";
+        if (theme.align.empty()) {
+            theme.align = "center";
         }
-        // A loaded style must be one the renderer can honour: the same
-        // contract createStyle/updateStyle enforce.
-        if (!std::isfinite(style.fontSize) || style.fontSize < 0.0 ||
-            !openshow::domain::isStyleAlign(style.align) ||
-            !std::isfinite(style.lineSpacing) || style.lineSpacing < 0.25 ||
-            style.lineSpacing > 8.0) {
-            fail(error, "service.json: style '" + style.id +
+        // A loaded theme must be one the renderer can honour: the same
+        // contract createTheme/updateTheme enforce.
+        if (!std::isfinite(theme.fontSize) || theme.fontSize < 0.0 ||
+            !openshow::domain::isThemeAlign(theme.align) ||
+            !std::isfinite(theme.lineSpacing) || theme.lineSpacing < 0.25 ||
+            theme.lineSpacing > 8.0) {
+            fail(error, "service.json: theme '" + theme.id +
                             "' holds typography the renderer cannot honour");
             return false;
         }
-        styleIds.insert(style.id);
-        styles.push_back(std::move(style));
+        themeIds.insert(theme.id);
+        themes.push_back(std::move(theme));
     }
 
     const boost::json::array* assetArray = nullptr;
@@ -1003,15 +1039,15 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     // Reference pass: a file we wrote always satisfies this; anything
     // else is corruption and the load says so.
     for (const Show& show : shows) {
-        if (!show.defaultStyleId.empty() && styleIds.count(show.defaultStyleId) == 0) {
-            fail(error, "service.json: show '" + show.id + "' defaults to unknown style '" +
-                            show.defaultStyleId + "'");
+        if (!show.defaultThemeId.empty() && themeIds.count(show.defaultThemeId) == 0) {
+            fail(error, "service.json: show '" + show.id + "' defaults to unknown theme '" +
+                            show.defaultThemeId + "'");
             return false;
         }
         for (const Slide& slide : show.slides) {
-            if (!slide.styleId.empty() && styleIds.count(slide.styleId) == 0) {
-                fail(error, "service.json: slide '" + slide.id + "' names unknown style '" +
-                                slide.styleId + "'");
+            if (!slide.themeId.empty() && themeIds.count(slide.themeId) == 0) {
+                fail(error, "service.json: slide '" + slide.id + "' names unknown theme '" +
+                                slide.themeId + "'");
                 return false;
             }
             if (!slide.backgroundAssetId.empty() &&
@@ -1050,7 +1086,7 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     }
 
     out->fShows = std::move(shows);
-    out->fStyles = std::move(styles);
+    out->fThemes = std::move(themes);
     out->fAssets = std::move(assets);
     out->fPlaylists = std::move(playlists);
     out->fNextOrdinal = nextOrdinal;
