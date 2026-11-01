@@ -65,7 +65,14 @@ int main(int argc, char** argv) {
     context->setContextProperty("appSettings", &settings);
     context->setContextProperty("uiSize", QSize(1380, 800));
     engine.loadFromModule("OpenShow", "Main");
-    if (engine.rootObjects().isEmpty()) return 1;
+    if (engine.rootObjects().isEmpty()) {
+        // A page that fails to compile leaves no window and, without this,
+        // no clue either: the collected engine warnings are the whole story.
+        for (const auto& warning : warnings) {
+            std::fprintf(stderr, "load QML: %s\n", qPrintable(warning));
+        }
+        return 1;
+    }
     auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
     if (!window) return 1;
     QTest::qWait(100);
@@ -1411,6 +1418,96 @@ int main(int argc, char** argv) {
         check(!worker.outputLive() && worker.frames() == 0,
               "clicking through themes asks no output and moves no audience");
 
+        // The lyric box (themes plan amendment 2026-11-01): the overlay on
+        // the sample carries the slide editor's own gestures, and the four
+        // fields are the exact-number path to the SAME rectangle. The sample
+        // is a fixture, so nothing here can reach the audience — what is
+        // pinned is the record, one history entry per gesture, and the
+        // honest disabled states of "no opinion".
+        const auto placementRow = [&docs](const QString& id) {
+            for (const QVariant& theme : docs.themes()) {
+                if (theme.toMap().value(QStringLiteral("id")).toString() == id) {
+                    return theme.toMap();
+                }
+            }
+            return QVariantMap{};
+        };
+        // Drive everything below against what the editor actually has
+        // selected RIGHT NOW: the browsing above ends on the last row of
+        // the list, and a remembered id from before duplicate/delete/undo
+        // is how an assertion tests one theme while the gestures edit the
+        // theme under the operator's cursor.
+        const QString placedId = editorPage->property("selectedId").toString();
+        check(!placedId.isEmpty(), "the editor has a selected theme to place with");
+        auto* noPlacementButton = findNamed(window->contentItem(), "themeEditorNoPlacement");
+        auto* placeXField = findNamed(window->contentItem(), "themeEditorPlaceX");
+        auto* placeYField = findNamed(window->contentItem(), "themeEditorPlaceY");
+        auto* placeWField = findNamed(window->contentItem(), "themeEditorPlaceW");
+        auto* placeHField = findNamed(window->contentItem(), "themeEditorPlaceH");
+        check(noPlacementButton && placeXField && placeHField
+                  && !noPlacementButton->property("enabled").toBool()
+                  && placementRow(placedId).value(QStringLiteral("placementSet")).toBool() == false,
+              "a theme with no placement shows the fields asleep: No placement is disabled "
+              "and the row says nothing is placed");
+        // Drag the box the overlay is OFFERING (the dashed built-in lyric
+        // rect 160,100,1600,880): press inside it, move up-left (the wide
+        // box clamps against the canvas's right edge before it clamps at
+        // zero), release once.
+        const qreal zoom = previewFrame->width() / 1920.0;
+        const QPointF hold = previewFrame->mapToScene(QPointF(960 * zoom, 540 * zoom));
+        const QPointF dragged = hold + QPointF(-20, -15);
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, hold.toPoint());
+        QTest::mouseMove(window, dragged.toPoint(), 20);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, dragged.toPoint());
+        QTest::qWait(80);
+        const QVariantMap moved = placementRow(placedId).value(QStringLiteral("placement")).toMap();
+        check(placementRow(placedId).value(QStringLiteral("placementSet")).toBool()
+                  && qAbs(moved.value(QStringLiteral("x")).toDouble()
+                          - std::round(160.0 - 20.0 / zoom)) <= 1.0
+                  && qAbs(moved.value(QStringLiteral("y")).toDouble()
+                          - std::round(100.0 - 15.0 / zoom)) <= 1.0
+                  && moved.value(QStringLiteral("width")).toDouble() == 1600.0,
+              "dragging the offered box makes a placement out of the gesture — "
+              "moved by exactly the pointer's travel, sized as it was");
+        docs.undo();
+        QTest::qWait(80);
+        check(!placementRow(placedId).value(QStringLiteral("placementSet")).toBool(),
+              "one undo removes the whole drag, not one pixel of it");
+        // The typed path: four fields, one write.
+        placeXField->setProperty("text", "200");
+        placeYField->setProperty("text", "150");
+        placeWField->setProperty("text", "1400");
+        placeHField->setProperty("text", "500");
+        QMetaObject::invokeMethod(placeHField, "editingFinished");
+        QTest::qWait(80);
+        const QVariantMap typed = placementRow(placedId).value(QStringLiteral("placement")).toMap();
+        check(typed.value(QStringLiteral("x")).toDouble() == 200.0
+                  && typed.value(QStringLiteral("y")).toDouble() == 150.0
+                  && typed.value(QStringLiteral("width")).toDouble() == 1400.0
+                  && typed.value(QStringLiteral("height")).toDouble() == 500.0
+                  && noPlacementButton->property("enabled").toBool(),
+              "typing the four numbers writes the placement as one unit and No placement wakes");
+        // A box the page itself will not place (w < 1) never reaches the
+        // model, and every field snaps back to where the record says it is.
+        placeWField->setProperty("text", "0");
+        QMetaObject::invokeMethod(placeWField, "editingFinished");
+        QTest::qWait(80);
+        check(placementRow(placedId).value(QStringLiteral("placement")).toMap()
+                      .value(QStringLiteral("width")).toDouble() == 1400.0
+                  && placeWField->property("text").toString() == QLatin1String("1400"),
+              "a refused rectangle changes nothing and the fields snap back");
+        // "No placement" is the theme's own revert: colours stay, the
+        // rectangle goes, and the overlay falls back to the dashed offer.
+        clickAt(noPlacementButton, noPlacementButton->width() / 2,
+                noPlacementButton->height() / 2);
+        QTest::qWait(80);
+        check(!placementRow(placedId).value(QStringLiteral("placementSet")).toBool()
+                  && !noPlacementButton->property("enabled").toBool()
+                  && placeXField->property("text").toString() == QLatin1String("160")
+                  && !placementRow(placedId).value(QStringLiteral("name")).toString().isEmpty(),
+              "No placement takes the theme's opinion away, puts the offered box back in "
+              "the fields, and leaves the theme itself intact");
+
         // The honest empty service: delete everything, controls disable.
         if (!docs.wornThemeId().isEmpty()) {
             docs.useThemeAsCurrent(QString());
@@ -1827,6 +1924,104 @@ int main(int argc, char** argv) {
         docs.undo();
         check(waitFor([&] { return docs.themes().size() == themesBefore; }),
               "one undo removes the fork too");
+
+        // --- the lyric box rides the chain (themes plan amendment) --------
+        // The four geometry fields edit the box WHERE IT DRAWS: on a slide
+        // whose theme places, a typed value records a placement
+        // CUSTOMIZATION — one unit, with its own owner label and revert —
+        // while an extra box keeps editing its authored rectangle exactly
+        // as it always did.
+        check(docs.setThemePlacement(house, 250.0, 150.0, 1300.0, 700.0),
+              "House gains a lyric-box placement");
+        auto* owner = findNamed(window->contentItem(), "placementOwner");
+        auto* revert = findNamed(window->contentItem(), "revertPlacementButton");
+        check(owner && revert
+                  && waitFor([&] { return owner->property("visible").toBool()
+                                        && owner->property("text").toString()
+                                               == QLatin1String("THEME PLACES"); })
+                  && !revert->property("enabled").toBool()
+                  && docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("x"))
+                             .toDouble() == 250.0,
+              "the geometry row names the THEME as the box's owner and the canvas shows "
+              "the themed rectangle with nothing to revert");
+        QList<QQuickItem*> geomFields;
+        collectNamed(window->contentItem(), "geometryField", geomFields);
+        check(geomFields.size() == 4
+                  && geomFields.first()->property("text").toString() == QLatin1String("250"),
+              "the X/Y/W/H fields read the placed box, not the authored one underneath");
+        geomFields.first()->setProperty("text", "500");
+        QMetaObject::invokeMethod(geomFields.first(), "editingFinished");
+        check(waitFor([&] { return docs.slideAppearance().value(QStringLiteral("placement"))
+                                       .toMap().value(QStringLiteral("customized")).toBool(); })
+                  && owner->property("text").toString() == QLatin1String("THIS SLIDE")
+                  && waitFor([&] { return revert->property("enabled").toBool(); }),
+              "typing on a placed box customizes the SLIDE's own spot — one unit, "
+              "owner label and revert and all");
+        // The geometry band lives at the bottom of the Edit page's
+        // Flickable, and at this window height its last row sits under the
+        // viewport edge. An operator flicks the page up to reach it, so the
+        // test does exactly that before clicking.
+        {
+            QQuickItem* page = revert->parentItem()->parentItem()->parentItem()->parentItem();
+            page->setProperty("contentY", page->property("contentHeight").toReal()
+                                              - page->property("height").toReal());
+            QTest::qWait(60);
+        }
+        clickAt(revert, revert->width() / 2, revert->height() / 2);
+        QTest::qWait(120);
+        check(waitFor([&] { return !docs.slideAppearance().value(QStringLiteral("placement"))
+                                          .toMap().value(QStringLiteral("customized")).toBool(); })
+                  && docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("x"))
+                             .toDouble() == 250.0
+                  && owner->property("text").toString() == QLatin1String("THEME PLACES"),
+              "the revert hands the whole rectangle back to the theme in one step");
+        // An extra box is geometry, never a placement: the theme drives
+        // exactly one box, and everything else keeps authored behaviour.
+        // The stack already carries whatever earlier fixtures left, so
+        // everything here is relative to the box COUNT and the NEW id —
+        // never an assumed index.
+        auto* newBox = findNamed(window->contentItem(), "newBoxButton");
+        const QStringList before = [&docs]() {
+            QStringList ids;
+            for (const QVariant& box : docs.currentSlideBoxes())
+                ids.append(box.toMap().value(QStringLiteral("id")).toString());
+            return ids;
+        }();
+        clickAt(newBox, newBox->width() / 2, newBox->height() / 2);
+        QTest::qWait(80);
+        QString newId;
+        int newIndex = -1;
+        {
+            const QVariantList boxes = docs.currentSlideBoxes();
+            for (int i = 0; i < boxes.size(); ++i) {
+                const QString id = boxes.at(i).toMap().value(QStringLiteral("id")).toString();
+                if (!before.contains(id)) {
+                    newId = id;
+                    newIndex = i;
+                }
+            }
+        }
+        check( docs.currentSlideBoxes().size() == before.size() + 1 && !newId.isEmpty()
+                   && docs.currentSlideBoxes().at(newIndex).toMap()
+                             .value(QStringLiteral("placed")).toBool() == false,
+               "the new box was added and the chain does not place it");
+        check(docs.currentBox() == newIndex, "the new box is the selection");
+        geomFields.first()->setProperty("text", "90");
+        QMetaObject::invokeMethod(geomFields.first(), "editingFinished");
+        QTest::qWait(80);
+        check(docs.currentSlideBoxes().at(newIndex).toMap().value(QStringLiteral("x"))
+                      .toDouble()
+                  == 90.0
+                  && !docs.slideAppearance().value(QStringLiteral("placement")).toMap()
+                            .value(QStringLiteral("customized")).toBool(),
+              "typing on an unplaced box edits its AUTHORED rectangle and customizes "
+              "no placement");
+        // Leave the fixture exactly the story it told before this block.
+        auto* deleteBox = findNamed(window->contentItem(), "deleteBoxButton");
+        clickAt(deleteBox, deleteBox->width() / 2, deleteBox->height() / 2);
+        QTest::qWait(80);
+        check(docs.currentSlideBoxes().size() == before.size() && docs.clearThemePlacement(house),
+              "the extra box goes and House stops placing — nothing leaks to the captures");
         window->setProperty("page", "show");
         QTest::qWait(60);
     }
@@ -1883,6 +2078,13 @@ int main(int argc, char** argv) {
         check(!houseId.isEmpty() && !loudId.isEmpty()
                   && docs.setShowDefaultThemeFor(docs.currentSongId(), loudId),
               "the captures' show follows a default theme");
+        // The amendment's story in one rectangle: House places the lyric
+        // box low and wide, so the Edit capture shows the canvas chrome
+        // drawn where the AUDIENCE sees the box, under the THEME PLACES
+        // label — and the Themes capture shows that rectangle being edited
+        // on the sample.
+        check(docs.setThemePlacement(houseId, 240.0, 620.0, 1440.0, 320.0),
+              "House gains a lyric-box placement for the captures");
         docs.selectSlide(0);
         check(docs.applyThemeToCurrentSlide(houseId)
                   && docs.customizeCurrentSlide(QStringLiteral("backgroundGradient"), QString())
@@ -1952,13 +2154,42 @@ int main(int argc, char** argv) {
             auto* sizeBadge = findNamed(window->contentItem(), "customizeBadgeFontSize");
             auto* colourBadge = findNamed(window->contentItem(), "customizeBadgeTextColor");
             auto* worn = findNamed(window->contentItem(), "themeWornName");
+            auto* ownerLabel = findNamed(window->contentItem(), "placementOwner");
             check(gradientBadge->property("visible").toBool()
                       && sizeBadge->property("visible").toBool()
                       && !colourBadge->property("visible").toBool()
-                      && worn->property("text").toString() == QStringLiteral("House"),
-                  "the edit capture carries exactly the two badges and the worn name");
+                      && worn->property("text").toString() == QStringLiteral("House")
+                      && ownerLabel->property("visible").toBool()
+                      && ownerLabel->property("text").toString()
+                             == QStringLiteral("THEME PLACES"),
+                  "the edit capture carries exactly the two badges, the worn name and "
+                  "the THEME PLACES label on a box the theme drives");
         }
         window->grabWindow().save(capture + ".edit.png");
+        // The Theme Editor, mid-edit on the placing theme: the overlay's
+        // solid rectangle IS the record's rectangle, and the fields hold
+        // its numbers.
+        window->setProperty("page", "themes");
+        QTest::qWait(80);
+        if (auto* editor = findNamed(window->contentItem(), "themeEditorPage")) {
+            editor->setProperty("selectedId", houseId);
+        }
+        QTest::qWait(80);
+        {
+            auto* editor = findNamed(window->contentItem(), "themeEditorPage");
+            auto* x = findNamed(window->contentItem(), "themeEditorPlaceX");
+            auto* y = findNamed(window->contentItem(), "themeEditorPlaceY");
+            auto* w = findNamed(window->contentItem(), "themeEditorPlaceW");
+            auto* h = findNamed(window->contentItem(), "themeEditorPlaceH");
+            check(editor->property("selectedId").toString() == houseId
+                      && x->property("text").toString() == QLatin1String("240")
+                      && y->property("text").toString() == QLatin1String("620")
+                      && w->property("text").toString() == QLatin1String("1440")
+                      && h->property("text").toString() == QLatin1String("320"),
+                  "selecting the placing theme puts its rectangle in the fields, and a "
+                  "page re-shown after outside edits still reads the record");
+        }
+        window->grabWindow().save(capture + ".themes.png");
         window->setProperty("page", "settings");
         QTest::qWait(50);
         window->grabWindow().save(capture + ".settings.png");

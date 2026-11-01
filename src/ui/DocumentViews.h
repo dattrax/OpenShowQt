@@ -60,6 +60,12 @@ public:
     // and geometry. The canvas outlines these rows and addresses its
     // gestures by index.
     QVariantList slideBoxes(const Cursor& cursor) const;
+    // Which box of cursor's slide the chain PLACES — its PRIMARY lyric box,
+    // the first TEXT item — or -1 when no layer carries a placement
+    // (amendment 2026-11-01). The canvas's hit test and the geometry write
+    // ask this so the chrome and the audience's pixels agree about where a
+    // box is; the rows above already carry the applied rectangle.
+    int placedBoxIndex(const Cursor& cursor) const;
     // The slide named by slideId inside showId, or nullptr. Callers re-check
     // rather than trusting a stale index across a slide removal.
     const openshow::domain::Slide* findSlide(const openshow::domain::Id& showId,

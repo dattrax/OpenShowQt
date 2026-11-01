@@ -226,14 +226,42 @@ focus-out is also not an edit: `editingFinished` fires when a field merely
 loses focus, so committing the value the chain already resolves to restores
 the binding instead of customizing the slide.
 
+A theme also carries WHERE its words go (the operator amendment, **TH.7/
+TH.8**): one optional `placement` rectangle in the 1920×1080 authored canvas,
+stored inside format 6 as a member of a theme entry and of a slide's
+`customizations` — absent means no opinion, so nothing about a pre-amendment
+document moves on open (a pre-6 file carrying the key is refused rather than
+guessed). Placement resolves through the same chain, and the compile stamps
+the resolved rectangle onto the slide's FIRST TEXT item only: additional
+boxes and every image item keep their authored positions, so a deliberately
+stacked slide does not collapse under a theme. The routing rule the operator
+sees: a drag or typed value on a PLACED box writes a placement CUSTOMIZATION
+(one revert unit "placement", owner label THEME PLACES ↔ THIS SLIDE), never
+the authored rectangle underneath; a box the chain does not drive keeps
+editing authored geometry exactly as before. The Theme Editor's sample
+overlay speaks the slide editor's own gesture language — 8 px handle
+tolerance, 20 authored-px floor, one commit on release — with X/Y/W/H fields
+and a "No placement" clear beside them, and while the theme has no opinion
+the overlay shows the built-in lyric box dashed: an offer, not a record.
+Two Qt 6.12 shapes mark this surface too: `Rectangle` has no dashed border,
+so the offer outline is a small `Canvas` stroke, and the inspector fields are
+re-read through `rowFor` on every write-driven sync because a handler running
+inside `documentsChanged` sees the `row` property's binding before it has
+re-run — the cached row would replay the numbers the write just replaced.
+
 Evidence: `domain_tests` (format-6 round-trip, migration, mix refusals, the
-precedence matrix per property), `scene_tests`/`document_present_tests`/
-`frontend_journey_tests` (the chain through to acknowledged pixels),
-`document_controller_tests` (the TH.5 surface API against real fixtures),
-`workspace_ui_tests` (menus, badges, bulk-undo-once, the themed-state checks)
-and the deterministic captures at 1680/1380/1000 taken with a show default, a
-worn slide theme and two live badges. [themes-plan.md](ui/themes-plan.md)
-carries the model and the acceptance rows; the PLAN ledger closes TH.1–TH.6.
+precedence matrix per property, and the placement matrix — silent theme,
+chain walk, one revert unit, storage refusals), `scene_tests`/
+`document_present_tests`/`frontend_journey_tests` (the chain through to
+acknowledged pixels, and the themed rectangle driving the FIRST TEXT item
+while stacked boxes and pictures keep authored geometry),
+`document_controller_tests` (the TH.5 surface API and the TH.8 placement
+routing against real fixtures), `workspace_ui_tests` (menus, badges,
+bulk-undo-once, the themed-state checks, and the placement gestures on both
+pages) and the deterministic captures at 1680/1380/1000 taken with a show
+default, a worn slide theme, two live badges and a themed placement visible
+on both the Edit canvas and the Theme Editor. [themes-plan.md](ui/themes-plan.md)
+carries the model and the acceptance rows; the PLAN ledger closes TH.1–TH.8.
 
 ## Review closure: R1–R19 evidence matrix (task 6.20a)
 

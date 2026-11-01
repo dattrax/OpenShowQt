@@ -58,9 +58,13 @@ Item {
     }
     // The fields SHOW the selection's values by assignment, not binding:
     // a field the operator is typing in must not be overwritten mid-word,
-    // and after a commit the model is re-read whole anyway.
+    // and after a commit the model is re-read whole anyway. The row is
+    // re-read through rowFor rather than taken from the `row` property
+    // because this function runs from inside the documentsChanged emit:
+    // at that moment the property's binding may not have re-run yet, and
+    // the cached row would replay the numbers the write just replaced.
     function syncInspector() {
-        const row = themeEditor.row
+        const row = themeEditor.rowFor(themeEditor.selectedId)
         nameField.text = row !== null ? row.name : ""
         colourField.text = row !== null ? row.textColor : ""
         backField.text = row !== null ? row.backgroundColor : ""
@@ -70,6 +74,13 @@ Item {
         alignCombo.currentIndex = row !== null
                 ? ["left", "center", "right"].indexOf(row.align) : 1
         spacingField.text = row !== null ? String(row.lineSpacing) : ""
+        // The placement fields follow the box the overlay shows (the theme's
+        // own, or the built-in lyric box it is being offered).
+        const box = themeEditor.boxFor(row)
+        placeXField.text = String(Math.round(box.x))
+        placeYField.text = String(Math.round(box.y))
+        placeWField.text = String(Math.round(box.width))
+        placeHField.text = String(Math.round(box.height))
     }
     // Every inspector edit writes the record back WHOLE — editTheme's
     // contract that one omitted field cannot silently flatten a gradient.
@@ -87,6 +98,135 @@ Item {
                        name === "fontSize" ? value : row.fontSize,
                        name === "align" ? value : row.align,
                        name === "lineSpacing" ? value : row.lineSpacing)
+    }
+
+    /* --- the placement (themes plan amendment 2026-11-01) ---------------
+     *
+     * Where this theme puts a wearing slide's PRIMARY lyric box, edited with
+     * the slide editor's own gestures: press inside to move, a corner to
+     * resize, ONE write on release, and the numbers can be typed instead.
+     * Absent is a real answer, so the overlay shows the built-in lyric box
+     * as an OFFER while the theme places nothing, and the first drag (or the
+     * first typed value) makes the placement exist. None of this reaches the
+     * audience: the sample is a fixture, and the theme's own rectangle is all
+     * that changes — the same boundary the colour fields keep.
+     */
+    readonly property bool hasPlacement: themeEditor.row !== null
+                                         && themeEditor.row.placementSet === true
+    // The gesture's live rectangle, in the 1920x1080 authored canvas.
+    property bool placing: false
+    property string dragMode: ""
+    property real dragOriginX: 0
+    property real dragOriginY: 0
+    property real penX: 0
+    property real penY: 0
+    property real penW: 0
+    property real penH: 0
+    property real anchorX: 0
+    property real anchorY: 0
+    property real anchorW: 0
+    property real anchorH: 0
+    function clamp(value, lo, hi) {
+        return value < lo ? lo : (value > hi ? hi : value)
+    }
+    // What the overlay draws and the fields show: the live drag while a
+    // gesture runs, the theme's own rectangle otherwise, and the built-in
+    // lyric box (the one a slide with no theme draws) as the offer when the
+    // theme has no opinion yet.
+    function boxFor(row) {
+        if (row !== null && row.placementSet)
+            return Qt.rect(row.placement.x, row.placement.y,
+                           row.placement.width, row.placement.height)
+        return Qt.rect(160, 100, 1600, 880)
+    }
+    readonly property rect shownBox: themeEditor.placing
+            ? Qt.rect(themeEditor.penX, themeEditor.penY,
+                      themeEditor.penW, themeEditor.penH)
+            : themeEditor.boxFor(themeEditor.row)
+    // Handles beat the interior, in preview pixels, with the Edit canvas's
+    // 8 px tolerance and its 20 authored px floor: below that a box cannot
+    // be grabbed back by its own handles.
+    function hitTest(px, py) {
+        if (themeEditor.row === null)
+            return ""
+        const zoom = placementLayer.zoom
+        const box = themeEditor.shownBox
+        const tol = 8
+        const left = box.x * zoom
+        const top = box.y * zoom
+        const right = (box.x + box.width) * zoom
+        const bottom = (box.y + box.height) * zoom
+        if (Math.abs(px - left) <= tol && Math.abs(py - top) <= tol) return "tl"
+        if (Math.abs(px - right) <= tol && Math.abs(py - top) <= tol) return "tr"
+        if (Math.abs(px - left) <= tol && Math.abs(py - bottom) <= tol) return "bl"
+        if (Math.abs(px - right) <= tol && Math.abs(py - bottom) <= tol) return "br"
+        if (px >= left && px <= right && py >= top && py <= bottom) return "move"
+        return ""
+    }
+    function beginGesture(mode) {
+        const box = themeEditor.shownBox
+        themeEditor.dragMode = mode
+        themeEditor.anchorX = box.x
+        themeEditor.anchorY = box.y
+        themeEditor.anchorW = box.width
+        themeEditor.anchorH = box.height
+        themeEditor.penX = box.x
+        themeEditor.penY = box.y
+        themeEditor.penW = box.width
+        themeEditor.penH = box.height
+        themeEditor.placing = true
+    }
+    function moveGesture(dx, dy) {
+        if (themeEditor.dragMode === "move") {
+            themeEditor.penX = themeEditor.clamp(themeEditor.anchorX + dx, 0,
+                                                 1920 - themeEditor.anchorW)
+            themeEditor.penY = themeEditor.clamp(themeEditor.anchorY + dy, 0,
+                                                 1080 - themeEditor.anchorH)
+            return
+        }
+        const min = 20
+        const right = themeEditor.anchorX + themeEditor.anchorW
+        const bottom = themeEditor.anchorY + themeEditor.anchorH
+        const x0 = (themeEditor.dragMode === "tl" || themeEditor.dragMode === "bl")
+            ? themeEditor.clamp(themeEditor.anchorX + dx, 0, right - min)
+            : themeEditor.anchorX
+        const y0 = (themeEditor.dragMode === "tl" || themeEditor.dragMode === "tr")
+            ? themeEditor.clamp(themeEditor.anchorY + dy, 0, bottom - min)
+            : themeEditor.anchorY
+        themeEditor.penX = x0
+        themeEditor.penY = y0
+        themeEditor.penW = right - x0
+        themeEditor.penH = bottom - y0
+    }
+    // One history entry per gesture, on release — the Edit canvas's rule,
+    // so dragging a theme's box is one undo and not one per pixel.
+    function endGesture() {
+        if (themeEditor.dragMode === "") {
+            themeEditor.placing = false
+            return
+        }
+        const id = themeEditor.selectedId
+        themeEditor.placing = false
+        themeEditor.dragMode = ""
+        if (id === "")
+            return
+        docs.setThemePlacement(id, Math.round(themeEditor.penX), Math.round(themeEditor.penY),
+                               Math.round(themeEditor.penW), Math.round(themeEditor.penH))
+        themeEditor.syncInspector()
+    }
+    // The exact-number path. Four fields commit together because a placement
+    // is one unit; anything the model refuses (or that is not a number) puts
+    // the fields back where the model says they belong.
+    function applyPlacementFields() {
+        const row = themeEditor.row
+        const x = parseFloat(placeXField.text)
+        const y = parseFloat(placeYField.text)
+        const w = parseFloat(placeWField.text)
+        const h = parseFloat(placeHField.text)
+        if (row === null || !Number.isFinite(x) || !Number.isFinite(y)
+                || !(w >= 1) || !(h >= 1)
+                || !docs.setThemePlacement(row.id, x, y, w, h))
+            themeEditor.syncInspector()
     }
 
     // The centre picture: the worker's own composition of the built-in
@@ -120,13 +260,25 @@ Item {
             // broke the binding; this reassignment is what replaces it.)
             useToggle.checked = docs.wornThemeId !== ""
                                 && docs.wornThemeId === themeEditor.selectedId
-            if (themeEditor.visible)
+            // The inspector reads the RECORD: whatever moved it — this
+            // page's own commit, "No placement", an undo — the fields and
+            // the overlay follow, so a stale number can never outlive the
+            // write it was typed for.
+            if (themeEditor.visible) {
+                themeEditor.syncInspector()
                 themeEditor.askForSamplePicture()
+            }
         }
     }
     onVisibleChanged: {
         if (themeEditor.visible) {
             themeEditor.reconcileSelection()
+            // Shown pages read the RECORD: documents may have moved while
+            // this page slept (another page, an undo, the More menu), and
+            // a selection that never changed fires no selectedIdChanged to
+            // re-sync the assigned fields. The overlay follows by binding;
+            // the fields only follow through here.
+            themeEditor.syncInspector()
             themeEditor.askForSamplePicture()
         } else {
             sampleAsk.stop()
@@ -316,6 +468,97 @@ Item {
                       : worker.statusNeedsAttention ? "Preview unavailable"
                                                     : "Waiting for the preview"
             }
+
+            // The lyric box this theme places (themes plan amendment
+            // 2026-11-01), drawn over the sample at the same 1920-unit scale
+            // the Edit canvas uses. It is chrome over the worker's own
+            // picture, never a second layout of the words — and with no
+            // placement on the theme it is a dashed OFFER, the box the
+            // audience would draw today, waiting to be moved into being.
+            Item {
+                id: placementLayer
+                anchors.fill: parent
+                enabled: themeEditor.row !== null
+                visible: enabled
+                readonly property real zoom: width / 1920
+                readonly property rect box: themeEditor.shownBox
+
+                Rectangle {
+                    x: placementLayer.box.x * placementLayer.zoom
+                    y: placementLayer.box.y * placementLayer.zoom
+                    width: placementLayer.box.width * placementLayer.zoom
+                    height: placementLayer.box.height * placementLayer.zoom
+                    color: "transparent"
+                    // A Rectangle border is only ever solid, and the solid/dashed
+                    // difference here is the whole message — "this is the record"
+                    // versus "this is only the box you are being offered". Canvas
+                    // is the one QtQuick type that dashes a stroke without a new
+                    // module import, so the outline is its own honest paint.
+                    Canvas {
+                        anchors.fill: parent
+                        readonly property bool placed: themeEditor.hasPlacement
+                        onPlacedChanged: requestPaint()
+                        onWidthChanged: requestPaint()
+                        onHeightChanged: requestPaint()
+                        onPaint: {
+                            const ctx = getContext("2d")
+                            ctx.clearRect(0, 0, width, height)
+                            ctx.strokeStyle = placed ? "#1685f8" : "#8ec9f5"
+                            ctx.lineWidth = 2
+                            ctx.setLineDash(placed ? [] : [6, 4])
+                            ctx.strokeRect(1, 1, width - 2, height - 2)
+                        }
+                    }
+                    Text {
+                        anchors.left: parent.left
+                        anchors.bottom: parent.top
+                        anchors.bottomMargin: 3
+                        color: themeEditor.hasPlacement ? "#1685f8" : "#8ec9f5"
+                        font.pixelSize: 11
+                        text: themeEditor.hasPlacement ? "lyric box" : "no placement — drag to place"
+                    }
+                    Repeater {
+                        model: [Qt.point(0, 0), Qt.point(1, 0), Qt.point(0, 1), Qt.point(1, 1)]
+                        delegate: Rectangle {
+                            required property var modelData
+                            width: 8
+                            height: 8
+                            color: themeEditor.hasPlacement ? "#1685f8" : "#8ec9f5"
+                            border.color: "#202020"
+                            x: placementLayer.box.x * placementLayer.zoom
+                                + (modelData.x === 0 ? -width / 2
+                                                     : placementLayer.box.width
+                                                       * placementLayer.zoom - width / 2)
+                            y: placementLayer.box.y * placementLayer.zoom
+                                + (modelData.y === 0 ? -height / 2
+                                                     : placementLayer.box.height
+                                                       * placementLayer.zoom - height / 2)
+                        }
+                    }
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton
+                    onPressed: function (mouse) {
+                        const mode = themeEditor.hitTest(mouse.x, mouse.y)
+                        if (mode !== "") {
+                            themeEditor.beginGesture(mode)
+                            themeEditor.dragOriginX = mouse.x
+                            themeEditor.dragOriginY = mouse.y
+                        }
+                    }
+                    onPositionChanged: function (mouse) {
+                        if (themeEditor.dragMode !== "")
+                            themeEditor.moveGesture((mouse.x - themeEditor.dragOriginX)
+                                                    / placementLayer.zoom,
+                                                    (mouse.y - themeEditor.dragOriginY)
+                                                    / placementLayer.zoom)
+                    }
+                    onReleased: themeEditor.endGesture()
+                    onCanceled: themeEditor.endGesture()
+                }
+            }
         }
         Text {
             width: parent.width
@@ -410,6 +653,61 @@ Item {
             objectName: "themeEditorSpacingField"
             width: parent.width
             onEditingFinished: themeEditor.applyField("lineSpacing", Number(text))
+        }
+
+        // The lyric box this theme places (themes plan amendment
+        // 2026-11-01): the same rectangle the overlay above is showing, in
+        // the 1920x1080 authored canvas, for the operator who would rather
+        // type it. Four fields commit together — a placement is ONE unit —
+        // and "No placement" takes the theme's opinion away so wearing
+        // slides draw the boxes they were authored with.
+        Text {
+            text: "Lyric box (x, y, w, h in 1920×1080)"
+            color: "#b0b0b0"
+            font.pixelSize: 11
+        }
+        Row {
+            spacing: 4
+            PanelField {
+                id: placeXField
+                objectName: "themeEditorPlaceX"
+                width: 52
+                onEditingFinished: themeEditor.applyPlacementFields()
+            }
+            PanelField {
+                id: placeYField
+                objectName: "themeEditorPlaceY"
+                width: 52
+                onEditingFinished: themeEditor.applyPlacementFields()
+            }
+            PanelField {
+                id: placeWField
+                objectName: "themeEditorPlaceW"
+                width: 52
+                onEditingFinished: themeEditor.applyPlacementFields()
+            }
+            PanelField {
+                id: placeHField
+                objectName: "themeEditorPlaceH"
+                width: 52
+                onEditingFinished: themeEditor.applyPlacementFields()
+            }
+        }
+        Row {
+            spacing: 6
+            PanelButton {
+                objectName: "themeEditorNoPlacement"
+                text: "No placement"
+                enabled: themeEditor.hasPlacement
+                onClicked: docs.clearThemePlacement(themeEditor.selectedId)
+            }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                color: themeEditor.hasPlacement ? "#8ec9f5" : "#888888"
+                font.pixelSize: 11
+                text: themeEditor.hasPlacement ? "this theme places its slides"
+                                               : "no opinion — slides keep their own boxes"
+            }
         }
     }
 }

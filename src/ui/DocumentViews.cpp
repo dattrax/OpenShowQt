@@ -13,11 +13,37 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <system_error>
 
 #include "LibrarySearch.h"
 
 namespace openshow::ui {
+
+namespace {
+
+// Which box of a slide the chain PLACES (themes plan amendment
+// 2026-11-01): the PRIMARY lyric box, which is the slide's first TEXT item
+// in draw order, and only when some layer carries a rectangle. -1 means
+// every box draws where it was authored. The list row, the canvas's
+// outlines and its hit test, and the geometry write all ask this one
+// question, so the chrome, the audience's pixels and the inspector's
+// numbers cannot become three different answers about where a box is.
+int placedIndexOf(const openshow::domain::Documents& documents,
+                  const openshow::domain::Id& showId,
+                  const openshow::domain::Slide& slide) {
+    if (!documents.appearanceForSlide(showId, slide.id).placement.has_value()) {
+        return -1;
+    }
+    for (std::size_t i = 0; i < slide.items.size(); ++i) {
+        if (slide.items[i].kind != openshow::domain::ItemKind::Image) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;  // a slide of pictures alone has no lyric box to place
+}
+
+}  // namespace
 
 QString DocumentViews::linesAsText(const std::vector<std::string>& lines) {
     QStringList parts;
@@ -121,6 +147,16 @@ QVariantList DocumentViews::slideBoxes(const Cursor& cursor) const {
     if (slide == nullptr) {
         return list;
     }
+    // Which box the chain places (amendment 2026-11-01), and where. The
+    // canvas outlines and handles boxes where the AUDIENCE sees them, so a
+    // placed box's row carries the applied rectangle and says it is applied
+    // ("placed"); the authored numbers stay behind it for the day the theme
+    // stops placing, and the inspector's revert goes back to the theme.
+    const int placed = placedIndexOf(fDocuments, cursor.showId, *slide);
+    const std::optional<openshow::domain::BoxRect> look =
+        placed < 0
+            ? std::optional<openshow::domain::BoxRect>()
+            : fDocuments.appearanceForSlide(cursor.showId, slide->id).placement;
     const std::vector<openshow::domain::SlideItem>& items = slide->items;
     for (std::size_t i = 0; i < items.size(); ++i) {
         QVariantMap entry;
@@ -135,13 +171,25 @@ QVariantList DocumentViews::slideBoxes(const Cursor& cursor) const {
                          ? QStringLiteral("image")
                          : QStringLiteral("text"));
         entry.insert(QStringLiteral("assetId"), QString::fromStdString(items[i].assetId));
-        entry.insert(QStringLiteral("x"), items[i].x);
-        entry.insert(QStringLiteral("y"), items[i].y);
-        entry.insert(QStringLiteral("width"), items[i].width);
-        entry.insert(QStringLiteral("height"), items[i].height);
+        const bool applied = look.has_value() && static_cast<int>(i) == placed;
+        entry.insert(QStringLiteral("x"), applied ? look->x : items[i].x);
+        entry.insert(QStringLiteral("y"), applied ? look->y : items[i].y);
+        entry.insert(QStringLiteral("width"), applied ? look->width : items[i].width);
+        entry.insert(QStringLiteral("height"), applied ? look->height : items[i].height);
+        entry.insert(QStringLiteral("placed"), applied);
         list.append(entry);
     }
     return list;
+}
+
+int DocumentViews::placedBoxIndex(const Cursor& cursor) const {
+    // The cursor's slide through the same rule every other view uses: which
+    // box (if any) the chain places. See placedIndexOf above.
+    const openshow::domain::Slide* slide = cursorSlide(cursor);
+    if (slide == nullptr) {
+        return -1;
+    }
+    return placedIndexOf(fDocuments, cursor.showId, *slide);
 }
 
 QString DocumentViews::backgroundFit(const Cursor& cursor) const {
@@ -240,6 +288,19 @@ QVariantList DocumentViews::themes() const {
         entry.insert(QStringLiteral("fontSize"), theme->fontSize);
         entry.insert(QStringLiteral("align"), QString::fromStdString(theme->align));
         entry.insert(QStringLiteral("lineSpacing"), theme->lineSpacing);
+        // Placement (amendment 2026-11-01, themes plan): the rectangle this
+        // theme gives a wearing slide's PRIMARY lyric box. placementSet is
+        // the honest "no opinion" answer — the map is empty then, because a
+        // rectangle has no honest zero to spell instead.
+        entry.insert(QStringLiteral("placementSet"), theme->placement.has_value());
+        QVariantMap rect;
+        if (theme->placement.has_value()) {
+            rect.insert(QStringLiteral("x"), theme->placement->x);
+            rect.insert(QStringLiteral("y"), theme->placement->y);
+            rect.insert(QStringLiteral("width"), theme->placement->width);
+            rect.insert(QStringLiteral("height"), theme->placement->height);
+        }
+        entry.insert(QStringLiteral("placement"), rect);
         list.append(entry);
     }
     return list;

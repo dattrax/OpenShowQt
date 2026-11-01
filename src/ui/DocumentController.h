@@ -248,6 +248,19 @@ public:
                                const QString& textColor, const QString& backgroundColor,
                                const QString& backgroundGradient, const QString& fontFamily,
                                double fontSize, const QString& align, double lineSpacing);
+    // Where a theme puts a wearing slide's PRIMARY lyric box (amendment
+    // 2026-11-01, themes plan): four numbers in the 1920x1080 authored
+    // canvas, vetted like an authored box. Setting one moves the slides that
+    // FOLLOW this theme and have not customized their own placement — which
+    // is the whole point of "the same place on every slide" — and the Theme
+    // Editor's preview shows the rectangle before anything is worn.
+    Q_INVOKABLE bool setThemePlacement(const QString& themeId, double x, double y, double width,
+                                       double height);
+    // The theme stops placing: its colours and typography stay, wearing
+    // slides go back to the boxes they were authored with (unless they
+    // customized placement). A theme with no placement is refused — the same
+    // wrong-click rule every other revert follows.
+    Q_INVOKABLE bool clearThemePlacement(const QString& themeId);
     // Creates a theme wearing whatever the current slide draws now
     // (resolved theme or built-in defaults) and overrides only that slide.
     Q_INVOKABLE bool createThemeFromCurrent(const QString& name);

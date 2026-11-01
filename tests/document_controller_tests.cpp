@@ -2448,6 +2448,220 @@ void exerciseThemeSurfaces(const std::filesystem::path& root) {
           "no show selected is refused");
 }
 
+// The themes plan amendment (2026-11-01) through the controller: the Theme
+// Editor's two writes and the rows they show, and the Edit page's routing —
+// a box the chain places CUSTOMIZES its spot, every other box edits its
+// authored rectangle exactly as it always did.
+void exercisePlacementSurfaces(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong("Placed");
+    docs.addSlide();
+    docs.addSlide();
+    docs.selectSlide(0);
+    check(docs.createBlankTheme("House"), "a blank theme exists to place with");
+    const QString house = docs.themes().at(0).toMap().value(QStringLiteral("id")).toString();
+    const auto rowFor = [&docs](const QString& id) {
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("id")).toString() == id) {
+                return theme.toMap();
+            }
+        }
+        return QVariantMap{};
+    };
+    // Rows by index, RE-READ each time: currentSlideBoxes() is a fresh list
+    // whenever the document moves, so a handle kept across an edit would be
+    // a snapshot of the past.
+    const auto appliedBox = [&docs](int index) {
+        return docs.currentSlideBoxes().at(index).toMap();
+    };
+    const auto slideIdAt = [&docs](int index) {
+        return docs.slides().at(index).toMap().value(QStringLiteral("id")).toString();
+    };
+    const auto placementValue = [&docs](const char* key) {
+        return docs.slideAppearance().value(QStringLiteral("placement")).toMap()
+            .value(QStringLiteral("value")).toMap().value(QLatin1String(key)).toDouble();
+    };
+    const auto placementCustomized = [&docs]() {
+        return docs.slideAppearance().value(QStringLiteral("placement")).toMap()
+            .value(QStringLiteral("customized")).toBool();
+    };
+    // Words, so the compile has an item to place; and the slide WEARS the
+    // theme, because a theme that nothing wears has nowhere to place anything.
+    docs.setSlideText(QStringLiteral("Placed one"));
+    docs.flushText();
+    check(docs.applyThemeToCurrentSlide(house), "the first slide wears House");
+
+    // A new theme has no opinion, and the row says so in both shapes: a
+    // flag and an empty rectangle, because a rectangle has no honest zero.
+    check(rowFor(house).value(QStringLiteral("placementSet")).toBool() == false &&
+              rowFor(house).value(QStringLiteral("placement")).toMap().isEmpty(),
+          "a theme with no placement reads placementSet false with no rectangle");
+    const QVariantMap before = appliedBox(0);
+    check(before.value(QStringLiteral("placed")).toBool() == false,
+          "and its slides' boxes are not placed — the canvas draws the authored box");
+
+    // The Theme Editor's exact-number path.
+    check(docs.setThemePlacement(house, 300.0, 400.0, 1200.0, 300.0),
+          "the Theme Editor sets a placement");
+    check(rowFor(house).value(QStringLiteral("placementSet")).toBool() &&
+              rowFor(house).value(QStringLiteral("placement")).toMap()
+                  .value(QStringLiteral("width")).toDouble() == 1200.0,
+          "the themes row carries the rectangle the canvas is drawing");
+    check(!docs.setThemePlacement(house, 10.0, 10.0, 0.0, 300.0) &&
+              docs.status().contains(QStringLiteral("theme placement")),
+          "a box with no width is refused on the status line, in the page's own words");
+    check(rowFor(house).value(QStringLiteral("placement")).toMap()
+                  .value(QStringLiteral("width")).toDouble() == 1200.0,
+          "and the refusal left the theme's rectangle alone");
+
+    // What the placement does to the slide under the cursor: the row the
+    // canvas outlines moves, the appearance row says who is driving, and the
+    // hit test follows the DRAWN box rather than the authored one.
+    check(placementValue("x") == 300.0 && placementValue("height") == 300.0 &&
+              !placementCustomized(),
+          "the appearance view resolves the theme's rectangle with nothing customized");
+    check(appliedBox(0).value(QStringLiteral("x")).toDouble() == 300.0 &&
+              appliedBox(0).value(QStringLiteral("placed")).toBool(),
+          "the box row carries the applied rectangle and says it is applied");
+    check(docs.boxAt(301.0, 401.0) == 0,
+          "a point inside the themed box hits it");
+    check(docs.boxAt(before.value(QStringLiteral("x")).toDouble() + 1.0,
+                      before.value(QStringLiteral("y")).toDouble() + 1.0) == -1,
+          "and the authored corner it no longer occupies is empty canvas — the hit "
+          "rule reads the audience's picture, not the history underneath");
+    check(compiledFor(docs, docs.slides().at(0).toMap().value(QStringLiteral("id")).toString())
+              .items[0].x == 300.0,
+          "the wire scene draws it there too — chrome and audience cannot disagree");
+
+    // The sample the Theme Editor previews wears the same rectangle.
+    openshow::scene::Scene sample;
+    const QString sampleJson = docs.themeSampleSceneJson(house);
+    check(!sampleJson.isEmpty() &&
+              openshow::scene::fromJson(boost::json::parse(sampleJson.toStdString()), &sample) &&
+              !sample.items.empty() && sample.items[0].x == 300.0 &&
+              sample.items[0].y == 400.0,
+          "the theme sample shows the placement, so the operator drags what the "
+          "audience will get");
+
+    // Dragging a PLACED box customizes: one unit, the authored rectangle
+    // survives underneath, and the revert hands the box back to the theme.
+    check(docs.selectTextBox(0) && docs.setTextBoxGeometry(200.0, 500.0, 900.0, 200.0),
+          "a drag on the placed box commits");
+    check(placementCustomized() && placementValue("y") == 500.0,
+          "the spot is now a placement CUSTOMIZATION of this slide");
+    check(appliedBox(0).value(QStringLiteral("x")).toDouble() == 200.0,
+          "and the canvas follows the slide's own spot over the theme's");
+    check(docs.revertCurrentSlideField(QStringLiteral("placement")) &&
+              !placementCustomized() &&
+              appliedBox(0).value(QStringLiteral("x")).toDouble() == 300.0,
+          "the badge reverts the whole rectangle back to the theme in one step");
+    check(!docs.revertCurrentSlideField(QStringLiteral("placement")) &&
+              docs.status().contains(QStringLiteral("revert")),
+          "reverting a placement the slide never wrote is refused on the status line");
+    // The authored rectangle is still there underneath. First proof: with
+    // the slide's customization gone, an explicit write to the placed box
+    // lands as a customization of EXACTLY those four numbers, not as a move
+    // of the authored box.
+    check(docs.setTextBoxGeometry(210.0, 510.0, 910.0, 210.0) && placementCustomized() &&
+              placementValue("width") == 910.0,
+          "and the next drag is a customization again, as one unit");
+    check(docs.revertCurrentSlideField(QStringLiteral("placement")),
+          "the box is handed back to the theme once more");
+    // Real proof, on the saved file: restore the slide's AUTHORED rectangle
+    // (the one operation the routing never touches) and check what the file
+    // says about the box underneath.
+    const QString slide1 = slideIdAt(0);
+    check(docs.setSlideGeometry(123.0, 45.0, 1200.0, 300.0) &&
+              compiledFor(docs, slide1).items[0].x == 300.0,
+          "moving the SLIDE's box leaves the placed box drawn where the theme says");
+    check(docs.save(), "the service saves");
+    // The authored rectangle is read out of the file's own JSON, not hunted
+    // as text: boost writes doubles in shortest form (123 as 1.23E2), so a
+    // substring would be a guess about the serializer's spelling.
+    {
+        const boost::json::value manifest =
+            boost::json::parse(readManifest(root / "service" / "service.json"));
+        const boost::json::array& items = manifest.at("shows").at(0).at("slides").at(0)
+                                             .at("items").as_array();
+        check(items[0].at("x").as_double() == 123.0 && items[0].at("y").as_double() == 45.0,
+              "and the file records the authored rectangle the routing preserved");
+    }
+    // The theme's placement then travels through the file: reload and the
+    // same slide draws the theme's rectangle again.
+    check(docs.setThemePlacement(house, 350.0, 450.0, 1100.0, 280.0) && docs.save(),
+          "the theme's placement is written too");
+    check(readManifest(root / "service" / "service.json").find("\"placement\"") !=
+              std::string::npos,
+          "the manifest carries the theme's placement object");
+    {
+        DocumentController reloadedController(nullptr, root);
+        check(reloadedController.load(), "the saved package reloads");
+        reloadedController.selectSong(docs.currentSongId());
+        reloadedController.selectSlide(0);
+        const QVariantMap reloaded = reloadedController.currentSlideBoxes().at(0).toMap();
+        check(reloaded.value(QStringLiteral("x")).toDouble() == 350.0 &&
+                  reloaded.value(QStringLiteral("placed")).toBool(),
+              "and the reloaded slide draws the theme's rectangle over its authored box");
+    }
+
+    // An EXTRA box is geometry, never a placement: the theme drives one box.
+    check(docs.addTextBox() && docs.setTextBoxGeometry(60.0, 70.0, 300.0, 120.0) &&
+              appliedBox(1).value(QStringLiteral("x")).toDouble() == 60.0 &&
+              appliedBox(1).value(QStringLiteral("placed")).toBool() == false &&
+              docs.slideAppearance().value(QStringLiteral("placement")).toMap()
+                  .value(QStringLiteral("customized")).toBool() == false,
+          "a second box keeps authored geometry and customizes no placement");
+
+    // Placement is one undo like every other edit.
+    check(docs.setThemePlacement(house, 400.0, 200.0, 1000.0, 400.0) &&
+              appliedBox(0).value(QStringLiteral("x")).toDouble() == 400.0,
+          "the theme's new rectangle is drawn at once");
+    docs.undo();
+    check(appliedBox(0).value(QStringLiteral("x")).toDouble() == 350.0,
+          "one undo steps the theme's rectangle back to the one before it");
+    docs.redo();
+    check(appliedBox(0).value(QStringLiteral("x")).toDouble() == 400.0,
+          "and redo puts it back");
+
+    // Duplicate carries the placement, and "wear what this slide draws"
+    // snapshots WHERE it draws as well as what.
+    check(docs.duplicateTheme(house), "the theme is duplicated");
+    QString copy;
+    for (const QVariant& theme : docs.themes()) {
+        if (theme.toMap().value(QStringLiteral("name")).toString() ==
+            QStringLiteral("House copy")) {
+            copy = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    check(!copy.isEmpty() &&
+              rowFor(copy).value(QStringLiteral("placementSet")).toBool() &&
+              rowFor(copy).value(QStringLiteral("placement")).toMap()
+                  .value(QStringLiteral("height")).toDouble() == 400.0,
+          "the duplicate places the same rectangle — a starting point to edit, "
+          "not a look with its position quietly missing");
+    check(docs.createThemeFromCurrent(QStringLiteral("From slide")),
+          "a theme made from the current slide snapshots its look");
+    QString fromSlide;
+    for (const QVariant& theme : docs.themes()) {
+        if (theme.toMap().value(QStringLiteral("name")).toString() ==
+            QStringLiteral("From slide")) {
+            fromSlide = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    check(rowFor(fromSlide).value(QStringLiteral("placementSet")).toBool() &&
+              rowFor(fromSlide).value(QStringLiteral("placement")).toMap()
+                  .value(QStringLiteral("x")).toDouble() == 400.0,
+          "and it snapshots the placement the slide draws through the chain");
+
+    // A slide with no theme anywhere keeps its authored box: the whole
+    // amendment is silent until someone draws a rectangle.
+    docs.selectSlide(1);
+    check(docs.slideAppearance().value(QStringLiteral("placement")).toMap()
+              .value(QStringLiteral("value")).toMap().isEmpty() &&
+              appliedBox(0).value(QStringLiteral("placed")).toBool() == false,
+          "the second slide, wearing nothing, resolves no placement at all");
+}
+
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("openshow-document-tests"));
@@ -2465,6 +2679,7 @@ int main(int argc, char* argv[]) {
     exerciseThemePanel(tempRoot / "styles");
     exerciseWornChain(tempRoot / "wornchain");
     exerciseThemeSurfaces(tempRoot / "surfaces");
+    exercisePlacementSurfaces(tempRoot / "placementsurfaces");
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");
     exerciseClipboard(tempRoot / "clipboard");

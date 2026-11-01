@@ -182,6 +182,21 @@ Leaves: **TH.7** (domain, storage, compile: the rectangle through the chain)
 and **TH.8** (the surfaces: Theme Editor canvas, Edit routing, badge,
 captures, documentation).
 
+Shipped 2026-11-01. TH.7 landed the chain matrix and the format-6 round-trip
+with its refusals; TH.8 landed the surfaces and found two things the fixture
+pinned rather than worked around: the Edit page's bottom band sits under the
+Flickable's viewport edge at capture height, so the placement controls are
+only clickable after the same flick an operator makes; and a QML handler
+fired from inside a C++ `documentsChanged` emit reads the stale `row`
+binding, so the Theme Editor's inspector re-reads through `rowFor` and
+re-syncs when the page is shown after sleeping through outside edits — a
+re-shown page that still displays the numbers from before someone else's
+write was the bug the themed `.themes.png` capture check caught. The
+capture pair now proves the story end to end: House places 240/620/1440/320,
+the Edit capture shows the canvas chrome drawn where the audience sees the
+box under THEME PLACES, and the Themes capture shows the same rectangle
+solid on the sample with the fields holding its numbers.
+
 ## Task order
 
 TH.1 → TH.2 → TH.3 run in sequence (naming before model before compile);

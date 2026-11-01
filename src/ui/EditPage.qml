@@ -274,6 +274,21 @@ Flickable {
             }
         }
 
+        // Where the SELECTED box comes from (themes plan amendment
+        // 2026-11-01): the chain places the slide's primary lyric box, and
+        // the row says so. These two flags drive the PLACEMENT control
+        // below — and a drag or a typed value on a placed box records a
+        // placement CUSTOMIZATION, so the way back to the theme belongs next
+        // to the four numbers it changes.
+        readonly property bool placedByTheme: {
+            const box = editCanvas.boxes[docs.currentBox]
+            return box !== undefined && box.placed === true
+        }
+        readonly property bool placementCustomized: {
+            const entry = docs.slideAppearance["placement"]
+            return entry !== undefined && entry.customized === true
+        }
+
         Column {
             spacing: 2
             Text {
@@ -292,6 +307,28 @@ Flickable {
                     color: "#242424"
                     border.color: "#4a4a4a"
                 }
+            }
+        }
+
+        // A box no theme places has nothing to say here: the fields edit its
+        // authored rectangle exactly as they always did.
+        Column {
+            spacing: 2
+            visible: boxFields.placedByTheme
+            Text {
+                objectName: "placementOwner"
+                color: boxFields.placementCustomized ? "#ffd666" : "#8ec9f5"
+                font.pixelSize: 10
+                text: boxFields.placementCustomized ? "THIS SLIDE" : "THEME PLACES"
+            }
+            PanelButton {
+                objectName: "revertPlacementButton"
+                text: "\u21ba Follow theme"
+                // Only live while the slide actually holds a placement of
+                // its own; the revert refuses out loud either way, so a
+                // wrong click costs nothing but says something.
+                enabled: boxFields.placementCustomized
+                onClicked: docs.revertCurrentSlideField("placement")
             }
         }
 
@@ -373,6 +410,12 @@ Flickable {
         readonly property var fieldNames: ["textColor", "backgroundColor",
                                            "backgroundGradient", "fontFamily",
                                            "fontSize", "align", "lineSpacing"]
+        // The whole revert set adds the placement (amendment 2026-11-01):
+        // "Remove customizations" clears it with the rest, so the button
+        // must be live when the box's spot is the ONLY thing the slide
+        // changed — even though that field's own badge lives by the
+        // geometry fields, not in this panel.
+        readonly property var revertableNames: fieldNames.concat(["placement"])
 
         // One resolved value with the built-in look behind it, so the
         // panel is never blank between slides or before any theme exists.
@@ -388,8 +431,8 @@ Flickable {
             return entry !== undefined && entry.customized === true
         }
         function customizedAny() {
-            for (var i = 0; i < fieldNames.length; ++i) {
-                if (isCustomized(fieldNames[i])) {
+            for (var i = 0; i < revertableNames.length; ++i) {
+                if (isCustomized(revertableNames[i])) {
                     return true
                 }
             }

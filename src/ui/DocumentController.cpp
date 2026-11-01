@@ -419,14 +419,27 @@ int DocumentController::boxAt(double x, double y) const {
         static_cast<std::size_t>(fCurrentSlide) >= show->slides.size()) {
         return -1;
     }
-    const std::vector<openshow::domain::SlideItem>& items =
-        show->slides[static_cast<std::size_t>(fCurrentSlide)].items;
+    const openshow::domain::Slide& slide = show->slides[static_cast<std::size_t>(fCurrentSlide)];
+    const std::vector<openshow::domain::SlideItem>& items = slide.items;
+    // A box the chain places (amendment 2026-11-01) is grabbed where it
+    // DRAWS: the outline under the pointer is the audience's rectangle, and
+    // a hit rule that read the authored one would put the handles somewhere
+    // the operator can see nothing.
+    const int placed = fViews.placedBoxIndex(viewCursor());
+    const std::optional<openshow::domain::BoxRect> look =
+        placed < 0 ? std::optional<openshow::domain::BoxRect>()
+                   : fDocuments.appearanceForSlide(fCurrentSongId, slide.id).placement;
     // Back to front: the box drawn last paints over the others, so it is the
     // box under the pointer wherever they overlap, and the click should land
     // on what the operator can see.
     for (std::size_t i = items.size(); i-- > 0;) {
         const openshow::domain::SlideItem& box = items[i];
-        if (x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height) {
+        const bool applied = look.has_value() && static_cast<int>(i) == placed;
+        const double left = applied ? look->x : box.x;
+        const double top = applied ? look->y : box.y;
+        const double width = applied ? look->width : box.width;
+        const double height = applied ? look->height : box.height;
+        if (x >= left && x <= left + width && y >= top && y <= top + height) {
             return static_cast<int>(i);
         }
     }
@@ -517,6 +530,41 @@ bool DocumentController::setTextBoxGeometry(double x, double y, double width, do
     const openshow::domain::Id slideId = currentSlideId();
     const openshow::domain::Id boxId = box->id;
     std::string error;
+    // A box the chain PLACES (amendment 2026-11-01) is not moved. Dragging
+    // the themed lyric box says "this slide wants its OWN spot", so the four
+    // numbers land as one placement CUSTOMIZATION: the authored rectangle
+    // survives underneath for the day the theme stops placing, and the badge
+    // the Edit page shows is the way back to the theme. Every other box —
+    // an extra lyric box, a picture — is geometry exactly as it always was.
+    const DocumentViews::Cursor cursor = viewCursor();
+    const int placed = fViews.placedBoxIndex(cursor);
+    if (placed >= 0 && fViews.selectedBoxIndex(cursor) == placed) {
+        openshow::domain::SlideCustomization changed;
+        bool onSlide = false;
+        const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+        if (show != nullptr) {
+            for (const openshow::domain::Slide& slide : show->slides) {
+                if (slide.id == slideId) {
+                    changed = slide.customizations;
+                    onSlide = true;
+                    break;
+                }
+            }
+        }
+        if (!onSlide) {
+            setStatus(QStringLiteral("text box: no current slide"));
+            return false;
+        }
+        changed.placement = openshow::domain::BoxRect{x, y, width, height};
+        if (!edit([&] {
+                return fDocuments.setSlideCustomizations(fCurrentSongId, slideId, changed,
+                                                         &error);
+            })) {
+            setStatus(QStringLiteral("text box: %1").arg(QString::fromStdString(error)));
+            return false;
+        }
+        return true;
+    }
     if (!edit([&] {
             return fDocuments.setItemGeometry(fCurrentSongId, slideId, boxId, x, y, width,
                                                  height, &error);
@@ -653,6 +701,32 @@ bool DocumentController::editTheme(const QString& themeId, const QString& name,
     return true;
 }
 
+bool DocumentController::setThemePlacement(const QString& themeId, double x, double y,
+                                           double width, double height) {
+    flushText();
+    std::string error;
+    const openshow::domain::BoxRect rect{x, y, width, height};
+    if (!edit([&] {
+            return fDocuments.setThemePlacement(themeId.toStdString(), rect, &error);
+        })) {
+        setStatus(QStringLiteral("theme placement: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::clearThemePlacement(const QString& themeId) {
+    flushText();
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.clearThemePlacement(themeId.toStdString(), &error);
+        })) {
+        setStatus(QStringLiteral("theme placement: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
 bool DocumentController::createThemeFromCurrent(const QString& name) {
     flushText();
     const openshow::domain::Id slideId = currentSlideId();
@@ -677,12 +751,21 @@ bool DocumentController::createThemeFromCurrent(const QString& name) {
     const double size = base.fontSize;
     const std::string alignment = base.align.empty() ? "center" : base.align;
     const double spacing = base.lineSpacing;
+    // "Whatever this slide draws now" includes WHERE its words are
+    // (amendment 2026-11-01): the placement the chain resolves becomes the
+    // new theme's own, so the slides that go on wearing it hold the line.
+    const std::optional<openshow::domain::BoxRect> placement = base.placement;
     std::string error;
     openshow::domain::Id created;
     if (!edit([&] {
             created = fDocuments.createTheme(name.toStdString(), text, background, gradient,
                                              family, size, alignment, spacing, &error);
             if (created.empty()) {
+                return false;
+            }
+            if (placement.has_value() &&
+                !fDocuments.setThemePlacement(created, *placement, &error)) {
+                fDocuments.removeTheme(created, nullptr);
                 return false;
             }
             if (!fDocuments.setSlideTheme(fCurrentSongId, slideId, created, &error)) {
@@ -744,11 +827,23 @@ bool DocumentController::duplicateTheme(const QString& themeId) {
                 error = "no theme '" + themeId.toStdString() + "'";
                 return false;
             }
-            return !fDocuments.createTheme(source->name + " copy", source->textColor,
-                                           source->backgroundColor, source->backgroundGradient,
-                                           source->fontFamily, source->fontSize, source->align,
-                                           source->lineSpacing, &error)
-                            .empty();
+            const openshow::domain::Id copy = fDocuments.createTheme(
+                source->name + " copy", source->textColor, source->backgroundColor,
+                source->backgroundGradient, source->fontFamily, source->fontSize, source->align,
+                source->lineSpacing, &error);
+            if (copy.empty()) {
+                return false;
+            }
+            // A duplicate that lost the placement (amendment 2026-11-01)
+            // would restyle a show and quietly move nothing — "a starting
+            // point to edit" means the whole look, where the words live
+            // included. Nothing survives a refused half of one entry.
+            if (source->placement.has_value() &&
+                !fDocuments.setThemePlacement(copy, *source->placement, &error)) {
+                fDocuments.removeTheme(copy, nullptr);
+                return false;
+            }
+            return true;
         })) {
         setStatus(QStringLiteral("duplicate theme: %1").arg(QString::fromStdString(error)));
         return false;
@@ -787,6 +882,14 @@ QString DocumentController::themeSampleSceneJson(const QString& themeId) const {
         source->name, source->textColor, source->backgroundColor, source->backgroundGradient,
         source->fontFamily, source->fontSize, source->align, source->lineSpacing, &error);
     if (twin.empty()) {
+        return QString();
+    }
+    // The twin is a TWIN (amendment 2026-11-01): it carries the placement
+    // too, so the sample's lyric box sits where a wearing slide's would and
+    // the rectangle the operator drags on this page is the one the audience
+    // gets. No placement, no move: the sample draws its authored box.
+    if (source->placement.has_value() &&
+        !fixture.setThemePlacement(twin, *source->placement, &error)) {
         return QString();
     }
     fixture.setSlideTheme(show, slide, twin);
@@ -866,7 +969,8 @@ QVariantMap DocumentController::slideAppearance() const {
         if (name == "fontFamily") return touched->fontFamily.has_value();
         if (name == "fontSize") return touched->fontSize.has_value();
         if (name == "align") return touched->align.has_value();
-        return touched->lineSpacing.has_value();
+        if (name == "lineSpacing") return touched->lineSpacing.has_value();
+        return name == "placement" && touched->placement.has_value();
     };
     field("textColor", QString::fromStdString(look.textColor), has("textColor"));
     field("backgroundColor", QString::fromStdString(look.backgroundColor),
@@ -877,6 +981,18 @@ QVariantMap DocumentController::slideAppearance() const {
     field("fontSize", look.fontSize, has("fontSize"));
     field("align", QString::fromStdString(look.align), has("align"));
     field("lineSpacing", look.lineSpacing, has("lineSpacing"));
+    // Placement (amendment 2026-11-01): the rectangle the chain resolves for
+    // the slide's PRIMARY lyric box, empty when no layer places it, with the
+    // flag saying whether the SLIDE wrote its own. The Edit page's geometry
+    // fields and their badge read this row like every other.
+    QVariantMap placed;
+    if (look.placement.has_value()) {
+        placed.insert(QStringLiteral("x"), look.placement->x);
+        placed.insert(QStringLiteral("y"), look.placement->y);
+        placed.insert(QStringLiteral("width"), look.placement->width);
+        placed.insert(QStringLiteral("height"), look.placement->height);
+    }
+    field("placement", placed, has("placement"));
     return map;
 }
 
@@ -962,6 +1078,11 @@ bool DocumentController::revertCurrentSlideField(const QString& field) {
                                            : changed.align;
         wasCustomized = slot.has_value();
         slot.reset();
+    } else if (name == "placement") {
+        // One unit (amendment 2026-11-01): the whole rectangle goes back to
+        // the themes at once — there is no such thing as half a placed box.
+        wasCustomized = changed.placement.has_value();
+        changed.placement.reset();
     } else {
         setStatus(QStringLiteral("revert: %1 is not an appearance field").arg(field));
         return false;

@@ -4,13 +4,18 @@ Updated: 2026-11-01 (Europe/London).
 
 ## Current checkpoint
 
-Current work: **the Themes amendment TH.7 is DONE** — a theme now carries the
-PRIMARY lyric box's rectangle, so "the same look" means the same place too.
-Placement resolves on the existing chain (slide placement customization →
-current theme → slide theme → show default), drives the **first text item**
-only, and is absent-by-default so no existing document or theme moves. The
-surface leaf **TH.8** (Theme Editor placement canvas, Edit drag routing and
-badge, captures and docs) is next.
+Current work: **the Themes amendment (TH.7 + TH.8) is DONE** — a theme now
+carries the PRIMARY lyric box's rectangle, so "the same look" means the same
+place too. Placement resolves on the existing chain (slide placement
+customization → current theme → slide theme → show default), drives the
+**first text item** only, and is absent-by-default so no existing document or
+theme moves. The surfaces shipped with it: the Theme Editor's sample overlay
+carries the slide editor's own drag/handle gestures, one commit per gesture,
+X/Y/W/H fields and a "No placement" clear (the built-in lyric box shown
+dashed while the theme has no opinion), and the Edit page routes a placed
+box's geometry to a placement CUSTOMIZATION under the THEME PLACES/THIS SLIDE
+owner label with a one-unit revert. **M7** (recovery, budgets, packaging and
+service acceptance) is the release milestone.
 
 Earlier in this milestone, **Themes TH.1–TH.6 are DONE**, verified
 2026-11-01 with one pushed commit per leaf. Appearance is one Theme entity
@@ -74,6 +79,7 @@ completed seek-clock epoch; supersession and failure have distinct outcomes.
 | UI.6 acceptance (2026-10-31) | `workspace_ui_tests` toolbar section (header offers Search, both operator pages, media visibility and Settings; the bin toggle closes the bin and re-opens with the bin's own bar agreeing both ways; toolbar Search takes focus to `librarySearchField`, Escape hands the keyboard back and the presenter's PgDn walk steps again; Settings/Show tab clicks switch modes and move the underline, and no header control hides on another page; a press released in place on a panel handle resizes nothing and a collapsed dock restores from its strip); deterministic captures at 1680/1380/1000 in both bin states, a one-row kind filter counting "1 shown", the fully-removed library ("no media — import a file" with the rail's "no prepared audio"), a long cue name whole at 1680 and elided narrower, and the disconnected bar/rail — all inspected, with the remaining reference differences recorded in [the plan](docs/ui/operator-workspace-plan.md) |
 | Themes TH.1–TH.6 acceptance (2026-11-01) | `domain_tests` format-6 round-trip, 1–5 migration and mix-spelling refusals, and the per-property precedence matrix across customization/current/slide/show/built-in with the answered empties; `scene_tests`, `document_present_tests` and `frontend_journey_tests` re-skin to acknowledged pixels through the chain; `document_controller_tests` exercises the whole TH.5 surface API over real fixtures (cross-show theming, bulk-undo-once, refusal statuses); `workspace_ui_tests` drives the shipped UI (header menu names the viewed show's default and reopens checked, flat cue/library menus theme and restore by real clicks, badges appear per customized field and revert only their own, refusing values snap back with the domain's wording, and a page switch commits nothing); captures at 1680/1380/1000 inspected themed — Loud as the header default, the edited slide wearing House with exactly the flat-gradient and size-44 badges; 57/57 desktop and 43/43 headless; evidence in [the plan](docs/ui/themes-plan.md) and [the architecture](docs/architecture.md) |
 | Themes TH.7 acceptance (2026-11-01) | `domain_tests` placement matrix — a theme without a rectangle is silent (never zero-sized), customization beats current beats slide beats show beats authored, one revert unit, undo, ghost-free theme deletion — plus format-6 round-trip (byte-stable, absence stays absence) and refusals for a non-object, a missing corner, a zero extent and a hand-bumped key in a format-5 file; `scene_tests` prove the themed rectangle drives the FIRST TEXT item only: a picture stacked on top and every additional box keep their authored geometry, and a picture-only slide gets no invented box; 57/57 desktop and 43/43 headless |
+| Themes TH.8 acceptance (2026-11-01) | `document_controller_tests` placement surfaces — applied-rect rows and `boxAt` hit test, geometry writes routed to a placement customization while the authored rect stays untouched underneath (proved by parsing the saved file's own JSON), per-field refusal on an unplaced box, revert-one-unit, and the sample/createThemeFromCurrent/duplicate carry the placement; `workspace_ui_tests` drives the shipped UI — the editor's fields asleep on a theme with no opinion, dragging the dashed OFFER makes a placement moved by exactly the pointer's travel, one undo removes the whole gesture, four typed numbers write one unit, a refused width changes nothing and the fields snap back, No placement clears the rectangle and leaves the theme intact, and a page re-shown after outside edits still reads the record (the stale-binding bug this check caught ships with the fix); on the Edit page THEME PLACES names the owner, a typed customization flips it to THIS SLIDE with the revert live, the revert hands the whole rectangle back, and a new box is unplaced and keeps authored edits; captures inspected — the Edit page draws the canvas chrome at House's 240/620/1440/320 under THEME PLACES and the Themes page shows that rectangle solid with the fields holding its numbers; 57/57 desktop and 43/43 headless; evidence in [the plan](docs/ui/themes-plan.md) and [the architecture](docs/architecture.md) |
 | Documentation | Current links, historical archive integrity and whitespace checked |
 
 Presets ran sequentially. Frame/position progress was measured; acoustic offset,
@@ -116,5 +122,10 @@ half an answer, so a theme carries one `placement` rectangle for the PRIMARY
 lyric box, resolved on the same chain and compiled onto the slide's first text
 item only. Storage stays format 6 — `placement` is an optional member of a
 theme entry and of a slide's customizations, and pre-6 files that carry the
-key are refused. **TH.8**, the surfaces (Theme Editor placement canvas, Edit
-drag routing and badge, captures, docs), is next; **M7** follows.
+key are refused. **Themes amendment TH.8 DONE 2026-11-01** closes it: the
+Theme Editor's sample overlay carries the slide editor's own gestures (drag,
+corner handles, one commit per gesture, X/Y/W/H fields, "No placement"), the
+Edit page routes a placed box's geometry to a placement CUSTOMIZATION with
+the THEME PLACES/THIS SLIDE owner label and a one-unit revert, and the
+capture pair shows one rectangle on both pages. The amendment's ledger in
+[docs/ui/themes-plan.md](docs/ui/themes-plan.md) is closed; **M7** is next.
