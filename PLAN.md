@@ -366,6 +366,8 @@ and archived 6.22 handoff. The current post-6.22 findings are B1–B5 below.
 
 Current priority: match the supplied operator layout, keeping setup in Settings
 and authoring in Edit. [Detailed scope, control audit and acceptance](docs/ui/operator-workspace-plan.md).
+The UI leaves are complete; the next workspace feature is planned in
+[Themes: editor, apply and restore](docs/ui/themes-plan.md) (section below).
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
@@ -380,6 +382,21 @@ and authoring in Edit. [Detailed scope, control audit and acceptance](docs/ui/op
 | UI.4b | DONE | Explicit media cue activation | Play/Stop on the audio row is `media.standalone` and nothing else — it costs no undo step, moves no cursor or cue marker and presents nothing, and is offered only where a runtime exists (a video's route stays a slide background authored in Edit). The worker validates playback off this process: a row whose file has gone says "file is not here", a probe refusal marks that row "cannot play" naming the file on Show and quoting the worker in Edit, an ON AIR marker follows the status block alone, and the removal is the stop |
 | UI.5 | DONE | Runtime preview, clear rail, transport and audio area | The rail is the plan's diagram: per-layer clear pairs beside the audience picture with Clear all/Restore, the acknowledged video transport beneath (with its source's gain and mute), and an AUDIO TRACK area whose cues are the bin's prepared audio by domain kind — picking browses, Play activates the production track through the same confirmed command as the bin, Stop is the removal; the interim file chooser and the controller's URL entry point are gone, no routing or layer setup reappeared, and every control's enablement answers for itself |
 | UI.6 | DONE | Toolbar, responsive layout and visual acceptance | The header is Search · Show · Edit · Media visibility left and audience state · Settings right, all live on every page; Search is exactly Ctrl+F and the toggle mirrors the bin's own state; pinned keyboard handback, drag cancellation and strip restore; deterministic captures at 1000/1380/1680 in both bin states plus long names, empty collections and the disconnected output, with the reference differences recorded |
+
+### Themes — editor, apply and restore (TH)
+
+Theme editor in a header submenu, themes applied to songs, customizations
+restorable. Priority: slide customization → current theme → slide theme →
+show default → built-in. [Detailed model, format 6 and acceptance](docs/ui/themes-plan.md).
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| TH.1 | TODO | Promote Style → Theme; storage format 6 with ≤ 5 migration | `domain_tests` round-trip and migration; call sites on new names |
+| TH.2 | TODO | `currentThemeId`, sparse slide customizations, full-chain resolution, undo | `domain_tests` precedence matrix per property |
+| TH.3 | TODO | Compiler/controller follow the chain | `scene_tests`, `document_present_tests`, `frontend_journey_tests` re-skin to acknowledged pixels |
+| TH.4 | TODO | More ⋯ menu and Theme Editor mode with live sample preview | `workspace_ui_tests`, `ui_loads`; browsing never writes to the worker |
+| TH.5 | TODO | Apply/restore surfaces and Edit customization badges | `workspace_ui_tests` + controller regressions; bulk ops undo once |
+| TH.6 | TODO | Captures and documentation | Three-width captures themed and customized; architecture.md updated |
 
 ### M7 — Productization, reliability and installable alpha
 

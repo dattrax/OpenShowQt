@@ -69,3 +69,10 @@ details belong in the review documents; older detailed records remain in
 [history](docs/history/README.md), including the unchanged [6.22g handoff](docs/history/PROGRESS-through-6.22g.md).
 The UI workspace plan (UI.1–UI.6) is complete. M7 (recovery, budgets,
 packaging and service acceptance) remains the release milestone.
+
+**Themes (TH) planned 2026-11-01**: the model, format 6 and task rows live in
+[docs/ui/themes-plan.md](docs/ui/themes-plan.md) with the TH.1–TH.6 ledger in
+PLAN.md. Decisions confirmed with the operator: customization > current theme >
+slide theme > show default > built-in, appearance-only themes (template slides
+deferred). Next action: start TH.1 (Style → Theme promotion and storage format
+6 with the format-5 migration) in `src/domain`.
