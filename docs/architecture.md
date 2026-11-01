@@ -182,6 +182,59 @@ placement, the page gate, the focus facts and the executors — at 255 lines.
 | Persistence | `src/domain/storage.cpp`, `src/ui/{AutosaveScheduler,DocumentPersistence}.cpp`; domain/controller tests | Matches durable staged package writes, asset adoption and coalesced background autosave. Since **6.19b1** the coordination has one owner: `DocumentPersistence` runs the decision protocol (quiesce, write or discard, remove the scratch the decision made stale with its survivor reported, reopen), the deferred refusal surfacing that keeps the crash net, the 2.3 startup rule and the quit-edge durable wait. Explicit save/load and decision waits remain synchronous. |
 | Demo isolation and dependencies | `render/TestScene.cpp`, `cmake/OpenShowSkia.cmake`, `scripts/build-skia.sh`; production/pixel/public-API guards | Production starts black and uses SceneRenderer without a demo builder. Since 6.18b2 the demo scene and the diagnostic drivers compile only into `openshow-worker-dev`; the product binary cannot reach them. Skia is a pinned submodule with public application includes and compatible ICU. |
 
+## Themes and the appearance chain (milestone TH)
+
+Appearance is one entity, the Theme (the type the project called Style until
+**TH.1**, which renamed it end to end and moved `service.json` to format 6:
+the array `themes`, the slide assignment `themeId`, the show default
+`defaultThemeId` and the session pointer `currentThemeId`). The reader still
+loads formats 1–5 under their old key names and refuses a file that mixes the
+two spellings rather than guessing which half to trust.
+
+Every slide's drawn appearance resolves through one chain, per property, in
+`Documents::appearanceForSlide`: the slide's own customization first, then the
+session's current theme, then the slide's `themeId`, then the show's
+`defaultThemeId`, then the built-in look. Customizations are sparse
+(`SlideCustomization` — a property absent from the struct follows the chain;
+TH.2), and the answered empties are real answers, not absences: a gradient
+`""` says flat whatever the theme grades, a family `""` says whatever the
+platform picks, a size `0` says the renderer's own. The compile (TH.3) still
+emits fully resolved styles into the scene JSON, so the wire, the worker, the
+preview streams and the acknowledged revision flow never learned the chain
+exists — a theme or customization edit re-compiles affected scenes exactly
+like any other document edit.
+
+The operator surfaces (TH.4/TH.5) keep one rule above all: **a shared entity
+is edited in the Theme Editor alone.** The More ⋯ header menu selects or
+clears the current theme; the Theme Editor mode lists themes (New, Duplicate,
+Rename, Delete with references cleared as one undo step) beside a live sample
+preview rendered through the selected-scene lane — the sample is a fixture,
+never a document, so browsing themes touches no output. The Edit page's
+inspector shows the RESOLVED appearance and its fields write per-slide
+customizations only, each customized field carrying a revert badge; the Show
+header names the VIEWED show's default, the cue tile's right-click themes one
+slide or restores its customizations, and the library row's right-click
+applies a theme to a whole presentation or restores it — every bulk landing
+as one history entry through the single owner. Refusals (a bad colour, a
+restore with nothing under it, a dead id) edit nothing and land on the status
+line. Two Qt 6.12 shapes are deliberate: the context menus are flat because a
+nested submenu's Repeater delegates never instantiate (the plan's "Apply
+theme ▸" would be a menu that cannot open), and the header selector is a
+plain AbstractButton over a Menu because a Material ComboBox embeds a
+writable text field the Show screen's visible-tree audit does not permit. A
+focus-out is also not an edit: `editingFinished` fires when a field merely
+loses focus, so committing the value the chain already resolves to restores
+the binding instead of customizing the slide.
+
+Evidence: `domain_tests` (format-6 round-trip, migration, mix refusals, the
+precedence matrix per property), `scene_tests`/`document_present_tests`/
+`frontend_journey_tests` (the chain through to acknowledged pixels),
+`document_controller_tests` (the TH.5 surface API against real fixtures),
+`workspace_ui_tests` (menus, badges, bulk-undo-once, the themed-state checks)
+and the deterministic captures at 1680/1380/1000 taken with a show default, a
+worn slide theme and two live badges. [themes-plan.md](ui/themes-plan.md)
+carries the model and the acceptance rows; the PLAN ledger closes TH.1–TH.6.
+
 ## Review closure: R1–R19 evidence matrix (task 6.20a)
 
 The review's completion rule says every finding must have passing regression

@@ -121,9 +121,20 @@ inside the existing 100 ms p95 budget for preloaded changes.
   workspace header; cue-grid context menu (Apply theme ▸, Remove
   customization); sidebar show-row context menu (Apply theme to show ▸,
   Remove all customizations in show). Bulk operations land as one undo step.
+  Delivered shape (Qt 6.12): the header selector is a plain button over a
+  menu — a Material ComboBox carries a writable text field, and the Show
+  screen's audit permits none — and both context menus are FLAT (theme rows
+  directly, restore below a separator): a nested submenu's Repeater delegates
+  never instantiate in this Qt version, so the "▸" spelling would be a menu
+  that cannot open. The header names the VIEWED show's default — browsing a
+  library presentation sets that presentation's own default, never the one
+  under preparation.
 - **Edit inspector**: fields show the resolved appearance; customized fields
   carry a badge with a per-field revert, and a "Remove customizations" action
-  for the whole slide. Field edits write customizations (see Model).
+  for the whole slide. Field edits write customizations (see Model). Delivered
+  detail: `editingFinished` also fires on a bare focus-out, so committing a
+  value the chain already resolves to is treated as no edit — leaving a field
+  untouched cannot customize it.
 
 Boundaries that hold throughout: browsing or previewing a theme never changes
 the audience output; every mutation is an acknowledged document edit through

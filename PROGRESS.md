@@ -1,10 +1,30 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-10-31 (Europe/London).
+Updated: 2026-11-01 (Europe/London).
 
 ## Current checkpoint
 
-Current UI work: **UI.6 DONE**, verified 2026-10-31 — and with it every UI
+Current work: **the Themes milestone (TH.1–TH.6) is DONE**, verified
+2026-11-01 with one pushed commit per leaf. Appearance is one Theme entity
+(the former Style) in storage format 6 — readers still take formats 1–5 and
+refuse files that mix the spellings — and every slide resolves per property
+through customization → current theme → slide theme → show default →
+built-in, compiled down to fully resolved styles so the wire and the worker
+never learned the chain exists. The More ⋯ menu and the Theme Editor mode
+(sample cue preview through the selected-scene lane, browsing never writes),
+the Show header's viewed-show default selector, the flat cue and library
+right-click menus (theme one slide, bulk-theme a presentation as one undo
+step, restore customizations) and the Edit inspector (resolved values,
+per-field revert badges, whole-slide restore, edits that customize the SLIDE
+and can never restyle a shared theme) are the delivered surfaces; the Qt
+6.12 shape deviations (flat menus, button-over-menu selector, focus-out is
+not an edit) are recorded in
+[the plan](docs/ui/themes-plan.md) and [the architecture](docs/architecture.md).
+Gates 57/57 desktop and 43/43 headless; deterministic captures re-taken with
+a show default, a worn slide theme and two live badges. **M7** (recovery,
+budgets, packaging and service acceptance) is what remains in PLAN.md.
+
+Previously: **UI.6 DONE**, verified 2026-10-31 — and with it every UI
 leaf is closed. The header is the plan's row (Search · Show · Edit · Media
 visibility left, unsaved/audience/Settings right; Settings is a mode at the
 far edge, not a third page), Search is exactly Ctrl+F, the bin toggle
@@ -44,6 +64,7 @@ completed seek-clock epoch; supersession and failure have distinct outcomes.
 | UI.4b acceptance (2026-10-31) | `document_controller_tests` asset-row `exists` (absent name, a real file, and a rename that the row reports without any edit); `workspace_ui_tests` cue surface (Play present and disabled with no output, absent for a video row, a missing file named in both columns, the `noticeForState` table driven directly for live/missing/kind/refused, nothing put on the wire by browsing); `worker_controller_tests` refusal seam (arrives naming its path, survives the echoes either side, retired by the removal); `frontend_journey_tests` §8 on a real worker (AAC bed on air with its own clock, garbage refused naming the file while the bed carries on, a go moves none of it, removal is the stop); evidence in [the plan](docs/ui/operator-workspace-plan.md) |
 | UI.5 acceptance (2026-10-31) | `workspace_ui_tests` rail section (clear strip beside the preview by scene position, all three clear controls disabled and saying "Clear all" with no output, transport nameless-empty with no controls, the audio combo holding audio names only — no video, no paths — picking sending nothing while Play/Stop stay disabled and the monitor keeps saying "Output disconnected", and no `playAudioButton` anywhere in the tree); `worker_controller_tests` transport scenario now confirms the three selection frames the operator can actually cause (the picker's URL half retired with the chooser); visible-tree audit on Show re-passes with the combo at all three capture sizes; evidence in [the plan](docs/ui/operator-workspace-plan.md) |
 | UI.6 acceptance (2026-10-31) | `workspace_ui_tests` toolbar section (header offers Search, both operator pages, media visibility and Settings; the bin toggle closes the bin and re-opens with the bin's own bar agreeing both ways; toolbar Search takes focus to `librarySearchField`, Escape hands the keyboard back and the presenter's PgDn walk steps again; Settings/Show tab clicks switch modes and move the underline, and no header control hides on another page; a press released in place on a panel handle resizes nothing and a collapsed dock restores from its strip); deterministic captures at 1680/1380/1000 in both bin states, a one-row kind filter counting "1 shown", the fully-removed library ("no media — import a file" with the rail's "no prepared audio"), a long cue name whole at 1680 and elided narrower, and the disconnected bar/rail — all inspected, with the remaining reference differences recorded in [the plan](docs/ui/operator-workspace-plan.md) |
+| Themes TH.1–TH.6 acceptance (2026-11-01) | `domain_tests` format-6 round-trip, 1–5 migration and mix-spelling refusals, and the per-property precedence matrix across customization/current/slide/show/built-in with the answered empties; `scene_tests`, `document_present_tests` and `frontend_journey_tests` re-skin to acknowledged pixels through the chain; `document_controller_tests` exercises the whole TH.5 surface API over real fixtures (cross-show theming, bulk-undo-once, refusal statuses); `workspace_ui_tests` drives the shipped UI (header menu names the viewed show's default and reopens checked, flat cue/library menus theme and restore by real clicks, badges appear per customized field and revert only their own, refusing values snap back with the domain's wording, and a page switch commits nothing); captures at 1680/1380/1000 inspected themed — Loud as the header default, the edited slide wearing House with exactly the flat-gradient and size-44 badges; 57/57 desktop and 43/43 headless; evidence in [the plan](docs/ui/themes-plan.md) and [the architecture](docs/architecture.md) |
 | Documentation | Current links, historical archive integrity and whitespace checked |
 
 Presets ran sequentially. Frame/position progress was measured; acoustic offset,
@@ -70,9 +91,14 @@ details belong in the review documents; older detailed records remain in
 The UI workspace plan (UI.1–UI.6) is complete. M7 (recovery, budgets,
 packaging and service acceptance) remains the release milestone.
 
-**Themes (TH) planned 2026-11-01**: the model, format 6 and task rows live in
-[docs/ui/themes-plan.md](docs/ui/themes-plan.md) with the TH.1–TH.6 ledger in
-PLAN.md. Decisions confirmed with the operator: customization > current theme >
-slide theme > show default > built-in, appearance-only themes (template slides
-deferred). Next action: start TH.1 (Style → Theme promotion and storage format
-6 with the format-5 migration) in `src/domain`.
+**Themes (TH.1–TH.6) DONE 2026-11-01**, one pushed commit per leaf, closing
+the ledger in [docs/ui/themes-plan.md](docs/ui/themes-plan.md): Style promoted
+to Theme with storage format 6 and the format-5 migration (TH.1), current-theme
+and sparse per-slide customizations resolving the full chain (TH.2), the compile
+and controller following the chain to acknowledged pixels (TH.3), the More ⋯
+menu and Theme Editor mode (TH.4), the apply/restore surfaces and the
+customize-not-restyle Edit inspector (TH.5), and the themed captures with the
+architecture write-up (TH.6). The model decision the operator confirmed —
+customization > current theme > slide theme > show default > built-in,
+appearance-only themes (template slides deferred) — is what shipped.
+Next action: M7 in PLAN.md.

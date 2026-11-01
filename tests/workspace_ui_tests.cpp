@@ -1846,10 +1846,10 @@ int main(int argc, char** argv) {
     }
     const auto capture = qEnvironmentVariable("OPENSHOW_WORKSPACE_CAPTURE");
     if (!capture.isEmpty()) {
-        // UI.6's deterministic populated state. The long-named cue is
-        // imported HERE so no earlier assertion sees it: it is the bin
-        // row's and rail combo's long-name story. This run is a
-        // disconnected session, which is the disconnected capture; the
+        // UI.6's deterministic populated state, TH.6's themed state. The
+        // long-named cue is imported HERE so no earlier assertion sees it:
+        // it is the bin row's and rail combo's long-name story. This run is
+        // a disconnected session, which is the disconnected capture; the
         // faulted sentences are pinned in the controller tests, which an
         // offscreen window cannot drive.
         const QString files = QString::fromStdString(scratch.path().toStdString());
@@ -1861,6 +1861,55 @@ int main(int argc, char** argv) {
         }
         check(docs.importMediaFile(files + "/" + longName),
               "the capture library carries a long-named cue");
+        // TH.6: every capture is taken WITH the chain in play, so the
+        // pictures show what themed and customized output actually looks
+        // like rather than a themeless fixture. The names come from the
+        // TH.5 run's themes; the state is re-established here, not
+        // inherited, so the captures stay deterministic however the
+        // assertions above shuffled the documents. Show default Loud,
+        // the slide under edit wears House over it, and the slide
+        // customizes the gradient flat and the size — the Edit capture
+        // therefore carries the worn name, two revert badges and a live
+        // "Remove customizations", and the Show header names the default.
+        QString houseId;
+        QString loudId;
+        for (const QVariant& theme : docs.themes()) {
+            const QString name = theme.toMap().value(QStringLiteral("name")).toString();
+            if (name == QStringLiteral("House"))
+                houseId = theme.toMap().value(QStringLiteral("id")).toString();
+            else if (name == QStringLiteral("Loud"))
+                loudId = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+        check(!houseId.isEmpty() && !loudId.isEmpty()
+                  && docs.setShowDefaultThemeFor(docs.currentSongId(), loudId),
+              "the captures' show follows a default theme");
+        docs.selectSlide(0);
+        check(docs.applyThemeToCurrentSlide(houseId)
+                  && docs.customizeCurrentSlide(QStringLiteral("backgroundGradient"), QString())
+                  && docs.customizeCurrentSlide(QStringLiteral("fontSize"), 44.0),
+              "the captured slide wears House over the default and customizes two fields");
+        // The badges the edit capture shows are exactly these two: leaving
+        // a field untouched must never customize it (editingFinished also
+        // fires on focus-out — the guard in commit() is what pins this).
+        {
+            const QVariantMap appearance = docs.slideAppearance();
+            int customizedCount = 0;
+            for (const QString& field : {QStringLiteral("textColor"),
+                                         QStringLiteral("backgroundColor"),
+                                         QStringLiteral("backgroundGradient"),
+                                         QStringLiteral("fontFamily"),
+                                         QStringLiteral("fontSize"),
+                                         QStringLiteral("align"),
+                                         QStringLiteral("lineSpacing")})
+                customizedCount += appearance.value(field).toMap()
+                    .value(QStringLiteral("customized")).toBool() ? 1 : 0;
+            check(customizedCount == 2
+                      && appearance.value(QStringLiteral("backgroundGradient")).toMap()
+                             .value(QStringLiteral("customized")).toBool()
+                      && appearance.value(QStringLiteral("fontSize")).toMap()
+                             .value(QStringLiteral("customized")).toBool(),
+                  "exactly the gradient and the size are customized — nothing else");
+        }
         QTest::qWait(60);
         window->grabWindow().save(capture);
         panels.toggleDrawer();
@@ -1895,6 +1944,20 @@ int main(int argc, char** argv) {
         QTest::qWait(50);
         window->setProperty("page", "edit");
         QTest::qWait(50);
+        // The capture's inspector shows the story: badges on exactly the
+        // two customized fields and the worn theme named to be read.
+        {
+            auto* gradientBadge =
+                findNamed(window->contentItem(), "customizeBadgeBackgroundGradient");
+            auto* sizeBadge = findNamed(window->contentItem(), "customizeBadgeFontSize");
+            auto* colourBadge = findNamed(window->contentItem(), "customizeBadgeTextColor");
+            auto* worn = findNamed(window->contentItem(), "themeWornName");
+            check(gradientBadge->property("visible").toBool()
+                      && sizeBadge->property("visible").toBool()
+                      && !colourBadge->property("visible").toBool()
+                      && worn->property("text").toString() == QStringLiteral("House"),
+                  "the edit capture carries exactly the two badges and the worn name");
+        }
         window->grabWindow().save(capture + ".edit.png");
         window->setProperty("page", "settings");
         QTest::qWait(50);

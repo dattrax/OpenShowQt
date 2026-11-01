@@ -396,7 +396,7 @@ show default → built-in. [Detailed model, format 6 and acceptance](docs/ui/the
 | TH.3 | DONE | Compiler/controller follow the chain | `scene_tests`, `document_present_tests`, `frontend_journey_tests` re-skin to acknowledged pixels |
 | TH.4 | DONE | More ⋯ menu and Theme Editor mode with live sample preview | `workspace_ui_tests`, `ui_loads`; browsing never writes to the worker |
 | TH.5 | DONE | Apply/restore surfaces and Edit customization badges | `workspace_ui_tests` + controller regressions; bulk ops undo once — header selector sets the VIEWED show's default, cue and library right-clicks theme and restore, Edit fields write per-slide customizations with per-field revert badges and never restyle the shared theme |
-| TH.6 | TODO | Captures and documentation | Three-width captures themed and customized; architecture.md updated |
+| TH.6 | DONE | Captures and documentation | Three-width captures themed and customized; architecture.md updated — captures carry the Loud show default, the slide wearing House and exactly two live badges (the focus-out-is-not-an-edit guard this check found ships with it); a Themes section in architecture.md and the plan record the model, chain, surfaces and Qt 6.12 shapes |
 
 ### M7 — Productization, reliability and installable alpha
 

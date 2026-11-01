@@ -400,7 +400,15 @@ Flickable {
         // theme's own contract — "" is a real answer for the gradient
         // (explicitly flat, 6.17c3) and the family (whatever the
         // platform picks) — and a bad value snaps the field back.
+        // editingFinished also fires on a bare focus-out, and leaving a
+        // field untouched is NOT an edit: a value the chain already
+        // resolves to customizes nothing and just puts the binding back.
         function commit(field, value) {
+            const entry = docs.slideAppearance[field]
+            if (entry !== undefined && entry.value === value) {
+                themePanel.sync()
+                return
+            }
             if (!docs.customizeCurrentSlide(field, value)) {
                 themePanel.sync()
             }
