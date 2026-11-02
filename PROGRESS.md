@@ -56,7 +56,12 @@ saved row stands, and a fresh controller plays every saved slide on the
 real output with zero further network asks — offline playback because the
 schedule is the passage's only durable owner. The operator's account of the
 whole journey now lives in `docs/architecture.md` under "Online Bible
-import". With BI closed, the next work is the open M7 release gates.
+import". With BI closed, the operator's first live run (2026-11-02) filed
+three follow-ups — Add not waking after a live lookup, a reference field
+with no book help, and a translation picker that opens unselected —
+recorded as milestone **BI-F (BIF.1–BIF.4)** in the PLAN ledger and
+[docs/ui/bible-import-plan.md](docs/ui/bible-import-plan.md), planned but
+not yet started; BIF.1 (Add must wake) is next.
 Before BI, **the Themes amendment
 (TH.9) is DONE** — the built-in look is now a real, embedded, undeletable **Default** theme (reserved id `default`,
 seeded first, re-ensured after every successful load, the chain's last

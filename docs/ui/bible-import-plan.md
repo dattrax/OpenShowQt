@@ -156,3 +156,45 @@ someone's navigation bar on the audience output.
 | BI.6 | end-to-end acceptance and operator documentation | connected import, disconnected failure, offline playback of saved slides; fixtures stay synthetic; nothing but the schedule keeps text |
 
 Task order: BI.1 → BI.2 → BI.3 → BI.4 → BI.5 → BI.6, one commit per leaf.
+
+## Follow-up leaves (BI-F — operator feedback, 2026-11-02)
+
+The first live run (real provider, real service, real worker) confirmed the
+lookup journey works and reported three defects. Their notes before code:
+
+- **Add never woke after a live lookup.** The fixtures drove six short verses
+  with a two-line licence; the live page answers whole chapters and carries
+  the publisher's real multi-line copyright. Candidates to pin down with a
+  production-shaped fixture: selections large enough that the pagination's
+  measurement batches exceed what one round retires (the wire caps a batch
+  at 32 blocks — `kMaxMeasureBatch`), the long live attribution's reserved
+  height squeezing the box differently than the fixtures assumed, and the
+  page's documentsChanged re-pagination racing an in-flight batch. The
+  acceptance rule that must hold however it fails: the page either wakes
+  Add or says why in its own line — never a silent "measuring…" forever.
+- **The picker opened unselected.** `BibleImportPage.qml`'s translation
+  ComboBox binds `currentIndex: indexOfValue(bible.translation)` — a plain
+  function call the binding engine cannot track, so it never re-runs when
+  `bible.translations` arrives after the binding first evaluates and the
+  control keeps index −1 until a click. (The `displayText` override printed
+  "NIV" anyway, which is why the row *looked* half-right.) The selection
+  must be derived through an expression that reads the model, and a lookup
+  issued with the untouched default must send exactly what a
+  menu-chosen-one sends.
+- **Naming a book is typing blind.** Add a Qt-free table of the 66 books
+  with common abbreviations and a suggester to `openshow::importer`
+  (case/whitespace/ordinal-insensitive: "1 cor", "1cor", "i cor",
+  "1st cor" → 1 Corinthians; "jn" → John), and a dropdown under the
+  reference field that filters as the operator types and completes on
+  Enter or click. Free text that matches nothing still looks up exactly as
+  typed — the completer helps, it never gates. No network: the canon is a
+  built-in list, not fetched.
+
+| Leaf | Scope | Acceptance |
+|---|---|---|
+| BIF.1 | diagnose and fix Add asleep after a live lookup; no-stuck-measuring guarantee | production-shaped fixture (live-length attribution, whole chapter, live worker with preview up, racing re-pagination) ends Add-live + one successful Add; an unanswerable batch retires with its own sentence; failures always reach the page's status line |
+| BIF.2 | picker opens on the session's translation; default lookup == chosen lookup | page opens showing NIV — New International Version selected without a click; picker follows `bible.translation` changes; the default and menu-chosen requests are byte-identical |
+| BIF.3 | 66-book table + suggester in `openshow::importer`; filtering completer on the reference field | matcher rows for case/whitespace/ordinal variants and abbreviations, numbered books in order; popup filters as you type and completes on Enter/click; unmatched text still looks up as typed; nothing fetched |
+| BIF.4 | end-to-end re-acceptance and docs | the production-shape e2e runs completer → default translation → whole chapter → Add → offline playback on a real worker; operator account and delivered-shape records updated; both gates green |
+
+Task order: BIF.1 → BIF.2 → BIF.3 → BIF.4, one commit per leaf.
