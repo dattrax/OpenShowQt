@@ -60,6 +60,7 @@ if(OPENSHOW_BUILD_UI)
 endif()
 
 add_subdirectory(src/domain)
+add_subdirectory(src/importer)
 add_subdirectory(src/protocol)
 add_subdirectory(src/scene)
 add_subdirectory(src/worker)

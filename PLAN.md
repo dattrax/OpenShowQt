@@ -406,6 +406,7 @@ show default → built-in. [Detailed model, format 6 and acceptance](docs/ui/the
 ### Bible import — online passages into today's schedule (BI)
 
 Planned 2026-11-02; depends on the Themes model and placement (TH.1–TH.8).
+[Detailed access record, model and acceptance ledger](docs/ui/bible-import-plan.md).
 Import only the passage the operator requests from Bible Gateway; never download
 or install a full Bible, build a local scripture library or prefetch chapters.
 References: [Bible Gateway passage and version example](https://www.biblegateway.com/passage/?search=1%20Corinthians%201&version=NIV)
@@ -457,7 +458,7 @@ using its schedule-owned text without another network request.
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| BI.1 | TODO | Confirm provider access/translation attribution requirements; isolate passage/version discovery and HTML parser | Supported access approach recorded before implementation; selected translation and verse boundaries verified; changed markup or a blocked/error page fails without importing unrelated text |
+| BI.1 | DONE | Confirm provider access/translation attribution requirements; isolate passage/version discovery and HTML parser | Access approach recorded in [the plan](docs/ui/bible-import-plan.md) before implementation (passage-only HTTPS page fetch, robots-allowed path with pacing, no corpus, attribution carried; live markup facts recorded the same day); `bible_import_tests` on synthetic fixtures: live-shape parse with chapter/verse boundaries, entities and Unicode preserved, headings/cross-references/navigation excluded, invalid-reference, blocked and changed-markup pages each refuse with their own sentence and import nothing, and a page answering a different translation is refused naming both |
 | BI.2 | TODO | Asynchronous bounded HTTPS lookup and transient importer state | Cancel/timeout/offline/retry and superseded requests leave output responsive; stale replies cannot replace the current passage; no fetched content written outside the schedule |
 | BI.3 | TODO | Schedule-owned scripture item and undo/save/recovery lifecycle | Add targets today's schedule once; round-trip/recovery retains only selected content and metadata; undo/removal leaves no Library copy; existing documents still load |
 | BI.4 | TODO | Theme-aware measured pagination and slide generation | Narrow/wide boxes, large fonts, long verses, Unicode and references fit at the chosen size; concatenated slide text preserves the selected passage exactly after whitespace normalization |

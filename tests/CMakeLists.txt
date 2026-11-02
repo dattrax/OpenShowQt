@@ -4,6 +4,13 @@ add_executable(domain_tests
 target_link_libraries(domain_tests PRIVATE openshow::domain)
 add_test(NAME domain_tests COMMAND domain_tests)
 
+# Milestone BI (task BI.1): the passage parser's regressions on synthetic
+# fixtures — the live shapes are recorded in docs/ui/bible-import-plan.md,
+# and no fetched passage is ever stored here. Qt-free like the domain.
+add_executable(bible_import_tests bible_import_tests.cpp)
+target_link_libraries(bible_import_tests PRIVATE openshow::importer)
+add_test(NAME bible_import_tests COMMAND bible_import_tests)
+
 add_executable(scene_tests
   scene_tests.cpp
 )
