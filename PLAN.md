@@ -68,7 +68,9 @@ estimate is historical; re-estimate remaining work before productization.
   cuts/crossfades and media playback. Video holds its final frame when not looping.
   Software decode is supported; optional VA-API and direct Vulkan-backed software
   decode were added during M1, with an explicit copying fallback.
-- **Deferred:** FreeShow import/round-trip, stage/scripture/additional outputs,
+- **Bible import:** online, passage-only lookup into today's schedule, with
+  theme-sized slides; planned in BI below. No installed Bible or passage cache.
+- **Deferred:** FreeShow import/round-trip, stage/additional outputs,
   Vulkan display-plane output, advanced effects, remote control, streaming,
   NDI/SDI, cloud services, Windows and macOS.
 
@@ -399,6 +401,67 @@ show default → built-in. [Detailed model, format 6 and acceptance](docs/ui/the
 | TH.6 | DONE | Captures and documentation | Three-width captures themed and customized; architecture.md updated — captures carry the Loud show default, the slide wearing House and exactly two live badges (the focus-out-is-not-an-edit guard this check found ships with it); a Themes section in architecture.md and the plan record the model, chain, surfaces and Qt 6.12 shapes |
 | TH.7 | DONE | Themes carry the lyric-box placement (amendment) | `domain_tests` placement chain matrix (customization > current > slide > show > authored), validation and storage round-trip/refusals on format 6; `scene_tests`: the themed rectangle drives the FIRST TEXT item only — extra boxes and images keep theirs |
 | TH.8 | DONE | Placement surfaces: Theme Editor canvas, Edit routing | `workspace_ui_tests`: theme-editor drag commits one placement (one undo removes the whole gesture), typed fields write it as one unit and refused values snap back, No placement clears it with colours left alone; Edit drag/typing on a themed slide customizes (THEME PLACES ↔ THIS SLIDE label, revert returns the whole rectangle to the theme), extra boxes keep authored edits untouched; the capture pair shows House's placement on the Edit canvas and the Theme Editor fields holding its numbers; architecture and the plan record the routing, and the re-shown-page sync this capture check caught ships with it |
+
+### Bible import — online passages into today's schedule (BI)
+
+Planned 2026-11-02; depends on the Themes model and placement (TH.1–TH.8).
+Import only the passage the operator requests from Bible Gateway; never download
+or install a full Bible, build a local scripture library or prefetch chapters.
+References: [Bible Gateway passage and version example](https://www.biblegateway.com/passage/?search=1%20Corinthians%201&version=NIV)
+and [ProPresenter Bible workflow](https://support.renewedvision.com/hc/en-us/articles/360041347594-Using-Bibles-in-ProPresenter).
+Use the latter for passage selection, theme preview and playlist insertion only;
+OpenShowQt offers one destination action: **Add to today's schedule**.
+
+**Operator flow and connection:** open Bible import, choose a translation
+(for example NIV), enter a chapter or verse range, fetch, select the required
+verses, choose a theme and preview the generated slides before adding them.
+Show **Online Bible lookup — internet connection required** in the importer.
+Report connection loss, timeouts, unavailable translations and invalid passages
+clearly, with retry; never substitute another translation or reuse an old result.
+Fetching, selecting and previewing never change the schedule or audience output.
+Require today's schedule as the explicit target; if none exists, require its
+creation/selection before adding, and invalidate an add if that target changes.
+
+**Extraction and lifetime:** use the HTTPS passage page with encoded `search`
+and `version` parameters, fetching only the requested passage. Parse HTML
+structurally into ordered verses with their references; decode entities and
+normalize whitespace, excluding navigation, adverts, headings, footnotes,
+cross-reference markers and study material. The result is plain text rather
+than HTML; preserve Unicode punctuation and letters rather than losing them
+through forced ASCII conversion. Retain translation identity and its required
+copyright/attribution separately for the schedule item and slide formatting.
+Keep fetched HTML and uncommitted text in bounded memory only; discard on new
+lookup, cancel or close. No HTTP disk cache, temporary passage files, lookup
+history, response-body logging or persisted importer previews.
+
+**Schedule ownership:** only the selected verses and generated slides, reference,
+translation and attribution become a schedule-owned presentation, in one undoable
+add. Do not create a reusable Library show or expose Save to Library, Copy to
+Presentation or direct-to-live actions. Schedule save/recovery may persist that
+item as part of the service document; this is its sole durable content owner,
+not a separate Bible cache. Imported slides remain presentable offline; further
+lookups require a connection. Removing the item must not leave a Library copy.
+
+**Theme-sized pagination:** use the resolved theme's primary text-box placement,
+font family/size, line spacing and output canvas, reserving room for references
+and attribution. Measure using the worker's existing SkParagraph/ICU layout;
+do not estimate by character count or introduce a second text renderer. Pack
+complete verses where they fit; split a long verse at sentence/word boundaries
+across continuation slides, preserving order and verse identity. Never clip,
+drop or repeat words, split inside a Unicode character, or silently shrink the
+chosen font. Preview all slides; theme/size changes in the importer regenerate
+pagination. An unusable text area blocks Add with an explanation. Later theme
+changes to an imported item require explicit re-pagination and preview in Edit,
+using its schedule-owned text without another network request.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| BI.1 | TODO | Confirm provider access/translation attribution requirements; isolate passage/version discovery and HTML parser | Supported access approach recorded before implementation; selected translation and verse boundaries verified; changed markup or a blocked/error page fails without importing unrelated text |
+| BI.2 | TODO | Asynchronous bounded HTTPS lookup and transient importer state | Cancel/timeout/offline/retry and superseded requests leave output responsive; stale replies cannot replace the current passage; no fetched content written outside the schedule |
+| BI.3 | TODO | Schedule-owned scripture item and undo/save/recovery lifecycle | Add targets today's schedule once; round-trip/recovery retains only selected content and metadata; undo/removal leaves no Library copy; existing documents still load |
+| BI.4 | TODO | Theme-aware measured pagination and slide generation | Narrow/wide boxes, large fonts, long verses, Unicode and references fit at the chosen size; concatenated slide text preserves the selected passage exactly after whitespace normalization |
+| BI.5 | TODO | Import UI: translation, passage/verse selection, theme preview and schedule-only Add | Online notice and actionable failures visible; no Library/direct-live action; cancel writes nothing; preview is off-air; repeated Add cannot duplicate an in-flight insertion |
+| BI.6 | TODO | End-to-end acceptance and operator documentation | Connected import to today's schedule, disconnected lookup failure and offline playback of saved slides demonstrated; parser/layout regressions use synthetic fixtures without storing fetched passages; no cache or unselected text persists |
 
 ### M7 — Productization, reliability and installable alpha
 
