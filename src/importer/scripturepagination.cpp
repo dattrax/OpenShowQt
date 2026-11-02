@@ -321,11 +321,11 @@ PaginationOutcome paginateScripture(const PaginationInput& input, const MeasureF
     // case the plan says blocks Add with an explanation.
     if (!std::isfinite(style.boxWidth) || style.boxWidth < 1.0 ||
         !std::isfinite(style.boxHeight) || style.boxHeight < 1.0 ||
-        !std::isfinite(style.fontSize) || style.fontSize <= 0.0 ||
+        !std::isfinite(style.fontSize) || style.fontSize < 0.0 ||
         !isUsableSpacing(style.lineSpacing)) {
         outcome.error =
             "this theme's text area or chosen text size cannot be measured — the box must have "
-            "a real width, height and a positive size";
+            "a real width, height and a size (0 is the renderer's own default)";
         return outcome;
     }
     std::vector<Piece> pieces;

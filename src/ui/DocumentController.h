@@ -291,6 +291,23 @@ public:
     // Unknown id: empty string.
     Q_INVOKABLE QString themeSampleSceneJson(const QString& themeId) const;
 
+    // The Bible importer's off-air look (task BI.5). A scripture slide
+    // belongs to a young show that wears nothing of its own, so what it
+    // draws is the WHOLE chain as the service stands: the worn theme, the
+    // Default layer, the built-in box. These two answer through a fixture
+    // COPY of the live documents with a throwaway show added — the same
+    // resolution the committed slide will walk, with no history entry, no
+    // dirty flag and nothing presented. `scriptureBoxStyle` returns the
+    // primary text box in canvas pixels and typography — {boxWidth,
+    // boxHeight, fontSize (0 = the renderer's own default), lineSpacing,
+    // fontFamily} — and an empty map when the chain compiles to no text
+    // box at all (the importer then blocks Add with an explanation).
+    // `scriptureSlideSceneJson` compiles one GENERATED slide (lines the
+    // document does not hold yet) to the scene JSON the preview transport
+    // takes, so the operator sees the slide before the schedule does.
+    Q_INVOKABLE QVariantMap scriptureBoxStyle() const;
+    Q_INVOKABLE QString scriptureSlideSceneJson(const QStringList& lines) const;
+
     // --- theme surfaces (task TH.5, themes plan) ---
 
     // The current slide through the whole chain, per property: the value
@@ -369,8 +386,11 @@ public:
     // edit, so one Undo removes the whole item. `playlistId` is the
     // explicit target (today's schedule); a target that vanished between
     // preview and Add is refused rather than guessed at. Each element of
-    // `slides` is the slide's lines as a QStringList. No Library show is
-    // ever created, so removal can never leave one behind.
+    // `slides` is the slide's lines as a QStringList, or a map
+    // {lines: [...], notes: "..."} when the slide carries a verse label —
+    // the label belongs in the NOTES so the slide's words stay exactly the
+    // passage (task BI.4's rule). No Library show is ever created, so
+    // removal can never leave one behind.
     Q_INVOKABLE bool addScripturePassage(const QString& playlistId, const QString& reference,
                                          const QString& translation, const QString& attribution,
                                          const QVariantList& slides);

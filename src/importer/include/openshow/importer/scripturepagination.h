@@ -72,6 +72,11 @@ struct PaginationVerse {
 // The resolved theme's primary text box and the CHOSEN typography, in
 // output-canvas pixels. Nothing here is a suggestion the paginator may
 // scale: it measures at exactly these numbers or the ask fails.
+// `fontSize` follows the scene's own contract: 0 is not "no size" but the
+// RENDERER's default — the number lives in the worker alone, and the
+// paginator forwards 0 to the measuring port unchanged, which measures it
+// at exactly what the drawing will use. A negative size is a caller bug
+// and is refused.
 struct PaginationStyle {
     double boxWidth = 0.0;
     double boxHeight = 0.0;

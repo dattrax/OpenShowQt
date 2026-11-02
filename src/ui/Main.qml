@@ -202,6 +202,15 @@ Window {
         anchors.margins: 12
     }
 
+    BibleImportPage {
+        visible: root.page === "bible"
+        anchors.left: leftDock.right
+        anchors.right: rightDock.left
+        anchors.top: topBar.bottom
+        anchors.bottom: mediaBin.top
+        anchors.margins: 12
+    }
+
     MediaBin {
         id: mediaBin
         objectName: "mediaBin"

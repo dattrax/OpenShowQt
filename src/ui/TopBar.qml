@@ -128,10 +128,10 @@ Rectangle {
         ToolTab {
             id: moreTab
             objectName: "toolbarMore"
-            Accessible.name: "Themes"
+            Accessible.name: "More"
             glyph: "\u22ef"
             label: "More"
-            selected: bar.page === "themes"
+            selected: bar.page === "themes" || bar.page === "bible"
             Menu {
                 id: themeMenu
                 objectName: "themeMenu"
@@ -159,6 +159,16 @@ Rectangle {
                     objectName: "themeMenuEditor"
                     text: "Theme Editor\u2026"
                     onTriggered: bar.pageSelected("themes")
+                }
+                MenuSeparator {}
+                // The Bible import (task BI.5): one requested passage at a
+                // time into today's schedule. Opening the entry opens the
+                // page; it asks for nothing and presents nothing until the
+                // operator looks something up and presses Add.
+                MenuItem {
+                    objectName: "bibleImportMenuItem"
+                    text: "Import Bible Passage\u2026"
+                    onTriggered: bar.pageSelected("bible")
                 }
             }
             onClicked: themeMenu.popup()

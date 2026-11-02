@@ -326,6 +326,16 @@ if(OPENSHOW_BUILD_UI)
     COMMAND text_measure_tests $<TARGET_FILE:openshow-worker>)
   set_tests_properties(text_measure_tests PROPERTIES LABELS display TIMEOUT 90)
 
+  # Milestone BI (task BI.5): the importer's page session end to end — the
+  # scripted network answers, the REAL worker measures, the slides preview
+  # off air, and Add is the one door to today's schedule. Needs a display
+  # like every row a live worker draws; the worker binary reaches the
+  # controller through ui-core's compiled-in path.
+  add_executable(bible_import_page_tests bible_import_page_tests.cpp)
+  target_link_libraries(bible_import_page_tests PRIVATE openshow::ui-core Qt6::Test)
+  add_test(NAME bible_import_page_tests COMMAND bible_import_page_tests)
+  set_tests_properties(bible_import_page_tests PROPERTIES LABELS display TIMEOUT 240)
+
   # Task 6.20c: the whole production journey — author through the panels'
   # DocumentController, an off-air picture of the next slide, the go, the
   # per-layer clears and the restore, and a background swap under live

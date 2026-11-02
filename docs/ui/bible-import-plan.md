@@ -102,6 +102,33 @@ someone's navigation bar on the audience output.
   cannot honestly fill blocks with its own sentence (see
   `scripture_pagination_tests` for the properties and `text_measure_tests`
   for the real-engine rows).
+- **Delivered shape (BI.5, 2026-11-02):** the page is
+  `BibleImportPage.qml` behind More ▸ "Import Bible Passage…", and the
+  session gluing the milestone together is `openshow::ui::ScriptureImport`
+  (`src/ui/`). Its one interesting shape is the measure port:
+  `paginateScripture` is synchronous while `WorkerController::measureText`
+  answers when the worker replies, so a run NEVER blocks — a cache miss
+  sends its batch and suspends the run with a private marker, the reply
+  fills a content-keyed cache, and the run restarts from the top where
+  every earlier ask is now a hit (each round sends at most one batch and
+  gets strictly further; a re-ask latches a rerun whose newest input wins,
+  and a worker that vanishes mid-batch fails with its own sentence rather
+  than measuring forever). The box and typography come from
+  `DocumentController::scriptureBoxStyle()`: a fixture COPY of the live
+  documents with one throwaway slide, compiled through the exact chain the
+  added slide will walk (worn theme → Default → built-in), with fontSize 0
+  forwarded unchanged — the renderer's default is the worker's number to
+  know. The picture is the editor's off-air selection-preview transport
+  (`requestSelectionPreview`), never a present; Add is
+  `addScripturePassage` against the workspace's current playlist with each
+  slide as {lines, notes} — the verse label rides in NOTES so the slide's
+  words stay exactly the passage — and a successful Add CONSUMES the
+  transient batch, making the plan's "repeated Add cannot duplicate an
+  insertion" structural rather than advisory. The class owns no verb for
+  the Library or for going live, so the page cannot offer one (`BibleImport`
+  likewise has no destination at all). See `bible_import_page_tests` for
+  the journey on a real worker and the BI.5 rows of `workspace_ui_tests`
+  for the page's shape off screen.
 
 ## Leaves
 

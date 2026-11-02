@@ -49,6 +49,8 @@ add_library(openshow-ui-core STATIC
   SceneAsk.h
   SceneEdit.cpp
   SceneEdit.h
+  ScriptureImport.cpp
+  ScriptureImport.h
   WorkerController.cpp
   WorkerController.h
   WorkspacePanels.cpp
@@ -84,7 +86,7 @@ set(OPENSHOW_WORKSPACE_QML_NAMES
   Main.qml TopBar.qml SidePanel.qml MediaBin.qml EditCanvas.qml
   ShortcutMap.qml OutputPanel.qml PlaylistPanel.qml ShowPage.qml
   EditPage.qml SettingsPage.qml PanelField.qml PanelButton.qml
-  ThemeEditorPage.qml
+  ThemeEditorPage.qml BibleImportPage.qml
 )
 set(OPENSHOW_WORKSPACE_QML_FILES)
 foreach(qml IN LISTS OPENSHOW_WORKSPACE_QML_NAMES)

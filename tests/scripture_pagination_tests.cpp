@@ -215,6 +215,46 @@ void testBoxAndSizeShape() {
     check(!bigScript.state->sizes.empty(), "measurement really happened at the chosen size");
 }
 
+// --- the renderer default (size 0) is forwarded, never invented ----------
+
+void testRendererDefaultSizePassesThrough() {
+    // The renderer's own default size lives in the worker alone (it is the
+    // answer to fontSize 0). The paginator must forward 0 unchanged — any
+    // number it invented here would be a second answerer, and the page
+    // would be packing against one engine while the audience saw another.
+    // std::function copies the callable, so the sizes land in a shared
+    // vector the recorder and this function both see.
+    auto sizes = std::make_shared<std::vector<double>>();
+    struct Recorder {
+        std::shared_ptr<std::vector<double>> sizes;
+        bool operator()(const std::vector<MeasureRequest>& requests,
+                        std::vector<MeasureReply>* replies, std::string*) {
+            for (const MeasureRequest& request : requests) {
+                sizes->push_back(request.fontSize);
+                MeasureReply reply;
+                reply.key = request.key;
+                reply.height = 24.0;  // whatever the engine says the default is
+                reply.lineCount = 1;
+                replies->push_back(reply);
+            }
+            return true;
+        }
+    } recorder{sizes};
+    const std::vector<PaginationVerse> verses{{"1:1", "First words."}, {"1:2", "Second words."}};
+    const PaginationOutcome outcome =
+        paginateScripture(input(verses, style(800, 90, /*size=*/0.0), "Mark 1:1-2"), recorder);
+    check(outcome.ok && outcome.slides.size() == 1,
+          "a theme with no size of its own still paginates (the renderer's default measures)");
+    check(!sizes->empty(), "measurement happened at the default too");
+    for (const double size : *sizes) {
+        if (size != 0.0) {
+            check(false, "size 0 reaches the engine unchanged — the default is the worker's, not ours");
+            return;
+        }
+    }
+    check(true, "size 0 reaches the engine unchanged — the default is the worker's, not ours");
+}
+
 // --- splits: sentences first, then words, identity preserved ----------------
 
 void testSentenceSplit() {
@@ -446,6 +486,7 @@ void testMeasureDiscipline() {
 int main() {
     testFitsOneSlide();
     testBoxAndSizeShape();
+    testRendererDefaultSizePassesThrough();
     testSentenceSplit();
     testWordSplit();
     testUnicode();

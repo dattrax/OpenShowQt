@@ -909,6 +909,68 @@ QString DocumentController::themeSampleSceneJson(const QString& themeId) const {
     return QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
 }
 
+// --- the Bible importer's off-air compile (task BI.5) -----------------------
+
+namespace {
+
+// A COPY of the live service with one throwaway slide added. A scripture
+// slide joins the schedule owning no theme and customising nothing, so its
+// appearance is the chain as the service stands — worn theme, Default
+// layer, built-in box — and a copy of the real documents is what walks
+// that chain identically. createShow stands in for createScriptureShow
+// because the scripture fields (ownership, provenance) speak nothing the
+// compile reads. The copy dies with the call: no history, no dirty flag,
+// no output.
+bool compileScriptureFixture(const openshow::domain::Documents& documents,
+                             const std::vector<std::string>& lines,
+                             openshow::scene::Scene* scene) {
+    openshow::domain::Documents fixture = documents;
+    const openshow::domain::Id show = fixture.createShow("Scripture preview");
+    const openshow::domain::Id slide = fixture.appendSlide(show);
+    if (show.empty() || slide.empty() || !fixture.setSlideLines(show, slide, lines)) {
+        return false;
+    }
+    return openshow::scene::compileSlide(fixture, show, slide, scene);
+}
+
+}  // namespace
+
+QVariantMap DocumentController::scriptureBoxStyle() const {
+    // One word is enough: the primary box's rectangle and typography are
+    // the chain's answer regardless of the words, and this compiles the
+    // same first text item a generated slide's words would fill.
+    openshow::scene::Scene scene;
+    QVariantMap style;
+    if (!compileScriptureFixture(fDocuments, {"a"}, &scene)) {
+        return style;
+    }
+    for (const openshow::scene::SceneItem& item : scene.items) {
+        if (item.isImage) {
+            continue;  // the primary lyric box is the first TEXT item
+        }
+        style.insert(QStringLiteral("boxWidth"), item.width);
+        style.insert(QStringLiteral("boxHeight"), item.height);
+        style.insert(QStringLiteral("fontSize"), item.fontSize);
+        style.insert(QStringLiteral("lineSpacing"), item.lineSpacing);
+        style.insert(QStringLiteral("fontFamily"), QString::fromStdString(item.fontFamily));
+        return style;
+    }
+    return style;  // no text box at all: the importer refuses with its own sentence
+}
+
+QString DocumentController::scriptureSlideSceneJson(const QStringList& lines) const {
+    std::vector<std::string> authored;
+    authored.reserve(lines.size());
+    for (const QString& line : lines) {
+        authored.push_back(line.toStdString());
+    }
+    openshow::scene::Scene scene;
+    if (!compileScriptureFixture(fDocuments, authored, &scene)) {
+        return QString();
+    }
+    return QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
+}
+
 // --- theme surfaces (task TH.5, themes plan) --------------------------------
 
 namespace {
@@ -1528,22 +1590,32 @@ bool DocumentController::addScripturePassage(const QString& playlistId, const QS
         return false;
     }
     // Shapes are checked before the edit opens: a row that is not a list
-    // of strings is a caller bug, and refusing here means the document
-    // never sees a half-built slide.
-    std::vector<std::vector<std::string>> boxes;
+    // of strings (with optional notes) is a caller bug, and refusing here
+    // means the document never sees a half-built slide.
+    struct SlideSpec {
+        std::vector<std::string> lines;
+        std::string notes;  // the verse label, in NOTES — never on the slide
+    };
+    std::vector<SlideSpec> boxes;
     boxes.reserve(slides.size());
     for (const QVariant& row : slides) {
-        if (!row.canConvert<QVariantList>()) {
+        SlideSpec spec;
+        QVariantList lines;
+        if (row.typeId() == QMetaType::QVariantMap) {
+            const QVariantMap map = row.toMap();
+            lines = map.value(QStringLiteral("lines")).toList();
+            spec.notes = map.value(QStringLiteral("notes")).toString().toStdString();
+        } else if (row.canConvert<QVariantList>()) {
+            lines = row.toList();
+        } else {
             setStatus(QStringLiteral("add passage: a slide's content is not a list of lines"));
             return false;
         }
-        const QVariantList lines = row.toList();
-        std::vector<std::string> box;
-        box.reserve(lines.size());
+        spec.lines.reserve(lines.size());
         for (const QVariant& line : lines) {
-            box.push_back(line.toString().toStdString());
+            spec.lines.push_back(line.toString().toStdString());
         }
-        boxes.push_back(std::move(box));
+        boxes.push_back(std::move(spec));
     }
     openshow::domain::Id created;
     std::string error;
@@ -1560,9 +1632,12 @@ bool DocumentController::addScripturePassage(const QString& playlistId, const QS
             // History will not roll a refused mutation back for us (the
             // paste rule), so any later step that fails takes the whole
             // young show with it — the document never keeps half a passage.
-            for (const std::vector<std::string>& box : boxes) {
+            for (const SlideSpec& spec : boxes) {
                 const openshow::domain::Id slide = fDocuments.appendSlide(created, &error);
-                if (slide.empty() || !fDocuments.setSlideLines(created, slide, box, &error)) {
+                if (slide.empty() ||
+                    !fDocuments.setSlideLines(created, slide, spec.lines, &error) ||
+                    (!spec.notes.empty() &&
+                     !fDocuments.setSlideNotes(created, slide, spec.notes, &error))) {
                     fDocuments.removeShow(created, nullptr);
                     created.clear();
                     return false;

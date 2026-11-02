@@ -25,6 +25,8 @@
 
 #include "DocumentController.h"
 #include "WorkerController.h"
+#include "BibleImport.h"
+#include "ScriptureImport.h"
 #include "WorkspacePanels.h"
 #include "AppSettings.h"
 
@@ -68,6 +70,15 @@ int main(int argc, char* argv[]) {
     // fullscreen); the page and the shortcut gates both bind to it.
     openshow::ui::AppSettings settings;
 
+    // Milestone BI: the Bible importer's two sessions. The lookup (BI.2)
+    // owns the transient passage and dies with the page; the page session
+    // (BI.5) packs the selection through the worker's own text layout
+    // (BI.4), previews it off air, and offers the schedule as its only
+    // destination (BI.3). Both bind to the objects the whole shell
+    // already answers to; neither owns them.
+    BibleImport bibleImport;
+    openshow::ui::ScriptureImport scriptureImport(&bibleImport, &documents, &worker);
+
     QObject::connect(&app, &QGuiApplication::aboutToQuit,
                      [&worker] { worker.shutdownNow(); });
 
@@ -98,6 +109,14 @@ int main(int argc, char* argv[]) {
     engine.rootContext()->setContextProperty("docs", &documents);
     engine.rootContext()->setContextProperty("panels", &panels);
     engine.rootContext()->setContextProperty("appSettings", &settings);
+    // Milestone BI: the importer's page. The lookup session owns the
+    // transient passage (BI.2); the page session turns a selection into
+    // worker-measured slides (BI.4), shows them off air through the same
+    // preview transport the edit canvas uses, and Add is the one door to
+    // today's schedule (BI.3) — there is no other destination and there
+    // never will be one from these objects.
+    engine.rootContext()->setContextProperty("bible", &bibleImport);
+    engine.rootContext()->setContextProperty("scripture", &scriptureImport);
     // Fixed-size capture seam for the workspace layout checks (PLAN.md UI
     // acceptance: "agreed captures at fixed sizes"; the reference's
     // measurements were taken at 1680x1020).

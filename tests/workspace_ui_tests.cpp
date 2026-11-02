@@ -12,7 +12,9 @@
 #include <QtMath>
 
 #include "AppSettings.h"
+#include "BibleImport.h"
 #include "DocumentController.h"
+#include "ScriptureImport.h"
 #include "WorkerController.h"
 #include "WorkspacePanels.h"
 #include "openshow/protocol/preview_wire.h"
@@ -32,6 +34,11 @@ int main(int argc, char** argv) {
     openshow::ui::WorkspacePanels panels(nullptr, base / "workspace.ini");
     openshow::ui::AppSettings settings(nullptr, base / "app.ini");
     openshow::ui::WorkerController worker;
+    // Milestone BI: the importer's sessions ride the same shell the
+    // operator sees; the workspace test proves the page loads and behaves
+    // off air with no worker and no network at all.
+    BibleImport bible;
+    openshow::ui::ScriptureImport scripture(&bible, &docs, &worker);
     docs.createSong("Good Grace");
     const QString songId = docs.currentSongId();
     docs.addSlide();
@@ -63,6 +70,8 @@ int main(int argc, char** argv) {
     context->setContextProperty("docs", &docs);
     context->setContextProperty("panels", &panels);
     context->setContextProperty("appSettings", &settings);
+    context->setContextProperty("bible", &bible);
+    context->setContextProperty("scripture", &scripture);
     context->setContextProperty("uiSize", QSize(1380, 800));
     engine.loadFromModule("OpenShow", "Main");
     if (engine.rootObjects().isEmpty()) {
@@ -1548,6 +1557,50 @@ int main(int argc, char** argv) {
                   && docs.themes().size() == 1
                   && docs.status().contains(QStringLiteral("default theme")),
               "even asked directly, the Default theme refuses to be removed");
+        window->setProperty("page", "show");
+        QTest::qWait(60);
+    }
+
+    // --- task BI.5: the import page in the shell (off-air surface only) ----
+    // The More menu carries one entry; it opens the page, and the page
+    // opens on the online notice with nothing to add. No worker runs and
+    // no network answers here — the point asserted is the SHAPE of the
+    // surface: an Add that sleeps until slides measure, a Cancel, and no
+    // control anywhere on the page that could reach the Library or air.
+    {
+        auto clickAt = [window](QQuickItem* item, qreal x, qreal y) {
+            if (item) {
+                QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                  item->mapToScene(QPointF(x, y)).toPoint());
+            }
+        };
+        auto* more = findNamed(window->contentItem(), "toolbarMore");
+        clickAt(more, 33, 26);
+        QTest::qWait(80);
+        auto* bibleEntry = findNamed(window->contentItem(), "bibleImportMenuItem");
+        check(bibleEntry != nullptr, "the More menu carries the Bible import entry");
+        clickAt(bibleEntry, 30, 12);
+        QTest::qWait(80);
+        auto* page = window->findChild<QQuickItem*>("bibleImportPage");
+        check(window->property("page").toString() == QLatin1String("bible") && page
+                  && page->isVisible(),
+              "the entry opens the Bible import page");
+        auto* notice = window->findChild<QQuickItem*>("bibleNoticeLabel");
+        check(notice && notice->property("text").toString().contains(QStringLiteral("internet")),
+              "the page opens on the online notice");
+        auto* add = window->findChild<QQuickItem*>("bibleAddButton");
+        auto* cancel = window->findChild<QQuickItem*>("bibleCancelButton");
+        check(add && !add->property("enabled").toBool() && cancel,
+              "with nothing fetched, Add sleeps and Cancel is there");
+        check(add && add->property("text").toString().contains(QStringLiteral("schedule")),
+              "the Add names its only destination: today's schedule");
+        check(!worker.outputLive() && worker.frames() == 0,
+              "opening and reading the import page asks for no output at all");
+        // Even clicking Add while it sleeps (programmatic ask) writes nothing.
+        const qsizetype entriesBeforeAdd = docs.playlistEntries().size();
+        check(!scripture.addToSchedule() && docs.playlistEntries().size() == entriesBeforeAdd
+                  && scripture.slides().isEmpty(),
+              "Add with no measured slides refuses and writes nothing");
         window->setProperty("page", "show");
         QTest::qWait(60);
     }
