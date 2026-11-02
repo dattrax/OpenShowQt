@@ -4,8 +4,8 @@ Updated: 2026-11-02 (Europe/London).
 
 ## Current checkpoint
 
-Current work: **Bible import is underway — BI.1 is DONE** (2026-11-02):
-the provider access approach is recorded in
+Current work: **Bible import is underway — BI.1 and BI.2 are DONE**
+(2026-11-02). BI.1: the provider access approach is recorded in
 [docs/ui/bible-import-plan.md](docs/ui/bible-import-plan.md) (passage-only
 HTTPS fetch of the ONE requested Bible Gateway page, robots-allowed path,
 no corpus, attribution carried; live markup facts recorded the same day),
@@ -14,8 +14,14 @@ boundaries from the page's own book-chapter-verse spans, entities and
 Unicode preserved, headings/cross-references/nav excluded — refusing
 invalid references, blocked pages, changed markup and translation
 mismatches without importing anything (`bible_import_tests`, verified
-against the live ESV/NIV/error pages). Next is BI.2: the asynchronous
-bounded lookup with transient state. Before it, **the Themes amendment
+against the live ESV/NIV/error pages). BI.2: the frontend's `BibleImport`
+session drives the lookup — one in-flight HTTPS request with a transfer
+timeout, explicit no-cache attributes and a 6 MB body cap, a generation
+counter so a superseded or cancelled reply answers to nobody, its own
+sentences for offline, timeout and HTTP errors, and verses that die the
+moment the translation moves; fetched bytes exist only in memory until Add
+(`bible_lookup_tests` on a scripted manager). Next is BI.3: the
+schedule-owned scripture show. Before BI, **the Themes amendment
 (TH.9) is DONE** — the built-in look is now a real, embedded, undeletable **Default** theme (reserved id `default`,
 seeded first, re-ensured after every successful load, the chain's last
 layer; editable like any theme but refused by delete, with the editor's
@@ -107,6 +113,7 @@ completed seek-clock epoch; supersession and failure have distinct outcomes.
 | Themes TH.8 acceptance (2026-11-01) | `document_controller_tests` placement surfaces — applied-rect rows and `boxAt` hit test, geometry writes routed to a placement customization while the authored rect stays untouched underneath (proved by parsing the saved file's own JSON), per-field refusal on an unplaced box, revert-one-unit, and the sample/createThemeFromCurrent/duplicate carry the placement; `workspace_ui_tests` drives the shipped UI — the editor's fields asleep on a theme with no opinion, dragging the dashed OFFER makes a placement moved by exactly the pointer's travel, one undo removes the whole gesture, four typed numbers write one unit, a refused width changes nothing and the fields snap back, No placement clears the rectangle and leaves the theme intact, and a page re-shown after outside edits still reads the record (the stale-binding bug this check caught ships with the fix); on the Edit page THEME PLACES names the owner, a typed customization flips it to THIS SLIDE with the revert live, the revert hands the whole rectangle back, and a new box is unplaced and keeps authored edits; captures inspected — the Edit page draws the canvas chrome at House's 240/620/1440/320 under THEME PLACES and the Themes page shows that rectangle solid with the fields holding its numbers; 57/57 desktop and 43/43 headless; evidence in [the plan](docs/ui/themes-plan.md) and [the architecture](docs/architecture.md) |
 | Themes TH.9 acceptance (2026-11-02) | `domain_tests` — a fresh service is seeded with exactly the Default theme, its look checked property-for-property against the built-in it replaced, unthemed slides resolve through the floor, Default renames and places like any theme but removal is refused naming itself, and a pre-amendment manifest opens healed with Default re-ensured; `document_controller_tests` — a drag on the UNPLACED primary box of a slide nothing places lands in `customizations.placement` with the saved file's authored rectangle unchanged (proved by parsing the manifest's own JSON), rows carry the applied rectangle and the `primary`/`placed` flags, and one revert hands the slide back to its authored box; `workspace_ui_tests` — More opens on the Default row with the editor still offered, Delete sleeps while Default is selected, and with only Default left every targeted control disables while a directly-asked removal is refused; captures inspected with Default leading the list and the THEME PLACES story unchanged; 57/57 desktop and 43/43 headless |
 | Bible import BI.1 acceptance (2026-11-02) | `bible_import_tests` — live-shape passage page parses to ordered verses (chapter/verse boundaries, `&ldquo;`/numeric entities, literal Unicode), headings/cross-reference anchors/verse numbers/site furniture never ride in a verse, the attribution block arrives as licence text; refusals: no-results, blocked, changed-markup, empty page, and a translation that answered something else (names both, imports nothing); translation menu carries NIV and KJV; the same parser verified against the live ESV, NIV and invalid-reference pages on 2026-11-02; 58/58 desktop and 44/44 headless |
+| Bible import BI.2 acceptance (2026-11-02) | `bible_lookup_tests` — scripted `QNetworkAccessManager` with fake replies: opens on the internet notice; the request is HTTPS with encoded `search`/`version`, a transfer timeout, `CacheSaveControlAttribute=false` and `AlwaysNetwork` load (nothing fetched is ever cached); success pre-selects verses and carries the attribution; offline says the notice and retry re-asks; the timeout has its own sentence; cancel retires the reply so it cannot write a passage later; a superseded reply leaves the newer passage standing; the 6 MB cap refuses unparsed; HTTP 403 answers with its number; an empty reference sends nothing; changing the translation clears the stale verses and attribution; 59/59 desktop and 44/44 headless |
 | Documentation | Current links, historical archive integrity and whitespace checked |
 
 Presets ran sequentially. Frame/position progress was measured; acoustic offset,

@@ -259,6 +259,15 @@ if(OPENSHOW_BUILD_UI)
   target_link_libraries(document_controller_tests PRIVATE openshow::ui-core)
   add_test(NAME document_controller_tests COMMAND document_controller_tests)
 
+  # Milestone BI (task BI.2): the Bible importer's session rules on a
+  # scripted network manager — success, offline and retry, timeout,
+  # cancel, a superseded reply, the size cap, an HTTP error and the
+  # translation-change rule. QCoreApplication only, no display.
+  add_executable(bible_lookup_tests bible_lookup_tests.cpp)
+  target_link_libraries(bible_lookup_tests PRIVATE openshow::ui-core Qt6::Test)
+  add_test(NAME bible_lookup_tests COMMAND bible_lookup_tests)
+  set_tests_properties(bible_lookup_tests PROPERTIES TIMEOUT 30)
+
   # Task 3.4's clear transforms and content flags, pinned headless: the
   # derived scenes must survive the strict wire validator and remove
   # exactly one layer each (Qt Core only, like the controller fixtures).
