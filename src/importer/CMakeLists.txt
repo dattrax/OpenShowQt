@@ -6,6 +6,7 @@
 # network I/O belongs to the frontend (task BI.2).
 add_library(openshow_importer STATIC
   biblepassage.cpp
+  scripturepagination.cpp
 )
 target_include_directories(openshow_importer PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -639,6 +639,33 @@ bool OutputSession::takePreviewReady(PreviewReady* out) {
     return fPreview.takeReady(out);
 }
 
+bool OutputSession::measureText(const MeasureBlock& block, float* heightOut,
+                                int* lineCountOut, std::string* error) {
+    // Task BI.4: the ONE measurer. This runs the block through the same
+    // engine, at scale 1.0 — no shrink pass — that draws the audience's
+    // slides, so a page the importer packed by these numbers packs the
+    // same way the worker will draw it. Off-thread layout is 6.22a's
+    // sanctioned shape (per-thread FontCollection); nothing here touches
+    // the store, the caches, the output or the frame loop.
+    if (fScene == nullptr) {
+        if (error != nullptr) {
+            *error = "text.measure has no text engine to measure with (the output is closed)";
+        }
+        return false;
+    }
+    openshow::scene::SceneItem item;
+    item.lines = block.lines;
+    item.fontFamily = block.fontFamily;
+    item.fontSize = block.fontSize;
+    item.width = block.width;
+    item.lineSpacing = block.lineSpacing;
+    const SceneTextEngine::LaidOutItem laid =
+        fScene->textEngine().layout(item, 1.0f, static_cast<float>(block.width));
+    *heightOut = laid.height;
+    *lineCountOut = laid.lineCount;
+    return true;
+}
+
 /*
  * The background-media seam (tasks 5.5–6.15b; BackgroundTransport is the
  * owner since 6.18b). Everything the audience-side media does lives behind

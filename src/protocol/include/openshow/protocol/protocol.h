@@ -101,8 +101,19 @@ namespace openshow::protocol {
 // background's key set is closed — so the gradient is refused loudly, never
 // quietly flattened. A frontend may only send a styled gradient to a worker
 // whose hello names the capability.
+// Minor 14 (task BI.4) adds text measurement: the text.measure command asks
+// this worker's OWN text engine how tall a block of lines is inside a given
+// width at a given size, named by "text.measure.v1". Additive in the honest
+// way — it draws nothing, publishes nothing and touches no scene, store or
+// output; a pre-14 frontend never sends the command and cannot tell that
+// minor 14 exists. It is the reason the Bible importer can paginate: the
+// answer comes from the same SkParagraph/ICU layout the audience's slide is
+// drawn with, so "does this fit the box at this size?" has exactly one
+// answerer in the product (estimate it elsewhere and the importer would be
+// shipping the operator a guess). Bounds for the batch are declared once,
+// beside the method, in preview_wire.h.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 13;
+inline constexpr std::uint32_t kProtocolMinor = 14;
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without
@@ -233,6 +244,42 @@ inline constexpr const char* kMethodMediaStandalone = "media.standalone";
 // wire does not change when 6.15b gives it a production lifetime.
 inline constexpr const char* kMediaSourceVideo = "video";
 inline constexpr const char* kMediaSourceStandalone = "standalone";
+
+// text.measure {"blocks":[{"key":"b0","lines":["line","line"],
+//                 "fontSize":60.0,"width":960.0,"lineSpacing":1.25}, ...]}
+// (task BI.4): ask this worker's own text engine how TALL this block of
+// lines is when wrapped to `width` at `fontSize` — the same SkParagraph/ICU
+// layout that draws the audience's slides, at scale 1.0 (no shrink: "does
+// this fit at the chosen size?" is the whole question, and the product must
+// have exactly one answerer for it). `width` is a finite positive pixel box
+// width in [1, 65536], `fontSize` follows the scene rule (0 means the
+// renderer default, otherwise finite, top at 4096), `lineSpacing` is finite
+// inside [0.25, 8] — the band the layout itself assumes, so a refused ask
+// never substitutes a spacing it did not measure — and `fontFamily` is the
+// optional theme family (absent or "" means the platform default the
+// renderer would use). Alignment is deliberately NOT a knob: it moves lines
+// sideways, never the line count or the height, so leaving it out cannot
+// make a measurement disagree with the drawing.
+//
+// The reply is {"measured":[{"key":"b0","height":h,"lineCount":n}, ...]} —
+// one entry per block, in request order, `key` echoed so a batch answers to
+// its asker even if a future reply ever reorders. Nothing else moves: no
+// scene enters the worker, no pixels are produced, no store is touched, no
+// output changes, and nothing about the measurement can appear on air.
+//
+// Bounds, enforced by both halves and declared once, here: at most
+// kMaxMeasureBatch blocks, a key of 1..kMaxMeasureKeyLength characters, at
+// most kMaxMeasureBlockLines lines per block and kMaxMeasureLineChars per
+// line — the same per-layer caps a drawn scene obeys, so a measurement ask
+// can never be bigger than what the renderer already agrees to draw. The
+// 1 MiB frame cap is what bounds the batch's total text. A batch over a cap
+// is refused naming the cap, BEFORE any of it is parsed, exactly as
+// preview.thumbnails enforces its own.
+inline constexpr const char* kMethodTextMeasure = "text.measure";
+inline constexpr std::size_t kMaxMeasureBatch = 32;
+inline constexpr std::size_t kMaxMeasureKeyLength = 128;
+inline constexpr std::size_t kMaxMeasureBlockLines = 256;
+inline constexpr std::size_t kMaxMeasureLineChars = 1024;
 
 // A framed message larger than this is a protocol error: the only legitimate
 // payloads are control messages, never pixels. The number is BOTH directions'

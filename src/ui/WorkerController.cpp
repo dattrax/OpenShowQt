@@ -216,6 +216,7 @@ void WorkerController::onRpcConnected() {
 void WorkerController::onRpcDisconnected() {
     fConnected = false;
     fHandshakeDone = false;
+    fTextMeasureCapable = false;  // a capability belongs to a live hello (BI.4)
     fStatusRequestId = 0;
     fPreview->setSessionLive(false);
     fPreview->closeStream();
@@ -332,6 +333,12 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             fStandaloneRefusal = reason;
             emit mediaChanged();
         }
+        if (pending.method == proto::kMethodTextMeasure) {
+            // Whoever is paginating by this batch must hear that it failed —
+            // a page packed on missing heights is the exact guess BI.4 is
+            // built to forbid (task BI.4).
+            emit textMeasureFailed(id, reason);
+        }
         setStatus(QStringLiteral("worker error (%1): %2")
                       .arg(QString::fromStdString(pending.method), reason));
         return;
@@ -399,6 +406,7 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         bool previewCapable = false;
         bool selectionCapable = false;
         bool thumbnailCapable = false;
+        bool measureCapable = false;
         if (payload.contains("capabilities") && payload.at("capabilities").is_array()) {
             for (const auto& capability : payload.at("capabilities").as_array()) {
                 if (!capability.is_string()) {
@@ -422,9 +430,17 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                     // the method answers "method not found", which is why the
                     // list asks only when it is named.
                     thumbnailCapable = true;
+                } else if (capability.as_string() == "text.measure.v1") {
+                    // The worker will answer text.measure (task BI.4). The
+                    // importer's pagination is built on this being possible:
+                    // without the capability there is no honest way to say
+                    // how tall a passage is, and pagination says so rather
+                    // than laying words out by eye.
+                    measureCapable = true;
                 }
             }
         }
+        fTextMeasureCapable = measureCapable;
         // Both targets at once, before anything is asked of them: the hello
         // reply is the only place either answer changes, and the consumer's
         // gates are what stop a worker that dropped a capability from being
@@ -483,6 +499,49 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         // carry, which only the consumer's own generation gate can decide are
         // still somebody's.
         fPreview->handleThumbnailsAck(intent, payload);
+        return;
+    }
+
+    if (pending.method == proto::kMethodTextMeasure) {
+        // The answer to a batch (task BI.4): {key, height, lineCount} per
+        // block, in request order, each key echoed exactly as it was sent.
+        // A reply whose shape this build cannot vouch for is reported as a
+        // failed ask, not swallowed: a pager that hears nothing waits on
+        // heights that will never arrive, and waiting forever is not a
+        // failure the operator can act on.
+        const auto measured = payload.find("measured");
+        QVariantList rows;
+        if (measured != payload.end() && measured->value().is_array()) {
+            bool wellFormed = true;
+            for (const boost::json::value& entry : measured->value().as_array()) {
+                if (!entry.is_object()) {
+                    wellFormed = false;
+                    break;
+                }
+                const boost::json::object& row = entry.as_object();
+                const auto key = row.find("key");
+                const auto height = row.find("height");
+                const auto lineCount = row.find("lineCount");
+                if (key == row.end() || !key->value().is_string() || height == row.end() ||
+                    !height->value().is_number() || lineCount == row.end() ||
+                    !lineCount->value().is_number()) {
+                    wellFormed = false;
+                    break;
+                }
+                QVariantMap item;
+                item.insert(QStringLiteral("key"),
+                            QString::fromStdString(std::string(key->value().as_string())));
+                item.insert(QStringLiteral("height"), height->value().to_number<double>());
+                item.insert(QStringLiteral("lineCount"),
+                            static_cast<qint64>(lineCount->value().to_number<std::int64_t>()));
+                rows.push_back(item);
+            }
+            if (wellFormed) {
+                emit textMeasured(id, rows);
+                return;
+            }
+        }
+        emit textMeasureFailed(id, QStringLiteral("the worker's measurement reply was malformed"));
         return;
     }
 
@@ -686,6 +745,79 @@ void WorkerController::requestThumbnails(const QVariantList& slides, qint64 widt
 
 void WorkerController::clearThumbnails() {
     fPreview->clearThumbnails();
+}
+
+qint64 WorkerController::measureText(const QVariantList& blocks) {
+    // Task BI.4. The guards answer to the importer's rule: it paginates by
+    // the worker's own layout or not at all, so a send that cannot happen
+    // says WHY in the status line and returns 0 rather than pretending an
+    // estimate is an answer.
+    if (!fConnected || !fHandshakeDone) {
+        setStatus(QStringLiteral("measure text: the worker is not connected"));
+        return 0;
+    }
+    if (!fTextMeasureCapable) {
+        setStatus(QStringLiteral(
+            "measure text: this worker does not offer text measurement"));
+        return 0;
+    }
+    if (blocks.isEmpty()) {
+        setStatus(QStringLiteral("measure text: nothing was asked to be measured"));
+        return 0;
+    }
+    if (static_cast<std::size_t>(blocks.size()) > proto::kMaxMeasureBatch) {
+        setStatus(QStringLiteral("measure text: at most %1 blocks per ask")
+                      .arg(static_cast<qint64>(proto::kMaxMeasureBatch)));
+        return 0;
+    }
+    // The wire's shape and caps, enforced here so the worker's refusal is
+    // never the first time anyone noticed. Keys must be non-empty: they are
+    // how the answer is read back.
+    boost::json::array jsonBlocks;
+    for (const QVariant& entry : blocks) {
+        const QVariantMap block = entry.toMap();
+        const QString key = block.value(QStringLiteral("key")).toString();
+        const QVariantList lines = block.value(QStringLiteral("lines")).toList();
+        if (key.isEmpty() ||
+            key.size() > static_cast<int>(proto::kMaxMeasureKeyLength)) {
+            setStatus(QStringLiteral("measure text: every block needs a key of at most %1 "
+                                     "characters")
+                          .arg(static_cast<qint64>(proto::kMaxMeasureKeyLength)));
+            return 0;
+        }
+        if (static_cast<std::size_t>(lines.size()) > proto::kMaxMeasureBlockLines) {
+            setStatus(QStringLiteral("measure text: block '%1' asks for more than %2 lines")
+                          .arg(key, static_cast<qint64>(proto::kMaxMeasureBlockLines)));
+            return 0;
+        }
+        boost::json::array jsonLines;
+        jsonLines.reserve(lines.size());
+        for (const QVariant& line : lines) {
+            const QString text = line.toString();
+            if (text.size() > static_cast<int>(proto::kMaxMeasureLineChars)) {
+                setStatus(QStringLiteral("measure text: a line in block '%1' is over %2 "
+                                         "characters")
+                              .arg(key, static_cast<qint64>(proto::kMaxMeasureLineChars)));
+                return 0;
+            }
+            jsonLines.push_back(boost::json::value(text.toStdString()));
+        }
+        boost::json::object jsonBlock{
+            {"key", key.toStdString()},
+            {"lines", std::move(jsonLines)},
+            {"fontSize", block.value(QStringLiteral("fontSize")).toDouble()},
+            {"width", block.value(QStringLiteral("width")).toDouble()},
+            {"lineSpacing", block.value(QStringLiteral("lineSpacing")).toDouble()},
+        };
+        const QVariant family = block.value(QStringLiteral("fontFamily"));
+        if (family.isValid() && !family.toString().isEmpty()) {
+            jsonBlock["fontFamily"] = family.toString().toStdString();
+        }
+        jsonBlocks.push_back(std::move(jsonBlock));
+    }
+    const std::int64_t id =
+        sendRequest(proto::kMethodTextMeasure, boost::json::object{{"blocks", std::move(jsonBlocks)}});
+    return id;
 }
 
 void WorkerController::presentScene(qint64 revision) {

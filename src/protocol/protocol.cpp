@@ -245,7 +245,7 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                             "media.error.v1", "media.audio-state.v1", "media.transport.v1",
                             "media.standalone.v1", "scene.image-items.v1",
                             "scene.background-fit.v1", "scene.background-fit-blur.v1",
-                            "scene.background-gradient.v1"}}};
+                            "scene.background-gradient.v1", "text.measure.v1"}}};
     return true;
 }
 

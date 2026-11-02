@@ -4,7 +4,7 @@ Updated: 2026-11-02 (Europe/London).
 
 ## Current checkpoint
 
-Current work: **Bible import is underway — BI.1, BI.2 and BI.3 are DONE**
+Current work: **Bible import is underway — BI.1 through BI.4 are DONE**
 (2026-11-02). BI.1: the provider access approach is recorded in
 [docs/ui/bible-import-plan.md](docs/ui/bible-import-plan.md) (passage-only
 HTTPS fetch of the ONE requested Bible Gateway page, robots-allowed path,
@@ -27,8 +27,17 @@ and licence, stored as optional format-6 keys that ordinary files never
 gain) plus its slides and its row on today's schedule as ONE undoable edit
 against an explicit target; the Library list, count and drawer search never
 see the item, save/reopen keeps the words and provenance, and removal
-leaves nothing behind (`domain_tests` + `document_controller_tests`). Next
-is BI.4: theme-sized pagination measured by the worker's text layout.
+leaves nothing behind (`domain_tests` + `document_controller_tests`). BI.4:
+pagination now measures instead of guessing — protocol minor 14's
+`text.measure` command answers "how tall is this block at this width and
+size?" from the worker's own SkParagraph/ICU layout (capability
+`text.measure.v1`; nothing drawn, stored or woken), the Qt-free
+`paginateScripture` packs whole verses and splits long ones at sentence
+then word boundaries through the resolved theme's box, and the reference
+and attribution reserve measured room rather than riding on the slide's
+words (`text_measure_tests` on a live worker + `scripture_pagination_tests`
+properties). Next is BI.5: the importer page binding lookup, selection,
+measured preview and the schedule-only Add together.
 Before BI, **the Themes amendment
 (TH.9) is DONE** — the built-in look is now a real, embedded, undeletable **Default** theme (reserved id `default`,
 seeded first, re-ensured after every successful load, the chain's last
@@ -123,6 +132,7 @@ completed seek-clock epoch; supersession and failure have distinct outcomes.
 | Bible import BI.1 acceptance (2026-11-02) | `bible_import_tests` — live-shape passage page parses to ordered verses (chapter/verse boundaries, `&ldquo;`/numeric entities, literal Unicode), headings/cross-reference anchors/verse numbers/site furniture never ride in a verse, the attribution block arrives as licence text; refusals: no-results, blocked, changed-markup, empty page, and a translation that answered something else (names both, imports nothing); translation menu carries NIV and KJV; the same parser verified against the live ESV, NIV and invalid-reference pages on 2026-11-02; 58/58 desktop and 44/44 headless |
 | Bible import BI.2 acceptance (2026-11-02) | `bible_lookup_tests` — scripted `QNetworkAccessManager` with fake replies: opens on the internet notice; the request is HTTPS with encoded `search`/`version`, a transfer timeout, `CacheSaveControlAttribute=false` and `AlwaysNetwork` load (nothing fetched is ever cached); success pre-selects verses and carries the attribution; offline says the notice and retry re-asks; the timeout has its own sentence; cancel retires the reply so it cannot write a passage later; a superseded reply leaves the newer passage standing; the 6 MB cap refuses unparsed; HTTP 403 answers with its number; an empty reference sends nothing; changing the translation clears the stale verses and attribution; 59/59 desktop and 44/44 headless |
 | Bible import BI.3 acceptance (2026-11-02) | `domain_tests` — `createScriptureShow` names itself after the reference, carries ownership and provenance from creation and refuses a blank reference or translation naming each; the manifest gains `scheduleOwned`/`scripture` only on the importer's entry (the Library show's entry gains no keys), the item round-trips field-for-field through `sameService`, a format-1 file claiming either key is refused naming it, and provenance on a show that is not schedule-owned is refused; `document_controller_tests` — one `addScripturePassage` lands show + two slides + the schedule's first row, the Library list/count and the drawer search stay clean of it, one undo removes the whole item and one redo restores the same identity, the saved manifest carries the provenance, a reopened controller reads the row back with the selected words while the Library stays empty, removing the schedule row leaves nothing, and an Add against a schedule that does not exist is refused naming the target; 59/59 desktop and 44/44 headless |
+| Bible import BI.4 acceptance (2026-11-02) | `protocol_tests` — hello serves minor 14 and names `text.measure.v1` (both capability tripwires moved to 17); `text_measure_tests` on a live `openshow-worker` — the same line at size 80 measures taller than at 40 with the same line count, the same text wraps to more lines in a narrower box (real SkParagraph/ICU layout answering, not a character count), Unicode words measure and wrap, an empty block measures zero, a named family measures and an unknown one falls back rather than refusing, a batch answers whole and in order with keys echoed, and every cap refusal (over-batch naming the cap, spacing outside the layout's band, zero width, missing key/lines, over-cap lines) names itself while the session lives on; `scripture_pagination_tests` on a scripted monotonic engine — whole verses pack one per line, a narrow box or a larger chosen size means MORE slides never smaller words (every ask carries the chosen size), long verses split at a sentence boundary (`.`/`!`/`?`/danda followed by whitespace, ellipsis-safe) falling back to word boundaries, every continuation slide still names its verse, concatenated slide text equals the selected passage after whitespace stripping in every case, no split ever lands inside a UTF-8 character, the reference/attribution reserve exactly their measured height and an attribution that eats the box blocks Add with "leave no room", and a zero-width box, a NaN height, a single unfitting word (naming its verse), a dead engine (latched, its own sentence passed through) or a shuffled/short answer each refuse with nothing generated; 61/61 desktop and 45/45 headless |
 | Documentation | Current links, historical archive integrity and whitespace checked |
 
 Presets ran sequentially. Frame/position progress was measured; acoustic offset,

@@ -340,6 +340,33 @@ public:
     // stream notifications are dropped, never sent (task 6.5).
     bool takePreviewReady(PreviewReady* out);
 
+    // --- text measurement (task BI.4) ---
+
+    // One block of words to measure: exactly the knobs SceneTextEngine::
+    // layout reads for a text item. No alignment and no box height: neither
+    // changes how tall wrapped lines are, and the question asked is "how
+    // tall at this width and size", at scale 1.0 — the shrink-to-fit pass
+    // belongs to layoutScene and is deliberately NOT part of a measurement.
+    struct MeasureBlock {
+        std::vector<std::string> lines;
+        std::string fontFamily;                              // "" = platform default
+        double fontSize = 0.0;                               // 0 = renderer default
+        double width = 0.0;                                  // finite, > 0
+        double lineSpacing = openshow::domain::kDefaultLineSpacing;
+    };
+
+    // Runs the block through the production renderer's OWN text engine on
+    // the CALLER's thread (the RPC loop): the same SkParagraph/ICU layout
+    // the audience's slides are drawn with, so "does this fit?" has one
+    // answerer in the product (task BI.4). Legal from this thread by 6.22a:
+    // the FontCollection an engine lays out with is per-thread, and the
+    // prepare executor has been building layouts off the render thread
+    // since 6.9b. Nothing is stored, cached, presented or woken. Refused
+    // only when there is no renderer — the reply must be an honest failure,
+    // never a guessed height.
+    bool measureText(const MeasureBlock& block, float* heightOut, int* lineCountOut,
+                     std::string* error);
+
     // --- background media (task 5.5d) ---
 
     // Pops the pending media.error notification (RPC thread, from

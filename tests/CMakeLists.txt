@@ -11,6 +11,14 @@ add_executable(bible_import_tests bible_import_tests.cpp)
 target_link_libraries(bible_import_tests PRIVATE openshow::importer)
 add_test(NAME bible_import_tests COMMAND bible_import_tests)
 
+# Milestone BI (task BI.4): the pagination's properties on a scripted
+# measuring engine — order, identity, splits, reservation, honest refusals.
+# Qt-free and engine-free, like the parser's regressions; the claim that
+# the real engine is the worker's layout belongs to text_measure_tests.
+add_executable(scripture_pagination_tests scripture_pagination_tests.cpp)
+target_link_libraries(scripture_pagination_tests PRIVATE openshow::importer)
+add_test(NAME scripture_pagination_tests COMMAND scripture_pagination_tests)
+
 add_executable(scene_tests
   scene_tests.cpp
 )
@@ -307,6 +315,16 @@ if(OPENSHOW_BUILD_UI)
   add_test(NAME document_present_tests
     COMMAND document_present_tests $<TARGET_FILE:openshow-worker>)
   set_tests_properties(document_present_tests PROPERTIES LABELS display TIMEOUT 90)
+
+  # Milestone BI (task BI.4): the measurement service on a real worker —
+  # the SkParagraph/ICU layout that draws the slides is the one answering,
+  # the batch answers whole, and every cap refusal names itself. Needs a
+  # display, like every row a live worker draws.
+  add_executable(text_measure_tests text_measure_tests.cpp)
+  target_link_libraries(text_measure_tests PRIVATE openshow::protocol)
+  add_test(NAME text_measure_tests
+    COMMAND text_measure_tests $<TARGET_FILE:openshow-worker>)
+  set_tests_properties(text_measure_tests PROPERTIES LABELS display TIMEOUT 90)
 
   # Task 6.20c: the whole production journey — author through the panels'
   # DocumentController, an off-air picture of the next slide, the go, the

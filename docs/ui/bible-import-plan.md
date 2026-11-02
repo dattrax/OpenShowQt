@@ -81,6 +81,27 @@ someone's navigation bar on the audience output.
   redirected); the Library list, the Library count and the drawer search
   all exclude schedule-owned shows, while the schedule's own rows and the
   presenter's cue see them normally.
+- **Delivered shape (BI.4, 2026-11-02):** protocol minor 14 adds
+  `text.measure` (capability `text.measure.v1`, contract and batch caps in
+  `protocol.h`): the worker answers "how tall is this block of lines at
+  this width and size?" from its OWN SkParagraph/ICU layout at scale 1.0 —
+  no scene enters the worker, nothing is drawn, stored or woken. The
+  frontend's `WorkerController::measureText` mirrors every cap locally and
+  says so in the status line when a send cannot happen at all (no
+  connection, or a hello without the capability); a malformed or partial
+  answer is a failed ask, never a swallowed one. Pagination itself is the
+  Qt-free pure function `paginateScripture` (`src/importer/`): whole-verse
+  prefix packing with geometric probes in one batched call plus a binary
+  search, a too-long verse split at a sentence boundary where one exists
+  and at a whitespace word boundary otherwise (never inside a UTF-8
+  character), the reference and attribution measured at the chosen size and
+  their wrapped height RESERVED out of the box rather than printed on the
+  slide, and continuation marks carried in the slide's label — which
+  belongs in the slide NOTES, so the slide's words stay exactly the
+  passage. No clipping, no repeats, no silent shrink: an area the words
+  cannot honestly fill blocks with its own sentence (see
+  `scripture_pagination_tests` for the properties and `text_measure_tests`
+  for the real-engine rows).
 
 ## Leaves
 

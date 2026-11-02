@@ -1004,6 +1004,181 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
                 }
             }
         }
+    } else if (name == proto::kMethodTextMeasure) {
+        // Task BI.4: "how tall is this block of words at this width and
+        // size?" answered by this worker's own layout — the importer's
+        // pagination is only honest if these numbers come from the engine
+        // that will draw the slide. Nothing is stored, drawn or woken; the
+        // whole contract is the reply.
+        if (!given.is_object()) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "text.measure wants a {blocks} array"),
+                outbound);
+            return;
+        }
+        const boost::json::object& args = given.as_object();
+        const auto blocksEntry = args.find("blocks");
+        if (blocksEntry == args.end() || !blocksEntry->value().is_array()) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "text.measure wants a \"blocks\" array (an empty one "
+                                 "measures nothing)"),
+                outbound);
+            return;
+        }
+        const boost::json::array& blocks = blocksEntry->value().as_array();
+        // THE CAP, BEFORE ANYTHING IS PARSED — the thumbnail rule: judging
+        // the count first makes an oversized ask cost one comparison rather
+        // than the parse of everything it over.
+        if (blocks.size() > proto::kMaxMeasureBatch) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "text.measure takes at most " +
+                                     std::to_string(proto::kMaxMeasureBatch) +
+                                     " blocks, asked for " + std::to_string(blocks.size())),
+                outbound);
+            return;
+        }
+        // Every block must be whole before ANY is measured: unlike a
+        // thumbnail band, where each row's picture stands on its own, one
+        // pagination ask is a single question, and answering half of it
+        // would let a frontend pack pages on missing heights. The refusal
+        // names the block index so the buggy caller finds its bug.
+        std::vector<OutputSession::MeasureBlock> parsed;
+        parsed.reserve(blocks.size());
+        std::vector<std::string> keys;
+        keys.reserve(blocks.size());
+        for (std::size_t i = 0; i < blocks.size(); ++i) {
+            const std::string at = "text.measure block " + std::to_string(i) + ": ";
+            if (!blocks[i].is_object()) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams, at + "is not an object"),
+                    outbound);
+                return;
+            }
+            const boost::json::object& block = blocks[i].as_object();
+            const auto key = block.find("key");
+            if (key == block.end() || !key->value().is_string() ||
+                key->value().as_string().empty()) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams, at + "has no \"key\""),
+                    outbound);
+                return;
+            }
+            const std::string_view rawKey = key->value().as_string();
+            if (rawKey.size() > proto::kMaxMeasureKeyLength) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     at + "key is over the " +
+                                         std::to_string(proto::kMaxMeasureKeyLength) +
+                                         "-character limit"),
+                    outbound);
+                return;
+            }
+            const auto linesEntry = block.find("lines");
+            if (linesEntry == block.end() || !linesEntry->value().is_array()) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     at + "wants a \"lines\" array of strings"),
+                    outbound);
+                return;
+            }
+            const boost::json::array& lineArray = linesEntry->value().as_array();
+            if (lineArray.size() > proto::kMaxMeasureBlockLines) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     at + "takes at most " +
+                                         std::to_string(proto::kMaxMeasureBlockLines) +
+                                         " lines, asked for " +
+                                         std::to_string(lineArray.size())),
+                    outbound);
+                return;
+            }
+            OutputSession::MeasureBlock parsedBlock;
+            parsedBlock.lines.reserve(lineArray.size());
+            for (const boost::json::value& line : lineArray) {
+                if (!line.is_string() || line.as_string().size() > proto::kMaxMeasureLineChars) {
+                    proto::appendFrame(
+                        proto::makeError(id, proto::kInvalidParams,
+                                         at + "every line must be a string of at most " +
+                                             std::to_string(proto::kMaxMeasureLineChars) +
+                                             " characters"),
+                        outbound);
+                    return;
+                }
+                parsedBlock.lines.push_back(std::string(line.as_string()));
+            }
+            // The scene's own rules, applied here at the wire: 0 is the
+            // renderer's default size, and anything else is finite and
+            // positive. The band's top is the renderer's canvas sanity, not
+            // a text limit — a caller asking for 4000 px was not measuring
+            // a slide.
+            if (!jsonDoubleInRange(block, "fontSize", 0.0, 4096.0, &parsedBlock.fontSize)) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     at + "\"fontSize\" must be finite and between 0 "
+                                          "(renderer default) and 4096"),
+                    outbound);
+                return;
+            }
+            if (!jsonDoubleInRange(block, "width", 1.0, 65536.0, &parsedBlock.width)) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     at + "\"width\" must be finite and between 1 and 65536"),
+                    outbound);
+                return;
+            }
+            // The band is the layout's OWN assumption (SceneText clamps to
+            // it); accepting only values inside the band means a refused
+            // ask is answered by a refusal, never by a quietly
+            // substituted spacing — this build does not measure something
+            // other than what it was asked.
+            if (!jsonDoubleInRange(block, "lineSpacing", 0.25, 8.0, &parsedBlock.lineSpacing)) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     at + "\"lineSpacing\" must be finite and between 0.25 "
+                                          "and 8"),
+                    outbound);
+                return;
+            }
+            const auto family = block.find("fontFamily");
+            if (family != block.end()) {
+                if (!family->value().is_string() ||
+                    family->value().as_string().size() > openshow::scene::kMaxFontFamilyChars) {
+                    proto::appendFrame(
+                        proto::makeError(id, proto::kInvalidParams,
+                                         at + "\"fontFamily\" must be a string of at most " +
+                                             std::to_string(openshow::scene::kMaxFontFamilyChars) +
+                                             " characters"),
+                        outbound);
+                    return;
+                }
+                parsedBlock.fontFamily = std::string(family->value().as_string());
+            }
+            keys.push_back(std::string(rawKey));
+            parsed.push_back(std::move(parsedBlock));
+        }
+        boost::json::array measured;
+        for (std::size_t i = 0; i < parsed.size(); ++i) {
+            float height = 0.0f;
+            int lineCount = 0;
+            std::string error;
+            if (!fSession.measureText(parsed[i], &height, &lineCount, &error)) {
+                // No engine means no honest number for ANY block; the whole
+                // ask fails with the session's own sentence rather than a
+                // reply half full of zeros a frontend could read as "fits".
+                proto::appendFrame(proto::makeError(id, proto::kInternalError, error),
+                                   outbound);
+                return;
+            }
+            measured.push_back(boost::json::object{{"key", keys[i]},
+                                                   {"height", static_cast<double>(height)},
+                                                   {"lineCount", lineCount}});
+        }
+        proto::appendFrame(
+            proto::makeResult(id, boost::json::object{{"measured", std::move(measured)}}),
+            outbound);
     } else if (name == "shutdown") {
         proto::appendFrame(proto::makeResult(id, boost::json::object{{"ok", true}}),
                            outbound);

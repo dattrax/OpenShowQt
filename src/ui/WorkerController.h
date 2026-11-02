@@ -225,6 +225,19 @@ public:
     Q_INVOKABLE void requestThumbnails(const QVariantList& slides, qint64 width, qint64 height);
     Q_INVOKABLE void clearThumbnails();
 
+    // Text measurement (task BI.4): ask the worker's OWN layout engine how
+    // tall these blocks of lines are when wrapped to the asked width at the
+    // asked size — the same SkParagraph/ICU pass that draws the audience's
+    // slides, so the Bible importer packs pages by what the renderer will
+    // really do and never by an estimate. `blocks` is
+    // [{key, lines, fontSize, width, lineSpacing, fontFamily?}], within the
+    // caps the wire declares; a block that breaks one is refused HERE, in
+    // the status line, not by a round trip to the worker's error. The
+    // return is the request id its answer comes back under (see
+    // textMeasured); 0 means nothing was sent — no connection, or a worker
+    // whose hello does not offer text.measure.v1 — with the reason said.
+    Q_INVOKABLE qint64 measureText(const QVariantList& blocks);
+
     // Media transport (task 6.15a, review R15): play/pause/seek/loop/
     // gain/mute as operator operations over the socket. Each call is a
     // fire-and-confirm request — the reply says the worker took it, the
@@ -332,6 +345,9 @@ public:
     qint64 thumbnailStale() const;
     qint64 thumbnailCachedBytes() const;
     QImage thumbnail(const QString& key) const;
+    // The worker's hello named text.measure.v1 (task BI.4): pagination may
+    // ask, and a worker without it is said so rather than worked around.
+    bool textMeasureSupported() const { return fTextMeasureCapable; }
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
@@ -357,6 +373,11 @@ signals:
     // repaints its own row and not the thirty around it; previewChanged still
     // carries the counters and the capability.
     void thumbnailReady(const QString& key);
+    // A measurement batch was answered (task BI.4). Batches can overlap — a
+    // preview regenerated while an older ask is in flight — so the answer
+    // carries the id of the ask it belongs to and a retired ask ignores it.
+    void textMeasured(qint64 requestId, const QVariantList& measured);
+    void textMeasureFailed(qint64 requestId, const QString& reason);
     void sceneChanged();
     void mediaChanged();
 
@@ -405,6 +426,10 @@ private:
     // something already on its way (task 6.8b).
     std::int64_t fStatusRequestId = 0;
     bool fHandshakeDone = false;
+    // Named by the worker's hello, and false again the moment the session is
+    // (task BI.4): "measurable" is a fact about this connection, not about
+    // the build.
+    bool fTextMeasureCapable = false;
     // The SESSION's view of the link, not the socket's: it also goes false when
     // the process is gone, which is a fact the transport is not told about. The
     // QML `connected` property reads this.

@@ -213,7 +213,7 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 16, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 17, "hello lists capabilities");
         {  // Task 6.17b's scene 2 (kinded items) is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasImageItems = std::any_of(
@@ -250,6 +250,16 @@ void testHello() {
                            v.as_string() == "scene.background-gradient.v1";
                 });
             check(hasGradient, "capabilities name scene.background-gradient.v1");
+        }
+        {  // Task BI.4's measurement service is named by one too: the
+           // importer may only paginate by the worker's own layout when the
+           // hello says that layout can be asked for at all.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasMeasure = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == "text.measure.v1";
+                });
+            check(hasMeasure, "capabilities name text.measure.v1");
         }
         {  // Task 5.5d's media visibility is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
