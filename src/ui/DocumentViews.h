@@ -66,6 +66,9 @@ public:
     // ask this so the chrome and the audience's pixels agree about where a
     // box is; the rows above already carry the applied rectangle.
     int placedBoxIndex(const Cursor& cursor) const;
+    // The slide's PRIMARY lyric box (first text item) whether or not a
+    // layer places it (amendment 2026-11-02); -1 for a pictures-only slide.
+    int primaryBoxIndex(const Cursor& cursor) const;
     // The slide named by slideId inside showId, or nullptr. Callers re-check
     // rather than trusting a stale index across a slide removal.
     const openshow::domain::Slide* findSlide(const openshow::domain::Id& showId,

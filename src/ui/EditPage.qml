@@ -274,12 +274,15 @@ Flickable {
             }
         }
 
-        // Where the SELECTED box comes from (themes plan amendment
-        // 2026-11-01): the chain places the slide's primary lyric box, and
-        // the row says so. These two flags drive the PLACEMENT control
-        // below — and a drag or a typed value on a placed box records a
-        // placement CUSTOMIZATION, so the way back to the theme belongs next
-        // to the four numbers it changes.
+        // Where the SELECTED box comes from (amendments 2026-11-01 and
+        // 2026-11-02): every geometry write on the slide's PRIMARY lyric
+        // box records a placement CUSTOMIZATION — whether a theme places or
+        // not — so the owner row and its revert belong to that box always,
+        // not only to the ones a theme currently drives.
+        readonly property bool primaryBox: {
+            const box = editCanvas.boxes[docs.currentBox]
+            return box !== undefined && box.primary === true
+        }
         readonly property bool placedByTheme: {
             const box = editCanvas.boxes[docs.currentBox]
             return box !== undefined && box.placed === true
@@ -310,16 +313,19 @@ Flickable {
             }
         }
 
-        // A box no theme places has nothing to say here: the fields edit its
-        // authored rectangle exactly as they always did.
+        // The owner row belongs to the PRIMARY box whatever the chain is
+        // doing (amendment 2026-11-02): every write here customizes, so the
+        // label says who is drawing the box right now — THIS SLIDE, THEME
+        // PLACES, or AUTHORED while nothing speaks.
         Column {
             spacing: 2
-            visible: boxFields.placedByTheme
+            visible: boxFields.primaryBox
             Text {
                 objectName: "placementOwner"
                 color: boxFields.placementCustomized ? "#ffd666" : "#8ec9f5"
                 font.pixelSize: 10
-                text: boxFields.placementCustomized ? "THIS SLIDE" : "THEME PLACES"
+                text: boxFields.placementCustomized ? "THIS SLIDE"
+                        : boxFields.placedByTheme ? "THEME PLACES" : "AUTHORED"
             }
             PanelButton {
                 objectName: "revertPlacementButton"

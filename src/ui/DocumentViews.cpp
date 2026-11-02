@@ -22,25 +22,32 @@ namespace openshow::ui {
 
 namespace {
 
+// The slide's PRIMARY lyric box (amendment 2026-11-01/2026-11-02): the
+// first TEXT item in draw order, the one a theme's placement drives and
+// the one whose geometry writes record a placement CUSTOMIZATION. -1 when
+// the slide is pictures alone.
+int firstTextIndexOf(const openshow::domain::Slide& slide) {
+    for (std::size_t i = 0; i < slide.items.size(); ++i) {
+        if (slide.items[i].kind != openshow::domain::ItemKind::Image) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;  // a slide of pictures alone has no lyric box
+}
+
 // Which box of a slide the chain PLACES (themes plan amendment
-// 2026-11-01): the PRIMARY lyric box, which is the slide's first TEXT item
-// in draw order, and only when some layer carries a rectangle. -1 means
-// every box draws where it was authored. The list row, the canvas's
-// outlines and its hit test, and the geometry write all ask this one
-// question, so the chrome, the audience's pixels and the inspector's
-// numbers cannot become three different answers about where a box is.
+// 2026-11-01): the primary lyric box, and only when some layer carries a
+// rectangle. -1 means every box draws where it was authored. The list
+// row, the canvas's outlines and its hit test all ask this one question,
+// so the chrome, the audience's pixels and the inspector's numbers cannot
+// become three different answers about where a box is.
 int placedIndexOf(const openshow::domain::Documents& documents,
                   const openshow::domain::Id& showId,
                   const openshow::domain::Slide& slide) {
     if (!documents.appearanceForSlide(showId, slide.id).placement.has_value()) {
         return -1;
     }
-    for (std::size_t i = 0; i < slide.items.size(); ++i) {
-        if (slide.items[i].kind != openshow::domain::ItemKind::Image) {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;  // a slide of pictures alone has no lyric box to place
+    return firstTextIndexOf(slide);
 }
 
 }  // namespace
@@ -147,16 +154,17 @@ QVariantList DocumentViews::slideBoxes(const Cursor& cursor) const {
     if (slide == nullptr) {
         return list;
     }
-    // Which box the chain places (amendment 2026-11-01), and where. The
-    // canvas outlines and handles boxes where the AUDIENCE sees them, so a
-    // placed box's row carries the applied rectangle and says it is applied
-    // ("placed"); the authored numbers stay behind it for the day the theme
-    // stops placing, and the inspector's revert goes back to the theme.
-    const int placed = placedIndexOf(fDocuments, cursor.showId, *slide);
+    // The canvas outlines and handles boxes where the AUDIENCE sees them
+    // (amendments 2026-11-01 and 2026-11-02): the PRIMARY lyric box's row
+    // carries the rectangle the chain resolves — its own placement
+    // customization, else the placing theme's rectangle, else the authored
+    // one — so the chrome, the number fields and the compile are one
+    // answer. Since every move of that box IS a customization, the chrome
+    // follows the pointer even on a slide no theme places; the authored
+    // numbers stay underneath for the day the operator reverts.
+    const int primary = firstTextIndexOf(*slide);
     const std::optional<openshow::domain::BoxRect> look =
-        placed < 0
-            ? std::optional<openshow::domain::BoxRect>()
-            : fDocuments.appearanceForSlide(cursor.showId, slide->id).placement;
+        fDocuments.appearanceForSlide(cursor.showId, slide->id).placement;
     const std::vector<openshow::domain::SlideItem>& items = slide->items;
     for (std::size_t i = 0; i < items.size(); ++i) {
         QVariantMap entry;
@@ -171,12 +179,21 @@ QVariantList DocumentViews::slideBoxes(const Cursor& cursor) const {
                          ? QStringLiteral("image")
                          : QStringLiteral("text"));
         entry.insert(QStringLiteral("assetId"), QString::fromStdString(items[i].assetId));
-        const bool applied = look.has_value() && static_cast<int>(i) == placed;
+        // The PRIMARY lyric box draws at the chain's rectangle whenever one
+        // speaks (customization or theme); every other box — extra text,
+        // pictures — draws where it was authored.
+        const bool applied = look.has_value() && static_cast<int>(i) == primary;
         entry.insert(QStringLiteral("x"), applied ? look->x : items[i].x);
         entry.insert(QStringLiteral("y"), applied ? look->y : items[i].y);
         entry.insert(QStringLiteral("width"), applied ? look->width : items[i].width);
         entry.insert(QStringLiteral("height"), applied ? look->height : items[i].height);
         entry.insert(QStringLiteral("placed"), applied);
+        // Which box is the slide's PRIMARY lyric box (amendment
+        // 2026-11-02): geometry writes on THIS box record a placement
+        // customization, wherever the chain happens to place it; every
+        // other box keeps editing its authored rectangle.
+        entry.insert(QStringLiteral("primary"),
+                     static_cast<int>(i) == firstTextIndexOf(*slide));
         list.append(entry);
     }
     return list;
@@ -190,6 +207,18 @@ int DocumentViews::placedBoxIndex(const Cursor& cursor) const {
         return -1;
     }
     return placedIndexOf(fDocuments, cursor.showId, *slide);
+}
+
+int DocumentViews::primaryBoxIndex(const Cursor& cursor) const {
+    // The slide's PRIMARY lyric box — the first text item — whether or not
+    // any layer places it (amendment 2026-11-02). The geometry write asks
+    // this, so every move of the lyric box is revertible to the theme (or
+    // to the authored rectangle) instead of silently rewriting the slide.
+    const openshow::domain::Slide* slide = cursorSlide(cursor);
+    if (slide == nullptr) {
+        return -1;
+    }
+    return firstTextIndexOf(*slide);
 }
 
 QString DocumentViews::backgroundFit(const Cursor& cursor) const {
@@ -301,6 +330,11 @@ QVariantList DocumentViews::themes() const {
             rect.insert(QStringLiteral("height"), theme->placement->height);
         }
         entry.insert(QStringLiteral("placement"), rect);
+        // The seeded Default theme (amendment 2026-11-02): editable like
+        // any theme, but the application will not delete it, and the
+        // editor's Delete button says so before the domain refuses.
+        entry.insert(QStringLiteral("builtin"),
+                     theme->id == openshow::domain::Documents::kDefaultThemeId);
         list.append(entry);
     }
     return list;

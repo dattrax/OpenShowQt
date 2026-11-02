@@ -689,8 +689,10 @@ void exerciseStyles() {
     check(docs.themeForSlide(show, slide) == nullptr,
           "a show whose default was cleared resolves to no style");
     // Sunset was only ever a value-holder, never a reference — removal
-    // clears `other` and leaves the rest in creation order.
-    check(docs.themeIds() == std::vector<Id>({theme, sunset}), "styleIds reflects removal");
+    // clears `other` and leaves the rest in creation order, which starts
+    // with the seeded Default floor (amendment 2026-11-02).
+    check(docs.themeIds() == std::vector<Id>({"default", theme, sunset}),
+          "styleIds reflects removal");
 }
 
 void exercisePlaylists() {
@@ -2478,6 +2480,57 @@ void exerciseThemePlacement() {
           "and its slide keeps its authored box rather than a ghost");
 }
 
+void exerciseDefaultThemeFloor(const fs::path& tempRoot) {
+    Documents docs;
+    std::string error;
+    // The floor (operator amendment 2026-11-02): every service stands on
+    // the embedded Default theme, seeded at construction before anything
+    // else can stack on it.
+    check(docs.themeIds() == std::vector<Id>({"default"}) && docs.defaultTheme().id == "default" &&
+              docs.findTheme("default") != nullptr,
+          "a fresh service is seeded with exactly the Default theme");
+    const Theme& floor = *docs.findTheme("default");
+    check(floor.name == "Default" && floor.textColor == "#ffffff" &&
+              floor.backgroundColor == "#000000" && floor.backgroundGradient.empty() &&
+              floor.fontFamily.empty() && floor.fontSize == 0.0 && floor.align == "center" &&
+              floor.lineSpacing == kDefaultLineSpacing && !floor.placement,
+          "the Default look is the built-in look it replaced, property for property");
+    const Id show = docs.createShow("Deck", &error);
+    const Id slide = docs.appendSlide(show, &error);
+    const ResolvedAppearance bare = docs.appearanceForSlide(show, slide);
+    check(bare.textColor == "#ffffff" && bare.backgroundColor == "#000000" && !bare.placement,
+          "an unthemed slide resolves through the Default floor");
+    // A theme like any other, except at the delete button...
+    check(docs.renameTheme("default", "House floor", &error) &&
+              docs.findTheme("default")->name == "House floor",
+          "the Default theme renames");
+    const BoxRect spot{120.0, 640.0, 1680.0, 300.0};
+    check(docs.setThemePlacement("default", spot, &error) &&
+              docs.appearanceForSlide(show, slide).placement == std::optional<BoxRect>(spot),
+          "the Default theme places the primary box while it speaks");
+    check(docs.clearThemePlacement("default", &error) &&
+              !docs.appearanceForSlide(show, slide).placement,
+          "and its placement clears back to no opinion");
+    check(!docs.removeTheme("default", &error) && docs.findTheme("default") != nullptr &&
+              error.find("cannot be removed") != std::string::npos,
+          "the Default theme refuses to be removed and stays put");
+    // A service written before the amendment — or hand-edited into its
+    // absence — opens on the floor again: the loader rebuilds the documents
+    // wholesale and ensureDefaultTheme lands after it (storage.cpp).
+    const fs::path preAmendment = tempRoot / "no-floor";
+    std::filesystem::create_directories(preAmendment);
+    writeFile(preAmendment / "service.json",
+              R"({"format":1,"nextOrdinal":9,"shows":[{"id":"show1","name":"Earlier",)"
+              R"("slides":[{"id":"slide1","lines":["Ancient line"]}]}],)"
+              R"("styles":[],"assets":[],"playlists":[]})");
+    Documents healed;
+    check(openshow::domain::loadService(&healed, preAmendment, &error) &&
+              healed.themeIds() == std::vector<Id>({"default"}),
+          "loading a pre-amendment service re-ensures the Default theme");
+    check(healed.appearanceForSlide("show1", "slide1").textColor == "#ffffff",
+          "the healed service draws its slides on the floor");
+}
+
 void exerciseHistory() {
     std::string error;
     Documents docs;
@@ -3238,6 +3291,7 @@ int main() {
     std::filesystem::remove_all(tempRoot);
     exercisePersistence(tempRoot);
     exerciseBoxStorage(tempRoot);
+    exerciseDefaultThemeFloor(tempRoot);
     std::filesystem::remove_all(tempRoot);
 
     exerciseHistory();

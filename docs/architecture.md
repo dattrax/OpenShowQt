@@ -194,7 +194,14 @@ two spellings rather than guessing which half to trust.
 Every slide's drawn appearance resolves through one chain, per property, in
 `Documents::appearanceForSlide`: the slide's own customization first, then the
 session's current theme, then the slide's `themeId`, then the show's
-`defaultThemeId`, then the built-in look. Customizations are sparse
+`defaultThemeId`, then the embedded **Default** theme — since the 2026-11-02
+amendment (**TH.9**) the built-in look exists as a real entity: reserved id
+`default` (outside the `styleN` sequence, so migration can never collide),
+seeded into every `Documents` at construction and re-ensured after every
+successful service load, appended as the chain's last layer (deduped),
+editable like any theme but refused by `removeTheme` and disabled in the
+Theme Editor's Delete button, so the floor is always there and always
+reachable. Customizations are sparse
 (`SlideCustomization` — a property absent from the struct follows the chain;
 TH.2), and the answered empties are real answers, not absences: a gradient
 `""` says flat whatever the theme grades, a family `""` says whatever the
@@ -235,10 +242,19 @@ guessed). Placement resolves through the same chain, and the compile stamps
 the resolved rectangle onto the slide's FIRST TEXT item only: additional
 boxes and every image item keep their authored positions, so a deliberately
 stacked slide does not collapse under a theme. The routing rule the operator
-sees: a drag or typed value on a PLACED box writes a placement CUSTOMIZATION
-(one revert unit "placement", owner label THEME PLACES ↔ THIS SLIDE), never
-the authored rectangle underneath; a box the chain does not drive keeps
-editing authored geometry exactly as before. The Theme Editor's sample
+sees, hardened by the 2026-11-02 amendment (**TH.9**): every drag or typed
+geometry write on the slide's PRIMARY box records a placement CUSTOMIZATION
+(one revert unit "placement") whether or not a theme currently speaks — for
+that row the authored rectangle is read-only legacy, compiled only while the
+whole chain stays silent, so a nudged slide never half-writes a themed look.
+Any other box — an additional text item, every image — keeps editing authored
+geometry exactly as before. The Edit page's owner column answers for the
+primary row in three states (THIS SLIDE / THEME PLACES / AUTHORED) and
+`slideBoxes()` carries the APPLIED rectangle, so canvas chrome is drawn
+where the audience sees the words even when no theme is in play. The
+restore-customizations controls already remove placement with the rest of a
+slide's custom edits — one restore, one undo step, as the operator ruled.
+The Theme Editor's sample
 overlay speaks the slide editor's own gesture language — 8 px handle
 tolerance, 20 authored-px floor, one commit on release — with X/Y/W/H fields
 and a "No placement" clear beside them, and while the theme has no opinion
@@ -260,8 +276,13 @@ routing against real fixtures), `workspace_ui_tests` (menus, badges,
 bulk-undo-once, the themed-state checks, and the placement gestures on both
 pages) and the deterministic captures at 1680/1380/1000 taken with a show
 default, a worn slide theme, two live badges and a themed placement visible
-on both the Edit canvas and the Theme Editor. [themes-plan.md](ui/themes-plan.md)
-carries the model and the acceptance rows; the PLAN ledger closes TH.1–TH.8.
+on both the Edit canvas and the Theme Editor. TH.9 adds its own rows: the
+floor's seeding, refusal and chain tail in `domain_tests`, the primary-box
+write-to-customization routing and applied-rect rows in
+`document_controller_tests`, and the Default-aware list/editor/floor checks
+in `workspace_ui_tests` — the captures now lead the theme list with Default.
+[themes-plan.md](ui/themes-plan.md)
+carries the model and the acceptance rows; the PLAN ledger closes TH.1–TH.9.
 
 ## Review closure: R1–R19 evidence matrix (task 6.20a)
 

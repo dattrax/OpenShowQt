@@ -487,6 +487,31 @@ struct Playlist {
 // the worker will own one instance behind its RPC loop.
 class Documents {
 public:
+    // The Default theme (operator amendment 2026-11-02): one theme that is
+    // always there, so a document always has a starting look and a deleted
+    // or hand-nicked theme never leaves a document looking like nothing.
+    // The application seeds it when a loaded service lacks it and refuses
+    // to delete it; an operator may rename and restyle it like any other
+    // theme. Its id is not drawn from the ordinal sequence, so a document
+    // written before this existed cannot already hold one by accident.
+    static inline constexpr const char kDefaultThemeId[] = "default";
+    // A fresh document already carries its Default theme (operator
+    // amendment 2026-11-02); the loader re-ensures after decoding, so the
+    // entry exists in every model the application can hold.
+    Documents();
+    // The look the Default theme is seeded with: white on black, the
+    // platform font at the renderer's own size, centred at the default
+    // line spacing. Same numbers, two reasons: it is the look every
+    // un-themed slide already draws, so seeding the Default theme moves
+    // nothing, and the operator's own changes to it stick in the document
+    // rather than being reset.
+    static Theme defaultTheme();
+    // Seed the Default theme when the service does not carry its id, so a
+    // file hand-edited into its absence still opens on a look. An existing
+    // theme with that id, whatever its author put in it, is left alone.
+    // Idempotent.
+    void ensureDefaultTheme();
+
     // --- shows ---
 
     // Names must be non-blank; duplicates are allowed (ids distinguish).

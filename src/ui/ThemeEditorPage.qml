@@ -389,6 +389,10 @@ Item {
                 objectName: "themeEditorDelete"
                 text: "Delete"
                 enabled: themeEditor.selectedId !== ""
+                         // The seeded Default theme (amendment 2026-11-02)
+                         // is the floor every chain resolves through:
+                         // editable like any theme, but never deleted.
+                         && !(themeEditor.row && themeEditor.row.builtin === true)
                 onClicked: docs.deleteTheme(themeEditor.selectedId)
             }
         }

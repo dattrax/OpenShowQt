@@ -1136,7 +1136,9 @@ void exerciseThemePanel(const std::filesystem::path& root) {
               chorus.value(QStringLiteral("lineSpacing")).toDouble() == 1.25 &&
               docs.currentThemeIsOverride(),
           "the new style wears the built-in look and overrides only this slide");
-    check(docs.themes().size() == 1, "the styles view lists the new style");
+    // The seeded Default theme (amendment 2026-11-02) is always in the
+    // library: Chorus is the operator's one, Default the floor beneath it.
+    check(docs.themes().size() == 2, "the styles view lists the new style (and the floor)");
 
     check(docs.setShowDefaultTheme(chorusId), "the style can become the show's default");
     docs.selectSlide(1);
@@ -1183,7 +1185,9 @@ void exerciseThemePanel(const std::filesystem::path& root) {
     check(compiledFor(docs, slideB).items[0].color == 0xFF0000u,
           "undoing the fork edit returns the slide to the shared look");
     docs.undo();  // the fork itself back (creation + override were one entry)
-    check(docs.themes().size() == 1 && !docs.currentThemeIsOverride() &&
+    // Default is back too (the seeded floor), but only one theme is the
+    // slide's own again.
+    check(docs.themes().size() == 2 && !docs.currentThemeIsOverride() &&
               compiledFor(docs, slideB).items[0].color == 0xFF0000u,
           "undoing the fork removes the extra style and hands the slide back");
 
@@ -2459,7 +2463,16 @@ void exercisePlacementSurfaces(const std::filesystem::path& root) {
     docs.addSlide();
     docs.selectSlide(0);
     check(docs.createBlankTheme("House"), "a blank theme exists to place with");
-    const QString house = docs.themes().at(0).toMap().value(QStringLiteral("id")).toString();
+    // Looked up BY NAME: row 0 is the seeded Default floor now (amendment
+    // 2026-11-02), and the placement below belongs to the operator's House.
+    QString house;
+    for (const QVariant& theme : docs.themes()) {
+        if (theme.toMap().value(QStringLiteral("name")).toString() == QStringLiteral("House")) {
+            house = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    check(!house.isEmpty() && house != QStringLiteral("default"),
+          "the placement test's theme is House, not the seeded floor");
     const auto rowFor = [&docs](const QString& id) {
         for (const QVariant& theme : docs.themes()) {
             if (theme.toMap().value(QStringLiteral("id")).toString() == id) {
@@ -2660,6 +2673,35 @@ void exercisePlacementSurfaces(const std::filesystem::path& root) {
               .value(QStringLiteral("value")).toMap().isEmpty() &&
               appliedBox(0).value(QStringLiteral("placed")).toBool() == false,
           "the second slide, wearing nothing, resolves no placement at all");
+
+    // TH.9's headline routing: with the chain silent the PRIMARY box no
+    // longer edits its authored rectangle either — a drag there records a
+    // placement CUSTOMIZATION, and the authored numbers stay the legacy
+    // fallback that no surface write touches any more.
+    docs.setSlideText(QStringLiteral("Silent one"));
+    docs.flushText();
+    const double authoredX = appliedBox(0).value(QStringLiteral("x")).toDouble();
+    check(appliedBox(0).value(QStringLiteral("primary")).toBool() && !placementCustomized(),
+          "the silent slide starts authored, and its first row says it is the primary box");
+    check(docs.selectTextBox(0) && docs.setTextBoxGeometry(260.0, 120.0, 1500.0, 700.0) &&
+              placementCustomized() && placementValue("x") == 260.0,
+          "a drag on the UNPLACED primary box records a placement customization");
+    check(appliedBox(0).value(QStringLiteral("x")).toDouble() == 260.0 &&
+              appliedBox(0).value(QStringLiteral("placed")).toBool(),
+          "the row applies the slide's own spot — the chain speaks through the customization");
+    check(docs.save(), "the silent-customized service saves");
+    {
+        const boost::json::value manifest =
+            boost::json::parse(readManifest(root / "service" / "service.json"));
+        const boost::json::array& slides = manifest.at("shows").at(0).at("slides").as_array();
+        check(slides[1].at("items").as_array()[0].at("x").as_double() == authoredX,
+              "the file's authored rectangle is exactly what it was — the drag landed "
+              "in customizations, not on the slide's own record");
+    }
+    check(docs.revertCurrentSlideField(QStringLiteral("placement")) && !placementCustomized() &&
+              appliedBox(0).value(QStringLiteral("x")).toDouble() == authoredX &&
+              appliedBox(0).value(QStringLiteral("placed")).toBool() == false,
+          "one revert hands the silent slide back to its authored box");
 }
 
 int main(int argc, char* argv[]) {

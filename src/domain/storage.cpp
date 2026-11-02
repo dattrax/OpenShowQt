@@ -1592,7 +1592,14 @@ bool loadService(Documents* documents, const std::filesystem::path& directory,
         fail(error, "loadService needs a target");
         return false;
     }
-    return ServiceCodec::load(documents, directory, error);
+    if (!ServiceCodec::load(documents, directory, error)) {
+        return false;
+    }
+    // A service written before the Default theme existed — or hand-edited
+    // into its absence — opens on the embedded one (amendment 2026-11-02).
+    // After decoding, so the loader's wholesale rebuild cannot drop it.
+    documents->ensureDefaultTheme();
+    return true;
 }
 
 bool saveServiceAndAdopt(Documents& documents, const std::filesystem::path& directory,

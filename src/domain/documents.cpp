@@ -575,6 +575,33 @@ std::vector<Id> Documents::slidesInGroup(const Id& showId, const std::string& gr
 
 // --- themes ----------------------------------------------------------------
 
+Documents::Documents() { ensureDefaultTheme(); }
+
+Theme Documents::defaultTheme() {
+    Theme theme;
+    theme.id = kDefaultThemeId;
+    theme.name = "Default";
+    theme.textColor = "#ffffff";
+    theme.backgroundColor = "#000000";
+    theme.backgroundGradient.clear();  // flat
+    theme.fontFamily.clear();          // the platform font
+    theme.fontSize = 0.0;              // the renderer's own default size
+    theme.align = "center";
+    theme.lineSpacing = kDefaultLineSpacing;
+    // No placement: the Default theme as seeded says nothing about WHERE
+    // the words go, so every un-themed slide keeps drawing its authored
+    // box — seeding moves no pixel in any existing document.
+    theme.placement.reset();
+    return theme;
+}
+
+void Documents::ensureDefaultTheme() {
+    if (findTheme(kDefaultThemeId) != nullptr) {
+        return;
+    }
+    fThemes.push_back(defaultTheme());
+}
+
 Id Documents::createTheme(const std::string& name, const std::string& textColor,
                           const std::string& backgroundColor,
                           const std::string& backgroundGradient, const std::string& fontFamily,
@@ -617,6 +644,15 @@ Id Documents::createTheme(const std::string& name, const std::string& textColor,
 }
 
 bool Documents::removeTheme(const Id& themeId, std::string* error) {
+    // The Default theme is the floor every other lookup falls back to
+    // (operator amendment 2026-11-02); removing it would recreate exactly
+    // the fragility it exists to close, so the application refuses it. The
+    // entry is a theme like any other in every other respect — a hand-edited
+    // file that nicked it is healed by ensureDefaultTheme at the next load.
+    if (themeId == kDefaultThemeId) {
+        fail(error, "the default theme cannot be removed");
+        return false;
+    }
     const auto found = std::find_if(fThemes.begin(), fThemes.end(),
                                     [&](const Theme& s) { return s.id == themeId; });
     if (found == fThemes.end()) {
@@ -953,7 +989,7 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
     // current theme first, then the slide's own, then the show's. A
     // reference to a vanished theme is no layer at all, the same
     // degradation themeForSlide has always applied.
-    const Theme* layers[3] = {nullptr, nullptr, nullptr};
+    const Theme* layers[4] = {nullptr, nullptr, nullptr, nullptr};
     size_t count = 0;
     if (!fCurrentThemeId.empty()) {
         if (const Theme* t = findTheme(fCurrentThemeId)) {
@@ -968,6 +1004,22 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
     if (!show->defaultThemeId.empty()) {
         if (const Theme* t = findTheme(show->defaultThemeId)) {
             layers[count++] = t;
+        }
+    }
+    // The Default theme closes the chain (operator amendment 2026-11-02):
+    // whatever it carries answers for slides no other layer spoke to, and a
+    // reference to a vanished theme lands on it rather than on scattered
+    // built-ins. As SEEDED it says colour-wise nothing the compile does not
+    // already apply (white on black, centred, renderer size), so documents
+    // drawn before it existed draw the same pixels; the operator tuning it
+    // is the point — house defaults become a thing the document can carry.
+    if (const Theme* d = findTheme(kDefaultThemeId)) {
+        bool already = false;
+        for (size_t i = 0; i < count; ++i) {
+            already = already || layers[i] == d;
+        }
+        if (!already) {
+            layers[count++] = d;
         }
     }
     // Per property, the first layer with something to say wins; a layer

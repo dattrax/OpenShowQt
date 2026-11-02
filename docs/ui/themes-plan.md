@@ -197,6 +197,52 @@ the Edit capture shows the canvas chrome drawn where the audience sees the
 box under THEME PLACES, and the Themes capture shows the same rectangle
 solid on the sample with the fields holding its numbers.
 
+## Amendment 2026-11-02 — the Default floor and universal placement edits (TH.9)
+
+The operator answered two open questions from the amendment's delivery:
+
+- **Every move of the primary lyric box is a customization.** TH.8's routing
+  ("a box the chain does not drive keeps editing authored geometry") is
+  superseded for the slide's FIRST TEXT item: a drag or typed geometry write
+  on the PRIMARY box always records `customizations.placement`, whether or
+  not a theme currently speaks. The authored rectangle becomes read-only
+  legacy for that row — the compile still uses it when the whole chain is
+  silent, but no UI write touches it any more — so a themed slide can be
+  nudged without first customizing it into place, and reverting placement
+  returns the slide to the theme (or to the authored legacy rect, or to the
+  Default floor) rather than to a half-written mixture. Additional text
+  boxes and every image item keep writing their authored rectangles exactly
+  as before. The Edit page's owner column answers for the primary row in
+  three states — THIS SLIDE (a placement customization is worn), THEME
+  PLACES (a theme's rectangle is applied), AUTHORED (nothing speaks; the
+  legacy rect is what the worker draws) — and `slideBoxes()` carries the
+  APPLIED rectangle for that row, so canvas chrome is drawn where the
+  audience sees the words even when no theme is in play.
+- **The built-in look is an embedded, undeletable Default theme.** A theme
+  with the reserved id `default` — outside the `styleN` ordinal sequence, so
+  a migrated document can never collide with it — is seeded into every
+  `Documents` at construction (where it takes row 0 of the list) and
+  re-ensured after every successful service load, so no open document is
+  ever without it and it is always the last layer of every chain walk. Its look (`#ffffff` on `#000000`, flat, platform font, size 0,
+  centered, default line spacing, no placement) is pixel-identical to the
+  pre-amendment built-in rendering. It is editable like any theme (rename,
+  recolour, place) but `removeTheme("default")` refuses with "the default
+  theme cannot be removed", the Theme Editor's Delete button is disabled
+  while it is selected, and it is what the header's clear-current lands on
+  as the fallback. A document whose one and only theme is Default cannot be
+  emptied further.
+- **Restore customizations already covers both.** Per the operator: "Restore
+  customizations can just remove any custom edits on that slide. I don't
+  think we need to do more than this." Placement is a member of the slide's
+  customization set, so the one existing restore removes look AND placement
+  in its single undo step; no separate "remove theming" entry was added.
+
+Shipped 2026-11-02. Note for legacy files: a slide whose authored primary
+rectangle was dragged before this amendment (the operator's slide 1 carries
+an authored y=261) keeps resolving to that authored rect — it is not
+silently converted; typing the intended numbers once turns the row into a
+customization and everything after that behaves uniformly.
+
 ## Task order
 
 TH.1 → TH.2 → TH.3 run in sequence (naming before model before compile);

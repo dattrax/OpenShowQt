@@ -1263,28 +1263,32 @@ int main(int argc, char** argv) {
 
         clickAt(more, 33, 26);
         QTest::qWait(120);
-        auto* emptyRow = findNamed(window->contentItem(), "themeMenuEmpty");
+        // The service is never without its Default theme (amendment
+        // 2026-11-02), so the menu's empty state needs a document that was
+        // emptied by hand — what a fresh app always offers is the Default
+        // row and the editor entry.
         auto* editorEntry = findNamed(window->contentItem(), "themeMenuEditor");
-        check(menu->property("visible").toBool() && emptyRow && emptyRow->isVisible()
-                  && editorEntry && editorEntry->isVisible(),
-              "More opens the menu, which says so when the service has no themes "
-              "and still offers the editor");
+        check(menu->property("visible").toBool() && editorEntry && editorEntry->isVisible()
+                  && menuRowsWith(1).size() == 1
+                  && docs.themes().size() == 1
+                  && docs.themes().at(0).toMap().value(QStringLiteral("builtin")).toBool(),
+              "More opens on the seeded Default theme and still offers the editor");
 
         check(docs.createBlankTheme("Alpha") && docs.createBlankTheme("Beta"),
               "two themes exist for the menu to name");
-        QList<QQuickItem*> menuRows = menuRowsWith(2);
+        QList<QQuickItem*> menuRows = menuRowsWith(3);
         check(!menuRows.isEmpty(), "every theme is a row in the open menu");
-        const QString alphaId = docs.themes().at(0).toMap().value(QStringLiteral("id")).toString();
-        clickAt(menuRows.first(), 40, menuRows.first()->height() / 2);
+        const QString alphaId = docs.themes().at(1).toMap().value(QStringLiteral("id")).toString();
+        clickAt(menuRows.at(1), 40, menuRows.at(1)->height() / 2);
         check(waitFor([&] { return docs.wornThemeId() == alphaId; })
                   && waitFor([&] { return !menu->property("visible").toBool(); }),
               "clicking a theme row wears it and closes the menu");
         clickAt(more, 33, 26);
-        QList<QQuickItem*> menuRows2 = menuRowsWith(2);
+        QList<QQuickItem*> menuRows2 = menuRowsWith(3);
         check(!menuRows2.isEmpty()
-                  && menuRows2.first()->property("text").toString().startsWith(QChar(0x2713)),
+                  && menuRows2.at(1)->property("text").toString().startsWith(QChar(0x2713)),
               "the worn theme is the checked one in the list");
-        clickAt(menuRows2.first(), 40, menuRows2.first()->height() / 2);
+        clickAt(menuRows2.at(1), 40, menuRows2.at(1)->height() / 2);
         check(waitFor([&] { return docs.wornThemeId().isEmpty(); }),
               "clicking the worn row again takes it off");
         waitFor([&] { return !menu->property("visible").toBool(); });
@@ -1315,12 +1319,24 @@ int main(int argc, char** argv) {
         QTest::qWait(80);
         check(docs.themes().size() == themesBefore, "one undo removes the new theme again");
 
+        // Default holds row 0 and selection opens there, but Delete stays
+        // asleep while it is selected — the floor cannot be deleted
+        // (amendment 2026-11-02). Every other row wakes every control.
+        const QString defaultId =
+            docs.themes().at(0).toMap().value(QStringLiteral("id")).toString();
+        const QString betaId = docs.themes().at(2).toMap().value(QStringLiteral("id")).toString();
         QList<QQuickItem*> listRows;
         collectNamed(window->contentItem(), "themeEditorRow", listRows);
-        const QString betaId = docs.themes().at(1).toMap().value(QStringLiteral("id")).toString();
-        check(listRows.size() == 2 && editorPage->property("selectedId").toString() == alphaId,
-              "the list shows one row per theme and selection prefers the first");
+        check(listRows.size() == 3 && editorPage->property("selectedId").toString() == defaultId,
+              "the list shows one row per theme and selection opens on the first row");
+        check(!deleteButton->property("enabled").toBool(),
+              "the Default row leaves Delete disabled");
         clickAt(listRows.at(1), 30, listRows.at(1)->height() / 2);
+        QTest::qWait(80);
+        check(deleteButton->property("enabled").toBool()
+                  && editorPage->property("selectedId").toString() == alphaId,
+              "selecting an ordinary row wakes Delete");
+        clickAt(listRows.at(2), 30, listRows.at(2)->height() / 2);
         QTest::qWait(80);
         check(editorPage->property("selectedId").toString() == betaId,
               "clicking a row selects that theme");
@@ -1508,19 +1524,30 @@ int main(int argc, char** argv) {
               "No placement takes the theme's opinion away, puts the offered box back in "
               "the fields, and leaves the theme itself intact");
 
-        // The honest empty service: delete everything, controls disable.
+        // The honest floor (amendment 2026-11-02): delete every theme the
+        // operator can delete, and the service still stands on its Default —
+        // every targeted control disables, New stays live, and the Default
+        // row cannot be emptied away.
         if (!docs.wornThemeId().isEmpty()) {
             docs.useThemeAsCurrent(QString());
         }
-        while (!docs.themes().isEmpty()) {
+        while (docs.themes().size() > 1) {
             docs.deleteTheme(docs.themes().last().toMap().value(QStringLiteral("id")).toString());
         }
         QTest::qWait(80);
-        check(!dupButton->property("enabled").toBool()
-                  && !deleteButton->property("enabled").toBool()
-                  && !useToggle->property("enabled").toBool()
+        const bool onlyDefault = docs.themes().size() == 1
+                                 && docs.themes().at(0).toMap()
+                                            .value(QStringLiteral("builtin")).toBool();
+        check(onlyDefault && !deleteButton->property("enabled").toBool()
+                  && dupButton->property("enabled").toBool()
+                  && useToggle->property("enabled").toBool()
                   && newButton->property("enabled").toBool(),
-              "with no theme left every targeted control disables and New stays live");
+              "with only the Default theme left Delete sleeps and every other "
+              "control stays live — the floor cannot be deleted");
+        check(!docs.deleteTheme(defaultId)
+                  && docs.themes().size() == 1
+                  && docs.status().contains(QStringLiteral("default theme")),
+              "even asked directly, the Default theme refuses to be removed");
         window->setProperty("page", "show");
         QTest::qWait(60);
     }
@@ -1621,7 +1648,7 @@ int main(int argc, char** argv) {
         const bool opened = defaultMenu && waitFor([&] {
                           return defaultMenu->property("visible").toBool();
                       });
-        defaultRows = settledRows("showDefaultThemeItem", 2);
+        defaultRows = settledRows("showDefaultThemeItem", 3);
         check(opened && !defaultRows.isEmpty(),
               "the header opens a menu naming every theme");
         QQuickItem* loudRow = nullptr;
@@ -1644,7 +1671,7 @@ int main(int argc, char** argv) {
         // arrives while the closing menu still holds the grab is eaten.
         waitFor([&] { return !defaultMenu->property("visible").toBool(); });
         clickAt(selector, selector->width() / 2, selector->height() / 2);
-        QList<QQuickItem*> defaultRows2 = settledRows("showDefaultThemeItem", 2);
+        QList<QQuickItem*> defaultRows2 = settledRows("showDefaultThemeItem", 3);
         QQuickItem* loudRow2 = nullptr;
         for (auto* row : defaultRows2) {
             if (row->property("text").toString().contains(QStringLiteral("Loud")))
@@ -1669,10 +1696,10 @@ int main(int argc, char** argv) {
         rightClickAt(tiles.at(1), 40, 20);
         auto* cueMenu = window->findChild<QObject*>("cueThemeMenu");
         check(cueMenu && waitFor([&] { return cueMenu->property("visible").toBool(); })
-                  && !settledRows("cueApplyThemeItem", 2).isEmpty()
+                  && !settledRows("cueApplyThemeItem", 3).isEmpty()
                   && !settledRows("cueRemoveCustomizationItem", 1).isEmpty(),
               "right-clicking a cue opens the theme menu on it");
-        QList<QQuickItem*> themeRows = settledRows("cueApplyThemeItem", 2);
+        QList<QQuickItem*> themeRows = settledRows("cueApplyThemeItem", 3);
         QQuickItem* loudCueRow = nullptr;
         for (auto* row : themeRows) {
             if (row->property("text").toString() == QStringLiteral("Loud"))
@@ -1765,10 +1792,10 @@ int main(int argc, char** argv) {
         rightClickAt(welcomeRow, 30, 14);
         auto* showMenu = window->findChild<QObject*>("showThemeMenu");
         check(showMenu && waitFor([&] { return showMenu->property("visible").toBool(); })
-                  && !settledRows("showApplyThemeItem", 2).isEmpty()
+                  && !settledRows("showApplyThemeItem", 3).isEmpty()
                   && !settledRows("showRemoveAllItem", 1).isEmpty(),
               "right-clicking the library row opens the show-wide theme menu");
-        QList<QQuickItem*> bulkRows = settledRows("showApplyThemeItem", 2);
+        QList<QQuickItem*> bulkRows = settledRows("showApplyThemeItem", 3);
         QQuickItem* bulkLoudRow = nullptr;
         for (auto* row : bulkRows) {
             if (row->property("text").toString() == QStringLiteral("Loud"))

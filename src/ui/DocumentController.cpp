@@ -530,15 +530,18 @@ bool DocumentController::setTextBoxGeometry(double x, double y, double width, do
     const openshow::domain::Id slideId = currentSlideId();
     const openshow::domain::Id boxId = box->id;
     std::string error;
-    // A box the chain PLACES (amendment 2026-11-01) is not moved. Dragging
-    // the themed lyric box says "this slide wants its OWN spot", so the four
-    // numbers land as one placement CUSTOMIZATION: the authored rectangle
-    // survives underneath for the day the theme stops placing, and the badge
-    // the Edit page shows is the way back to the theme. Every other box —
-    // an extra lyric box, a picture — is geometry exactly as it always was.
+    // The PRIMARY lyric box is never moved (amendment 2026-11-02, the
+    // operator's "positional information still persisted"): dragging it or
+    // typing its numbers says "this slide wants its OWN spot", and the four
+    // numbers land as one placement CUSTOMIZATION whether or not any theme
+    // places — so whatever the operator did is always revertible, back to
+    // the theme or to the authored rectangle, instead of rewriting the
+    // slide's own geometry out from under the undo. The authored rectangle
+    // survives underneath. Every other box — an extra lyric box, a picture —
+    // is geometry exactly as it always was.
     const DocumentViews::Cursor cursor = viewCursor();
-    const int placed = fViews.placedBoxIndex(cursor);
-    if (placed >= 0 && fViews.selectedBoxIndex(cursor) == placed) {
+    const int primary = fViews.primaryBoxIndex(cursor);
+    if (primary >= 0 && fViews.selectedBoxIndex(cursor) == primary) {
         openshow::domain::SlideCustomization changed;
         bool onSlide = false;
         const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
