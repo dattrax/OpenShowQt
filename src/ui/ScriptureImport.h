@@ -96,14 +96,17 @@ private:
     DocumentController* fDocuments = nullptr;
     WorkerController* fWorker = nullptr;
 
-    // Content-keyed across the rounds of one run: an identical block is
-    // measured once, and the run's determinism is what makes the restart
-    // converge instead of churn. Cleared whenever the inputs change.
-    std::map<std::vector<std::string>, double> fMeasured;
+    // Content-AND-size keyed across the rounds of one run: an identical
+    // block is measured once at a given size (the words and the caption
+    // are the same words set twice, so they are two measured answers), and
+    // the run's determinism is what makes the restart converge instead of
+    // churn. Cleared whenever the inputs change.
+    std::map<std::pair<std::vector<std::string>, double>, double> fMeasured;
     // The batch in flight: the worker's reply keys mapped back to the
-    // content they measured, so the cache is keyed by words, not by ids.
+    // content and size they measured, so the cache is keyed by words, not
+    // by ids.
     qint64 fPendingMeasureId = 0;
-    std::map<std::string, std::vector<std::string>> fPendingSends;
+    std::map<std::string, std::pair<std::vector<std::string>, double>> fPendingSends;
     bool fMeasuring = false;
     bool fRerunWanted = false;  // asked again while suspended: the newest wins
     QVariantList fSlides;

@@ -60,8 +60,17 @@ import". With BI closed, the operator's first live run (2026-11-02) filed
 three follow-ups — Add not waking after a live lookup, a reference field
 with no book help, and a translation picker that opens unselected —
 recorded as milestone **BI-F (BIF.1–BIF.4)** in the PLAN ledger and
-[docs/ui/bible-import-plan.md](docs/ui/bible-import-plan.md), planned but
-not yet started; BIF.1 (Add must wake) is next. The operator's paging note
+[docs/ui/bible-import-plan.md](docs/ui/bible-import-plan.md). **BIF.1 is
+DONE (2026-11-02):** the production-shaped fixture named the cause — the
+reference and attribution reserved room at the WORDS' display size, so a
+theme with no size of its own measured the licence at the renderer's ~96 px
+default, ate 720 px of the box, and ground a chapter into 94 one-line slides
+behind an asleep Add. The reservation is now caption type (still the
+worker's measurement, just set small as provenance is), the chapter
+measures into 19 multi-verse slides and one Add lands it, a batch nobody
+answers retires after a minute with its own sentence, and no path sits on
+"measuring". **BIF.2 (the picker opens on NIV) is next**, then BIF.3, BIF.4.
+The operator's paging note
 — flow the whole downloaded passage with the theme deciding how much text
 a slide carries (their examples: two display lines for songs, six for a
 reading; the line count is what the theme's bible box measures out, never

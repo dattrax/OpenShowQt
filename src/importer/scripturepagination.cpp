@@ -40,27 +40,38 @@ std::string join(const std::vector<std::string>& parts, std::size_t from, std::s
 }
 
 // Per-run measurement state: a content cache (an identical block is asked
-// about exactly once) and a failure latch (a dead engine is not re-asked
-// verse after verse; the first failure's sentence is the run's).
+// about exactly once AT A GIVEN SIZE — the reservation is set in caption
+// type while the words are set in the chosen size, and the same words at
+// two sizes are two different answers) and a failure latch (a dead engine
+// is not re-asked verse after verse; the first failure's sentence is the
+// run's).
 class Measurer {
 public:
     Measurer(const MeasureFn& fn, const PaginationStyle& style) : fFn(fn), fStyle(style) {}
 
     bool height(const std::vector<std::string>& lines, double* out) {
-        return measureAll({lines}, out);
+        return measureAll({lines}, out, fStyle.fontSize);
     }
 
-    // One height per block. Every block not already cached goes to the
-    // port in chunks of at most kMaxMeasureChunk (the wire's batch cap,
-    // mirrored so a legal run never meets a refusal).
+    // The words' own size: the fitting ladder runs at the chosen
+    // typography and asks nothing else.
     bool measureAll(const std::vector<std::vector<std::string>>& blocks, double* out) {
+        return measureAll(blocks, out, fStyle.fontSize);
+    }
+
+    // One height per block, measured at `fontSize` (0 = the renderer's
+    // own default). Every block not already cached for that size goes to
+    // the port in chunks of at most kMaxMeasureChunk (the wire's batch
+    // cap, mirrored so a legal run never meets a refusal).
+    bool measureAll(const std::vector<std::vector<std::string>>& blocks, double* out,
+                    double fontSize) {
         if (fFailed) {
             return false;
         }
         std::vector<std::vector<std::string>> fresh;
         std::vector<std::size_t> slots;
         for (std::size_t i = 0; i < blocks.size(); ++i) {
-            const auto cached = fCache.find(blocks[i]);
+            const auto cached = fCache.find({blocks[i], fontSize});
             if (cached != fCache.end()) {
                 out[i] = cached->second;
                 continue;
@@ -80,7 +91,7 @@ public:
                 MeasureRequest request;
                 request.key = "m" + std::to_string(fKeyCounter++);
                 request.lines = fresh[i];
-                request.fontSize = fStyle.fontSize;
+                request.fontSize = fontSize;
                 request.width = fStyle.boxWidth;
                 request.lineSpacing = fStyle.lineSpacing;
                 request.fontFamily = fStyle.fontFamily;
@@ -115,7 +126,7 @@ public:
                     }
                     return false;
                 }
-                fCache[requests[i].lines] = reply.height;
+                fCache[{requests[i].lines, fontSize}] = reply.height;
                 heights[start + i] = reply.height;
             }
         }
@@ -132,7 +143,7 @@ public:
 private:
     const MeasureFn& fFn;
     const PaginationStyle& fStyle;
-    std::map<std::vector<std::string>, double> fCache;
+    std::map<std::pair<std::vector<std::string>, double>, double> fCache;
     bool fFailed = false;
     std::string fError;
     std::uint64_t fKeyCounter = 0;
@@ -344,8 +355,12 @@ PaginationOutcome paginateScripture(const PaginationInput& input, const MeasureF
     Measurer measurer(measure, style);
 
     // The reservation: reference and attribution, each measured in this
-    // very box at the chosen size — "references fit at the chosen size"
-    // is arithmetic, not intent. (An empty string reserves nothing.)
+    // very box in CAPTION type (BIF.1: setting provenance small print in
+    // the words' display face let a live licence paragraph reserve most of
+    // the box it never shares with the words on screen). The height is
+    // still the worker's measured answer at exactly the caption size —
+    // arithmetic never stands in for a glyph run. (An empty string
+    // reserves nothing.)
     std::vector<std::vector<std::string>> reserveBlocks;
     if (!input.reference.empty()) {
         reserveBlocks.push_back({input.reference});
@@ -356,7 +371,8 @@ PaginationOutcome paginateScripture(const PaginationInput& input, const MeasureF
     double reserved = 0.0;
     if (!reserveBlocks.empty()) {
         std::vector<double> reserveHeights(reserveBlocks.size(), 0.0);
-        if (!measurer.measureAll(reserveBlocks, reserveHeights.data())) {
+        if (!measurer.measureAll(reserveBlocks, reserveHeights.data(),
+                                 reservationFontSize(style))) {
             outcome.error = "the passage could not be measured: " + measurer.error();
             return outcome;
         }
@@ -369,8 +385,8 @@ PaginationOutcome paginateScripture(const PaginationInput& input, const MeasureF
     outcome.availableHeight = available;
     if (available < 1.0) {
         outcome.error =
-            "the reference and attribution leave no room for the passage in this theme's box "
-            "at the chosen size — choose a larger box or a smaller text size";
+            "even set as small print, the reference and attribution leave no room for the "
+            "passage in this theme's text area — choose a larger box or a smaller text size";
         return outcome;
     }
 

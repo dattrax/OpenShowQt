@@ -13,13 +13,18 @@
 //
 // The words are the whole of a generated slide's lines: the reference and
 // the attribution are NOT slide text (the schedule item carries them as
-// provenance and the slide labels ride in the slide notes), but both are
-// measured in the same box at the chosen typography and their height is
-// RESERVED out of it — the plan's "reserving room for references and
-// attribution" and "references fit at the chosen size", made numeric. When
-// the reservation leaves no room for the words, or a single word will not
-// fit, this says so with its own sentence and generates nothing: Add is
-// blocked by explanation, never by silent clipping.
+// provenance and the slide labels ride in the slide notes), but their
+// height is RESERVED out of the box — the plan's "reserving room for
+// references and attribution", made numeric. The reservation is measured
+// in CAPTION type (see kCaptionBoxFraction below), not in the words' own
+// display face: BIF.1's live run showed a licence paragraph set at the
+// song-display size eating most of the box it never shares with the
+// words on screen. Measured, never estimated — the caption size is a
+// typeset choice; the wrapped height remains the worker's own answer at
+// exactly that size. When the reservation leaves no room for the words,
+// or a single word will not fit, this says so with its own sentence and
+// generates nothing: Add is blocked by explanation, never by silent
+// clipping.
 //
 // Qt-free on purpose: the pagination is a pure function over its input and
 // the measuring port, so the ordering/no-repeats/no-loss properties are
@@ -91,6 +96,27 @@ struct PaginationInput {
     std::string attribution; // the licence text; reserves room, may be empty
     PaginationStyle style;
 };
+
+// The caption the reservation is set in (BIF.1). Its size is four percent
+// of the box's height — a provenance line is small print wherever it
+// lives — clamped to [16, 56] canvas pixels so it stays readable in a
+// small theme box and stays small in a great one, and never larger than
+// the words themselves. The HEIGHT it reserves is still the worker's
+// measured answer at exactly this size; no arithmetic stands in for a
+// glyph run.
+inline double reservationFontSize(const PaginationStyle& style) {
+    double caption = style.boxHeight * 0.04;
+    if (caption < 16.0) {
+        caption = 16.0;
+    }
+    if (caption > 56.0) {
+        caption = 56.0;
+    }
+    if (style.fontSize > 0.0 && style.fontSize < caption) {
+        caption = style.fontSize;  // the reservation never out-typesets the words
+    }
+    return caption;
+}
 
 // One generated slide. `lines` is the slide's ONLY text and holds ONLY
 // passage words — concatenating every slide's lines in order preserves the

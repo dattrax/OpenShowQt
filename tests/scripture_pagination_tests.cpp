@@ -219,18 +219,19 @@ void testBoxAndSizeShape() {
 
 void testRendererDefaultSizePassesThrough() {
     // The renderer's own default size lives in the worker alone (it is the
-    // answer to fontSize 0). The paginator must forward 0 unchanged — any
-    // number it invented here would be a second answerer, and the page
-    // would be packing against one engine while the audience saw another.
-    // std::function copies the callable, so the sizes land in a shared
-    // vector the recorder and this function both see.
-    auto sizes = std::make_shared<std::vector<double>>();
+    // answer to fontSize 0). The paginator must forward 0 for the WORDS
+    // unchanged — any number it invented here would be a second answerer,
+    // and the page would be packing against one engine while the audience
+    // saw another. The RESERVATION is the exception BIF.1 recorded: the
+    // reference is provenance small print, set in caption type by the
+    // paginator's own choice — and the height it reserves is still the
+    // engine's measured answer at that caption size.
     struct Recorder {
-        std::shared_ptr<std::vector<double>> sizes;
+        std::shared_ptr<std::vector<std::pair<double, std::string>>> asks;
         bool operator()(const std::vector<MeasureRequest>& requests,
                         std::vector<MeasureReply>* replies, std::string*) {
             for (const MeasureRequest& request : requests) {
-                sizes->push_back(request.fontSize);
+                asks->push_back({request.fontSize, request.lines.empty() ? "" : request.lines[0]});
                 MeasureReply reply;
                 reply.key = request.key;
                 reply.height = 24.0;  // whatever the engine says the default is
@@ -239,20 +240,32 @@ void testRendererDefaultSizePassesThrough() {
             }
             return true;
         }
-    } recorder{sizes};
+    } recorder;
+    recorder.asks = std::make_shared<std::vector<std::pair<double, std::string>>>();
     const std::vector<PaginationVerse> verses{{"1:1", "First words."}, {"1:2", "Second words."}};
+    const PaginationStyle box = style(800, 90, /*size=*/0.0);
     const PaginationOutcome outcome =
-        paginateScripture(input(verses, style(800, 90, /*size=*/0.0), "Mark 1:1-2"), recorder);
+        paginateScripture(input(verses, box, "Mark 1:1-2"), recorder);
     check(outcome.ok && outcome.slides.size() == 1,
           "a theme with no size of its own still paginates (the renderer's default measures)");
-    check(!sizes->empty(), "measurement happened at the default too");
-    for (const double size : *sizes) {
-        if (size != 0.0) {
-            check(false, "size 0 reaches the engine unchanged — the default is the worker's, not ours");
-            return;
+    check(!recorder.asks->empty(), "measurement happened at the default too");
+    bool sawCaption = false;
+    bool wordsOnlyDefault = true;
+    for (const auto& [size, firstLine] : *recorder.asks) {
+        if (firstLine == "Mark 1:1-2") {
+            if (size == reservationFontSize(box)) {
+                sawCaption = true;  // the provenance set in caption type
+            } else {
+                wordsOnlyDefault = false;
+            }
+        } else if (size != 0.0) {
+            wordsOnlyDefault = false;  // the words must meet the default, not a guess
         }
     }
-    check(true, "size 0 reaches the engine unchanged — the default is the worker's, not ours");
+    check(wordsOnlyDefault,
+          "every WORD measurement reaches the engine at size 0 unchanged — the default is the "
+          "worker's, not ours");
+    check(sawCaption, "the reservation is asked at the caption size, still measured not invented");
 }
 
 // --- splits: sentences first, then words, identity preserved ----------------
@@ -386,8 +399,31 @@ void testReservation() {
     checkIdentity(withReference, verses, "the reference is not slide text — identity holds");
 }
 
-void testReservationBlocks() {
-    const std::vector<PaginationVerse> verses{{"1:1", "Short words."}};
+// The BIF.1 live shape: the words are set in the theme's display size,
+// and a licence paragraph set in THAT face reserved most of the box the
+// words actually own. The reservation must be set in caption type — a
+// number of its own, smaller than the words it stands under.
+void testReservationIsCaptionType() {
+    const std::vector<PaginationVerse> verses{{"1:1", "some words"}};
+    const PaginationStyle box = style(1600, 900, 80.0);
+    MeasureScript script;
+    const PaginationOutcome outcome =
+        paginateScripture(input(verses, box, "Genesis chapter one"), script);
+    check(outcome.ok, "the display-size run measures");
+    check(reservationFontSize(box) == 36.0,
+          "in a 900 px box the caption is 36 px — small print by the box, not by guess");
+    check(outcome.reservedHeight == 36.0,
+          "the reference reserves its measured CAPTION row, not the 80 px display row it used to eat");
+    bool captionAsked = false;
+    for (const double size : script.state->sizes) {
+        if (size == 36.0) {
+            captionAsked = true;
+        }
+    }
+    check(captionAsked, "the caption height was asked of the engine at the caption size — measured");
+}
+
+void testReservationBlocks() {    const std::vector<PaginationVerse> verses{{"1:1", "Short words."}};
     // The attribution alone: 100 cp at width 100 = 5 rows = 50 px in a
     // 50 px box — nothing is left for the words, so Add must block with
     // its own sentence, not clip.
@@ -492,6 +528,7 @@ int main() {
     testUnicode();
     testSplitHelpers();
     testReservation();
+    testReservationIsCaptionType();
     testReservationBlocks();
     testRefusals();
     testMeasureDiscipline();

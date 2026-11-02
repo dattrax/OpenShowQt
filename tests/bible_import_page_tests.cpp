@@ -139,6 +139,51 @@ public:
     int requests = 0;
 };
 
+// The production shape (milestone BI-F, task BIF.1): a WHOLE chapter —
+// thirty-one synthetic verses of varying length in the live BI.1 markup —
+// and a live-length publisher attribution: the NIV notice the operator
+// actually met runs to about 140 characters, so this stand-in carries the
+// same weight (its own synthetic words). Both matter at once: the chapter
+// crosses the wire's 32-block batch cap, and the attribution reserves real
+// measured lines no matter how the theme sizes the words.
+QByteArray chapterBody() {
+    std::string html = R"HTML(<div class="passage-text"><div class='passage-content'>
+    <div class="version-EXAMPLE result-text-style-normal text-html">)HTML";
+    for (int v = 1; v <= 31; ++v) {
+        std::string text;
+        switch (v % 5) {
+            case 1:
+                text = "Verse " + std::to_string(v) +
+                       " opens the sequence with words long enough to wrap twice and enough "
+                       "matter to measure honestly across the audience renderer's box.";
+                break;
+            case 2:
+                text = "Verse " + std::to_string(v) +
+                       " follows with a middling run of words, one sentence only.";
+                break;
+            case 3:
+                text = "Verse " + std::to_string(v) +
+                       " carries several sentences. It must split at a boundary. Yet nothing "
+                       "may be clipped from it under any box.";
+                break;
+            case 4:
+                text = "Verse " + std::to_string(v) + " is short.";
+                break;
+            default:
+                text = "Verse " + std::to_string(v) +
+                       " closes the little group with a longer cadence, testing how much a "
+                       "slide really holds when the words keep coming.";
+                break;
+        }
+        html += "<p><span class=\"text 1Test-1-" + std::to_string(v) + "\">" + text +
+                "</span></p>\n";
+    }
+    html += R"HTML(    </div></div></div>
+    <div class="publisher-info-bottom"><strong>Example Bible (EXAMPLE)</strong>
+    <p>Example Bible, Example Version&#8482;, EXV&#8482; Copyright &#169; 1973, 2011 by Synthetic Publisher, Inc.&#8482; Used by permission. All rights reserved worldwide.</p></div>)HTML";
+    return QByteArray::fromStdString(html);
+}
+
 // Six verses in the live BI.1 shape; verse four carries three sentences so
 // a narrow theme box must split it, not clip it.
 QByteArray passageBody() {
@@ -419,6 +464,116 @@ int main(int argc, char* argv[]) {
               "and said so in its own line");
 
         worker.shutdownNow();
+    }
+
+    // --- BIF.1: the production shape ----------------------------------------
+    // A whole chapter, a live-length attribution, the plain look the
+    // operator wore (no theme edits), the worker's preview stream up from
+    // the first published slide — and the page's documentsChanged handler
+    // (which calls regenerate) firing WHILE a measure batch is in flight.
+    // The end state this fixture demands is the one the operator never
+    // reached: the run settles, Add is live, and one Add lands the item.
+    {
+        DocumentController docs(nullptr, root / "prodshape");
+        WorkerController worker;
+        worker.start();
+        if (!check(waitForMeasureReady(worker), "the production-shape worker came up")) {
+            worker.shutdownNow();
+            return 1;
+        }
+        BibleImport bible;
+        ScriptedManager manager;
+        bible.setNetworkAccessManager(&manager);
+        ScriptureImport scripture(&bible, &docs, &worker);
+
+        bible.setReference(QStringLiteral("First Test 1"));
+        bible.setTranslation(QStringLiteral("EXAMPLE"));
+        manager.steps.push_back({chapterBody(), {}, {}, 200, 0});
+        bible.lookup();
+        waitForLookup(bible);
+        check(bible.verses().size() == 31, "the chapter lookup answered with thirty-one verses");
+        check(bible.attribution().size() > 120,
+              "the fixture carries a live-length attribution, not a stub");
+
+        // Race the page's re-pagination across BOTH the answer and the
+        // in-flight batches — exactly what the QML Connections handler
+        // does when the documents move under an open page: some calls
+        // land before pagination, some land on a batch in flight.
+        QElapsedTimer churn;
+        churn.start();
+        while (churn.elapsed() < 4000 && (bible.busy() || scripture.measuring())) {
+            QTest::qWait(8);
+            scripture.regenerate();
+        }
+        check(!bible.busy(), "the chapter lookup completed under the churn");
+        check(waitForMeasured(scripture, 30000),
+              "the racing regenerate did not strand the run on measuring");
+        if (!scripture.slides().isEmpty()) {
+            // The preview stream is up: the first slide went off air.
+            QTest::qWait(120);
+            check(!worker.wordsOnAir(), "the production-shape preview stayed off air");
+        }
+        // Whatever the plain look measured out, the operator's rule holds:
+        // if the words fit, Add is live and one Add lands; if they cannot,
+        // the page says WHY and never sits silent on measuring.
+        // BIF.1's outcome, demanded outright: the provenance reserves
+        // caption room rather than eating the box in the words' display
+        // face, so the plain look paginates, packs multiple verses per
+        // slide, wakes Add, and one Add lands the whole chapter.
+        std::fprintf(stderr, "  prodshape: slides=%lld status=%s\n",
+                     static_cast<long long>(scripture.slides().size()),
+                     scripture.status().toUtf8().constData());
+        check(!scripture.slides().isEmpty(),
+              "the chapter paginates on the plain look — the caption reservation leaves room "
+              "instead of refusing");
+        check(scripture.slides().size() < bible.verses().size(),
+              "the chapter packs multiple verses per slide — never one verse per slide");
+        check(scripture.canAdd(), "the production shape wakes Add");
+        const qsizetype slidesAtAdd = scripture.slides().size();
+        check(scripture.addToSchedule(), "Add landed the chapter on today's schedule");
+        check(docs.playlistEntries().size() == 1, "exactly one row joined the schedule");
+        const QString showId =
+            docs.playlistEntries().at(0).toMap().value(QStringLiteral("showId")).toString();
+        check(!showId.isEmpty() && docs.slidesOf(showId).size() == slidesAtAdd,
+              "the schedule-owned show carries every generated slide");
+        worker.shutdownNow();
+    }
+
+    // --- BIF.1: a batch that can never be answered retires, with its own
+    // sentence — the page must never sit on "measuring" for a worker that
+    // has gone away mid-ask. -----------------------------------------------
+    {
+        DocumentController docs(nullptr, root / "unanswerable");
+        WorkerController worker;
+        worker.start();
+        if (!check(waitForMeasureReady(worker), "the unanswerable-shape worker came up")) {
+            worker.shutdownNow();
+            return 1;
+        }
+        BibleImport bible;
+        ScriptedManager manager;
+        bible.setNetworkAccessManager(&manager);
+        ScriptureImport scripture(&bible, &docs, &worker);
+        bible.setReference(QStringLiteral("First Test 1"));
+        bible.setTranslation(QStringLiteral("EXAMPLE"));
+        manager.steps.push_back({chapterBody(), {}, {}, 200, 0});
+        bible.lookup();
+        waitForLookup(bible);
+        check(bible.verses().size() == 31, "the chapter answered before the worker died");
+        // The batch is in flight by now (or queued); kill the answerer.
+        worker.shutdownNow();
+        check(waitForMeasured(scripture, 15000),
+              "with no worker to answer, the run retired instead of hanging");
+        check(!scripture.measuring(), "the page does not sit on measuring");
+        if (scripture.slides().isEmpty()) {
+            // The death cut a run short (the normal outcome at this
+            // timing): no slides survive an unmeasured passage, Add stays
+            // asleep, and the sentence says what went away.
+            check(!scripture.canAdd(), "no Add on a run that never finished");
+            check(scripture.status().contains(QStringLiteral("renderer")) ||
+                      scripture.status().contains(QStringLiteral("worker")),
+                  "the unanswerable batch's sentence names what went away");
+        }
     }
 
     // --- without a worker the failure is actionable, not guessed -----------

@@ -4,6 +4,7 @@
 // the schedule.
 #include "ScriptureImport.h"
 
+#include <QTimer>
 #include <QStringList>
 #include <QVariantMap>
 
@@ -19,6 +20,12 @@ namespace importer = openshow::importer;
 // never a sentence shown to the operator: the reply resumes the run, and
 // only a genuine failure reaches the status line.
 constexpr const char* kPendingMarker = "\x01awaiting-measurement";
+
+// The renderer answered once per batch round trip; the budget is a whole
+// minute of silence, which is a dead or wedged output and not a slow one.
+// It exists so the "measuring" state always has an exit the operator can
+// act on.
+constexpr int kMeasureAnswerBudgetMs = 60000;
 
 // A measure round answers at least one new block or the run is not making
 // progress; the bound turns any pathological engine into an honest failure
@@ -162,7 +169,7 @@ bool ScriptureImport::measure(const std::vector<importer::MeasureRequest>& reque
                               std::string* error) {
     QVariantList blocks;
     for (const importer::MeasureRequest& request : requests) {
-        const auto cached = fMeasured.find(request.lines);
+        const auto cached = fMeasured.find({request.lines, request.fontSize});
         if (cached != fMeasured.end()) {
             importer::MeasureReply reply;
             reply.key = request.key;
@@ -186,7 +193,7 @@ bool ScriptureImport::measure(const std::vector<importer::MeasureRequest>& reque
                          QString::fromStdString(request.fontFamily));
         }
         blocks.push_back(block);
-        fPendingSends[request.key] = request.lines;
+        fPendingSends[request.key] = {request.lines, request.fontSize};
     }
     if (blocks.isEmpty()) {
         return true;  // the whole batch was cache
@@ -210,6 +217,20 @@ bool ScriptureImport::measure(const std::vector<importer::MeasureRequest>& reque
         return false;
     }
     fPendingMeasureId = id;
+    // BIF.1: a batch that is never answered must retire with its own
+    // sentence — "measuring forever" is the one state the operator can do
+    // nothing about. A reply for a retired id is already ignored by the
+    // handlers above, so winning or losing this race is safe either way.
+    QTimer::singleShot(kMeasureAnswerBudgetMs, this, [this, id] {
+        if (fPendingMeasureId != id) {
+            return;  // answered, retired or superseded — this ask is done
+        }
+        fPendingMeasureId = 0;
+        fPendingSends.clear();
+        finishWithFailure(QStringLiteral(
+            "the renderer did not answer the measurement — no slides were generated; "
+            "try again, and if it keeps silence check the output device"));
+    });
     *error = kPendingMarker;
     return false;
 }

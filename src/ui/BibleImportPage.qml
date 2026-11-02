@@ -137,8 +137,10 @@ ScrollView {
         }
         Text {
             objectName: "bibleNothingSelectedHint"
+            // A failed pagination leaves its own sentence showing; the
+            // hint must not overwrite it with a wrong explanation (BIF.1).
             visible: bible.verses.length > 0 && scripture.slides.length === 0
-                     && !scripture.measuring
+                     && !scripture.measuring && scripture.status.length === 0
             width: parent.width; wrapMode: Text.WordWrap
             color: "#909090"; font.pixelSize: 11
             text: "No verses are selected — keep at least one and the slides will generate."
