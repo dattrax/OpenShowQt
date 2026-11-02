@@ -61,7 +61,16 @@ three follow-ups — Add not waking after a live lookup, a reference field
 with no book help, and a translation picker that opens unselected —
 recorded as milestone **BI-F (BIF.1–BIF.4)** in the PLAN ledger and
 [docs/ui/bible-import-plan.md](docs/ui/bible-import-plan.md), planned but
-not yet started; BIF.1 (Add must wake) is next.
+not yet started; BIF.1 (Add must wake) is next. The operator's paging note
+— flow the whole downloaded passage with the theme deciding how much text
+a slide carries (two display lines for songs, six for a reading), and keep
+the split/sizing code common with the future ASCII song import — is
+recorded as milestone **TF (TF.1–TF.4)**: named typography-only contexts on
+the theme, resolved by the one appearance resolver, and the packing core
+extracted from `paginateScripture` into a generic text-flow engine with
+scripture as its first adapter; design in
+[docs/ui/text-flow-plan.md](docs/ui/text-flow-plan.md), planned not
+started, after BI-F's fixes.
 Before BI, **the Themes amendment
 (TH.9) is DONE** — the built-in look is now a real, embedded, undeletable **Default** theme (reserved id `default`,
 seeded first, re-ensured after every successful load, the chain's last

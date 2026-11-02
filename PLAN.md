@@ -485,6 +485,33 @@ today's schedule as the page's only destination.
 
 Task order: BIF.1 → BIF.2 → BIF.3 → BIF.4, one commit per leaf.
 
+### Theme text contexts and shared text flow (TF)
+
+The operator's paging note: the theme should decide how a box fills with
+text, and it may hold more than one view — song slides at two display
+lines, a bible reading at six — with the whole downloaded passage flowing
+as one run of text across those slides; the future ASCII song import is
+meant to reuse the same split-and-size engine. A **context** is a
+typography-only override of a theme (size, line spacing, alignment,
+maximum lines, inset — never colours), stored per theme under a name
+(`scripture` is this milestone's consumer), resolved by the one existing
+appearance resolver so preview and output cannot diverge; the packing
+core of `paginateScripture` is extracted into a generic text-flow engine
+whose scripture adapter keeps its current suite unchanged. Full design in
+[the plan](docs/ui/text-flow-plan.md).
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| TF.1 | TODO | Theme text contexts and per-slide `text_context` through storage and the resolver | Optional `themes[].contexts` array and per-slide `text_context` round-trip through the save format with a minor bump; unknown context names are preserved untouched; a file without them loads and renders pixel-identically; `appearanceForSlide` layers base theme → named context → slide customization in that precedence; a scripture slide under a 6-line context renders at the context's typography (PIL-verified) while a song slide of the same theme is unchanged |
+| TF.2 | TODO | The generic text-flow engine, scripture reduced to an adapter | A `textflow` component in `openshow::importer` holds the packing, sentence/word splitting, continuation labelling, height reservation and the `AwaitingMeasurement` port; `paginateScripture` becomes blocks + a reference labeler + reservation arithmetic over it with its existing suite passing unchanged; engine tests cover stanza-shaped blocks with a no-op labeler, a line budget sizing slides to the budget by measured binary search, and the no-fit refusal naming itself |
+| TF.3 | TODO | Scripture import flows the whole passage through the engine under the theme's scripture context | The live-shape chapter fixture (BIF.1's findings as input): with a 6-line `scripture` context the passage flows across ~6-line slides — never one verse per slide — the preview is the same call as the output, and labels, notes and provenance match BI.5; a theme without the context behaves exactly as today; measurement stays the worker's alone and nothing is clipped |
+| TF.4 | TODO | Theme editor section for the reading context; re-acceptance and docs | The theme editor sets the scripture context's lines and size; the Bible page's plan sentence names the context used; the end-to-end fixture re-runs under an edited theme and the PGM slide matches the previewed flow with the provider down; `docs/architecture.md` and the delivered-shape record updated; full desktop and headless gates pass |
+
+Task order: TF.1 → TF.2 → TF.3 → TF.4, one commit per leaf; BIF.1 lands
+first regardless (it explains the live shape the engine must control, and
+Add is blocked until it does), BIF.2/BIF.3 stay independent, and TF.4's
+re-acceptance rides after BIF.4's.
+
 ### M7 — Productization, reliability and installable alpha
 
 These release gates remain open regardless of historical milestone tags.
