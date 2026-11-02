@@ -91,6 +91,12 @@ QVariantList DocumentViews::songs() const {
         if (show == nullptr) {
             continue;
         }
+        // A schedule-owned presentation (task BI.3) is not a Library row:
+        // the importer's item lives on today's schedule and nowhere else,
+        // so the Library list — and with it the Show page — never sees it.
+        if (show->scheduleOwned) {
+            continue;
+        }
         QVariantMap entry;
         entry.insert(QStringLiteral("id"), QString::fromStdString(id));
         entry.insert(QStringLiteral("name"), QString::fromStdString(show->name));
@@ -408,8 +414,16 @@ QVariantList DocumentViews::collectionOutline() const {
     library.insert(QStringLiteral("kind"), QStringLiteral("library"));
     library.insert(QStringLiteral("id"), QString());
     library.insert(QStringLiteral("name"), QStringLiteral("Library"));
-    library.insert(QStringLiteral("count"),
-                   static_cast<int>(fDocuments.showIds().size()));
+    // The count is the Library's own (task BI.3): schedule-owned scripture
+    // items live on their playlist rows, not in this bin.
+    int libraryShows = 0;
+    for (const openshow::domain::Id& id : fDocuments.showIds()) {
+        const openshow::domain::Show* show = fDocuments.findShow(id);
+        if (show != nullptr && !show->scheduleOwned) {
+            ++libraryShows;
+        }
+    }
+    library.insert(QStringLiteral("count"), libraryShows);
     list.append(library);
     for (const QVariant& row : playlists()) {
         const QVariantMap playlist = row.toMap();
@@ -509,6 +523,12 @@ QVariantList DocumentViews::searchShows(const QString& query) const {
     for (const openshow::domain::Id& id : fDocuments.showIds()) {
         const openshow::domain::Show* show = fDocuments.findShow(id);
         if (show == nullptr) {
+            continue;
+        }
+        // The drawer searches the Library (task BI.3); a schedule-owned
+        // scripture item is found where it lives — the schedule's rows —
+        // not by pulling it into the Library's index.
+        if (show->scheduleOwned) {
             continue;
         }
         LibraryRow row;

@@ -2704,6 +2704,109 @@ void exercisePlacementSurfaces(const std::filesystem::path& root) {
           "one revert hands the silent slide back to its authored box");
 }
 
+// Task BI.3: the importer's single destination action, seen from the
+// workspace. One Add writes show + slides + schedule row as ONE history
+// unit; the item answers to its playlist and to nothing in the Library;
+// save and reopen keep exactly the selected content and the provenance;
+// and an add whose target vanished is invalidated rather than retargeted.
+void exerciseScripturePassage(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    check(docs.createSong("Ordinary Hymn"), "the Library has one ordinary show");
+    const QString service = docs.currentPlaylistId();
+    check(!service.isEmpty(), "the seeded Service playlist stands in for today's schedule");
+    const int libraryCount = docs.songs().size();
+    check(docs.collectionOutline().at(0).toMap().value(QStringLiteral("count")).toInt() ==
+              libraryCount,
+          "the Library row counts the Library alone");
+
+    const QVariantList slides{
+        QVariantList{QStringLiteral("Grace to you and peace"),
+                     QStringLiteral("from God our Father.")},
+        QVariantList{QStringLiteral("I give thanks to my God")},
+    };
+    check(docs.addScripturePassage(service, QStringLiteral("1 Corinthians 1:1-2"),
+                                   QStringLiteral("ESV"),
+                                   QStringLiteral("ESV test licence line."), slides),
+          "the importer's Add lands once on today's schedule");
+    // The schedule row appeared...
+    check(docs.playlistEntries().size() == 1, "the passage is the schedule's first row");
+    const QVariantMap row = docs.playlistEntries().at(0).toMap();
+    const QString passageShow = row.value(QStringLiteral("showId")).toString();
+    check(!passageShow.isEmpty() && row.value(QStringLiteral("slideCount")).toInt() == 2,
+          "the row names the new two-slide presentation");
+    // ...and nowhere else.
+    check(docs.songs().size() == libraryCount,
+          "the Library list gained no row — no reusable show was created");
+    check(docs.collectionOutline().at(0).toMap().value(QStringLiteral("count")).toInt() ==
+              libraryCount,
+          "the Library count is unchanged too");
+    check(docs.searchShows(QStringLiteral("grace")).isEmpty() &&
+              docs.searchShows(QStringLiteral("corinthians")).isEmpty(),
+          "the drawer search cannot find the schedule-owned passage");
+
+    // One Undo removes the WHOLE item: row and presentation together.
+    docs.undo();
+    check(docs.playlistEntries().isEmpty() && docs.songs().size() == libraryCount,
+          "one undo removes the schedule row and the presentation with it");
+    docs.redo();
+    check(docs.playlistEntries().size() == 1 &&
+              docs.playlistEntries().at(0).toMap().value(QStringLiteral("showId")).toString() ==
+                  passageShow,
+          "redo brings the whole item back with the same identity");
+
+    // Save and reopen: the file carries the selected content and the
+    // provenance, and the reopened document still keeps it out of the
+    // Library.
+    check(docs.save(), "the service with its passage saves");
+    {
+        const boost::json::value manifest =
+            boost::json::parse(readManifest(root / "service" / "service.json"));
+        const boost::json::array& shows = manifest.at("shows").as_array();
+        const boost::json::object* found = nullptr;
+        for (const boost::json::value& element : shows) {
+            if (element.at("id").as_string() == passageShow.toStdString()) {
+                found = &element.as_object();
+            }
+        }
+        check(found != nullptr && found->at("scheduleOwned").as_bool() &&
+                  found->at("scripture").at("reference").as_string() ==
+                      "1 Corinthians 1:1-2" &&
+                  found->at("scripture").at("translation").as_string() == "ESV" &&
+                  found->at("scripture").at("attribution").as_string() ==
+                      "ESV test licence line.",
+              "the file carries the passage as a schedule-owned item with its provenance");
+    }
+    DocumentController reopened(nullptr, root);
+    check(reopened.load(), "the service reopens");
+    reopened.selectPlaylist(service);
+    check(reopened.playlistEntries().size() == 1, "the reopened schedule still has the passage");
+    check(reopened.songs().size() == 1, "and the reopened Library still does not");
+    const QVariantList kept = reopened.slidesOf(passageShow);
+    check(kept.size() == 2 &&
+              kept.at(0).toMap().value(QStringLiteral("preview")).toString() ==
+                  QStringLiteral("Grace to you and peace"),
+          "the reopened passage shows the selected words");
+
+    // Removal leaves nothing behind: the schedule loses the row and the
+    // Library never had the show, so no orphan copy exists anywhere.
+    check(reopened.removePlaylistEntry(
+              reopened.playlistEntries().at(0).toMap()
+                  .value(QStringLiteral("entryId"))
+                  .toString()),
+          "the schedule row is removed");
+    check(reopened.playlistEntries().isEmpty(), "the schedule is empty again");
+
+    // The invalidated target: if today's schedule is gone by the time Add
+    // runs, the add refuses — it does not pick a different target.
+    DocumentController vanished(nullptr, root);
+    check(!vanished.addScripturePassage(QStringLiteral("no-such-playlist"),
+                                        QStringLiteral("Psalm 23"), QStringLiteral("NIV"),
+                                        QStringLiteral(""), slides),
+          "an Add to a schedule that does not exist is refused");
+    check(vanished.status().contains(QStringLiteral("schedule")),
+          "and the refusal names the missing target");
+}
+
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("openshow-document-tests"));
@@ -2722,6 +2825,7 @@ int main(int argc, char* argv[]) {
     exerciseWornChain(tempRoot / "wornchain");
     exerciseThemeSurfaces(tempRoot / "surfaces");
     exercisePlacementSurfaces(tempRoot / "placementsurfaces");
+    exerciseScripturePassage(tempRoot / "scripturepassage");
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");
     exerciseClipboard(tempRoot / "clipboard");

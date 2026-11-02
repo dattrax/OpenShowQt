@@ -69,6 +69,18 @@ someone's navigation bar on the audience output.
   becomes a **schedule-owned presentation** — a show that belongs to that
   playlist and is NOT part of the reusable Library, with no path from it
   back into the Library.
+- **Delivered shape (BI.3, 2026-11-02):** `Show.scheduleOwned` plus
+  `Show.scripture = ScriptureProvenance{reference, translation, attribution}`,
+  stored as optional format-6 show keys (`"scheduleOwned": true`, a
+  `"scripture"` object) written only when they speak — an ordinary file's
+  entries gain no keys, a pre-6 file carrying either key or provenance on a
+  show that is not schedule-owned is refused naming the key. The controller's
+  `addScripturePassage(playlistId, reference, translation, attribution,
+  slides)` performs the plan's one destination action as ONE history unit
+  against an explicit target (a vanished schedule is refused, not
+  redirected); the Library list, the Library count and the drawer search
+  all exclude schedule-owned shows, while the schedule's own rows and the
+  presenter's cue see them normally.
 
 ## Leaves
 

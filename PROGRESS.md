@@ -4,7 +4,7 @@ Updated: 2026-11-02 (Europe/London).
 
 ## Current checkpoint
 
-Current work: **Bible import is underway — BI.1 and BI.2 are DONE**
+Current work: **Bible import is underway — BI.1, BI.2 and BI.3 are DONE**
 (2026-11-02). BI.1: the provider access approach is recorded in
 [docs/ui/bible-import-plan.md](docs/ui/bible-import-plan.md) (passage-only
 HTTPS fetch of the ONE requested Bible Gateway page, robots-allowed path,
@@ -20,8 +20,16 @@ timeout, explicit no-cache attributes and a 6 MB body cap, a generation
 counter so a superseded or cancelled reply answers to nobody, its own
 sentences for offline, timeout and HTTP errors, and verses that die the
 moment the translation moves; fetched bytes exist only in memory until Add
-(`bible_lookup_tests` on a scripted manager). Next is BI.3: the
-schedule-owned scripture show. Before BI, **the Themes amendment
+(`bible_lookup_tests` on a scripted manager). BI.3: the importer's one
+destination action landed — `addScripturePassage` writes a **schedule-owned
+show** (new domain flag + `ScriptureProvenance` of reference, translation
+and licence, stored as optional format-6 keys that ordinary files never
+gain) plus its slides and its row on today's schedule as ONE undoable edit
+against an explicit target; the Library list, count and drawer search never
+see the item, save/reopen keeps the words and provenance, and removal
+leaves nothing behind (`domain_tests` + `document_controller_tests`). Next
+is BI.4: theme-sized pagination measured by the worker's text layout.
+Before BI, **the Themes amendment
 (TH.9) is DONE** — the built-in look is now a real, embedded, undeletable **Default** theme (reserved id `default`,
 seeded first, re-ensured after every successful load, the chain's last
 layer; editable like any theme but refused by delete, with the editor's
@@ -114,6 +122,7 @@ completed seek-clock epoch; supersession and failure have distinct outcomes.
 | Themes TH.9 acceptance (2026-11-02) | `domain_tests` — a fresh service is seeded with exactly the Default theme, its look checked property-for-property against the built-in it replaced, unthemed slides resolve through the floor, Default renames and places like any theme but removal is refused naming itself, and a pre-amendment manifest opens healed with Default re-ensured; `document_controller_tests` — a drag on the UNPLACED primary box of a slide nothing places lands in `customizations.placement` with the saved file's authored rectangle unchanged (proved by parsing the manifest's own JSON), rows carry the applied rectangle and the `primary`/`placed` flags, and one revert hands the slide back to its authored box; `workspace_ui_tests` — More opens on the Default row with the editor still offered, Delete sleeps while Default is selected, and with only Default left every targeted control disables while a directly-asked removal is refused; captures inspected with Default leading the list and the THEME PLACES story unchanged; 57/57 desktop and 43/43 headless |
 | Bible import BI.1 acceptance (2026-11-02) | `bible_import_tests` — live-shape passage page parses to ordered verses (chapter/verse boundaries, `&ldquo;`/numeric entities, literal Unicode), headings/cross-reference anchors/verse numbers/site furniture never ride in a verse, the attribution block arrives as licence text; refusals: no-results, blocked, changed-markup, empty page, and a translation that answered something else (names both, imports nothing); translation menu carries NIV and KJV; the same parser verified against the live ESV, NIV and invalid-reference pages on 2026-11-02; 58/58 desktop and 44/44 headless |
 | Bible import BI.2 acceptance (2026-11-02) | `bible_lookup_tests` — scripted `QNetworkAccessManager` with fake replies: opens on the internet notice; the request is HTTPS with encoded `search`/`version`, a transfer timeout, `CacheSaveControlAttribute=false` and `AlwaysNetwork` load (nothing fetched is ever cached); success pre-selects verses and carries the attribution; offline says the notice and retry re-asks; the timeout has its own sentence; cancel retires the reply so it cannot write a passage later; a superseded reply leaves the newer passage standing; the 6 MB cap refuses unparsed; HTTP 403 answers with its number; an empty reference sends nothing; changing the translation clears the stale verses and attribution; 59/59 desktop and 44/44 headless |
+| Bible import BI.3 acceptance (2026-11-02) | `domain_tests` — `createScriptureShow` names itself after the reference, carries ownership and provenance from creation and refuses a blank reference or translation naming each; the manifest gains `scheduleOwned`/`scripture` only on the importer's entry (the Library show's entry gains no keys), the item round-trips field-for-field through `sameService`, a format-1 file claiming either key is refused naming it, and provenance on a show that is not schedule-owned is refused; `document_controller_tests` — one `addScripturePassage` lands show + two slides + the schedule's first row, the Library list/count and the drawer search stay clean of it, one undo removes the whole item and one redo restores the same identity, the saved manifest carries the provenance, a reopened controller reads the row back with the selected words while the Library stays empty, removing the schedule row leaves nothing, and an Add against a schedule that does not exist is refused naming the target; 59/59 desktop and 44/44 headless |
 | Documentation | Current links, historical archive integrity and whitespace checked |
 
 Presets ran sequentially. Frame/position progress was measured; acoustic offset,

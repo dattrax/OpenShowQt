@@ -88,6 +88,31 @@ Id Documents::createShow(const std::string& name, std::string* error) {
     return fShows.back().id;
 }
 
+Id Documents::createScriptureShow(const std::string& name, const ScriptureProvenance& scripture,
+                                  std::string* error) {
+    // The provenance is the point of the item: the reference says what the
+    // words are and the translation says which book they are in. An empty
+    // reference or translation would make the saved words unattributable,
+    // so the creation refuses rather than storing a mystery.
+    const std::string cleanReference = trimmed(scripture.reference);
+    const std::string cleanTranslation = trimmed(scripture.translation);
+    if (cleanReference.empty()) {
+        fail(error, "a scripture item needs the reference it was looked up as");
+        return {};
+    }
+    if (cleanTranslation.empty()) {
+        fail(error, "a scripture item needs the translation it was fetched in");
+        return {};
+    }
+    Show show;
+    show.id = nextId("show");
+    show.name = trimmed(name).empty() ? cleanReference : trimmed(name);
+    show.scheduleOwned = true;
+    show.scripture = ScriptureProvenance{cleanReference, cleanTranslation, scripture.attribution};
+    fShows.push_back(std::move(show));
+    return fShows.back().id;
+}
+
 bool Documents::removeShow(const Id& showId, std::string* error) {
     const auto found = std::find_if(fShows.begin(), fShows.end(),
                                     [&](const Show& s) { return s.id == showId; });

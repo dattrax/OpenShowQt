@@ -363,6 +363,17 @@ public:
     Q_INVOKABLE void selectPlaylist(const QString& playlistId);
     Q_INVOKABLE bool addShowToPlaylist(const QString& showId);
     Q_INVOKABLE bool insertShowInPlaylist(const QString& showId, int index);
+    // The Bible importer's Add (task BI.3), the plan's one destination
+    // action: create the schedule-owned scripture show, fill it with the
+    // generated slides and join it to the GIVEN playlist — all as one
+    // edit, so one Undo removes the whole item. `playlistId` is the
+    // explicit target (today's schedule); a target that vanished between
+    // preview and Add is refused rather than guessed at. Each element of
+    // `slides` is the slide's lines as a QStringList. No Library show is
+    // ever created, so removal can never leave one behind.
+    Q_INVOKABLE bool addScripturePassage(const QString& playlistId, const QString& reference,
+                                         const QString& translation, const QString& attribution,
+                                         const QVariantList& slides);
     // The drawer's Enter: insert after the current show when it is in
     // the playlist (the reference's placement rule), otherwise append.
     Q_INVOKABLE bool insertShowAfterCurrentShow(const QString& showId);

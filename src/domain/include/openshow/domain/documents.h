@@ -376,6 +376,20 @@ struct Slide {
     }
 };
 
+// Where an online Bible import's words came from (task BI.3). This is the
+// schedule item's whole provenance: the reference the operator typed, the
+// translation the PAGE answered with, and the licence text the translation
+// requires carried beside the words. It is metadata only — the slide texts
+// are ordinary schedule content, and this record is what keeps them
+// attributable after the network answer is long gone.
+struct ScriptureProvenance {
+    std::string reference;    // as looked up, e.g. "1 Corinthians 1:1-6"
+    std::string translation;  // the version the passage was fetched in, e.g. "NIV"
+    std::string attribution;  // the publisher/copyright block, as the page gave it
+
+    bool operator==(const ScriptureProvenance&) const = default;
+};
+
 struct Show {
     Id id;
     std::string name;
@@ -383,6 +397,14 @@ struct Show {
     std::vector<Slide> slides;  // presentation order
     // Theme new slides implicitly use; empty means "no theme yet".
     Id defaultThemeId;
+    // A schedule-owned presentation (task BI.3): a real show that lives on
+    // today's schedule but is NEVER a Library row — no Library list, count
+    // or search sees it, and removing it leaves nothing behind. The online
+    // Bible import creates only these.
+    bool scheduleOwned = false;
+    // Set exactly when the show came from a passage lookup; scheduleOwned
+    // alone can also cover future schedule-only items without provenance.
+    std::optional<ScriptureProvenance> scripture;
 };
 
 // A named appearance. Colours are "#rgb" or "#rrggbb"; a zero font size
@@ -517,6 +539,15 @@ public:
     // Names must be non-blank; duplicates are allowed (ids distinguish).
     // Returns the new show's Id, or "" on failure.
     Id createShow(const std::string& name, std::string* error = nullptr);
+    // The online Bible import's destination shape (task BI.3): a
+    // schedule-owned presentation carrying its provenance. Slides join
+    // through appendSlide/setSlideLines like any other show's; what makes
+    // it scripture is the provenance and the Library exclusion, not a
+    // second kind of slide. The reference and the translation must be
+    // there — an unattributable import is the one thing the plan forbids
+    // persisting; the attribution may be empty (a public-domain version).
+    Id createScriptureShow(const std::string& name, const ScriptureProvenance& scripture,
+                           std::string* error = nullptr);
     // Removing a show also drops its playlist entries (an entry naming
     // a deleted show could never run); nothing else references shows.
     bool removeShow(const Id& showId, std::string* error = nullptr);

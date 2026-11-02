@@ -1505,6 +1505,86 @@ bool DocumentController::addShowToPlaylist(const QString& showId) {
     return insertShowInPlaylist(showId, -1);
 }
 
+bool DocumentController::addScripturePassage(const QString& playlistId, const QString& reference,
+                                             const QString& translation,
+                                             const QString& attribution,
+                                             const QVariantList& slides) {
+    flushText();
+    // The plan's explicit target: the importer never picks a schedule for
+    // the operator, and an Add whose target vanished since the preview is
+    // invalidated, not redirected.
+    const openshow::domain::Id target = playlistId.toStdString();
+    if (target.empty() || fDocuments.findPlaylist(target) == nullptr) {
+        setStatus(QStringLiteral("add passage: today's schedule does not exist — select or "
+                                 "create it first"));
+        return false;
+    }
+    if (reference.trimmed().isEmpty() || translation.trimmed().isEmpty()) {
+        setStatus(QStringLiteral("add passage: a reference and a translation are required"));
+        return false;
+    }
+    if (slides.isEmpty()) {
+        setStatus(QStringLiteral("add passage: no slides were generated to add"));
+        return false;
+    }
+    // Shapes are checked before the edit opens: a row that is not a list
+    // of strings is a caller bug, and refusing here means the document
+    // never sees a half-built slide.
+    std::vector<std::vector<std::string>> boxes;
+    boxes.reserve(slides.size());
+    for (const QVariant& row : slides) {
+        if (!row.canConvert<QVariantList>()) {
+            setStatus(QStringLiteral("add passage: a slide's content is not a list of lines"));
+            return false;
+        }
+        const QVariantList lines = row.toList();
+        std::vector<std::string> box;
+        box.reserve(lines.size());
+        for (const QVariant& line : lines) {
+            box.push_back(line.toString().toStdString());
+        }
+        boxes.push_back(std::move(box));
+    }
+    openshow::domain::Id created;
+    std::string error;
+    if (!edit([&] {
+            created = fDocuments.createScriptureShow(
+                reference.trimmed().toStdString(),
+                openshow::domain::ScriptureProvenance{reference.trimmed().toStdString(),
+                                                      translation.trimmed().toStdString(),
+                                                      attribution.toStdString()},
+                &error);
+            if (created.empty()) {
+                return false;
+            }
+            // History will not roll a refused mutation back for us (the
+            // paste rule), so any later step that fails takes the whole
+            // young show with it — the document never keeps half a passage.
+            for (const std::vector<std::string>& box : boxes) {
+                const openshow::domain::Id slide = fDocuments.appendSlide(created, &error);
+                if (slide.empty() || !fDocuments.setSlideLines(created, slide, box, &error)) {
+                    fDocuments.removeShow(created, nullptr);
+                    created.clear();
+                    return false;
+                }
+            }
+            if (fDocuments.addPlaylistEntry(target, created, std::string(), &error).empty()) {
+                fDocuments.removeShow(created, nullptr);
+                created.clear();
+                return false;
+            }
+            return true;
+        })) {
+        setStatus(QStringLiteral("add passage: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    // The schedule gained a row; if that schedule is on screen, it must say so.
+    if (fCurrentPlaylistId == target) {
+        emit navigationChanged();
+    }
+    return true;
+}
+
 bool DocumentController::insertShowInPlaylist(const QString& showId, int index) {
     flushText();
     if (fCurrentPlaylistId.empty()) {

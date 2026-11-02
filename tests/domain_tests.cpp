@@ -23,6 +23,8 @@
 
 #include <unistd.h>
 
+#include <boost/json.hpp>
+
 #include "openshow/domain/documents.h"
 #include "openshow/domain/history.h"
 #include "openshow/domain/storage.h"
@@ -45,6 +47,7 @@ using openshow::domain::Id;
 using openshow::domain::AssetRebind;
 using openshow::domain::kDefaultLineSpacing;
 using openshow::domain::kMaxSlideItems;
+using openshow::domain::ScriptureProvenance;
 using Asset = openshow::domain::Asset;
 using Autosave = openshow::domain::Autosave;
 using History = openshow::domain::History;
@@ -844,6 +847,7 @@ bool sameService(const Documents& a, const Documents& b) {
         const Show* sb = b.findShow(showId);
         if (sa == nullptr || sb == nullptr || sa->name != sb->name ||
             sa->notes != sb->notes || sa->defaultThemeId != sb->defaultThemeId ||
+            sa->scheduleOwned != sb->scheduleOwned || sa->scripture != sb->scripture ||
             sa->slides.size() != sb->slides.size()) {
             return false;
         }
@@ -2531,6 +2535,94 @@ void exerciseDefaultThemeFloor(const fs::path& tempRoot) {
           "the healed service draws its slides on the floor");
 }
 
+void exerciseScriptureShows(const fs::path& tempRoot) {
+    Documents docs;
+    std::string error;
+    // The Bible importer's destination shape (task BI.3): a real show that
+    // belongs to the schedule and carries where its words came from.
+    const Id plain = docs.createShow("Hymn", &error);
+    const ScriptureProvenance where{"Psalm 1:1-2", "NIV", "NIV copyright text"};
+    const Id scripture = docs.createScriptureShow("", where, &error);
+    check(!scripture.empty() && docs.findShow(scripture)->name == "Psalm 1:1-2",
+          "a scripture show takes the reference as its name when nothing else is given");
+    check(docs.findShow(scripture)->scheduleOwned &&
+              docs.findShow(scripture)->scripture->translation == "NIV" &&
+              docs.findShow(scripture)->scripture->attribution == "NIV copyright text",
+          "ownership and provenance are there from the first moment of existence");
+    check(docs.createScriptureShow("x", {"", "NIV", ""}, &error).empty() &&
+              error.find("reference") != std::string::npos,
+          "a scripture item without the reference it was looked up as is refused");
+    check(docs.createScriptureShow("x", {"Psalm 1", "", ""}, &error).empty() &&
+              error.find("translation") != std::string::npos,
+          "a scripture item that cannot name its translation is refused too");
+    check(docs.findShow(plain)->scheduleOwned == false && !docs.findShow(plain)->scripture,
+          "an ordinary show carries neither flag nor provenance");
+    const Id slide = docs.appendSlide(scripture, &error);
+    check(!slide.empty() &&
+              docs.setSlideLines(scripture, slide, {"Blessed is the one", "who walks not"},
+                                 &error),
+          "the scripture show holds ordinary slides");
+
+    // Round trip: save, reload, compare; and the manifest carries the
+    // promise in its own words.
+    const fs::path package = tempRoot / "scripture";
+    std::filesystem::create_directories(package);
+    check(openshow::domain::saveService(docs, package, &error), "the scripture service saves");
+    {
+        const boost::json::value manifest =
+            boost::json::parse(readFile(package / "service.json"));
+        const boost::json::array& shows = manifest.at("shows").as_array();
+        check(shows[0].as_object().find("scheduleOwned") == shows[0].as_object().end() &&
+                  shows[0].as_object().find("scripture") == shows[0].as_object().end(),
+              "the Library show's entry gained no keys — files without the importer save as before");
+        check(shows[1].at("scheduleOwned").as_bool() &&
+                  shows[1].at("scripture").at("reference").as_string() == "Psalm 1:1-2" &&
+                  shows[1].at("scripture").at("translation").as_string() == "NIV" &&
+                  shows[1].at("scripture").at("attribution").as_string() == "NIV copyright text",
+              "the schedule-owned entry names its reference, translation and licence");
+    }
+    Documents back;
+    check(openshow::domain::loadService(&back, package, &error) && sameService(docs, back),
+          "the scripture item round-trips field for field");
+    check(back.findShow(scripture)->scheduleOwned &&
+              back.findShow(scripture)->scripture->reference == "Psalm 1:1-2",
+          "and the reloaded item is still schedule-owned scripture");
+
+    // A pre-6 file carrying either key is another build meaning something
+    // by it: refused naming the key, not guessed (the placement rule).
+    const fs::path warped = tempRoot / "scripture-warped";
+    std::filesystem::create_directories(warped);
+    const std::string kFormat1Head =
+        R"({"format":1,"nextOrdinal":9,"shows":[{"id":"show1","name":"Earlier",)";
+    writeFile(warped / "service.json",
+              kFormat1Head +
+                  R"("scheduleOwned":true,"slides":[],"notes":""}],"styles":[],"assets":[],"playlists":[]})");
+    Documents healed;
+    check(!openshow::domain::loadService(&healed, warped, &error) &&
+              error.find("scheduleOwned") != std::string::npos,
+          "a format-1 file claiming scheduleOwned is refused naming the key");
+    writeFile(warped / "service.json",
+              kFormat1Head +
+                  R"("scripture":{"reference":"Psalm 1","translation":"NIV","attribution":""},)"
+                  R"("slides":[],"notes":""}],"styles":[],"assets":[],"playlists":[]})");
+    check(!openshow::domain::loadService(&healed, warped, &error) &&
+              error.find("scripture") != std::string::npos,
+          "a format-1 file carrying scripture provenance is refused too");
+    // Format 6 keeps its own pair honest: provenance belongs to a
+    // schedule-owned show and to nothing else.
+    const fs::path mismatched = tempRoot / "scripture-mismatched";
+    std::filesystem::create_directories(mismatched);
+    writeFile(mismatched / "service.json",
+              R"({"format":6,"nextOrdinal":9,"currentThemeId":"","shows":[)"
+              R"({"id":"show1","name":"False claim","notes":"","defaultThemeId":"",)"
+              R"("slides":[],"scripture":{"reference":"Psalm 1","translation":"NIV",)"
+              R"("attribution":""}}],"themes":[],"assets":[],"playlists":[]})");
+    Documents liar;
+    check(!openshow::domain::loadService(&liar, mismatched, &error) &&
+              error.find("schedule-owned") != std::string::npos,
+          "provenance on a show that is not schedule-owned is refused");
+}
+
 void exerciseHistory() {
     std::string error;
     Documents docs;
@@ -3292,6 +3384,7 @@ int main() {
     exercisePersistence(tempRoot);
     exerciseBoxStorage(tempRoot);
     exerciseDefaultThemeFloor(tempRoot);
+    exerciseScriptureShows(tempRoot);
     std::filesystem::remove_all(tempRoot);
 
     exerciseHistory();

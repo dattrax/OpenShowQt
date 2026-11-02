@@ -570,6 +570,20 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
         entry.emplace("name", show.name);
         entry.emplace("notes", show.notes);
         entry.emplace("defaultThemeId", show.defaultThemeId);
+        // The schedule-owned flag and the scripture provenance (task BI.3)
+        // are format-6 members written only when they speak: a Library
+        // show's entry gains no keys, so files that pre-date the importer
+        // save byte-for-byte as they did.
+        if (show.scheduleOwned) {
+            entry.emplace("scheduleOwned", true);
+        }
+        if (show.scripture.has_value()) {
+            boost::json::object scriptureJson;
+            scriptureJson.emplace("reference", show.scripture->reference);
+            scriptureJson.emplace("translation", show.scripture->translation);
+            scriptureJson.emplace("attribution", show.scripture->attribution);
+            entry.emplace("scripture", std::move(scriptureJson));
+        }
         boost::json::array slides;
         for (const Slide& slide : show.slides) {
             boost::json::object slideJson;
@@ -842,6 +856,64 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         if (!refuseMixedNaming(jsonShow, themeNamed ? "defaultStyleId" : "defaultThemeId",
                                "show '" + show.id + "'")) {
             return false;
+        }
+        // The schedule-owned flag and the scripture provenance (task BI.3)
+        // are format-6 members: a pre-6 file carrying either is another
+        // build meaning something by it, and that key is refused, not
+        // guessed (the placement rule, applied to shows).
+        if (jsonShow.contains("scheduleOwned")) {
+            if (!themeNamed) {
+                fail(error, "service.json: a \"scheduleOwned\" flag in a format-" +
+                                std::to_string(format) + " file, where that key"
+                                " does not exist");
+                return false;
+            }
+            const boost::json::value& flag = jsonShow.at("scheduleOwned");
+            if (!flag.is_bool()) {
+                fail(error, "service.json: show '" + show.id +
+                                "' scheduleOwned is not true or false");
+                return false;
+            }
+            show.scheduleOwned = flag.as_bool();
+        }
+        if (jsonShow.contains("scripture")) {
+            if (!themeNamed) {
+                fail(error, "service.json: a \"scripture\" block in a format-" +
+                                std::to_string(format) + " file, where that key"
+                                " does not exist");
+                return false;
+            }
+            const boost::json::value& scriptureValue = jsonShow.at("scripture");
+            if (!scriptureValue.is_object()) {
+                fail(error, "service.json: show '" + show.id +
+                                "' carries \"scripture\" that is not an object");
+                return false;
+            }
+            const boost::json::object& scriptureJson = scriptureValue.as_object();
+            ScriptureProvenance scripture;
+            if (!wantString(scriptureJson, "reference", &scripture.reference, error) ||
+                scripture.reference.empty() ||
+                !wantString(scriptureJson, "translation", &scripture.translation, error) ||
+                scripture.translation.empty()) {
+                if (error != nullptr && error->empty()) {
+                    fail(error, "service.json: show '" + show.id +
+                                    "' scripture needs a reference and a translation");
+                }
+                return false;
+            }
+            if (!wantOptionalString(scriptureJson, "attribution", &scripture.attribution,
+                                    error)) {
+                return false;
+            }
+            // Provenance without schedule ownership is a file that cannot
+            // say where the item is allowed to be seen; the writer can
+            // never produce the pair, so an editor that did is refused.
+            if (!show.scheduleOwned) {
+                fail(error, "service.json: show '" + show.id +
+                                "' carries scripture provenance without being schedule-owned");
+                return false;
+            }
+            show.scripture = std::move(scripture);
         }
         const boost::json::array* slideArray = nullptr;
         if (!wantArray(jsonShow, "slides", &slideArray, error)) {
