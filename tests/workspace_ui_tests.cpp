@@ -1588,6 +1588,27 @@ int main(int argc, char** argv) {
         auto* notice = window->findChild<QQuickItem*>("bibleNoticeLabel");
         check(notice && notice->property("text").toString().contains(QStringLiteral("internet")),
               "the page opens on the online notice");
+        // BIF.2: the picker must OPEN on the session's translation — the
+        // operator's NIV default appeared only after they clicked the menu
+        // by hand because the old currentIndex binding never recomputed.
+        if (auto* picker = window->findChild<QObject*>("bibleTranslationPicker")) {
+            const int index = picker->property("currentIndex").toInt();
+            check(index >= 0, "the translation picker opens WITH a row selected");
+            check(bible.translation() == QStringLiteral("NIV") &&
+                      picker->property("displayText").toString() ==
+                          QStringLiteral("NIV — New International Version"),
+                  "and the row it opens on is the session's NIV, name and all");
+            bible.setTranslation(QStringLiteral("ESV"));  // a session-side move
+            QTest::qWait(60);
+            check(picker->property("currentIndex").toInt() != index &&
+                      picker->property("displayText").toString().startsWith(
+                          QStringLiteral("ESV — ")),
+                  "changing the session's translation moves the picker");
+            bible.setTranslation(QStringLiteral("NIV"));
+            QTest::qWait(60);
+        } else {
+            check(false, "the page carries the translation picker");
+        }
         auto* add = window->findChild<QQuickItem*>("bibleAddButton");
         auto* cancel = window->findChild<QQuickItem*>("bibleCancelButton");
         check(add && !add->property("enabled").toBool() && cancel,

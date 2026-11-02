@@ -68,10 +68,30 @@ ScrollView {
             }
             ComboBox {
                 objectName: "bibleTranslationPicker"
+                id: translationPicker
                 width: 200
                 model: bible.translations
                 textRole: "version"; valueRole: "version"
-                currentIndex: indexOfValue(bible.translation)
+                // BIF.2: `currentIndex: indexOfValue(...)` is a plain
+                // function call — the binding engine cannot see what it
+                // reads (the control's own model is not a dependency it
+                // can capture), so it never resolved and the picker opened
+                // unselected. This expression reads the session's property
+                // directly — engine-tracked — so the row matching
+                // bible.translation is selected from the first paint, and
+                // a session-side change to the translation re-runs it.
+                // (Popup activation writes currentIndex from C++, which
+                // keeps a declarative binding alive; onActivated feeds the
+                // session, and this binding follows it back.)
+                currentIndex: {
+                    const wanted = bible.translation
+                    const rows = bible.translations
+                    for (let i = 0; i < rows.length; ++i) {
+                        if (rows[i].version === wanted)
+                            return i
+                    }
+                    return -1
+                }
                 displayText: bible.translation + (currentIndex >= 0 && model[currentIndex]
                                                   ? " — " + model[currentIndex].name : "")
                 onActivated: bible.translation = currentValue

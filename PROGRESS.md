@@ -69,7 +69,13 @@ behind an asleep Add. The reservation is now caption type (still the
 worker's measurement, just set small as provenance is), the chapter
 measures into 19 multi-verse slides and one Add lands it, a batch nobody
 answers retires after a minute with its own sentence, and no path sits on
-"measuring". **BIF.2 (the picker opens on NIV) is next**, then BIF.3, BIF.4.
+"measuring". **BIF.2 is DONE the same day:** the picker's
+`indexOfValue` binding — untrackable by the engine, the reason it opened
+empty — is replaced by an expression over the session property; opening
+the page now shows NIV — New International Version selected, session-side
+changes move the picker, and the untouched default sends a byte-identical
+request to a menu-chosen one. **BIF.3 (book autocomplete) is next**, then
+BIF.4.
 The operator's paging note
 — flow the whole downloaded passage with the theme deciding how much text
 a slide carries (their examples: two display lines for songs, six for a

@@ -324,6 +324,37 @@ int main(int argc, char* argv[]) {
               "a passage belongs to the translation it was fetched in; the menu change drops it");
     }
 
+    // --- BIF.2: the untouched default asks for exactly what a chosen row asks
+    {
+        // Same reference, one importer that never touches the translation
+        // (the operator's path once the picker opens on NIV) and one that
+        // sets it as the menu's activation does. The URLs must be
+        // identical — the default is a choice like any other, not a hole.
+        BibleImport untouched;
+        ScriptedManager untouchedManager;
+        untouched.setNetworkAccessManager(&untouchedManager);
+        untouchedManager.steps.push_back({passageBody("NIV"), {}, {}, 200, 0});
+        untouched.setReference(QStringLiteral("First Test 1"));
+        untouched.lookup();
+        waitForIdle(untouched);
+
+        BibleImport chosen;
+        ScriptedManager chosenManager;
+        chosen.setNetworkAccessManager(&chosenManager);
+        chosenManager.steps.push_back({passageBody("NIV"), {}, {}, 200, 0});
+        chosen.setReference(QStringLiteral("First Test 1"));
+        chosen.setTranslation(QStringLiteral("NIV"));  // what onActivated does
+        chosen.lookup();
+        waitForIdle(chosen);
+
+        check(untouched.translation() == QStringLiteral("NIV"),
+              "the session's default translation is NIV");
+        check(untouchedManager.requests == 1 && chosenManager.requests == 1,
+              "each path sent exactly one request");
+        check(untouchedManager.lastUrl == chosenManager.lastUrl,
+              "the default translation sends exactly the menu-chosen request");
+    }
+
     if (gFailed == 0) {
         std::printf("bible_lookup_tests: all fixtures passed\n");
         return 0;
