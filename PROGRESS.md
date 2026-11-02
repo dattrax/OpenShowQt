@@ -63,9 +63,10 @@ recorded as milestone **BI-F (BIF.1–BIF.4)** in the PLAN ledger and
 [docs/ui/bible-import-plan.md](docs/ui/bible-import-plan.md), planned but
 not yet started; BIF.1 (Add must wake) is next. The operator's paging note
 — flow the whole downloaded passage with the theme deciding how much text
-a slide carries (two display lines for songs, six for a reading), and keep
-the split/sizing code common with the future ASCII song import — is
-recorded as milestone **TF (TF.1–TF.4)**: named typography-only contexts on
+a slide carries (their examples: two display lines for songs, six for a
+reading; the line count is what the theme's bible box measures out, never
+a fixed split) — is recorded as milestone **TF (TF.1–TF.4)**: named
+typography-and-box contexts on
 the theme, resolved by the one appearance resolver, and the packing core
 extracted from `paginateScripture` into a generic text-flow engine with
 scripture as its first adapter; design in

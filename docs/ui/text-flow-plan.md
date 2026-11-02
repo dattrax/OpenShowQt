@@ -20,6 +20,14 @@ learning to speak of more than one **text context**, and the packing
 learning to be a **generic text-flow engine** the scripture importer and
 the future ASCII-song importer both call.
 
+**The line count is the answer, not the input.** The operator's "songs two
+lines, bible reading six" is a description of what a well-sized context
+*looks like*, not a number to be dialled in: the number of lines is
+whatever sensibly fits the theme's bible box, never a fixed split. So a
+context declares typography and geometry, and the engine lets the
+measurement settle how many lines each slide carries. Nothing anywhere in
+TF splits at N lines.
+
 ## The theme's text contexts
 
 A theme's appearance (colours, background image, typography) stays what
@@ -31,14 +39,17 @@ name:
 - A theme may carry named contexts. The known consumer names are
   `scripture` (the Bible page) and, later, whatever the ASCII song import
   asks for; unknown names in stored files round-trip untouched.
-- A context may override: font family, font size, line spacing,
-  alignment, **maximum lines per slide**, and box inset. Colours and
-  backgrounds do not belong to a context — the scripture slides of a
-  theme look like that theme, they just fit more text.
+- A context may override: font family, font size, line spacing, alignment,
+  and the text box (inset or an explicit rectangle) — the "bible part of
+  the theme" the operator means. It may NOT set a line count: how many
+  lines a slide carries is what the measurement says fits that box at that
+  typography. Colours and backgrounds do not belong to a context — the
+  scripture slides of a theme look like that theme, they just fit more
+  text.
 
 Storage: `themes[].contexts` is an optional array
-(`{ name, font_family?, font_size?, line_spacing?, alignment?,
-max_lines?, inset? }`). Absent means exactly today. Slides gain an
+(`{ name, font_family?, font_size?, line_spacing?, alignment?, inset?,
+box? }`). Absent means exactly today. Slides gain an
 optional `text_context` string — an imported passage carries
 `"scripture"`; song slides carry nothing. Both are additive and bump the
 storage format's minor; old files load with no contexts and no slide
@@ -62,7 +73,6 @@ built; it is scripture-shaped. Extract the shape out of it:
 TextFlowInput {
     blocks:  [{ id, lines }],   // ordered units that stay whole if they can
     box, style,                 // the resolved (context-aware) appearance
-    max_lines,                  // optional budget from the context
     reserved_height,            // reference + attribution, as BI.4
     labeler(blockIds, continued) -> slide label
 }
@@ -72,15 +82,15 @@ TextFlowInput {
 What stays exactly as BI.4 proved it: the only measurer is the worker's
 `text.measure` port (`AwaitingMeasurement` + the content-keyed cache),
 greedy whole-block packing first, sentence split before word split,
-continuation slides labelled, nothing clipped, nothing estimated.
+continuation slides labelled, nothing clipped, nothing estimated — and no
+size shrinking: the context's size is the size.
 
-`max_lines` is genuinely new: when a context declares a line budget (the
-operator's "bible reading may have 6 lines"), the engine sizes the text —
-binary search over the theme's allowed sizes, each candidate measured by
-the worker — so a slide carries as many of the packed blocks as the
-budget allows, never exceeding the box and never going below the theme's
-floor. Without a budget, today's "fit everything at the chosen size"
-behavior stands.
+Note what the input does **not** carry: any line count. The operator's
+"six lines" is what the scripture context's box at its reading size
+measures out, and "two lines" is what the song look's display size
+measures out — the same engine, two contexts, no split number anywhere.
+If the scripture box at its size happens to hold nine lines, it paginates
+nine; the theme expresses the look and the measurement decides the rest.
 
 Adapters on top, thin by construction:
 
@@ -91,21 +101,22 @@ Adapters on top, thin by construction:
   attribution reserve room as BI.4 does.
 - **ASCII song import** (later milestone): the blocks are the stanzas or
   paragraphs of the imported text, the labeler produces stanza numbers or
-  nothing, and the base context (two display lines) applies. That
-  importer writes no pagination code — it calls this engine.
+  nothing, and the base (song) context applies — whose display size is why
+  songs read as two lines. That importer writes no pagination code — it
+  calls this engine.
 
 ## Leaves
 
 | Leaf | Delivers | Acceptance | Depends on |
 |---|---|---|---|
 | **TF.1** | Theme contexts and slide `text_context` through storage and the resolver. | Optional `themes[].contexts` + per-slide `text_context` round-trip; unknown names preserved; old files load and render unchanged; `appearanceForSlide` layers base → context → slide customization; a scripture slide with a context overrides renders at them (PIL) and a song slide of the same theme is pixel-unchanged. | BI.5 |
-| **TF.2** | The generic engine extracted, scripture as adapter. | `textflow` component holds packing/splitting/continuation/reserve/measurement-port logic; `paginateScripture` becomes blocks+labeler+reservation arithmetic over it with its existing suite passing unchanged; engine tests cover stanza-shaped blocks, a line budget sizing slides to it, and the no-fit error. | TF.1 |
-| **TF.3** | Scripture import flows the whole passage through the engine with the theme's `scripture` context. | Live-shape chapter fixture: with a 6-line scripture context the passage flows across ~6-line slides — not one verse per slide — preview identical to output (same call), labels/notes/provenance as BI.5; a theme without the context behaves exactly as today; BIF.1's production-shape findings are the fixture's input. | TF.2 |
-| **TF.4** | Theme editor UI for the scripture context; the flow stated on the Bible page; re-acceptance. | Editor section sets the reading context's lines/size; the Bible page's plan sentence names the context it used; e2e: import a chapter under an edited theme and the PGM slide matches the previewed flow; docs updated. | TF.3, BIF.4 |
+| **TF.2** | The generic engine extracted, scripture as adapter. | `textflow` component holds packing/splitting/continuation/reserve/measurement-port logic; `paginateScripture` becomes blocks+labeler+reservation arithmetic over it with its existing suite passing unchanged; engine tests cover stanza-shaped blocks with a stanza labeler, one whole block never split when it fits alone, and the no-fit error; the input carries no line count. | TF.1 |
+| **TF.3** | Scripture import flows the whole passage through the engine with the theme's `scripture` context. | Live-shape chapter fixture: with the context's reading size in force the passage packs multiple verses per slide — the line count is what the measurement fits, not a setting — never one verse per slide, preview identical to output (same call), labels/notes/provenance as BI.5; a theme without the context behaves exactly as today; BIF.1's production-shape findings are the fixture's input. | TF.2 |
+| **TF.4** | Theme editor UI for the scripture context; the flow stated on the Bible page; re-acceptance. | Editor section sets the reading context's typography and box (never a line count — the editor says how many lines the box measured out, as information); the Bible page's plan sentence names the context it used; e2e: import a chapter under an edited theme and the PGM slide matches the previewed flow; docs updated. | TF.3, BIF.4 |
 
 Ordering: BIF.1 first regardless — it explains the live shape (font size
-defaults and the attribution reservation) that TF.2's line budget then
-controls properly, and the operator's Add is blocked until it lands.
+defaults and the attribution reservation) that the scripture context then
+sizes properly, and the operator's Add is blocked until it lands.
 BIF.2/BIF.3 stay independent. TF.1→TF.2→TF.3 is one continuous thread;
 TF.4 closes it with the UI and the operator-facing re-acceptance. The
 future ASCII song import is a milestone of its own against this engine,
