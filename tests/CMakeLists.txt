@@ -336,6 +336,16 @@ if(OPENSHOW_BUILD_UI)
   add_test(NAME bible_import_page_tests COMMAND bible_import_page_tests)
   set_tests_properties(bible_import_page_tests PROPERTIES LABELS display TIMEOUT 240)
 
+  # Milestone BI (task BI.6): the whole import in one journey — connected
+  # import and save, the sandboxed disk read as a witness (no fetched bytes
+  # or dropped verse persist anywhere), a disconnected failure that leaves
+  # the saved item standing, and offline playback of the saved slides on a
+  # real worker with the provider down.
+  add_executable(bible_import_e2e_tests bible_import_e2e_tests.cpp)
+  target_link_libraries(bible_import_e2e_tests PRIVATE openshow::ui-core Qt6::Test)
+  add_test(NAME bible_import_e2e_tests COMMAND bible_import_e2e_tests)
+  set_tests_properties(bible_import_e2e_tests PROPERTIES LABELS display TIMEOUT 240)
+
   # Task 6.20c: the whole production journey — author through the panels'
   # DocumentController, an off-air picture of the next slide, the go, the
   # per-layer clears and the restore, and a background swap under live

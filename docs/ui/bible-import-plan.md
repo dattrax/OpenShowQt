@@ -129,6 +129,20 @@ someone's navigation bar on the audience output.
   likewise has no destination at all). See `bible_import_page_tests` for
   the journey on a real worker and the BI.5 rows of `workspace_ui_tests`
   for the page's shape off screen.
+- **Delivered shape (BI.6, 2026-11-02):** `bible_import_e2e_tests` proves
+  the milestone end to end with the disk itself as witness: HOME and the
+  XDG directories are sandboxed into the scratch tree before the
+  application exists, and after the connected import + save the whole tree
+  is walked byte-for-byte — the fetched HTML's furniture and the
+  deselected verse appear in no file anywhere, and the kept words only
+  inside the service's own records (autosave included, as the schedule's
+  own recovery). The provider then goes unreachable: the next lookup
+  fails actionably on its own line, the saved row stands, and a fresh
+  controller plays EVERY saved slide through the ordinary go on a real
+  worker with zero further network asks — offline playback holds because
+  the schedule is the passage's only durable owner. The suite contacts no
+  live provider; the operator-facing account lives in
+  `docs/architecture.md` ("Online Bible import").
 
 ## Leaves
 

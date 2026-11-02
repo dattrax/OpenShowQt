@@ -284,6 +284,62 @@ in `workspace_ui_tests` — the captures now lead the theme list with Default.
 [themes-plan.md](ui/themes-plan.md)
 carries the model and the acceptance rows; the PLAN ledger closes TH.1–TH.9.
 
+## Online Bible import (milestone BI)
+
+The importer brings ONE requested passage at a time from Bible Gateway into
+today's schedule — for the operator, in five moves:
+
+1. **More ▸ Import Bible Passage…** opens the page. It opens on its own
+   notice — "Online Bible lookup — internet connection required" — and
+   every failure keeps that line honest: an unreachable provider, a timeout
+   or a page that no longer looks like a passage each answers with its own
+   actionable sentence, and a Retry re-asks. Nothing else on the page has
+   happened yet.
+2. **Type one reference** ("1 Corinthians 1:1-6"), choose the translation,
+   press Lookup. One page is fetched per click — the passage page for
+   exactly that reference and version. There is no Bible to download, no
+   library to install and no background fetching, ever; the fetched words
+   live in memory and die on a new lookup, a cancel or a close.
+3. **Choose verses.** The answer arrives as a verse list, all ticked;
+   untick what the reading skips. Changing the translation retires the
+   verses rather than serving stale ones. The ticks and the words are pure
+   importer state: nothing on this page writes to the schedule until Add.
+4. **Read the generated slides beside the off-air picture.** The selection
+   packs itself into slides through the theme the service wears right now —
+   box, font, size and spacing measured by the audience's own text engine
+   (protocol `text.measure`, so what the importer promises is what the
+   output will draw). A long verse splits at sentence boundaries across
+   continuation slides that still name their verse, the reference and the
+   licence reserve measured room instead of crowding the words, and a box
+   the words honestly cannot fill blocks Add with an explanation instead
+   of shrinking anything. Clicking a slide row previews it OFF AIR — the
+   audience keeps whatever it had. Wearing a different theme re-paginates
+   from the words already held; no second network request.
+5. **Add to today's schedule** is the page's only door out. The passage
+   becomes one schedule-owned item — not a Library show — with its verses
+   as slides, the verse labels in the slides' notes (the slide's words are
+   exactly the passage), and the reference, translation and licence stored
+   with it. One undo removes the whole item; removing it from the schedule
+   leaves no copy anywhere. Closing the page after Add leaves nothing
+   behind: there is deliberately no Save to Library, no Present button and
+   no second destination anywhere on this surface.
+
+After Add the item is ordinary schedule content: **it plays with no
+internet at all** — playback reads only what the service file holds.
+Further lookups need the connection again. Saving is the item's one
+durable moment; the importer caches nothing anywhere else (the end-to-end
+fixture walks the whole sandboxed home to prove no fetched bytes and no
+deselected verse persist in any file).
+
+The access approach, the provider's live markup facts and the delivered
+shapes of each leaf are recorded in
+[bible-import-plan.md](ui/bible-import-plan.md); the regression evidence is
+`bible_import_tests` (parser), `bible_lookup_tests` (session),
+`text_measure_tests` and `scripture_pagination_tests` (measured
+pagination), `bible_import_page_tests` and the BI rows of
+`workspace_ui_tests` (the page), and `bible_import_e2e_tests` (the whole
+journey, offline playback and the disk witness).
+
 ## Review closure: R1–R19 evidence matrix (task 6.20a)
 
 The review's completion rule says every finding must have passing regression
