@@ -1566,6 +1566,93 @@ void testStackedBoxesOffAir(std::int64_t& nextId, int fd) {
            std::to_string(leanInk) + " -> " + std::to_string(fullInk) + ")").c_str());
 }
 
+// --- the theme editor's view switch (task TV.1) --------------------------
+//
+// The editor's BIBLE view asks the worker for a different picture of the
+// same material: the passage measured into the scripture context's lectern
+// instead of the lyric box the Songs view wears. Both asks are off-air
+// draws on the one selection target, and the claim TV.1 rests on is that
+// the SECOND ask's pixels REPLACE the first's on that lane while the
+// audience never notices either — switching a view is an editing thought,
+// not a cue.
+void testViewSwitchFollowsPixels(std::int64_t& nextId, int fd) {
+    // The audience wears BLUE from testAudienceUnaffected's fade and the
+    // lane's history runs through red, green and blue solids, so this
+    // scenario wears two colours nothing else in the phase does: magenta
+    // for the Songs look, orange for the Bible lectern. Each is then
+    // unmistakable in a frame average — including for the audience's.
+    constexpr std::uint32_t kSongsColour = 0xFF00FFu;
+    constexpr std::uint32_t kBibleColour = 0xFF8000u;
+
+    // The Songs look: the built-in lyric box.
+    const std::uint64_t songsRevision =
+        prepareScene(fd, nextId, solidScene("TV1-SONG", kSongsColour, "VERSE ONE"));
+    // The Bible look: the same words in a lectern box (the context's own
+    // rectangle).
+    boost::json::object lectern = solidScene("TV1-BIBLE", kBibleColour, "VERSE ONE");
+    boost::json::object& primary = lectern["items"].as_array()[0].as_object();
+    primary["x"] = 480.0;
+    primary["y"] = 120.0;
+    primary["width"] = 960.0;
+    primary["height"] = 840.0;
+    primary["fontSize"] = 96.0;
+    const std::uint64_t bibleRevision = prepareScene(fd, nextId, lectern);
+    if (!check(songsRevision != 0 && bibleRevision != 0,
+               "the two view-shaped scenes prepare")) {
+        return;
+    }
+
+    const boost::json::object before = status(fd, nextId);
+    const std::uint64_t presentedBefore = fieldValue(before, "frames");
+
+    // Requests continue the session's numbering, as every scenario here.
+    const boost::json::object settled = selectionStatus(fd, nextId);
+    std::uint32_t request = static_cast<std::uint32_t>(fieldValue(settled, "request")) + 1;
+
+    const std::string songRefusal = selectScene(fd, nextId, songsRevision, request);
+    check(songRefusal.empty(), ("the Songs-view ask is accepted: " + songRefusal).c_str());
+    Delivery songsFrame;
+    if (!check(waitForSelection(fd, request, 3000, &songsFrame),
+               "the Songs-view frame arrives")) {
+        return;
+    }
+    check(songsFrame.red > songsFrame.green + 80.0 && songsFrame.blue > songsFrame.green + 80.0,
+          "the Songs frame really is the magenta lyric-box slide");
+
+    ++request;
+    const std::string bibleRefusal = selectScene(fd, nextId, bibleRevision, request);
+    check(bibleRefusal.empty(), ("the Bible-view ask is accepted: " + bibleRefusal).c_str());
+    Delivery bibleFrame;
+    if (!check(waitForSelection(fd, request, 3000, &bibleFrame),
+               "the Bible-view frame arrives")) {
+        return;
+    }
+    check(bibleFrame.target == proto::kPreviewTargetSelection && bibleFrame.request == request,
+          "the Bible frame answers the view switch and only that ask");
+    check(bibleFrame.red > 150.0 && bibleFrame.green > 80.0 && bibleFrame.blue < 70.0,
+          "the newest ask's pixels REPLACE the old view's: the lane shows the orange lectern");
+    check(bibleFrame.blue < songsFrame.blue - 80.0,
+          "the magenta is gone from the lane: one view's picture at a time");
+    check(bibleFrame.revision == (bibleRevision & 0xFFFFFFFFu),
+          "and it carries the Bible scene's revision, not the Songs scene's");
+
+    // The audience never heard the thought: its presented-frame counter is
+    // flat across both draws, and no lectern-coloured frame reached a
+    // frame tagged for the audience (which is showing the blue scene).
+    pump(fd, 500);
+    const boost::json::object after = status(fd, nextId);
+    check(fieldValue(after, "frames") == presentedBefore,
+          "the view switch presented nothing: the audience's counter is flat");
+    int lecternForAudience = 0;
+    for (const auto& delivery : deliveries()) {
+        if (delivery.target == proto::kPreviewTargetAudience && delivery.red > 150.0 &&
+            delivery.green > 80.0 && delivery.blue < 70.0) {
+            ++lecternForAudience;
+        }
+    }
+    check(lecternForAudience == 0, "no Bible-view frame leaked into an audience frame");
+}
+
 // --- a foreground picture on an off-air slide -------------------------
 //
 // Task 6.17b's other half of the same promise: the panel's draw is the
@@ -1987,6 +2074,7 @@ int main(int argc, char* argv[]) {
     testAudienceUnaffected(nextId, fd, redRevision, greenRevision, blueRevision);
     testSlideList(nextId, fd, blueRevision);
     testStackedBoxesOffAir(nextId, fd);
+    testViewSwitchFollowsPixels(nextId, fd);
     testForegroundImageOffAir(nextId, fd);
     testStandDown(nextId, fd, greenRevision);
 

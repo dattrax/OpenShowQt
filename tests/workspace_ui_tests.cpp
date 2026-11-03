@@ -1546,6 +1546,23 @@ int main(int argc, char** argv) {
         const auto contextRow = [&docs](const QString& id) {
             return docs.themeContext(id, QStringLiteral("scripture"));
         };
+        // TV.1: this section is the theme's BIBLE VIEW now — reached by the
+        // navigator beside the list, and browsing to it is pure navigation:
+        // the selection holds, the theme record is untouched, and an
+        // absent context still says nothing.
+        auto* viewSongs = findNamed(window->contentItem(), "themeViewSongs");
+        auto* viewBible = findNamed(window->contentItem(), "themeViewBible");
+        const QString viewedId = editorPage->property("selectedId").toString();
+        check(viewSongs && viewBible
+                  && editorPage->property("selectedView").toString().isEmpty()
+                  && editorPage->property("selectedId").toString() == viewedId,
+              "the editor browses in the Songs view, with a view navigator beside the list");
+        clickAt(viewBible, viewBible->width() / 2, viewBible->height() / 2);
+        QTest::qWait(80);
+        check(editorPage->property("selectedView").toString() == QLatin1String("scripture")
+                  && editorPage->property("selectedId").toString() == viewedId
+                  && editorPage->property("contextOn").toBool() == false,
+              "the Bible button opens the reading-context view, selection and all, still silent");
         check(ctxToggle && !ctxToggle->property("checked").toBool()
                   && contextRow(placedId).value(QStringLiteral("set")).toBool() == false,
               "a theme with no reading context opens the section asleep");
@@ -1606,6 +1623,65 @@ int main(int argc, char** argv) {
                   && contextRow(placedId).value(QStringLiteral("height")).toDouble() == 600.0
                   && ctxToggle->property("checked").toBool(),
               "one undo brings the whole context back — the toggle follows the record");
+
+        // TV.1: the two views keep two records. Every context edit above is
+        // the BIBLE view's; the theme's own placement stayed absent and a
+        // drag on the Bible box now will write the context and leave the
+        // theme alone — the other way round from a Songs-view drag.
+        const QVariantMap themeNow = placementRow(placedId);
+        check(!themeNow.value(QStringLiteral("placementSet")).toBool()
+                  && themeNow.value(QStringLiteral("fontSize")).toDouble() == 0.0,
+              "the context's size and box never touched the theme's own record");
+        const qreal lecternZoom = previewFrame->width() / 1920.0;
+        // Press the middle of the CONTEXT's box (160,100,1600,600) and
+        // carry it: the gesture commits to the view it happened in.
+        const QPointF bibleHold = previewFrame->mapToScene(
+            QPointF(960 * lecternZoom, 300 * lecternZoom));
+        const QPointF bibleMoved = bibleHold + QPointF(10, 12);
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, bibleHold.toPoint());
+        QTest::mouseMove(window, bibleMoved.toPoint(), 20);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, bibleMoved.toPoint());
+        QTest::qWait(80);
+        const QVariantMap draggedContext = contextRow(placedId);
+        check(draggedContext.value(QStringLiteral("boxSet")).toBool()
+                  && qAbs(draggedContext.value(QStringLiteral("x")).toDouble()
+                          - std::round(160.0 + 10.0 / lecternZoom)) <= 1.0
+                  && qAbs(draggedContext.value(QStringLiteral("y")).toDouble()
+                          - std::round(100.0 + 12.0 / lecternZoom)) <= 1.0
+                  && !placementRow(placedId).value(QStringLiteral("placementSet")).toBool(),
+              "a drag in the Bible view moves the CONTEXT's box and leaves the theme's placement absent");
+        docs.undo();
+        QTest::qWait(80);
+        check(contextRow(placedId).value(QStringLiteral("x")).toDouble() == 160.0
+                  && !placementRow(placedId).value(QStringLiteral("placementSet")).toBool(),
+              "one undo rolls the view drag back to the context's own record — one entry, as the Songs view keeps it");
+        // Back to Songs: the base fields wake, the context sleeps, and the
+        // selection never moved.
+        clickAt(viewSongs, viewSongs->width() / 2, viewSongs->height() / 2);
+        QTest::qWait(80);
+        auto* songsSection = findNamed(window->contentItem(), "themeEditorSongsSection");
+        auto* bibleSection = findNamed(window->contentItem(), "themeEditorBibleSection");
+        check(songsSection && songsSection->property("visible").toBool()
+                  && bibleSection && !bibleSection->property("visible").toBool()
+                  && editorPage->property("selectedId").toString() == viewedId,
+              "the Songs button puts the theme's own look back and sleeps the context — the selection held");
+        // And browsing stays browsing inside the Bible view: rows clicked
+        // through with no worker started move no audience and create no
+        // context for the themes that do not carry one.
+        clickAt(viewBible, viewBible->width() / 2, viewBible->height() / 2);
+        QTest::qWait(60);
+        QList<QQuickItem*> viewedRows;
+        collectNamed(window->contentItem(), "themeEditorRow", viewedRows);
+        if (viewedRows.size() > 1) {
+            clickAt(viewedRows.at(0), 30, 12);
+            QTest::qWait(60);
+        }
+        auto* viewNote = findNamed(window->contentItem(), "themeEditorViewNote");
+        check(editorPage->property("selectedView").toString() == QLatin1String("scripture")
+                  && viewNote
+                      && viewNote->property("text").toString().contains(QStringLiteral("BIBLE"))
+                  && !worker.outputLive() && worker.frames() == 0,
+              "browsing themes inside the Bible view says so and still asks the output for nothing");
 
         // The honest floor (amendment 2026-11-02): delete every theme the
         // operator can delete, and the service still stands on its Default —

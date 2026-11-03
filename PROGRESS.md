@@ -4,44 +4,53 @@ Updated: 2026-11-03 (Europe/London).
 
 ## Current checkpoint
 
-**Theme/editor architecture review and implementation runbook complete;
-implementation not started.**
-The [review](docs/reviews/theme-editor-2026-11-03.md) records current code evidence,
-the supplied ProPresenter references, inspected UI/font captures, proposed
-contracts, estimates and per-leaf tests. PLAN.md now schedules **TV** (Songs/Bible
-views and workspace), **TS** (typography/stroke/shadow/fit), **TR** (transition
-options) and **TA.1** (integrated acceptance); **FO** records later NDI/OBS/stage
-work separately. TH/TF DONE checkpoints are preserved. No product/test source
-changes or font installation were made. The user's follow-up authorizes
-committing and pushing this documentation update to GitHub.
+**TV.1 complete (2026-11-03): the Theme Editor browses Songs and Bible
+views, and each view's sample resolves through the production chain.**
+`themeSampleSceneJson(themeId, view)` and the new read-only
+`themeSampleAppearance(themeId, view)` share one fixture builder — a copy of
+the live Documents with the current theme cleared, the selected theme set as
+a throwaway show's default and the sample slide naming the view's text
+context — so the edited Default floor and every theme's contexts resolve as
+the audience walks them and whatever the service wears cannot bleed into a
+browsed theme's picture. The Songs sample compiles the cue, the Bible
+sample the reading (reference, running text, numerals, Greek); a theme
+carrying the context outranks the floor **wholesale**, a theme carrying
+nothing inherits it, and an unknown context name is silence
+(`document_controller_tests` `exerciseThemeSampleViews`, which also pins
+that browsing never dirties and records nothing). `ThemeEditorPage.qml`
+gained `selectedView` (`""` songs / `"scripture"` bible) with a
+`themeViewSongs`/`themeViewBible` navigator, Songs/Bible inspector
+sections, an overlay and box fields that read the compiled fixture's own
+rectangle, and one-write gestures routed to the view they started in — a
+Bible drag writes the context's `box` and retires a stored `inset` in the
+same edit (`workspace_ui_tests`: the view switch keeps the selection, the
+theme record and the context record stay two records, browsing inside the
+Bible view moves no audience). On the worker lane
+`testViewSwitchFollowsPixels` shows the newest ask's pixels replacing the
+old view's while the audience's presented counter stays flat and no
+lectern-coloured frame reaches an audience tag. Service format 7 unchanged.
+Gates: desktop build green, **64/64 desktop serial**, **35/35 headless**
+(no skips), `git diff --check` clean.
 
-PLAN.md now includes per-leaf numbered implementation steps, a file/API ownership
-map, fixed style/transition names and numeric limits, migration/capability rules,
-Bible role geometry and opt-in creation, async generation/Go intent handling and
-focused/full verification commands. These are proposed implementation contracts;
-every implementation leaf remains TODO. Start with the runbook rather than
-inferring an implementation from the short ledger rows.
+The [review](docs/reviews/theme-editor-2026-11-03.md) and the PLAN.md
+runbook landed earlier today (docs-only, `7f990b3`): findings R1–R12, the
+view/effects/transition contracts, per-leaf numbered steps, fixed
+style/transition names and numeric limits, the file/API ownership map and
+the test matrix this leaf implemented. Its baseline record (22 focused
+checks, the editor capture and the Inter/Lora/Oswald stimulus under
+`/tmp/openshow-theme-review/`) stands as written there; the review remains
+the authority for the contracts the later leaves consume.
 
-Verification: desktop build passed; **22 distinct focused checks passed** across
-domain, scene, text flow, UI, scripture import/save/reopen, preview ownership and
-live fades, plus renderer guards. The restricted sandbox prevented scripted IPC
-handshakes; the local-socket/display run passed 9/9 with no skips, including that
-test. This was a focused baseline, not a fresh full-preset/physical-display run.
-UI captures and pinned Inter/Lora/Oswald stimulus are in
-`/tmp/openshow-theme-review/`; sources/checksums and exact commands are in the
-review. New tests described there are acceptance work, not delivered coverage.
-The runbook follow-up changes documentation only; application tests were not
-rerun for it. Validation passed for local links/anchors across five documents,
-39 source entry points, 22 unique ledger IDs, all 15 implementation runbooks,
-four test selectors against registered ctest names, estimate totals and
-`git diff --check`.
-
-Next implementation action: **TV.1** — select Songs/Bible views, build the
-off-air fixture from a copy of Documents and compile the selected context; keep
-format 7 unchanged and prove Bible edits and canvas placement affect only that
-view. Then TV.2 reclaims
-the workspace and makes every inspector control reachable. Nothing blocks this
-work; M7 remains the release gate after TV/TS/TR, and future outputs stay deferred.
+Next implementation action: **TV.2** — reclaim the workspace for Themes:
+hide the operator docks and media bin without overwriting their saved
+state, bound the side columns (~220/300 px) and scroll the inspector, size
+the canvas `min(availableWidth, availableHeight×16/9)`, and take workspace
+captures at 1000×680, 1380×800 and 1680×1020 in both views proving no
+overflow and a restored Show state (`workspace_ui_tests`,
+`workspace_panels_tests`, `ui_loads`). Then TS.1 claims the next scene
+format with capability `scene.text-style.v1` (advertised only once TS.2
+draws it). Nothing blocks this work; M7 remains the release gate after
+TV/TS/TR, and future outputs stay deferred.
 
 ## Previous implementation checkpoint (retained evidence)
 

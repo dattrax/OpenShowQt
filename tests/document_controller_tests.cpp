@@ -11,6 +11,7 @@
  * edge of the same commit path, so the fixtures stay deterministic.
  */
 
+#include <algorithm>
 #include <cstdio>
 #include <chrono>
 #include <cstdlib>
@@ -2853,6 +2854,171 @@ void exerciseReadingContexts(const std::filesystem::path& root) {
           "the file carries the context field for field");
 }
 
+// The sample gains a VIEW (task TV.1): the Theme Editor's Songs view is the
+// theme's own look and its Bible view is the theme's `scripture` context —
+// both compiled through a fixture that walks the SAME chain the audience
+// would (a copy of the live records: the edited Default floor in, whatever
+// the service happens to be wearing out). Browsing leaves no mark: no
+// context appears, no history entry opens, nothing dirties.
+void exerciseThemeSampleViews(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong("Viewed");
+    docs.addSlide();
+    docs.selectSlide(0);
+    check(docs.createBlankTheme("House") && docs.createBlankTheme("Quiet"),
+          "two blank themes exist to sample");
+    QString house;
+    QString quiet;
+    QString floorId;
+    for (const QVariant& theme : docs.themes()) {
+        const QVariantMap map = theme.toMap();
+        const QString name = map.value(QStringLiteral("name")).toString();
+        if (name == QStringLiteral("House")) {
+            house = map.value(QStringLiteral("id")).toString();
+        }
+        if (name == QStringLiteral("Quiet")) {
+            quiet = map.value(QStringLiteral("id")).toString();
+        }
+        if (map.value(QStringLiteral("builtin")).toBool()) {
+            floorId = map.value(QStringLiteral("id")).toString();
+        }
+    }
+    check(!house.isEmpty() && !quiet.isEmpty() && !floorId.isEmpty(),
+          "the sample test names House, Quiet and the service's Default floor");
+
+    const QVariantMap songs = docs.themeSampleAppearance(house);
+    const QVariantMap inherited = docs.themeSampleAppearance(house,
+                                                            QStringLiteral("scripture"));
+    check(songs.value(QStringLiteral("ok")).toBool()
+              && songs.value(QStringLiteral("context")).toString().isEmpty()
+              && songs.value(QStringLiteral("boxX")).toDouble() == 160.0
+              && songs.value(QStringLiteral("boxWidth")).toDouble() == 1600.0,
+          "the Songs sample of an unplaced theme offers the built-in lyric box");
+    check(inherited.value(QStringLiteral("ok")).toBool()
+              && inherited.value(QStringLiteral("context")).toString().isEmpty()
+              && inherited.value(QStringLiteral("boxWidth")).toDouble()
+                     == songs.value(QStringLiteral("boxWidth")).toDouble()
+              && inherited.value(QStringLiteral("fontSize")).toDouble()
+                     == songs.value(QStringLiteral("fontSize")).toDouble(),
+          "a Bible view no theme carries answers as no layer — the Songs look stands");
+
+    // The selected theme speaks through the sample: its own placement and
+    // size (as the throwaway show's default, exactly what the one-argument
+    // sample compiled before views existed), and its own context for the
+    // Bible view only.
+    check(docs.setThemePlacement(house, 300, 400, 1200, 600)
+              && docs.editTheme(house, QStringLiteral("House"), QStringLiteral("#ffffff"),
+                                QStringLiteral("#101010"), QString(), QString(), 40.0,
+                                QStringLiteral("center"), 1.25),
+          "House is placed and sized");
+    QVariantMap lectern;
+    lectern.insert(QStringLiteral("fontSize"), 28.0);
+    QVariantMap ctxBox;
+    ctxBox.insert(QStringLiteral("x"), 480.0);
+    ctxBox.insert(QStringLiteral("y"), 120.0);
+    ctxBox.insert(QStringLiteral("width"), 960.0);
+    ctxBox.insert(QStringLiteral("height"), 840.0);
+    lectern.insert(QStringLiteral("box"), ctxBox);
+    check(docs.applyThemeContext(house, QStringLiteral("scripture"), lectern),
+          "House gains a scripture context with its own size and lectern box");
+    const QVariantMap songLook = docs.themeSampleAppearance(house);
+    const QVariantMap bibleLook = docs.themeSampleAppearance(house,
+                                                             QStringLiteral("scripture"));
+    check(songLook.value(QStringLiteral("boxX")).toDouble() == 300.0
+              && songLook.value(QStringLiteral("fontSize")).toDouble() == 40.0
+              && songLook.value(QStringLiteral("context")).toString().isEmpty(),
+          "the Songs view wears the theme's own placement and size; the context says nothing there");
+    check(bibleLook.value(QStringLiteral("boxX")).toDouble() == 480.0
+              && bibleLook.value(QStringLiteral("boxHeight")).toDouble() == 840.0
+              && bibleLook.value(QStringLiteral("fontSize")).toDouble() == 28.0
+              && bibleLook.value(QStringLiteral("context")).toString()
+                     == QStringLiteral("scripture"),
+          "the Bible view resolves the context's lectern and names the context that answered");
+
+    // The two views' sample PICTURES differ in words as well as boxes: the
+    // song cue carries the pangram, the passage carries a reference,
+    // running text and Unicode — the shapes each view is for.
+    openshow::scene::Scene cue;
+    openshow::scene::Scene passage;
+    const QString songJson = docs.themeSampleSceneJson(house);
+    const QString bibleJson = docs.themeSampleSceneJson(house, QStringLiteral("scripture"));
+    bool cueIsSong = false;
+    bool passageHasGreek = false;
+    bool passageHasReference = false;
+    if (!songJson.isEmpty() && !bibleJson.isEmpty()
+            && openshow::scene::fromJson(boost::json::parse(songJson.toStdString()), &cue)
+            && openshow::scene::fromJson(boost::json::parse(bibleJson.toStdString()), &passage)
+            && !cue.items.empty() && !passage.items.empty()) {
+        cueIsSong = std::any_of(cue.items[0].lines.begin(), cue.items[0].lines.end(),
+                                [](const std::string& line) {
+                                    return line.find("quick brown fox") != std::string::npos;
+                                });
+        for (const std::string& line : passage.items[0].lines) {
+            if (line.find("χάρις") != std::string::npos) {
+                passageHasGreek = true;
+            }
+            if (line.find("1 Corinthians") != std::string::npos) {
+                passageHasReference = true;
+            }
+        }
+    }
+    check(cueIsSong, "the Songs sample compiles the song cue");
+    check(passageHasGreek && passageHasReference,
+          "the Bible sample compiles the READING — reference, running text and Unicode — "
+          "not the song's pangram");
+
+    // Chain honesty (review R4): the fixture is a copy of the LIVE records
+    // — a floor context reaches a theme that carries none, and a theme
+    // that carries one answers wholesale.
+    QVariantMap floorContext;
+    floorContext.insert(QStringLiteral("fontSize"), 24.0);
+    check(docs.applyThemeContext(floorId, QStringLiteral("scripture"), floorContext),
+          "the Default floor gains a scripture size of its own");
+    const QVariantMap through = docs.themeSampleAppearance(house,
+                                                            QStringLiteral("scripture"));
+    check(through.value(QStringLiteral("fontSize")).toDouble() == 28.0
+              && through.value(QStringLiteral("boxX")).toDouble() == 480.0,
+          "a theme that carries the context outranks the floor's WHOLESALE — fields never mix");
+    const QVariantMap quietBible = docs.themeSampleAppearance(quiet,
+                                                               QStringLiteral("scripture"));
+    check(quietBible.value(QStringLiteral("fontSize")).toDouble() == 24.0
+              && quietBible.value(QStringLiteral("context")).toString()
+                     == QStringLiteral("scripture")
+              && quietBible.value(QStringLiteral("boxWidth")).toDouble() == 1600.0,
+          "a theme that carries nothing takes the floor's size and the inherited box");
+
+    // A view nobody carries is silence, not a guess.
+    const QVariantMap unknown = docs.themeSampleAppearance(house, QStringLiteral("anthem"));
+    check(unknown.value(QStringLiteral("ok")).toBool()
+              && unknown.value(QStringLiteral("context")).toString().isEmpty()
+              && unknown.value(QStringLiteral("fontSize")).toDouble() == 40.0
+              && unknown.value(QStringLiteral("boxX")).toDouble() == 300.0,
+          "a context name no theme carries resolves as no layer — the theme's own numbers stand");
+
+    // The worn theme cannot bleed into a BROWSED theme's picture: the
+    // fixture clears the current theme on its copy, so the sample answers
+    // for the selected row and not for whatever the service wears.
+    check(docs.useThemeAsCurrent(floorId), "the service now wears the Default floor");
+    const QVariantMap browsed = docs.themeSampleAppearance(house);
+    check(browsed.value(QStringLiteral("fontSize")).toDouble() == 40.0
+              && browsed.value(QStringLiteral("boxX")).toDouble() == 300.0,
+          "the browsed theme's sample is not out-resolved by the worn one");
+
+    // And browsing marks nothing: the sample verbs are const, so nothing
+    // dirties and the last recorded change is STILL the wear above — one
+    // undo rolls back the wear itself, with no context left behind.
+    const bool dirtyBefore = docs.dirty();
+    docs.themeSampleAppearance(quiet, QStringLiteral("scripture"));
+    docs.themeSampleSceneJson(house, QStringLiteral("scripture"));
+    check(docs.dirty() == dirtyBefore, "sampling the views never dirties the document");
+    docs.undo();
+    check(docs.wornThemeId().isEmpty()
+              && docs.themeContext(quiet, QStringLiteral("scripture"))
+                             .value(QStringLiteral("set"))
+                             .toBool() == false,
+          "one undo rolls back the WEAR — the browsing left no history and no context behind");
+}
+
 void exerciseScripturePassage(const std::filesystem::path& root) {
     DocumentController docs(nullptr, root);
     check(docs.createSong("Ordinary Hymn"), "the Library has one ordinary show");
@@ -2970,6 +3136,7 @@ int main(int argc, char* argv[]) {
     exerciseThemeSurfaces(tempRoot / "surfaces");
     exercisePlacementSurfaces(tempRoot / "placementsurfaces");
     exerciseReadingContexts(tempRoot / "readingcontexts");
+    exerciseThemeSampleViews(tempRoot / "sampleviews");
     exerciseScripturePassage(tempRoot / "scripturepassage");
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");

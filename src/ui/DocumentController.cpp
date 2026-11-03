@@ -1005,47 +1005,114 @@ bool DocumentController::deleteTheme(const QString& themeId) {
     return true;
 }
 
-QString DocumentController::themeSampleSceneJson(const QString& themeId) const {
-    const openshow::domain::Theme* source = fDocuments.findTheme(themeId.toStdString());
+namespace {
+
+// The Theme Editor's sample fixture (task TV.1): a COPY of the live
+// documents with one throwaway show added, the current theme cleared, and
+// the SELECTED theme set as that show's default. Copying the real records
+// — rather than hand-cloning the fields the editor happens to show — is
+// what makes the sample honest: the edited Default theme is the chain's
+// last layer exactly as in the audience's picture, every theme's contexts
+// travel whole, and clearing the current theme keeps a theme the operator
+// is BROWSING from being out-resolved by a theme the service is WEARING.
+// The slide names the selected view's text context ("" for Songs is no
+// name at all), so the first theme in chain order carrying it supplies its
+// typography and box exactly as a passage's slide resolves them. The copy
+// dies with the call: no history, no dirty flag, nothing presented.
+bool compileThemeSample(const openshow::domain::Documents& documents,
+                        const openshow::domain::Id& themeId, const std::string& view,
+                        openshow::scene::Scene* scene,
+                        openshow::domain::ResolvedAppearance* look = nullptr) {
+    const openshow::domain::Theme* source = documents.findTheme(themeId);
     if (source == nullptr) {
-        return QString();
+        return false;
     }
-    // A throwaway service holding nothing but the sample: a show, a slide,
-    // and a twin of the theme being sampled. The compile runs its FULL
-    // chain — the twin arrives through the same accessor the worker's scenes
-    // do, so the preview shows exactly what a slide wearing this theme
-    // draws — and the fixture is dropped on the floor: nothing is recorded,
-    // nothing is presented, and no document ever sees it.
-    openshow::domain::Documents fixture;
+    openshow::domain::Documents fixture = documents;
+    std::string error;
+    if (!fixture.setCurrentTheme({}, &error)) {
+        return false;
+    }
     const openshow::domain::Id show = fixture.createShow("Theme sample");
     const openshow::domain::Id slide = fixture.appendSlide(show);
-    std::string error;
-    const openshow::domain::Id twin = fixture.createTheme(
-        source->name, source->textColor, source->backgroundColor, source->backgroundGradient,
-        source->fontFamily, source->fontSize, source->align, source->lineSpacing, &error);
-    if (twin.empty()) {
-        return QString();
+    if (show.empty() || slide.empty()) {
+        return false;
     }
-    // The twin is a TWIN (amendment 2026-11-01): it carries the placement
-    // too, so the sample's lyric box sits where a wearing slide's would and
-    // the rectangle the operator drags on this page is the one the audience
-    // gets. No placement, no move: the sample draws its authored box.
-    if (source->placement.has_value() &&
-        !fixture.setThemePlacement(twin, *source->placement, &error)) {
-        return QString();
+    if (!fixture.setShowDefaultTheme(show, themeId, &error) ||
+        (!view.empty() && !fixture.setSlideTextContext(show, slide, view, &error))) {
+        return false;
     }
-    fixture.setSlideTheme(show, slide, twin);
-    // One word to read the colour and face in, one scale line to read the
-    // tracking and the wrap, one blank to read the line box.
-    fixture.setSlideLines(show, slide,
-                          {source->name,
-                           "The quick brown fox jumps over the lazy dog 0123456789",
-                           ""});
+    // Songs sample: one word to read the colour and face in, one scale line
+    // to read the tracking and the wrap, one blank to read the line box.
+    // Bible sample (task TV.1): the reading shape the context is FOR — a
+    // reference line, running text long enough to wrap at a lectern size,
+    // numerals and Unicode, and a licence-style tail — so the operator sees
+    // the passage's measure, not the song's pangram, under the Bible box.
+    std::vector<std::string> lines;
+    if (view.empty()) {
+        lines = {source->name,
+                 "The quick brown fox jumps over the lazy dog 0123456789",
+                 ""};
+    } else {
+        lines = {source->name + " — 1 Corinthians 1:1-3",
+                 "Paul, a prisoner of Christ Jesus, called to be an apostle — sent not from "
+                 "any human authority, but through Jesus Christ and God the Father who raised "
+                 "him from the dead. 0123456789",
+                 "Grace to you and peace from God our Father and the Lord Jesus Christ. "
+                 "χάρις ὑμῖν καὶ εἰρήνη",
+                 "© OpenShow sample text — placeholder attribution",
+                 ""};
+    }
+    if (!fixture.setSlideLines(show, slide, lines)) {
+        return false;
+    }
+    if (look != nullptr) {
+        *look = fixture.appearanceForSlide(show, slide);
+    }
+    return openshow::scene::compileSlide(fixture, show, slide, scene);
+}
+
+}  // namespace
+
+QString DocumentController::themeSampleSceneJson(const QString& themeId,
+                                                 const QString& contextName) const {
     openshow::scene::Scene scene;
-    if (!openshow::scene::compileSlide(fixture, show, slide, &scene)) {
+    if (!compileThemeSample(fDocuments, themeId.toStdString(), contextName.toStdString(),
+                            &scene)) {
         return QString();
     }
     return QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
+}
+
+QVariantMap DocumentController::themeSampleAppearance(const QString& themeId,
+                                                      const QString& contextName) const {
+    QVariantMap out;
+    out.insert(QStringLiteral("ok"), false);
+    openshow::scene::Scene scene;
+    openshow::domain::ResolvedAppearance look;
+    if (!compileThemeSample(fDocuments, themeId.toStdString(), contextName.toStdString(),
+                            &scene, &look)) {
+        return out;
+    }
+    // The primary lyric box is the FIRST TEXT item, exactly as the compile
+    // and the Edit canvas place it — the picture's own rectangle, so the
+    // overlay's handles sit where the audience's words will.
+    for (const openshow::scene::SceneItem& item : scene.items) {
+        if (item.isImage) {
+            continue;
+        }
+        out.insert(QStringLiteral("ok"), true);
+        out.insert(QStringLiteral("boxX"), item.x);
+        out.insert(QStringLiteral("boxY"), item.y);
+        out.insert(QStringLiteral("boxWidth"), item.width);
+        out.insert(QStringLiteral("boxHeight"), item.height);
+        out.insert(QStringLiteral("fontSize"), item.fontSize);
+        out.insert(QStringLiteral("lineSpacing"), item.lineSpacing);
+        out.insert(QStringLiteral("align"), QString::fromStdString(item.align));
+        out.insert(QStringLiteral("fontFamily"), QString::fromStdString(item.fontFamily));
+        out.insert(QStringLiteral("context"), QString::fromStdString(look.contextName));
+        return out;
+    }
+    return out;  // no text box at all: the page keeps the box it was shown
 }
 
 // --- the Bible importer's off-air compile (task BI.5) -----------------------

@@ -47,6 +47,41 @@ Item {
             askForSamplePicture()
         }
     }
+
+    /* --- theme views (task TV.1, theme-editor review) ---------------------
+     * Songs is the theme's OWN look (the base fields and placement); Bible
+     * is the theme's `scripture` text context — the same record the Bible
+     * page paginates against. The spellings are the storage's: "" is the
+     * song/default view and "scripture" is the Bible view (review R3).
+     * Theme identity and view are independent properties — switching a
+     * view never changes which theme is selected, never creates a context,
+     * and never dirties the document: selecting an absent Bible view simply
+     * previews the look it would inherit.
+     */
+    property string selectedView: ""
+    function selectView(view) {
+        if (view === themeEditor.selectedView)
+            return
+        // An unfinished gesture belongs to the view it started in: it is
+        // cancelled, not committed under the new view's handles.
+        themeEditor.placing = false
+        themeEditor.dragMode = ""
+        themeEditor.selectedView = view
+        themeEditor.syncInspector()
+        themeEditor.askForSamplePicture()
+    }
+    // The compiled fixture's PRIMARY box and typography for the selected
+    // theme AND view — the overlay's and the fields' single truth, so the
+    // handles can never frame a song picture beneath Bible edits (R4).
+    property var viewLook: ({ok: false})
+    function refreshViewLook() {
+        if (themeEditor.selectedId === "") {
+            themeEditor.viewLook = ({ok: false})
+            return
+        }
+        themeEditor.viewLook = docs.themeSampleAppearance(themeEditor.selectedId,
+                                                          themeEditor.selectedView)
+    }
     // Re-pick the selection when the list moved under it — a delete, or
     // the first theme added to an empty service. Selection prefers the
     // worn theme: that is the one the operator sees through the show.
@@ -85,6 +120,7 @@ Item {
         placeYField.text = String(Math.round(box.y))
         placeWField.text = String(Math.round(box.width))
         placeHField.text = String(Math.round(box.height))
+        themeEditor.refreshViewLook()
         themeEditor.syncContext()
     }
     // Every inspector edit writes the record back WHOLE — editTheme's
@@ -156,6 +192,7 @@ Item {
         ctxSpacingField.text = ctx.lineSpacingSet === true ? String(ctx.lineSpacing) : ""
         ctxAlignCombo.currentIndex = ctx.alignSet === true
                 ? ["left", "center", "right"].indexOf(ctx.align) + 1 : 0
+        themeEditor.contextPlaces = ctx.boxSet === true || ctx.insetSet === true
         // Silence SHOWS the box the passage would land on anyway — the
         // theme's lyric rectangle, or the built-in one — because that is
         // the honest answer to "where do the words go right now"; typing
@@ -198,6 +235,11 @@ Item {
     // A field's commit is a WHOLE-entry write: the current set merged with
     // the one field, because the domain, like the file, replaces the entry
     // it is given. null is the field's way of saying "be silent again".
+    // The one place-task rule (task TV.1): the view answers with ONE box —
+    // writing its own rectangle retires a stored inset in the SAME edit,
+    // and "No box" clears the box and inset keys together while the entry's
+    // typography stays. Removing the whole VIEW is the toggle's job, not a
+    // field's.
     function commitContext(overrides) {
         const id = themeEditor.selectedId
         const current = themeEditor.contextRecord()
@@ -212,9 +254,9 @@ Item {
             fields.lineSpacing = current.lineSpacing
         if (current.alignSet === true)
             fields.align = current.align
-        if (current.insetSet === true)
+        if (current.insetSet === true && overrides.box === undefined)
             fields.inset = current.inset
-        if (current.boxSet === true)
+        if (current.boxSet === true && overrides.inset === undefined)
             fields.box = {x: current.x, y: current.y, width: current.width,
                           height: current.height}
         for (const key in overrides) {
@@ -253,6 +295,12 @@ Item {
      */
     readonly property bool hasPlacement: themeEditor.row !== null
                                          && themeEditor.row.placementSet === true
+    // Whether the VIEW being edited states its own box: the Songs view's is
+    // the theme's placement; the Bible view's is the context's box or inset
+    // (re-derived from the record on every sync, like contextOn).
+    property bool contextPlaces: false
+    readonly property bool viewPlaces: themeEditor.selectedView === ""
+                                       ? themeEditor.hasPlacement : themeEditor.contextPlaces
     // The gesture's live rectangle, in the 1920x1080 authored canvas.
     property bool placing: false
     property string dragMode: ""
@@ -269,20 +317,28 @@ Item {
     function clamp(value, lo, hi) {
         return value < lo ? lo : (value > hi ? hi : value)
     }
-    // What the overlay draws and the fields show: the live drag while a
-    // gesture runs, the theme's own rectangle otherwise, and the built-in
-    // lyric box (the one a slide with no theme draws) as the offer when the
-    // theme has no opinion yet.
     function boxFor(row) {
         if (row !== null && row.placementSet)
             return Qt.rect(row.placement.x, row.placement.y,
                            row.placement.width, row.placement.height)
         return Qt.rect(160, 100, 1600, 880)
     }
+    // What the overlay draws and the fields show: the live drag while a
+    // gesture runs; the SELECTED VIEW's compiled rectangle otherwise — the
+    // theme's own box (or the built-in lyric box offered) for Songs, and
+    // the box the fixture really resolves for Bible (the context's box, its
+    // inset shrunk, or the inherited landing box). The Edit canvas's rule,
+    // one write per gesture.
+    function viewBox() {
+        const look = themeEditor.viewLook
+        if (themeEditor.selectedView !== "" && look && look.ok === true)
+            return Qt.rect(look.boxX, look.boxY, look.boxWidth, look.boxHeight)
+        return themeEditor.boxFor(row)
+    }
     readonly property rect shownBox: themeEditor.placing
             ? Qt.rect(themeEditor.penX, themeEditor.penY,
                       themeEditor.penW, themeEditor.penH)
-            : themeEditor.boxFor(themeEditor.row)
+            : themeEditor.viewBox()
     // Handles beat the interior, in preview pixels, with the Edit canvas's
     // 8 px tolerance and its 20 authored px floor: below that a box cannot
     // be grabbed back by its own handles.
@@ -339,7 +395,11 @@ Item {
         themeEditor.penH = bottom - y0
     }
     // One history entry per gesture, on release — the Edit canvas's rule,
-    // so dragging a theme's box is one undo and not one per pixel.
+    // so dragging a theme's box is one undo and not one per pixel. The
+    // gesture commits to the VIEW it happened in (task TV.1): Songs drags
+    // write the theme's placement, Bible drags write the context's own box
+    // (retiring any inset in the same edit, per commitContext), and the
+    // other view's record is left exactly as it was.
     function endGesture() {
         if (themeEditor.dragMode === "") {
             themeEditor.placing = false
@@ -350,8 +410,14 @@ Item {
         themeEditor.dragMode = ""
         if (id === "")
             return
-        docs.setThemePlacement(id, Math.round(themeEditor.penX), Math.round(themeEditor.penY),
-                               Math.round(themeEditor.penW), Math.round(themeEditor.penH))
+        if (themeEditor.selectedView !== "") {
+            themeEditor.commitContext({box: {
+                x: Math.round(themeEditor.penX), y: Math.round(themeEditor.penY),
+                width: Math.round(themeEditor.penW), height: Math.round(themeEditor.penH)}})
+        } else {
+            docs.setThemePlacement(id, Math.round(themeEditor.penX), Math.round(themeEditor.penY),
+                                   Math.round(themeEditor.penW), Math.round(themeEditor.penH))
+        }
         themeEditor.syncInspector()
     }
     // The exact-number path. Four fields commit together because a placement
@@ -382,7 +448,8 @@ Item {
                 worker.clearSelectionPreview()
                 return
             }
-            const json = docs.themeSampleSceneJson(themeEditor.selectedId)
+            const json = docs.themeSampleSceneJson(themeEditor.selectedId,
+                                                   themeEditor.selectedView)
             if (json !== "")
                 worker.requestSelectionPreview(json)
         }
@@ -593,6 +660,40 @@ Item {
                 onClicked: docs.deleteTheme(themeEditor.selectedId)
             }
         }
+        // The view navigator (task TV.1, theme-editor review): which half
+        // of the theme the canvas and inspector edit — Songs is the theme's
+        // own look, Bible is its `scripture` context. Picking a view is
+        // pure browsing: it never creates a record, never edits the theme,
+        // and never marks the document dirty.
+        Row {
+            spacing: 6
+            Button {
+                objectName: "themeViewSongs"
+                text: "Songs"
+                font.pixelSize: 12
+                font.bold: themeEditor.selectedView === ""
+                onClicked: themeEditor.selectView("")
+            }
+            Button {
+                objectName: "themeViewBible"
+                text: "Bible"
+                font.pixelSize: 12
+                font.bold: themeEditor.selectedView === "scripture"
+                onClicked: themeEditor.selectView("scripture")
+            }
+        }
+        Text {
+            objectName: "themeEditorViewNote"
+            width: parent.width
+            wrapMode: Text.WordWrap
+            color: "#8ec9f5"
+            font.pixelSize: 11
+            text: themeEditor.selectedView === ""
+                  ? "Viewing SONGS — the theme's own look, which the Bible "
+                    + "view inherits from"
+                  : "Viewing BIBLE — the scripture reading context; what it "
+                    + "does not say, the Songs look answers"
+        }
         Text {
             width: parent.width
             wrapMode: Text.WordWrap
@@ -697,7 +798,7 @@ Item {
                     // module import, so the outline is its own honest paint.
                     Canvas {
                         anchors.fill: parent
-                        readonly property bool placed: themeEditor.hasPlacement
+                        readonly property bool placed: themeEditor.viewPlaces
                         onPlacedChanged: requestPaint()
                         onWidthChanged: requestPaint()
                         onHeightChanged: requestPaint()
@@ -711,12 +812,17 @@ Item {
                         }
                     }
                     Text {
+                        objectName: "themeEditorBoxLabel"
                         anchors.left: parent.left
                         anchors.bottom: parent.top
                         anchors.bottomMargin: 3
-                        color: themeEditor.hasPlacement ? "#1685f8" : "#8ec9f5"
+                        color: themeEditor.viewPlaces ? "#1685f8" : "#8ec9f5"
                         font.pixelSize: 11
-                        text: themeEditor.hasPlacement ? "lyric box" : "no placement — drag to place"
+                        text: themeEditor.selectedView === ""
+                              ? (themeEditor.viewPlaces ? "lyric box"
+                                                        : "no placement — drag to place")
+                              : (themeEditor.viewPlaces ? "Bible box"
+                                                        : "no Bible box — drag to place")
                     }
                     Repeater {
                         model: [Qt.point(0, 0), Qt.point(1, 0), Qt.point(0, 1), Qt.point(1, 1)]
@@ -724,7 +830,7 @@ Item {
                             required property var modelData
                             width: 8
                             height: 8
-                            color: themeEditor.hasPlacement ? "#1685f8" : "#8ec9f5"
+                            color: themeEditor.viewPlaces ? "#1685f8" : "#8ec9f5"
                             border.color: "#202020"
                             x: placementLayer.box.x * placementLayer.zoom
                                 + (modelData.x === 0 ? -width / 2
@@ -782,7 +888,14 @@ Item {
         }
     }
 
-    /* --- the inspector --------------------------------------------------- */
+    /* --- the inspector ---------------------------------------------------
+     *
+     * The inspector edits one VIEW at a time (task TV.1): the SONGS section
+     * holds the theme's own look — the values the Bible view inherits from —
+     * and the BIBLE section holds the theme's `scripture` context. The
+     * sections follow `selectedView`; the sync writes every field either
+     * way so whichever section wakes already holds the record.
+     */
 
     Column {
         id: inspectorColumn
@@ -793,269 +906,288 @@ Item {
         spacing: 8
 
         Text {
-            text: "SELECTED THEME"
+            text: themeEditor.selectedView === "" ? "SELECTED THEME — SONGS"
+                                                  : "SELECTED THEME — BIBLE"
             color: "#bbbbbb"
             font.pixelSize: 11
             font.bold: true
-        }
-        Text { text: "Name"; color: "#b0b0b0"; font.pixelSize: 11 }
-        PanelField {
-            id: nameField
-            objectName: "themeEditorNameField"
-            width: parent.width
-            onEditingFinished: themeEditor.applyField("name", text.trim())
-        }
-        Text { text: "Text colour (#rgb or #rrggbb)"; color: "#b0b0b0"; font.pixelSize: 11 }
-        PanelField {
-            id: colourField
-            objectName: "themeEditorColourField"
-            width: parent.width
-            onEditingFinished: themeEditor.applyField("textColor", text)
-        }
-        Text { text: "Background colour"; color: "#b0b0b0"; font.pixelSize: 11 }
-        PanelField {
-            id: backField
-            objectName: "themeEditorBackField"
-            width: parent.width
-            onEditingFinished: themeEditor.applyField("backgroundColor", text)
-        }
-        Text { text: "Gradient colour (\"\" = flat)"; color: "#b0b0b0"; font.pixelSize: 11 }
-        PanelField {
-            id: gradientField
-            objectName: "themeEditorGradientField"
-            width: parent.width
-            onEditingFinished: themeEditor.applyField("backgroundGradient", text)
-        }
-        Text { text: "Font family (\"\" = platform)"; color: "#b0b0b0"; font.pixelSize: 11 }
-        PanelField {
-            id: fontField
-            objectName: "themeEditorFontField"
-            width: parent.width
-            onEditingFinished: themeEditor.applyField("fontFamily", text)
-        }
-        Text { text: "Font size (0 = renderer default)"; color: "#b0b0b0"; font.pixelSize: 11 }
-        PanelField {
-            id: sizeField
-            objectName: "themeEditorSizeField"
-            width: parent.width
-            onEditingFinished: themeEditor.applyField("fontSize", Number(text))
-        }
-        Text { text: "Alignment"; color: "#b0b0b0"; font.pixelSize: 11 }
-        ComboBox {
-            id: alignCombo
-            objectName: "themeEditorAlign"
-            width: parent.width
-            model: ["left", "center", "right"]
-            onActivated: themeEditor.applyField("align", currentValue)
-        }
-        Text { text: "Line spacing (0.25 to 8)"; color: "#b0b0b0"; font.pixelSize: 11 }
-        PanelField {
-            id: spacingField
-            objectName: "themeEditorSpacingField"
-            width: parent.width
-            onEditingFinished: themeEditor.applyField("lineSpacing", Number(text))
-        }
-
-        // The lyric box this theme places (themes plan amendment
-        // 2026-11-01): the same rectangle the overlay above is showing, in
-        // the 1920x1080 authored canvas, for the operator who would rather
-        // type it. Four fields commit together — a placement is ONE unit —
-        // and "No placement" takes the theme's opinion away so wearing
-        // slides draw the boxes they were authored with.
-        Text {
-            text: "Lyric box (x, y, w, h in 1920×1080)"
-            color: "#b0b0b0"
-            font.pixelSize: 11
-        }
-        Row {
-            spacing: 4
-            PanelField {
-                id: placeXField
-                objectName: "themeEditorPlaceX"
-                width: 52
-                onEditingFinished: themeEditor.applyPlacementFields()
-            }
-            PanelField {
-                id: placeYField
-                objectName: "themeEditorPlaceY"
-                width: 52
-                onEditingFinished: themeEditor.applyPlacementFields()
-            }
-            PanelField {
-                id: placeWField
-                objectName: "themeEditorPlaceW"
-                width: 52
-                onEditingFinished: themeEditor.applyPlacementFields()
-            }
-            PanelField {
-                id: placeHField
-                objectName: "themeEditorPlaceH"
-                width: 52
-                onEditingFinished: themeEditor.applyPlacementFields()
-            }
-        }
-        Row {
-            spacing: 6
-            PanelButton {
-                objectName: "themeEditorNoPlacement"
-                text: "No placement"
-                enabled: themeEditor.hasPlacement
-                onClicked: docs.clearThemePlacement(themeEditor.selectedId)
-            }
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                color: themeEditor.hasPlacement ? "#8ec9f5" : "#888888"
-                font.pixelSize: 11
-                text: themeEditor.hasPlacement ? "this theme places its slides"
-                                               : "no opinion — slides keep their own boxes"
-            }
-        }
-
-        // The scripture reading context (task TF.4): the one named entry
-        // that says how a Bible passage is SET by this theme. Typography
-        // and a box, nothing else — the colours stay the theme's and the
-        // line count stays the measurement's.
-        Item { width: parent.width; height: 6 }
-        Text {
-            text: "SCRIPTURE READING"
-            color: "#bbbbbb"
-            font.pixelSize: 11
-            font.bold: true
-        }
-        CheckBox {
-            id: ctxToggle
-            objectName: "themeEditorContextToggle"
-            text: "set passages apart"
-            font.pixelSize: 11
-            enabled: themeEditor.selectedId !== ""
-            checked: false
-            onToggled: themeEditor.setContext(checked)
         }
         Column {
-            objectName: "themeEditorContextFields"
+            objectName: "themeEditorSongsSection"
             width: parent.width
             spacing: 8
-            visible: themeEditor.contextOn
-            Text { text: "Reading font (\"\" = theme's)"; color: "#b0b0b0"; font.pixelSize: 11 }
+            visible: themeEditor.selectedView === ""
+            Text { text: "Name"; color: "#b0b0b0"; font.pixelSize: 11 }
             PanelField {
-                id: ctxFontField
-                objectName: "themeEditorContextFont"
+                id: nameField
+                objectName: "themeEditorNameField"
                 width: parent.width
-                onEditingFinished: themeEditor.commitContext(
-                            {fontFamily: text.trim() === "" ? null : text.trim()})
+                onEditingFinished: themeEditor.applyField("name", text.trim())
             }
-            Text { text: "Reading size (0 = renderer, \"\" = theme's)"
-                       color: "#b0b0b0"; font.pixelSize: 11 }
+            Text { text: "Text colour (#rgb or #rrggbb)"; color: "#b0b0b0"; font.pixelSize: 11 }
             PanelField {
-                id: ctxSizeField
-                objectName: "themeEditorContextSize"
+                id: colourField
+                objectName: "themeEditorColourField"
                 width: parent.width
-                onEditingFinished: {
-                    const t = text.trim()
-                    if (t === "") {
-                        themeEditor.commitContext({fontSize: null})
-                        return
-                    }
-                    const v = Number(t)
-                    if (!isFinite(v) || v < 0) {
-                        themeEditor.syncContext()
-                        return
-                    }
-                    themeEditor.commitContext({fontSize: v})
-                }
+                onEditingFinished: themeEditor.applyField("textColor", text)
             }
-            Text { text: "Reading alignment"; color: "#b0b0b0"; font.pixelSize: 11 }
+            Text { text: "Background colour"; color: "#b0b0b0"; font.pixelSize: 11 }
+            PanelField {
+                id: backField
+                objectName: "themeEditorBackField"
+                width: parent.width
+                onEditingFinished: themeEditor.applyField("backgroundColor", text)
+            }
+            Text { text: "Gradient colour (\"\" = flat)"; color: "#b0b0b0"; font.pixelSize: 11 }
+            PanelField {
+                id: gradientField
+                objectName: "themeEditorGradientField"
+                width: parent.width
+                onEditingFinished: themeEditor.applyField("backgroundGradient", text)
+            }
+            Text { text: "Font family (\"\" = platform)"; color: "#b0b0b0"; font.pixelSize: 11 }
+            PanelField {
+                id: fontField
+                objectName: "themeEditorFontField"
+                width: parent.width
+                onEditingFinished: themeEditor.applyField("fontFamily", text)
+            }
+            Text { text: "Font size (0 = renderer default)"; color: "#b0b0b0"; font.pixelSize: 11 }
+            PanelField {
+                id: sizeField
+                objectName: "themeEditorSizeField"
+                width: parent.width
+                onEditingFinished: themeEditor.applyField("fontSize", Number(text))
+            }
+            Text { text: "Alignment"; color: "#b0b0b0"; font.pixelSize: 11 }
             ComboBox {
-                id: ctxAlignCombo
-                objectName: "themeEditorContextAlign"
+                id: alignCombo
+                objectName: "themeEditorAlign"
                 width: parent.width
-                model: ["(theme)", "left", "center", "right"]
-                onActivated: themeEditor.commitContext(
-                            {align: currentIndex === 0 ? null : currentValue})
+                model: ["left", "center", "right"]
+                onActivated: themeEditor.applyField("align", currentValue)
             }
-            Text { text: "Reading line spacing (0.25 to 8, \"\" = theme's)"
-                       color: "#b0b0b0"; font.pixelSize: 11 }
+            Text { text: "Line spacing (0.25 to 8)"; color: "#b0b0b0"; font.pixelSize: 11 }
             PanelField {
-                id: ctxSpacingField
-                objectName: "themeEditorContextSpacing"
+                id: spacingField
+                objectName: "themeEditorSpacingField"
                 width: parent.width
-                onEditingFinished: {
-                    const t = text.trim()
-                    if (t === "") {
-                        themeEditor.commitContext({lineSpacing: null})
-                        return
-                    }
-                    const v = Number(t)
-                    if (!isFinite(v) || v < 0.25 || v > 8) {
-                        themeEditor.syncContext()
-                        return
-                    }
-                    themeEditor.commitContext({lineSpacing: v})
-                }
+                onEditingFinished: themeEditor.applyField("lineSpacing", Number(text))
             }
-            Text { text: "Reading box (x, y, w, h in 1920×1080)"
-                       color: "#b0b0b0"; font.pixelSize: 11 }
+
+            // The lyric box this theme places (themes plan amendment
+            // 2026-11-01): the same rectangle the overlay above is showing,
+            // in the 1920x1080 authored canvas, for the operator who would
+            // rather type it. Four fields commit together — a placement is
+            // ONE unit — and "No placement" takes the theme's opinion away
+            // so wearing slides draw the boxes they were authored with.
+            Text {
+                text: "Lyric box (x, y, w, h in 1920×1080)"
+                color: "#b0b0b0"
+                font.pixelSize: 11
+            }
             Row {
                 spacing: 4
                 PanelField {
-                    id: ctxXField
-                    objectName: "themeEditorContextX"
+                    id: placeXField
+                    objectName: "themeEditorPlaceX"
                     width: 52
-                    onEditingFinished: themeEditor.applyContextBox()
+                    onEditingFinished: themeEditor.applyPlacementFields()
                 }
                 PanelField {
-                    id: ctxYField
-                    objectName: "themeEditorContextY"
+                    id: placeYField
+                    objectName: "themeEditorPlaceY"
                     width: 52
-                    onEditingFinished: themeEditor.applyContextBox()
+                    onEditingFinished: themeEditor.applyPlacementFields()
                 }
                 PanelField {
-                    id: ctxWField
-                    objectName: "themeEditorContextW"
+                    id: placeWField
+                    objectName: "themeEditorPlaceW"
                     width: 52
-                    onEditingFinished: themeEditor.applyContextBox()
+                    onEditingFinished: themeEditor.applyPlacementFields()
                 }
                 PanelField {
-                    id: ctxHField
-                    objectName: "themeEditorContextH"
+                    id: placeHField
+                    objectName: "themeEditorPlaceH"
                     width: 52
-                    onEditingFinished: themeEditor.applyContextBox()
+                    onEditingFinished: themeEditor.applyPlacementFields()
                 }
             }
             Row {
                 spacing: 6
                 PanelButton {
-                    objectName: "themeEditorContextBoxTheme"
-                    text: "Theme's lyric box"
-                    onClicked: {
-                        const box = themeEditor.boxFor(themeEditor.themeRow())
-                        themeEditor.commitContext({box: {x: box.x, y: box.y,
-                                                         width: box.width, height: box.height}})
+                    objectName: "themeEditorNoPlacement"
+                    text: "No placement"
+                    enabled: themeEditor.hasPlacement
+                    onClicked: docs.clearThemePlacement(themeEditor.selectedId)
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: themeEditor.hasPlacement ? "#8ec9f5" : "#888888"
+                    font.pixelSize: 11
+                    text: themeEditor.hasPlacement ? "this theme places its slides"
+                                                   : "no opinion — slides keep their own boxes"
+                }
+            }
+        }
+
+        Column {
+            objectName: "themeEditorBibleSection"
+            width: parent.width
+            spacing: 8
+            visible: themeEditor.selectedView === "scripture"
+            Text { text: "Name"; color: "#b0b0b0"; font.pixelSize: 11 }
+            PanelField {
+                // The same record the Songs view edits — a theme's identity
+                // belongs to the theme, not to one view — kept reachable
+                // from either view so the operator never loses the row.
+                objectName: "themeEditorNameFieldBible"
+                width: parent.width
+                onEditingFinished: themeEditor.applyField("name", text.trim())
+                onVisibleChanged: if (visible) text = themeEditor.rowFor(
+                                          themeEditor.selectedId) !== null
+                                  ? themeEditor.rowFor(themeEditor.selectedId).name : ""
+            }
+            // The scripture reading context (tasks TF.4, TV.1): the named
+            // entry this theme's BIBLE VIEW is. Typography and a box,
+            // nothing else — the colours stay the theme's and the line
+            // count stays the measurement's. An absent view is a real
+            // state: the passage simply wears the Songs look.
+            CheckBox {
+                id: ctxToggle
+                objectName: "themeEditorContextToggle"
+                text: "set passages apart"
+                font.pixelSize: 11
+                enabled: themeEditor.selectedId !== ""
+                checked: false
+                onToggled: themeEditor.setContext(checked)
+            }
+            Column {
+                objectName: "themeEditorContextFields"
+                width: parent.width
+                spacing: 8
+                visible: themeEditor.contextOn
+                Text { text: "Reading font (\"\" = theme's)"; color: "#b0b0b0"; font.pixelSize: 11 }
+                PanelField {
+                    id: ctxFontField
+                    objectName: "themeEditorContextFont"
+                    width: parent.width
+                    onEditingFinished: themeEditor.commitContext(
+                                {fontFamily: text.trim() === "" ? null : text.trim()})
+                }
+                Text { text: "Reading size (0 = renderer, \"\" = theme's)"
+                           color: "#b0b0b0"; font.pixelSize: 11 }
+                PanelField {
+                    id: ctxSizeField
+                    objectName: "themeEditorContextSize"
+                    width: parent.width
+                    onEditingFinished: {
+                        const t = text.trim()
+                        if (t === "") {
+                            themeEditor.commitContext({fontSize: null})
+                            return
+                        }
+                        const v = Number(t)
+                        if (!isFinite(v) || v < 0) {
+                            themeEditor.syncContext()
+                            return
+                        }
+                        themeEditor.commitContext({fontSize: v})
                     }
                 }
-                PanelButton {
-                    objectName: "themeEditorContextBoxClear"
-                    text: "No box"
-                    onClicked: themeEditor.commitContext({box: null})
+                Text { text: "Reading alignment"; color: "#b0b0b0"; font.pixelSize: 11 }
+                ComboBox {
+                    id: ctxAlignCombo
+                    objectName: "themeEditorContextAlign"
+                    width: parent.width
+                    model: ["(theme)", "left", "center", "right"]
+                    onActivated: themeEditor.commitContext(
+                                {align: currentIndex === 0 ? null : currentValue})
                 }
-            }
-            Text {
-                id: ctxLinesLabel
-                objectName: "themeEditorContextLines"
-                width: parent.width
-                wrapMode: Text.WordWrap
-                color: "#8ec9f5"
-                font.pixelSize: 11
-                text: ""
-            }
-            Text {
-                width: parent.width
-                wrapMode: Text.WordWrap
-                color: "#888888"
-                font.pixelSize: 10
-                text: "a reading context sets type and a box — never a colour, "
-                      + "and never a line count: how many lines ride a slide is "
-                      + "what the renderer measures"
+                Text { text: "Reading line spacing (0.25 to 8, \"\" = theme's)"
+                           color: "#b0b0b0"; font.pixelSize: 11 }
+                PanelField {
+                    id: ctxSpacingField
+                    objectName: "themeEditorContextSpacing"
+                    width: parent.width
+                    onEditingFinished: {
+                        const t = text.trim()
+                        if (t === "") {
+                            themeEditor.commitContext({lineSpacing: null})
+                            return
+                        }
+                        const v = Number(t)
+                        if (!isFinite(v) || v < 0.25 || v > 8) {
+                            themeEditor.syncContext()
+                            return
+                        }
+                        themeEditor.commitContext({lineSpacing: v})
+                    }
+                }
+                Text { text: "Bible box (x, y, w, h in 1920×1080)"
+                           color: "#b0b0b0"; font.pixelSize: 11 }
+                Row {
+                    spacing: 4
+                    PanelField {
+                        id: ctxXField
+                        objectName: "themeEditorContextX"
+                        width: 52
+                        onEditingFinished: themeEditor.applyContextBox()
+                    }
+                    PanelField {
+                        id: ctxYField
+                        objectName: "themeEditorContextY"
+                        width: 52
+                        onEditingFinished: themeEditor.applyContextBox()
+                    }
+                    PanelField {
+                        id: ctxWField
+                        objectName: "themeEditorContextW"
+                        width: 52
+                        onEditingFinished: themeEditor.applyContextBox()
+                    }
+                    PanelField {
+                        id: ctxHField
+                        objectName: "themeEditorContextH"
+                        width: 52
+                        onEditingFinished: themeEditor.applyContextBox()
+                    }
+                }
+                Row {
+                    spacing: 6
+                    PanelButton {
+                        objectName: "themeEditorContextBoxTheme"
+                        text: "Theme's lyric box"
+                        onClicked: {
+                            const box = themeEditor.boxFor(themeEditor.themeRow())
+                            themeEditor.commitContext({box: {x: box.x, y: box.y,
+                                                             width: box.width, height: box.height}})
+                        }
+                    }
+                    PanelButton {
+                        objectName: "themeEditorContextBoxClear"
+                        text: "No box"
+                        onClicked: themeEditor.commitContext({box: null})
+                    }
+                }
+                Text {
+                    id: ctxLinesLabel
+                    objectName: "themeEditorContextLines"
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    color: "#8ec9f5"
+                    font.pixelSize: 11
+                    text: ""
+                }
+                Text {
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    color: "#888888"
+                    font.pixelSize: 10
+                    text: "the Bible view sets type and a box — never a colour, "
+                          + "and never a line count: how many lines ride a slide is "
+                          + "what the renderer measures"
+                }
             }
         }
     }

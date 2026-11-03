@@ -305,7 +305,27 @@ public:
     // document: nothing is recorded and nothing is presented, so browsing
     // every theme in the service cannot touch the audience's picture.
     // Unknown id: empty string.
-    Q_INVOKABLE QString themeSampleSceneJson(const QString& themeId) const;
+    // Task TV.1 gives the sample a VIEW: "" compiles the SONGS look (the
+    // theme's own base fields), and a name — "scripture" is this build's
+    // Bible view — compiles the sample slide naming that text context, so
+    // the context's typography and box answer exactly as a passage's slide
+    // will resolve them. The fixture is a COPY of the live documents with
+    // the current theme cleared and the SELECTED theme set as the throwaway
+    // show's default: the edited Default theme and every theme's contexts
+    // sit in the chain as the audience would walk them, and whatever the
+    // service happens to wear cannot bleed into another theme's sample.
+    Q_INVOKABLE QString themeSampleSceneJson(const QString& themeId,
+                                             const QString& contextName = QString()) const;
+    // What the sample's PRIMARY text box actually resolves to — the same
+    // fixture and the same resolver, answered as a row instead of pixels:
+    // {ok, boxX, boxY, boxWidth, boxHeight, fontSize (0 = the renderer's
+    // own default), lineSpacing, align, fontFamily, context} with `context`
+    // the name of the context that layered ("" when none did). The Theme
+    // Editor's overlay and box fields read THIS rectangle, so the handle
+    // and the picture underneath it can never disagree about which view
+    // is being edited. Unknown id or an uncompilable fixture: {ok: false}.
+    Q_INVOKABLE QVariantMap themeSampleAppearance(const QString& themeId,
+                                                  const QString& contextName = QString()) const;
 
     // The Bible importer's off-air look (task BI.5). A scripture slide
     // belongs to a young show that wears nothing of its own, so what it
