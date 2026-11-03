@@ -294,7 +294,9 @@ public:
     // The Bible importer's off-air look (task BI.5). A scripture slide
     // belongs to a young show that wears nothing of its own, so what it
     // draws is the WHOLE chain as the service stands: the worn theme, the
-    // Default layer, the built-in box. These two answer through a fixture
+    // Default layer, the built-in box — and the `scripture` text context
+    // the passage names, when one of those themes carries it (task TF.3).
+    // These two answer through a fixture
     // COPY of the live documents with a throwaway show added — the same
     // resolution the committed slide will walk, with no history entry, no
     // dirty flag and nothing presented. `scriptureBoxStyle` returns the

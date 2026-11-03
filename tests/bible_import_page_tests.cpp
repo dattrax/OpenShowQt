@@ -539,6 +539,162 @@ int main(int argc, char* argv[]) {
         worker.shutdownNow();
     }
 
+    // --- TF.3: the production chapter under the theme's scripture context ---
+    // BIF.1's whole chapter again, into two services whose manifests differ
+    // in exactly one thing: one theme carries a `scripture` context (a
+    // reading size in its own lectern box), the other carries nothing. With
+    // the context the SAME engine on the SAME chapter must pack MORE verses
+    // onto FEWER slides — the lines per slide are what the measurement
+    // fits at the context's typography, never a set split — the preview
+    // compiles the same context the audience will resolve (one call, one
+    // chain), and the added slides carry the context's NAME into the file,
+    // with labels, notes and provenance exactly as BI.5 keeps them. The
+    // sibling without the context is the "behaves exactly as today" leg:
+    // the name it never carries resolves as no layer, at the display size
+    // in the built-in box.
+    {
+        const auto writeHouseService = [](const std::filesystem::path& dir, bool withContext) {
+            std::filesystem::create_directories(dir);
+            const std::string contexts =
+                withContext
+                    ? R"(,"contexts":[{"name":"scripture","fontSize":32,"lineSpacing":1.3,)"
+                      R"("align":"left","box":{"x":200,"y":120,"width":1200,"height":760}}])"
+                    : std::string();
+            std::ofstream out(dir / "service.json");
+            out << R"({"format":7,"nextOrdinal":90,"currentThemeId":"theme1","shows":[],)"
+                << R"("themes":[{"id":"theme1","name":"House","textColor":"#ffffff",)"
+                << R"("backgroundColor":"#101010","backgroundGradient":"","fontFamily":"",)"
+                << R"("fontSize":96,"align":"center","lineSpacing":1.2)" << contexts
+                << R"(}],"assets":[],"playlists":[]})";
+            out.close();
+        };
+
+        WorkerController worker;
+        worker.start();
+        if (!check(waitForMeasureReady(worker), "the TF.3 worker came up")) {
+            worker.shutdownNow();
+            return 1;
+        }
+        writeHouseService(root / "abplain" / "service", false);
+        writeHouseService(root / "ablectern" / "service", true);
+
+        // A: the same chapter, a theme with no context.
+        DocumentController plain(nullptr, root / "abplain");
+        BibleImport plainBible;
+        ScriptedManager plainManager;
+        plainBible.setNetworkAccessManager(&plainManager);
+        ScriptureImport plainScripture(&plainBible, &plain, &worker);
+        const QVariantMap plainStyle = plain.scriptureBoxStyle();
+        check(plainStyle.value(QStringLiteral("fontSize")).toDouble() == 96.0 &&
+                  plainStyle.value(QStringLiteral("boxWidth")).toDouble() == 1600.0 &&
+                  plainStyle.value(QStringLiteral("boxHeight")).toDouble() == 880.0,
+              "a service whose themes carry no scripture context measures exactly as today: "
+              "the theme's display size in the built-in box");
+        plainBible.setReference(QStringLiteral("First Test 1"));
+        plainBible.setTranslation(QStringLiteral("EXAMPLE"));
+        plainManager.steps.push_back({chapterBody(), {}, {}, 200, 0});
+        plainBible.lookup();
+        waitForLookup(plainBible);
+        check(waitForMeasured(plainScripture, 30000), "the contextless chapter paginates");
+        const qsizetype plainSlides = plainScripture.slides().size();
+        check(plainSlides == 31 || plainSlides > 1,
+              "the contextless chapter packs at the display size, verse for verse or better");
+
+        // B: the same chapter, the theme's scripture context in force.
+        DocumentController lectern(nullptr, root / "ablectern");
+        const QVariantMap ctxStyle = lectern.scriptureBoxStyle();
+        check(ctxStyle.value(QStringLiteral("fontSize")).toDouble() == 32.0 &&
+                  ctxStyle.value(QStringLiteral("boxWidth")).toDouble() == 1200.0 &&
+                  ctxStyle.value(QStringLiteral("boxHeight")).toDouble() == 760.0,
+              "the measurement style answers through the scripture context: reading size, "
+              "lectern box — not the theme's display size");
+        BibleImport bible;
+        ScriptedManager manager;
+        bible.setNetworkAccessManager(&manager);
+        ScriptureImport scripture(&bible, &lectern, &worker);
+        bible.setReference(QStringLiteral("First Test 1"));
+        bible.setTranslation(QStringLiteral("EXAMPLE"));
+        manager.steps.push_back({chapterBody(), {}, {}, 200, 0});
+        bible.lookup();
+        waitForLookup(bible);
+        check(bible.verses().size() == 31, "the contexted chapter lookup answered whole");
+        check(waitForMeasured(scripture, 30000), "the contexted chapter paginates");
+        const qsizetype ctxSlides = scripture.slides().size();
+        std::fprintf(stderr, "  tf.3: plain=%lld context=%lld verses=31\n",
+                     static_cast<long long>(plainSlides), static_cast<long long>(ctxSlides));
+        check(ctxSlides > 1 && ctxSlides < plainSlides,
+              "the reading context measures out more verses per slide — the line count is "
+              "the worker's answer, never a set split");
+        check(ctxSlides < bible.verses().size(),
+              "the passage never lands one verse per slide");
+        check(identityHolds(scripture, bible),
+              "the contexted slides carry exactly the chapter — nothing clipped, added "
+              "or repeated");
+
+        // The preview is the output: one call down one chain. The scene the
+        // preview compiles for a generated slide carries the CONTEXT's
+        // typography and box, which is what the added slide will resolve
+        // at playback through the same appearanceForSlide.
+        const QStringList firstLines = scripture.slides()
+                                           .at(0)
+                                           .toMap()
+                                           .value(QStringLiteral("lines"))
+                                           .toStringList();
+        const QString sceneJson = lectern.scriptureSlideSceneJson(firstLines);
+        bool previewFollowsContext = false;
+        if (!sceneJson.isEmpty()) {
+            const boost::json::object item = boost::json::parse(sceneJson.toStdString())
+                                                 .at("items")
+                                                 .as_array()
+                                                 .at(0)
+                                                 .as_object();
+            previewFollowsContext = boost::json::value_to<double>(item.at("fontSize")) == 32.0 &&
+                                    boost::json::value_to<double>(item.at("y")) == 120.0 &&
+                                    boost::json::value_to<double>(item.at("height")) == 760.0 &&
+                                    item.at("align").as_string() == "left";
+        }
+        check(previewFollowsContext,
+              "the previewed slide compiles at the context's size inside the context's box "
+              "— the preview runs the same resolution as the output");
+
+        check(scripture.canAdd() && scripture.addToSchedule(),
+              "the contexted chapter wakes Add and one Add lands it");
+        check(lectern.save(), "the contexted service saves");
+        {
+            const std::string manifest = readTextFile(root / "ablectern" / "service" /
+                                                      "service.json");
+            const boost::json::object service =
+                boost::json::parse(manifest).as_object();
+            int named = 0;
+            int labelled = 0;
+            for (const boost::json::value& showValue : service.at("shows").as_array()) {
+                const boost::json::object& show = showValue.as_object();
+                if (!show.contains("scripture")) {
+                    continue;  // only the passage's own young show has slides here
+                }
+                check(show.at("scripture").as_object().at("reference").as_string() ==
+                          "First Test 1",
+                      "the provenance rides the show as BI.5 keeps it");
+                for (const boost::json::value& slideValue : show.at("slides").as_array()) {
+                    const boost::json::object& slide = slideValue.as_object();
+                    if (slide.contains("textContext") &&
+                        slide.at("textContext").as_string() == "scripture") {
+                        ++named;
+                    }
+                    if (!slide.at("notes").as_string().empty()) {
+                        ++labelled;
+                    }
+                }
+            }
+            check(named == static_cast<int>(ctxSlides),
+                  "every added slide names the scripture context into the file — playback "
+                  "resolves what the preview measured");
+            check(labelled == static_cast<int>(ctxSlides),
+                  "every added slide carries its verse label in NOTES, never on the slide");
+        }
+        worker.shutdownNow();
+    }
+
     // --- BIF.1: a batch that can never be answered retires, with its own
     // sentence — the page must never sit on "measuring" for a worker that
     // has gone away mid-ask. -----------------------------------------------

@@ -1152,13 +1152,17 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
     }
     // Per property, the first layer with something to say wins; a layer
     // silent on a property (an empty string, a size of 0) falls through.
+    // A NULL contextField is the property's way of saying a context can
+    // NEVER speak it (the colours) — the pointer is never dereferenced
+    // then; a null pointer-to-member dereferenced is not "no value" but
+    // no definition at all.
     auto pickString = [&](const std::optional<std::string>& own,
                           const std::optional<std::string> TextContext::*contextField,
                           const std::string Theme::*field) -> std::string {
         if (own.has_value()) {
             return *own;
         }
-        if (ctx != nullptr && (ctx->*contextField).has_value()) {
+        if (ctx != nullptr && contextField != nullptr && (ctx->*contextField).has_value()) {
             return *(ctx->*contextField);
         }
         for (size_t i = 0; i < count; ++i) {

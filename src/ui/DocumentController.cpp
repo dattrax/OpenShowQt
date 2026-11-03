@@ -917,17 +917,23 @@ namespace {
 // slide joins the schedule owning no theme and customising nothing, so its
 // appearance is the chain as the service stands — worn theme, Default
 // layer, built-in box — and a copy of the real documents is what walks
-// that chain identically. createShow stands in for createScriptureShow
-// because the scripture fields (ownership, provenance) speak nothing the
-// compile reads. The copy dies with the call: no history, no dirty flag,
-// no output.
+// that chain identically. It also names the `scripture` text context
+// (task TF.3), exactly as the added slides do: when the service's themes
+// carry a reading-size scripture context, the measurement style and the
+// preview here resolve through it, and the box the engine packs into is
+// the box the audience will draw into; when no theme carries the name,
+// it resolves as no layer at all and everything is as it stood before TF.
+// createShow stands in for createScriptureShow because the scripture
+// fields (ownership, provenance) speak nothing the compile reads. The
+// copy dies with the call: no history, no dirty flag, no output.
 bool compileScriptureFixture(const openshow::domain::Documents& documents,
                              const std::vector<std::string>& lines,
                              openshow::scene::Scene* scene) {
     openshow::domain::Documents fixture = documents;
     const openshow::domain::Id show = fixture.createShow("Scripture preview");
     const openshow::domain::Id slide = fixture.appendSlide(show);
-    if (show.empty() || slide.empty() || !fixture.setSlideLines(show, slide, lines)) {
+    if (show.empty() || slide.empty() || !fixture.setSlideLines(show, slide, lines) ||
+        !fixture.setSlideTextContext(show, slide, "scripture")) {
         return false;
     }
     return openshow::scene::compileSlide(fixture, show, slide, scene);
@@ -1632,12 +1638,19 @@ bool DocumentController::addScripturePassage(const QString& playlistId, const QS
             // History will not roll a refused mutation back for us (the
             // paste rule), so any later step that fails takes the whole
             // young show with it — the document never keeps half a passage.
+            // Every slide names the `scripture` text context (task TF.3):
+            // the reading typography and box the pagination was measured
+            // against are the context's, and playback must resolve them
+            // through the same chain the preview walked. A service whose
+            // themes carry no such context resolves the name as no layer,
+            // exactly as it drew before contexts existed.
             for (const SlideSpec& spec : boxes) {
                 const openshow::domain::Id slide = fDocuments.appendSlide(created, &error);
                 if (slide.empty() ||
                     !fDocuments.setSlideLines(created, slide, spec.lines, &error) ||
                     (!spec.notes.empty() &&
-                     !fDocuments.setSlideNotes(created, slide, spec.notes, &error))) {
+                     !fDocuments.setSlideNotes(created, slide, spec.notes, &error)) ||
+                    !fDocuments.setSlideTextContext(created, slide, "scripture", &error)) {
                     fDocuments.removeShow(created, nullptr);
                     created.clear();
                     return false;

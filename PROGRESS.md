@@ -135,6 +135,25 @@ even probed as a fragment; a split carries the block's id through both
 halves with `(cont.)` and `(continues)` said by the caller's labeler; the
 single-word dead end refuses naming the block (`textflow_tests`; gates
 64/64 desktop serial, 46/46 headless).
+**TF.3 is DONE the same day:** the Bible page's whole flow — the
+measurement style, the off-air preview and the added slides — now walks
+the **`scripture` text context**. BIF.1's live-shape chapter on the real
+worker, into two services whose manifests differ by nothing but the
+context: the plain 96 px look measures out **19 slides**, the theme's
+32 px lectern box measures out **4** — seven and eight verses to a slide,
+because that is what the worker's measurement fits and nothing else; the
+words are exactly the chapter, the preview compiles the same box the
+audience will draw into, and every added slide carries the context's
+NAME into the file so playback resolves what the preview measured, with
+labels in notes and provenance on the show exactly as BI.5 keeps them.
+The sibling without the context answers 96 px in the built-in box and
+its whole existing suite passes untouched — the name is no layer until a
+theme grows it. The fixture also caught a latent **undefined behaviour**
+the resolver had been surviving by layout luck: a context-property helper
+dereferenced the NULL pointer-to-member the colours (which a context can
+never speak) are passed as; guarded now, and the page fixture that found
+it keeps the path honest (`bible_import_page_tests`; gates 64/64 desktop
+serial, 46/46 headless).
 The operator's paging note
 — flow the whole downloaded passage with the theme deciding how much text
 a slide carries (their examples: two display lines for songs, six for a
