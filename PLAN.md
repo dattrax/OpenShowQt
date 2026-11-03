@@ -1,11 +1,12 @@
 # OpenShowQt: implementation plan
 
-Accepted 2026-10-21; reviewed and condensed 2026-10-30.
+Accepted 2026-10-21; condensed 2026-10-30; theme architecture reviewed 2026-11-03.
 Current checkpoint and verification: [PROGRESS.md](PROGRESS.md).
 Current code boundaries and open differences: [docs/architecture.md](docs/architecture.md).
 Detailed completed-task evidence: [history](docs/history/README.md).
 Post-M6 conformance review: [original findings](docs/reviews/M6-conformance-2026-10-30.md).
 Architecture review: [after 6.22](docs/reviews/M6-post-6.22-review-2026-10-31.md); [6.23 closure evidence](docs/reviews/M6-6.23-verification-2026-10-31.md).
+Theme/editor review and proposed contracts: [2026-11-03 review](docs/reviews/theme-editor-2026-11-03.md).
 
 ## Goal and reference
 
@@ -69,10 +70,13 @@ estimate is historical; re-estimate remaining work before productization.
   Software decode is supported; optional VA-API and direct Vulkan-backed software
   decode were added during M1, with an explicit copying fallback.
 - **Bible import:** online, passage-only lookup into today's schedule, with
-  theme-sized slides; planned in BI below. No installed Bible or passage cache.
+  measured theme-sized slides and a named scripture context (BI/TF delivered).
+  View/editor follow-ups are TV below. No installed Bible or passage cache.
 - **Deferred:** FreeShow import/round-trip, stage/additional outputs,
-  Vulkan display-plane output, advanced effects, remote control, streaming,
+  Vulkan display-plane output, effects beyond TS below, remote control, streaming,
   NDI/SDI, cloud services, Windows and macOS.
+  Future output-profile/NDI/stage work is recorded separately in FO below;
+  reserving its design does not enable another output in this release.
 
 ### Output layer model
 
@@ -129,6 +133,9 @@ remain **7.3**. Do not use old machine paths as current dependency configuration
    commit accounts. Keep PROGRESS.md to a short current handoff; put lasting
    contracts in architecture documentation and detailed completed evidence in history.
    Add or split work items only when scope requires it, with brief descriptions.
+   The implementation runbook below is an intentional exception for unfinished
+   TV/TS/TR work: retain actionable steps until delivered, then move detailed
+   implementation evidence to history and keep the completed ledger concise.
 
 ## Work breakdown
 
@@ -319,7 +326,7 @@ M7 release gates remain open. Historical 6.1–6.4 reliability references mean 7
 | 6.20b | DONE | Recheck public Skia guard and bounded-RPC audit | Public-API positive/negative guards; protocol/scene/RPC fixtures |
 | 6.20c | DONE | Production worker journey and idle-write deadline correction | `production_journey_tests`, transport regressions; integration follow-up 6.21g |
 | 6.20d | DONE | Resolve layer controls, audio contract and foreground worker status | Scene pixel/output-status regressions; frontend follow-up 6.21f |
-| 6.20e | DONE | Record M6 closure evidence and environment limits | [Architecture closure](docs/architecture.md#m6-closure-the-completion-rule-in-writing); archived 6.20d gates |
+| 6.20e | DONE | Record M6 closure evidence and environment limits | [Architecture closure](docs/architecture.md#m6-closure-the-completion-rule-in-writing-task-620e); archived 6.20d gates |
 
 Checkpoint: `M6: close code review and graduate production architecture`.
 
@@ -514,6 +521,485 @@ Task order: TF.1 → TF.2 → TF.3 → TF.4, one commit per leaf; BIF.1 lands
 first regardless (it explains the live shape the engine must control, and
 Add is blocked until it does), BIF.2/BIF.3 stay independent, and TF.4's
 re-acceptance rides after BIF.4's.
+
+### Theme views and workspace follow-up (TV)
+
+Reviewed 2026-11-03. Call the user-facing variants **theme views**: Songs uses
+the base theme; Bible uses the existing `scripture` context, initially unchanged.
+Use the workspace below the header for Themes, with view navigation left, a
+large worker-rendered canvas and a scrollable inspector. The review records
+current gaps, migration/precedence, proposed contracts, estimates and test matrix.
+TH/TF completion remains historical evidence; every new leaf starts TODO.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| TV.0 | DONE | Review domain, storage, editor, scripture flow, renderer and transitions against references | [Findings R1–R12, proposed contracts and baseline evidence](docs/reviews/theme-editor-2026-11-03.md); 22 focused checks pass with local IPC/display access; current editor capture and three-font stimulus inspected |
+| TV.1 | TODO | Select Songs/Bible views and compile the selected view's complete off-air fixture | Format 7 unchanged; Bible edits/box gestures affect Bible only, copied contexts and edited Default appear in samples; `document_controller_tests`, `workspace_ui_tests`, `preview_selection_tests` prove pixels/handles follow selection and browsing never presents |
+| TV.2 | TODO | Full-workspace Themes layout, view thumbnails and reachable inspector | Hide operator docks/bin during Themes without overwriting their saved state; scroll/collapse fields and bound columns; mouse/keyboard checks and Songs/Bible captures at 1000×680, 1380×800, 1680×1020 show no overflow/negative canvas and restore Show state (`workspace_ui_tests`, `workspace_panels_tests`, `ui_loads`) |
+| TV.3 | TODO | Promote sparse scripture contexts to appearance views with versioned migration and provenance | After TS.1's shared style contract: allow independent view colours/effects, preserve first-context-wholesale precedence, inherit vs explicit off, unknown names, Default and customization/revert; old services keep pixels/IDs; malformed or old-format new keys refuse atomically (`domain_tests`, `scene_tests`, `document_controller_tests`) |
+| TV.4a | TODO | Bible body/reference/attribution roles in domain, storage and scene compilation | Independently resolved typography/boxes compile to flat scene items, within item budgets; legacy primary/extra boxes unchanged and no captions silently added on migration; one-undo/round-trip, role validation and geometry assertions (`domain_tests`, `scene_tests`, `document_controller_tests`) |
+| TV.4b | TODO | Measure and generate the Bible roles through preview, Add and offline playback | Actual body/caption regions match reservation and rendered ink; long reference/attribution and impossible layouts tested, exact selected words conserved; one undo, save/reopen and provider-free playback (`scripture_pagination_tests`, `text_measure_tests`, `bible_import_page_tests`, `bible_import_e2e_tests`) |
+| TV.5 | TODO | Retire stale view measurements/previews and stale Bible plans across mode changes | Returning after theme edits remeasures in-memory words; Add requires current style/worker/selection/target generation; delayed replies cannot re-enable Add or display wrong-view pixels; committed passages retain authored boundaries; connected/disconnected and reachability journeys cover real interactions |
+
+### Text styling and effects (TS)
+
+Keep SkParagraph as the only layout/measurement engine. Author font weight/style,
+stroke, shadow and fit policy through the domain and resolved scenes; preserve
+old pixels by default. [Units, inheritance, font fixtures and renderer constraints](docs/reviews/theme-editor-2026-11-03.md#typography-and-effects-contract).
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| TS.1 | TODO | Shared typography/effects/fit records, undo, storage and validated scene/protocol contract | Optional inherit vs disabled effects, finite bounded units, legacy defaults and version/capability handling; unsupported workers refuse features; round-trip/refusal/precedence/budget tests in `domain_tests`, `scene_tests`, `protocol_tests`, `document_controller_tests` |
+| TS.2 | TODO | Render font faces, stroke and shadow through public Skia APIs | Shaped glyphs share wrap and position, stroke behind fill, effects follow fade alpha; disabled appearance equals legacy; CPU/GPU fixtures and existing API/render-target guards pass without composition intermediates |
+| TS.3 | TODO | Shared ink bounds, effect-aware fit/measurement and complete style cache keys | Stroke/offset/blur extents fit chosen regions at multiple scales; importer, editor probes and audience use identical font/style inputs; stale measurements rejected, caches bounded, impossible Bible layouts reported (`scene_render_tests`, `text_measure_tests`, flow fixtures) |
+| TS.4 | TODO | Installed font/face picker and selected-view typography/effect controls | Worker-consistent family list, unavailable-family feedback, inherit/revert and validated stroke/shadow/fit fields; all controls reachable and one undo per edit/gesture, preview and saved output match (`workspace_ui_tests`, controller/journey tests) |
+| TS.5 | TODO | Reproducible font/effect raster and performance acceptance | Pin Inter/Lora/Oswald and licences/checksums in an isolated offline fixture setup; test fallback/Unicode, weights, effect edges/negative offsets and midpoint fades; visible missing-fixture failures/skips and no unbounded preparation/render cost |
+
+### Configurable slide transitions (TR)
+
+Store a service default plus optional incoming theme-view override; send resolved
+options with each Go intent through the existing prepare/present/store path.
+Expose Cut/Crossfade and separate foreground/background durations; preserve
+500/800 ms defaults. [Timing, video limits, clear/restore and compatibility](docs/reviews/theme-editor-2026-11-03.md#transition-contract).
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| TR.1 | TODO | Validated/persisted transition options and intent-bound RPC/store handoff | Service/view inheritance and undo round-trip; options captured at Go survive delayed prepare/settings changes; invalid/unsupported payloads change no output; legacy defaults preserved (`domain_tests`, `protocol_tests`, `worker_controller_tests`, `scene_store_tests`) |
+| TR.2 | TODO | Renderer uses landed per-command durations and documented video behaviour | Cut/zero/unequal durations, first scene, rapid Go, clear/restore and failed presentation; settle only after presented frame, mirror uses same blends, same-background video continues; existing video-switch fade limitation tested (`scene_frame_tests`, `render_scene_transition`, `live_fade_tests`) |
+| TR.3 | TODO | Service and selected-view transition UI with end-to-end acceptance | Controls persist/inherit/revert; edits affect next Go, not active fade; UI interaction changes real output timing, live markers still acknowledge landed output and restart begins black (`workspace_ui_tests`, `document_present_tests`, `production_journey_tests`) |
+
+| ID | Status | Integrated acceptance | Evidence |
+|---|---|---|---|
+| TA.1 | TODO | Close TV/TS/TR together; update architecture, captures, fixtures and handoff | New journeys prove selected view → styling/measurement → save/reopen → presentation; all leaf tests plus desktop serial/headless presets and source guards pass; report skips, font provenance, budgets and remaining physical gates separately |
+
+Suggested order: TV.1 → TV.2 → TS.1 → TV.3 → TS.2 → TS.3 → TV.4a →
+TV.4b → TS.4 → TV.5 → TS.5 → TR.1 → TR.2 → TR.3 → TA.1, then M7.
+Initial estimate **21.5 engineer-days**, 0.5–2 days per leaf including tests;
+re-estimate after schema/renderer prototypes. Detailed dependencies and test
+requirements live in the review; no new feature acceptance is claimed by TV.0.
+
+### Implementation runbook — TV/TS/TR
+
+This runbook is the implementation starting point; the linked review explains
+the findings. Work on **one leaf at a time** in the order above. Read its steps,
+the relevant source below and its tests before editing. New names below are
+proposed APIs/fields, not a claim that they already exist. Preserve existing
+callers with wrappers/default arguments while changing a seam. Do not start FO
+or rewrite the renderer/document model to complete these leaves.
+
+#### Source ownership and editing map
+
+Paths below are relative to the repository root. Header `documents.h` means
+`src/domain/include/openshow/domain/documents.h`; scene headers live under
+`src/scene/include/openshow/scene/` and protocol headers under
+`src/protocol/include/openshow/protocol/`.
+
+| Responsibility | Starting files / existing functions |
+|---|---|
+| Domain types, mutations and resolution | `documents.h`, `src/domain/documents.cpp`: `Theme`, `TextContext`, `SlideCustomization`, `ResolvedAppearance`, `SlideItem`, `setThemeContexts`, `appearanceForSlide` |
+| Service persistence and migrations | `src/domain/storage.cpp`: `kServiceFormat` (currently 7), theme/context/customization/item readers and writers; `src/domain/history.cpp` for value snapshots |
+| Controller, QML adapters and undo | `src/ui/DocumentController.h/.cpp`: `edit`, `themeSampleSceneJson`, `themeContext`, `applyThemeContext`, `removeThemeContext`, `setThemePlacement`, `duplicateTheme`, `scriptureBoxStyle`, `scriptureSlideSceneJson`, `addScripturePassage`; `src/ui/DocumentViews.cpp` for exposed appearance rows |
+| Workspace and theme gestures | `src/ui/Main.qml`, `ThemeEditorPage.qml`, `WorkspacePanels.h/.cpp`, `TopBar.qml`: page anchors, `syncInspector`, `syncContext`, `boxFor`, `endGesture`, `applyPlacementFields`, `sampleAsk`, `linesAsk` |
+| Static compilation and scene validation | `src/scene/scene.cpp`, `scene.h`: `compileSlide`, equality, `toJson`, `fromJson`, scene format and strict per-kind keys |
+| Font shaping, measuring and painting | `src/worker/render/SceneText.h/.cpp`: `SceneTextEngine::layout`, `layoutScene`, `drawLayout`, `GroupAlphaPainter`; `src/worker/session/OutputSession.cpp`: `measureText` |
+| Scripture flow and transient state | `src/importer/include/openshow/importer/textflow.h`, `src/importer/textflow.cpp`, `scripturepagination.cpp`; `src/ui/ScriptureImport.h/.cpp`, `BibleImportPage.qml` |
+| Async presentation intent | `src/ui/SceneAsk.h`: `ScenePrepareAsk`; `PresentationModel.h/.cpp`: `armPrepare`, `presentCueJson`, `handlePrepareAck`, `presentScene`, clears/restore; `WorkerController.h/.cpp` for public entry points |
+| Worker command and frame state | `src/worker/rpc/RpcMethods.cpp`, `session/SceneStore.h/.cpp`, `session/OutputSession.h/.cpp`, `render/Layer.h`, `render/SceneRenderer.h/.cpp`: `present`, `Decision`, `presentScene`, `setActiveScene`, `captureFrame`, `commitFrame` |
+| Protocol discovery and test registration | `src/protocol/protocol.cpp`, `protocol.h`, `preview_wire.h`, `src/ui/WorkerController.cpp` handshake; `tests/CMakeLists.txt` for new targets/resources |
+
+#### Decisions to implement consistently
+
+- **View identity:** UI label Songs maps to `textContext == ""`; Bible maps to
+  `"scripture"`. Keep these persisted spellings. Theme selection and view selection
+  are independent UI properties. Selecting an absent Bible view previews inherited
+  defaults; it does not create a context or mark the document dirty.
+- **Inheritance:** customization → first matching context record in current,
+  slide, show, Default order → base theme chain → renderer defaults. Choose the
+  context **once**, then resolve each field. Never search lower context records
+  to fill holes. Unknown context names survive round-trip and theme duplication.
+- **Format allocation:** current service/scene/protocol are 7 / 3 / 0.14.
+  Each leaf adding persisted meaning claims the next unused service format,
+  adds migration/old-era-key refusal tests and updates version documentation.
+  TS.1 introduces the next scene format and codec; TS.2 advertises rendering
+  support only when it actually draws the fields. Never bump versions blindly
+  from the numbers printed here after another leaf has landed.
+- **Style fields:** add `fontWeight` (integer 100–900, default 400), `fontStyle`
+  (`normal`/`italic`, default `normal`), `fitMode` (`shrink`/`fixed`, default
+  `shrink`), `minFontSize` (1–4096, default 12). Keep existing `fontSize == 0`
+  meaning worker default (currently 96); do not use 0 to mean inheritance in a
+  sparse override. Shrinking may never enlarge the selected font.
+- **Effects:** `stroke = {enabled, color, width}` with RGB colour and width
+  0–32; `shadow = {enabled, color, opacity, offsetX, offsetY, blurSigma}` with
+  opacity 0–1, offsets −256–256 and sigma 0–64. Numbers are finite authored
+  canvas units, scaled once at draw time. Defaults are disabled, stroke black
+  width 2, shadow black/0.65/(2,2)/sigma 4. Width 0 or opacity 0 draws no ink.
+  Use a complete validated record when an effect is present; absent optional
+  record inherits, `enabled:false` explicitly disables the inherited effect.
+- **Sparse editing:** new style fields are optional on Theme, customization and
+  context records; resolve the documented concrete defaults only after the
+  chain is exhausted. Do not populate old Theme records with explicit overrides
+  during load. Update equality, empty/clear/has
+  helpers, validators, JSON, row adapters and duplication together. No field
+  may be editable if save/reopen or worker rendering drops it.
+- **Bible roles:** first increment uses disjoint body/reference/attribution boxes,
+  not shared-region caption placement. Existing context box/inset controls the
+  body. Add optional `scriptureLayout` on the Bible context containing caption
+  boxes and sparse caption text-style overrides; no second body rectangle.
+  Do not persist role content in themes. Legacy untagged slides keep their pixels.
+- **Transition fields:** `TransitionOptions {kind, textDurationMs, mediaDurationMs}`;
+  `kind` is `fade` or `cut`, durations are integers 0–10000, defaults 500/800.
+  Store one concrete `Documents` service default, optional whole-record overrides
+  on Theme (Songs) and TextContext (Bible), and no per-slide override initially.
+  Resolve the first matching context override, then first base theme override,
+  then service default. A missing record inherits; an explicit Cut is an answer.
+- **Runtime isolation:** QML never shapes text; frontend themes never cross RPC;
+  no per-layer targets or `saveLayer`; no network/provider calls during preview
+  regeneration or saved-passage playback. Fonts are discovered via the worker,
+  not a second Qt-only font list. Future NDI/stage remain disabled.
+
+#### TV.1 — selected-view fixture and edit routing
+
+1. Add `selectedView` to `ThemeEditorPage.qml`, default `""`, with stable object
+   names `themeViewSongs` / `themeViewBible` for navigation tests. Keep selected
+   theme identity unchanged when switching views; cancel an unfinished drag.
+2. Extend `themeSampleSceneJson(themeId, contextName)` and add a read-only
+   `themeSampleAppearance(themeId, contextName)` adapter. Both must share one
+   fixture builder and production resolution. Build it from a **copy of the real
+   Documents**, create temporary show/slide, clear the copy's current theme, set
+   the selected theme as that show's default, set the slide context, and compile.
+   This preserves the real edited Default and all contexts without hand-copying
+   selected fields. Never call `edit`/save/present on the real controller here.
+3. Return the effective primary rectangle/typography from the compiled fixture;
+   use that rectangle for the overlay and fields. Songs fields route to existing
+   `editTheme`/`setThemePlacement`; Bible fields route to `applyThemeContext`.
+   When writing one Bible field, merge the **current entire entry** and replace
+   only that field. Do not run the old toggle's seed-from-base code implicitly.
+4. Bible drag/typed box writes one context `box` and removes `inset` in the same
+   edit; clearing the Bible box removes its `box`/`inset` keys only. Distinguish
+   this from removing the whole view. Empty numeric fields clear the override;
+   a present numeric zero remains an explicit value where the domain permits it.
+5. Test sample JSON and effective geometry for Songs vs Bible, no Bible record,
+   unknown context, modified Default and a current theme different from the
+   selected theme. Assert real history/dirty/current-theme/output unchanged by
+   browsing. Tests: `document_controller_tests`, `workspace_ui_tests`,
+   `preview_selection_tests`. Do not change service format for this leaf.
+
+#### TV.2 — reclaim workspace and prove reachability
+
+1. In `Main.qml`, derive `themeMode` from `page === "themes"`. Hide library,
+   output dock and media bin in this mode and anchor ThemeEditorPage to the root
+   edges below the top bar. Anchor to the root explicitly; invisible docks still
+   have geometry. Leave `WorkspacePanels` stored values untouched.
+2. Replace theme-page fixed-height/plain columns with bounded layout containers:
+   roughly 220 px left navigation, 300 px inspector, minimum positive centre.
+   Put all inspector content in `ScrollView`/`Flickable` with correct content
+   height and clipping. Give New/Duplicate/Delete their own fitting layout.
+   Fit the canvas by `min(availableWidth, availableHeight * 16/9)` and centre it;
+   overlay transforms must use the actual displayed canvas origin and scale.
+3. Add Songs/Bible thumbnail rows via the existing bounded off-air thumbnail
+   transport; use separate selection/thumbnail request generations. Avoid a new
+   preview stream/renderer. Keep compact audience state and emergency clears in
+   the header; mode exit cancels gestures and hands focus back to the workspace.
+4. In `workspace_ui_tests`, use mouse/key events, scroll the inspector to its
+   final control, and check the control's scene rectangle intersects the visible
+   viewport before clicking. Merely finding a QML object or calling its handler
+   is insufficient. Capture both views at all three ledger sizes and test panel
+   widths/drawer state unchanged after entering/leaving Themes.
+
+#### TS.1 — model, persistence and scene contract before controls
+
+1. Define shared style enums/records and validation helpers in the Qt-free domain
+   headers, using the exact defaults/limits above. Add fields to theme base,
+   customizations and resolved appearance; TV.3 adds them to contexts. Expose
+   undoable controller verbs with strict QVariant type/unknown-key checks rather
+   than converting malformed strings to zero. Use `DocumentController::edit`.
+2. Walk every consumer: domain equality and customization clear/has/empty;
+   theme duplication; storage read/write/migration; resolver; scene compilation,
+   equality/codec and budgets; controller theme/appearance rows. New fields must
+   survive edit → duplicate → save → reopen → compile.
+3. Read every currently supported service version. Absent new fields reproduce
+   normal 400 / shrink / 12 / disabled effects; do not insert customization
+   records into old slides. Refuse new fields under an older declared format.
+   Normalize complete effect records so save/load does not change their meaning.
+4. Add the next scene schema, retain a reader for legacy scene 3 with legacy
+   defaults, validate new per-text-item keys and prohibit them on image items.
+   Budget worst-case metadata within the RPC cap. Add capability spelling
+   `scene.text-style.v1` to the contract, but advertise it only with TS.2's
+   renderer; frontend must reject non-default unsupported styles before sending.
+5. Extend `domain_tests`, `scene_tests`, `protocol_tests` and controller tests
+   for min/max/out-of-range/NaN, disabled-vs-inherit, undo, malformed fields,
+   format-era refusal, legacy equality and maximum-size scenes. No effects UI yet.
+
+#### TV.3 — full sparse Bible view and inheritance provenance
+
+1. Add optional `textColor`, `backgroundColor`, `backgroundGradient` and TS.1
+   fields to `TextContext`; keep font/box/inset names unchanged. A present empty
+   gradient explicitly means flat; absence inherits. Extend `setThemeContexts`
+   validation, strict context JSON keys and controller map adapters together.
+2. Preserve the resolver's first-context selection. Apply the chosen context's
+   new fields above base themes and below slide customizations. Report source
+   kind and theme/context identity per editable field without changing scene
+   pixels. Use one resolution path for editor rows and compilation.
+3. Allocate the next service format; format 7 remains typography/geometry-only.
+   Add a migration fixture with several unknown context names and verify all
+   survive duplicate/save/reopen. Test a high-priority partial context does not
+   pull missing fields from a lower theme's namesake. Assert Songs unaffected.
+4. Reuse the existing per-field revert idiom: clearing a view override removes
+   that optional field, while clearing a slide customization resumes inheritance.
+   Test effects disabled over enabled base, explicit flat gradient, edited Default,
+   whole-view removal, one undo and unchanged other contexts.
+
+#### TS.2 — render faces and effects from resolved styles
+
+1. Pass weight/slant into public `TextStyle::setFontStyle`; include them in all
+   shaping identities. Keep existing default family fallback and thread-owned
+   FontCollection/paragraph rules. No system font installation in the product.
+2. Use the same shaped glyph positions for shadow → stroke → fill. Prototype
+   stroke using public paragraph foreground-paint / ParagraphPainter APIs in the
+   pinned Skia; never shape a second differently styled paragraph to approximate
+   an outline. Suppress duplicate shadows when painting stroke/fill separately.
+3. Extend `GroupAlphaPainter` so the frame fade multiplies each effect's original
+   alpha exactly once, including shadow opacity. Use public SkPaint stroke and
+   blur APIs with authored-unit scaling; keep bounded preparation outside draw.
+4. Add raster assertions for edge order, offsets, disabled identity, normal/bold/
+   italic and 50% fades. Exercise the GPU live fade path too. Only then advertise
+   `scene.text-style.v1`; unsupported-worker tests must still refuse non-default
+   effects. Run `scene_render_tests`, `unicode_text_tests`, `scene_frame_tests`,
+   `live_fade_tests`, `skia_public_api_guard`, `render_layer_guard`.
+
+#### TS.3 — measurement, bounds and fit use the same style
+
+1. Add ink bounds (left/top/right/bottom relative to text origin) to layout and
+   measurement results while retaining paragraph height/line count. Derive glyph
+   bounds from the same laid-out runs and expand for stroke and the finite Skia
+   blur-filter support; shadow expansion unions offset shadow with fill bounds.
+   Validate actual raster ink lies inside reported bounds, including negative
+   offsets. Do not substitute a font-size-based height guess.
+2. Add `text.measure.v2` capability and its style/bounds fields; keep v1 valid
+   for old clients. Update `RpcMethods`, `OutputSession`, `WorkerController`,
+   `textflow` MeasureRequest/Reply, scripture reservation and editor probes.
+   An effects-dependent measurement on a v1-only worker must fail clearly.
+3. Cache keys include lines, family, weight/slant, size, width, spacing, fit and
+   effect records; cache generations include connection and resolved geometry.
+   The current `(lines, fontSize)` importer cache is not enough across styles.
+   A fresh run may clear a cache, but late replies must not refill a newer run.
+4. `shrink` preserves the existing bounded loop/minimum default and uses visual
+   bounds; `fixed` lays out once and reports overflow. Bible flow measures fixed
+   size and repaginates words; it does not silently shrink to hide a bad plan.
+   Tests compare measured vs rendered ink at 1920×1080 and scaled output, plus
+   wide strokes, negative shadows, minimum-size failure and cache invalidation.
+
+#### TV.4a — persist semantic scripture items and layout slots
+
+1. Add an optional text role on `SlideItem`: absent/legacy, `scripture-body`,
+   `scripture-reference`, `scripture-attribution`. Refuse roles on image items
+   and unknown role spellings; version the persisted keys. Legacy load leaves
+   roles absent. Do not infer them from first/second/third stack position.
+2. Add `scriptureLayout` to the Bible context with reference and attribution
+   slot records (box + sparse text-style fields). Body style/geometry comes
+   from the existing resolved Bible view. A caption inherits family/fill/effects,
+   with its explicit size/alignment overriding the body. Keep geometry finite,
+   positive, inside 1920×1080 and caption/body regions disjoint for generated
+   slides; invalid layouts disable generation with an actionable error.
+3. Provide an explicit **Add Bible caption layout** action; selecting Bible or
+   loading an old service must not add it. Initial recipe: body `(160,100,1600,680)`,
+   reference `(160,800,1600,64)` at 28 px left aligned, attribution
+   `(160,884,1600,96)` at 22 px left aligned. Existing box changes happen only
+   when that action is chosen, in the same undo edit. Reject/surface captions
+   that do not fit; operators may adjust the boxes and sizes.
+4. Add a role-aware resolver used by `compileSlide` to produce ordinary resolved
+   `SceneItem`s; roles do not become worker template bindings. Placement and
+   placement customization target the tagged body; use legacy first-text
+   placement only when no tagged body exists. If the current theme has no caption
+   layout, tagged captions retain authored geometry and role defaults (28/22 px,
+   left aligned), inheriting other text fields. Test deleting/switching themes,
+   reordered captions, extra text/images, migration identity and item-count cap.
+5. Add a Body/Reference/Attribution selector in the Bible inspector. Body edits
+   existing view fields; captions edit the selected `scriptureLayout` slot via
+   one whole-context merge. Revert removes only that slot's optional text field;
+   deleting the layout is a separate explicit action and never deletes slide words.
+
+#### TV.4b — generate the same roles that were measured
+
+1. Extend the generated-slide payload to carry body lines, verse-range label,
+   reference/translation text, attribution and their semantic roles. Preserve
+   verse label in notes and original provenance on the schedule-owned show.
+   Use one shared fixture/compiler path for importer preview and final Add.
+2. When a caption layout is enabled, paginate against the actual body box;
+   measure reference/attribution at their own style/width in their separate
+   boxes. Do not subtract the old caption reservation from that body a second
+   time. Without a new layout, retain the existing legacy pagination path.
+3. Extend `addScripturePassage` to validate all role items and target first,
+   then write one schedule-owned show/playlist entry in one `edit`. On any
+   refusal leave no partial show/items/assets; never promote it into Library.
+4. Cover long/multiline attribution, empty optional caption, impossible role
+   boxes, word conservation/continuations, preview→Add equivalence, one undo,
+   save/reopen and offline playback with network request count unchanged.
+   A later theme change restyles these authored items without changing boundaries.
+
+#### TS.4 — expose controls through the worker's fonts and view verbs
+
+1. Add bounded `font.list` RPC/capability `font.list.v1` through the worker font
+   manager, returning family/face/weight/style metadata, not font bytes. Cache
+   per worker lifetime; cap reply bytes (page it if needed), and refuse a stale
+   connection response. Keep scanning out of presentation/audio callbacks.
+2. Add a searchable family/face popup and font sample; show requested vs missing
+   family/fallback status without rewriting the stored requested name. Support
+   typed names even when the current worker is disconnected.
+3. Put font weight/style, fill, stroke, shadow and fit controls into the TV.2
+   inspector. Route to base theme for Songs or sparse context for Bible; show
+   inherited-source badges. Use validated one-field merge verbs rather than
+   extending a fragile positional `editTheme` call with many arguments.
+4. On refusal re-read authoritative values, on focus-out without change write
+   nothing, and batch drag/spin gestures into one undo. Test actual popup search,
+   scrolling to shadow blur, inherit/off/revert, disconnect/reconnect and saved
+   scene equality with the preview; no QML-only text effects.
+
+#### TV.5 — state generations own previews and Add
+
+1. Track a monotonically increasing editor generation keyed by selected theme,
+   view, resolved style and worker connection. Invalidate pending line probes and
+   selection readiness immediately on change; old reply IDs cannot update labels
+   or show an old image beneath current handles. Include font family in probes.
+2. In `ScriptureImport`, retain an input fingerprint/generation covering ordered
+   selected verses, translation/attribution, complete resolved role styles/boxes,
+   worker connection and **target schedule identity**. Capture that target with
+   the plan; Add must not read a newly selected playlist and reuse old slides.
+3. Re-entering Bible regenerates if the fingerprint differs, even if theme
+   changes happened while the page was hidden. Before Add, compare again; on a
+   mismatch invalidate and regenerate, leaving Add disabled. A timed-out/dead/
+   superseded measurement has no route to mark a newer plan ready.
+4. Do not regenerate synchronously from the Add mutation's `documentsChanged`
+   signal and accidentally enable a duplicate insertion: mark the batch consuming
+   before commit and clear it on success. Test hidden-page edits, delayed A→B→A
+   replies, target switch, disconnect/reconnect, double Add and cancelled drag.
+
+#### TS.5 — pin fonts and record visual/resource evidence
+
+1. Use the review's pinned Google Fonts revision, TTF hashes and each `OFL.txt`.
+   Create an explicit setup script/manifest with hash checks, never a network
+   download inside ctest. Use a local cache and isolated Fontconfig/cache path;
+   vendor fixtures only if the packaging/licence policy allows it. Include a
+   pinned fallback face and ensure family resolution is asserted before pixels.
+2. Parameterize real text-engine fixtures over Inter/Lora/Oswald, fallback and
+   Unicode. Test body/caption metrics, extreme legal effects, fixed/shrink and
+   fading; use raster tolerances rather than driver-dependent PNG byte equality.
+3. Record steady-state cache/build counts and frame/preparation budgets with
+   previews active; assert finite cache occupancy after churn and no new shaping/
+   decode work on a steady draw. Report setup skips separately from passing tests.
+
+#### TR.1 — capture transition options at Go, not at prepare ack
+
+1. Add shared Qt-free `TransitionOptions` with one validator. Add undoable
+   service-default and optional Theme/TextContext setters plus storage migration,
+   duplication and `resolveTransitionForSlide(showId, slideId)` following the
+   transition-record priority above. Do not put durations in static SceneItem.
+2. Resolve options in the cue/controller entry point when Go is issued. Carry a
+   **value copy** on `ScenePrepareAsk` and the corresponding pending Go record.
+   `handlePrepareAck` forwards that intent's copy; it never consults mutable
+   current settings. Legacy present entry points explicitly supply defaults.
+3. Extend `scene.present` with optional `textDurationMs` / `mediaDurationMs`
+   alongside existing `transition` (`fade`/`cut`). Missing fields use 500/800;
+   malformed/fractional/negative/>10000 values refuse before touching SceneStore,
+   including when kind is Cut. Advertise `scene.transition-options.v1` only with
+   TR.2; an old worker accepts only legacy-equivalent settings via the frontend.
+4. Carry the complete record through SceneStore desired state and `Decision`,
+   OutputSession's landed scene handoff, and the renderer. Keep acknowledged
+   live markers and repeat-present no-op rules. Add delayed-ack test: Go A with
+   100/200, change settings to 900/1000, receive A's ack; A must still send 100/200.
+
+#### TR.2 — landed transition owns durations and completion
+
+1. Replace renderer constants with options captured in `SceneTransition` on
+   `setActiveScene`; defaults remain 0.5/0.8 seconds after one ms conversion.
+   Blend helper checks `duration <= 0` **before** `elapsed <= 0` so zero duration
+   reaches 1 on the first frame. Cut/first scene discard outgoing fade state.
+2. Capture blends once per audience frame and retire the outgoing scene only
+   after the settled frame is actually presented. A failed submit/present still
+   owes that frame; preview drawing cannot move the clock or retire the fade.
+3. Explicit clears send Cut. Store restore options with the retained restore
+   point and snapshot them into the Restore intent; do not use whatever theme
+   the operator happens to be browsing. Preserve current rapid-Go replacement
+   semantics without compositing the in-progress blend to a new render target.
+4. Test 0/0, 0/800, 500/0, 100/200, Cut interrupt, Go during fade, failed final
+   present, clear/restore and idle after completion. Keep same-video background
+   playback continuous; different-video background switching remains a cut.
+   Run CPU frame/store tests, developer transition check and real live fades.
+
+#### TR.3 — service defaults and view overrides in the UI
+
+1. Put service defaults in Settings and a Transition section in Theme Editor.
+   Offer Inherit, Cut or Crossfade for view overrides; show inherited source and
+   resolved foreground/background milliseconds. Disable duration fields for Cut
+   without erasing them. Songs writes the Theme record; Bible writes its context.
+2. Entering fields validates through controller/domain and commits one undo.
+   Show the existing video-background limitation beside the background duration
+   control. Editing the selected off-air theme never presents a cue.
+3. Extend `workspace_ui_tests` with actual control interaction, then a production
+   journey that changes timing through these verbs and measures landed frames.
+   Cover persistence, default inheritance, active-fade stability, clear/restore
+   and worker restart to black. Do not infer success from the widget value alone.
+
+#### TA.1 — completion and verification commands
+
+After each leaf, build only what changed and run its listed meaningful tests;
+after the complete milestone run both presets. Run display/IPC fixtures in a
+session that permits local sockets, shared memory and the worker display. If a
+restricted sandbox blocks those resources, record that environment failure and
+rerun with access; do not weaken/skip assertions to obtain green output.
+
+```sh
+cmake --build --preset desktop --parallel 2
+
+# TV/model leaves (add further exact test names when a leaf creates them).
+ctest --test-dir build -R '^(domain_tests|scene_tests|document_controller_tests|workspace_ui_tests|workspace_panels_tests|preview_selection_tests)$' --output-on-failure -j1
+
+# TS/render and measurement leaves.
+ctest --test-dir build -R '^(scene_render_tests|unicode_text_tests|scene_frame_tests|text_measure_tests|live_fade_tests|skia_public_api_guard|render_layer_guard)$' --output-on-failure -j1
+
+# TV scripture generation/state leaves.
+ctest --test-dir build -R '^(textflow_tests|scripture_pagination_tests|bible_import_page_tests|bible_import_e2e_tests)$' --output-on-failure -j1
+
+# TR async commands and real frame timing.
+ctest --test-dir build -R '^(protocol_tests|worker_controller_tests|scene_store_tests|scene_frame_tests|render_scene_transition|live_fade_tests|document_present_tests|production_journey_tests)$' --output-on-failure -j1
+
+# Repeat capture runs at different scale factors for the final UI gate.
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software OPENSHOW_WORKSPACE_CAPTURE=/tmp/openshow-theme-acceptance.png build/tests/workspace_ui_tests
+
+# Final milestone gates; headless preset excludes display-labelled tests.
+ctest --preset desktop -j1
+cmake --build --preset headless --parallel 2
+ctest --preset headless -j1
+git diff --check
+```
+
+Extend the capture harness to emit both theme views at each required size;
+its current single `.themes.png` is not sufficient. Repeat capture invocations
+with `QT_SCALE_FACTOR=1.5` and `2` and distinct output prefixes. Register any
+new test target in `tests/CMakeLists.txt`, including display labels/timeouts
+and deterministic font setup. A leaf is DONE only when its new behaviour is
+covered and its named tests pass; fields merely serialized or handlers called
+directly do not establish visual/interaction acceptance. Keep unfinished controls
+disabled. Update architecture/handoff with actual commands/results, skips and
+remaining physical gates, and preserve old DONE evidence. This user's current
+GitHub publishing authorization covers the documentation update; follow the
+session's authorization for later implementation commits.
+
+### Future output profiles — lower thirds to OBS and stage (FO)
+
+Deferred beyond TV/TS/TR and the current one-audience release. Content view
+(Songs/Bible) and destination (audience/broadcast/stage) are separate dimensions.
+Do not implement NDI as a slide context or advertise an active sender from an
+editor placeholder. Spike first and split any leaf exceeding two days.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| FO.1 | TODO | Define independent output profiles, per-target scene/state/preview ownership and reflow policy | Same cue resolves different Songs/Bible layouts for three targets without changing audience pagination or leaking stage-only content; migration and isolation fixtures |
+| FO.2 | TODO | Alpha-aware broadcast/lower-third compositor and preview | Transparent clears/background omission, premultiplied edges/effects and sizing tested over checkerboards; audience remains opaque and unchanged |
+| FO.3 | TODO | NDI sender dependency/build and OBS compatibility spike | Record SDK/distribution requirements, supported alpha/pixel formats, receiver/plugin setup, frame pacing and measured network/resource budgets on target machines |
+| FO.4 | TODO | Bounded paced NDI sender and destination controls after spike | Real OBS receives lower thirds/alpha; discovery/reconnect/disable work; sender pressure/loss never stalls audience, previews or audio |
+| FO.5 | TODO | Stage layout, current/next/notes bindings and independent output | Off-air and on-device tests prove correct current/next content, transition policy and no audience leakage; independent destination/removal lifecycle |
+| FO.6 | TODO | Physical multi-output and network acceptance | Mixed service with projector, OBS receiver and stage, disconnect/reconnect/backpressure and resource budgets recorded; packaging/notices and recovery gates extended before enabling release |
 
 ### M7 — Productization, reliability and installable alpha
 

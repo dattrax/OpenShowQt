@@ -351,6 +351,11 @@ journey, offline playback and the disk witness).
 
 ## Text contexts and the shared text-flow engine (milestone TF)
 
+The [2026-11-03 theme/editor review](reviews/theme-editor-2026-11-03.md) records
+the limitations of this delivered model and schedules TV/TS/TR in PLAN.md.
+Its richer theme views, workspace layout, effects and configurable transitions
+are proposals, not behaviour implemented by the TF checkpoint described here.
+
 A theme now knows that not all the text it wears is lyrics. A theme may
 carry named **text contexts** — `themes[].contexts` entries holding
 typography and geometry only: font, size, spacing, alignment, an optional

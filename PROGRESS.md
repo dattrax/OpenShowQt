@@ -1,8 +1,49 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-11-02 (Europe/London).
+Updated: 2026-11-03 (Europe/London).
 
 ## Current checkpoint
+
+**Theme/editor architecture review and implementation runbook complete;
+implementation not started.**
+The [review](docs/reviews/theme-editor-2026-11-03.md) records current code evidence,
+the supplied ProPresenter references, inspected UI/font captures, proposed
+contracts, estimates and per-leaf tests. PLAN.md now schedules **TV** (Songs/Bible
+views and workspace), **TS** (typography/stroke/shadow/fit), **TR** (transition
+options) and **TA.1** (integrated acceptance); **FO** records later NDI/OBS/stage
+work separately. TH/TF DONE checkpoints are preserved. No product/test source
+changes or font installation were made. The user's follow-up authorizes
+committing and pushing this documentation update to GitHub.
+
+PLAN.md now includes per-leaf numbered implementation steps, a file/API ownership
+map, fixed style/transition names and numeric limits, migration/capability rules,
+Bible role geometry and opt-in creation, async generation/Go intent handling and
+focused/full verification commands. These are proposed implementation contracts;
+every implementation leaf remains TODO. Start with the runbook rather than
+inferring an implementation from the short ledger rows.
+
+Verification: desktop build passed; **22 distinct focused checks passed** across
+domain, scene, text flow, UI, scripture import/save/reopen, preview ownership and
+live fades, plus renderer guards. The restricted sandbox prevented scripted IPC
+handshakes; the local-socket/display run passed 9/9 with no skips, including that
+test. This was a focused baseline, not a fresh full-preset/physical-display run.
+UI captures and pinned Inter/Lora/Oswald stimulus are in
+`/tmp/openshow-theme-review/`; sources/checksums and exact commands are in the
+review. New tests described there are acceptance work, not delivered coverage.
+The runbook follow-up changes documentation only; application tests were not
+rerun for it. Validation passed for local links/anchors across five documents,
+39 source entry points, 22 unique ledger IDs, all 15 implementation runbooks,
+four test selectors against registered ctest names, estimate totals and
+`git diff --check`.
+
+Next implementation action: **TV.1** — select Songs/Bible views, build the
+off-air fixture from a copy of Documents and compile the selected context; keep
+format 7 unchanged and prove Bible edits and canvas placement affect only that
+view. Then TV.2 reclaims
+the workspace and makes every inspector control reachable. Nothing blocks this
+work; M7 remains the release gate after TV/TS/TR, and future outputs stay deferred.
+
+## Previous implementation checkpoint (retained evidence)
 
 Current work: **Bible import is DONE — BI.1 through BI.6 are all DONE**
 (2026-11-02). BI.1: the provider access approach is recorded in

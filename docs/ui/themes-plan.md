@@ -1,5 +1,11 @@
 # Themes: editor, apply and restore
 
+Follow-up review (2026-11-03): [theme views, editor space, styling and transitions](../reviews/theme-editor-2026-11-03.md).
+TH and TF below describe delivered behaviour. New TV/TS/TR work is TODO in
+[PLAN.md](../../PLAN.md); it proposes Songs/Bible navigation, a full-workspace
+editor and richer versioned view overrides. TF's typography-only context rule
+remains the current format-7 contract until that follow-up is implemented.
+
 Added 2026-11-01; decisions confirmed with the operator the same day.
 Scope: service appearance themes across the domain, storage, compilation and
 operator window. Reference:
