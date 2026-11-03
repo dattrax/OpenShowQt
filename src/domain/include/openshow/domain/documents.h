@@ -366,6 +366,12 @@ struct Slide {
     // still keeps its authored choice for when it gets one. Default COVER is
     // what every pre-6.17c file drew, so loading one is not a re-render.
     BackgroundFit backgroundFit = BackgroundFit::Cover;
+    // The named text context this slide's words are set in (milestone TF):
+    // an imported passage carries "scripture", song slides carry nothing.
+    // A name no wearing theme defines is no layer at all — the slide draws
+    // exactly as the chain resolved without it, and the name survives the
+    // round-trip for the theme that will grow it.
+    std::string textContext;
 
     // The item the slide's single-text operations address (setSlideLines,
     // setSlideGeometry): the FIRST in draw order, which for every slide
@@ -418,6 +424,31 @@ inline bool isThemeAlign(const std::string& align) {
     return align == "left" || align == "center" || align == "right";
 }
 
+// A theme's named text context (milestone TF): a typography-and-box
+// override of that theme, addressed by name — `scripture` is this
+// milestone's consumer, and unknown names round-trip untouched for the
+// importers still to come. A context says how text is SET in a box, never
+// which colours: scripture slides of a theme look like that theme, they
+// just fit more text. And a context NEVER carries a line count — how many
+// lines a slide holds is whatever the worker's measurement fits in the
+// context's box at the context's size; the field does not exist to store.
+// Every override is optional; a field the context does not carry keeps
+// saying nothing, exactly like a theme silent on it.
+struct TextContext {
+    std::string name;                        // "scripture", …; unique in a theme
+    std::optional<std::string> fontFamily;   // present = answer, "" = platform pick
+    std::optional<double> fontSize;          // present = answer; 0 = renderer default
+    std::optional<double> lineSpacing;
+    std::optional<std::string> align;        // "left" | "center" | "right"
+    std::optional<BoxRect> box;              // the context's own rectangle
+    // Shrink the box this context would otherwise land on by this many
+    // canvas pixels on every side — the "slightly smaller bible box"
+    // without naming four numbers. Mutually exclusive with `box`.
+    std::optional<double> inset;
+
+    bool operator==(const TextContext&) const = default;
+};
+
 struct Theme {
     Id id;
     std::string name;
@@ -446,6 +477,10 @@ struct Theme {
     // travels the same chain as every other property — a slide that wants
     // its own spot customizes its placement and reverts it to follow again.
     std::optional<BoxRect> placement;
+    // Named text contexts (milestone TF): typography-and-box overrides
+    // slides opt into by name. Empty is exactly the pre-TF theme; names
+    // are unique and the resolver takes the FIRST entry a name matches.
+    std::vector<TextContext> contexts;
 };
 
 // One slide's appearance after the whole chain has been walked
@@ -667,6 +702,15 @@ public:
     // boxes (unless they customized placement). Refuses a theme that has
     // no placement to remove.
     bool clearThemePlacement(const Id& themeId, std::string* error = nullptr);
+    // Name the theme's text contexts (task TF.1, text-flow plan): a whole-
+    // set replacement, like a slide's customizations. The vetting is the
+    // loader's, so a theme this verb accepts is a theme this build can save
+    // and honour: names non-empty and unique, box and inset mutually
+    // exclusive, typography the renderer can draw. A context carries
+    // typography and a box ONLY — there is no line-count field to set.
+    // Passing {} takes every context off (an empty set is the plain theme).
+    bool setThemeContexts(const Id& themeId, std::vector<TextContext> contexts,
+                          std::string* error = nullptr);
     // Points a show's default (and therefore its un-themed slides) at a
     // theme; "" clears back to none.
     bool setShowDefaultTheme(const Id& showId, const Id& themeId, std::string* error = nullptr);
@@ -703,6 +747,14 @@ public:
     bool removeSlideCustomizations(const Id& showId, const Id& slideId,
                                    std::string* error = nullptr);
     bool removeShowCustomizations(const Id& showId, std::string* error = nullptr);
+
+    // Point a slide at a named text context (task TF.1). The name is not
+    // checked against any theme: an imported passage may say "scripture"
+    // today and the house theme may grow it tomorrow, and a name nothing
+    // carries is no layer at all (never a refusal, never a silent drop).
+    // "" takes the name off — the slide is set by its theme alone again.
+    bool setSlideTextContext(const Id& showId, const Id& slideId, const std::string& name,
+                             std::string* error = nullptr);
 
     // One mutation naming every slide it touches (task TH.5's apply): the
     // theme (or "" to follow the show again) lands on exactly the slides

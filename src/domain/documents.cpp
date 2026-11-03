@@ -786,6 +786,91 @@ bool Documents::clearThemePlacement(const Id& themeId, std::string* error) {
     return true;
 }
 
+bool Documents::setThemeContexts(const Id& themeId, std::vector<TextContext> contexts,
+                                 std::string* error) {
+    Theme* theme = findTheme_mut(themeId);
+    if (theme == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    // The loader's own contract (task TF.1), kept in one place so a theme
+    // this verb accepts is exactly a theme this build can save without a
+    // later load refusing it. There is deliberately no line-count field to
+    // vet: how many lines fit is the worker's measurement, never stored.
+    for (size_t i = 0; i < contexts.size(); ++i) {
+        const TextContext& context = contexts[i];
+        if (context.name.empty()) {
+            fail(error, "a context of theme '" + themeId + "' has no name");
+            return false;
+        }
+        for (size_t earlier = 0; earlier < i; ++earlier) {
+            if (contexts[earlier].name == context.name) {
+                fail(error, "theme '" + themeId + "' names context '" + context.name +
+                                "' twice");
+                return false;
+            }
+        }
+        if (context.box.has_value() && context.inset.has_value()) {
+            fail(error, "context '" + context.name +
+                            "' gives both a box and an inset; the inset would shrink"
+                            " nothing the box did not already say");
+            return false;
+        }
+        if (context.box.has_value() &&
+            !placeableBox(context.box->x, context.box->y, context.box->width,
+                          context.box->height)) {
+            fail(error, "context '" + context.name +
+                            "' needs a finite box with positive width and height");
+            return false;
+        }
+        if (context.fontSize.has_value() &&
+            (!std::isfinite(*context.fontSize) || *context.fontSize < 0.0)) {
+            fail(error, "context '" + context.name +
+                            "' carries a font size the renderer cannot honour");
+            return false;
+        }
+        if (context.lineSpacing.has_value() && (!std::isfinite(*context.lineSpacing) ||
+                                                *context.lineSpacing < 0.25 ||
+                                                *context.lineSpacing > 8.0)) {
+            fail(error, "context '" + context.name +
+                            "' carries a line spacing the renderer cannot honour");
+            return false;
+        }
+        if (context.align.has_value() && !isThemeAlign(*context.align)) {
+            fail(error, "context '" + context.name + "' has align '" + *context.align +
+                            "', not an alignment this build can draw");
+            return false;
+        }
+        if (context.inset.has_value() &&
+            (!std::isfinite(*context.inset) || *context.inset < 0.0)) {
+            fail(error, "context '" + context.name +
+                            "' carries an inset that shrinks nothing sane");
+            return false;
+        }
+    }
+    theme->contexts = std::move(contexts);
+    return true;
+}
+
+bool Documents::setSlideTextContext(const Id& showId, const Id& slideId,
+                                    const std::string& name, std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    const int index = findSlideIndex(*show, slideId);
+    if (index < 0) {
+        fail(error, idError("slide", slideId));
+        return false;
+    }
+    // The name is trusted, not checked: "not yet a context" is a thing an
+    // import says on purpose, and the theme that grows the name is the
+    // answer — nothing wears a ghost either way.
+    show->slides[static_cast<size_t>(index)].textContext = name;
+    return true;
+}
+
 bool Documents::setShowDefaultTheme(const Id& showId, const Id& themeId, std::string* error) {
     Show* show = findShow_mut(showId);
     if (show == nullptr) {
@@ -1047,12 +1132,34 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
             layers[count++] = d;
         }
     }
+    // The slide's named text context (milestone TF) layers between the
+    // customization and the themes: the first theme in chain order that
+    // carries the name supplies it, and a name no theme carries is no
+    // layer at all — the slide resolves exactly as it did before the name
+    // existed, which is what lets an import name `scripture` today and the
+    // theme grow it tomorrow. Colours never come from a context: it says
+    // how text is set, and the theme's own look is untouched.
+    const TextContext* ctx = nullptr;
+    if (!slide.textContext.empty()) {
+        for (size_t i = 0; i < count && ctx == nullptr; ++i) {
+            for (const TextContext& candidate : layers[i]->contexts) {
+                if (candidate.name == slide.textContext) {
+                    ctx = &candidate;
+                    break;
+                }
+            }
+        }
+    }
     // Per property, the first layer with something to say wins; a layer
     // silent on a property (an empty string, a size of 0) falls through.
     auto pickString = [&](const std::optional<std::string>& own,
+                          const std::optional<std::string> TextContext::*contextField,
                           const std::string Theme::*field) -> std::string {
         if (own.has_value()) {
             return *own;
+        }
+        if (ctx != nullptr && (ctx->*contextField).has_value()) {
+            return *(ctx->*contextField);
         }
         for (size_t i = 0; i < count; ++i) {
             if (!(layers[i]->*field).empty()) {
@@ -1061,16 +1168,19 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
         }
         return std::string();
     };
-    out.textColor = pickString(c.textColor, &Theme::textColor);
-    out.backgroundColor = pickString(c.backgroundColor, &Theme::backgroundColor);
-    out.backgroundGradient = pickString(c.backgroundGradient, &Theme::backgroundGradient);
-    out.fontFamily = pickString(c.fontFamily, &Theme::fontFamily);
-    out.align = pickString(c.align, &Theme::align);
+    out.textColor = pickString(c.textColor, nullptr, &Theme::textColor);
+    out.backgroundColor = pickString(c.backgroundColor, nullptr, &Theme::backgroundColor);
+    out.backgroundGradient = pickString(c.backgroundGradient, nullptr, &Theme::backgroundGradient);
+    out.fontFamily = pickString(c.fontFamily, &TextContext::fontFamily, &Theme::fontFamily);
+    out.align = pickString(c.align, &TextContext::align, &Theme::align);
     // A customized number is an ANSWER, even 0 — "renderer default" over
-    // a sized theme is a thing an operator means. Only an absent field
-    // falls through to the layers.
+    // a sized theme is a thing an operator means. A context's number is
+    // an answer too, for the same reason: it is present exactly when the
+    // context means it. Only an absent field falls through to the layers.
     if (c.fontSize.has_value()) {
         out.fontSize = *c.fontSize;
+    } else if (ctx != nullptr && ctx->fontSize.has_value()) {
+        out.fontSize = *ctx->fontSize;
     } else {
         for (size_t i = 0; i < count; ++i) {
             if (layers[i]->fontSize != 0.0) {
@@ -1081,24 +1191,55 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
     }
     if (c.lineSpacing.has_value()) {
         out.lineSpacing = *c.lineSpacing;
+    } else if (ctx != nullptr && ctx->lineSpacing.has_value()) {
+        out.lineSpacing = *ctx->lineSpacing;
     } else if (count > 0) {
         out.lineSpacing = layers[0]->lineSpacing;
     } else {
         out.lineSpacing = kDefaultLineSpacing;  // no layer spoke
     }
     // Placement (amendment 2026-11-01) resolves on the same walk. A
-    // customized rectangle is an answer; otherwise the first theme that
-    // CARRIES one places the words, and a theme without a rectangle is
-    // silent rather than zero-sized. When no layer speaks the optional
-    // stays empty, and the compile draws the slide's own authored box —
-    // so nothing moves for documents and themes made before this existed.
+    // customized rectangle is an answer; then the context's own box, then
+    // its inset applied to whichever box the slide would otherwise land
+    // on; then the first theme that CARRIES one places the words, and a
+    // theme without a rectangle is silent rather than zero-sized. When no
+    // layer speaks the optional stays empty, and the compile draws the
+    // slide's own authored box — so nothing moves for documents and themes
+    // made before this existed.
     if (c.placement.has_value()) {
         out.placement = c.placement;
+    } else if (ctx != nullptr && ctx->box.has_value()) {
+        out.placement = ctx->box;
     } else {
         for (size_t i = 0; i < count; ++i) {
             if (layers[i]->placement.has_value()) {
                 out.placement = layers[i]->placement;
                 break;
+            }
+        }
+        if (ctx != nullptr && ctx->inset.has_value()) {
+            // The inset shrinks the box THIS slide lands on without the
+            // context: the themed rectangle if one wore the slide, else
+            // the slide's own authored primary box. No box to shrink
+            // (a slide with no text item at all) means no opinion.
+            const SlideItem* primary = nullptr;
+            for (const SlideItem& item : slide.items) {
+                if (item.kind != ItemKind::Image) {
+                    primary = &item;
+                    break;
+                }
+            }
+            BoxRect base = out.placement.value_or(
+                primary != nullptr
+                    ? BoxRect{primary->x, primary->y, primary->width, primary->height}
+                    : BoxRect{});
+            if (out.placement.has_value() || primary != nullptr) {
+                const double side = *ctx->inset;
+                base.x += side;
+                base.y += side;
+                base.width = std::max(1.0, base.width - 2.0 * side);
+                base.height = std::max(1.0, base.height - 2.0 * side);
+                out.placement = base;
             }
         }
     }

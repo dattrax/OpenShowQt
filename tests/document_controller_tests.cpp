@@ -1809,9 +1809,9 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
         std::ifstream manifest(root / "service" / "service.json");
         const std::string text{std::istreambuf_iterator<char>(manifest),
                                std::istreambuf_iterator<char>()};
-        check(text.find("\"format\":6") != std::string::npos &&
+        check(text.find("\"format\":7") != std::string::npos &&
                   text.find("\"fit\":\"contain\"") != std::string::npos,
-              "the manifest is this build's format (6 since TH.1) and spells the slide's fit");
+              "the manifest is this build's format (7 since TF.1) and spells the slide's fit");
     }
     {
         DocumentController reopened(nullptr, root);

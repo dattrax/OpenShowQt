@@ -856,7 +856,11 @@ bool sameService(const Documents& a, const Documents& b) {
             const Slide& y = sb->slides[i];
             if (x.id != y.id || x.group != y.group || x.notes != y.notes ||
                 x.themeId != y.themeId || x.customizations != y.customizations ||
-                x.backgroundAssetId != y.backgroundAssetId) {
+                x.backgroundAssetId != y.backgroundAssetId ||
+                // The named text context is slide state (task TF.1): a round
+                // trip that dropped the name would compare equal while a
+                // future theme silently stopped applying to the passage.
+                x.textContext != y.textContext) {
                 return false;
             }
             // A slide's boxes are compared IN ORDER, id and geometry included
@@ -889,8 +893,9 @@ bool sameService(const Documents& a, const Documents& b) {
             xa->align != xb->align || xa->lineSpacing != xb->lineSpacing ||
             // The lyric-box placement is theme state too (amendment
             // 2026-11-01): a round trip that dropped it would compare equal
-            // while quietly moving every wearing slide's words.
-            xa->placement != xb->placement) {
+            // while quietly moving every wearing slide's words. Contexts
+            // (task TF.1) follow the same rule, entry and field by field.
+            xa->placement != xb->placement || xa->contexts != xb->contexts) {
             return false;
         }
     }
@@ -1167,7 +1172,7 @@ void exercisePersistence(const fs::path& tempRoot) {
     {
         const fs::path dir = tempRoot / "wrong-era";
         // Same push-the-written-number discipline as the format tamper
-        // above: this build writes 6 (task TH.1), and anchoring on a
+        // above: this build writes 7 (task TF.1), and anchoring on a
         // literal would stop matching the day the format moves again.
         check(tamperedPackage(package, dir, [](std::string& m) {
                   const std::string key = "\"format\":";
@@ -1776,8 +1781,8 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                   manifest.find("\"backgroundGradient\":\"\"") != std::string::npos,
               "the gradient AND the flat are both written by name — leaving the "
               "default to an absent key is the rule this project refuses");
-        check(manifest.find("\"format\":6") != std::string::npos,
-              "the manifest says format 6");
+        check(manifest.find("\"format\":7") != std::string::npos,
+              "the manifest says format 7");
         check(openshow::domain::saveService(back, tempRoot / "v5-regraded", &error) &&
                   readFile(tempRoot / "v5-regraded" / "service.json") == manifest,
               "re-saving a graded service writes a byte-identical manifest");
@@ -1893,7 +1898,7 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
             check(openshow::domain::saveService(migrated, resaved, &error) &&
                       readFile(resaved / "service.json").find("\"themes\":[") !=
                           std::string::npos,
-                  "the first save by this build re-spells the package to format 6");
+                  "the first save by this build re-spells the package to its own format");
         }
 
         // The mixes: a key from the other era, in either direction, is
@@ -2115,6 +2120,159 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
             "themes":[],"assets":[],"playlists":[]})JSON",
                 "not an object",
                 "a customized placement of the wrong shape is refused naming its owner");
+    }
+
+    // --- text contexts on the wire (task TF.1) ---
+    // A theme's named typography-and-box overrides and a slide's context
+    // name round-trip field by field; a name no theme carries is preserved
+    // untouched for the theme that will grow it; and the shape refusals
+    // guard the one rule a context must never break — it stores how text
+    // is SET, never how many lines it gets.
+    {
+        Documents lectern;
+        const Id show = lectern.createShow("Lectern", &error);
+        const Id verse = lectern.appendSlide(show, &error);
+        const Id chorus = lectern.appendSlide(show, &error);
+        const Id orphan = lectern.appendSlide(show, &error);
+        const Id theme = lectern.createTheme("House", "#ffffff", "#101020", "", "DejaVu Serif",
+                                             64.0, "center", kDefaultLineSpacing, &error);
+        openshow::domain::TextContext reading;
+        reading.name = "scripture";
+        reading.fontFamily = "Lectern Serif";
+        reading.fontSize = 40.0;
+        reading.lineSpacing = 1.25;
+        reading.align = "left";
+        openshow::domain::BoxRect readingBox;
+        readingBox.x = 120.0;
+        readingBox.y = 80.0;
+        readingBox.width = 1680.0;
+        readingBox.height = 920.5;
+        reading.box = readingBox;
+        openshow::domain::TextContext narrow;  // silent on everything but its inset
+        narrow.name = "narrow";
+        narrow.inset = 160.0;
+        check(!theme.empty() &&
+                  lectern.setThemeContexts(theme, {reading, narrow}, &error),
+              "a theme accepts a named reading context and a silent inset one");
+        check(lectern.setSlideTextContext(show, verse, "scripture", &error) &&
+                  lectern.setSlideTextContext(show, orphan, "not-yet-a-context", &error) &&
+                  lectern.setShowDefaultTheme(show, theme, &error),
+              "the passage names scripture, one slide names a context nobody carries yet");
+
+        const fs::path dir = tempRoot / "contexts";
+        check(openshow::domain::saveService(lectern, dir, &error), "the contexted service saves");
+        const std::string manifest = readFile(dir / "service.json");
+        check(manifest.find("\"contexts\":[") != std::string::npos &&
+                  manifest.find("\"textContext\":\"scripture\"") != std::string::npos,
+              "the contexts array and the slide's context name are both written by name");
+        check(manifest.find("\"textContext\":\"not-yet-a-context\"") != std::string::npos,
+              "the name no theme carries still travels");
+        // The numbers are boost's shortest spelling of each double (the
+        // placement rule again), so the manifest is asked only whether the
+        // inset key travels and whether the FORBIDDEN keys do not; the
+        // values themselves are pinned on the reload below.
+        check(manifest.find("\"inset\":") != std::string::npos &&
+                  manifest.find("\"maxLines\"") == std::string::npos &&
+                  manifest.find("\"lineCount\"") == std::string::npos,
+              "the inset travels and no line-count key exists to travel in");
+        int namedSlides = 0;
+        for (size_t at = manifest.find("\"textContext\""); at != std::string::npos;
+             at = manifest.find("\"textContext\"", at + 1)) {
+            ++namedSlides;
+        }
+        check(namedSlides == 2,
+              "only the two named slides carry a context key — silence is absence");
+        Documents back;
+        check(openshow::domain::loadService(&back, dir, &error) && sameService(lectern, back),
+              "contexts and names round-trip field by field and the services compare equal");
+        const Theme* reloaded = back.findTheme(theme);
+        check(reloaded != nullptr && reloaded->contexts.size() == 2 &&
+                  reloaded->contexts[0] == reading && reloaded->contexts[1] == narrow,
+              "both contexts land exactly as authored, the silent one still silent");
+        const fs::path again = tempRoot / "contexts-again";
+        check(openshow::domain::saveService(back, again, &error) &&
+                  readFile(again / "service.json") == manifest,
+              "re-saving a contexted service writes a byte-identical manifest");
+    }
+
+    // The lies a context file can tell: a line count (the field that must
+    // never exist), another era's key, a squatter's name twice, and both
+    // answers to "where" at once.
+    {
+        const std::string goodTheme =
+            R"({"id":"theme1","name":"House","textColor":"#ffffff","backgroundColor":"#000000",)"
+            R"("backgroundGradient":"","fontFamily":"","fontSize":64,"align":"center",)"
+            R"("lineSpacing":1.5})";
+        const std::string head =
+            R"({"format":7,"nextOrdinal":99,"currentThemeId":"","shows":[],"themes":[)";
+        const std::string tail = R"(],"assets":[],"playlists":[]})";
+        refusesJson(head +
+                        R"({"id":"theme1","name":"House","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"",)"
+                        R"("fontFamily":"","fontSize":64,"align":"center","lineSpacing":1.5,)"
+                        R"("contexts":[{"name":"scripture","maxLines":6}]})" + tail,
+                    "never a line count",
+                    "a context carrying 'maxLines' is refused naming the rule it breaks");
+        refusesJson(R"({"format":6,"nextOrdinal":99,"currentThemeId":"","shows":[],"themes":[)"
+                        R"({"id":"theme1","name":"House","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"",)"
+                        R"("fontFamily":"","fontSize":64,"align":"center","lineSpacing":1.5,)"
+                        R"("contexts":[{"name":"scripture","fontSize":40}]}],"assets":[],)"
+                        R"("playlists":[]})",
+                    "does not exist",
+                    "a hand-bumped \"contexts\" in a format-6 file is refused naming the era");
+        refusesJson(R"({"format":6,"nextOrdinal":99,"currentThemeId":"","shows":[)"
+                        R"({"id":"show1","name":"Old","slides":[)"
+                        R"({"id":"slide1","group":"","items":[],"notes":"","themeId":"",)"
+                        R"("fit":"cover","backgroundAssetId":"","customizations":{},)"
+                        R"("textContext":"scripture"}]}],"themes":[],"assets":[],)"
+                        R"("playlists":[]})",
+                    "does not exist",
+                    "a hand-bumped \"textContext\" in a format-6 file is refused naming the era");
+        refusesJson(head +
+                        R"({"id":"theme1","name":"House","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"",)"
+                        R"("fontFamily":"","fontSize":64,"align":"center","lineSpacing":1.5,)"
+                        R"("contexts":[{"name":"scripture","fontSize":40},)"
+                        R"({"name":"scripture","fontSize":30}]})" + tail,
+                    "names context 'scripture' twice",
+                    "a theme that names one context twice is refused");
+        refusesJson(head +
+                        R"({"id":"theme1","name":"House","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"",)"
+                        R"("fontFamily":"","fontSize":64,"align":"center","lineSpacing":1.5,)"
+                        R"("contexts":[{"fontSize":40}]})" + tail,
+                    "has no name",
+                    "a context with no name is refused naming its theme");
+        refusesJson(head +
+                        R"({"id":"theme1","name":"House","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"",)"
+                        R"("fontFamily":"","fontSize":64,"align":"center","lineSpacing":1.5,)"
+                        R"("contexts":[{"name":"scripture","fontSize":40,"inset":80,)"
+                        R"("box":{"x":0,"y":0,"width":100,"height":100}}]})" + tail,
+                    "both a box and an inset",
+                    "box and inset in one context are refused — the inset would shrink nothing");
+        refusesJson(head +
+                        R"({"id":"theme1","name":"House","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"",)"
+                        R"("fontFamily":"","fontSize":64,"align":"center","lineSpacing":1.5,)"
+                        R"("contexts":[{"name":"scripture","align":"justify"}]})" + tail,
+                    "not an alignment this build can draw",
+                    "a context naming an alignment the renderer cannot draw is refused");
+        refusesJson(head +
+                        R"({"id":"theme1","name":"House","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"",)"
+                        R"("fontFamily":"","fontSize":64,"align":"center","lineSpacing":1.5,)"
+                        R"("contexts":[{"name":"scripture","textColor":"#00ff00"}]})" + tail,
+                    "never a line count or a colour",
+                    "a context reaching for a colour is refused — it styles placement, never look");
+        refusesJson(head +
+                        R"({"id":"theme1","name":"House","textColor":"#ffffff",)"
+                        R"("backgroundColor":"#000000","backgroundGradient":"",)"
+                        R"("fontFamily":"","fontSize":64,"align":"center","lineSpacing":1.5,)"
+                        R"("contexts":"scripture"})" + tail,
+                    "'contexts' must be an array",
+                    "a 'contexts' that is not an array is refused");
     }
 }
 
@@ -2482,6 +2640,160 @@ void exerciseThemePlacement() {
           "the slide wears the placing theme once more, and that theme is deleted");
     check(docs.appearanceForSlide(show, slide).placement == std::nullopt,
           "and its slide keeps its authored box rather than a ghost");
+}
+
+// Task TF.1 (text-flow plan): a slide that names a text context layers that
+// context's typography and box BETWEEN the slide's own customizations and
+// the theme chain. The first theme in chain order carrying the name supplies
+// it — wholesale, not merged across themes — and a context answers only how
+// text is SET: colours still come from the themes, and there is no line
+// count anywhere, because how many lines fit is what the worker's
+// measurement decides. A slide with no name, or a name no theme carries,
+// resolves exactly as it did before the name existed.
+void exerciseTextContextChain() {
+    std::string error;
+    Documents docs;
+    const Id show = docs.createShow("Served");
+    const Id reading = docs.appendSlide(show);   // names scripture
+    const Id columned = docs.appendSlide(show);  // names column (inset only)
+    const Id whisper = docs.appendSlide(show);   // names whisper (size 0 = renderer default)
+    const Id song = docs.appendSlide(show);      // names nothing
+    const Id ghost = docs.appendSlide(show);     // names a context no theme carries yet
+    const Id showTheme = docs.createTheme("Show", "#111111", "#222222", "", "Show Serif",
+                                          40.0, "left", 1.1, &error);
+    const Id current = docs.createTheme("Current", "#555555", "#666666", "", "Current Sans",
+                                        60.0, "center", 1.5, &error);
+    openshow::domain::BoxRect themeRect;
+    themeRect.x = 160.0;
+    themeRect.y = 90.0;
+    themeRect.width = 1600.0;
+    themeRect.height = 900.0;
+    openshow::domain::TextContext loud;
+    loud.name = "scripture";
+    loud.fontSize = 28.0;
+    loud.lineSpacing = 1.15;
+    loud.align = "right";
+    openshow::domain::BoxRect lectern;
+    lectern.x = 240.0;
+    lectern.y = 120.0;
+    lectern.width = 1440.0;
+    lectern.height = 840.5;
+    loud.box = lectern;
+    openshow::domain::TextContext column;
+    column.name = "column";
+    column.inset = 80.0;
+    openshow::domain::TextContext tiny;
+    tiny.name = "whisper";
+    tiny.fontSize = 0.0;  // present means answer: 0 is "renderer default", a thing operators mean
+    // The same name on a lower theme, quieter: the chain finds the CURRENT
+    // theme's context and never merges the two — what the current one leaves
+    // unsaid falls through to the themes, not to another theme's context.
+    openshow::domain::TextContext quiet;
+    quiet.name = "scripture";
+    quiet.fontSize = 20.0;
+    check(!showTheme.empty() && !current.empty() &&
+              docs.setThemeContexts(current, {loud, column, tiny}, &error) &&
+              docs.setThemeContexts(showTheme, {quiet}, &error),
+          "a placing theme carries three contexts and the show theme a quieter namesake");
+    check(docs.setSlideTextContext(show, reading, "scripture", &error) &&
+              docs.setSlideTextContext(show, columned, "column", &error) &&
+              docs.setSlideTextContext(show, whisper, "whisper", &error) &&
+              docs.setSlideTextContext(show, ghost, "karaoke", &error) &&
+              docs.setShowDefaultTheme(show, showTheme, &error) &&
+              docs.setThemePlacement(current, themeRect, &error) &&
+              docs.setCurrentTheme(current, &error),
+          "slides name their contexts and the themes are put in chain");
+
+    const ResolvedAppearance a = docs.appearanceForSlide(show, reading);
+    check(a.fontSize == 28.0 && a.lineSpacing == 1.15 && a.align == "right",
+          "the context sets size, spacing and alignment over both themes");
+    check(a.textColor == "#555555" && a.backgroundColor == "#666666" &&
+              a.fontFamily == "Current Sans",
+          "the look still comes from the themes — a context carries no colour, and its "
+          "silence on a family falls through to its own theme, not a namesake's");
+    check(a.placement == std::optional<BoxRect>(lectern),
+          "the context's own box answers, outranking the themed placement");
+    const ResolvedAppearance plain = docs.appearanceForSlide(show, song);
+    check(plain.fontSize == 60.0 && plain.align == "center" && plain.lineSpacing == 1.5 &&
+              plain.placement == std::optional<BoxRect>(themeRect),
+          "the unnamed song slide of the same theme is untouched by every context");
+    const ResolvedAppearance haunted = docs.appearanceForSlide(show, ghost);
+    check(haunted.fontSize == plain.fontSize && haunted.align == plain.align &&
+              haunted.lineSpacing == plain.lineSpacing &&
+              haunted.placement == plain.placement,
+          "a name no theme carries is no layer at all — the slide resolves as before");
+    const ResolvedAppearance narrowed = docs.appearanceForSlide(show, columned);
+    check(narrowed.fontSize == 60.0 && narrowed.align == "center" &&
+              narrowed.lineSpacing == 1.5,
+          "an inset-only context says nothing about typography");
+    check(narrowed.placement ==
+              std::optional<BoxRect>(BoxRect{240.0, 170.0, 1440.0, 740.0}),
+          "its inset shrinks the themed placement on every side");
+    const ResolvedAppearance hushed = docs.appearanceForSlide(show, whisper);
+    check(hushed.fontSize == 0.0,
+          "a context size of 0 is the answer \"renderer default\", not silence to fall through");
+
+    // The slide's own customization still outranks the context, field by
+    // field, exactly as it outranks the themes.
+    openshow::domain::BoxRect own;
+    own.x = 10.0;
+    own.y = 20.0;
+    own.width = 300.0;
+    own.height = 200.0;
+    SlideCustomization changed;
+    changed.fontSize = 75.0;
+    check(docs.setSlideCustomizations(show, reading, changed, &error),
+          "the reading slide customizes its size");
+    ResolvedAppearance tuned = docs.appearanceForSlide(show, reading);
+    check(tuned.fontSize == 75.0 && tuned.align == "right" && tuned.lineSpacing == 1.15 &&
+              tuned.placement == std::optional<BoxRect>(lectern),
+          "the customization answers size while the context keeps answering the rest");
+    changed.placement = own;
+    check(docs.setSlideCustomizations(show, reading, changed, &error),
+          "and it customizes its placement too");
+    tuned = docs.appearanceForSlide(show, reading);
+    check(tuned.placement == std::optional<BoxRect>(own),
+          "the slide's own rectangle outranks the context's box");
+    check(docs.setSlideCustomizations(show, reading, SlideCustomization{}, &error) &&
+              docs.appearanceForSlide(show, reading).fontSize == 28.0 &&
+              docs.appearanceForSlide(show, reading).placement ==
+                  std::optional<BoxRect>(lectern),
+          "reverting the customization hands the answers back to the context");
+
+    // With no theme placing anything, the inset shrinks the box the slide
+    // would otherwise land on — its own authored primary item.
+    check(docs.clearThemePlacement(current, &error) &&
+              docs.appearanceForSlide(show, song).placement == std::nullopt,
+          "the theme stops placing and the plain slide returns to its authored box");
+    const SlideItem* authored = docs.findShow(show)->slides[0].firstItem();
+    check(authored != nullptr, "the slide has an authored box to shrink");
+    const ResolvedAppearance still = docs.appearanceForSlide(show, columned);
+    check(still.placement ==
+              std::optional<BoxRect>(BoxRect{authored->x + 80.0, authored->y + 80.0,
+                                             authored->width - 160.0,
+                                             authored->height - 160.0}),
+          "the inset now shrinks the slide's own authored box");
+
+    // What the loader refuses, the edit door refuses too — a theme this
+    // verb accepted must never be a theme the next save refuses.
+    check(!docs.setThemeContexts(current, {loud, loud}, &error) &&
+              error.find("twice") != std::string::npos,
+          "naming one context twice is refused by the mutator");
+    openshow::domain::TextContext greedy;
+    greedy.name = "greedy";
+    greedy.box = lectern;
+    greedy.inset = 40.0;
+    check(!docs.setThemeContexts(current, {greedy}, &error) &&
+              error.find("both a box and an inset") != std::string::npos,
+          "box and inset together are refused by the mutator too");
+    check(!docs.setSlideTextContext(show, "slide-gone", "scripture", &error),
+          "a slide that is not there is refused like everywhere else");
+    check(docs.setSlideTextContext(show, song, "scripture", &error) &&
+              docs.appearanceForSlide(show, song).fontSize == 28.0,
+          "naming a context moves the plain slide onto it");
+    check(docs.setSlideTextContext(show, song, "", &error) &&
+              docs.appearanceForSlide(show, song).fontSize == 60.0,
+          "and the empty name takes it off again");
 }
 
 void exerciseDefaultThemeFloor(const fs::path& tempRoot) {
@@ -3374,6 +3686,7 @@ int main() {
     exerciseStyles();
     exerciseThemeChain();
     exerciseThemePlacement();
+    exerciseTextContextChain();
     exercisePlaylists();
     exerciseFailureLeavesNoTrace();
 

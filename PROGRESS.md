@@ -99,6 +99,24 @@ slide with the network counter frozen — the never-substitute rule proving
 itself when a fixture body answering the wrong translation parsed to zero
 verses. With BI-F closed, the operator's three live-run defects are all
 fixed; **TF (theme-driven pagination) is next**, stopping before M7.
+**TF.1 is DONE (2026-11-03):** a theme carries named **text contexts** —
+typography and box overrides, full stop — and a slide names the one its
+words are set in. Format 7 writes them and refuses `contexts`/`textContext`
+in a file that predates the concept; inside an entry the vetting is
+stricter than anywhere else in the package because an unknown key is
+refused naming the rule it breaks — *never a line count or a colour*: the
+number of lines a slide holds is whatever the worker's measurement fits,
+so the field does not exist to store. The resolver answers customization >
+context > themes (the first theme in chain carrying the name supplies it,
+wholesale; colours never come from a context), `box` places directly and
+`inset` shrinks whichever box the slide would otherwise land on — themed
+rectangle or authored primary. Measured, not argued: the reading-size
+passage compiles and draws at the context's typography inside the
+context's box where the display size wrapped, the song slide of the same
+theme draws **byte-identically** before and after the theme grows the
+context, and the save/load round-trip draws byte-identically
+(`domain_tests`, `scene_render_tests` CPU rasters; gates 63/63 desktop
+serial, 45/45 headless).
 The operator's paging note
 — flow the whole downloaded passage with the theme deciding how much text
 a slide carries (their examples: two display lines for songs, six for a

@@ -631,6 +631,127 @@ void testAuthoredBoxStackRenders() {
     std::filesystem::remove_all(root);
 }
 
+// Task TF.1 (text-flow plan), the pixel end of the context. A theme's
+// named text context exists to re-SET the typography and the rectangle of
+// the slides that name it — and to do nothing whatsoever to the slides
+// that do not. Both halves are measured, the way the authored-box fixture
+// measures: through the real compile from a real document, into the same
+// CPU raster the audience layers use, compared byte for byte.
+//
+//   - a slide naming "scripture" compiles with the context's size and
+//     alignment into the context's box, and its ink lands there — the
+//     reading size fits where the display size wrapped;
+//   - a song slide of the same theme draws byte-identically before and
+//     after the theme grows the context;
+//   - and services round-trip to the identical picture: the one with
+//     contexts keeps them through the file, and a service without any is
+//     exactly the pre-TF frame.
+void testThemeTextContextsRender() {
+    namespace domain = openshow::domain;
+    std::string error;
+
+    domain::Documents docs;
+    const domain::Id show = docs.createShow("Contexted", &error);
+    const domain::Id verse = docs.appendSlide(show, &error);
+    const domain::Id chorus = docs.appendSlide(show, &error);
+    docs.setSlideLines(show, verse,
+                       {"The passage runs the whole width of the reading box"}, &error);
+    docs.setSlideLines(show, chorus, {"Sing"}, &error);
+    const domain::Id house = docs.createTheme("House", "#ffffff", "#000000", "", "DejaVu Serif",
+                                              96.0, "center", 1.2, &error);
+    check(!house.empty() && docs.setShowDefaultTheme(show, house, &error),
+          "the house theme sets display size and centres it");
+
+    scene::Scene plainVerse;
+    scene::Scene plainChorus;
+    Frame plainVerseFrame;
+    Frame plainChorusFrame;
+    if (!check(scene::compileSlide(docs, show, verse, &plainVerse, &error) &&
+                   scene::compileSlide(docs, show, chorus, &plainChorus, &error),
+               "both slides compile before any context exists: " + error)) {
+        return;
+    }
+    if (!renderFixture(plainVerse, "ctx-verse-before", &plainVerseFrame, &error) ||
+        !renderFixture(plainChorus, "ctx-chorus-before", &plainChorusFrame, &error)) {
+        check(false, "the pre-context frames render: " + error);
+        return;
+    }
+    check(inkBands(plainVerseFrame) >= 2,
+          "the display-size passage wraps inside the default box");
+
+    // The theme grows its reading context; the passage names it.
+    domain::TextContext reading;
+    reading.name = "scripture";
+    reading.fontSize = 28.0;
+    reading.align = "left";
+    reading.box = domain::BoxRect{240.0, 640.0, 1440.0, 360.0};
+    check(docs.setThemeContexts(house, {reading}, &error) &&
+              docs.setSlideTextContext(show, verse, "scripture", &error),
+          "the theme grows a scripture context and the passage names it");
+
+    scene::Scene setVerse;
+    scene::Scene setChorus;
+    Frame setVerseFrame;
+    Frame setChorusFrame;
+    if (!check(scene::compileSlide(docs, show, verse, &setVerse, &error) &&
+                   scene::compileSlide(docs, show, chorus, &setChorus, &error),
+               "both slides compile after the context arrives: " + error)) {
+        return;
+    }
+    check(setVerse.items.size() == 1 && setVerse.items[0].fontSize == 28.0 &&
+              setVerse.items[0].align == "left" && setVerse.items[0].y == 640.0 &&
+              setVerse.items[0].height == 360.0,
+          "the compiled passage carries the context's size, alignment and box");
+    if (!renderFixture(setVerse, "ctx-verse-after", &setVerseFrame, &error) ||
+        !renderFixture(setChorus, "ctx-chorus-after", &setChorusFrame, &error)) {
+        check(false, "the post-context frames render: " + error);
+        return;
+    }
+    const Ink readingInk = measureInk(setVerseFrame);
+    const double boxLeft = 240.0 * kScale;
+    const double boxTop = 640.0 * kScale;
+    const double boxRight = (240.0 + 1440.0) * kScale;
+    const double boxBottom = (640.0 + 360.0) * kScale;
+    check(readingInk.count > 0 && readingInk.left >= boxLeft - 2 &&
+              readingInk.right <= boxRight + 2 && readingInk.top >= boxTop - 2 &&
+              readingInk.bottom <= boxBottom + 2,
+          "the reading-size ink sits inside the context's box");
+    check(readingInk.left - boxLeft <= 6.0,
+          "and it starts at the box's left edge — the context aligned it");
+    check(inkBands(setVerseFrame) == 1,
+          "the reading size fits the passage on one line where the display size took two");
+    check(setChorusFrame.pixels == plainChorusFrame.pixels,
+          "the song slide of the same theme draws byte-identically — a context touches only "
+          "the slides that name it");
+
+    // The file keeps its promise: both services round-trip to the SAME
+    // pixels, and a service that never heard of contexts compiles and
+    // draws exactly what the untouched theme draws.
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("openshow-render-ctx-" + std::to_string(static_cast<long>(::getpid())));
+    std::filesystem::create_directories(root);
+    domain::Documents back;
+    scene::Scene roundVerse;
+    scene::Scene roundChorus;
+    Frame roundVerseFrame;
+    Frame roundChorusFrame;
+    if (check(domain::saveService(docs, root, &error) &&
+                  domain::loadService(&back, root, &error),
+              "the contexted service round-trips: " + error) &&
+        check(scene::compileSlide(back, show, verse, &roundVerse, &error) &&
+                  scene::compileSlide(back, show, chorus, &roundChorus, &error) &&
+                  roundVerse == setVerse && roundChorus == setChorus,
+              "recompiled from the file, both slides carry the same scene: " + error) &&
+        renderFixture(roundVerse, "ctx-verse-round", &roundVerseFrame, &error) &&
+        renderFixture(roundChorus, "ctx-chorus-round", &roundChorusFrame, &error)) {
+        check(roundVerseFrame.pixels == setVerseFrame.pixels &&
+                  roundChorusFrame.pixels == setChorusFrame.pixels,
+              "the round-tripped service draws byte-identically — contexts included, "
+              "song slides untouched");
+    }
+    std::filesystem::remove_all(root);
+}
+
 void testTypographyAlignsAndSpaces() {
     // Task 4.4: the theme's align places the lines inside the authored
     // box, lineSpacing opens the line box, and an item that carries
@@ -3114,6 +3235,7 @@ int main() {
     testFallbackAndShaping();
     testPerBoxPlacement();
     testAuthoredBoxStackRenders();
+    testThemeTextContextsRender();
     testTypographyAlignsAndSpaces();
     testWireSceneRendersIdentically();
     testDemoSlidesRender();

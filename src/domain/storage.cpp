@@ -56,18 +56,29 @@ namespace {
 // gradient stated. The writer only ever emits kServiceFormat, and a
 // 6-file read by an older build refuses the whole package rather than
 // quietly drawing what it cannot name.
-constexpr unsigned long long kServiceFormat = 6;
+// Format 7 (task TF.1) adds the theme's named text contexts
+// ("themes"[i]["contexts"], typography and box overrides only — there is
+// no line-count field to store) and a slide's "textContext" name. Both are
+// additive: a 6-file loads with no contexts and every slide untextured,
+// drawing exactly the pixels it drew before, and the keys are era-guarded
+// so a context cannot hide in a file that predates the concept. The writer
+// only ever emits kServiceFormat, and a
+// 6-file read by an older build refuses the whole package rather than
+// quietly drawing what it cannot name.
+constexpr unsigned long long kServiceFormat = 7;
 // The older versions this build reads: single-box slides (1), a stack whose
 // every item was necessarily text (2), a kinded stack whose slides had no
 // fit choice yet — cover was the only thing the worker knew (3) — a fitted
 // stack whose themes had no gradient yet — flat was the only thing it knew
-// (4) — and a gradient stack that still spelled the appearance entity
-// "style" in its key names (5).
+// (4) — a gradient stack that still spelled the appearance entity
+// "style" in its key names (5) — and a themed stack whose themes carried no
+// text contexts yet (6).
 constexpr unsigned long long kServiceFormatLegacyBoxes = 1;
 constexpr unsigned long long kServiceFormatLegacyTextOnly = 2;
 constexpr unsigned long long kServiceFormatLegacyUnfit = 3;
 constexpr unsigned long long kServiceFormatLegacyFlat = 4;
 constexpr unsigned long long kServiceFormatLegacyStyleNamed = 5;
+constexpr unsigned long long kServiceFormatLegacyContextless = 6;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -457,6 +468,35 @@ boost::json::object boxRectJson(const BoxRect& rect) {
     return out;
 }
 
+// A theme's named text context on the wire (task TF.1): the name always
+// travels (it IS the entry), and every override only when the context
+// carries it — a context silent on a field falls through exactly like a
+// theme silent on it, and spelling silences as nulls would make the
+// reader guess between two kinds of nothing (placement's rule).
+boost::json::object textContextJson(const TextContext& context) {
+    boost::json::object out;
+    out.emplace("name", context.name);
+    if (context.fontFamily.has_value()) {
+        out.emplace("fontFamily", *context.fontFamily);
+    }
+    if (context.fontSize.has_value()) {
+        out.emplace("fontSize", *context.fontSize);
+    }
+    if (context.lineSpacing.has_value()) {
+        out.emplace("lineSpacing", *context.lineSpacing);
+    }
+    if (context.align.has_value()) {
+        out.emplace("align", *context.align);
+    }
+    if (context.box.has_value()) {
+        out.emplace("box", boxRectJson(*context.box));
+    }
+    if (context.inset.has_value()) {
+        out.emplace("inset", *context.inset);
+    }
+    return out;
+}
+
 bool wantBoxRect(const boost::json::object& obj, const char* key, const std::string& owner,
                  std::optional<BoxRect>* out, std::string* error) {
     const boost::json::value* value = field(obj, key);
@@ -661,6 +701,12 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             // item kind: leaving the default to inference is how a future
             // change silently redefines what an old file drew.
             slideJson.emplace("fit", backgroundFitName(slide.backgroundFit));
+            // The named text context (task TF.1) travels only when the
+            // slide wears one: an absent key is the same silence as an
+            // empty name — a song slide said nothing and carries nothing.
+            if (!slide.textContext.empty()) {
+                slideJson.emplace("textContext", slide.textContext);
+            }
             slides.push_back(std::move(slideJson));
         }
         entry.emplace("slides", std::move(slides));
@@ -693,6 +739,16 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
         // a wearing slide's PRIMARY lyric box lands in.
         if (theme.placement.has_value()) {
             entry.emplace("placement", boxRectJson(*theme.placement));
+        }
+        // Contexts share placement's discipline of silence: the key is
+        // present exactly when the theme carries any, and an empty or
+        // absent array is the plain pre-TF theme.
+        if (!theme.contexts.empty()) {
+            boost::json::array contexts;
+            for (const TextContext& context : theme.contexts) {
+                contexts.push_back(textContextJson(context));
+            }
+            entry.emplace("contexts", std::move(contexts));
         }
         themes.push_back(std::move(entry));
     }
@@ -756,11 +812,12 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     // format means quietly dropping whatever the newer build's operator wrote.
     if (format != kServiceFormat && format != kServiceFormatLegacyBoxes &&
         format != kServiceFormatLegacyTextOnly && format != kServiceFormatLegacyUnfit &&
-        format != kServiceFormatLegacyFlat && format != kServiceFormatLegacyStyleNamed) {
+        format != kServiceFormatLegacyFlat && format != kServiceFormatLegacyStyleNamed &&
+        format != kServiceFormatLegacyContextless) {
         fail(error, "service.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " + std::to_string(kServiceFormat) +
                         " and formats " + std::to_string(kServiceFormatLegacyBoxes) +
-                        " through " + std::to_string(kServiceFormatLegacyStyleNamed) +
+                        " through " + std::to_string(kServiceFormatLegacyContextless) +
                         " with their text boxes migrated to a kinded list, their"
                         " backgrounds to cover and their themes to flat)");
         return false;
@@ -772,8 +829,11 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     // Format 6 (task TH.1) spells the appearance entity "theme" in three
     // key names; every earlier file spelled it "style". The declared format
     // picks the key set, and a file that mixes the spellings is refused:
-    // half a rename is ambiguity, not intent (the gradient's rule).
-    const bool themeNamed = format >= kServiceFormat;
+    // half a rename is ambiguity, not intent (the gradient's rule). The
+    // test is against the format that INTRODUCED the spelling (6, kept
+    // readable as kServiceFormatLegacyContextless), not kServiceFormat —
+    // TF.1's 7 changes no key names.
+    const bool themeNamed = format >= kServiceFormatLegacyContextless;
     const char* const themesKey = themeNamed ? "themes" : "styles";
     const char* const slideThemeKey = themeNamed ? "themeId" : "styleId";
     const char* const showDefaultThemeKey = themeNamed ? "defaultThemeId" : "defaultStyleId";
@@ -1154,6 +1214,22 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                 }
                 slide.backgroundFit = BackgroundFit::Cover;
             }
+            // The named text context (task TF.1): format 7 knows the key,
+            // earlier files do not — a "textContext" in one of those is
+            // somebody else's meaning, the fit's and placement's era rule
+            // applied again. Absent, or a name no theme carries, the slide
+            // resolves with no context layer.
+            if (format >= kServiceFormat) {
+                if (!wantOptionalString(jsonSlide, "textContext", &slide.textContext, error)) {
+                    return false;
+                }
+            } else if (jsonSlide.contains("textContext")) {
+                fail(error, "service.json: slide '" + slide.id +
+                                "' carries \"textContext\" in a format " +
+                                std::to_string(format) + " file, where that key"
+                                " does not exist");
+                return false;
+            }
             for (const SlideItem& item : slide.items) {
                 if (!std::isfinite(item.x) || !std::isfinite(item.y) ||
                     !std::isfinite(item.width) || !std::isfinite(item.height) ||
@@ -1248,6 +1324,153 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             theme.lineSpacing > 8.0) {
             fail(error, "service.json: theme '" + theme.id +
                             "' holds typography the renderer cannot honour");
+            return false;
+        }
+        // Named text contexts (task TF.1) are a format-7 member: absent
+        // is the plain theme, and a "contexts" key in an earlier file is
+        // somebody else's meaning (the placement rule, applied again).
+        // Inside an entry the vetting is STRICTER than elsewhere in the
+        // package: an unknown field is refused naming itself, because the
+        // one thing a context must never grow is a line count — the line
+        // count is whatever the measurement fits, and a file that says
+        // otherwise came from somewhere this build answers nowhere to.
+        if (format >= kServiceFormat) {
+            const boost::json::value* contextsValue = field(jsonTheme, "contexts");
+            if (contextsValue != nullptr) {
+                if (!contextsValue->is_array()) {
+                    fail(error, "service.json: 'contexts' must be an array");
+                    return false;
+                }
+                std::set<std::string> seenNames;
+                for (const boost::json::value& element : contextsValue->as_array()) {
+                    if (!element.is_object()) {
+                        fail(error, "service.json: theme '" + theme.id +
+                                        "' holds a non-object context");
+                        return false;
+                    }
+                    const boost::json::object& jsonContext = element.as_object();
+                    TextContext context;
+                    const boost::json::value* nameValue = field(jsonContext, "name");
+                    if (nameValue == nullptr || !nameValue->is_string() ||
+                        nameValue->as_string().empty()) {
+                        fail(error, "service.json: a context of theme '" + theme.id +
+                                        "' has no name");
+                        return false;
+                    }
+                    context.name = std::string(nameValue->as_string());
+                    if (!seenNames.insert(context.name).second) {
+                        fail(error, "service.json: theme '" + theme.id +
+                                        "' names context '" + context.name + "' twice");
+                        return false;
+                    }
+                    for (const auto& member : jsonContext) {
+                        const std::string_view key = member.key();
+                        if (key == "name" || key == "fontFamily" || key == "fontSize" ||
+                            key == "lineSpacing" || key == "align" || key == "box" ||
+                            key == "inset") {
+                            continue;
+                        }
+                        fail(error, "service.json: context '" + context.name +
+                                        "' carries '" + std::string(key) +
+                                        "', and a context holds only typography and a box"
+                                        " — never a line count or a colour");
+                        return false;
+                    }
+                    // Read the optionals into the struct through small
+                    // locals: a present value is exactly an override.
+                    const boost::json::value* fontFamily = field(jsonContext, "fontFamily");
+                    if (fontFamily != nullptr) {
+                        if (!fontFamily->is_string()) {
+                            fail(error, "service.json: context '" + context.name +
+                                            "' fontFamily must be a string");
+                            return false;
+                        }
+                        context.fontFamily = std::string(fontFamily->as_string());
+                    }
+                    const boost::json::value* fontSize = field(jsonContext, "fontSize");
+                    if (fontSize != nullptr) {
+                        if (!fontSize->is_number()) {
+                            fail(error, "service.json: context '" + context.name +
+                                            "' fontSize must be a number");
+                            return false;
+                        }
+                        context.fontSize = fontSize->to_number<double>();
+                    }
+                    const boost::json::value* lineSpacing = field(jsonContext, "lineSpacing");
+                    if (lineSpacing != nullptr) {
+                        if (!lineSpacing->is_number()) {
+                            fail(error, "service.json: context '" + context.name +
+                                            "' lineSpacing must be a number");
+                            return false;
+                        }
+                        context.lineSpacing = lineSpacing->to_number<double>();
+                    }
+                    const boost::json::value* align = field(jsonContext, "align");
+                    if (align != nullptr) {
+                        if (!align->is_string()) {
+                            fail(error, "service.json: context '" + context.name +
+                                            "' align must be a string");
+                            return false;
+                        }
+                        context.align = std::string(align->as_string());
+                    }
+                    if (!wantBoxRect(jsonContext, "box", "context '" + context.name + "'",
+                                     &context.box, error)) {
+                        return false;
+                    }
+                    const boost::json::value* inset = field(jsonContext, "inset");
+                    if (inset != nullptr) {
+                        if (!inset->is_number()) {
+                            fail(error, "service.json: context '" + context.name +
+                                            "' inset must be a number");
+                            return false;
+                        }
+                        context.inset = inset->to_number<double>();
+                    }
+                    if (context.box.has_value() && context.inset.has_value()) {
+                        fail(error, "service.json: context '" + context.name +
+                                        "' gives both a box and an inset; the inset would"
+                                        " shrink nothing the box did not already say");
+                        return false;
+                    }
+                    if (context.fontFamily.has_value() && context.fontFamily->size() > 256) {
+                        fail(error, "service.json: context '" + context.name +
+                                        "' names an implausibly long font family");
+                        return false;
+                    }
+                    if (context.fontSize.has_value() && (!std::isfinite(*context.fontSize) ||
+                                                         *context.fontSize < 0.0)) {
+                        fail(error, "service.json: context '" + context.name +
+                                        "' carries a font size the renderer cannot honour");
+                        return false;
+                    }
+                    if (context.lineSpacing.has_value() && (!std::isfinite(*context.lineSpacing) ||
+                                                            *context.lineSpacing < 0.25 ||
+                                                            *context.lineSpacing > 8.0)) {
+                        fail(error, "service.json: context '" + context.name +
+                                        "' carries a line spacing the renderer cannot honour");
+                        return false;
+                    }
+                    if (context.align.has_value() && !isThemeAlign(*context.align)) {
+                        fail(error, "service.json: context '" + context.name +
+                                        "' has align '" + *context.align +
+                                        "', not an alignment this build can draw");
+                        return false;
+                    }
+                    if (context.inset.has_value() && (!std::isfinite(*context.inset) ||
+                                                      *context.inset < 0.0)) {
+                        fail(error, "service.json: context '" + context.name +
+                                        "' carries an inset that shrinks nothing sane");
+                        return false;
+                    }
+                    theme.contexts.push_back(std::move(context));
+                }
+            }
+        } else if (jsonTheme.contains("contexts")) {
+            fail(error, "service.json: theme '" + theme.id +
+                            "' carries \"contexts\" in a format " +
+                            std::to_string(format) + " file, where that key"
+                            " does not exist");
             return false;
         }
         themeIds.insert(theme.id);
