@@ -411,6 +411,12 @@ private:
                                                             "preview.select.v1",
                                                             "preview.thumbnail.v1"};
             }
+            // Task TS.1: the worker that DRAWS the scene 4 style block names
+            // it, and the fixture checks a styled prepare reaches exactly
+            // this peer and not the plain one.
+            if (fScenario == "text-style") {
+                result["capabilities"] = boost::json::array{"scene.text-style.v1"};
+            }
             sendResult(id, std::move(result));
             return;
         }
@@ -1803,6 +1809,18 @@ std::string smuggledMediaPayload() {
     return boost::json::serialize(scene::toJson(scene));
 }
 
+// Task TS.1: text that says more than the contract's defaults — weight
+// 700, an outline that draws. This is the payload the frontend may only
+// send to a worker whose hello named scene.text-style.v1; a peer without
+// the claim would read the fields and draw none of them, which is the
+// silent omission the gate exists to refuse.
+std::string sceneStyledText() {
+    scene::Scene styled = authoredScene({"BOLD WORDS"}, 0xFFFFFFu);
+    styled.items.front().fontWeight = 700;
+    styled.items.front().stroke.enabled = true;
+    return boost::json::serialize(scene::toJson(styled));
+}
+
 // Task 6.12 (review R7): a background PICTURE naming a file on disk. The
 // adoption fixture asserts on WHICH path each prepare carried, so the file
 // name is the payload's whole point.
@@ -2472,6 +2490,107 @@ void scenarioRefusedLocally() {
           "local: three prepares and three presents, the refusals contributing neither");
     check(counts.at("unknown").to_number<std::int64_t>() == 1,
           "local: the over-budget frame never reached the worker (the ordinary one did)");
+}
+
+// S8b (task TS.1): the scene-text-style capability gate. Scene 4 carries a
+// style block on every text item, but a worker only DRAWS it if its hello
+// says so; sending styling to one that does not would paint the audience's
+// words unstyled while the operator's preview says otherwise — the silent
+// omission the pre-send checks exist to refuse. So: styled text stops here
+// without the capability, plain text always travels, and the styled text
+// goes through to exactly the peer that claimed it.
+void scenarioTextStyleGate() {
+    // (a) The plain peer lists no capabilities: the styled prepare is
+    // refused locally, naming the capability the worker never spoke.
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
+    const std::string report = tempPath("style-gate-closed");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "style gate: handshake with the capability-less peer")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(!controller.textStyleSupported(),
+          "style gate: no hello claim, no drawing permission");
+    controller.prepareScene(QString::fromStdString(sceneStyledText()));
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(
+                       QStringLiteral("scene.text-style.v1"));
+               }),
+               "style gate: the styled scene is refused naming the capability")) {
+        std::fprintf(stderr, "  status was: %s\n",
+                     controller.statusText().toLocal8Bit().constData());
+    }
+    check(controller.scenePrepared() == 0 && controller.sceneActive() == 0,
+          "style gate: the refused styled scene stored nothing and moved nothing");
+
+    // A scene whose every text item sits on the contract defaults draws
+    // the same pixels either way — it travels without the capability.
+    controller.prepareScene(QString::fromStdString(sceneWordsOnly("PLAIN")));
+    const bool prepared = waitUntil([&controller] { return controller.scenePrepared() == 1; });
+    check(prepared,
+          "style gate: defaults-only styling needs no capability — it IS the picture "
+          "an unstyled worker draws");
+    controller.shutdownNow();
+    const boost::json::object closedCounts = readReport(report);
+    check(methodCount(closedCounts, "scene.prepare") == 1,
+          "style gate: the peer saw the plain prepare and never the styled one");
+
+    // (b) The peer that names scene.text-style.v1 receives the styled
+    // scene like any other — the gate opens on the claim, not on a guess.
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "text-style", 1);
+    const std::string openReport = tempPath("style-gate-open");
+    ::unlink(openReport.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", openReport.c_str(), 1);
+
+    WorkerController styledSession;
+    styledSession.start();
+    if (!check(waitUntil([&styledSession] {
+                   return styledSession.statusText().contains(
+                       QStringLiteral("connected to worker"));
+               }),
+               "style gate: handshake with the style-drawing peer")) {
+        styledSession.shutdownNow();
+        return;
+    }
+    check(styledSession.textStyleSupported(),
+          "style gate: the hello named the capability and the session remembers");
+    styledSession.prepareScene(QString::fromStdString(sceneStyledText()));
+    check(waitUntil([&styledSession] { return styledSession.scenePrepared() == 1; }),
+          "style gate: the styled scene reaches the worker that claimed to draw it");
+    styledSession.shutdownNow();
+    const boost::json::object openCounts = readReport(openReport);
+    check(methodCount(openCounts, "scene.prepare") == 1,
+          "style gate: the claiming peer was asked to prepare the styled scene");
+
+    // (c) A capability belongs to a live hello: reconnecting to the plain
+    // peer closes the gate again — a styled send is refused without a
+    // restart of the application.
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
+    WorkerController secondSession;
+    secondSession.start();
+    if (!check(waitUntil([&secondSession] {
+                   return secondSession.statusText().contains(
+                       QStringLiteral("connected to worker"));
+               }),
+               "style gate: re-handshake with the plain peer")) {
+        secondSession.shutdownNow();
+        return;
+    }
+    check(!secondSession.textStyleSupported(),
+          "style gate: the new hello claims nothing, so the gate is shut again");
+    secondSession.prepareScene(QString::fromStdString(sceneStyledText()));
+    check(waitUntil([&secondSession] {
+              return secondSession.statusText().contains(QStringLiteral("scene.text-style.v1"));
+          }),
+          "style gate: the second session refuses styled text too");
+    secondSession.shutdownNow();
 }
 
 // S9 (task 6.8b, review R11): a worker that takes every command and answers
@@ -4106,6 +4225,7 @@ int main(int argc, char* argv[]) {
     scenarioRestoreSurvivesStoreWindow();
     scenarioFailedRestoreRetry();
     scenarioRefusedLocally();
+    scenarioTextStyleGate();
     scenarioUnansweredRequestsStayBounded();
     scenarioWriteStallIsRefusedBoundedAndClosed();
     scenarioStalledThenResumingPeerKeepsItsSession();

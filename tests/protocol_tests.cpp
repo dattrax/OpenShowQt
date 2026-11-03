@@ -261,6 +261,22 @@ void testHello() {
                 });
             check(hasMeasure, "capabilities name text.measure.v1");
         }
+        {  // TS.1 defines the scene-text-style spelling in the contract but
+           // this build does NOT advertise it: the wire carries the fields
+           // (scene 4) while the renderer still ignores them, so claiming
+           // "I draw styles" would let a frontend ship an enabled stroke to
+           // a worker that silently drops it. TS.2 draws them and adds the
+           // name; until then the honest answer is absence — and this
+           // tripwire is what TS.2 must consciously update.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasTextStyle = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == proto::kCapabilityTextStyle;
+                });
+            check(!hasTextStyle,
+                  "scene.text-style.v1 is spelled by the contract but not yet "
+                  "advertised — TS.2's renderer earns it");
+        }
         {  // Task 5.5d's media visibility is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasMedia = std::any_of(

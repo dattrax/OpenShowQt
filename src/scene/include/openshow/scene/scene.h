@@ -77,10 +77,11 @@ bool assetPathIsLocal(const std::string& path, std::string* why = nullptr);
 // How big a SCENE may be: the number an operator can grow just by typing,
 // where kMaxMessageBytes only bounds the message wrapped around it. Measured
 // rather than guessed, and scene_tests prints it — a representative slide
-// serialises at 324 bytes, and one pushed to EVERY budget below (64 KiB of
-// text made of the characters JSON escapes at their longest, ids, font and
-// path at their limits) reaches 408 KiB inside a scene.prepare: 39% of the
-// frame budget, at depth 5 of kMaxParseDepth. Nothing an operator can author
+// serialises at 576 bytes (scene 4 writes the style block on every text
+// item), and one pushed to EVERY budget below (64 KiB of text made of the
+// characters JSON escapes at their longest, ids, font and path at their
+// limits) reaches 400 KiB inside a scene.prepare: 39.1% of the frame
+// budget, at depth 5 of kMaxParseDepth. Nothing an operator can author
 // is refused by the wire.
 inline constexpr std::size_t kMaxSceneItems = 8;    // items on one slide, either kind
 inline constexpr std::size_t kMaxItemLines = 256;   // lines in one text layer
@@ -165,6 +166,20 @@ struct SceneItem {
     double height = kDefaultBoxHeight;
     std::string align = "center";  // "left" | "center" | "right"
     double lineSpacing = domain::kDefaultLineSpacing;
+    // The TS.1 style fields, resolved CONCRETE like every other answer
+    // here (task TS.1): the chain above has already chosen, and these
+    // defaults are the contract's own — weight 400, upright, the shrink
+    // policy, minimum 12, no ink. A scene-3 payload carries none of the
+    // keys and lands on exactly these numbers, which is what the worker
+    // always drew, so old payloads keep their exact pixels. The records
+    // are the domain's own: one sentence describes an effect from the
+    // editor to the wire.
+    int fontWeight = domain::kDefaultFontWeight;
+    std::string fontStyle = "normal";  // "normal" | "italic"
+    std::string fitMode = "shrink";    // "shrink" | "fixed"
+    double minFontSize = domain::kDefaultMinFontSize;
+    domain::TextStroke stroke;   // disabled by default; enabled draws
+    domain::TextShadow shadow;
     // Image items only (6.17b): what compileSlide resolved from the
     // model's asset reference, same discipline as the background's pair.
     domain::Id assetId;
@@ -207,14 +222,18 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 
 // --- wire form ---------------------------------------------------------------
 
-// {"scene":3,"showId":...,"slideId":...,"backgroundColor":<int>,
+// {"scene":4,"showId":...,"slideId":...,"backgroundColor":<int>,
 //  "background":{"image":bool,"video":bool,
 //                "fit":"cover"|"contain"|"blur","assetId":...,"assetPath":...,
 //                "gradient":<int>},
 //  "items":[{"kind":"text","lines":[...],"color":<int>,"fontFamily":...,
 //            "fontSize":<num>,"x":<num>,"y":<num>,"width":<num>,
 //            "height":<num>,"align":"left"|"center"|"right",
-//            "lineSpacing":<num>}
+//            "lineSpacing":<num>,"fontWeight":<int>,"fontStyle":"normal"|"italic",
+//            "fitMode":"shrink"|"fixed","minFontSize":<num>,
+//            "stroke":{"enabled":bool,"color":<int>,"width":<num>},
+//            "shadow":{"enabled":bool,"color":<int>,"opacity":<num>,
+//                      "offsetX":<num>,"offsetY":<num>,"blurSigma":<num>}}
 //           ,{"kind":"image","assetId":...,"assetPath":...,
 //             "x":<num>,"y":<num>,"width":<num>,"height":<num>}]}
 // Colours are packed 0xRRGGBB integers. Serialisation order is fixed.
@@ -223,21 +242,31 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 // the background's asset pair; scene 3 (task 6.17c1) requires the
 // background's "fit" — the domain's name for how the picture sits on the
 // canvas, mandatory because a payload that leaves it out is a payload the
-// reader would have to guess. There is no cross-format tolerance in either
-// direction — frontend and worker ship together, and a payload whose
-// items mean something the reader has not validated must not draw.
-// "gradient" (task 6.17c3, review R17) is the exception that proves the
-// rule rather than breaking it: written only when the theme names a second
-// background colour, and absent means flat — the payload's own history, not
-// a guess. It moves no format number; it is protocol MINOR 13's addition,
-// named by "scene.background-gradient.v1". The closed key set is what makes
-// that safe in the other direction: a worker older than minor 13 refuses a
-// payload carrying "gradient" by name, so a gradient is loudly refused,
-// never quietly drawn flat.
+// reader would have to guess. "gradient" (task 6.17c3, review R17) is the
+// exception that proves the rule rather than breaking it: written only when
+// the theme names a second background colour, and absent means flat — the
+// payload's own history, not a guess. It moves no format number; it is
+// protocol MINOR 13's addition, named by "scene.background-gradient.v1".
+// The closed key set is what makes that safe in the other direction: a
+// worker older than minor 13 refuses a payload carrying "gradient" by name,
+// so a gradient is loudly refused, never quietly drawn flat.
+// Scene 4 (task TS.1) gives every TEXT item the resolved style block above
+// — always written, never defaulted by absence, because a text item whose
+// style the reader has not validated must not draw — and the per-kind key
+// set stays closed, so style keys on an image item are refused naming
+// themselves. Unlike 2→3, this build also READS scene 3: a legacy payload
+// carries no style keys and lands on the contract's concrete defaults
+// (400/normal/shrink/12/disabled effects), which is exactly what every
+// scene-3 worker drew. That keeps one frontend able to drive a worker that
+// has not heard of styles; sending a NON-default style to such a worker is
+// the frontend's to refuse (capability "scene.text-style.v1", advertised
+// from TS.2's renderer), because quietly drawing it unstyled is the silent
+// omission the wire has refused since 6.8a.
 boost::json::value toJson(const Scene& scene);
 
 // Strict reader for the above; see the header for the contract. Fails
-// on: wrong scene format number, malformed or wrongly-typed fields,
+// on: wrong scene format number (only 4, and legacy 3, are read), malformed
+// or wrongly-typed fields,
 // colours outside 0xRRGGBB, non-finite or negative font sizes, non-finite
 // text-box edges, non-positive box width or height, an alignment outside
 // left/center/right, a line spacing outside 0.25..8, a "video" flag that
@@ -245,7 +274,11 @@ boost::json::value toJson(const Scene& scene);
 // anything over an application budget above (items, lines, characters, ids,
 // path), a key the format does not define (named in the error), an asset
 // reference that is not a local path, an empty asset path behind image:true,
-// and a NUL in any string.
+// and a NUL in any string. Since scene 4 (task TS.1): a missing text-item
+// style key, a weight outside 100..900 or not an integer, a font style or
+// fit mode outside its two words, a minimum size outside 1..4096, an
+// effect that is not a whole closed record, and any effect number outside
+// its band (width 0..32, opacity 0..1, offsets -256..256, blur 0..64).
 //
 // The key set is CLOSED on purpose. Minor-version tolerance is a frontend
 // rule — an unknown field in a STATUS object costs a viewer nothing — but a

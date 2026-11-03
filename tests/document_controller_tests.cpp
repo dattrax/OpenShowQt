@@ -1810,9 +1810,9 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
         std::ifstream manifest(root / "service" / "service.json");
         const std::string text{std::istreambuf_iterator<char>(manifest),
                                std::istreambuf_iterator<char>()};
-        check(text.find("\"format\":7") != std::string::npos &&
+        check(text.find("\"format\":8") != std::string::npos &&
                   text.find("\"fit\":\"contain\"") != std::string::npos,
-              "the manifest is this build's format (7 since TF.1) and spells the slide's fit");
+              "the manifest is this build's format (8 since TS.1) and spells the slide's fit");
     }
     {
         DocumentController reopened(nullptr, root);
@@ -2854,6 +2854,213 @@ void exerciseReadingContexts(const std::filesystem::path& root) {
           "the file carries the context field for field");
 }
 
+// TS.1's surfaces: the Theme Editor's whole-set style verb (strict shapes,
+// undoable), the Edit page's style customizations and their reverts, the
+// rows every view reads, and the carry rules for duplication and
+// from-slide snapshots. The bands themselves are the domain's — exercised
+// in domain_tests — so this fixture is about the doors and the rows.
+void exerciseTextStyleSurfaces(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong("Styled");
+    docs.addSlide();
+    docs.selectSlide(0);
+    check(docs.createBlankTheme("House"), "a blank theme exists to style");
+    QString house;
+    for (const QVariant& theme : docs.themes()) {
+        if (theme.toMap().value(QStringLiteral("name")).toString() == QStringLiteral("House")) {
+            house = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    check(!house.isEmpty() && docs.applyThemeToCurrentSlide(house),
+          "the slide wears House");
+
+    // The bare theme's rows: silent flags with the contract's defaults as
+    // display values, and EMPTY effect maps — silence has no record to show.
+    {
+        QVariantMap row;
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("id")).toString() == house) {
+                row = theme.toMap();
+            }
+        }
+        check(row.value(QStringLiteral("fontWeightSet")).toBool() == false &&
+                  row.value(QStringLiteral("fontWeight")).toInt() == 400 &&
+                  row.value(QStringLiteral("strokeSet")).toBool() == false &&
+                  row.value(QStringLiteral("stroke")).toMap().isEmpty(),
+              "an unstyled theme's row says silent and shows the defaults");
+    }
+
+    // --- the verb: whole set in, strict shape, one undo ---
+    QVariantMap strokeOn;
+    strokeOn.insert(QStringLiteral("enabled"), true);
+    strokeOn.insert(QStringLiteral("color"), QStringLiteral("#ff0000"));
+    strokeOn.insert(QStringLiteral("width"), 3.0);
+    QVariantMap style;
+    style.insert(QStringLiteral("fontWeight"), 700);
+    style.insert(QStringLiteral("fontStyle"), QStringLiteral("italic"));
+    style.insert(QStringLiteral("stroke"), strokeOn);
+    check(docs.setThemeTextStyle(house, style),
+          "the Theme Editor sets weight, slant and a whole stroke record");
+    check(compiledFor(docs, docs.slides().at(0).toMap().value(QStringLiteral("id")).toString())
+                  .items[0]
+                  .fontWeight == 700,
+          "the compiled scene carries the theme's weight");
+    QVariantMap halfStroke;
+    halfStroke.insert(QStringLiteral("enabled"), true);
+    QVariantMap aliased;
+    aliased.insert(QStringLiteral("weight"), 700);
+    QVariantMap shadowAlien;
+    shadowAlien.insert(QStringLiteral("enabled"), true);
+    shadowAlien.insert(QStringLiteral("color"), QStringLiteral("#000000"));
+    shadowAlien.insert(QStringLiteral("opacity"), 0.5);
+    shadowAlien.insert(QStringLiteral("offsetX"), 2.0);
+    shadowAlien.insert(QStringLiteral("offsetY"), 2.0);
+    shadowAlien.insert(QStringLiteral("blurSigma"), 4.0);
+    shadowAlien.insert(QStringLiteral("feather"), 8.0);
+    check(!docs.setThemeTextStyle(house, QVariantMap{{QStringLiteral("weight"), 700}}) &&
+                  docs.status().contains(QStringLiteral("not a text-style field")),
+          "an unknown key is refused naming itself");
+    check(!docs.setThemeTextStyle(house, QVariantMap{{QStringLiteral("fontWeight"),
+                                                      QStringLiteral("700")}}),
+          "a stringy weight is refused, not coerced: the spin box's 700 is not the text field's");
+    check(!docs.setThemeTextStyle(house, QVariantMap{{QStringLiteral("stroke"), halfStroke}}),
+          "half a stroke record is refused: an effect travels whole");
+    check(!docs.setThemeTextStyle(house, QVariantMap{{QStringLiteral("stroke"),
+                                                      QStringLiteral("thick")}}),
+          "and so is an effect spelled as anything but a record");
+    check(!docs.setThemeTextStyle(house, QVariantMap{{QStringLiteral("shadow"), shadowAlien}}),
+          "a shadow member the record never had is refused naming itself");
+    check(!docs.setThemeTextStyle(house, QVariantMap{{QStringLiteral("fontWeight"), 901}}),
+          "an off-scale weight is refused by the domain's band");
+    {
+        QVariantMap after;
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("id")).toString() == house) {
+                after = theme.toMap();
+            }
+        }
+        check(after.value(QStringLiteral("fontWeight")).toInt() == 700 &&
+                  after.value(QStringLiteral("strokeSet")).toBool(),
+              "the refusals changed nothing: the accepted style stands");
+    }
+    docs.undo();
+    check(compiledFor(docs, docs.slides().at(0).toMap().value(QStringLiteral("id")).toString())
+                  .items[0]
+                  .fontWeight == 400,
+          "one undo is one style edit: the theme is unstyled and the slide draws defaults");
+    docs.redo();
+    check(compiledFor(docs, docs.slides().at(0).toMap().value(QStringLiteral("id")).toString())
+                  .items[0]
+                  .fontWeight == 700,
+          "and redo puts the whole style back");
+
+    // --- the Edit page: customize one style field, revert it back ---
+    check(docs.customizeCurrentSlide(QStringLiteral("fontWeight"), 900),
+          "the slide customizes its weight over the themed 700");
+    QVariantMap look = docs.slideAppearance();
+    check(look.value(QStringLiteral("fontWeight")).toMap()
+                  .value(QStringLiteral("value")).toInt() == 900 &&
+              look.value(QStringLiteral("fontWeight")).toMap()
+                  .value(QStringLiteral("customized")).toBool() &&
+              !look.value(QStringLiteral("fontStyle")).toMap()
+                   .value(QStringLiteral("customized")).toBool(),
+          "the appearance view shows the drawn 900 and flags only the touched field");
+    QVariantMap strokeOff;
+    strokeOff.insert(QStringLiteral("enabled"), false);
+    strokeOff.insert(QStringLiteral("color"), QStringLiteral("#00ff00"));
+    strokeOff.insert(QStringLiteral("width"), 0.0);
+    check(docs.customizeCurrentSlide(QStringLiteral("stroke"), strokeOff),
+          "the slide switches the themed outline off — a whole refusal record");
+    openshow::scene::Scene drawn =
+        compiledFor(docs, docs.slides().at(0).toMap().value(QStringLiteral("id")).toString());
+    check(drawn.items[0].fontWeight == 900 && !drawn.items[0].stroke.enabled,
+          "the customization answers weight and refusal while the theme keeps the slant");
+    check(drawn.items[0].fontStyle == "italic", "and the themed italic still draws");
+    check(!docs.customizeCurrentSlide(QStringLiteral("fontWeight"),
+                                      QStringLiteral("bold")) &&
+                  !docs.customizeCurrentSlide(QStringLiteral("stroke"), halfStroke) &&
+                  !docs.customizeCurrentSlide(QStringLiteral("shadow"), shadowAlien),
+          "the customization door quotes the same shape rules as the theme verb");
+    check(docs.revertCurrentSlideField(QStringLiteral("fontWeight")) &&
+              docs.revertCurrentSlideField(QStringLiteral("stroke")),
+          "both style badges revert");
+    look = docs.slideAppearance();
+    check(!look.value(QStringLiteral("fontWeight")).toMap()
+                 .value(QStringLiteral("customized")).toBool() &&
+              look.value(QStringLiteral("fontWeight")).toMap()
+                  .value(QStringLiteral("value")).toInt() == 700 &&
+              !look.value(QStringLiteral("stroke")).toMap()
+                   .value(QStringLiteral("customized")).toBool(),
+          "after the reverts the themed answers show again, unflagged");
+    check(!docs.revertCurrentSlideField(QStringLiteral("stroke")) &&
+              docs.status().contains(QStringLiteral("revert")),
+          "reverting a field that was never customized is refused on the status line");
+
+    // --- duplication and snapshots carry the style ---
+    QVariantMap contextCreate;
+    contextCreate.insert(QStringLiteral("fontSize"), 32.0);
+    check(docs.applyThemeContext(house, QStringLiteral("scripture"), contextCreate),
+          "House also carries a scripture context");
+    check(docs.duplicateTheme(house), "House is duplicated");
+    QString copy;
+    QVariantMap copyRow;
+    for (const QVariant& theme : docs.themes()) {
+        const QVariantMap map = theme.toMap();
+        if (map.value(QStringLiteral("name")).toString() == QStringLiteral("House copy")) {
+            copy = map.value(QStringLiteral("id")).toString();
+            copyRow = map;
+        }
+    }
+    check(copyRow.value(QStringLiteral("fontWeightSet")).toBool() &&
+              copyRow.value(QStringLiteral("fontWeight")).toInt() == 700 &&
+              copyRow.value(QStringLiteral("fontStyle")).toString() == QStringLiteral("italic") &&
+              copyRow.value(QStringLiteral("strokeSet")).toBool() &&
+              copyRow.value(QStringLiteral("stroke")).toMap()
+                  .value(QStringLiteral("enabled")).toBool(),
+          "the duplicate carries the whole style — weight, slant and the outline");
+    check(docs.themeContext(copy, QStringLiteral("scripture"))
+                  .value(QStringLiteral("set"))
+                  .toBool(),
+          "the duplicate carries the contexts too");
+
+    // A theme taken FROM the slide snapshots the chain's concrete answers.
+    check(docs.customizeCurrentSlide(QStringLiteral("minFontSize"), 30.0),
+          "the slide also customizes its minimum size");
+    check(docs.createThemeFromCurrent(QStringLiteral("From slide")),
+          "a theme is made from what the slide draws");
+    QVariantMap snapshotRow;
+    for (const QVariant& theme : docs.themes()) {
+        const QVariantMap map = theme.toMap();
+        if (map.value(QStringLiteral("name")).toString() == QStringLiteral("From slide")) {
+            snapshotRow = map;
+        }
+    }
+    check(snapshotRow.value(QStringLiteral("fontWeightSet")).toBool() &&
+              snapshotRow.value(QStringLiteral("fontWeight")).toInt() == 700 &&
+              snapshotRow.value(QStringLiteral("minFontSizeSet")).toBool() &&
+              snapshotRow.value(QStringLiteral("minFontSize")).toDouble() == 30.0 &&
+              snapshotRow.value(QStringLiteral("fitModeSet")).toBool() &&
+              snapshotRow.value(QStringLiteral("fitMode")).toString() == QStringLiteral("shrink"),
+          "the new theme owns the chain's answers — the customized weight, the customized "
+          "minimum, and even the default it inherited becomes its own");
+
+    // The wearing-theme row carries the style fields as well.
+    check(docs.useThemeAsCurrent(house), "the service now wears House");
+    const QVariantMap worn = docs.currentTheme();
+    check(worn.value(QStringLiteral("fontWeightSet")).toBool() &&
+              worn.value(QStringLiteral("fontWeight")).toInt() == 700,
+          "currentTheme() carries the same style rows the list does");
+
+    // And the whole thing survives the disk.
+    check(docs.save(), "the service saves with its styles");
+    openshow::domain::Documents reopened;
+    std::string loadError;
+    check(openshow::domain::loadService(&reopened, root / "service", &loadError) &&
+              reopened.findTheme(house.toStdString())->fontWeight == 700 &&
+              reopened.findTheme(house.toStdString())->stroke->enabled,
+          "the styled theme reads back from disk through the next session's load");
+}
+
 // The sample gains a VIEW (task TV.1): the Theme Editor's Songs view is the
 // theme's own look and its Bible view is the theme's `scripture` context —
 // both compiled through a fixture that walks the SAME chain the audience
@@ -3136,6 +3343,7 @@ int main(int argc, char* argv[]) {
     exerciseThemeSurfaces(tempRoot / "surfaces");
     exercisePlacementSurfaces(tempRoot / "placementsurfaces");
     exerciseReadingContexts(tempRoot / "readingcontexts");
+    exerciseTextStyleSurfaces(tempRoot / "textstyle");
     exerciseThemeSampleViews(tempRoot / "sampleviews");
     exerciseScripturePassage(tempRoot / "scripturepassage");
     exerciseMultiBoxSession(tempRoot / "multibox");

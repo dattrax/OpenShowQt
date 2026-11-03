@@ -65,20 +65,37 @@ namespace {
 // only ever emits kServiceFormat, and a
 // 6-file read by an older build refuses the whole package rather than
 // quietly drawing what it cannot name.
-constexpr unsigned long long kServiceFormat = 7;
+// Format 8 (task TS.1, theme-editor review) gives themes and slide
+// customizations the shared TEXT-STYLE fields — "fontWeight", "fontStyle",
+// "fitMode", "minFontSize" and the atomic effect records "stroke" and
+// "shadow". Every one is optional in the file: a 7-file loads with themes
+// silent and slides unstyled, and those resolve to the concrete defaults
+// the renderer always applied, so old documents keep their exact pixels.
+// The keys are era-guarded like every earlier meaning: a "stroke" inside
+// a 7-file is somebody else's build meaning something by it.
+constexpr unsigned long long kServiceFormat = 8;
 // The older versions this build reads: single-box slides (1), a stack whose
 // every item was necessarily text (2), a kinded stack whose slides had no
 // fit choice yet — cover was the only thing the worker knew (3) — a fitted
 // stack whose themes had no gradient yet — flat was the only thing it knew
 // (4) — a gradient stack that still spelled the appearance entity
-// "style" in its key names (5) — and a themed stack whose themes carried no
-// text contexts yet (6).
+// "style" in its key names (5) — a themed stack whose themes carried no
+// text contexts yet (6) — and a contexted stack that knew nothing of text
+// style (7).
 constexpr unsigned long long kServiceFormatLegacyBoxes = 1;
 constexpr unsigned long long kServiceFormatLegacyTextOnly = 2;
 constexpr unsigned long long kServiceFormatLegacyUnfit = 3;
 constexpr unsigned long long kServiceFormatLegacyFlat = 4;
 constexpr unsigned long long kServiceFormatLegacyStyleNamed = 5;
 constexpr unsigned long long kServiceFormatLegacyContextless = 6;
+// The FORMAT that introduced the context spellings — the guards quote the
+// introducer, never the moving kServiceFormat (the fit's rule), because
+// format 8 is current while "contexts" is 7's own meaning.
+constexpr unsigned long long kServiceFormatContexts = 7;
+// And 8 introduces the text style fields. Named for the same reason: the
+// day TS.3 or TR.1 claims 9, every style guard must still read "8", the
+// format where these keys got their meaning.
+constexpr unsigned long long kServiceFormatTextStyle = 8;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -421,6 +438,23 @@ bool wantOptionalNumber(const boost::json::object& obj, const char* key, double*
     return true;
 }
 
+// The OPTIONAL-number reader for theme members that answer with silence
+// (task TS.1): absent keeps the theme's non-answer (resolution then walks
+// to the next layer), unlike wantOptionalNumber's default-on-absent.
+bool wantOptionalNumberField(const boost::json::object& obj, const char* key,
+                             std::optional<double>* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;
+    }
+    if (!value->is_number()) {
+        fail(error, std::string("service.json: '") + key + "' must be a number");
+        return false;
+    }
+    *out = value->to_number<double>();
+    return true;
+}
+
 // Sparse-field readers for the customization set (task TH.2): absent is
 // "not customized", present is that slide's own answer — even "" — and
 // anything of the wrong shape is refused naming the field.
@@ -449,6 +483,169 @@ bool wantCustomNumber(const boost::json::object& obj, const char* key,
         return false;
     }
     *out = value->to_number<double>();
+    return true;
+}
+
+// An optional INTEGER (task TS.1): the CSS weight scale is whole numbers,
+// and "400.5" is a hand-edit to refuse, not a weight to round. An absent
+// key keeps the caller's silence.
+bool wantOptionalInteger(const boost::json::object& obj, const char* key,
+                         std::optional<int>* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;
+    }
+    double number = 0.0;
+    if (value->is_int64() || value->is_uint64()) {
+        number = value->to_number<double>();
+    } else if (value->is_number()) {
+        number = value->to_number<double>();
+        if (number != std::floor(number)) {
+            fail(error, std::string("service.json: '") + key + "' must be an integer");
+            return false;
+        }
+    } else {
+        fail(error, std::string("service.json: '") + key + "' must be an integer");
+        return false;
+    }
+    *out = static_cast<int>(number);
+    return true;
+}
+
+bool wantOptionalJsonString(const boost::json::object& obj, const char* key,
+                            std::optional<std::string>* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;
+    }
+    if (!value->is_string()) {
+        fail(error, std::string("service.json: '") + key + "' must be a string");
+        return false;
+    }
+    *out = std::string(value->as_string());
+    return true;
+}
+
+bool wantCustomInteger(const boost::json::object& obj, const char* key,
+                       std::optional<int>* out, std::string* error) {
+    return wantOptionalInteger(obj, key, out, error);
+}
+
+bool wantCustomJsonString(const boost::json::object& obj, const char* key,
+                          std::optional<std::string>* out, std::string* error) {
+    return wantOptionalJsonString(obj, key, out, error);
+}
+
+// The effect records on the wire (task TS.1). Both travel WHOLE: a record
+// is `enabled` plus its complete look, never a fragment, because half an
+// effect has no meaning to resolve — the theme-editor review's atomicity
+// rule. The closed member set refuses a stray key naming itself, and the
+// bands are the shared domain sentence (validStroke / validShadow), so
+// what loads is exactly what a verb would have accepted.
+boost::json::object strokeJson(const TextStroke& stroke) {
+    boost::json::object out;
+    out.emplace("enabled", stroke.enabled);
+    out.emplace("color", stroke.color);
+    out.emplace("width", stroke.width);
+    return out;
+}
+
+boost::json::object shadowJson(const TextShadow& shadow) {
+    boost::json::object out;
+    out.emplace("enabled", shadow.enabled);
+    out.emplace("color", shadow.color);
+    out.emplace("opacity", shadow.opacity);
+    out.emplace("offsetX", shadow.offsetX);
+    out.emplace("offsetY", shadow.offsetY);
+    out.emplace("blurSigma", shadow.blurSigma);
+    return out;
+}
+
+bool wantStroke(const boost::json::object& obj, const char* key, const std::string& owner,
+                std::optional<TextStroke>* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;  // no opinion; the layers under it answer
+    }
+    if (!value->is_object()) {
+        fail(error, "service.json: " + owner + " carries \"stroke\" that is not an effect record");
+        return false;
+    }
+    const boost::json::object& record = value->as_object();
+    for (const auto& entry : record) {
+        const std::string name(entry.key());
+        if (name != "enabled" && name != "color" && name != "width") {
+            fail(error, "service.json: " + owner + " stroke has no field '" + name + "'");
+            return false;
+        }
+    }
+    TextStroke stroke;
+    const boost::json::value* enabled = field(record, "enabled");
+    const boost::json::value* color = field(record, "color");
+    const boost::json::value* width = field(record, "width");
+    if (enabled == nullptr || !enabled->is_bool() || color == nullptr || !color->is_string() ||
+        width == nullptr || !width->is_number()) {
+        fail(error, "service.json: " + owner +
+                        " stroke is a whole record or nothing: it needs a boolean \"enabled\", "
+                        "a string \"color\" and a number \"width\"");
+        return false;
+    }
+    stroke.enabled = enabled->as_bool();
+    stroke.color = std::string(color->as_string());
+    stroke.width = width->to_number<double>();
+    // Bands and colours are NOT re-derived here: the customization contract
+    // and the theme's own load-time re-vet (the domain's single sentence,
+    // validStroke included) run on the object this reader produced.
+    *out = stroke;
+    return true;
+}
+
+bool wantShadow(const boost::json::object& obj, const char* key, const std::string& owner,
+                std::optional<TextShadow>* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;
+    }
+    if (!value->is_object()) {
+        fail(error, "service.json: " + owner + " carries \"shadow\" that is not an effect record");
+        return false;
+    }
+    const boost::json::object& record = value->as_object();
+    for (const auto& entry : record) {
+        const std::string name(entry.key());
+        if (name != "enabled" && name != "color" && name != "opacity" && name != "offsetX" &&
+            name != "offsetY" && name != "blurSigma") {
+            fail(error, "service.json: " + owner + " shadow has no field '" + name + "'");
+            return false;
+        }
+    }
+    TextShadow shadow;
+    const boost::json::value* enabled = field(record, "enabled");
+    const boost::json::value* color = field(record, "color");
+    const boost::json::value* opacity = field(record, "opacity");
+    const boost::json::value* offsetX = field(record, "offsetX");
+    const boost::json::value* offsetY = field(record, "offsetY");
+    const boost::json::value* blur = field(record, "blurSigma");
+    if (enabled == nullptr || !enabled->is_bool() || color == nullptr || !color->is_string() ||
+        opacity == nullptr || !opacity->is_number() || offsetX == nullptr ||
+        !offsetX->is_number() || offsetY == nullptr || !offsetY->is_number() ||
+        blur == nullptr || !blur->is_number()) {
+        fail(error, "service.json: " + owner +
+                        " shadow is a whole record or nothing: it needs a boolean \"enabled\", "
+                        "a string \"color\" and numbers \"opacity\", \"offsetX\", \"offsetY\" "
+                        "and \"blurSigma\"");
+        return false;
+    }
+    shadow.enabled = enabled->as_bool();
+    shadow.color = std::string(color->as_string());
+    shadow.opacity = opacity->to_number<double>();
+    shadow.offsetX = offsetX->to_number<double>();
+    shadow.offsetY = offsetY->to_number<double>();
+    shadow.blurSigma = blur->to_number<double>();
+    // Like the stroke: shape here, bands right after — the customization
+    // contract re-vets the whole set, the theme's own load re-vets its
+    // style block, and both quote the domain's single sentence.
+    *out = shadow;
     return true;
 }
 
@@ -695,6 +892,28 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             if (changed.placement.has_value()) {
                 customizations.emplace("placement", boxRectJson(*changed.placement));
             }
+            // The TS.1 style fields: written exactly when the slide speaks,
+            // silence written as silence. An effect is one whole record —
+            // `enabled:false` travels too, because it IS the slide's answer
+            // ("no outline here, theme"), not an absence.
+            if (changed.fontWeight.has_value()) {
+                customizations.emplace("fontWeight", *changed.fontWeight);
+            }
+            if (changed.fontStyle.has_value()) {
+                customizations.emplace("fontStyle", *changed.fontStyle);
+            }
+            if (changed.fitMode.has_value()) {
+                customizations.emplace("fitMode", *changed.fitMode);
+            }
+            if (changed.minFontSize.has_value()) {
+                customizations.emplace("minFontSize", *changed.minFontSize);
+            }
+            if (changed.stroke.has_value()) {
+                customizations.emplace("stroke", strokeJson(*changed.stroke));
+            }
+            if (changed.shadow.has_value()) {
+                customizations.emplace("shadow", shadowJson(*changed.shadow));
+            }
             slideJson.emplace("customizations", std::move(customizations));
             slideJson.emplace("backgroundAssetId", slide.backgroundAssetId);
             // Fit on EVERY slide, cover included — 6.17b1's rule for the
@@ -749,6 +968,29 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
                 contexts.push_back(textContextJson(context));
             }
             entry.emplace("contexts", std::move(contexts));
+        }
+        // The TS.1 style fields (task TS.1) share the same discipline:
+        // present exactly when the theme speaks. A theme that carries no
+        // style opinion saves without a single new key, so a show nobody
+        // styled round-trips through this build byte-comparably, and the
+        // reader's silence means silence — never a guessed override.
+        if (theme.fontWeight.has_value()) {
+            entry.emplace("fontWeight", *theme.fontWeight);
+        }
+        if (theme.fontStyle.has_value()) {
+            entry.emplace("fontStyle", *theme.fontStyle);
+        }
+        if (theme.fitMode.has_value()) {
+            entry.emplace("fitMode", *theme.fitMode);
+        }
+        if (theme.minFontSize.has_value()) {
+            entry.emplace("minFontSize", *theme.minFontSize);
+        }
+        if (theme.stroke.has_value()) {
+            entry.emplace("stroke", strokeJson(*theme.stroke));
+        }
+        if (theme.shadow.has_value()) {
+            entry.emplace("shadow", shadowJson(*theme.shadow));
         }
         themes.push_back(std::move(entry));
     }
@@ -813,11 +1055,11 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     if (format != kServiceFormat && format != kServiceFormatLegacyBoxes &&
         format != kServiceFormatLegacyTextOnly && format != kServiceFormatLegacyUnfit &&
         format != kServiceFormatLegacyFlat && format != kServiceFormatLegacyStyleNamed &&
-        format != kServiceFormatLegacyContextless) {
+        format != kServiceFormatLegacyContextless && format != kServiceFormatContexts) {
         fail(error, "service.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " + std::to_string(kServiceFormat) +
                         " and formats " + std::to_string(kServiceFormatLegacyBoxes) +
-                        " through " + std::to_string(kServiceFormatLegacyContextless) +
+                        " through " + std::to_string(kServiceFormatContexts) +
                         " with their text boxes migrated to a kinded list, their"
                         " backgrounds to cover and their themes to flat)");
         return false;
@@ -1162,6 +1404,39 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                                  &c.placement, error)) {
                     return false;
                 }
+                // The TS.1 style fields are format-8 meanings inside the
+                // (format-6) customization object: a 6- or 7-file that
+                // carries one came from a build whose "stroke" this loader
+                // cannot interpret, and the whole package is refused naming
+                // the key (the placement rule again, at one level deeper).
+                if (format >= kServiceFormatTextStyle) {
+                    if (!wantCustomInteger(changedObject, "fontWeight", &c.fontWeight,
+                                           error) ||
+                        !wantCustomJsonString(changedObject, "fontStyle", &c.fontStyle,
+                                              error) ||
+                        !wantCustomJsonString(changedObject, "fitMode", &c.fitMode, error) ||
+                        !wantCustomNumber(changedObject, "minFontSize", &c.minFontSize,
+                                          error) ||
+                        !wantStroke(changedObject, "stroke", "slide '" + slide.id +
+                                                                "' customization",
+                                    &c.stroke, error) ||
+                        !wantShadow(changedObject, "shadow", "slide '" + slide.id +
+                                                                 "' customization",
+                                    &c.shadow, error)) {
+                        return false;
+                    }
+                } else {
+                    for (const char* key : {"fontWeight", "fontStyle", "fitMode",
+                                            "minFontSize", "stroke", "shadow"}) {
+                        if (changedObject.contains(key)) {
+                            fail(error, "service.json: slide '" + slide.id + "' carries "
+                                            "customization '" + key + "' in a format " +
+                                            std::to_string(format) + " file, where that "
+                                            "field does not exist");
+                            return false;
+                        }
+                    }
+                }
                 for (const auto& entry : changedObject) {
                     if (!isCustomizableField(std::string(entry.key()))) {
                         fail(error, "service.json: slide '" + slide.id + "' carries "
@@ -1219,7 +1494,7 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             // somebody else's meaning, the fit's and placement's era rule
             // applied again. Absent, or a name no theme carries, the slide
             // resolves with no context layer.
-            if (format >= kServiceFormat) {
+            if (format >= kServiceFormatContexts) {
                 if (!wantOptionalString(jsonSlide, "textContext", &slide.textContext, error)) {
                     return false;
                 }
@@ -1334,7 +1609,7 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         // one thing a context must never grow is a line count — the line
         // count is whatever the measurement fits, and a file that says
         // otherwise came from somewhere this build answers nowhere to.
-        if (format >= kServiceFormat) {
+        if (format >= kServiceFormatContexts) {
             const boost::json::value* contextsValue = field(jsonTheme, "contexts");
             if (contextsValue != nullptr) {
                 if (!contextsValue->is_array()) {
@@ -1472,6 +1747,52 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                             std::to_string(format) + " file, where that key"
                             " does not exist");
             return false;
+        }
+        // The TS.1 style fields (task TS.1) are format-8 members and share
+        // placement's discipline of silence: absent is "this theme has no
+        // style opinion", which resolves to the concrete defaults the
+        // renderer always applied — old files keep their exact pixels.
+        // A style key in a pre-8 file is somebody else's build meaning
+        // something by it (the backgroundGradient rule, applied to a set).
+        if (format >= kServiceFormatTextStyle) {
+            if (!wantOptionalInteger(jsonTheme, "fontWeight", &theme.fontWeight, error) ||
+                !wantOptionalJsonString(jsonTheme, "fontStyle", &theme.fontStyle, error) ||
+                !wantOptionalJsonString(jsonTheme, "fitMode", &theme.fitMode, error) ||
+                !wantOptionalNumberField(jsonTheme, "minFontSize", &theme.minFontSize,
+                                         error) ||
+                !wantStroke(jsonTheme, "stroke", "theme '" + theme.id + "'", &theme.stroke,
+                            error) ||
+                !wantShadow(jsonTheme, "shadow", "theme '" + theme.id + "'", &theme.shadow,
+                            error)) {
+                return false;
+            }
+            // A loaded theme must be one this build could have written:
+            // the shape was the reader's, the MEANING is the domain's one
+            // sentence — the same validThemeTextStyle setThemeTextStyle
+            // quotes, so a file cannot store what a verb would refuse.
+            ThemeTextStyle style;
+            style.fontWeight = theme.fontWeight;
+            style.fontStyle = theme.fontStyle;
+            style.fitMode = theme.fitMode;
+            style.minFontSize = theme.minFontSize;
+            style.stroke = theme.stroke;
+            style.shadow = theme.shadow;
+            std::string detail;
+            if (!Documents::validThemeTextStyle(style, &detail)) {
+                fail(error, "service.json: theme '" + theme.id +
+                                "' carries text style the renderer cannot honour: " + detail);
+                return false;
+            }
+        } else {
+            for (const char* key : {"fontWeight", "fontStyle", "fitMode", "minFontSize",
+                                    "stroke", "shadow"}) {
+                if (jsonTheme.contains(key)) {
+                    fail(error, "service.json: theme '" + theme.id + "' carries \"" + key +
+                                    "\" in a format " + std::to_string(format) +
+                                    " file, where that key does not exist");
+                    return false;
+                }
+            }
         }
         themeIds.insert(theme.id);
         themes.push_back(std::move(theme));

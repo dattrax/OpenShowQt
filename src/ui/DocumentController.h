@@ -261,6 +261,19 @@ public:
     // customized placement). A theme with no placement is refused — the same
     // wrong-click rule every other revert follows.
     Q_INVOKABLE bool clearThemePlacement(const QString& themeId);
+    // The theme's OWN text style (task TS.1, theme-editor review): WHOLE-SET
+    // replacement in applyThemeContext's manner — a key present becomes the
+    // theme's answer, a key absent makes the theme silent (it stops carrying
+    // an override that used to be there), and {} silences all six. The map
+    // names: fontWeight (integer 100..900), fontStyle ("normal"/"italic"),
+    // fitMode ("shrink"/"fixed"), minFontSize (1..4096), stroke and shadow
+    // (whole records — stroke {enabled,color,width}, shadow {enabled,color,
+    // opacity,offsetX,offsetY,blurSigma}; a fragment is refused, because an
+    // effect means one thing whole). Unknown keys, stringy weights and
+    // half-records are refused naming themselves, never defaulted; the
+    // bands are the domain's, so what this accepts the save can store and
+    // the resolver can honour.
+    Q_INVOKABLE bool setThemeTextStyle(const QString& themeId, const QVariantMap& style);
     // The theme's named TEXT CONTEXTS (task TF.4, text-flow plan): a
     // context carries typography and a box ONLY — never colours, and never
     // a line count, because how many lines fit is what the worker's

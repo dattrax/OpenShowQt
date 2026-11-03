@@ -348,6 +348,11 @@ public:
     // The worker's hello named text.measure.v1 (task BI.4): pagination may
     // ask, and a worker without it is said so rather than worked around.
     bool textMeasureSupported() const { return fTextMeasureCapable; }
+    // The worker's hello named scene.text-style.v1 (task TS.1): that worker
+    // DRAWS the scene 4 style block. Until TS.2 ships the drawing, no hello
+    // names it, and sceneIsSendable refuses a non-default style rather than
+    // letting an enabled stroke silently not appear on air.
+    bool textStyleSupported() const { return fTextStyleCapable; }
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
@@ -430,6 +435,8 @@ private:
     // (task BI.4): "measurable" is a fact about this connection, not about
     // the build.
     bool fTextMeasureCapable = false;
+    // scene.text-style.v1 (task TS.1): see textStyleSupported().
+    bool fTextStyleCapable = false;
     // The SESSION's view of the link, not the socket's: it also goes false when
     // the process is gone, which is a fact the transport is not told about. The
     // QML `connected` property reads this.

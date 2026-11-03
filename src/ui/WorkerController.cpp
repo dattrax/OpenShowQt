@@ -217,6 +217,7 @@ void WorkerController::onRpcDisconnected() {
     fConnected = false;
     fHandshakeDone = false;
     fTextMeasureCapable = false;  // a capability belongs to a live hello (BI.4)
+    fTextStyleCapable = false;    // TS.1: same, for the style-block claim
     fStatusRequestId = 0;
     fPreview->setSessionLive(false);
     fPreview->closeStream();
@@ -407,6 +408,7 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         bool selectionCapable = false;
         bool thumbnailCapable = false;
         bool measureCapable = false;
+        bool styleCapable = false;
         if (payload.contains("capabilities") && payload.at("capabilities").is_array()) {
             for (const auto& capability : payload.at("capabilities").as_array()) {
                 if (!capability.is_string()) {
@@ -437,10 +439,19 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                     // how tall a passage is, and pagination says so rather
                     // than laying words out by eye.
                     measureCapable = true;
+                } else if (capability.as_string() == proto::kCapabilityTextStyle) {
+                    // The worker DRAWS the scene 4 style block (task TS.1).
+                    // TS.1's worker reads the fields but ignores them, so it
+                    // does not name this; when a styled scene reaches a
+                    // worker without it, sceneIsSendable has already refused
+                    // the send on the operator's side rather than ship an
+                    // enabled stroke the audience would never see.
+                    styleCapable = true;
                 }
             }
         }
         fTextMeasureCapable = measureCapable;
+        fTextStyleCapable = styleCapable;
         // Both targets at once, before anything is asked of them: the hello
         // reply is the only place either answer changes, and the consumer's
         // gates are what stop a worker that dropped a capability from being
@@ -702,12 +713,38 @@ bool WorkerController::sceneIsSendable(const boost::json::value& candidate,
                                        const char* verb) {
     openshow::scene::Scene parsed;
     std::string error;
-    if (openshow::scene::fromJson(candidate, &parsed, &error)) {
-        return true;
+    if (!openshow::scene::fromJson(candidate, &parsed, &error)) {
+        setStatus(QStringLiteral("%1: the scene was not sent - %2")
+                      .arg(QString::fromLatin1(verb), QString::fromStdString(error)));
+        return false;
     }
-    setStatus(QStringLiteral("%1: the scene was not sent - %2")
-                  .arg(QString::fromLatin1(verb), QString::fromStdString(error)));
-    return false;
+    // The capability gate (task TS.1): scene 4 carries a style block on
+    // every text item, and a worker that has not said it DRAWS the block
+    // would honour the defaults and silently drop everything else — the
+    // exact silent omission the wire refuses. A scene whose every item sits
+    // on the contract defaults draws the same pixels either way, so it
+    // travels; one that says more only travels to a hello that named
+    // scene.text-style.v1. The refusal is local and names the rule: the
+    // operator hears "this worker does not draw text styles", not silence.
+    if (!fTextStyleCapable) {
+        for (const openshow::scene::SceneItem& item : parsed.items) {
+            if (item.isImage) {
+                continue;
+            }
+            const bool styled = item.fontWeight != openshow::domain::kDefaultFontWeight ||
+                                item.fontStyle != "normal" || item.fitMode != "shrink" ||
+                                item.minFontSize != openshow::domain::kDefaultMinFontSize ||
+                                item.stroke.enabled || item.shadow.enabled;
+            if (styled) {
+                setStatus(QStringLiteral("%1: the scene was not sent - this worker has not "
+                                         "said it draws text styles (scene.text-style.v1); "
+                                         "remove the styling or update the worker")
+                              .arg(QString::fromLatin1(verb)));
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 // --- the scene operations (task 2.4c, 3.3; the model is task 6.19a3) ---------

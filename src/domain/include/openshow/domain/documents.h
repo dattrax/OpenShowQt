@@ -241,6 +241,67 @@ struct BoxRect {
     }
 };
 
+// --- text style (task TS.1, theme-editor review) --------------------------
+//
+// The shared typography-and-effects contract. A theme, a slide's
+// customization set, and (from TV.3) a named text context may each carry
+// these fields; every one is OPTIONAL everywhere it appears, and the
+// concrete values named here are the answers only after the whole chain
+// has been walked — old documents carry nothing and must keep drawing
+// exactly as they did, which these defaults describe to the number.
+// Weight is the CSS scale; style and fit are closed word sets, refused
+// naming themselves like `align` always was. Fit is a POLICY: `shrink` is
+// the renderer's existing wrap-then-shrink behaviour (which may never
+// enlarge the selected size), `fixed` draws at the chosen size whatever
+// overflows. The effect records are ATOMIC — a complete validated record
+// or nothing; absence inherits, `enabled:false` is an explicit refusal of
+// an inherited effect, and zero width or opacity is a valid record that
+// draws no ink. Coordinates, widths and blur are authored canvas pixels,
+// scaled exactly once with the canvas at draw time.
+inline constexpr int kDefaultFontWeight = 400;
+inline constexpr double kDefaultMinFontSize = 12.0;
+
+inline bool isFontWeightInBand(int weight) { return weight >= 100 && weight <= 900; }
+inline bool isFontStyleName(const std::string& name) {
+    return name == "normal" || name == "italic";
+}
+inline bool isFitModeName(const std::string& name) {
+    return name == "shrink" || name == "fixed";
+}
+
+struct TextStroke {
+    bool enabled = false;
+    std::string color = "#000000";
+    double width = 2.0;  // authored px, 0..32; 0 draws no ink
+
+    bool operator==(const TextStroke&) const = default;
+};
+
+struct TextShadow {
+    bool enabled = false;
+    std::string color = "#000000";
+    double opacity = 0.65;    // 0..1; 0 draws no ink
+    double offsetX = 2.0;     // authored px, -256..256
+    double offsetY = 2.0;
+    double blurSigma = 4.0;   // authored px, 0..64
+
+    bool operator==(const TextShadow&) const = default;
+};
+
+// The style block `Documents::setThemeTextStyle` replaces wholesale, in
+// setThemeContexts' manner: present sets the theme's own answer, absent
+// leaves the theme silent on it, and an effect is one whole record.
+struct ThemeTextStyle {
+    std::optional<int> fontWeight;
+    std::optional<std::string> fontStyle;
+    std::optional<std::string> fitMode;
+    std::optional<double> minFontSize;
+    std::optional<TextStroke> stroke;
+    std::optional<TextShadow> shadow;
+
+    bool operator==(const ThemeTextStyle&) const = default;
+};
+
 // What one slide's operator changed for itself (task TH.2, themes plan).
 // Sparse by construction: a field is present exactly when the slide
 // customized it, and resolution falls through per property — a slide that
@@ -261,20 +322,36 @@ struct SlideCustomization {
     // (amendment 2026-11-01). One unit — a half-placed box is not a thing
     // an operator drags.
     std::optional<BoxRect> placement;
+    // The TS.1 style fields, sparse like every other answer here: present
+    // means this slide speaks, absent means the themes answer. An effect
+    // customization is the WHOLE record — `enabled:false` over a themed
+    // stroke is the slide saying "no outline here", which no absence can
+    // say (theme-editor review, effects contract).
+    std::optional<int> fontWeight;
+    std::optional<std::string> fontStyle;
+    std::optional<std::string> fitMode;
+    std::optional<double> minFontSize;
+    std::optional<TextStroke> stroke;
+    std::optional<TextShadow> shadow;
 
     bool operator==(const SlideCustomization& other) const {
         return textColor == other.textColor && backgroundColor == other.backgroundColor &&
                backgroundGradient == other.backgroundGradient &&
                fontFamily == other.fontFamily && fontSize == other.fontSize &&
                align == other.align && lineSpacing == other.lineSpacing &&
-               placement == other.placement;
+               placement == other.placement && fontWeight == other.fontWeight &&
+               fontStyle == other.fontStyle && fitMode == other.fitMode &&
+               minFontSize == other.minFontSize && stroke == other.stroke &&
+               shadow == other.shadow;
     }
 
     bool empty() const {
         return !textColor.has_value() && !backgroundColor.has_value() &&
                !backgroundGradient.has_value() && !fontFamily.has_value() &&
                !fontSize.has_value() && !align.has_value() && !lineSpacing.has_value() &&
-               !placement.has_value();
+               !placement.has_value() && !fontWeight.has_value() &&
+               !fontStyle.has_value() && !fitMode.has_value() && !minFontSize.has_value() &&
+               !stroke.has_value() && !shadow.has_value();
     }
     // Remove one customized field; reverting "this thing" is a key away.
     void clearField(const std::string& field) {
@@ -294,6 +371,18 @@ struct SlideCustomization {
             lineSpacing.reset();
         } else if (field == "placement") {
             placement.reset();
+        } else if (field == "fontWeight") {
+            fontWeight.reset();
+        } else if (field == "fontStyle") {
+            fontStyle.reset();
+        } else if (field == "fitMode") {
+            fitMode.reset();
+        } else if (field == "minFontSize") {
+            minFontSize.reset();
+        } else if (field == "stroke") {
+            stroke.reset();
+        } else if (field == "shadow") {
+            shadow.reset();
         }
     }
     bool hasField(const std::string& field) const {
@@ -321,6 +410,24 @@ struct SlideCustomization {
         if (field == "placement") {
             return placement.has_value();
         }
+        if (field == "fontWeight") {
+            return fontWeight.has_value();
+        }
+        if (field == "fontStyle") {
+            return fontStyle.has_value();
+        }
+        if (field == "fitMode") {
+            return fitMode.has_value();
+        }
+        if (field == "minFontSize") {
+            return minFontSize.has_value();
+        }
+        if (field == "stroke") {
+            return stroke.has_value();
+        }
+        if (field == "shadow") {
+            return shadow.has_value();
+        }
         return false;
     }
 };
@@ -328,12 +435,15 @@ struct SlideCustomization {
 // The names the customization keys — and the UI's per-field revert — use.
 // "placement" (amendment 2026-11-01) is one name for the whole rectangle:
 // dragging a box changes four numbers, and reverting half a box is not a
-// thing an operator wants or storage should carry.
+// thing an operator wants or storage should carry. The TS.1 effects follow
+// the same rule: "stroke" and "shadow" name one whole record each.
 inline bool isCustomizableField(const std::string& field) {
     return field == "textColor" || field == "backgroundColor" ||
            field == "backgroundGradient" || field == "fontFamily" ||
            field == "fontSize" || field == "align" || field == "lineSpacing" ||
-           field == "placement";
+           field == "placement" || field == "fontWeight" || field == "fontStyle" ||
+           field == "fitMode" || field == "minFontSize" || field == "stroke" ||
+           field == "shadow";
 }
 
 // One slide of a show: a stack of items over a background.
@@ -471,6 +581,16 @@ struct Theme {
     // renderer applies (its own default, 1.25, is kDefaultLineSpacing).
     std::string align = "center";
     double lineSpacing = kDefaultLineSpacing;
+    // The TS.1 style fields. Sparse like placement: an old theme carries
+    // NONE of them and must keep resolving to the concrete defaults above
+    // (which are exactly what the renderer always did), so loading a
+    // pre-8 file never populates these with explicit overrides.
+    std::optional<int> fontWeight;
+    std::optional<std::string> fontStyle;
+    std::optional<std::string> fitMode;
+    std::optional<double> minFontSize;
+    std::optional<TextStroke> stroke;
+    std::optional<TextShadow> shadow;
     // Where a slide wearing this theme puts its PRIMARY lyric box
     // (amendment 2026-11-01, themes plan). Absent is no opinion: wearing
     // this theme never moves a slide's words. When set, the rectangle
@@ -498,6 +618,17 @@ struct ResolvedAppearance {
     double fontSize = 0.0;
     std::string align;   // empty means "no layer said"; the compile centres
     double lineSpacing = kDefaultLineSpacing;
+    // The TS.1 style fields, resolved to CONCRETE answers: unlike the
+    // colours, the chain here ends at the contract's own defaults (normal
+    // weight, normal style, the renderer's shrink policy, its minimum, no
+    // ink) — so a document nobody styled resolves to exactly what it drew
+    // before these fields existed, and the compile never has to guess.
+    int fontWeight = kDefaultFontWeight;
+    std::string fontStyle = "normal";
+    std::string fitMode = "shrink";
+    double minFontSize = kDefaultMinFontSize;
+    TextStroke stroke;   // disabled by default; an enabled record draws
+    TextShadow shadow;
     // The primary lyric box's rectangle, resolved like the rest: the slide's
     // placement customization beats a themed rectangle, and a themed
     // rectangle beats the slide's authored box. Empty means no layer spoke,
@@ -717,6 +848,16 @@ public:
     // Passing {} takes every context off (an empty set is the plain theme).
     bool setThemeContexts(const Id& themeId, std::vector<TextContext> contexts,
                           std::string* error = nullptr);
+    // Set or clear a theme's OWN style fields (task TS.1). Whole-set
+    // replacement in setThemeContexts' manner: every field present becomes
+    // the theme's answer, every field absent makes the theme silent (it no
+    // longer places an override that used to be there). The vetting is the
+    // loader's — weight in band, style/fit in their word sets, finite
+    // bounded min, complete effect records — so a theme this accepts is a
+    // theme this build can save and honour. An effect record is atomic:
+    // `enabled:false` is kept, not dropped, because it refuses an inherited
+    // effect. Passing {} makes the theme carry no style opinion at all.
+    bool setThemeTextStyle(const Id& themeId, ThemeTextStyle style, std::string* error = nullptr);
     // Points a show's default (and therefore its un-themed slides) at a
     // theme; "" clears back to none.
     bool setShowDefaultTheme(const Id& showId, const Id& themeId, std::string* error = nullptr);
@@ -848,6 +989,15 @@ private:
     // something (a flat gradient, no family) pass.
     static bool validCustomizations(const SlideCustomization& customizations,
                                     std::string* error);
+    // TS.1 style vetting (theme-editor review): weight in band, style and
+    // fit in their word sets, a finite bounded minimum, and COMPLETE
+    // effect records. One implementation shared by setThemeTextStyle, the
+    // customization contract and the loader, so the record a caller wrote,
+    // what is stored and what re-reads from disk all answer to the same
+    // sentence.
+    static bool validThemeTextStyle(const ThemeTextStyle& style, std::string* error);
+    static bool validStroke(const TextStroke& stroke, std::string* error);
+    static bool validShadow(const TextShadow& shadow, std::string* error);
     Id nextId(const char* kind);
 
     std::vector<Show> fShows;

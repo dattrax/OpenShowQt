@@ -112,8 +112,33 @@ namespace openshow::protocol {
 // answerer in the product (estimate it elsewhere and the importer would be
 // shipping the operator a guess). Bounds for the batch are declared once,
 // beside the method, in preview_wire.h.
+// Minor 15 (task TS.1, theme-editor review) moves the scene payload to
+// format 4: every TEXT item carries the resolved style block — fontWeight
+// (100..900), fontStyle, fitMode, minFontSize, and the whole stroke/shadow
+// effect records — mandatory, because a text style the reader has not
+// validated is a style it would have to guess, the scene format's standing
+// refusal. Unlike the 2→3 moves this one carries a legacy reader: scene 3
+// payloads read onto the contract's concrete defaults (400/normal/shrink/
+// 12/no ink), which are the pixels every scene-3 worker drew — an absent
+// style is complete information, where a scene-2 background's missing
+// "fit" never was. The capability that names DRAWING these fields is
+// "scene.text-style.v1", and this minor deliberately does NOT advertise
+// it: TS.1 makes the model, the storage and the wire speak style; TS.2's
+// renderer is what makes a worker deserve the claim. A frontend may only
+// send a NON-default style block to a worker whose hello names it — and
+// must refuse such a send otherwise, because drawing an enabled stroke
+// that nobody told the worker about is the silent omission the wire has
+// refused since 6.8a. Scene 4 with the contract defaults is always safe:
+// it is what a scene-3 payload means.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 14;
+inline constexpr std::uint32_t kProtocolMinor = 15;
+
+// The capability that names a worker DRAWING the scene 4 style block.
+// Defined here so the frontend's pre-send gate and TS.2's hello name one
+// spelling; until the renderer draws the fields the hello list omits it,
+// and protocol_tests pin both halves — the constant exists and the
+// advertised list does not carry it.
+inline constexpr const char* kCapabilityTextStyle = "scene.text-style.v1";
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without

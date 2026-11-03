@@ -13,7 +13,13 @@ namespace openshow::scene {
 
 namespace {
 
-constexpr int kSceneFormat = 3;
+// Scene 4 (task TS.1) adds the text item's resolved style block. Legacy
+// scene 3 keeps a READER: an absent style means the concrete defaults the
+// contract names, which are the pixels every scene-3 worker drew (see the
+// wire doc in scene.h for why this direction is safe and the other one is
+// gated by capability instead).
+constexpr int kSceneFormat = 4;
+constexpr int kSceneFormatLegacy = 3;
 
 void fail(std::string* error, const std::string& message) {
     if (error != nullptr) {
@@ -240,6 +246,216 @@ bool wantLineSpacing(const boost::json::object& obj, const char* key, double* ou
     return true;
 }
 
+// --- TS.1 style readers ------------------------------------------------
+//
+// A scene-4 text item carries the whole resolved style block, so every
+// reader here is REQUIRED and band-checked: what draws on the audience
+// output is what this function validated, nothing inferred. The bands are
+// the domain's own contract numbers, spelled locally because the scene
+// library answers to the wire, not to a caller's error strings — a payload
+// is a foreign object, and "the renderer cannot honour" is the domain
+// sentence for a person's edit.
+
+// The CSS weight scale is WHOLE numbers; "450.5" is a hand-edit of a
+// payload, not a weight to round.
+bool wantFontWeight(const boost::json::object& obj, const char* key, int* out,
+                    std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        fail(error, std::string("scene: a text item's '") + key +
+                        "' is required in scene 4");
+        return false;
+    }
+    double number = 0.0;
+    if (value->is_int64() || value->is_uint64()) {
+        number = value->to_number<double>();
+    } else if (value->is_number()) {
+        number = value->to_number<double>();
+        if (!std::isfinite(number) || number != std::floor(number)) {
+            fail(error, std::string("scene: '") + key + "' must be a whole number");
+            return false;
+        }
+    } else {
+        fail(error, std::string("scene: '") + key + "' must be an integer");
+        return false;
+    }
+    if (number < 100.0 || number > 900.0) {
+        fail(error, std::string("scene: '") + key + "' must be within 100..900");
+        return false;
+    }
+    *out = static_cast<int>(number);
+    return true;
+}
+
+// A closed two-word set (font style, fit mode): a name the payload invented
+// is refused naming itself, the align rule (4.4) applied again.
+bool wantStyleWord(const boost::json::object& obj, const char* key,
+                   std::string_view first, std::string_view second, std::string* out,
+                   std::string* error) {
+    if (!wantString(obj, key, out, 16, error)) {
+        return false;
+    }
+    if (*out != first && *out != second) {
+        fail(error, std::string("scene: '") + key + "' must be \"" + std::string(first) +
+                        "\" or \"" + std::string(second) + "\"");
+        return false;
+    }
+    return true;
+}
+
+// The smallest size the shrink policy may reach. Bounded below by 1 — a
+// minimum of 0 means invisible text, which is a clear, not a fit — and
+// above at the same ceiling the domain quotes.
+bool wantMinFontSize(const boost::json::object& obj, const char* key, double* out,
+                     std::string* error) {
+    if (field(obj, key) == nullptr) {
+        fail(error, std::string("scene: a text item's '") + key +
+                        "' is required in scene 4");
+        return false;
+    }
+    if (!wantFontSize(obj, key, out, error)) {
+        return false;
+    }
+    if (*out < 1.0 || *out > 4096.0) {
+        fail(error, std::string("scene: '") + key + "' must be within 1..4096");
+        return false;
+    }
+    return true;
+}
+
+// The effect records travel WHOLE (theme-editor review, atomicity): a
+// fragment has no meaning for a renderer to draw, so the closed member set
+// is required in full and any stray key is refused naming itself. The
+// numbers keep their authored meaning here — the renderer scales once at
+// draw time — so the bands are the contract's, restated for a payload.
+// Packed colour back to the domain's canonical "#rrggbb" — parseColor's
+// mirror. Compile normalises an authored "#fff" through here too, so a
+// compiled scene and a wire round-trip of it compare equal, exactly as the
+// packed item colour does.
+std::string hexColor(Color color) {
+    static const char kDigits[] = "0123456789abcdef";
+    std::string hex(1, '#');
+    for (int shift = 20; shift >= 0; shift -= 4) {
+        hex.push_back(kDigits[(color >> shift) & 0xF]);
+    }
+    return hex;
+}
+
+bool wantStrokeWire(const boost::json::object& obj, const char* key,
+                    domain::TextStroke* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        fail(error, std::string("scene: a text item's '") + key +
+                        "' is required in scene 4");
+        return false;
+    }
+    if (!value->is_object()) {
+        fail(error, std::string("scene: '") + key + "' must be a whole effect record");
+        return false;
+    }
+    const boost::json::object& record = value->as_object();
+    if (!noUnknownKeys(record, {"enabled", "color", "width"}, "'stroke'", error)) {
+        return false;
+    }
+    Color color = kBlack;
+    if (!wantBool(record, "enabled", &out->enabled, error) ||
+        !wantColor(record, "color", &color, error)) {
+        return false;
+    }
+    out->color = hexColor(color);
+    // wantBoxEdge says "finite"; the contract says "0..32 authored pixels".
+    // Width 0 stays a valid record that draws no ink.
+    if (!wantBoxEdge(record, "width", &out->width, error)) {
+        return false;
+    }
+    if (out->width < 0.0 || out->width > 32.0) {
+        fail(error, "scene: 'stroke' width must be within 0..32");
+        return false;
+    }
+    return true;
+}
+
+bool wantShadowWire(const boost::json::object& obj, const char* key,
+                    domain::TextShadow* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        fail(error, std::string("scene: a text item's '") + key +
+                        "' is required in scene 4");
+        return false;
+    }
+    if (!value->is_object()) {
+        fail(error, std::string("scene: '") + key + "' must be a whole effect record");
+        return false;
+    }
+    const boost::json::object& record = value->as_object();
+    if (!noUnknownKeys(record,
+                       {"enabled", "color", "opacity", "offsetX", "offsetY", "blurSigma"},
+                       "'shadow'", error)) {
+        return false;
+    }
+    if (!wantBool(record, "enabled", &out->enabled, error)) {
+        return false;
+    }
+    Color color = kBlack;
+    if (!wantColor(record, "color", &color, error)) {
+        return false;
+    }
+    out->color = hexColor(color);
+    // One band sentence per number: wantBoxEdge's "finite" plus the
+    // contract's bounds. 0 opacity is a valid record that draws no ink.
+    if (!wantBoxEdge(record, "opacity", &out->opacity, error)) {
+        return false;
+    }
+    if (out->opacity < 0.0 || out->opacity > 1.0) {
+        fail(error, "scene: 'shadow' opacity must be within 0..1");
+        return false;
+    }
+    if (!wantBoxEdge(record, "offsetX", &out->offsetX, error) ||
+        !wantBoxEdge(record, "offsetY", &out->offsetY, error)) {
+        return false;
+    }
+    if (std::abs(out->offsetX) > 256.0 || std::abs(out->offsetY) > 256.0) {
+        fail(error, "scene: 'shadow' offsets must be within -256..256");
+        return false;
+    }
+    if (!wantBoxEdge(record, "blurSigma", &out->blurSigma, error)) {
+        return false;
+    }
+    if (out->blurSigma < 0.0 || out->blurSigma > 64.0) {
+        fail(error, "scene: 'shadow' blur must be within 0..64");
+        return false;
+    }
+    return true;
+}
+
+// The wire form of one effect record (task TS.1): written WHOLE, in a fixed
+// key order, exactly as the background's pair is written whole — a record
+// the reader validates in full or refuses. The colour crosses PACKED like
+// every other colour on this wire: the compile vetted the string already,
+// so parseColor cannot fail here, and kBlack is only the belt.
+boost::json::object strokeWire(const domain::TextStroke& stroke) {
+    Color color = kBlack;
+    parseColor(stroke.color, &color);
+    boost::json::object out;
+    out.emplace("enabled", stroke.enabled);
+    out.emplace("color", static_cast<std::uint32_t>(color));
+    out.emplace("width", stroke.width);
+    return out;
+}
+
+boost::json::object shadowWire(const domain::TextShadow& shadow) {
+    Color color = kBlack;
+    parseColor(shadow.color, &color);
+    boost::json::object out;
+    out.emplace("enabled", shadow.enabled);
+    out.emplace("color", static_cast<std::uint32_t>(color));
+    out.emplace("opacity", shadow.opacity);
+    out.emplace("offsetX", shadow.offsetX);
+    out.emplace("offsetY", shadow.offsetY);
+    out.emplace("blurSigma", shadow.blurSigma);
+    return out;
+}
+
 }  // namespace
 
 bool operator==(const Background& a, const Background& b) {
@@ -257,10 +473,20 @@ bool operator==(const Background& a, const Background& b) {
 bool operator!=(const Background& a, const Background& b) { return !(a == b); }
 
 bool operator==(const SceneItem& a, const SceneItem& b) {
+    // The style block is part of what a text item IS on screen (task
+    // TS.1): 400-to-700, shrink-to-fixed and off-to-on stroke are all new
+    // pictures, not the same picture redrawn. The effect colours only mean
+    // something when their record is enabled — but the record is atomic,
+    // so the WHOLE record compares, disabled included: an explicit
+    // "no outline" over a themed outline is a different answer from a
+    // payload that never spoke, and the two must not dedupe to one frame.
     return a.isImage == b.isImage && a.lines == b.lines && a.color == b.color &&
            a.fontFamily == b.fontFamily && a.fontSize == b.fontSize && a.x == b.x &&
            a.y == b.y && a.width == b.width && a.height == b.height &&
            a.align == b.align && a.lineSpacing == b.lineSpacing &&
+           a.fontWeight == b.fontWeight && a.fontStyle == b.fontStyle &&
+           a.fitMode == b.fitMode && a.minFontSize == b.minFontSize &&
+           a.stroke == b.stroke && a.shadow == b.shadow &&
            a.assetId == b.assetId && a.assetPath == b.assetPath;
 }
 bool operator!=(const SceneItem& a, const SceneItem& b) { return !(a == b); }
@@ -479,6 +705,29 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         // file gets a meaning nothing can write.
         item.align = look.align.empty() ? std::string("center") : look.align;
         item.lineSpacing = look.lineSpacing;
+        // The TS.1 style block (task TS.1): ResolvedAppearance already answered
+        // every field — the customization, the first theme that carries it,
+        // then the contract's concrete default — so the compile copies, and
+        // only normalises the effect colours to the canonical "#rrggbb" the
+        // wire round-trip produces. Nothing here guesses: a slide nobody
+        // styled compiles to 400/normal/shrink/12/disabled, the pixels the
+        // renderer has always drawn.
+        item.fontWeight = look.fontWeight;
+        item.fontStyle = look.fontStyle;
+        item.fitMode = look.fitMode;
+        item.minFontSize = look.minFontSize;
+        item.stroke = look.stroke;
+        {
+            Color strokeColor = kBlack;
+            parseColor(item.stroke.color, &strokeColor);
+            item.stroke.color = hexColor(strokeColor);
+        }
+        item.shadow = look.shadow;
+        {
+            Color shadowColor = kBlack;
+            parseColor(item.shadow.color, &shadowColor);
+            item.shadow.color = hexColor(shadowColor);
+        }
         scene.items.push_back(std::move(item));
     }
 
@@ -585,6 +834,15 @@ boost::json::value toJson(const Scene& scene) {
         jsonItem.emplace("height", item.height);
         jsonItem.emplace("align", item.align);
         jsonItem.emplace("lineSpacing", item.lineSpacing);
+        // The TS.1 style block, ALWAYS written (scene 4): a text item whose
+        // style the reader has not validated must not draw, so none of it
+        // travels by absence — even the defaults say "default" by name.
+        jsonItem.emplace("fontWeight", item.fontWeight);
+        jsonItem.emplace("fontStyle", item.fontStyle);
+        jsonItem.emplace("fitMode", item.fitMode);
+        jsonItem.emplace("minFontSize", item.minFontSize);
+        jsonItem.emplace("stroke", strokeWire(item.stroke));
+        jsonItem.emplace("shadow", shadowWire(item.shadow));
         items.push_back(std::move(jsonItem));
     }
     root.emplace("items", std::move(items));
@@ -603,9 +861,15 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     const boost::json::object& root = value.as_object();
 
     const boost::json::value* format = field(root, "scene");
-    if (format == nullptr || !format->is_int64() ||
-        format->as_int64() != kSceneFormat) {
-        fail(error, "scene: unsupported scene format (this build reads scene 2)");
+    // Scene 4 is this build's format; legacy scene 3 keeps a reader — an
+    // absent style is the contract's concrete defaults, which are the
+    // pixels scene-3 workers drew (scene.h's wire doc owns the argument).
+    const bool legacyScene = format != nullptr && format->is_int64() &&
+                             format->as_int64() == kSceneFormatLegacy;
+    if ((format == nullptr || !format->is_int64() ||
+         (format->as_int64() != kSceneFormat && !legacyScene))) {
+        fail(error,
+             "scene: unsupported scene format (this build reads scene 4 and legacy scene 3)");
         return false;
     }
 
@@ -788,8 +1052,15 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
             return false;
         }
         if (!noUnknownKeys(jsonItem,
-                           {"kind", "lines", "color", "fontFamily", "fontSize", "x", "y",
-                            "width", "height", "align", "lineSpacing"},
+                           legacyScene
+                               ? std::initializer_list<const char*>{
+                                     "kind", "lines", "color", "fontFamily", "fontSize", "x",
+                                     "y", "width", "height", "align", "lineSpacing"}
+                               : std::initializer_list<const char*>{
+                                     "kind", "lines", "color", "fontFamily", "fontSize", "x",
+                                     "y", "width", "height", "align", "lineSpacing",
+                                     "fontWeight", "fontStyle", "fitMode", "minFontSize",
+                                     "stroke", "shadow"},
                            "a text item", error)) {
             return false;
         }
@@ -849,6 +1120,20 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
             !wantBoxSize(jsonItem, "height", &item.height, error) ||
             !wantAlign(jsonItem, "align", &item.align, error) ||
             !wantLineSpacing(jsonItem, "lineSpacing", &item.lineSpacing, error)) {
+            return false;
+        }
+        // Scene 4 REQUIRES the style block (its keys passed the closed-set
+        // gate above only because this format defines them); scene 3 said
+        // nothing and keeps the struct's concrete defaults — 400, upright,
+        // shrink, 12, no ink — which is exactly what it always drew.
+        if (!legacyScene &&
+            (!wantFontWeight(jsonItem, "fontWeight", &item.fontWeight, error) ||
+             !wantStyleWord(jsonItem, "fontStyle", "normal", "italic", &item.fontStyle,
+                            error) ||
+             !wantStyleWord(jsonItem, "fitMode", "shrink", "fixed", &item.fitMode, error) ||
+             !wantMinFontSize(jsonItem, "minFontSize", &item.minFontSize, error) ||
+             !wantStrokeWire(jsonItem, "stroke", &item.stroke, error) ||
+             !wantShadowWire(jsonItem, "shadow", &item.shadow, error))) {
             return false;
         }
         scene.items.push_back(std::move(item));

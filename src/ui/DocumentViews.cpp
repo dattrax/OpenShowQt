@@ -302,6 +302,51 @@ QVariantMap DocumentViews::boxAsset(const openshow::domain::SlideItem* box) cons
     return map;
 }
 
+namespace {
+
+// The TS.1 style fields on a theme row (task TS.1), written the placement
+// row's way: a ...Set flag answers "does this theme speak?" and the value
+// follows — the scalars at the contract's default when silent, the effect
+// records as maps that are EMPTY when the theme carries none (a record has
+// no honest zero to spell instead, and `enabled:false` is a REAL record
+// the flag distinguishes from silence). Shared by the list row and the
+// wearing-theme row so the two can never disagree about one theme.
+void insertThemeStyleRow(QVariantMap& entry, const openshow::domain::Theme& theme) {
+    entry.insert(QStringLiteral("fontWeightSet"), theme.fontWeight.has_value());
+    entry.insert(QStringLiteral("fontWeight"),
+                 theme.fontWeight.value_or(openshow::domain::kDefaultFontWeight));
+    entry.insert(QStringLiteral("fontStyleSet"), theme.fontStyle.has_value());
+    entry.insert(QStringLiteral("fontStyle"),
+                 QString::fromStdString(theme.fontStyle.value_or("normal")));
+    entry.insert(QStringLiteral("fitModeSet"), theme.fitMode.has_value());
+    entry.insert(QStringLiteral("fitMode"),
+                 QString::fromStdString(theme.fitMode.value_or("shrink")));
+    entry.insert(QStringLiteral("minFontSizeSet"), theme.minFontSize.has_value());
+    entry.insert(QStringLiteral("minFontSize"),
+                 theme.minFontSize.value_or(openshow::domain::kDefaultMinFontSize));
+    entry.insert(QStringLiteral("strokeSet"), theme.stroke.has_value());
+    QVariantMap stroke;
+    if (theme.stroke.has_value()) {
+        stroke.insert(QStringLiteral("enabled"), theme.stroke->enabled);
+        stroke.insert(QStringLiteral("color"), QString::fromStdString(theme.stroke->color));
+        stroke.insert(QStringLiteral("width"), theme.stroke->width);
+    }
+    entry.insert(QStringLiteral("stroke"), stroke);
+    entry.insert(QStringLiteral("shadowSet"), theme.shadow.has_value());
+    QVariantMap shadow;
+    if (theme.shadow.has_value()) {
+        shadow.insert(QStringLiteral("enabled"), theme.shadow->enabled);
+        shadow.insert(QStringLiteral("color"), QString::fromStdString(theme.shadow->color));
+        shadow.insert(QStringLiteral("opacity"), theme.shadow->opacity);
+        shadow.insert(QStringLiteral("offsetX"), theme.shadow->offsetX);
+        shadow.insert(QStringLiteral("offsetY"), theme.shadow->offsetY);
+        shadow.insert(QStringLiteral("blurSigma"), theme.shadow->blurSigma);
+    }
+    entry.insert(QStringLiteral("shadow"), shadow);
+}
+
+}  // namespace
+
 QVariantList DocumentViews::themes() const {
     QVariantList list;
     for (const openshow::domain::Id& id : fDocuments.themeIds()) {
@@ -336,6 +381,7 @@ QVariantList DocumentViews::themes() const {
             rect.insert(QStringLiteral("height"), theme->placement->height);
         }
         entry.insert(QStringLiteral("placement"), rect);
+        insertThemeStyleRow(entry, *theme);
         // The seeded Default theme (amendment 2026-11-02): editable like
         // any theme, but the application will not delete it, and the
         // editor's Delete button says so before the domain refuses.
@@ -380,6 +426,10 @@ QVariantMap DocumentViews::currentTheme(const Cursor& cursor) const {
     map.insert(QStringLiteral("fontSize"), theme->fontSize);
     map.insert(QStringLiteral("align"), QString::fromStdString(theme->align));
     map.insert(QStringLiteral("lineSpacing"), theme->lineSpacing);
+    // The style block rides both rows (task TS.1), one helper keeping the
+    // list and the wearing-theme view telling the same story about one
+    // theme's weight, face, fit and effects.
+    insertThemeStyleRow(map, *theme);
     return map;
 }
 

@@ -895,7 +895,14 @@ bool sameService(const Documents& a, const Documents& b) {
             // 2026-11-01): a round trip that dropped it would compare equal
             // while quietly moving every wearing slide's words. Contexts
             // (task TF.1) follow the same rule, entry and field by field.
-            xa->placement != xb->placement || xa->contexts != xb->contexts) {
+            xa->placement != xb->placement || xa->contexts != xb->contexts ||
+            // The TS.1 style block is theme state by the same argument:
+            // a round trip that dropped the weight or turned a disabled
+            // record back into silence would compare equal while the
+            // audience's text changed under it.
+            xa->fontWeight != xb->fontWeight || xa->fontStyle != xb->fontStyle ||
+            xa->fitMode != xb->fitMode || xa->minFontSize != xb->minFontSize ||
+            xa->stroke != xb->stroke || xa->shadow != xb->shadow) {
             return false;
         }
     }
@@ -1781,8 +1788,8 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                   manifest.find("\"backgroundGradient\":\"\"") != std::string::npos,
               "the gradient AND the flat are both written by name — leaving the "
               "default to an absent key is the rule this project refuses");
-        check(manifest.find("\"format\":7") != std::string::npos,
-              "the manifest says format 7");
+        check(manifest.find("\"format\":8") != std::string::npos,
+              "the manifest says format 8");
         check(openshow::domain::saveService(back, tempRoot / "v5-regraded", &error) &&
                   readFile(tempRoot / "v5-regraded" / "service.json") == manifest,
               "re-saving a graded service writes a byte-identical manifest");
@@ -2802,6 +2809,387 @@ void exerciseTextContextChain() {
           "and the empty name takes it off again");
 }
 
+// TS.1: the text-style verbs, their bands, and the resolver's walk over the
+// style block. The contract lives in documents.h; what this exercises is
+// that the doors QUOTE it — the theme verb, the customization door, and the
+// chain's first-carrier rule with `enabled:false` honoured as an answer.
+void exerciseTextStyle() {
+    std::string error;
+    Documents docs;
+    const Id show = docs.createShow("Styled");
+    const Id plain = docs.appendSlide(show);
+    const Id current = docs.createTheme("Current", "#555555", "#666666", "", "Current Sans",
+                                        60.0, "center", 1.5, &error);
+    const Id base = docs.createTheme("Base", "#111111", "#222222", "", "Base Serif",
+                                     40.0, "left", 1.1, &error);
+    check(!show.empty() && !plain.empty() && !current.empty() && !base.empty() &&
+              docs.setShowDefaultTheme(show, base, &error) &&
+              docs.setCurrentTheme(current, &error),
+          "a show with a base default theme and a current theme worn over it exists");
+
+    // An unstyled chain resolves to the CONTRACT's concrete answers — the
+    // numbers describe what every renderer has always drawn, so an old
+    // document keeps its exact pixels without carrying a single new key.
+    ResolvedAppearance look = docs.appearanceForSlide(show, plain);
+    check(look.fontWeight == 400 && look.fontStyle == "normal" && look.fitMode == "shrink" &&
+              look.minFontSize == 12.0 && !look.stroke.enabled && !look.shadow.enabled &&
+              look.stroke.color == "#000000" && look.stroke.width == 2.0 &&
+              look.shadow.opacity == 0.65 && look.shadow.offsetX == 2.0 &&
+              look.shadow.blurSigma == 4.0,
+          "the style-less chain lands on the contract's defaults to the number");
+
+    // --- the theme verb: whole-set replacement, in setThemeContexts' manner ---
+    openshow::domain::TextStroke outline;
+    outline.enabled = true;
+    outline.color = "#ffcc00";
+    outline.width = 3.0;
+    openshow::domain::ThemeTextStyle style;
+    style.fontWeight = 700;
+    style.stroke = outline;
+    check(docs.setThemeTextStyle(current, style, &error) &&
+              docs.findTheme(current)->fontWeight == 700 &&
+              docs.findTheme(current)->stroke == outline &&
+              !docs.findTheme(current)->fontStyle.has_value(),
+          "the verb sets the fields it was given and leaves the rest of the theme silent");
+    openshow::domain::ThemeTextStyle quieter;
+    quieter.fontWeight = 500;
+    check(docs.setThemeTextStyle(current, quieter, &error) &&
+              docs.findTheme(current)->fontWeight == 500 &&
+              !docs.findTheme(current)->stroke.has_value(),
+          "replacement is WHOLE: a key the new set does not give stops being the theme's "
+          "answer, exactly like applyThemeContext");
+    check(docs.setThemeTextStyle(current, openshow::domain::ThemeTextStyle{}, &error) &&
+              !docs.findTheme(current)->fontWeight.has_value(),
+          "the empty set silences the theme entirely — back to carrying no style opinion");
+
+    // --- the bands the verbs refuse, each naming its own ---
+    const auto refusedStyle = [&](const openshow::domain::ThemeTextStyle& candidate,
+                                  const std::string& expectIn, const char* what) {
+        error.clear();
+        const bool refused = !docs.setThemeTextStyle(current, candidate, &error);
+        if (!check(refused && error.find(expectIn) != std::string::npos, what)) {
+            std::fprintf(stderr, "   wanted \"%s\", verb %s: %s\n", expectIn.c_str(),
+                         refused ? "said" : "ACCEPTED", error.c_str());
+        }
+    };
+    openshow::domain::ThemeTextStyle bad;
+    bad.fontWeight = 99;
+    refusedStyle(bad, "100..900", "a weight below the CSS scale is refused naming the band");
+    bad.fontWeight = 901;
+    refusedStyle(bad, "100..900", "and one above it");
+    bad = openshow::domain::ThemeTextStyle{};
+    bad.fontStyle = "oblique";
+    refusedStyle(bad, "\"normal\" or \"italic\"",
+                 "a made-up font style is refused naming its two words");
+    bad.fontStyle = "";
+    refusedStyle(bad, "\"normal\" or \"italic\"",
+                 "and so is the empty string: silence is absence, not a word");
+    bad = openshow::domain::ThemeTextStyle{};
+    bad.fitMode = "auto";
+    refusedStyle(bad, "\"shrink\" or \"fixed\"", "a made-up fit is refused naming its two words");
+    bad = openshow::domain::ThemeTextStyle{};
+    bad.minFontSize = 0.0;
+    refusedStyle(bad, "1..4096", "a minimum of 0 is refused: invisible text is a clear, not a fit");
+    bad.minFontSize = 4097.0;
+    refusedStyle(bad, "1..4096", "and so is one past the ceiling");
+    bad = openshow::domain::ThemeTextStyle{};
+    openshow::domain::TextStroke fat;
+    fat.enabled = true;
+    fat.width = 33.0;
+    bad.stroke = fat;
+    refusedStyle(bad, "0..32", "a 33-pixel stroke is refused naming the band");
+    bad.stroke->width = -1.0;
+    refusedStyle(bad, "0..32", "and a negative one with it");
+    bad.stroke->width = 2.0;
+    bad.stroke->color = "#12345";
+    refusedStyle(bad, "is not #rgb or #rrggbb",
+                 "an effect colour faces the same colour rule as every other");
+    bad = openshow::domain::ThemeTextStyle{};
+    openshow::domain::TextShadow cast;
+    cast.enabled = true;
+    cast.opacity = 1.5;
+    bad.shadow = cast;
+    refusedStyle(bad, "0..1", "a 150% shadow is refused naming its band");
+    bad.shadow->opacity = 0.5;
+    bad.shadow->offsetX = 257.0;
+    refusedStyle(bad, "-256..256", "and an offset a pixel past a quarter of the canvas");
+    bad.shadow->offsetX = 2.0;
+    bad.shadow->blurSigma = 65.0;
+    refusedStyle(bad, "0..64", "and a blur beyond the ceiling");
+    check(!docs.findTheme(current)->fontWeight.has_value() &&
+              !docs.findTheme(current)->stroke.has_value() &&
+              !docs.findTheme(current)->shadow.has_value(),
+          "a refused verb leaves the theme exactly as it was — no half style survives");
+
+    // The widest legal block is ACCEPTED: every band edge and a disabled
+    // record with a look of its own are data, not errors.
+    openshow::domain::ThemeTextStyle widest;
+    widest.fontWeight = 900;
+    widest.fontStyle = "italic";
+    widest.fitMode = "fixed";
+    widest.minFontSize = 4096.0;
+    openshow::domain::TextStroke hairline;  // enabled, width 0: as if outlined, no ink
+    hairline.enabled = true;
+    hairline.color = "#abc";
+    hairline.width = 0.0;
+    widest.stroke = hairline;
+    openshow::domain::TextShadow extreme;
+    extreme.enabled = false;  // a refusal that still carries its full look
+    extreme.color = "#ffffff";
+    extreme.opacity = 1.0;
+    extreme.offsetX = -256.0;
+    extreme.offsetY = 256.0;
+    extreme.blurSigma = 64.0;
+    widest.shadow = extreme;
+    check(docs.setThemeTextStyle(current, widest, &error) &&
+              docs.findTheme(current)->fontWeight == 900 &&
+              docs.findTheme(current)->stroke == hairline &&
+              docs.findTheme(current)->shadow == extreme,
+          "every band edge and a disabled record with a full look are accepted as authored");
+    widest.fontWeight = 100;
+    widest.minFontSize = 1.0;
+    check(docs.setThemeTextStyle(current, widest, &error),
+          "and so is the bottom of each band");
+
+    // --- the resolver's walk: customization, then first CARRIER, then default ---
+    openshow::domain::ThemeTextStyle baseStyle;
+    baseStyle.fontWeight = 300;
+    openshow::domain::TextShadow flat;  // base's explicit "no shadow here"
+    flat.enabled = false;
+    baseStyle.shadow = flat;
+    openshow::domain::ThemeTextStyle currentStyle;
+    currentStyle.fontStyle = "italic";
+    currentStyle.stroke = outline;
+    check(docs.setThemeTextStyle(current, currentStyle, &error) &&
+              docs.setThemeTextStyle(base, baseStyle, &error),
+          "the current theme carries slant and stroke; the base carries weight and a refusal");
+    look = docs.appearanceForSlide(show, plain);
+    check(look.fontWeight == 300 && look.fontStyle == "italic" && look.fitMode == "shrink" &&
+              look.minFontSize == 12.0 && look.stroke == outline && look.shadow == flat,
+          "each field falls to the first theme that carries it, and a carried enabled:false "
+          "shadow resolves as the explicit refusal it is — not as silence");
+
+    // The slide's own set outranks both, field by field, including a
+    // customized refusal over a themed outline.
+    openshow::domain::TextStroke off;
+    off.enabled = false;
+    off.color = "#00ff00";
+    off.width = 0.0;
+    SlideCustomization changed;
+    changed.fontWeight = 900;
+    changed.stroke = off;
+    check(docs.setSlideCustomizations(show, plain, changed, &error),
+          "the slide customizes its weight and switches the themed outline off");
+    look = docs.appearanceForSlide(show, plain);
+    check(look.fontWeight == 900 && look.stroke == off && look.fontStyle == "italic" &&
+              look.shadow == flat,
+          "the slide answers its two fields while the themes keep answering the rest");
+    const SlideCustomization& spoken = docs.findShow(show)->slides[0].customizations;
+    check(spoken.hasField("fontWeight") && spoken.hasField("stroke") &&
+              !spoken.hasField("fontStyle") && !spoken.hasField("shadow"),
+          "the sparse set says WHICH fields the slide spoke, style names included");
+
+    // What the theme door refuses, the customization door refuses too: a
+    // slide cannot style itself into an appearance no theme could carry.
+    SlideCustomization rogue;
+    rogue.fontWeight = 45;
+    check(!docs.setSlideCustomizations(show, plain, rogue, &error) &&
+              error.find("100..900") != std::string::npos,
+          "a customized weight off the scale is refused by the customization door");
+    rogue = SlideCustomization{};
+    rogue.shadow = extreme;
+    rogue.shadow->blurSigma = 100.0;
+    check(!docs.setSlideCustomizations(show, plain, rogue, &error) &&
+              error.find("0..64") != std::string::npos,
+          "and so is a shadow record beyond the blur ceiling");
+    check(docs.findShow(show)->slides[0].customizations.fontWeight == 900,
+          "the refused customization left the slide's own set untouched");
+
+    // Reverting a style field hands it back: clearField speaks the names,
+    // and the whole revert returns the slide to the chain's answer.
+    SlideCustomization minusStroke = changed;
+    minusStroke.clearField("stroke");
+    check(docs.setSlideCustomizations(show, plain, minusStroke, &error) &&
+              docs.appearanceForSlide(show, plain).stroke == outline,
+          "clearing the customized stroke hands the outline back to the current theme");
+    check(docs.setSlideCustomizations(show, plain, SlideCustomization{}, &error) &&
+              docs.appearanceForSlide(show, plain).fontWeight == 300 &&
+              docs.appearanceForSlide(show, plain).stroke == outline,
+          "the full revert returns every style field to the themes");
+}
+
+// TS.1's storage half: a styled service round-trips through the file to the
+// number, silence is written as silence, and the format-era guards refuse
+// every way a pre-8 file can carry a meaning it never defined.
+void exerciseTextStyleStorage(const fs::path& tempRoot) {
+    std::string error;
+    int seq = 0;
+    const auto refusesJson = [&](const std::string& manifest, const std::string& expectIn,
+                                 const char* what) {
+        const fs::path dir = tempRoot / ("style-refuse-" + std::to_string(++seq));
+        std::filesystem::create_directories(dir);
+        writeFile(dir / "service.json", manifest);
+        Documents attempt;
+        error.clear();
+        const bool refused = openshow::domain::loadService(&attempt, dir, &error);
+        if (!check(!refused && error.find(expectIn) != std::string::npos, what)) {
+            std::fprintf(stderr, "   wanted \"%s\", load %s: %s\n", expectIn.c_str(),
+                         refused ? "succeeded" : "said", error.c_str());
+        }
+    };
+
+    // --- a styled service: written, read back, and written again identically ---
+    {
+        const fs::path dir = tempRoot / "style-round";
+        Documents docs;
+        const Id show = docs.createShow("Lit");
+        const Id styled = docs.appendSlide(show);
+        const Id plain = docs.appendSlide(show);
+        const Id theme = docs.createTheme("Bold", "#ffffff", "#000000", "", "Serif", 64.0,
+                                          "center", 1.5, &error);
+        openshow::domain::TextStroke outline;
+        outline.enabled = true;
+        outline.color = "#ff0000";
+        outline.width = 7.5;
+        openshow::domain::ThemeTextStyle style;
+        style.fontWeight = 800;
+        style.fontStyle = "italic";
+        style.fitMode = "fixed";
+        style.minFontSize = 24.5;
+        style.stroke = outline;
+        openshow::domain::TextShadow cast;
+        cast.enabled = true;
+        cast.color = "#0000ff";
+        cast.opacity = 0.25;
+        cast.offsetX = -30.0;
+        cast.offsetY = 12.0;
+        cast.blurSigma = 0.0;
+        style.shadow = cast;
+        SlideCustomization changed;
+        changed.fontWeight = 100;
+        openshow::domain::TextStroke off;  // the slide's refusal, whole, with its own look
+        off.enabled = false;
+        off.color = "#00ff00";
+        off.width = 0.0;
+        changed.stroke = off;
+        check(!theme.empty() && !styled.empty() &&
+                  docs.setThemeTextStyle(theme, style, &error) &&
+                  docs.setSlideCustomizations(show, styled, changed, &error) &&
+                  openshow::domain::saveService(docs, dir, &error),
+              "a theme with the whole style block and a slide with two style answers save");
+        const std::string manifest = readFile(dir / "service.json");
+        // Keyed by NAME, not by digits: this boost spells 24.5 as 2.45E1,
+        // so a number-exact string check would test the JSON library's
+        // formatter rather than this codec's discipline. The values get
+        // pinned field-for-field by the round trip right below.
+        check(manifest.find("\"fontWeight\":800") != std::string::npos &&
+                  manifest.find("\"fitMode\":\"fixed\"") != std::string::npos &&
+                  manifest.find("\"minFontSize\":") != std::string::npos &&
+                  manifest.find("\"blurSigma\":") != std::string::npos &&
+                  manifest.find("\"offsetX\":") != std::string::npos,
+              "the theme's style is written BY NAME, the zero blur included — "
+              "leaving an authored answer to an absent key is the rule this project refuses");
+        Documents back;
+        check(openshow::domain::loadService(&back, dir, &error) && sameService(back, docs) &&
+                  back.findTheme(theme)->fontWeight == 800 &&
+                  back.findTheme(theme)->fontStyle == "italic" &&
+                  back.findTheme(theme)->fitMode == "fixed" &&
+                  back.findTheme(theme)->minFontSize == 24.5 &&
+                  back.findTheme(theme)->stroke == outline &&
+                  back.findTheme(theme)->shadow == cast,
+              "the styled theme reads back field for field and the whole service compares");
+        const SlideCustomization& spoken = back.findShow(show)->slides[0].customizations;
+        check(spoken.fontWeight == 100 && spoken.stroke == off && !spoken.shadow.has_value(),
+              "the slide's weight and its whole disabled stroke survive, and the fields it "
+              "never spoke stay unspoken");
+        check(openshow::domain::saveService(back, tempRoot / "style-again", &error) &&
+                  readFile(tempRoot / "style-again" / "service.json") == manifest,
+              "re-saving a styled service writes a byte-identical manifest");
+    }
+
+    // Silence is written as silence: a service nobody styled gains not one
+    // of the new keys, so old documents keep their shape through this build.
+    {
+        Documents docs;
+        const Id show = docs.createShow("Plain");
+        docs.appendSlide(show);
+        const Id theme = docs.createTheme("Quiet", "#ffffff", "#000000", "", "Serif", 64.0,
+                                          "center", 1.5, &error);
+        const fs::path dir = tempRoot / "style-silent";
+        check(!theme.empty() && openshow::domain::saveService(docs, dir, &error),
+              "a plain service saves");
+        const std::string manifest = readFile(dir / "service.json");
+        for (const char* key : {"\"fontWeight\"", "\"fontStyle\"", "\"fitMode\"",
+                                "\"minFontSize\"", "\"stroke\"", "\"shadow\""}) {
+            check(manifest.find(key) == std::string::npos,
+                  (std::string("a theme that carries no style writes no ") + key)
+                      .c_str());
+        }
+    }
+
+    // --- the era guards: a style key in a pre-8 file is somebody else's meaning ---
+    {
+        // One theme fixture, spelled complete, waiting for exactly one
+        // style key to be appended before its closing brace.
+        const std::string themeStart =
+            R"({"id":"theme1","name":"House","textColor":"#ffffff","backgroundColor":"#000000",)"
+            R"("backgroundGradient":"","fontFamily":"","fontSize":64,"align":"center",)"
+            R"("lineSpacing":1.5)";
+        const std::string themesTail = R"(],"assets":[],"playlists":[]})";
+        const auto themed = [&](unsigned long long format, const std::string& extraStyle) {
+            return std::string(R"({"format":)") + std::to_string(format) +
+                   R"(,"nextOrdinal":99,"currentThemeId":"","shows":[],"themes":[)" +
+                   themeStart + extraStyle + "}" + themesTail;
+        };
+        refusesJson(themed(7, R"(,"fontWeight":700)"),
+                    "carries \"fontWeight\" in a format 7 file",
+                    "a hand-bumped theme weight in a format-7 file is refused naming the era");
+        refusesJson(themed(7, R"(,"stroke":{"enabled":true,"color":"#000000","width":2})"),
+                    "carries \"stroke\" in a format 7 file",
+                    "and a stroke record in that same era is refused with it");
+        // The customization object exists since format 6 — but its STYLE
+        // fields are format-8 meanings one level deeper, and the guard
+        // reaches them there.
+        const std::string slideStart =
+            R"({"id":"slide1","group":"","items":[],"notes":"","themeId":"",)"
+            R"("fit":"cover","backgroundAssetId":"","customizations":)";
+        const auto slideWith = [&](unsigned long long format, const std::string& customJson) {
+            return std::string(R"({"format":)") + std::to_string(format) +
+                   R"(,"nextOrdinal":99,"currentThemeId":"","shows":[{"id":"show1",)"
+                   R"("name":"Old","slides":[)" +
+                   slideStart + customJson +
+                   R"(}]}],"themes":[],"assets":[],"playlists":[]})";
+        };
+        refusesJson(slideWith(6, R"({"stroke":{"enabled":true,"color":"#000000","width":2}})"),
+                    "customization 'stroke' in a format 6 file",
+                    "a stroke inside a format-6 slide's customizations is refused naming the era");
+        refusesJson(slideWith(7, R"({"minFontSize":20})"),
+                    "customization 'minFontSize' in a format 7 file",
+                    "and a minimum size inside a format-7 one with it");
+        // Format 8 is where these keys mean something — but MEANING is the
+        // domain's sentence: a file in the right era can still carry a
+        // value no renderer could honour, and it is refused for that.
+        refusesJson(themed(8, R"(,"fontWeight":901)"),
+                    "carries text style the renderer cannot honour",
+                    "a format-8 theme with an off-scale weight is refused by the domain's "
+                    "own sentence, not just the reader's shape check");
+        refusesJson(themed(8, R"(,"stroke":{"enabled":true})"),
+                    "whole record or nothing",
+                    "half a stroke record is refused: an effect travels complete or not at all");
+        refusesJson(themed(8, R"(,"shadow":{"enabled":true,"color":"#000000","opacity":0.5,)"
+                               R"("offsetX":2,"offsetY":2,"blurSigma":4,"feather":8})"),
+                    "shadow has no field 'feather'",
+                    "and a shadow member the record never had is refused naming itself");
+        refusesJson(slideWith(8, R"({"fontWeight":99})"),
+                    "carries a customization the renderer cannot honour",
+                    "an off-scale customized weight in a format-8 file meets the same "
+                    "sentence the verb quotes");
+        refusesJson(slideWith(8, R"({"fitMode":"auto"})"),
+                    "\"shrink\" or \"fixed\"",
+                    "and a made-up fit name with it");
+    }
+}
+
 void exerciseDefaultThemeFloor(const fs::path& tempRoot) {
     Documents docs;
     std::string error;
@@ -3693,6 +4081,7 @@ int main() {
     exerciseThemeChain();
     exerciseThemePlacement();
     exerciseTextContextChain();
+    exerciseTextStyle();
     exercisePlaylists();
     exerciseFailureLeavesNoTrace();
 
@@ -3702,6 +4091,7 @@ int main() {
     std::filesystem::remove_all(tempRoot);
     exercisePersistence(tempRoot);
     exerciseBoxStorage(tempRoot);
+    exerciseTextStyleStorage(tempRoot);
     exerciseDefaultThemeFloor(tempRoot);
     exerciseScriptureShows(tempRoot);
     std::filesystem::remove_all(tempRoot);

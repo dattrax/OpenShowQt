@@ -730,6 +730,170 @@ bool DocumentController::clearThemePlacement(const QString& themeId) {
     return true;
 }
 
+namespace {
+
+// The style verb's strict SHAPE check (task TS.1). The bands belong to the
+// domain (setThemeTextStyle quotes validThemeTextStyle); this function only
+// decides whether the QVariantMap even has the shape of that sentence —
+// unknown keys refused naming themselves, a weight that must BE an integer
+// rather than become one ("700" from a text field and 700 from a spin box
+// are not the same answer, and defaulting the difference is how a theme
+// gets a value nobody typed), and effect maps required member-for-member
+// whole. A shape this refuses is a theme the save would refuse right back.
+bool styleFromMap(const QVariantMap& style, openshow::domain::ThemeTextStyle* out,
+                  std::string* error) {
+    static const QStringList kAllowed{QStringLiteral("fontWeight"), QStringLiteral("fontStyle"),
+                                      QStringLiteral("fitMode"), QStringLiteral("minFontSize"),
+                                      QStringLiteral("stroke"), QStringLiteral("shadow")};
+    for (const QString& key : style.keys()) {
+        if (!kAllowed.contains(key)) {
+            *error = "'" + key.toStdString() + "' is not a text-style field";
+            return false;
+        }
+    }
+    if (style.contains(QStringLiteral("fontWeight"))) {
+        const QVariant value = style.value(QStringLiteral("fontWeight"));
+        const int type = value.userType();
+        const bool integral = type == QMetaType::Int || type == QMetaType::UInt ||
+                              type == QMetaType::LongLong || type == QMetaType::ULongLong;
+        if (!integral) {
+            *error = "font weight must be an integer, not a string or a decimal";
+            return false;
+        }
+        out->fontWeight = value.toInt();
+    }
+    if (style.contains(QStringLiteral("fontStyle"))) {
+        out->fontStyle = style.value(QStringLiteral("fontStyle")).toString().toStdString();
+    }
+    if (style.contains(QStringLiteral("fitMode"))) {
+        out->fitMode = style.value(QStringLiteral("fitMode")).toString().toStdString();
+    }
+    if (style.contains(QStringLiteral("minFontSize"))) {
+        const QVariant value = style.value(QStringLiteral("minFontSize"));
+        bool ok = false;
+        const double number = value.toDouble(&ok);
+        if (!ok) {
+            *error = "minimum font size must be a number";
+            return false;
+        }
+        out->minFontSize = number;
+    }
+    if (style.contains(QStringLiteral("stroke"))) {
+        const QVariant value = style.value(QStringLiteral("stroke"));
+        if (value.userType() != QMetaType::QVariantMap ) {
+            *error = "stroke is a whole record: {enabled, color, width}";
+            return false;
+        }
+        const QVariantMap record = value.toMap();
+        static const QStringList kMembers{QStringLiteral("enabled"), QStringLiteral("color"),
+                                          QStringLiteral("width")};
+        for (const QString& key : record.keys()) {
+            if (!kMembers.contains(key)) {
+                *error = "stroke has no member '" + key.toStdString() + "'";
+                return false;
+            }
+        }
+        openshow::domain::TextStroke stroke;
+        for (const QString& member : kMembers) {
+            if (!record.contains(member)) {
+                *error = "stroke is a whole record: member '" + member.toStdString() +
+                         "' is missing";
+                return false;
+            }
+        }
+        if (record.value(QStringLiteral("enabled")).userType() != QMetaType::Bool) {
+            *error = "stroke 'enabled' must be true or false";
+            return false;
+        }
+        stroke.enabled = record.value(QStringLiteral("enabled")).toBool();
+        stroke.color = record.value(QStringLiteral("color")).toString().toStdString();
+        bool ok = false;
+        stroke.width = record.value(QStringLiteral("width")).toDouble(&ok);
+        if (!ok) {
+            *error = "stroke 'width' must be a number";
+            return false;
+        }
+        out->stroke = stroke;
+    }
+    if (style.contains(QStringLiteral("shadow"))) {
+        const QVariant value = style.value(QStringLiteral("shadow"));
+        if (value.userType() != QMetaType::QVariantMap ) {
+            *error = "shadow is a whole record: {enabled, color, opacity, offsetX, offsetY, "
+                     "blurSigma}";
+            return false;
+        }
+        const QVariantMap record = value.toMap();
+        static const QStringList kMembers{QStringLiteral("enabled"), QStringLiteral("color"),
+                                          QStringLiteral("opacity"), QStringLiteral("offsetX"),
+                                          QStringLiteral("offsetY"), QStringLiteral("blurSigma")};
+        for (const QString& key : record.keys()) {
+            if (!kMembers.contains(key)) {
+                *error = "shadow has no member '" + key.toStdString() + "'";
+                return false;
+            }
+        }
+        openshow::domain::TextShadow shadow;
+        for (const QString& member : kMembers) {
+            if (!record.contains(member)) {
+                *error = "shadow is a whole record: member '" + member.toStdString() +
+                         "' is missing";
+                return false;
+            }
+        }
+        if (record.value(QStringLiteral("enabled")).userType() != QMetaType::Bool) {
+            *error = "shadow 'enabled' must be true or false";
+            return false;
+        }
+        shadow.enabled = record.value(QStringLiteral("enabled")).toBool();
+        shadow.color = record.value(QStringLiteral("color")).toString().toStdString();
+        bool ok = false;
+        shadow.opacity = record.value(QStringLiteral("opacity")).toDouble(&ok);
+        if (!ok) {
+            *error = "shadow 'opacity' must be a number";
+            return false;
+        }
+        shadow.offsetX = record.value(QStringLiteral("offsetX")).toDouble(&ok);
+        if (!ok) {
+            *error = "shadow 'offsetX' must be a number";
+            return false;
+        }
+        shadow.offsetY = record.value(QStringLiteral("offsetY")).toDouble(&ok);
+        if (!ok) {
+            *error = "shadow 'offsetY' must be a number";
+            return false;
+        }
+        shadow.blurSigma = record.value(QStringLiteral("blurSigma")).toDouble(&ok);
+        if (!ok) {
+            *error = "shadow 'blurSigma' must be a number";
+            return false;
+        }
+        out->shadow = shadow;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool DocumentController::setThemeTextStyle(const QString& themeId, const QVariantMap& style) {
+    flushText();
+    openshow::domain::ThemeTextStyle next;
+    std::string error;
+    if (!styleFromMap(style, &next, &error)) {
+        setStatus(QStringLiteral("theme style: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    // One verb, whole set (task TS.1): the domain vets the bands — weight in
+    // band, the two word sets, the bounded minimum, complete effect records —
+    // and the edit() wrapper is what makes the undo cost what it changes.
+    if (!edit([&] {
+            return fDocuments.setThemeTextStyle(themeId.toStdString(), next, &error);
+        })) {
+        setStatus(QStringLiteral("theme style: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
 QVariantMap DocumentController::themeContext(const QString& themeId, const QString& name) const {
     QVariantMap out;
     out.insert(QStringLiteral("set"), false);
@@ -897,6 +1061,15 @@ bool DocumentController::createThemeFromCurrent(const QString& name) {
     // (amendment 2026-11-01): the placement the chain resolves becomes the
     // new theme's own, so the slides that go on wearing it hold the line.
     const std::optional<openshow::domain::BoxRect> placement = base.placement;
+    // "What the slide draws now" includes HOW the words are set (task
+    // TS.1): the chain's CONCRETE style answers become the new theme's own,
+    // so a theme taken from a styled slide keeps the weight, the slant,
+    // the fit policy, the minimum and both effect records — a disabled
+    // record travels as the explicit refusal it is, and the new theme
+    // wearing itself later draws exactly the pixels this slide draws now.
+    const openshow::domain::ThemeTextStyle style{
+        base.fontWeight, base.fontStyle, base.fitMode, base.minFontSize, base.stroke,
+        base.shadow};
     std::string error;
     openshow::domain::Id created;
     if (!edit([&] {
@@ -907,6 +1080,10 @@ bool DocumentController::createThemeFromCurrent(const QString& name) {
             }
             if (placement.has_value() &&
                 !fDocuments.setThemePlacement(created, *placement, &error)) {
+                fDocuments.removeTheme(created, nullptr);
+                return false;
+            }
+            if (!fDocuments.setThemeTextStyle(created, style, &error)) {
                 fDocuments.removeTheme(created, nullptr);
                 return false;
             }
@@ -963,16 +1140,23 @@ bool DocumentController::duplicateTheme(const QString& themeId) {
     flushText();
     std::string error;
     if (!edit([&] {
-            const openshow::domain::Theme* source =
+            const openshow::domain::Theme* original =
                 fDocuments.findTheme(themeId.toStdString());
-            if (source == nullptr) {
+            if (original == nullptr) {
                 error = "no theme '" + themeId.toStdString() + "'";
                 return false;
             }
+            // The copy is taken UP FRONT: createTheme below appends to the
+            // very container this pointer reads through, and a pointer into
+            // a vector that reallocates is a pointer into freed memory.
+            // (It read its fields through stale bytes for as long as the
+            // duplicate only carried placement; reading six more fields,
+            // including a vector of contexts, is how that luck ends.)
+            const openshow::domain::Theme source = *original;
             const openshow::domain::Id copy = fDocuments.createTheme(
-                source->name + " copy", source->textColor, source->backgroundColor,
-                source->backgroundGradient, source->fontFamily, source->fontSize, source->align,
-                source->lineSpacing, &error);
+                source.name + " copy", source.textColor, source.backgroundColor,
+                source.backgroundGradient, source.fontFamily, source.fontSize, source.align,
+                source.lineSpacing, &error);
             if (copy.empty()) {
                 return false;
             }
@@ -980,8 +1164,34 @@ bool DocumentController::duplicateTheme(const QString& themeId) {
             // would restyle a show and quietly move nothing — "a starting
             // point to edit" means the whole look, where the words live
             // included. Nothing survives a refused half of one entry.
-            if (source->placement.has_value() &&
-                !fDocuments.setThemePlacement(copy, *source->placement, &error)) {
+            if (source.placement.has_value() &&
+                !fDocuments.setThemePlacement(copy, *source.placement, &error)) {
+                fDocuments.removeTheme(copy, nullptr);
+                return false;
+            }
+            // The contexts travel too (task TS.1 closes the older gap the
+            // duplication had left): the plan's inheritance rule says
+            // unknown context names survive theme duplication, and a copy
+            // that reads as a song under a Bible context is a copy that
+            // lied about the look.
+            if (!source.contexts.empty() &&
+                !fDocuments.setThemeContexts(copy, source.contexts, &error)) {
+                fDocuments.removeTheme(copy, nullptr);
+                return false;
+            }
+            // And the TS.1 style block: weight, slant, fit policy, the
+            // minimum size and both effect records, whole — including a
+            // disabled record, because THAT is the source theme's answer
+            // ("no outline, whatever the chain says") and a duplicate that
+            // dropped it would start drawing one.
+            openshow::domain::ThemeTextStyle style;
+            style.fontWeight = source.fontWeight;
+            style.fontStyle = source.fontStyle;
+            style.fitMode = source.fitMode;
+            style.minFontSize = source.minFontSize;
+            style.stroke = source.stroke;
+            style.shadow = source.shadow;
+            if (!fDocuments.setThemeTextStyle(copy, style, &error)) {
                 fDocuments.removeTheme(copy, nullptr);
                 return false;
             }
@@ -1254,7 +1464,11 @@ QVariantMap DocumentController::slideAppearance() const {
         if (name == "fontSize") return touched->fontSize.has_value();
         if (name == "align") return touched->align.has_value();
         if (name == "lineSpacing") return touched->lineSpacing.has_value();
-        return name == "placement" && touched->placement.has_value();
+        if (name == "placement") return touched->placement.has_value();
+        // The TS.1 style fields (task TS.1): the slide's sparse set answers
+        // by name, and "stroke"/"shadow" name one WHOLE record each — the
+        // badge reads "customized" exactly when the slide spoke.
+        return touched->hasField(name);
     };
     field("textColor", QString::fromStdString(look.textColor), has("textColor"));
     field("backgroundColor", QString::fromStdString(look.backgroundColor),
@@ -1277,6 +1491,28 @@ QVariantMap DocumentController::slideAppearance() const {
         placed.insert(QStringLiteral("height"), look.placement->height);
     }
     field("placement", placed, has("placement"));
+    // The TS.1 style fields: the chain's CONCRETE answers (the resolved
+    // record is never silent — the defaults are the contract's own), with
+    // the customized flag from the slide's sparse set. The effects travel
+    // as whole maps, `enabled` first-class, because "disabled here over an
+    // inherited effect" is a value the inspector must be able to show.
+    field("fontWeight", look.fontWeight, has("fontWeight"));
+    field("fontStyle", QString::fromStdString(look.fontStyle), has("fontStyle"));
+    field("fitMode", QString::fromStdString(look.fitMode), has("fitMode"));
+    field("minFontSize", look.minFontSize, has("minFontSize"));
+    QVariantMap strokeRow;
+    strokeRow.insert(QStringLiteral("enabled"), look.stroke.enabled);
+    strokeRow.insert(QStringLiteral("color"), QString::fromStdString(look.stroke.color));
+    strokeRow.insert(QStringLiteral("width"), look.stroke.width);
+    field("stroke", strokeRow, has("stroke"));
+    QVariantMap shadowRow;
+    shadowRow.insert(QStringLiteral("enabled"), look.shadow.enabled);
+    shadowRow.insert(QStringLiteral("color"), QString::fromStdString(look.shadow.color));
+    shadowRow.insert(QStringLiteral("opacity"), look.shadow.opacity);
+    shadowRow.insert(QStringLiteral("offsetX"), look.shadow.offsetX);
+    shadowRow.insert(QStringLiteral("offsetY"), look.shadow.offsetY);
+    shadowRow.insert(QStringLiteral("blurSigma"), look.shadow.blurSigma);
+    field("shadow", shadowRow, has("shadow"));
     return map;
 }
 
@@ -1314,6 +1550,41 @@ bool DocumentController::customizeCurrentSlide(const QString& field, const QVari
          : name == "fontFamily"       ? changed.fontFamily
                                       : changed.align)
             = value.toString().toStdString();
+    } else if (name == "fontWeight" || name == "fontStyle" || name == "fitMode" ||
+               name == "minFontSize" || name == "stroke" || name == "shadow") {
+        // The TS.1 fields (task TS.1): ONE field's edit passes the theme
+        // verb's own shape check by way of a one-field map, so a stringy
+        // weight, an off-list word or half an effect record is refused
+        // naming itself here exactly as setThemeTextStyle refuses it — and
+        // the bands land in setSlideCustomizations' domain vetting, the
+        // same sentence one call away. A customization is as strict as a
+        // theme because it has to be able to become one.
+        QVariantMap single;
+        single.insert(field, value);
+        openshow::domain::ThemeTextStyle styled;
+        std::string shapeError;
+        if (!styleFromMap(single, &styled, &shapeError)) {
+            setStatus(QStringLiteral("customize: %1").arg(QString::fromStdString(shapeError)));
+            return false;
+        }
+        if (styled.fontWeight.has_value()) {
+            changed.fontWeight = styled.fontWeight;
+        }
+        if (styled.fontStyle.has_value()) {
+            changed.fontStyle = styled.fontStyle;
+        }
+        if (styled.fitMode.has_value()) {
+            changed.fitMode = styled.fitMode;
+        }
+        if (styled.minFontSize.has_value()) {
+            changed.minFontSize = styled.minFontSize;
+        }
+        if (styled.stroke.has_value()) {
+            changed.stroke = styled.stroke;
+        }
+        if (styled.shadow.has_value()) {
+            changed.shadow = styled.shadow;
+        }
     } else {
         setStatus(QStringLiteral("customize: %1 is not an appearance field").arg(field));
         return false;
@@ -1367,6 +1638,13 @@ bool DocumentController::revertCurrentSlideField(const QString& field) {
         // the themes at once — there is no such thing as half a placed box.
         wasCustomized = changed.placement.has_value();
         changed.placement.reset();
+    } else if (openshow::domain::isCustomizableField(name)) {
+        // The TS.1 style fields revert through the record's own name list
+        // (task TS.1): hasField/clearField speak every customizable name,
+        // and "stroke"/"shadow" carry the whole record back to the themes —
+        // half an effect is not a thing, so half a revert never is either.
+        wasCustomized = changed.hasField(name);
+        changed.clearField(name);
     } else {
         setStatus(QStringLiteral("revert: %1 is not an appearance field").arg(field));
         return false;

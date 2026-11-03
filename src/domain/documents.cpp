@@ -852,6 +852,26 @@ bool Documents::setThemeContexts(const Id& themeId, std::vector<TextContext> con
     return true;
 }
 
+bool Documents::setThemeTextStyle(const Id& themeId, ThemeTextStyle style, std::string* error) {
+    Theme* theme = findTheme_mut(themeId);
+    if (theme == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    // Same vetting the loader quotes (task TS.1): weight in band, style/fit
+    // in their word sets, a finite bounded min, complete effect records.
+    if (!validThemeTextStyle(style, error)) {
+        return false;
+    }
+    theme->fontWeight = style.fontWeight;
+    theme->fontStyle = style.fontStyle;
+    theme->fitMode = style.fitMode;
+    theme->minFontSize = style.minFontSize;
+    theme->stroke = style.stroke;
+    theme->shadow = style.shadow;
+    return true;
+}
+
 bool Documents::setSlideTextContext(const Id& showId, const Id& slideId,
                                     const std::string& name, std::string* error) {
     Show* show = findShow_mut(showId);
@@ -938,6 +958,73 @@ const Theme* Documents::themeForSlide(const Id& showId, const Id& slideId) const
 
 // --- themes: current, customization, the full chain (task TH.2) ----------
 
+bool Documents::validStroke(const TextStroke& stroke, std::string* error) {
+    // A record is complete or refused; `enabled:false` is data, not noise.
+    // Width 0 is a valid record that draws no ink — "as if outlined, and
+    // the outline is hairline-thin" — while a negative or oversized one is
+    // a value no renderer could honour (theme-editor review limits).
+    if (!validColor(stroke.color, error)) {
+        return false;
+    }
+    if (!std::isfinite(stroke.width) || stroke.width < 0.0 || stroke.width > 32.0) {
+        fail(error, "stroke width must be a finite authored width within 0..32");
+        return false;
+    }
+    return true;
+}
+
+bool Documents::validShadow(const TextShadow& shadow, std::string* error) {
+    if (!validColor(shadow.color, error)) {
+        return false;
+    }
+    if (!std::isfinite(shadow.opacity) || shadow.opacity < 0.0 || shadow.opacity > 1.0) {
+        fail(error, "shadow opacity must be a finite fraction within 0..1");
+        return false;
+    }
+    if (!std::isfinite(shadow.offsetX) || std::abs(shadow.offsetX) > 256.0 ||
+        !std::isfinite(shadow.offsetY) || std::abs(shadow.offsetY) > 256.0) {
+        fail(error, "shadow offsets must be finite authored widths within -256..256");
+        return false;
+    }
+    if (!std::isfinite(shadow.blurSigma) || shadow.blurSigma < 0.0 ||
+        shadow.blurSigma > 64.0) {
+        fail(error, "shadow blur must be a finite authored sigma within 0..64");
+        return false;
+    }
+    return true;
+}
+
+bool Documents::validThemeTextStyle(const ThemeTextStyle& style, std::string* error) {
+    // The one sentence every door (verb, customization, loader) quotes.
+    if (style.fontWeight.has_value() && !isFontWeightInBand(*style.fontWeight)) {
+        fail(error, "font weight must be an integer 100..900 (got " +
+                        std::to_string(*style.fontWeight) + ")");
+        return false;
+    }
+    if (style.fontStyle.has_value() && !isFontStyleName(*style.fontStyle)) {
+        fail(error, "font style must be \"normal\" or \"italic\" (got '" + *style.fontStyle +
+                        "')");
+        return false;
+    }
+    if (style.fitMode.has_value() && !isFitModeName(*style.fitMode)) {
+        fail(error, "fit must be \"shrink\" or \"fixed\" (got '" + *style.fitMode + "')");
+        return false;
+    }
+    if (style.minFontSize.has_value() &&
+        (!std::isfinite(*style.minFontSize) || *style.minFontSize < 1.0 ||
+         *style.minFontSize > 4096.0)) {
+        fail(error, "minimum font size must be a finite size within 1..4096");
+        return false;
+    }
+    if (style.stroke.has_value() && !validStroke(*style.stroke, error)) {
+        return false;
+    }
+    if (style.shadow.has_value() && !validShadow(*style.shadow, error)) {
+        return false;
+    }
+    return true;
+}
+
 bool Documents::validCustomizations(const SlideCustomization& c, std::string* error) {
     // Every check is the theme's own check on the same field, so a slide
     // can never customize itself into an appearance a theme could not
@@ -974,7 +1061,17 @@ bool Documents::validCustomizations(const SlideCustomization& c, std::string* er
                     "positive width and height");
         return false;
     }
-    return true;
+    // The TS.1 style fields face the theme's own sentence, unchanged (task
+    // TS.1): a slide can no more customize in an uncarryable weight, a
+    // half-record stroke or an off-list fit than it can a bad colour.
+    ThemeTextStyle styled;
+    styled.fontWeight = c.fontWeight;
+    styled.fontStyle = c.fontStyle;
+    styled.fitMode = c.fitMode;
+    styled.minFontSize = c.minFontSize;
+    styled.stroke = c.stroke;
+    styled.shadow = c.shadow;
+    return validThemeTextStyle(styled, error);
 }
 
 bool Documents::setCurrentTheme(const Id& themeId, std::string* error) {
@@ -1250,6 +1347,67 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
                 base.width = std::max(1.0, base.width - 2.0 * side);
                 base.height = std::max(1.0, base.height - 2.0 * side);
                 out.placement = base;
+            }
+        }
+    }
+    // TS.1 style fields. Contexts say nothing of these yet (TV.3 adds
+    // them), so the walk is customization first, then the first theme that
+    // CARRIES the field, then the contract's concrete default. An effect
+    // record is atomic: the first layer that carries one answers whole,
+    // and a carried `enabled:false` is honoured as the explicit refusal it
+    // is — the reason resolution reads has_value and not "is truthy".
+    if (c.fontWeight.has_value()) {
+        out.fontWeight = *c.fontWeight;
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            if (layers[i]->fontWeight.has_value()) {
+                out.fontWeight = *layers[i]->fontWeight;
+                break;
+            }
+        }
+    }
+    if (c.minFontSize.has_value()) {
+        out.minFontSize = *c.minFontSize;
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            if (layers[i]->minFontSize.has_value()) {
+                out.minFontSize = *layers[i]->minFontSize;
+                break;
+            }
+        }
+    }
+    auto pickStyleString = [&](const std::optional<std::string>& own,
+                               const std::optional<std::string> Theme::*field,
+                               const char* fallback) -> std::string {
+        if (own.has_value()) {
+            return *own;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            if ((layers[i]->*field).has_value()) {
+                return *(layers[i]->*field);
+            }
+        }
+        return fallback;
+    };
+    out.fontStyle = pickStyleString(c.fontStyle, &Theme::fontStyle, "normal");
+    out.fitMode = pickStyleString(c.fitMode, &Theme::fitMode, "shrink");
+    if (c.stroke.has_value()) {
+        out.stroke = *c.stroke;
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            if (layers[i]->stroke.has_value()) {
+                out.stroke = *layers[i]->stroke;
+                break;
+            }
+        }
+    }
+    if (c.shadow.has_value()) {
+        out.shadow = *c.shadow;
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            if (layers[i]->shadow.has_value()) {
+                out.shadow = *layers[i]->shadow;
+                break;
             }
         }
     }

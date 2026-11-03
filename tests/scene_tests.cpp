@@ -303,11 +303,12 @@ void exerciseWireRoundTrip(const Fixture& fx) {
         obj[key] = replacement;
         return boost::json::serialize(obj);
     };
-    // One past this build's scene 3 (task 6.17c1 moved the number with the
-    // background's fit; anchoring a "future" on the wrong side of that move
-    // is how a version check gets tested against a format someone else
-    // agreed to).
-    refuses(mutate("scene", 4), "unsupported scene format", "a future scene format refuses");
+    // One past this build's scene 4 (task TS.1 moved the number with the
+    // text item's style block; TS.1 also opened the other direction — legacy
+    // scene 3 now reads — but "one past" stays the future the way 6.17c1
+    // pinned it: anchoring on the wrong side of the move is how a version
+    // check gets tested against a format someone else agreed to).
+    refuses(mutate("scene", 5), "unsupported scene format", "a future scene format refuses");
     refuses(boost::json::serialize(7), "top level must be an object",
             "a bare number refuses");
     refuses(mutate("backgroundColor", 0x1000000), "outside 0xRRGGBB",
@@ -1246,7 +1247,7 @@ void exerciseImageWire(Fixture& fx) {
 
     // --- the wire: per-kind keys, and a round trip that changes nothing ---
     const boost::json::value written = scene::toJson(out);
-    check(written.at("scene").to_number<int>() == 3, "the payload says scene 3");
+    check(written.at("scene").to_number<int>() == 4, "the payload says scene 4");
     const boost::json::object& imageJson = written.at("items").as_array().at(2).as_object();
     check(imageJson.at("kind").as_string() == "image" &&
               imageJson.at("assetId").as_string() == fx.asset &&
@@ -1347,18 +1348,196 @@ void exerciseImageWire(Fixture& fx) {
                   std::string::npos,
               "and the path budget applies to a foreground picture as it does to a background");
     }
-    {  // Scene 1 and scene 2 are not scene 3 in either direction (6.17c1:
+    {  // Scene 1 and scene 2 are not scene 4 in either direction (6.17c1:
        // a scene-2 background carries no "fit", and a reader that defaulted
        // one would be guessing at what the writer meant by leaving it out).
+       // Scene 3 is NOT in this loop: TS.1 gave it a reader — its missing
+       // style keys answer with the contract's own defaults, the pixels
+       // every scene-3 worker drew, so the legacy payload is complete in
+       // the way a scene-2 background never is.
         for (int oldFormat : {1, 2}) {
             boost::json::object old = scene::toJson(out).as_object();
             old["scene"] = oldFormat;
             check(readRefused(boost::json::value(old)).find("unsupported scene format") !=
                       std::string::npos,
                   ("a scene-" + std::to_string(oldFormat) +
-                   " payload is refused by a scene-3 worker rather than drawn with "
+                   " payload is refused by a scene-4 worker rather than drawn with "
                    "whatever kinds or fits an older build meant")
                       .c_str());
+        }
+    }
+    {  // Scene 3 (TS.1's legacy): the same payload minus every style key.
+       // It must READ, land on 400/normal/shrink/12 and disabled records,
+       // and compare equal to the scene-4 round trip of the same compiled
+       // scene — the legacy defaults are not an approximation.
+        boost::json::object legacy = scene::toJson(out).as_object();
+        legacy["scene"] = 3;
+        for (boost::json::value& element : legacy.at("items").as_array()) {
+            if (!element.as_object().contains("lines")) {
+                continue;  // image items never carried style anyway
+            }
+            boost::json::object& text = element.as_object();
+            text.erase("fontWeight");
+            text.erase("fontStyle");
+            text.erase("fitMode");
+            text.erase("minFontSize");
+            text.erase("stroke");
+            text.erase("shadow");
+        }
+        scene::Scene fromLegacy;
+        error.clear();
+        check(scene::fromJson(boost::json::value(legacy), &fromLegacy, &error) &&
+                  fromLegacy == out && fromLegacy.items.front().fontWeight == 400 &&
+                  fromLegacy.items.front().fontStyle == "normal" &&
+                  fromLegacy.items.front().fitMode == "shrink" &&
+                  fromLegacy.items.front().minFontSize == 12.0 &&
+                  !fromLegacy.items.front().stroke.enabled &&
+                  !fromLegacy.items.front().shadow.enabled,
+              "a scene-3 payload reads onto the contract's defaults and compares "
+              "equal to its scene-4 twin");
+        {  // A style key smuggled into a scene-3 payload is refused by name —
+           // that format never defined it, and reading it would be guessing.
+            boost::json::object styled = legacy;
+            styled["items"].as_array()[0].as_object()["fontWeight"] = 700;
+            check(readRefused(boost::json::value(styled)).find("has no field 'fontWeight'") !=
+                      std::string::npos,
+                  "a scene-3 payload carrying 'fontWeight' is refused naming the key");
+        }
+        {  // Scene 4 requires the whole block: dropping one key refuses.
+            boost::json::object missing = scene::toJson(out).as_object();
+            missing["items"].as_array()[0].as_object().erase("stroke");
+            check(readRefused(boost::json::value(missing)).find("'stroke' is required") !=
+                      std::string::npos,
+                  "a scene-4 text item with no 'stroke' is refused naming the key");
+            missing = scene::toJson(out).as_object();
+            missing["items"].as_array()[0].as_object().erase("minFontSize");
+            check(readRefused(boost::json::value(missing)).find("'minFontSize' is required") !=
+                      std::string::npos,
+                  "and so is one with no minimum size");
+        }
+        {  // Out-of-band style numbers refuse, each naming its own band.
+            const auto refuseStyle = [&](const char* pathJson) {
+                boost::json::object mutated = scene::toJson(out).as_object();
+                boost::json::value spec = boost::json::parse(pathJson);
+                boost::json::object& item = mutated["items"].as_array()[0].as_object();
+                if (spec.as_array().size() == 2) {
+                    item[spec.as_array()[0].as_string()] = spec.as_array()[1];
+                } else {
+                    boost::json::object& record = item[spec.as_array()[0].as_string()].as_object();
+                    record[spec.as_array()[1].as_string()] = spec.as_array()[2];
+                }
+                return readRefused(boost::json::value(mutated));
+            };
+            check(refuseStyle(R"(["fontWeight", 901])").find("within 100..900") !=
+                      std::string::npos,
+                  "a 901 weight is refused: the scale stops at 900");
+            check(refuseStyle(R"(["fontWeight", 99])").find("within 100..900") !=
+                      std::string::npos,
+                  "and so is a 99: it starts at 100");
+            check(refuseStyle(R"(["fontWeight", 450.5])").find("whole number") !=
+                      std::string::npos,
+                  "and a fractional weight is refused as the hand-edit it is");
+            check(refuseStyle(R"(["fontStyle", "oblique"])").find("\"normal\" or \"italic\"") !=
+                      std::string::npos,
+                  "a made-up font style refuses naming its two words");
+            check(refuseStyle(R"(["fitMode", "auto"])").find("\"shrink\" or \"fixed\"") !=
+                      std::string::npos,
+                  "and so does a made-up fit");
+            check(refuseStyle(R"(["minFontSize", 0])").find("within 1..4096") !=
+                      std::string::npos,
+                  "a minimum of 0 is refused: invisible text is a clear, not a fit");
+            check(refuseStyle(R"(["minFontSize", 4097])").find("within 1..4096") !=
+                      std::string::npos,
+                  "and so is one past the ceiling");
+            check(refuseStyle(R"(["stroke", "width", 33])").find("width must be within 0..32") !=
+                      std::string::npos,
+                  "a 33-pixel stroke is refused naming the band");
+            check(refuseStyle(R"(["stroke", "width", -1])").find("width must be within 0..32") !=
+                      std::string::npos,
+                  "and so is a negative one");
+            check(refuseStyle(R"(["shadow", "opacity", 1.5])").find("opacity must be within 0..1") !=
+                      std::string::npos,
+                  "a 150% shadow is refused naming the band");
+            check(refuseStyle(R"(["shadow", "offsetX", -257])").find("offsets must be within") !=
+                      std::string::npos,
+                  "and an offset beyond a quarter of the canvas height with it");
+            check(refuseStyle(R"(["shadow", "blurSigma", 65])").find("blur must be within 0..64") !=
+                      std::string::npos,
+                  "and a blur beyond the ceiling");
+            check(refuseStyle(R"(["stroke", "color", 16777216])")
+                      .find("outside 0xRRGGBB") != std::string::npos,
+                  "an effect colour obeys the same 24-bit rule as every other");
+        }
+        {  // Whole records only: a fragment, a stray member, a wrong type.
+            boost::json::object fragment = scene::toJson(out).as_object();
+            fragment["items"].as_array()[0].as_object()["stroke"] =
+                boost::json::object{{"enabled", true}};
+            check(readRefused(boost::json::value(fragment)).find("'color' must be") !=
+                      std::string::npos,
+                  "half a stroke record is refused naming the member it left out: "
+                  "an effect travels whole");
+            boost::json::object alien = scene::toJson(out).as_object();
+            alien["items"].as_array()[0].as_object()["shadow"].as_object()["blur"] = 4.0;
+            check(readRefused(boost::json::value(alien)).find("'shadow' has no field 'blur'") !=
+                      std::string::npos,
+                  "and a shadow member the record never had is refused naming itself");
+            boost::json::object scalar = scene::toJson(out).as_object();
+            scalar["items"].as_array()[0].as_object()["stroke"] = "thick";
+            check(readRefused(boost::json::value(scalar)).find("whole effect record") !=
+                      std::string::npos,
+                  "and so is an effect spelled as anything but an object");
+        }
+        {  // Style keys never belong to a picture, in either format.
+            boost::json::object talking = legacy;
+            for (boost::json::value& element : talking["items"].as_array()) {
+                if (element.as_object().contains("assetId") &&
+                    !element.as_object().contains("lines")) {
+                    element.as_object()["fontWeight"] = 700;
+                    break;
+                }
+            }
+            check(readRefused(boost::json::value(talking)).find("has no field 'fontWeight'") !=
+                      std::string::npos,
+                  "a weight on an image item is refused as the unknown key it is");
+            boost::json::object painted = scene::toJson(out).as_object();
+            for (boost::json::value& element : painted["items"].as_array()) {
+                if (element.as_object().contains("assetId")) {
+                    element.as_object()["stroke"] =
+                        boost::json::object{{"enabled", true}, {"color", 0}, {"width", 2}};
+                    break;
+                }
+            }
+            check(readRefused(boost::json::value(painted)).find("has no field 'stroke'") !=
+                      std::string::npos,
+                  "and so is an effect record on a picture, scene-4 included");
+        }
+        {  // The effects travel the wire WHOLE, enabled:false included —
+           // the refusal of an inherited effect must survive the trip.
+            scene::Scene refused = out;
+            refused.items.front().stroke.enabled = false;
+            refused.items.front().stroke.color = "#ff0000";
+            refused.items.front().stroke.width = 9.0;
+            scene::Scene back;
+            check(scene::fromJson(scene::toJson(refused), &back, &error) && back == refused &&
+                      back.items.front().stroke.enabled == false &&
+                      back.items.front().stroke.color == "#ff0000" &&
+                      back.items.front().stroke.width == 9.0,
+                  "a disabled record with a colour and width of its own round-trips "
+                  "as the explicit refusal it is");
+            scene::Scene lit = out;
+            lit.items.front().shadow.enabled = true;
+            lit.items.front().shadow.color = "#123456";
+            lit.items.front().shadow.opacity = 0.25;
+            lit.items.front().shadow.offsetX = -250.5;
+            lit.items.front().shadow.offsetY = 250.5;
+            lit.items.front().shadow.blurSigma = 64.0;
+            lit.items.front().fontWeight = 900;
+            lit.items.front().fontStyle = "italic";
+            lit.items.front().fitMode = "fixed";
+            lit.items.front().minFontSize = 4096.0;
+            scene::Scene litBack;
+            check(scene::fromJson(scene::toJson(lit), &litBack, &error) && litBack == lit,
+                  "the widest legal style block round-trips byte for byte of meaning");
         }
     }
 
