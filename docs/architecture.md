@@ -295,11 +295,20 @@ today's schedule — for the operator, in five moves:
    or a page that no longer looks like a passage each answers with its own
    actionable sentence, and a Retry re-asks. Nothing else on the page has
    happened yet.
-2. **Type one reference** ("1 Corinthians 1:1-6"), choose the translation,
-   press Lookup. One page is fetched per click — the passage page for
-   exactly that reference and version. There is no Bible to download, no
-   library to install and no background fetching, ever; the fetched words
-   live in memory and die on a new lookup, a cancel or a close.
+2. **Type one reference.** Start naming a book and the field finishes the
+   sentence: a built-in table of the 66 books answers every keystroke as a
+   dropdown — "1 cor", "1cor" and "i cor" all name 1 Corinthians — and
+   Enter or a click completes the book while keeping the chapter and verses
+   already typed. It is a helper, never a gate: text the table does not
+   know shows no rows and still looks up exactly as typed, and the book
+   list never touches the network. The translation picker opens on the
+   session's default — NIV, New International Version — and leaving it
+   alone is the same request as choosing it from the menu. Press Lookup:
+   one page is fetched per click — the passage page for exactly that
+   reference and version, and the importer refuses a page that answers a
+   different translation. There is no Bible to download, no library to
+   install and no background fetching, ever; the fetched words live in
+   memory and die on a new lookup, a cancel or a close.
 3. **Choose verses.** The answer arrives as a verse list, all ticked;
    untick what the reading skips. Changing the translation retires the
    verses rather than serving stale ones. The ticks and the words are pure

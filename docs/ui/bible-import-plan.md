@@ -198,3 +198,51 @@ lookup journey works and reported three defects. Their notes before code:
 | BIF.4 | end-to-end re-acceptance and docs | the production-shape e2e runs completer → default translation → whole chapter → Add → offline playback on a real worker; operator account and delivered-shape records updated; both gates green |
 
 Task order: BIF.1 → BIF.2 → BIF.3 → BIF.4, one commit per leaf.
+
+### BI-F delivered (2026-11-03)
+
+**BIF.1** — the production-shaped fixture named the cause exactly where the
+notes aimed: the reference and attribution reserved room at the WORDS'
+display size, so a theme with no caption size of its own measured the
+licence at the renderer's ~96 px default, ate most of the box and ground a
+chapter into one-line slides behind an Add that waited forever on the
+resulting batch storm. The reservation is now caption type —
+`reservationFontSize = clamp(boxHeight × 0.04, 16, 56)`, never above the
+words' size, still the worker's own measurement — and caches key on both
+content and size. A batch nobody answers retires after 60 s
+(`kMeasureAnswerBudgetMs`) with its own sentence; no path sits on
+"measuring".
+
+**BIF.2** — the picker's `currentIndex: indexOfValue(...)` (an untrackable
+function call) is replaced by an inline expression over the session's
+property; the page opens on NIV — New International Version, session-side
+`setTranslation` moves the picker, and the untouched default sends a
+byte-identical URL to a menu-chosen request.
+
+**BIF.3** — `openshow::importer/bookindex` (Qt-free): the 66 books with
+their common abbreviations and a matcher that is case-, whitespace- and
+ordinal-insensitive. Matching is tiered, exact above prefix, canon order
+within a tier — so "1 co" already means 1 Corinthians even though
+"1corinthians" also merely starts with it; the typed chapter tail rides the
+completion whole and the consumed separator space is restored ("1 cor" →
+"1 Corinthians ", "1 cor 1:1-6" → "1 Corinthians 1:1-6"). The reference
+field's Popup filters with every keystroke, Enter or a click completes,
+Escape or unmatched text puts it away, and Lookup is never gated on it.
+Two measured popup truths shipped in the shape: a Popup sizes itself to
+its `contentItem`'s implicit size, so the ListView had to become the
+content item (a free child left the rows outside the popup's own 4-px
+click area), and Material's enter/exit fades defer `visible=false` until
+the transition finishes — a fading completer both lags the keystrokes it
+follows and reports stale state while unrendered, so the completer nulls
+both transitions and retires synchronously.
+
+**BIF.4** — the e2e fixture now walks the production shape after the BI.6
+journey: the completer answers "1 cor 1" with the whole chapter, a fresh
+session's untouched default (NIV) is proven to be the exact URL that goes
+out, the whole chapter adds as one item beside the first passage, the
+sandboxed disk gives the same zero-cache witness a second time, and a
+disk-only controller plays every chapter slide with the network count
+frozen. The never-substitute rule proved itself on the way: a fixture body
+answering EXAMPLE to the NIV request parsed to zero verses, exactly as the
+importer is specified to refuse. Gates at delivery: 63/63 desktop serial,
+45/45 headless.

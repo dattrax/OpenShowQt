@@ -88,8 +88,17 @@ guessing: a Popup sizes itself to its `contentItem`'s implicit size (the
 ListView had to become the content item or its rows sat outside the
 popup's own 4-px click area), and Material's enter/exit fades defer
 `visible=false` until the transition finishes — so the completer nulls
-both and retires the instant its completion is taken. **BIF.4
-(re-acceptance and docs) is next.**
+both and retires the instant its completion is taken. **BIF.4 is DONE the
+same day:** the end-to-end fixture walks the production shape after its
+BI.6 journey — the completer answers "1 cor 1" with the whole chapter, a
+fresh session's untouched default is proven (from the captured request
+URL) to be exactly the NIV request the menu would have sent, the chapter
+adds beside the first passage, the sandboxed disk gives the same
+zero-cache witness again, and a disk-only controller plays every chapter
+slide with the network counter frozen — the never-substitute rule proving
+itself when a fixture body answering the wrong translation parsed to zero
+verses. With BI-F closed, the operator's three live-run defects are all
+fixed; **TF (theme-driven pagination) is next**, stopping before M7.
 The operator's paging note
 — flow the whole downloaded passage with the theme deciding how much text
 a slide carries (their examples: two display lines for songs, six for a

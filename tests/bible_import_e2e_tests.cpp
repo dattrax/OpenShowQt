@@ -1,6 +1,6 @@
 /*
- * Task BI.6 acceptance: the whole Bible import in one journey, one real
- * worker, one sandboxed home.
+ * Task BI.6 acceptance, plus the BIF.4 re-acceptance: the whole Bible
+ * import in one journey, one real worker, one sandboxed home.
  *
  * The page fixture (bible_import_page_tests) proves each seam of the page;
  * this fixture proves the MILESTONE's sentences end to end: a connected
@@ -14,6 +14,11 @@
  * the journey the byte-for-byte question is answerable — the fetched HTML
  * and the deselected verse appear in NO file anywhere under the sandbox,
  * while the selected words appear only inside the service's own records.
+ * Then the BIF.4 journey walks the PRODUCTION shape once more the way the
+ * operator actually moves: the completer's whole-chapter answer taken from
+ * three typed letters, the translation picker never touched (the untouched
+ * default must be the request that goes out), Add, save, and offline
+ * playback of the chapter on the real worker.
  * Fixtures stay synthetic: no live provider is ever contacted from here.
  *
  * Needs a display (the worker opens its output window): desktop preset,
@@ -28,6 +33,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QUrl>
+#include <QUrlQuery>
 #include <QVariantMap>
 
 #include <cstdio>
@@ -130,12 +137,14 @@ public:
     QNetworkReply* createRequest(Operation, const QNetworkRequest& request,
                                  QIODevice*) override {
         ++requests;
+        urls.push_back(request.url());
         const Step step = steps.isEmpty() ? Step{} : steps.takeFirst();
         return new FakeReply(request, step.body, step.error, step.errorString, step.status,
                              step.delayMs);
     }
 
     QVector<Step> steps;
+    QVector<QUrl> urls;
     int requests = 0;
 };
 
@@ -152,6 +161,26 @@ QByteArray passageBody() {
     <p><span class="text 1Test-1-6">Sixth kept words close the line.</span></p>
     </div></div></div>
     <div class="publisher-info-bottom"><strong>Example Bible (EXAMPLE)</strong>
+    <p>Used by permission.</p></div>)HTML";
+}
+
+// The BIF.4 production shape's chapter: the live BI.1 furniture again, but
+// nothing deselected — six verses of a whole chapter, one of them long
+// enough to make the packer split. It answers NIV, because the importer
+// refuses any page that answers a different translation than it asked for.
+// Its phrases are the journey's watched tokens: they must end up only
+// inside the service's records.
+QByteArray chapterBody() {
+    return R"HTML(<div class="passage-text"><div class='passage-content'>
+    <div class="version-NIV result-text-style-normal text-html">
+    <p class="chapter-1"><span class="text 1Cor-1-1"><span class="chapternum">1&#160;</span>Whole chapter words one open the reading.</span></p>
+    <p><span class="text 1Cor-1-2">Whole chapter words two carry the tune.</span></p>
+    <p><span class="text 1Cor-1-3">Whole chapter words three stand in the light.</span></p>
+    <p><span class="text 1Cor-1-4">Fourth of the chapter runs long enough to force the packer to split words across measured slides the way a real reading does. It keeps going and going until the box simply runs out of room for another line. Nothing at all may ever be clipped from the operator's words.</span></p>
+    <p><span class="text 1Cor-1-5">Whole chapter words five near the close.</span></p>
+    <p><span class="text 1Cor-1-6">Whole chapter words six seal the paragraph.</span></p>
+    </div></div></div>
+    <div class="publisher-info-bottom"><strong>Example Bible (NIV)</strong>
     <p>Used by permission.</p></div>)HTML";
 }
 
@@ -363,6 +392,91 @@ int main(int argc, char* argv[]) {
     check(worker.wordsOnAir(), "the audience holds the imported words with the provider down");
     check(manager.requests == 2,
           "playback of saved slides asked the network for nothing (only the two lookups ran)");
+
+    // --- BIF.4: the production shape, end to end ------------------------------
+    // The operator's real route through the fixed page: three typed letters,
+    // the completer's whole-chapter answer taken as-is, the translation
+    // picker never touched, Add, save — then playback from what the DISK
+    // alone knows. One fresh session plays the next service's operator.
+    const QVariantList suggestions = bible.suggestBooks(QStringLiteral("1 cor 1"));
+    const QString chapterRef =
+        suggestions.isEmpty() ? QString()
+                              : suggestions.first()
+                                        .toMap()
+                                        .value(QStringLiteral("completion"))
+                                        .toString();
+    check(chapterRef == QStringLiteral("1 Corinthians 1"),
+          "the completer answers three letters with the whole chapter");
+
+    BibleImport liveSession;
+    liveSession.setNetworkAccessManager(&manager);
+    ScriptureImport liveScripture(&liveSession, &reopened, &worker);
+    check(liveSession.translation() == QStringLiteral("NIV"),
+          "a fresh session opens on the default translation, untouched");
+    liveSession.setReference(chapterRef);
+    manager.steps.push_back({chapterBody(), {}, {}, 200, 0});
+    liveSession.lookup();
+    waitForLookup(liveSession);
+    check(liveSession.verses().size() == 6, "the whole chapter answered");
+    const QUrlQuery lastQuery(manager.urls.last());
+    check(lastQuery.queryItemValue(QStringLiteral("version")) == QStringLiteral("NIV") &&
+              lastQuery.queryItemValue(QStringLiteral("search")) == chapterRef,
+          "the untouched default sent exactly the request the menu would have sent");
+    check(waitForMeasured(liveScripture), "the whole chapter packed into multi-verse slides");
+    check(liveScripture.canAdd() && liveScripture.addToSchedule(),
+          "Add wakes on the production shape and lands the chapter");
+    check(reopened.playlistEntries().size() == 2,
+          "the chapter joined today's schedule beside the first passage");
+    check(reopened.save(), "the service saves with the whole chapter");
+
+    // The disk keeps its witness a second time, and gives the same answer:
+    // fetched markup leaves no trace anywhere — not even inside the
+    // service's records, which hold only the parsed words.
+    const auto chapterWitness = walk(root, {"passage-text", "publisher-info-bottom",
+                                          "version-NIV"});
+    if (!chapterWitness.containing.empty()) {
+        std::fprintf(stderr, "  chapter markup found in: %s\n",
+                     chapterWitness.containing.front().string().c_str());
+    }
+    check(chapterWitness.containing.empty(),
+          "the chapter's fetched page bytes persist nowhere under the sandbox");
+
+    // Offline playback of the chapter through a controller that knows only
+    // the disk: the words go on air because the schedule owns them.
+    worker.clearSlide();
+    QTest::qWait(100);
+    DocumentController diskOnly(nullptr, root / "service");
+    if (!check(diskOnly.load(), "the whole chapter survives a reopen from disk")) {
+        worker.shutdownNow();
+        return 1;
+    }
+    diskOnly.selectPlaylist(diskOnly.currentPlaylistId());
+    QVariantList chapterScenes;
+    for (const QVariant& entry : diskOnly.playlistEntries()) {
+        const QString showId = entry.toMap().value(QStringLiteral("showId")).toString();
+        for (const QVariant& slide : diskOnly.slidesOf(showId)) {
+            const QString scene =
+                diskOnly.sceneJsonForSlide(slide.toMap().value(QStringLiteral("id")).toString());
+            if (scene.contains(QStringLiteral("Whole chapter words"))) {
+                chapterScenes.push_back(scene);
+            }
+        }
+    }
+    int playedChapter = 0;
+    for (const QVariant& scene : chapterScenes) {
+        worker.presentSceneJson(scene.toString());
+        if (!waitForOnAir(worker)) {
+            break;
+        }
+        ++playedChapter;
+    }
+    check(static_cast<int>(chapterScenes.size()) >= 2 &&
+              playedChapter == static_cast<int>(chapterScenes.size()),
+          "every whole-chapter slide played back offline on the real output");
+    check(worker.wordsOnAir(),
+          "the congregation holds the chapter the picker never touched");
+    check(manager.requests == 3,
+          "the production journey fetched exactly its one page, and playback nothing");
 
     worker.shutdownNow();
     if (gFailed == 0) {
