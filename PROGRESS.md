@@ -74,8 +74,22 @@ answers retires after a minute with its own sentence, and no path sits on
 empty — is replaced by an expression over the session property; opening
 the page now shows NIV — New International Version selected, session-side
 changes move the picker, and the untouched default sends a byte-identical
-request to a menu-chosen one. **BIF.3 (book autocomplete) is next**, then
-BIF.4.
+request to a menu-chosen one. **BIF.3 is DONE (2026-11-03):** a Qt-free
+table of the 66 books and their common abbreviations lives in
+`openshow::importer/bookindex`, matched case-, whitespace- and
+ordinal-insensitively with exact matches ranking above prefixes ("1 cor",
+"1cor", "i cor" and "1st cor" all name 1 Corinthians; "jn" names John) and
+a typed chapter tail carried whole into the completion; the reference
+field's dropdown filters with every keystroke, Enter or a click finishes
+the book, and text matching nothing shows no rows and still looks up
+verbatim — the helper never gates and no book list crosses the network.
+Two popup truths came out of measuring the live widget rather than
+guessing: a Popup sizes itself to its `contentItem`'s implicit size (the
+ListView had to become the content item or its rows sat outside the
+popup's own 4-px click area), and Material's enter/exit fades defer
+`visible=false` until the transition finishes — so the completer nulls
+both and retires the instant its completion is taken. **BIF.4
+(re-acceptance and docs) is next.**
 The operator's paging note
 — flow the whole downloaded passage with the theme deciding how much text
 a slide carries (their examples: two display lines for songs, six for a

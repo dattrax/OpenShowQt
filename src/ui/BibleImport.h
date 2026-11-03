@@ -72,6 +72,11 @@ public:
     Q_INVOKABLE void setVerseSelected(int index, bool selected);
     // The whole fetched passage or none of it — the menu's quick step.
     Q_INVOKABLE void selectAllVerses(bool selected);
+    // BIF.3: rows {name, completion} for the reference field's dropdown,
+    // from the built-in canon table — no network, and never a verdict:
+    // no rows means "hide the dropdown", and the lookup itself accepts
+    // exactly what the operator typed whatever the table thinks.
+    Q_INVOKABLE QVariantList suggestBooks(const QString& typed) const;
 
 signals:
     void stateChanged();

@@ -8,6 +8,7 @@
 // The live shapes behind this structure are recorded in
 // docs/ui/bible-import-plan.md.
 #include "openshow/importer/biblepassage.h"
+#include "openshow/importer/bookindex.h"
 
 #include <cstdio>
 #include <string>
@@ -178,6 +179,75 @@ int main() {
     }
     check(!menu.empty() && hasNiv && hasKjv,
           "the menu carries the plan's example translation and the public-domain one");
+
+    // --- BIF.3: the built-in canon answers when the operator names a book --
+    {
+        using openshow::importer::canonicalBook;
+        using openshow::importer::suggestBooks;
+
+        auto topName = [](const std::string& typed) -> std::string {
+            const auto rows = suggestBooks(typed);
+            return rows.empty() ? std::string() : rows[0].name;
+        };
+
+        // The same book, four ways of spelling its ordinal.
+        check(topName("1 cor") == "1 Corinthians", "'1 cor' names 1 Corinthians");
+        check(topName("1cor") == "1 Corinthians", "'1cor' names 1 Corinthians");
+        check(topName("i cor") == "1 Corinthians", "'i cor' names 1 Corinthians");
+        check(topName("1st cor") == "1 Corinthians", "'1st cor' names 1 Corinthians");
+        check(topName("  1CoR  ") == "1 Corinthians",
+              "case and stray whitespace are nothing to the matcher");
+
+        // Common abbreviations off the shelf.
+        check(topName("jn") == "John", "'jn' names John");
+        check(topName("phm") == "Philemon", "'phm' names Philemon");
+        check(topName("song") == "Song of Solomon", "'song' names Song of Solomon");
+        check(topName("gen") == "Genesis", "'gen' names Genesis");
+        check(topName("1jn") == "1 John", "'1jn' names 1 John, not John");
+        check(topName("iii john") == "3 John", "'iii john' names 3 John");
+        check(topName("2 Chr") == "2 Chronicles", "'2 Chr' names 2 Chronicles");
+
+        // Numbered books offer in order, and only the numbered ones.
+        const auto ones = suggestBooks("1 ");
+        bool allFirst = !ones.empty();
+        bool sawSamuel = false;
+        bool sawCorinthians = false;
+        for (const auto& row : ones) {
+            if (row.name.compare(0, 2, "1 ") != 0) {
+                allFirst = false;
+            }
+            if (row.name == "1 Samuel") {
+                sawSamuel = true;
+            }
+            if (row.name == "1 Corinthians") {
+                sawCorinthians = true;
+            }
+        }
+        check(allFirst, "prefix '1 ' offers only first books");
+        check(sawSamuel && sawCorinthians,
+              "prefix '1 ' reaches from 1 Samuel to 1 Corinthians");
+        const auto genesisRun = suggestBooks("G");
+        check(!genesisRun.empty() && genesisRun[0].name == "Genesis",
+              "books come back in canon order — Genesis heads the list");
+
+        // The chapter tail survives the completion whole.
+        const auto tailed = suggestBooks("1 cor 1:1-6");
+        check(!tailed.empty() && tailed[0].completion == "1 Corinthians 1:1-6",
+              "the completion keeps the typed chapter and verses exactly");
+        const auto chaptered = suggestBooks("jn 3");
+        check(!chaptered.empty() && chaptered[0].completion == "John 3",
+              "a trailing chapter is not mistaken for part of the book");
+
+        // Unmatched text is an empty answer — never a refusal, never a guess.
+        check(suggestBooks("qqq").empty(), "text matching nothing suggests nothing");
+        check(suggestBooks("").empty(), "nothing typed suggests nothing");
+        check(!canonicalBook("1cor").has_value() || canonicalBook("1cor").value() == "1 Corinthians",
+              "the canonical lookup agrees with the list");
+        check(canonicalBook("jn") == "John" && canonicalBook("1 co") == "1 Corinthians",
+              "the canonical lookup reads the abbreviations too");
+        check(!canonicalBook("book of lost words").has_value(),
+              "unknown text has no canonical book — and the lookup would still try it as typed");
+    }
 
     if (gFailed == 0) {
         std::printf("bible_import_tests: all fixtures passed\n");

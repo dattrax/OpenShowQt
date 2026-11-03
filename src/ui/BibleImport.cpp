@@ -4,6 +4,9 @@
 #include <QNetworkRequest>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QVariantMap>
+
+#include "openshow/importer/bookindex.h"
 
 namespace {
 
@@ -270,6 +273,22 @@ void BibleImport::selectAllVerses(bool selected) {
         row.selected = selected;
     }
     emit passageChanged();
+}
+
+QVariantList BibleImport::suggestBooks(const QString& typed) const {
+    // The built-in table answers, in canon order; the lookup is untouched
+    // by anything here. Conversion only — the matching lives in
+    // openshow::importer where it is testable with no Qt at all.
+    QVariantList rows;
+    for (const openshow::importer::BookSuggestion& suggestion :
+         openshow::importer::suggestBooks(typed.toStdString())) {
+        QVariantMap row;
+        row.insert(QStringLiteral("name"), QString::fromStdString(suggestion.name));
+        row.insert(QStringLiteral("completion"),
+                   QString::fromStdString(suggestion.completion));
+        rows.push_back(row);
+    }
+    return rows;
 }
 
 void BibleImport::failWith(const QString& sentence) {

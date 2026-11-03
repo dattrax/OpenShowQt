@@ -58,6 +58,7 @@ ScrollView {
         Row {
             spacing: 8
             TextField {
+                id: referenceField
                 objectName: "bibleReferenceField"
                 width: Math.max(220, biblePage.availableWidth - 470)
                 placeholderText: "Reference, e.g. 1 Corinthians 1:1-6"
@@ -65,6 +66,80 @@ ScrollView {
                 onEditingFinished: bible.reference = text
                 color: "#eeeeee"
                 font.pixelSize: 13
+
+                // BIF.3: the built-in canon answers as the operator names a
+                // book — the dropdown filters with every keystroke and a
+                // click or Enter finishes the book name while keeping the
+                // chapter/verse tail. It is a helper only: unmatched text
+                // shows no rows, and Lookup sends exactly what is typed no
+                // matter what the table thinks.
+                function refreshSuggestions() {
+                    const rows = bible.suggestBooks(text)
+                    // Once the field already reads like the top row, the
+                    // help has been taken — put it away.
+                    bookSuggest.rows =
+                        (rows.length > 0 && rows[0].completion.trim() !== text.trim()) ? rows : []
+                    bookSuggest.visible = bookSuggest.rows.length > 0
+                }
+                function completeTop() {
+                    if (bookSuggest.rows.length > 0) {
+                        text = bookSuggest.rows[0].completion
+                        bible.reference = text
+                    }
+                    bookSuggest.visible = false
+                }
+                onTextEdited: refreshSuggestions()
+                onAccepted: {
+                    if (bookSuggest.visible)
+                        completeTop()
+                    else
+                        bible.reference = text
+                }
+                Keys.onEscapePressed: bookSuggest.visible = false
+
+                Popup {
+                    id: bookSuggest
+                    objectName: "bibleBookPopup"
+                    property var rows: []
+                    y: referenceField.height
+                    width: referenceField.width
+                    padding: 2
+                    modal: false
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                    // No Material fade (measured): Popup only flips
+                    // visible=false AFTER its exit transition finishes, so
+                    // a fading dropdown lags the keystrokes it follows and
+                    // reports stale state while unrendered. A completer
+                    // retires the instant the completion is taken.
+                    enter: null
+                    exit: null
+                    // The ListView IS the content item: a Popup sizes
+                    // itself to its contentItem's implicit size, and a
+                    // free-floating child never feeds that — leaving the
+                    // popup 4 px tall and its rows outside its own click
+                    // area (found by measuring the live popup, not by
+                    // guessing). The implicit height caps at six-ish rows.
+                    contentItem: ListView {
+                        id: bookSuggestList
+                        objectName: "bibleBookSuggestionList"
+                        implicitHeight: Math.min(contentHeight, 216)
+                        clip: true
+                        model: bookSuggest.rows
+                        delegate: ItemDelegate {
+                            objectName: "bibleBookSuggestionRow"
+                            width: bookSuggestList.width
+                            required property var modelData
+                            text: modelData.name
+                            font.pixelSize: 13
+                            onClicked: {
+                                referenceField.text = modelData.completion
+                                bible.reference = modelData.completion
+                                bookSuggest.visible = false
+                                referenceField.forceActiveFocus()
+                            }
+                        }
+                    }
+                }
             }
             ComboBox {
                 objectName: "bibleTranslationPicker"

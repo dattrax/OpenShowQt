@@ -1609,6 +1609,58 @@ int main(int argc, char** argv) {
         } else {
             check(false, "the page carries the translation picker");
         }
+        // BIF.3: naming a book while typing raises the built-in canon as a
+        // dropdown; Enter completes the book; unmatched text shows nothing
+        // and is still sendable as typed.
+        if (auto* field = window->findChild<QQuickItem*>("bibleReferenceField")) {
+            // A closed Popup keeps its (hidden) delegates materialised, so
+            // the dropdown's state is read from the popup itself, not from
+            // the mere presence of row items in the tree.
+            auto dropdownOpen = [field]() {
+                // The Popup is a child object of the field, so scope the
+                // lookup there: a window-wide findChild can land on any
+                // same-named control the workspace happens to hold.
+                auto* popup = field->findChild<QObject*>("bibleBookPopup");
+                return popup && popup->property("visible").toBool();
+            };
+            clickAt(field, field->width() / 2, field->height() / 2);
+            field->forceActiveFocus();
+            QTest::qWait(60);
+            for (const char c : std::string("1 cor")) QTest::keyClick(window, c);
+            QTest::qWait(150);
+            check(dropdownOpen(), "typing a book opens the completer's dropdown");
+            QList<QQuickItem*> rows;
+            collectNamed(window->contentItem(), "bibleBookSuggestionRow", rows);
+            check(rows.isEmpty() || rows.first()->property("text").toString() ==
+                                        QStringLiteral("1 Corinthians"),
+                  "the first row names the book the ordinal spelled three ways means");
+            if (!rows.empty()) {
+                // The completion is taken with ENTER — the keyboard path
+                // into the completer. (Synthetic mouse routing into a
+                // non-modal overlay Popup is platform-dependent and not
+                // what this fixture exists to accept; Enter completes and
+                // retires through exactly the wiring the click uses.)
+                QTest::keyClick(window, Qt::Key_Return);
+                QTest::qWait(60);
+                check(field->property("text").toString().startsWith(
+                          QStringLiteral("1 Corinthians")),
+                      "taking the completion finishes the book in the field");
+                check(bible.reference().startsWith(QStringLiteral("1 Corinthians")),
+                      "and the completed book is what the session holds");
+                check(!dropdownOpen(), "the dropdown retires once the completion is taken");
+            }
+            // Free text the table knows nothing about: no dropdown, and the
+            // session keeps it verbatim — the helper never gates.
+            for (const char c : std::string(" zzz of nowhere")) QTest::keyClick(window, c);
+            QTest::qWait(150);
+            check(!dropdownOpen(), "unmatched text suggests nothing");
+            QTest::keyClick(window, Qt::Key_Return);
+            QTest::qWait(60);
+            check(bible.reference().contains(QStringLiteral("zzz of nowhere")),
+                  "and Enter still sends the text exactly as typed");
+        } else {
+            check(false, "the page carries the reference field");
+        }
         auto* add = window->findChild<QQuickItem*>("bibleAddButton");
         auto* cancel = window->findChild<QQuickItem*>("bibleCancelButton");
         check(add && !add->property("enabled").toBool() && cancel,
