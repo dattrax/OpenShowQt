@@ -2717,7 +2717,13 @@ void exerciseTextContextChain() {
     check(plain.fontSize == 60.0 && plain.align == "center" && plain.lineSpacing == 1.5 &&
               plain.placement == std::optional<BoxRect>(themeRect),
           "the unnamed song slide of the same theme is untouched by every context");
+    // Naming WHICH context layered is the resolver's own answer (task
+    // TF.4): the pages' plan sentences read it instead of re-walking.
+    check(a.contextName == "scripture" && plain.contextName.empty(),
+          "the resolution names the context it layered and stays silent for the slide it did not");
     const ResolvedAppearance haunted = docs.appearanceForSlide(show, ghost);
+    check(haunted.contextName.empty(),
+          "a name no theme carries is not an answer anyone may print");
     check(haunted.fontSize == plain.fontSize && haunted.align == plain.align &&
               haunted.lineSpacing == plain.lineSpacing &&
               haunted.placement == plain.placement,

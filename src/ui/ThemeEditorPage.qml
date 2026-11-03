@@ -12,6 +12,10 @@ import QtQuick.Controls
  * that lane at a time because only one page is visible at a time — the same
  * contract the Edit page keeps (6.16a), including standing the target down
  * on the way out and showing an honest blank when no worker is connected.
+ * Since task TF.4 the inspector also edits the theme's `scripture` reading
+ * context — typography and a box only, never a colour and never a line
+ * count; the "lines" note there is the worker's measurement, shown as
+ * information (text-flow plan).
  */
 Item {
     id: themeEditor
@@ -81,6 +85,7 @@ Item {
         placeYField.text = String(Math.round(box.y))
         placeWField.text = String(Math.round(box.width))
         placeHField.text = String(Math.round(box.height))
+        themeEditor.syncContext()
     }
     // Every inspector edit writes the record back WHOLE — editTheme's
     // contract that one omitted field cannot silently flatten a gradient.
@@ -98,6 +103,141 @@ Item {
                        name === "fontSize" ? value : row.fontSize,
                        name === "align" ? value : row.align,
                        name === "lineSpacing" ? value : row.lineSpacing)
+    }
+
+    /* --- the scripture reading context (task TF.4, text-flow plan) -------
+     * The entry this theme carries under the name "scripture" decides how
+     * a Bible passage is SET: typography and a box, and nothing else — no
+     * colour (the theme's look is the theme's own) and never a line count,
+     * because how many lines ride a slide is what the worker's measurement
+     * says, not what anyone types here. The fields read and write that one
+     * entry through the controller's verbs; an empty field is SILENCE (the
+     * property falls through to the themes), and the "lines" note is the
+     * same engine's answer for the same box the Bible page will paginate
+     * into, shown as information only.
+     */
+    // The measure request id of the in-flight lines probe (0 = none).
+    property int linesAskId: 0
+    // Whether the selected theme carries the context (derived on every
+    // sync; the toggle follows the record, never the other way round).
+    property bool contextOn: false
+
+    function themeRow() {
+        return themeEditor.rowFor(themeEditor.selectedId)
+    }
+    function contextRecord() {
+        if (themeEditor.selectedId === "" || themeEditor.themeRow() === null)
+            return {set: false}
+        return docs.themeContext(themeEditor.selectedId, "scripture")
+    }
+    // The look the passage actually resolves: the context where it speaks,
+    // the theme and the landing box where it is silent. The lines probe
+    // measures THIS, which is the same chain the Bible page measures.
+    function contextTypography() {
+        const row = themeEditor.themeRow()
+        const ctx = themeEditor.contextRecord()
+        return {
+            size: ctx.fontSizeSet === true ? ctx.fontSize : (row !== null ? row.fontSize : 0),
+            spacing: ctx.lineSpacingSet === true ? ctx.lineSpacing
+                                                 : (row !== null ? row.lineSpacing : 1.25),
+            box: ctx.boxSet === true ? Qt.rect(ctx.x, ctx.y, ctx.width, ctx.height)
+                                     : themeEditor.boxFor(row)
+        }
+    }
+    // Re-read the whole section from the record — the commit, the More
+    // menu's undo, a refused write: whatever moved, the fields follow.
+    function syncContext() {
+        const row = themeEditor.themeRow()
+        const ctx = themeEditor.contextRecord()
+        themeEditor.contextOn = ctx.set === true
+        ctxToggle.checked = ctx.set === true
+        ctxFontField.text = ctx.fontFamilySet === true ? ctx.fontFamily : ""
+        ctxSizeField.text = ctx.fontSizeSet === true ? String(ctx.fontSize) : ""
+        ctxSpacingField.text = ctx.lineSpacingSet === true ? String(ctx.lineSpacing) : ""
+        ctxAlignCombo.currentIndex = ctx.alignSet === true
+                ? ["left", "center", "right"].indexOf(ctx.align) + 1 : 0
+        // Silence SHOWS the box the passage would land on anyway — the
+        // theme's lyric rectangle, or the built-in one — because that is
+        // the honest answer to "where do the words go right now"; typing
+        // over it states the context's own opinion.
+        const box = ctx.boxSet === true
+                ? Qt.rect(ctx.x, ctx.y, ctx.width, ctx.height) : themeEditor.boxFor(row)
+        ctxXField.text = String(Math.round(box.x))
+        ctxYField.text = String(Math.round(box.y))
+        ctxWField.text = String(Math.round(box.width))
+        ctxHField.text = String(Math.round(box.height))
+        linesAsk.restart()
+    }
+    // Toggle on CREATES the context from this theme's current look and box:
+    // the reading starts as what the audience already sees, and the
+    // operator narrows it to a lectern from there. Toggle off removes the
+    // entry; a refusal (there was nothing to remove) leaves the toggle
+    // exactly where the record says it is.
+    function setContext(on) {
+        const row = themeEditor.themeRow()
+        if (row === null) {
+            ctxToggle.checked = themeEditor.contextOn
+            return
+        }
+        if (on) {
+            const box = themeEditor.boxFor(row)
+            const fields = {}
+            if (row.fontFamily !== "")
+                fields.fontFamily = row.fontFamily
+            if (row.fontSize > 0)
+                fields.fontSize = row.fontSize
+            fields.lineSpacing = row.lineSpacing
+            fields.align = row.align
+            fields.box = {x: box.x, y: box.y, width: box.width, height: box.height}
+            if (!docs.applyThemeContext(row.id, "scripture", fields))
+                ctxToggle.checked = false
+        } else if (!docs.removeThemeContext(row.id, "scripture")) {
+            ctxToggle.checked = true
+        }
+    }
+    // A field's commit is a WHOLE-entry write: the current set merged with
+    // the one field, because the domain, like the file, replaces the entry
+    // it is given. null is the field's way of saying "be silent again".
+    function commitContext(overrides) {
+        const id = themeEditor.selectedId
+        const current = themeEditor.contextRecord()
+        if (id === "" || current.set !== true)
+            return
+        const fields = {}
+        if (current.fontFamilySet === true)
+            fields.fontFamily = current.fontFamily
+        if (current.fontSizeSet === true)
+            fields.fontSize = current.fontSize
+        if (current.lineSpacingSet === true)
+            fields.lineSpacing = current.lineSpacing
+        if (current.alignSet === true)
+            fields.align = current.align
+        if (current.insetSet === true)
+            fields.inset = current.inset
+        if (current.boxSet === true)
+            fields.box = {x: current.x, y: current.y, width: current.width,
+                          height: current.height}
+        for (const key in overrides) {
+            if (overrides[key] === null)
+                delete fields[key]
+            else
+                fields[key] = overrides[key]
+        }
+        if (!docs.applyThemeContext(id, "scripture", fields))
+            themeEditor.syncContext()  // the refusal wins: the fields go back
+    }
+    // Four fields commit together, exactly like the theme's own placement:
+    // a box is one unit, and a half-typed one is a wrong one.
+    function applyContextBox() {
+        const x = parseFloat(ctxXField.text)
+        const y = parseFloat(ctxYField.text)
+        const w = parseFloat(ctxWField.text)
+        const h = parseFloat(ctxHField.text)
+        if (!isFinite(x) || !isFinite(y) || !isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) {
+            themeEditor.syncContext()
+            return
+        }
+        themeEditor.commitContext({box: {x: x, y: y, width: w, height: h}})
     }
 
     /* --- the placement (themes plan amendment 2026-11-01) ---------------
@@ -250,6 +390,62 @@ Item {
     function askForSamplePicture() {
         sampleAsk.restart()
     }
+    // The measured lines the passage's box holds (information, never a
+    // setting): one "M" at the resolved size and spacing, measured by the
+    // worker's own paragraph engine — the same one the Bible page paginates
+    // with — and the box height divided by the row it answers with.
+    Timer {
+        id: linesAsk
+        interval: 240
+        repeat: false
+        onTriggered: {
+            const look = themeEditor.contextTypography()
+            if (!themeEditor.visible || !themeEditor.contextOn) {
+                ctxLinesLabel.text = ""
+                return
+            }
+            if (!worker.connected) {
+                ctxLinesLabel.text = "not measured — the worker is not answering"
+                return
+            }
+            // A size of 0 is the renderer's own default, which no probe
+            // here can name — say so rather than divide by a guess.
+            if (look.size <= 0) {
+                ctxLinesLabel.text = "the renderer's default size decides"
+                return
+            }
+            const id = worker.measureText([{
+                key: "theme-editor-lines",
+                lines: ["M"],
+                fontSize: look.size,
+                width: look.box.width,
+                lineSpacing: look.spacing
+            }])
+            themeEditor.linesAskId = id
+            if (id === 0)
+                ctxLinesLabel.text = "not measured — the worker is not answering"
+        }
+    }
+    Connections {
+        target: worker
+        function onTextMeasured(requestId, measured) {
+            if (requestId !== themeEditor.linesAskId || measured.length === 0)
+                return  // another page's batch; the editor asked nothing
+            themeEditor.linesAskId = 0
+            const rowHeight = Number(measured[0].height)
+            const box = themeEditor.contextTypography().box
+            ctxLinesLabel.text = rowHeight > 0
+                    ? "the box holds ≈ " + Math.floor(box.height / rowHeight)
+                      + " lines of this size — how many ride is what the passage measures"
+                    : ""
+        }
+        function onTextMeasureFailed(requestId, reason) {
+            if (requestId !== themeEditor.linesAskId)
+                return
+            themeEditor.linesAskId = 0
+            ctxLinesLabel.text = "not measured: " + reason
+        }
+    }
     Connections {
         target: docs
         function onDocumentsChanged() {
@@ -282,6 +478,7 @@ Item {
             themeEditor.askForSamplePicture()
         } else {
             sampleAsk.stop()
+            linesAsk.stop()
             worker.clearSelectionPreview()
             themeEditor.renamingId = ""
         }
@@ -711,6 +908,154 @@ Item {
                 font.pixelSize: 11
                 text: themeEditor.hasPlacement ? "this theme places its slides"
                                                : "no opinion — slides keep their own boxes"
+            }
+        }
+
+        // The scripture reading context (task TF.4): the one named entry
+        // that says how a Bible passage is SET by this theme. Typography
+        // and a box, nothing else — the colours stay the theme's and the
+        // line count stays the measurement's.
+        Item { width: parent.width; height: 6 }
+        Text {
+            text: "SCRIPTURE READING"
+            color: "#bbbbbb"
+            font.pixelSize: 11
+            font.bold: true
+        }
+        CheckBox {
+            id: ctxToggle
+            objectName: "themeEditorContextToggle"
+            text: "set passages apart"
+            font.pixelSize: 11
+            enabled: themeEditor.selectedId !== ""
+            checked: false
+            onToggled: themeEditor.setContext(checked)
+        }
+        Column {
+            objectName: "themeEditorContextFields"
+            width: parent.width
+            spacing: 8
+            visible: themeEditor.contextOn
+            Text { text: "Reading font (\"\" = theme's)"; color: "#b0b0b0"; font.pixelSize: 11 }
+            PanelField {
+                id: ctxFontField
+                objectName: "themeEditorContextFont"
+                width: parent.width
+                onEditingFinished: themeEditor.commitContext(
+                            {fontFamily: text.trim() === "" ? null : text.trim()})
+            }
+            Text { text: "Reading size (0 = renderer, \"\" = theme's)"
+                       color: "#b0b0b0"; font.pixelSize: 11 }
+            PanelField {
+                id: ctxSizeField
+                objectName: "themeEditorContextSize"
+                width: parent.width
+                onEditingFinished: {
+                    const t = text.trim()
+                    if (t === "") {
+                        themeEditor.commitContext({fontSize: null})
+                        return
+                    }
+                    const v = Number(t)
+                    if (!isFinite(v) || v < 0) {
+                        themeEditor.syncContext()
+                        return
+                    }
+                    themeEditor.commitContext({fontSize: v})
+                }
+            }
+            Text { text: "Reading alignment"; color: "#b0b0b0"; font.pixelSize: 11 }
+            ComboBox {
+                id: ctxAlignCombo
+                objectName: "themeEditorContextAlign"
+                width: parent.width
+                model: ["(theme)", "left", "center", "right"]
+                onActivated: themeEditor.commitContext(
+                            {align: currentIndex === 0 ? null : currentValue})
+            }
+            Text { text: "Reading line spacing (0.25 to 8, \"\" = theme's)"
+                       color: "#b0b0b0"; font.pixelSize: 11 }
+            PanelField {
+                id: ctxSpacingField
+                objectName: "themeEditorContextSpacing"
+                width: parent.width
+                onEditingFinished: {
+                    const t = text.trim()
+                    if (t === "") {
+                        themeEditor.commitContext({lineSpacing: null})
+                        return
+                    }
+                    const v = Number(t)
+                    if (!isFinite(v) || v < 0.25 || v > 8) {
+                        themeEditor.syncContext()
+                        return
+                    }
+                    themeEditor.commitContext({lineSpacing: v})
+                }
+            }
+            Text { text: "Reading box (x, y, w, h in 1920×1080)"
+                       color: "#b0b0b0"; font.pixelSize: 11 }
+            Row {
+                spacing: 4
+                PanelField {
+                    id: ctxXField
+                    objectName: "themeEditorContextX"
+                    width: 52
+                    onEditingFinished: themeEditor.applyContextBox()
+                }
+                PanelField {
+                    id: ctxYField
+                    objectName: "themeEditorContextY"
+                    width: 52
+                    onEditingFinished: themeEditor.applyContextBox()
+                }
+                PanelField {
+                    id: ctxWField
+                    objectName: "themeEditorContextW"
+                    width: 52
+                    onEditingFinished: themeEditor.applyContextBox()
+                }
+                PanelField {
+                    id: ctxHField
+                    objectName: "themeEditorContextH"
+                    width: 52
+                    onEditingFinished: themeEditor.applyContextBox()
+                }
+            }
+            Row {
+                spacing: 6
+                PanelButton {
+                    objectName: "themeEditorContextBoxTheme"
+                    text: "Theme's lyric box"
+                    onClicked: {
+                        const box = themeEditor.boxFor(themeEditor.themeRow())
+                        themeEditor.commitContext({box: {x: box.x, y: box.y,
+                                                         width: box.width, height: box.height}})
+                    }
+                }
+                PanelButton {
+                    objectName: "themeEditorContextBoxClear"
+                    text: "No box"
+                    onClicked: themeEditor.commitContext({box: null})
+                }
+            }
+            Text {
+                id: ctxLinesLabel
+                objectName: "themeEditorContextLines"
+                width: parent.width
+                wrapMode: Text.WordWrap
+                color: "#8ec9f5"
+                font.pixelSize: 11
+                text: ""
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                color: "#888888"
+                font.pixelSize: 10
+                text: "a reading context sets type and a box — never a colour, "
+                      + "and never a line count: how many lines ride a slide is "
+                      + "what the renderer measures"
             }
         }
     }

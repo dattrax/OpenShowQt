@@ -154,6 +154,29 @@ dereferenced the NULL pointer-to-member the colours (which a context can
 never speak) are passed as; guarded now, and the page fixture that found
 it keeps the path honest (`bible_import_page_tests`; gates 64/64 desktop
 serial, 46/46 headless).
+**TF.4 is DONE the same day, closing the milestone:** the Theme Editor's
+inspector gained the **Scripture Reading** section — the toggle creates the
+`scripture` context out of the theme's current look and box, size,
+alignment, spacing and the reading box commit through undoable
+controller verbs (an empty field is silence the themes answer, a refused
+value snaps every field back, and remove refuses when there is nothing to
+remove), and the section states "the box holds ≈ N lines of this size" as
+**information only**, measured through the same `text.measure` port the
+pagination answers on — no worker, no number, just the honest sentence.
+There is still no line-count field anywhere. The resolver itself now
+reports which context layered (`ResolvedAppearance.contextName`), so the
+Bible page's plan sentence says the passage was "measured to fit **in the
+theme's scripture context**" in the resolver's own word, and stays
+byte-identical when none answered. The e2e re-acceptance walks the whole
+route — context applied through the editor's verbs, the chapter looked up
+once, Add, save, reopen: the schedule holds exactly the previewed slides,
+every saved scene compiles at the context's size inside its box, and the
+presented PGM picture is the previewed flow (`workspace_ui_tests` TF rows,
+the TF leg of `bible_import_e2e_tests`; `document_controller_tests` pins
+the verbs' merge, refusals, one-undo steps and disk round-trip;
+`docs/architecture.md` gained the delivered-shape section and
+`docs/ui/text-flow-plan.md` its as-built close; gates 64/64 desktop
+serial, 46/46 headless).
 The operator's paging note
 — flow the whole downloaded passage with the theme deciding how much text
 a slide carries (their examples: two display lines for songs, six for a
@@ -162,9 +185,9 @@ a fixed split) — is recorded as milestone **TF (TF.1–TF.4)**: named
 typography-and-box contexts on
 the theme, resolved by the one appearance resolver, and the packing core
 extracted from `paginateScripture` into a generic text-flow engine with
-scripture as its first adapter; design in
-[docs/ui/text-flow-plan.md](docs/ui/text-flow-plan.md), planned not
-started, after BI-F's fixes.
+scripture as its first adapter; design and as-built in
+[docs/ui/text-flow-plan.md](docs/ui/text-flow-plan.md) — **all four
+leaves delivered**, as recorded above.
 Before BI, **the Themes amendment
 (TH.9) is DONE** — the built-in look is now a real, embedded, undeletable **Default** theme (reserved id `default`,
 seeded first, re-ensured after every successful load, the chain's last

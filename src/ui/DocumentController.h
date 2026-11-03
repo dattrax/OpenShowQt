@@ -261,6 +261,22 @@ public:
     // customized placement). A theme with no placement is refused — the same
     // wrong-click rule every other revert follows.
     Q_INVOKABLE bool clearThemePlacement(const QString& themeId);
+    // The theme's named TEXT CONTEXTS (task TF.4, text-flow plan): a
+    // context carries typography and a box ONLY — never colours, and never
+    // a line count, because how many lines fit is what the worker's
+    // measurement says. `themeContext` answers {set, name, fontFamily,
+    // fontSize, lineSpacing, align, x, y, width, height, inset} with a
+    // ...Set flag per field (silence is a real state — an unset field
+    // falls through to the themes); absent set means no such context.
+    // `applyThemeContext` replaces (or adds) the named entry from a map
+    // whose ABSENT keys are silence, exactly like absent keys in the file;
+    // the vetting is the loader's. `removeThemeContext` takes one entry
+    // off and refuses when the theme carries none — an undo costs what it
+    // changes. The Bible passage is set in the context named "scripture".
+    Q_INVOKABLE QVariantMap themeContext(const QString& themeId, const QString& name) const;
+    Q_INVOKABLE bool applyThemeContext(const QString& themeId, const QString& name,
+                                       const QVariantMap& fields);
+    Q_INVOKABLE bool removeThemeContext(const QString& themeId, const QString& name);
     // Creates a theme wearing whatever the current slide draws now
     // (resolved theme or built-in defaults) and overrides only that slide.
     Q_INVOKABLE bool createThemeFromCurrent(const QString& name);

@@ -1533,6 +1533,80 @@ int main(int argc, char** argv) {
               "No placement takes the theme's opinion away, puts the offered box back in "
               "the fields, and leaves the theme itself intact");
 
+        // The scripture reading context (task TF.4): the toggle CREATES the
+        // entry out of the theme's current look and box, the fields commit
+        // one property at a time, refusals snap back, and the line note
+        // says it cannot measure rather than invent a number — no worker
+        // runs in this fixture. What the section writes is the SAME entry
+        // the Bible page paginates against; the e2e leg pins that.
+        auto* ctxToggle = findNamed(window->contentItem(), "themeEditorContextToggle");
+        auto* ctxSizeField = findNamed(window->contentItem(), "themeEditorContextSize");
+        auto* ctxHField = findNamed(window->contentItem(), "themeEditorContextH");
+        auto* ctxLinesLabel = findNamed(window->contentItem(), "themeEditorContextLines");
+        const auto contextRow = [&docs](const QString& id) {
+            return docs.themeContext(id, QStringLiteral("scripture"));
+        };
+        check(ctxToggle && !ctxToggle->property("checked").toBool()
+                  && contextRow(placedId).value(QStringLiteral("set")).toBool() == false,
+              "a theme with no reading context opens the section asleep");
+        clickAt(ctxToggle, ctxToggle->width() / 2, ctxToggle->height() / 2);
+        QTest::qWait(80);
+        const QVariantMap created = contextRow(placedId);
+        check(created.value(QStringLiteral("set")).toBool()
+                  && ctxToggle->property("checked").toBool()
+                  && created.value(QStringLiteral("boxSet")).toBool()
+                  && created.value(QStringLiteral("height")).toDouble() == 880.0
+                  && created.value(QStringLiteral("alignSet")).toBool()
+                  && !created.value(QStringLiteral("fontSizeSet")).toBool()
+                  // a context speaks type and a box — never colours; the
+                  // record has no colour fields to speak in the first place
+                  && !created.contains(QStringLiteral("textColor")),
+              "toggling creates the scripture context from the theme's current look: "
+              "the offered box is stated, a size of 0 stays silent");
+        ctxSizeField->setProperty("text", "32");
+        QMetaObject::invokeMethod(ctxSizeField, "editingFinished");
+        QTest::qWait(80);
+        check(contextRow(placedId).value(QStringLiteral("fontSizeSet")).toBool()
+                  && contextRow(placedId).value(QStringLiteral("fontSize")).toDouble() == 32.0,
+              "committing the reading size writes 32 into the context");
+        docs.undo();
+        QTest::qWait(80);
+        check(contextRow(placedId).value(QStringLiteral("set")).toBool()
+                  && !contextRow(placedId).value(QStringLiteral("fontSizeSet")).toBool(),
+              "one undo takes the size commit back and leaves the context standing");
+        ctxSizeField->setProperty("text", "-4");
+        QMetaObject::invokeMethod(ctxSizeField, "editingFinished");
+        QTest::qWait(80);
+        check(!contextRow(placedId).value(QStringLiteral("fontSizeSet")).toBool()
+                  && ctxSizeField->property("text").toString().isEmpty(),
+              "a negative size never reaches the context and the field snaps back to silence");
+        // The height field is the box as one unit: one typed number commits
+        // all four.
+        ctxHField->setProperty("text", "600");
+        QMetaObject::invokeMethod(ctxHField, "editingFinished");
+        QTest::qWait(80);
+        const QVariantMap resized = contextRow(placedId);
+        check(resized.value(QStringLiteral("boxSet")).toBool()
+                  && resized.value(QStringLiteral("height")).toDouble() == 600.0
+                  && resized.value(QStringLiteral("x")).toDouble() == 160.0,
+              "typing the box's height commits the rectangle as one unit");
+        check(waitFor([&] {
+                  return ctxLinesLabel->property("text").toString().contains(
+                          QStringLiteral("not measured"));
+              }),
+              "with no worker answering the line note says so instead of inventing a count");
+        clickAt(ctxToggle, ctxToggle->width() / 2, ctxToggle->height() / 2);
+        QTest::qWait(80);
+        check(!contextRow(placedId).value(QStringLiteral("set")).toBool()
+                  && !ctxToggle->property("checked").toBool(),
+              "toggling off removes the reading context and the fields sleep");
+        docs.undo();
+        QTest::qWait(80);
+        check(contextRow(placedId).value(QStringLiteral("set")).toBool()
+                  && contextRow(placedId).value(QStringLiteral("height")).toDouble() == 600.0
+                  && ctxToggle->property("checked").toBool(),
+              "one undo brings the whole context back — the toggle follows the record");
+
         // The honest floor (amendment 2026-11-02): delete every theme the
         // operator can delete, and the service still stands on its Default —
         // every targeted control disables, New stays live, and the Default

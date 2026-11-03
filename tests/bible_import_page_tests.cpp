@@ -599,6 +599,9 @@ int main(int argc, char* argv[]) {
         const qsizetype plainSlides = plainScripture.slides().size();
         check(plainSlides == 31 || plainSlides > 1,
               "the contextless chapter packs at the display size, verse for verse or better");
+        check(plainScripture.context().isEmpty() &&
+                  !plainScripture.status().contains(QStringLiteral("context")),
+              "with no context the plan sentence stays exactly as plain as it was");
 
         // B: the same chapter, the theme's scripture context in force.
         DocumentController lectern(nullptr, root / "ablectern");
@@ -622,6 +625,9 @@ int main(int argc, char* argv[]) {
         const qsizetype ctxSlides = scripture.slides().size();
         std::fprintf(stderr, "  tf.3: plain=%lld context=%lld verses=31\n",
                      static_cast<long long>(plainSlides), static_cast<long long>(ctxSlides));
+        check(scripture.context() == QStringLiteral("scripture") &&
+                  scripture.status().contains(QStringLiteral("in the theme's scripture context")),
+              "the plan sentence names the context the measurement ran in");
         check(ctxSlides > 1 && ctxSlides < plainSlides,
               "the reading context measures out more verses per slide — the line count is "
               "the worker's answer, never a set split");

@@ -106,6 +106,7 @@ void ScriptureImport::regenerate() {
         // Not a failure: the lookup line is already saying where the
         // operator stands (the notice, a refusal, or a passage awaiting a
         // selection). The slides are simply none.
+        fContext.clear();
         if (!fSlides.isEmpty()) {
             fSlides.clear();
             emit slidesChanged();
@@ -138,6 +139,10 @@ void ScriptureImport::runPagination() {
                                   ? style.value(QStringLiteral("lineSpacing")).toDouble()
                                   : 1.25;
     input.style.fontFamily = style.value(QStringLiteral("fontFamily")).toString().toStdString();
+    // Which context answered the chain (task TF.4). "" means none did and
+    // the words wear the theme's own look; the plan sentence says exactly
+    // which of the two the operator is about to add.
+    fContext = style.value(QStringLiteral("context")).toString();
 
     for (int round = 1; round <= kMaxMeasureRounds; ++round) {
         const importer::PaginationOutcome outcome = importer::paginateScripture(
@@ -256,12 +261,17 @@ void ScriptureImport::publish(const std::vector<importer::GeneratedSlide>& gener
         return;
     }
     emit slidesChanged();
-    // The honest arithmetic of the reservation, in the operator's terms.
-    setStatus(QStringLiteral("%1 slide%2 measured to fit (the reference and attribution reserve "
-                             "%3 px of the box) — the picture is off air; Add places them on "
-                             "today's schedule as one undoable item")
+    // The honest arithmetic of the reservation, in the operator's terms,
+    // naming the context the plan was measured in when one answered
+    // (task TF.4) — "the theme decides" made audible.
+    setStatus(QStringLiteral("%1 slide%2 measured to fit%3 (the reference and attribution "
+                             "reserve %4 px of the box) — the picture is off air; Add places "
+                             "them on today's schedule as one undoable item")
                   .arg(static_cast<qint64>(fSlides.size()))
                   .arg(fSlides.size() == 1 ? QString() : QStringLiteral("s"))
+                  .arg(fContext.isEmpty()
+                           ? QString()
+                           : QStringLiteral(" in the theme's %1 context").arg(fContext))
                   .arg(QString::number(outcome.reservedHeight, 'f', 0)));
     emit stateChanged();
     previewSlide(0);
@@ -338,6 +348,7 @@ void ScriptureImport::cancel() {
     fMeasured.clear();
     fMeasuring = false;
     fRerunWanted = false;
+    fContext.clear();  // the cancelled plan named a context; there is no plan now
     const bool hadSlides = !fSlides.isEmpty();
     if (hadSlides) {
         fSlides.clear();
@@ -351,6 +362,7 @@ void ScriptureImport::cancel() {
 void ScriptureImport::finishWithFailure(const QString& sentence) {
     fMeasuring = false;
     fSlides.clear();
+    fContext.clear();  // there is no plan left to name a context of
     emit slidesChanged();
     setStatus(sentence);
 }

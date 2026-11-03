@@ -1150,6 +1150,12 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
             }
         }
     }
+    // Which context answered is itself an answer (task TF.4): the pages
+    // that say "set in the scripture context" read it here rather than
+    // re-walking the chain and guessing what layered.
+    if (ctx != nullptr) {
+        out.contextName = ctx->name;
+    }
     // Per property, the first layer with something to say wins; a layer
     // silent on a property (an empty string, a size of 0) falls through.
     // A NULL contextField is the property's way of saying a context can

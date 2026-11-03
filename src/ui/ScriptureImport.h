@@ -50,6 +50,11 @@ class ScriptureImport final : public QObject {
     // the verse range for the slide's NOTES — the slide's words carry only
     // the passage, the plan's rule, all the way through the page.
     Q_PROPERTY(QVariantList slides READ slides NOTIFY slidesChanged)
+    // The text context the chain used for the current plan (task TF.4):
+    // "scripture" when a wearing theme carries that context and the
+    // passage is set by it, "" when the words wear the theme's own look.
+    // The page's plan sentence names this word; it never guesses.
+    Q_PROPERTY(QString context READ context NOTIFY stateChanged)
 
 public:
     ScriptureImport(BibleImport* bible, DocumentController* documents,
@@ -57,6 +62,7 @@ public:
 
     bool measuring() const { return fMeasuring || fPendingMeasureId != 0; }
     QString status() const { return fStatus; }
+    QString context() const { return fContext; }
     bool canAdd() const { return !fSlides.isEmpty() && !measuring(); }
     QVariantList slides() const { return fSlides; }
 
@@ -111,6 +117,7 @@ private:
     bool fRerunWanted = false;  // asked again while suspended: the newest wins
     QVariantList fSlides;
     QString fStatus;
+    QString fContext;  // the context the newest style answered with
 };
 
 }  // namespace openshow::ui

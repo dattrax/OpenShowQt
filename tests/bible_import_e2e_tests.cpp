@@ -19,6 +19,11 @@
  * three typed letters, the translation picker never touched (the untouched
  * default must be the request that goes out), Add, save, and offline
  * playback of the chapter on the real worker.
+ * Then the TF.4 re-acceptance: the SAME chapter again after the service
+ * wears a theme that has grown a `scripture` reading context — the plan
+ * names the context, the saved slides are the previewed slides line for
+ * line, every saved scene compiles inside the context's box, and the PGM
+ * picture is the previewed flow.
  * Fixtures stay synthetic: no live provider is ever contacted from here.
  *
  * Needs a display (the worker opens its output window): desktop preset,
@@ -44,6 +49,8 @@
 #include <fstream>
 #include <string>
 #include <vector>
+
+#include <boost/json.hpp>
 
 #include "BibleImport.h"
 #include "DocumentController.h"
@@ -477,6 +484,139 @@ int main(int argc, char* argv[]) {
           "the congregation holds the chapter the picker never touched");
     check(manager.requests == 3,
           "the production journey fetched exactly its one page, and playback nothing");
+
+    // --- TF.4: the reading context, end to end --------------------------------
+    // The re-acceptance the text-flow plan demands: a theme that has GROWN
+    // a scripture context (a reading size in a box of its own) decides how
+    // the SAME chapter is set — and the flow the operator previewed is the
+    // flow the schedule saves and the audience finally sees. One fresh
+    // session plays the next service's operator: context applied through
+    // the editor's own verbs, chapter looked up once, Add, save, reopen,
+    // present. The count can only fall (same words, reading size, wider
+    // box), the saved lines are the previewed lines, and every saved scene
+    // compiles inside the context's numbers with its name on the slide.
+    const int chapterWithoutContext = static_cast<int>(chapterScenes.size());
+    DocumentController lectern(nullptr, root / "service");
+    if (!check(lectern.load(), "a fresh session reopens the service for the reading context")) {
+        worker.shutdownNow();
+        return 1;
+    }
+    lectern.selectPlaylist(lectern.currentPlaylistId());
+    check(lectern.createBlankTheme("Lectern"), "the service grows a reading theme");
+    QString lecternId;
+    for (const QVariant& theme : lectern.themes()) {
+        if (theme.toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Lectern")) {
+            lecternId = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    QVariantMap ctxFields;
+    ctxFields.insert(QStringLiteral("fontSize"), 30.0);
+    ctxFields.insert(QStringLiteral("align"), QStringLiteral("left"));
+    QVariantMap ctxBox;
+    ctxBox.insert(QStringLiteral("x"), 100.0);
+    ctxBox.insert(QStringLiteral("y"), 200.0);
+    ctxBox.insert(QStringLiteral("width"), 1720.0);
+    ctxBox.insert(QStringLiteral("height"), 700.0);
+    ctxFields.insert(QStringLiteral("box"), ctxBox);
+    check(!lecternId.isEmpty() &&
+              lectern.applyThemeContext(lecternId, QStringLiteral("scripture"), ctxFields) &&
+              lectern.useThemeAsCurrent(lecternId),
+          "the theme carries a scripture context and the service wears it");
+    const QVariantMap planStyle = lectern.scriptureBoxStyle();
+    check(planStyle.value(QStringLiteral("context")).toString() == QStringLiteral("scripture") &&
+              planStyle.value(QStringLiteral("fontSize")).toDouble() == 30.0 &&
+              planStyle.value(QStringLiteral("boxHeight")).toDouble() == 700.0,
+          "the importer's measurement style answers through the context, and names it");
+
+    BibleImport lecternBible;
+    lecternBible.setNetworkAccessManager(&manager);
+    ScriptureImport lecternScripture(&lecternBible, &lectern, &worker);
+    lecternBible.setReference(chapterRef);
+    manager.steps.push_back({chapterBody(), {}, {}, 200, 0});
+    lecternBible.lookup();
+    waitForLookup(lecternBible);
+    check(waitForMeasured(lecternScripture), "the chapter repacks under the reading context");
+    check(lecternScripture.context() == QStringLiteral("scripture") &&
+              lecternScripture.status().contains(QStringLiteral("theme's scripture context")),
+          "the plan sentence says out loud which context it was measured in");
+    const qsizetype previewedCount = lecternScripture.slides().size();
+    check(previewedCount >= 1 && previewedCount <= chapterWithoutContext,
+          "the same chapter needs no MORE slides at a reading size in a wider box "
+          "than it needed plain");
+
+    const QVariantList previewedSlides = lecternScripture.slides();
+    check(lecternScripture.canAdd() && lecternScripture.addToSchedule(),
+          "Add lands the contexted chapter on today's schedule");
+    const QVariantList entries = lectern.playlistEntries();
+    check(entries.size() == 3, "the passage joined beside the first passage and the plain chapter");
+    const QString contextedShow =
+        entries.last().toMap().value(QStringLiteral("showId")).toString();
+    check(lectern.slidesOf(contextedShow).size() == previewedCount,
+          "the schedule holds exactly the slides the preview showed — one flow, not two");
+    check(lectern.save(), "the contexted service saves");
+
+    DocumentController contextedFromDisk(nullptr, root / "service");
+    if (!check(contextedFromDisk.load(), "the contexted service reopens from disk")) {
+        worker.shutdownNow();
+        return 1;
+    }
+    const QVariantList savedSlidesOfChapter = contextedFromDisk.slidesOf(contextedShow);
+    bool scenesFollowContext = savedSlidesOfChapter.size() == previewedCount &&
+                               !savedSlidesOfChapter.isEmpty();
+    QStringList savedSceneLines;
+    for (qsizetype i = 0; scenesFollowContext && i < savedSlidesOfChapter.size(); ++i) {
+        const QString sceneJson = contextedFromDisk.sceneJsonForSlide(
+            savedSlidesOfChapter.at(i).toMap().value(QStringLiteral("id")).toString());
+        boost::json::object item;
+        try {
+            item = boost::json::parse(sceneJson.toStdString())
+                       .at("items")
+                       .as_array()
+                       .at(0)
+                       .as_object();
+        } catch (...) {
+            scenesFollowContext = false;
+            break;
+        }
+        if (boost::json::value_to<double>(item.at("fontSize")) != 30.0 ||
+            boost::json::value_to<double>(item.at("y")) != 200.0 ||
+            boost::json::value_to<double>(item.at("height")) != 700.0 ||
+            item.at("align").as_string() != "left") {
+            scenesFollowContext = false;
+            break;
+        }
+        QStringList lines;
+        for (const boost::json::value& line : item.at("lines").as_array()) {
+            lines.push_back(QString::fromStdString(boost::json::value_to<std::string>(line)));
+        }
+        savedSceneLines.push_back(lines.join(QLatin1Char('\n')));
+    }
+    check(scenesFollowContext,
+          "every saved scene compiles at the context's size inside the context's box — "
+          "playback resolves what the preview measured, through the same chain");
+    bool linesAreTheFlow = savedSceneLines.size() == previewedCount;
+    for (qsizetype i = 0; linesAreTheFlow && i < previewedCount; ++i) {
+        // The scene carries exactly the lines the preview was built from —
+        // the schedule did not re-flow the passage on the way to the file.
+        linesAreTheFlow = savedSceneLines.at(i) ==
+                          previewedSlides.at(i).toMap()
+                              .value(QStringLiteral("lines"))
+                              .toStringList()
+                              .join(QLatin1Char('\n'));
+    }
+    check(linesAreTheFlow,
+          "slide for slide, the words on the schedule are the words the preview showed");
+
+    worker.clearSlide();
+    QTest::qWait(100);
+    const QString firstContextedScene = contextedFromDisk.sceneJsonForSlide(
+        savedSlidesOfChapter.first().toMap().value(QStringLiteral("id")).toString());
+    worker.presentSceneJson(firstContextedScene);
+    check(waitForOnAir(worker) && worker.wordsOnAir(),
+          "the PGM slide is the flow the operator previewed — the audience draws the "
+          "context's picture");
+    check(manager.requests == 4,
+          "the contexted journey fetched its one page and playback asked for nothing");
 
     worker.shutdownNow();
     if (gFailed == 0) {

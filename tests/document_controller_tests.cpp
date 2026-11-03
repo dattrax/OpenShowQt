@@ -2709,6 +2709,150 @@ void exercisePlacementSurfaces(const std::filesystem::path& root) {
 // unit; the item answers to its playlist and to nothing in the Library;
 // save and reopen keep exactly the selected content and the provenance;
 // and an add whose target vanished is invalidated rather than retargeted.
+void exerciseReadingContexts(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong("Contexted");
+    docs.addSlide();
+    docs.selectSlide(0);
+    check(docs.createBlankTheme("House"), "a blank theme exists to carry a reading context");
+    QString house;
+    for (const QVariant& theme : docs.themes()) {
+        if (theme.toMap().value(QStringLiteral("name")).toString() == QStringLiteral("House")) {
+            house = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    check(!house.isEmpty(), "the reading-context test's theme is House");
+    // The passage's chain runs through the CURRENT theme, so wear House
+    // before anything else here — and before the context edits, so the
+    // undo arithmetic below counts only the context's own entries.
+    check(docs.useThemeAsCurrent(house), "the service wears House");
+    // A theme that carries nothing answers `set` false — and so do the
+    // wrong ids, because the honest answer to "which context?" when there
+    // is no such thing is silence, not a half-map.
+    check(docs.themeContext(house, QStringLiteral("scripture"))
+                  .value(QStringLiteral("set"))
+                  .toBool() == false,
+          "a theme with no reading context answers set false");
+    check(docs.themeContext(QStringLiteral("theme-nope"), QStringLiteral("scripture"))
+                          .value(QStringLiteral("set"))
+                          .toBool() == false,
+          "an unknown theme answers the same way, not with numbers");
+
+    // The editor's create: every field it shows, stated. The reply is the
+    // same shape the entry has — a flag per property, silence flaggable.
+    QVariantMap create;
+    create.insert(QStringLiteral("fontSize"), 32.0);
+    create.insert(QStringLiteral("lineSpacing"), 1.3);
+    create.insert(QStringLiteral("align"), QStringLiteral("left"));
+    QVariantMap box;
+    box.insert(QStringLiteral("x"), 200.0);
+    box.insert(QStringLiteral("y"), 120.0);
+    box.insert(QStringLiteral("width"), 1200.0);
+    box.insert(QStringLiteral("height"), 760.0);
+    create.insert(QStringLiteral("box"), box);
+    check(docs.applyThemeContext(house, QStringLiteral("scripture"), create),
+          "the editor creates the scripture context with size, spacing, alignment and box");
+    const QVariantMap made = docs.themeContext(house, QStringLiteral("scripture"));
+    check(made.value(QStringLiteral("set")).toBool() &&
+              made.value(QStringLiteral("name")).toString() == QStringLiteral("scripture") &&
+              made.value(QStringLiteral("fontSize")).toDouble() == 32.0 &&
+              made.value(QStringLiteral("lineSpacing")).toDouble() == 1.3 &&
+              made.value(QStringLiteral("align")).toString() == QStringLiteral("left") &&
+              made.value(QStringLiteral("boxSet")).toBool() &&
+              made.value(QStringLiteral("height")).toDouble() == 760.0 &&
+              made.value(QStringLiteral("fontFamilySet")).toBool() == false,
+          "the entry reads back field for field, with the untouched font flagged silent");
+
+    // The merge contract, stated the only way the file states it: absent
+    // keys are SILENCE. A commit that carries only the spacing replaces the
+    // entry with one that says nothing about size — which is exactly why
+    // the page commits the whole merged entry, not the one edited field.
+    QVariantMap spacingOnly;
+    spacingOnly.insert(QStringLiteral("lineSpacing"), 1.4);
+    check(docs.applyThemeContext(house, QStringLiteral("scripture"), spacingOnly),
+          "a commit that carries one field replaces the entry as the file does");
+    const QVariantMap merged = docs.themeContext(house, QStringLiteral("scripture"));
+    check(merged.value(QStringLiteral("lineSpacing")).toDouble() == 1.4 &&
+              merged.value(QStringLiteral("fontSizeSet")).toBool() == false &&
+              merged.value(QStringLiteral("boxSet")).toBool() == false,
+          "absent keys became silence — the old size and box did not survive the rewrite");
+    docs.undo();
+    check(docs.themeContext(house, QStringLiteral("scripture"))
+                      .value(QStringLiteral("fontSize"))
+                      .toDouble() == 32.0,
+          "and the entry is exactly what the create wrote");
+
+    // The vetting is the loader's: what the editor accepts, the next save
+    // cannot refuse.
+    QVariantMap crooked;
+    crooked.insert(QStringLiteral("align"), QStringLiteral("sideways"));
+    check(!docs.applyThemeContext(house, QStringLiteral("scripture"), crooked) &&
+              docs.status().contains(QStringLiteral("reading context")),
+          "an alignment no file may carry is refused in the page's own words");
+    check(docs.themeContext(house, QStringLiteral("scripture"))
+                      .value(QStringLiteral("align"))
+                      .toString() == QStringLiteral("left"),
+          "and the refusal left the entry standing");
+    check(!docs.applyThemeContext(QStringLiteral("theme-nope"), QStringLiteral("scripture"),
+                                  spacingOnly) &&
+              docs.status().contains(QStringLiteral("reading context")),
+          "applying to a theme that does not exist is refused the same way");
+
+    // What the context does for the passage's own lookup: the style the
+    // Bible page measures against names WHICH context answered — the same
+    // word the plan sentence will print — and answers the context's numbers.
+    const QVariantMap style = docs.scriptureBoxStyle();
+    check(style.value(QStringLiteral("context")).toString() == QStringLiteral("scripture") &&
+              style.value(QStringLiteral("fontSize")).toDouble() == 32.0 &&
+              style.value(QStringLiteral("boxWidth")).toDouble() == 1200.0,
+          "the scripture style answers through the context and names it");
+    docs.undo();  // the create itself; refused edits never entered History
+    check(docs.themeContext(house, QStringLiteral("scripture"))
+                      .value(QStringLiteral("set"))
+                      .toBool() == false,
+          "...and the theme has no reading context at all — the create was ONE undo");
+    check(docs.scriptureBoxStyle().value(QStringLiteral("context")).toString().isEmpty(),
+          "and with no context the style names nothing — the plan sentence stays plain");
+
+    // Removal: refuses when there is nothing to remove, and one undo brings
+    // the whole entry — every field — back.
+    QVariantMap again;
+    again.insert(QStringLiteral("fontSize"), 28.0);
+    check(docs.applyThemeContext(house, QStringLiteral("scripture"), again),
+          "the context is created a second time, from one field only");
+    check(docs.removeThemeContext(house, QStringLiteral("scripture")),
+          "remove takes the entry off");
+    check(docs.themeContext(house, QStringLiteral("scripture"))
+                      .value(QStringLiteral("set"))
+                      .toBool() == false,
+          "and the theme carries nothing again");
+    check(!docs.removeThemeContext(house, QStringLiteral("scripture")) &&
+              docs.status().contains(QStringLiteral("reading context")),
+          "removing a context that is not there is refused, not silently true");
+    docs.undo();  // of the removal
+    const QVariantMap restored = docs.themeContext(house, QStringLiteral("scripture"));
+    check(restored.value(QStringLiteral("set")).toBool() &&
+              restored.value(QStringLiteral("fontSize")).toDouble() == 28.0 &&
+              restored.value(QStringLiteral("alignSet")).toBool() == false,
+          "the whole entry returns exactly as it was — fields and all");
+
+    // And it survives the disk: what the editor wrote, the next session
+    // reads without a single field drifting.
+    check(docs.save(), "the service saves with the context");
+    const std::filesystem::path service = root / "service" / "service.json";
+    openshow::domain::Documents reopened;
+    std::string loadError;
+    check(openshow::domain::loadService(&reopened, service.parent_path(), &loadError),
+          "the saved service loads");
+    const openshow::domain::Theme* diskTheme = reopened.findTheme(house.toStdString());
+    check(diskTheme != nullptr && diskTheme->contexts.size() == 1 &&
+              diskTheme->contexts[0].name == "scripture" &&
+              diskTheme->contexts[0].fontSize.has_value() &&
+              *diskTheme->contexts[0].fontSize == 28.0 &&
+              !diskTheme->contexts[0].box.has_value(),
+          "the file carries the context field for field");
+}
+
 void exerciseScripturePassage(const std::filesystem::path& root) {
     DocumentController docs(nullptr, root);
     check(docs.createSong("Ordinary Hymn"), "the Library has one ordinary show");
@@ -2825,6 +2969,7 @@ int main(int argc, char* argv[]) {
     exerciseWornChain(tempRoot / "wornchain");
     exerciseThemeSurfaces(tempRoot / "surfaces");
     exercisePlacementSurfaces(tempRoot / "placementsurfaces");
+    exerciseReadingContexts(tempRoot / "readingcontexts");
     exerciseScripturePassage(tempRoot / "scripturepassage");
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");

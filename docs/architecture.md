@@ -349,6 +349,60 @@ pagination), `bible_import_page_tests` and the BI rows of
 `workspace_ui_tests` (the page), and `bible_import_e2e_tests` (the whole
 journey, offline playback and the disk witness).
 
+## Text contexts and the shared text-flow engine (milestone TF)
+
+A theme now knows that not all the text it wears is lyrics. A theme may
+carry named **text contexts** — `themes[].contexts` entries holding
+typography and geometry only: font, size, spacing, alignment, an optional
+box and inset. Nothing else. Colours always come from the theme, and
+nothing in the file format or any editor carries a line-count field,
+because how many lines a slide carries is the measurement's answer, never
+a number to dial in.
+
+A slide may name a context (`text_context`). The resolver
+(`appearanceForSlide`) layers that context between the slide's
+customizations and the themes' values: the first theme in the worn chain
+that carries the name supplies it, per property, and a name no theme
+carries is no layer at all — every older file and every unnamed slide
+resolves exactly as it did before contexts existed. The resolver also
+reports WHICH context layered, and the pages that say where a passage was
+set read that one word instead of re-walking the chain.
+
+The Bible page names `scripture` on every lookup it runs: the measurement
+style, the off-air preview and every added slide carry the name, so a
+theme that has grown a reading-size context decides how its passages are
+SET. The same chapter, two services differing only by the context,
+measured on the real worker: the plain 96 px display look packs 19 slides;
+a 32 px lectern context lands 4 — multiple verses per slide because that
+is what the worker's measurement fits, with exactly the chapter's words
+either way. A theme without the context leaves the plan sentence byte-for
+byte as plain as it was. The Theme Editor's Scripture Reading section
+edits the one entry — a toggle that creates it from the theme's current
+look and box, fields for size, alignment, spacing and the reading box,
+an empty field meaning silence — and states the lines the box measures out
+as information only, through the same `text.measure` port the pagination
+answers on.
+
+The packing itself is one generic component, `openshow::importer::textflow`:
+ordered blocks, a box, a typography, a reserved height, the measuring
+port, and a caller-supplied labeler. Greedy whole-block packing, the
+sentence-before-word split, continuation labelling and every honest
+refusal live there once; `paginateScripture` is the scripture adapter,
+and the future ASCII song import calls the same engine with stanzas. The
+worker's SkParagraph remains the only measurer anywhere — nothing is
+clipped, repeated or silently shrunk.
+
+The design and per-leaf acceptance are recorded in
+[text-flow-plan.md](ui/text-flow-plan.md); the regression evidence is
+`domain_tests` (the context chain and the resolver's report),
+`textflow_tests` (the engine on a scripted measurer),
+`document_controller_tests` (the editor's context verbs: replace-or-add
+merge, refusals, one-undo steps, the disk round-trip),
+`bible_import_page_tests` (the 19-versus-4 A/B and the plan sentence),
+the TF rows of `workspace_ui_tests` (the editor section), and the TF leg
+of `bible_import_e2e_tests` (the previewed flow is the scheduled flow is
+the flow the audience saw).
+
 ## Review closure: R1–R19 evidence matrix (task 6.20a)
 
 The review's completion rule says every finding must have passing regression

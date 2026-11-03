@@ -730,6 +730,145 @@ bool DocumentController::clearThemePlacement(const QString& themeId) {
     return true;
 }
 
+QVariantMap DocumentController::themeContext(const QString& themeId, const QString& name) const {
+    QVariantMap out;
+    out.insert(QStringLiteral("set"), false);
+    const openshow::domain::Theme* theme = fDocuments.findTheme(themeId.toStdString());
+    if (theme == nullptr || name.trimmed().isEmpty()) {
+        return out;
+    }
+    for (const openshow::domain::TextContext& context : theme->contexts) {
+        if (context.name != name.trimmed().toStdString()) {
+            continue;
+        }
+        out.insert(QStringLiteral("set"), true);
+        out.insert(QStringLiteral("name"), QString::fromStdString(context.name));
+        out.insert(QStringLiteral("fontFamily"),
+                   context.fontFamily.has_value()
+                       ? QString::fromStdString(*context.fontFamily)
+                       : QString());
+        out.insert(QStringLiteral("fontFamilySet"), context.fontFamily.has_value());
+        out.insert(QStringLiteral("fontSize"), context.fontSize.value_or(0.0));
+        out.insert(QStringLiteral("fontSizeSet"), context.fontSize.has_value());
+        out.insert(QStringLiteral("lineSpacing"), context.lineSpacing.value_or(0.0));
+        out.insert(QStringLiteral("lineSpacingSet"), context.lineSpacing.has_value());
+        out.insert(QStringLiteral("align"),
+                   context.align.has_value() ? QString::fromStdString(*context.align)
+                                             : QString());
+        out.insert(QStringLiteral("alignSet"), context.align.has_value());
+        const openshow::domain::BoxRect box = context.box.value_or(openshow::domain::BoxRect{});
+        out.insert(QStringLiteral("boxSet"), context.box.has_value());
+        out.insert(QStringLiteral("x"), box.x);
+        out.insert(QStringLiteral("y"), box.y);
+        out.insert(QStringLiteral("width"), box.width);
+        out.insert(QStringLiteral("height"), box.height);
+        out.insert(QStringLiteral("insetSet"), context.inset.has_value());
+        out.insert(QStringLiteral("inset"), context.inset.value_or(0.0));
+        return out;
+    }
+    return out;  // no entry with that name: `set` false, nothing else
+}
+
+bool DocumentController::applyThemeContext(const QString& themeId, const QString& name,
+                                           const QVariantMap& fields) {
+    flushText();
+    std::string error;
+    const std::string contextName = name.trimmed().toStdString();
+    if (contextName.empty()) {
+        setStatus(QStringLiteral("reading context: a context needs a name"));
+        return false;
+    }
+    if (!edit([&] {
+            // The merge reads the CURRENT set inside the edit: the entry
+            // named here is replaced (or added) and everything else —
+            // every other context, field for field — travels untouched,
+            // because the domain mutator, like the file, replaces the
+            // whole set. Absent keys are silence in the new entry, and
+            // the mutator's vetting is the loader's, so what the editor
+            // accepts the next save cannot refuse.
+            const openshow::domain::Theme* current =
+                fDocuments.findTheme(themeId.toStdString());
+            if (current == nullptr) {
+                error = "no theme '" + themeId.toStdString() + "'";
+                return false;
+            }
+            std::vector<openshow::domain::TextContext> contexts = current->contexts;
+            openshow::domain::TextContext context;
+            context.name = contextName;
+            if (fields.contains(QStringLiteral("fontFamily"))) {
+                context.fontFamily = fields.value(QStringLiteral("fontFamily")).toString().toStdString();
+            }
+            if (fields.contains(QStringLiteral("fontSize"))) {
+                context.fontSize = fields.value(QStringLiteral("fontSize")).toDouble();
+            }
+            if (fields.contains(QStringLiteral("lineSpacing"))) {
+                context.lineSpacing = fields.value(QStringLiteral("lineSpacing")).toDouble();
+            }
+            if (fields.contains(QStringLiteral("align"))) {
+                context.align = fields.value(QStringLiteral("align")).toString().toStdString();
+            }
+            if (fields.contains(QStringLiteral("inset"))) {
+                context.inset = fields.value(QStringLiteral("inset")).toDouble();
+            }
+            if (fields.contains(QStringLiteral("box"))) {
+                const QVariantMap box = fields.value(QStringLiteral("box")).toMap();
+                openshow::domain::BoxRect rect;
+                rect.x = box.value(QStringLiteral("x")).toDouble();
+                rect.y = box.value(QStringLiteral("y")).toDouble();
+                rect.width = box.value(QStringLiteral("width")).toDouble();
+                rect.height = box.value(QStringLiteral("height")).toDouble();
+                context.box = rect;
+            }
+            bool replaced = false;
+            for (openshow::domain::TextContext& existing : contexts) {
+                if (existing.name == contextName) {
+                    existing = context;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                contexts.push_back(std::move(context));
+            }
+            return fDocuments.setThemeContexts(themeId.toStdString(), std::move(contexts),
+                                               &error);
+        })) {
+        setStatus(QStringLiteral("reading context: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::removeThemeContext(const QString& themeId, const QString& name) {
+    flushText();
+    std::string error;
+    const std::string contextName = name.trimmed().toStdString();
+    if (!edit([&] {
+            const openshow::domain::Theme* current =
+                fDocuments.findTheme(themeId.toStdString());
+            if (current == nullptr) {
+                error = "no theme '" + themeId.toStdString() + "'";
+                return false;
+            }
+            std::vector<openshow::domain::TextContext> kept;
+            for (const openshow::domain::TextContext& context : current->contexts) {
+                if (context.name != contextName) {
+                    kept.push_back(context);
+                }
+            }
+            if (kept.size() == current->contexts.size()) {
+                error = "theme '" + themeId.toStdString() + "' carries no context '" +
+                        contextName + "' to remove";
+                return false;
+            }
+            return fDocuments.setThemeContexts(themeId.toStdString(), std::move(kept), &error);
+        })) {
+        setStatus(QStringLiteral("reading context: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
 bool DocumentController::createThemeFromCurrent(const QString& name) {
     flushText();
     const openshow::domain::Id slideId = currentSlideId();
@@ -928,13 +1067,18 @@ namespace {
 // copy dies with the call: no history, no dirty flag, no output.
 bool compileScriptureFixture(const openshow::domain::Documents& documents,
                              const std::vector<std::string>& lines,
-                             openshow::scene::Scene* scene) {
+                             openshow::scene::Scene* scene, std::string* contextName = nullptr) {
     openshow::domain::Documents fixture = documents;
     const openshow::domain::Id show = fixture.createShow("Scripture preview");
     const openshow::domain::Id slide = fixture.appendSlide(show);
     if (show.empty() || slide.empty() || !fixture.setSlideLines(show, slide, lines) ||
         !fixture.setSlideTextContext(show, slide, "scripture")) {
         return false;
+    }
+    if (contextName != nullptr) {
+        // Which theme carried the name is the resolver's answer, and the
+        // page prints exactly that word (task TF.4).
+        *contextName = fixture.appearanceForSlide(show, slide).contextName;
     }
     return openshow::scene::compileSlide(fixture, show, slide, scene);
 }
@@ -946,10 +1090,12 @@ QVariantMap DocumentController::scriptureBoxStyle() const {
     // the chain's answer regardless of the words, and this compiles the
     // same first text item a generated slide's words would fill.
     openshow::scene::Scene scene;
+    std::string contextName;
     QVariantMap style;
-    if (!compileScriptureFixture(fDocuments, {"a"}, &scene)) {
+    if (!compileScriptureFixture(fDocuments, {"a"}, &scene, &contextName)) {
         return style;
     }
+    style.insert(QStringLiteral("context"), QString::fromStdString(contextName));
     for (const openshow::scene::SceneItem& item : scene.items) {
         if (item.isImage) {
             continue;  // the primary lyric box is the first TEXT item

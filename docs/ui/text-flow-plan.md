@@ -121,3 +121,50 @@ BIF.2/BIF.3 stay independent. TF.1→TF.2→TF.3 is one continuous thread;
 TF.4 closes it with the UI and the operator-facing re-acceptance. The
 future ASCII song import is a milestone of its own against this engine,
 not a leaf here.
+
+## As built (milestone TF delivered, 2026-11-03)
+
+All four leaves shipped as planned; the design rule held everywhere —
+**no number anywhere named, defaulted, or nudged a line count.**
+
+- **TF.1** — format 7: optional `themes[].contexts[]`, each a `{name,
+  fontFamily?, fontSize?, lineSpacing?, align?, inset?, box?}` vetted at
+  load (a field that smells like a line count or a colour is refused by
+  name), and per-slide `text_context`. `appearanceForSlide` layers the
+  first context in chain order that carries the name, wholesale and per
+  property, between the slide's customization and the themes' own values;
+  colours can never arrive through a context, and a name no theme carries
+  is no layer at all — old files and nameless slides resolve untouched.
+- **TF.2** — `openshow::importer::textflow` is the engine: blocks of
+  lines, a box, a typography, a reserved height, the `MeasureFn` port.
+  Greedy whole-block packing, sentence-before-word splitting,
+  continuation labels by the caller's `LabelFn`, and every refusal naming
+  the block it cannot place. `paginateScripture` is the scripture
+  adapter; BI.4's suite passed the extraction unchanged. The future ASCII
+  import calls the same engine with a stanza labeler.
+- **TF.3** — the Bible page's measurement style, off-air preview and
+  added slides all name `scripture` through the one resolver. BIF.1's
+  chapter on the real worker: the plain 96 px look measures 19 slides;
+  the same theme's 32 px lectern context measures 4 — multiple verses per
+  slide because that is what the measurement fits. Every added slide
+  carries the name into format 7; labels stay in notes, provenance on
+  the show.
+- **TF.4** — the Theme Editor's inspector gained a **Scripture Reading**
+  section: the toggle creates the context from the theme's current look
+  and box, the fields commit size/alignment/spacing and the reading box
+  (an empty field is silence, falling through to the themes; a refused
+  value snaps the fields back), and the section states "the box holds ≈ N
+  lines of this size" — measured by the same `text.measure` port the
+  paginator uses, as information only. The resolver itself answers which
+  context layered (`ResolvedAppearance.contextName`), so the Bible page's
+  plan sentence says "…measured to fit **in the theme's scripture
+  context**…" in the resolver's own word, and stays byte-identical when
+  none answered. The e2e re-acceptance walks the whole route: apply the
+  context through the editor's verbs, look the chapter up, Add, save,
+  reopen — the schedule holds exactly the previewed slides, each saved
+  scene compiles at the context's size inside its box, and the presented
+  PGM picture is the previewed flow.
+
+The engine never clipped, repeated or silently shrank a word across every
+fixture (the identity assertion `identityHolds` guards each one), and the
+gates closed at 64/64 desktop serial and 46/46 headless.

@@ -504,6 +504,12 @@ struct ResolvedAppearance {
     // so the slide draws its own authored box (the built-in lyric default
     // where the slide is untouched).
     std::optional<BoxRect> placement;
+    // The name of the text context the chain actually layered (task TF),
+    // or "" when none did — the slide names nothing, or no theme wearing
+    // it carries the name. The importer's plan sentence and the editor's
+    // honest "which look set these words" read this instead of re-walking
+    // the chain and guessing; the compile itself reads nothing of it.
+    std::string contextName;
 };
 
 // One media file belonging to the service. The model records only the
