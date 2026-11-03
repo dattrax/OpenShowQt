@@ -4,8 +4,60 @@ Updated: 2026-11-03 (Europe/London).
 
 ## Current checkpoint
 
-**TV.1 complete (2026-11-03): the Theme Editor browses Songs and Bible
-views, and each view's sample resolves through the production chain.**
+**TV.2 complete (2026-11-03): Themes reclaims the whole workspace, shows
+live view thumbnails, and hands the keyboard back on the way out.**
+`Main.qml` owns a `themeMode` flag: the library dock, output dock and media
+bin are **hidden, never resized** — `WorkspacePanels` keeps every stored
+width and drawer height and hidden items keep their geometry, so the other
+pages still anchor by id and leaving puts back exactly the workspace the
+operator arranged (proved by width/height/open-state comparisons across the
+switch). The page anchors to the window edges below the header with bounded
+columns: 220 px nav, 300 px inspector, and a centre canvas fitted to
+`min(availableWidth, availableHeight×16/9)` and centred — checked positive
+and 16:9 at 1000×680, 1380×800 and 1680×1020. The inspector is a ScrollView
+(`themeEditorInspectorScroll`) and the test scrolls its first and last
+fields into view at the tightest size. The nav footer carries the two
+**view thumbnails**: one batch of both sample scenes (Songs cue + Bible
+reading) through the existing thumbnail transport with per-view+theme keys,
+a coalesced ask mirroring the Show band's idiom, re-asked when the selected
+theme changes, and stood down on the way out so the Show band's batch never
+competes (LIVE variant: the real transport answers the House tiles). The
+header's emergency `Clear` appears only on Themes and restores output if the
+worker can, else clears all; output fullscreen is torn down by the docks'
+existing hide rule. Exiting cancels a half-finished gesture and takes the
+keyboard with the page — the Qt subtlety worth recording: releasing the
+typed field drops active focus onto the inspector's ScrollView Pane, and the
+window's **deferred** focus-chain recomputation re-arms that Pane after any
+same-pass release (acquisition alone loses it; `parentItem` is not exposed
+to QML, so the ancestry walk uses `parent`). The page therefore releases
+every focus holder inside itself and re-acquires for the window root, with
+a `Qt.callLater` belt in the shell handover; the test types into a field,
+leaves mid-edit and asserts nothing inside the page holds the keyboard.
+`workspace_ui_tests` carries the whole matrix; captures
+`.themes-{1680,1380,1000}.png` and `.themes-bible-{1680,1380,1000}.png`
+(House lectern context in the Bible pair) show no overflow and both tiles
+rendering. Service formats unchanged. Gates: **64/64 desktop serial**,
+**35/35 headless**, `git diff --check` clean.
+
+The [review](docs/reviews/theme-editor-2026-11-03.md) and the PLAN.md
+runbook landed earlier today (docs-only, `7f990b3`): findings R1–R12, the
+view/effects/transition contracts, per-leaf numbered steps, fixed
+style/transition names and numeric limits, the file/API ownership map and
+the test matrix TV.1–TV.2 implemented. Its baseline record stands as
+written there; the review remains the authority for the contracts the later
+leaves consume.
+
+Next implementation action: **TS.1** — the shared text-style contract in the
+domain and storage (fontWeight 100–900, fitMode shrink/fixed, stroke,
+shadow), claiming the next document service format (8) and defining
+capability `scene.text-style.v1`, which is advertised only once TS.2 draws
+it. Then TV.3. Nothing blocks this work; M7 remains the release gate after
+TV/TS/TR, and future outputs stay deferred.
+
+## Previous implementation checkpoint (retained evidence)
+
+**TV.1 (2026-11-03): the Theme Editor browses Songs and Bible views, and
+each view's sample resolves through the production chain.**
 `themeSampleSceneJson(themeId, view)` and the new read-only
 `themeSampleAppearance(themeId, view)` share one fixture builder — a copy of
 the live Documents with the current theme cleared, the selected theme set as
@@ -33,28 +85,15 @@ Gates: desktop build green, **64/64 desktop serial**, **35/35 headless**
 (no skips), `git diff --check` clean.
 
 The [review](docs/reviews/theme-editor-2026-11-03.md) and the PLAN.md
-runbook landed earlier today (docs-only, `7f990b3`): findings R1–R12, the
-view/effects/transition contracts, per-leaf numbered steps, fixed
+runbook landed earlier the same day (docs-only, `7f990b3`): findings R1–R12,
+the view/effects/transition contracts, per-leaf numbered steps, fixed
 style/transition names and numeric limits, the file/API ownership map and
-the test matrix this leaf implemented. Its baseline record (22 focused
+the test matrix TV.1–TV.2 have implemented. Its baseline record (22 focused
 checks, the editor capture and the Inter/Lora/Oswald stimulus under
 `/tmp/openshow-theme-review/`) stands as written there; the review remains
 the authority for the contracts the later leaves consume.
 
-Next implementation action: **TV.2** — reclaim the workspace for Themes:
-hide the operator docks and media bin without overwriting their saved
-state, bound the side columns (~220/300 px) and scroll the inspector, size
-the canvas `min(availableWidth, availableHeight×16/9)`, and take workspace
-captures at 1000×680, 1380×800 and 1680×1020 in both views proving no
-overflow and a restored Show state (`workspace_ui_tests`,
-`workspace_panels_tests`, `ui_loads`). Then TS.1 claims the next scene
-format with capability `scene.text-style.v1` (advertised only once TS.2
-draws it). Nothing blocks this work; M7 remains the release gate after
-TV/TS/TR, and future outputs stay deferred.
-
-## Previous implementation checkpoint (retained evidence)
-
-Current work: **Bible import is DONE — BI.1 through BI.6 are all DONE**
+Earlier, **Bible import was DONE — BI.1 through BI.6 are all DONE**
 (2026-11-02). BI.1: the provider access approach is recorded in
 [docs/ui/bible-import-plan.md](docs/ui/bible-import-plan.md) (passage-only
 HTTPS fetch of the ONE requested Bible Gateway page, robots-allowed path,

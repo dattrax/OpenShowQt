@@ -211,6 +211,21 @@ Rectangle {
                 MouseArea { id: statusHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
             }
         }
+        // Themes hides the operator docks (task TV.2) — and with them the
+        // Output panel's clear buttons. The emergency verb stays with the
+        // audience state it acts on: the same Clear-all/Restore toggle the
+        // panel offers (3.4), and the only control in this bar that shows
+        // for one mode, because the only page that needs it is the one
+        // with nowhere else to reach it.
+        ToolTab {
+            objectName: "toolbarAudienceClear"
+            Accessible.name: worker.canRestore ? "Restore the audience output"
+                                               : "Clear the audience output"
+            glyph: "\u2715"
+            label: worker.canRestore ? "Restore" : "Clear"
+            visible: bar.page === "themes"
+            onClicked: worker.canRestore ? worker.restoreOutput() : worker.clearAll()
+        }
         // Settings is a mode, and the plan's header puts it at the far
         // right beside the audience state rather than among the operator
         // pages: Show and Edit run the service, this configures it.

@@ -31,6 +31,14 @@ Window {
 
     // Explicit modes separate presenting from content authoring.
     property string page: "show"
+    // Task TV.2 (theme-editor review): the Themes mode reclaims everything
+    // under the header. The operator docks and the media bin are HIDDEN for
+    // it — hidden, never resized, and `WorkspacePanels` keeps every stored
+    // width and the drawer its height: leaving Themes puts back exactly the
+    // workspace the operator had arranged. Hidden items keep their geometry,
+    // so the other pages still anchor to the docks by id, and only the
+    // Themes page anchors to the root edges.
+    readonly property bool themeMode: page === "themes"
     // Switching modes has to hand the keyboard over. Qt does not take the
     // active focus from an item whose page is only hidden, so the lyric box
     // the operator was typing in would go on owning every keystroke — the
@@ -40,7 +48,15 @@ Window {
     onPageChanged: {
         const held = activeFocusItem
         if (held) held.focus = false
+        // TV.2: releasing is not enough when the Themes page is involved.
+        // Its inspector's ScrollView grabs the keyboard while it is first
+        // polished on the way in, and again while it is torn down on the way
+        // out — in both cases after this release has run, and after the
+        // page's own items are gone, so the window would be left with no
+        // focus at all (Page Up/Down dead). Hand the window the focus back
+        // once layout and teardown have settled.
         contentItem.forceActiveFocus()
+        Qt.callLater(function () { contentItem.forceActiveFocus() })
     }
 
     // True while a text field holds the focus — the plain-arrow nudges
@@ -124,6 +140,7 @@ Window {
 
     TopBar {
         id: topBar
+        objectName: "topBar"
         page: root.page
         // The toolbar's two working controls (UI.6): Search is exactly
         // Ctrl+F, and the bin toggle reads the bin's own open state and
@@ -141,6 +158,7 @@ Window {
     PlaylistPanel {
         id: leftDock
         objectName: "libraryDock"
+        visible: !root.themeMode  // TV.2: Themes reclaims the workspace
         editingEnabled: root.page === "edit"
         width: panels.leftWidth <= 8 ? panels.leftWidth
                : Math.min(panels.leftWidth, root.width * 0.24)
@@ -153,6 +171,7 @@ Window {
     OutputPanel {
         id: rightDock
         objectName: "outputDock"
+        visible: !root.themeMode  // TV.2: Themes reclaims the workspace
         width: panels.rightWidth <= 8 ? panels.rightWidth
                : Math.min(Math.max(320, panels.rightWidth), root.width * 0.34)
         anchors.right: parent.right
@@ -193,12 +212,16 @@ Window {
         anchors.margins: 12
     }
 
+    // TV.2: the Themes page spans the window under the header — anchored to
+    // the ROOT, not to the docks it hides. An invisible dock still has a
+    // geometry, and anchoring here to `leftDock.right` would leave a
+    // library-width gutter nobody can see the reason for.
     ThemeEditorPage {
-        visible: root.page === "themes"
-        anchors.left: leftDock.right
-        anchors.right: rightDock.left
+        visible: root.themeMode
+        anchors.left: parent.left
+        anchors.right: parent.right
         anchors.top: topBar.bottom
-        anchors.bottom: mediaBin.top
+        anchors.bottom: parent.bottom
         anchors.margins: 12
     }
 
@@ -214,6 +237,7 @@ Window {
     MediaBin {
         id: mediaBin
         objectName: "mediaBin"
+        visible: !root.themeMode  // TV.2: Themes reclaims the workspace
         editingEnabled: root.page === "edit"
         height: Math.min(panels.drawerHeight, Math.max(40,
                     root.height - topBar.height - 300))

@@ -1711,6 +1711,198 @@ int main(int argc, char** argv) {
         QTest::qWait(60);
     }
 
+    // --- task TV.2: Themes reclaims the workspace, everything reachable ---
+    // The docks and the bin are HIDDEN for Themes and written never; the
+    // page spans the window under the header; the canvas is a real 16:9
+    // picture that FITS at every supported size; the inspector's final
+    // control is a real click-and-type target (scrolled into view first —
+    // finding a QML object proves nothing); the view tiles ask their
+    // thumbnails as one bounded two-scene batch; and leaving puts back the
+    // exact workspace the operator had arranged. Mouse and key events only.
+    {
+        auto clickAt = [window](QQuickItem* item, qreal x, qreal y) {
+            if (item) {
+                QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                  item->mapToScene(QPointF(x, y)).toPoint());
+            }
+        };
+        const QSize sizeBefore = window->size();
+        // The Show state as the operator arranged it, recorded BEFORE
+        // entering — the stored values AND the geometry they drive.
+        const qreal leftBefore = panels.leftWidth();
+        const qreal rightBefore = panels.rightWidth();
+        const qreal drawerBefore = panels.drawerHeight();
+        const qreal leftGeomBefore = left->width();
+        const qreal rightGeomBefore = right->width();
+        const bool binOpenBefore = mediaBin->property("open").toBool();
+        window->setProperty("page", "themes");
+        QTest::qWait(100);
+        auto* editorPage = findNamed(window->contentItem(), "themeEditorPage");
+        auto* topBar = findNamed(window->contentItem(), "topBar");
+        check(editorPage && editorPage->isVisible() && topBar,
+              "the Themes page opens with the header it lives under");
+        check(!left->isVisible() && !right->isVisible() && !mediaBin->isVisible(),
+              "Themes hides the library dock, the output dock and the media bin");
+        check(panels.leftWidth() == leftBefore && panels.rightWidth() == rightBefore
+                  && panels.drawerHeight() == drawerBefore
+                  && mediaBin->property("open").toBool() == binOpenBefore,
+              "hiding writes nothing: the stored widths and drawer are the operator's own");
+        // The emergency clear now rides with the audience state, because
+        // the panel that usually carries it is one of the things hidden.
+        auto* headerClear = findNamed(window->contentItem(), "toolbarAudienceClear");
+        check(headerClear && headerClear->isVisible(),
+              "the header carries the audience clear while Themes hides the panel");
+        auto* nav = findNamed(window->contentItem(), "themeEditorNav");
+        auto* scroll = findNamed(window->contentItem(), "themeEditorInspectorScroll");
+        auto* canvas = findNamed(window->contentItem(), "themeEditorPreview");
+        auto* actions = findNamed(window->contentItem(), "themeEditorActions");
+        auto* viewSongs = findNamed(window->contentItem(), "themeViewSongs");
+        auto* viewBible = findNamed(window->contentItem(), "themeViewBible");
+        check(nav && scroll && canvas && actions && viewSongs && viewBible,
+              "the page is navigation, a fitted canvas and a scrolling inspector");
+        const qreal pageLeft = editorPage->mapToScene(QPointF(0, 0)).x();
+        const qreal pageTop = editorPage->mapToScene(QPointF(0, 0)).y();
+        check(qAbs(pageLeft - 12) < 0.5
+                  && qAbs(pageTop - (topBar->height() + 12)) < 0.5
+                  && qAbs(editorPage->width() - (window->width() - 24)) <= 1.0
+                  && qAbs(editorPage->height() - (window->height() - topBar->height() - 24)) <= 1.0,
+              "the Themes page spans the window under the header, not the dock gutter");
+        // Every supported size: the 16:9 canvas fits the workspace whole,
+        // the final inspector control — scrolled to, not assumed — sits
+        // inside the viewport, and both view tiles are clickable where
+        // they actually are.
+        auto* lastField = findNamed(window->contentItem(), "themeEditorSpacingField");
+        check(lastField != nullptr, "the Songs section's final control exists");
+        for (const auto size : {QSize(1000, 680), QSize(1380, 800), QSize(1680, 1020)}) {
+            window->resize(size);
+            QTest::qWait(80);
+            const QPointF topLeft = canvas->mapToScene(QPointF(0, 0));
+            const QPointF bottomRight =
+                canvas->mapToScene(QPointF(canvas->width(), canvas->height()));
+            check(canvas->width() > 0.0 && canvas->height() > 0.0
+                      && qAbs(canvas->width() / canvas->height() - 16.0 / 9.0) < 0.02,
+                  "the canvas is a positive 16:9 picture at every supported size");
+            check(topLeft.x() >= 0.0 && topLeft.y() >= topBar->height() - 0.5
+                      && bottomRight.x() <= window->width() + 0.5
+                      && bottomRight.y() <= window->height() + 0.5,
+                  "the canvas fits below the header and inside the window, never clipped");
+            QMetaObject::invokeMethod(editorPage, "scrollInspectorToEnd");
+            QTest::qWait(50);
+            const QPointF field = lastField->mapToScene(
+                QPointF(lastField->width() / 2, lastField->height() / 2));
+            const QPointF bibleCentre = viewBible->mapToScene(
+                QPointF(viewBible->width() / 2, viewBible->height() / 2));
+            check(field.x() >= 0.0 && field.x() <= window->width()
+                      && field.y() >= 0.0 && field.y() <= window->height()
+                      && bibleCentre.x() >= 0.0 && bibleCentre.y() >= 0.0
+                      && bibleCentre.y() <= window->height(),
+                  "the final inspector control and the view tiles are all inside the window");
+            clickAt(viewBible, viewBible->width() / 2, viewBible->height() / 2);
+            QTest::qWait(60);
+            check(editorPage->property("selectedView").toString() == QLatin1String("scripture"),
+                  "the Bible tile switches the view with one real click at this size");
+            clickAt(viewSongs, viewSongs->width() / 2, viewSongs->height() / 2);
+            QTest::qWait(60);
+            check(editorPage->property("selectedView").toString().isEmpty(),
+                  "the Songs tile switches back at this size too");
+        }
+        // Reachable is also a TYPING story at the minimum size: scroll the
+        // rail to the end, click the final field, and commit it with real
+        // keys. The click must be what takes the focus, the keys what
+        // writes the value, and one undo what takes it back.
+        window->resize(1000, 680);
+        QTest::qWait(80);
+        QMetaObject::invokeMethod(editorPage, "scrollInspectorToEnd");
+        QTest::qWait(50);
+        lastField->setProperty("text", "");
+        clickAt(lastField, lastField->width() / 2, lastField->height() / 2);
+        QTest::qWait(60);
+        auto* focused = window->property("activeFocusItem").value<QQuickItem*>();
+        bool focusInsideField = focused == lastField;
+        for (auto* up = focused; up && !focusInsideField; up = up->parentItem())
+            focusInsideField = up == lastField;
+        check(focusInsideField,
+              "the clicked field inside the scrolled rail holds the keyboard");
+        for (const char c : std::string("1.5")) QTest::keyClick(window, c);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(80);
+        const QString typedId = editorPage->property("selectedId").toString();
+        auto lineSpacingOf = [&docs](const QString& id) {
+            for (const QVariant& theme : docs.themes())
+                if (theme.toMap().value(QStringLiteral("id")).toString() == id)
+                    return theme.toMap().value(QStringLiteral("lineSpacing")).toDouble();
+            return 0.0;
+        };
+        check(!typedId.isEmpty() && lineSpacingOf(typedId) == 1.5,
+              "the final control writes through the real keyboard at the minimum window");
+        docs.undo();
+        QTest::qWait(80);
+        check(lineSpacingOf(typedId) != 1.5, "one undo takes the typed spacing back");
+        // The view tiles' ask, pinned off the wire: ONE batch of two keyed
+        // scenes for the selected theme, at a size the stream accepts, and
+        // a fresh ask every time the selection moves under them.
+        QVariant batchAnswer;
+        QMetaObject::invokeMethod(editorPage, "viewThumbBatch",
+                                  Q_RETURN_ARG(QVariant, batchAnswer));
+        const QVariantList batch = batchAnswer.toList();
+        const QVariantMap first = batch.value(0).toMap();
+        const QVariantMap second = batch.value(1).toMap();
+        check(batch.size() == 2
+                  && first.value(QStringLiteral("key")).toString()
+                         == QStringLiteral("theme-view-songs-") + typedId
+                  && second.value(QStringLiteral("key")).toString()
+                         == QStringLiteral("theme-view-bible-") + typedId
+                  && !first.value(QStringLiteral("scene")).toString().isEmpty()
+                  && first.value(QStringLiteral("scene")).toString()
+                         != second.value(QStringLiteral("scene")).toString(),
+              "the tiles ask one batch: two keys naming the selection, two distinct fixture scenes");
+        QVariant askPixels;
+        QMetaObject::invokeMethod(editorPage, "viewThumbPixels",
+                                  Q_RETURN_ARG(QVariant, askPixels));
+        const int askW = askPixels.toMap().value(QStringLiteral("w")).toInt();
+        const int askH = askPixels.toMap().value(QStringLiteral("h")).toInt();
+        check(askW >= 32 && askW <= 512 && askH >= 32 && askH <= 512
+                  && askH == qRound(askW * 9.0 / 16.0)
+                  && openshow::protocol::thumbnailExtentFits(
+                         static_cast<std::uint32_t>(askW), static_cast<std::uint32_t>(askH),
+                         openshow::protocol::previewSlotStrideBytes(640, 360)),
+              "the tiles' ask size is 16:9 inside the envelope this app's slot accepts");
+        const int asksBefore = editorPage->property("viewThumbRequests").toInt();
+        check(docs.createBlankTheme("TV.2 browse"), "the browse fixture adds a theme");
+        QTest::qWait(160);  // past the tiles' debounce either way
+        check(editorPage->property("viewThumbRequests").toInt() > asksBefore,
+              "moving the selection re-asks the tiles — the batch names the selected theme");
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("name")).toString()
+                    == QStringLiteral("TV.2 browse"))
+                docs.deleteTheme(theme.toMap().value(QStringLiteral("id")).toString());
+        }
+        QTest::qWait(80);
+        // Leaving restores the operator's workspace exactly — visible, and
+        // with the stored values they arranged — and hands the keyboard
+        // back to the shell rather than leaving it in a field on a page
+        // nobody can see any more. Geometry first gets the window back to
+        // the size the widths were recorded at.
+        window->setProperty("page", "show");
+        window->resize(sizeBefore);
+        QTest::qWait(120);
+        check(left->isVisible() && right->isVisible() && mediaBin->isVisible(),
+              "leaving Themes brings the docks and the bin back");
+        check(panels.leftWidth() == leftBefore && panels.rightWidth() == rightBefore
+                  && panels.drawerHeight() == drawerBefore
+                  && qAbs(left->width() - leftGeomBefore) < 0.5
+                  && qAbs(right->width() - rightGeomBefore) < 0.5
+                  && mediaBin->property("open").toBool() == binOpenBefore,
+              "the workspace the operator arranged comes back whole");
+        check(!headerClear->isVisible(), "the header's Themes-only clear sleeps again");
+        auto* stillFocused = window->property("activeFocusItem").value<QQuickItem*>();
+        bool focusTrappedInEditor = false;
+        for (auto* up = stillFocused; up && !focusTrappedInEditor; up = up->parentItem())
+            focusTrappedInEditor = up == editorPage;
+        check(!focusTrappedInEditor && !window->property("typingIntoField").toBool(),
+              "exiting Themes leaves no field of the editor holding the keyboard");
+    }
+
     // --- task BI.5: the import page in the shell (off-air surface only) ----
     // The More menu carries one entry; it opens the page, and the page
     // opens on the online notice with nothing to add. No worker runs and
@@ -2341,6 +2533,25 @@ int main(int argc, char** argv) {
         check(worker.outputLive() && !worker.thumbnail(firstId).isNull()
               && !worker.thumbnail(lastId).isNull(),
               "visible slide grid receives thumbnails from the production worker");
+        // TV.2: the theme view tiles ride the same lane as a two-scene
+        // batch — enter the page and the selected theme's Songs key is
+        // owed a picture just as the grid's rows are.
+        window->setProperty("page", "themes");
+        QElapsedTimer tileTimeout;
+        tileTimeout.start();
+        QString tileKey;
+        if (auto* themePage = window->findChild<QQuickItem*>("themeEditorPage")) {
+            const QString tileSelection = themePage->property("selectedId").toString();
+            if (!tileSelection.isEmpty())
+                tileKey = QStringLiteral("theme-view-songs-") + tileSelection;
+        }
+        while (!tileKey.isEmpty() && tileTimeout.elapsed() < 10000
+               && worker.thumbnail(tileKey).isNull())
+            QTest::qWait(50);
+        check(!tileKey.isEmpty() && !worker.thumbnail(tileKey).isNull(),
+              "the Songs view tile receives its picture from the production worker");
+        window->setProperty("page", "show");
+        QTest::qWait(80);
     }
     const auto capture = qEnvironmentVariable("OPENSHOW_WORKSPACE_CAPTURE");
     if (!capture.isEmpty()) {
@@ -2493,6 +2704,48 @@ int main(int argc, char** argv) {
                   "page re-shown after outside edits still reads the record");
         }
         window->grabWindow().save(capture + ".themes.png");
+        // TV.2: the Themes workspace at every ledger size in both views.
+        // The Bible captures carry a lectern context so the picture, the
+        // overlay and the section are visibly the BIBLE view rather than
+        // the Songs one again — one deterministic state, six pictures.
+        {
+            auto clickCaptureTile = [window](QQuickItem* item) {
+                if (item) {
+                    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                      item->mapToScene(QPointF(item->width() / 2,
+                                                               item->height() / 2))
+                                          .toPoint());
+                }
+            };
+            QVariantMap lectern;
+            lectern.insert(QStringLiteral("fontSize"), 40.0);
+            QVariantMap lecternBox;
+            lecternBox.insert(QStringLiteral("x"), 240.0);
+            lecternBox.insert(QStringLiteral("y"), 120.0);
+            lecternBox.insert(QStringLiteral("width"), 1440.0);
+            lecternBox.insert(QStringLiteral("height"), 700.0);
+            lectern.insert(QStringLiteral("box"), lecternBox);
+            check(docs.applyThemeContext(houseId, QStringLiteral("scripture"), lectern),
+                  "House gains a lectern context for the Bible captures");
+            for (const auto size : {QSize(1680, 1020), QSize(1380, 800), QSize(1000, 680)}) {
+                window->resize(size);
+                QTest::qWait(70);
+                auto* songsTile = findNamed(window->contentItem(), "themeViewSongs");
+                auto* bibleTile = findNamed(window->contentItem(), "themeViewBible");
+                check(songsTile && songsTile->isVisible() && bibleTile
+                          && bibleTile->isVisible(),
+                      "the view tiles are up for the capture matrix");
+                const QString tag = QString::number(size.width());
+                window->grabWindow().save(capture + ".themes-" + tag + ".png");
+                clickCaptureTile(bibleTile);
+                QTest::qWait(80);
+                window->grabWindow().save(capture + ".themes-bible-" + tag + ".png");
+                clickCaptureTile(songsTile);
+                QTest::qWait(70);
+            }
+            window->resize(QSize(1680, 1020));
+            QTest::qWait(70);
+        }
         window->setProperty("page", "settings");
         QTest::qWait(50);
         window->grabWindow().save(capture + ".settings.png");
