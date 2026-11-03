@@ -19,6 +19,14 @@ add_executable(scripture_pagination_tests scripture_pagination_tests.cpp)
 target_link_libraries(scripture_pagination_tests PRIVATE openshow::importer)
 add_test(NAME scripture_pagination_tests COMMAND scripture_pagination_tests)
 
+# Milestone TF (task TF.2): the generic text-flow engine's own properties on
+# a scripted measuring engine — stanzas pack, split and label by the same
+# rules verses do, the line count is whatever fits, a fitting block is never
+# split, and the dead end refuses naming itself. Qt-free like the paginator.
+add_executable(textflow_tests textflow_tests.cpp)
+target_link_libraries(textflow_tests PRIVATE openshow::importer)
+add_test(NAME textflow_tests COMMAND textflow_tests)
+
 add_executable(scene_tests
   scene_tests.cpp
 )

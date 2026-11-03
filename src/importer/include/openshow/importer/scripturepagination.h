@@ -1,30 +1,16 @@
-// Measured scripture pagination (milestone BI, task BI.4).
-//
-// "How do the selected verses sit in this theme's box at the chosen size?"
-// is answered ONLY by the worker's own text engine, handed in as the port
-// below (the frontend implements it over the text.measure RPC; the tests
-// script it). There is no character-count estimate here, no second
-// renderer, and no shrinking — the size is chosen and the WORDS move,
-// either onto further slides or, for a verse too long for any box, across
-// continuation slides split at a sentence boundary where one is available
-// and at a word boundary otherwise. A whitespace split can never cut a
-// Unicode character: UTF-8 continuation bytes are ≥ 0x80 and every
-// considered whitespace is ASCII.
-//
-// The words are the whole of a generated slide's lines: the reference and
-// the attribution are NOT slide text (the schedule item carries them as
-// provenance and the slide labels ride in the slide notes), but their
-// height is RESERVED out of the box — the plan's "reserving room for
-// references and attribution", made numeric. The reservation is measured
-// in CAPTION type (see kCaptionBoxFraction below), not in the words' own
-// display face: BIF.1's live run showed a licence paragraph set at the
-// song-display size eating most of the box it never shares with the
-// words on screen. Measured, never estimated — the caption size is a
-// typeset choice; the wrapped height remains the worker's own answer at
-// exactly that size. When the reservation leaves no room for the words,
-// or a single word will not fit, this says so with its own sentence and
-// generates nothing: Add is blocked by explanation, never by silent
-// clipping.
+// Measured scripture pagination (milestone BI, task BI.4) — as of task
+// TF.2 this is an ADAPTER over the generic text-flow engine
+// (openshow/importer/textflow.h), and thin by construction: it turns the
+// selected verses into blocks (whole verses in canonical order, each one
+// line, referenced by its "chapter:verse"), measures the reference and
+// attribution reservation in caption type, composes the verse-range
+// labels, and hands the packing to the engine. Everything BI proved about
+// the packing — greedy whole verses, sentence then word split,
+// continuation labels, no clipping, no repeats, no shrinking, the worker
+// as the only measurer — is the engine's, unchanged, because the future
+// ASCII song import will call that same engine with stanzas. The engine
+// input carries no line count anywhere: how many verses fit is what the
+// measurement answers for the resolved (context-aware) box and size.
 //
 // Qt-free on purpose: the pagination is a pure function over its input and
 // the measuring port, so the ordering/no-repeats/no-loss properties are
@@ -32,41 +18,17 @@
 #ifndef OPENSHOW_IMPORTER_SCRIPTUREPAGINATION_H
 #define OPENSHOW_IMPORTER_SCRIPTUREPAGINATION_H
 
-#include <functional>
 #include <string>
-#include <string_view>
 #include <vector>
+
+#include "openshow/importer/textflow.h"
 
 namespace openshow::importer {
 
-// One block of words put to the measuring engine: exactly the knobs the
-// worker's layout reads (see protocol.h's text.measure contract). `key`
-// correlates the answer; the paginator keys its cache on the CONTENT, so
-// an identical block is measured at most once per run.
-struct MeasureRequest {
-    std::string key;
-    std::vector<std::string> lines;
-    double fontSize = 0.0;
-    double width = 0.0;
-    double lineSpacing = 1.25;
-    std::string fontFamily;
-};
-
-struct MeasureReply {
-    std::string key;
-    double height = 0.0;
-    int lineCount = 0;
-};
-
-// The measuring port. Returns true only when EVERY request was answered,
-// in order, with matching keys — a partial or shuffled answer is a failure,
-// because half a page's heights is exactly the guess this task exists to
-// forbid. The frontend's adapter implements this over
-// WorkerController::measureText (whose answers come from the worker's
-// SkParagraph/ICU layout).
-using MeasureFn = std::function<bool(const std::vector<MeasureRequest>& requests,
-                                     std::vector<MeasureReply>* replies,
-                                     std::string* error)>;
+// The measuring port, the batch cap and the split helpers come from the
+// engine header (MeasureRequest, MeasureReply, MeasureFn,
+// kMaxMeasureChunk, splitSentences, splitWords, measureReservation) — the
+// paginator and every other adapter share them, the frontend included.
 
 // One selected verse, in the order the passage gave them.
 struct PaginationVerse {
@@ -75,20 +37,10 @@ struct PaginationVerse {
 };
 
 // The resolved theme's primary text box and the CHOSEN typography, in
-// output-canvas pixels. Nothing here is a suggestion the paginator may
-// scale: it measures at exactly these numbers or the ask fails.
-// `fontSize` follows the scene's own contract: 0 is not "no size" but the
-// RENDERER's default — the number lives in the worker alone, and the
-// paginator forwards 0 to the measuring port unchanged, which measures it
-// at exactly what the drawing will use. A negative size is a caller bug
-// and is refused.
-struct PaginationStyle {
-    double boxWidth = 0.0;
-    double boxHeight = 0.0;
-    double fontSize = 0.0;
-    double lineSpacing = 1.25;
-    std::string fontFamily;
-};
+// output-canvas pixels — the engine's box-and-typography itself (see
+// textflow.h for the contract: nothing is a suggestion, and fontSize 0 is
+// the RENDERER's default).
+using PaginationStyle = FlowStyle;
 
 struct PaginationInput {
     std::vector<PaginationVerse> verses;  // the selection, in order
@@ -139,24 +91,13 @@ struct PaginationOutcome {
     double availableHeight = 0.0;
 };
 
-// Paginate. The measure port is called only with whole batches of blocks
-// this run has not measured yet, at most kMaxMeasureChunk per call (the
-// wire's batch cap, mirrored so a legal run never meets a refusal).
+// Paginate. Blocks are the selected verses; the labeler composes
+// "1:2", "1:2-1:4", "(cont.) 1:5" and "1:6 (continues)" from the block
+// ids the engine reports; the reference and attribution reserve measured
+// room in caption type. All packing happens in the engine — the measure
+// port is called only with whole batches, at most kMaxMeasureChunk per
+// call.
 PaginationOutcome paginateScripture(const PaginationInput& input, const MeasureFn& measure);
-
-// The batch cap one MeasureFn call never exceeds (mirrors the protocol's
-// kMaxMeasureBatch; kept here so this Qt-free library stands alone).
-inline constexpr int kMaxMeasureChunk = 32;
-
-// UTF-8-safe split helpers, exposed so the "never split inside a Unicode
-// character" claim is testable directly. Sentences end at '.' '!' '?'
-// U+0964 U+3002 U+FF01 U+FF1F followed by whitespace or the end of the
-// text; the punctuation rides with the sentence that owns it. Words split
-// at runs of ASCII whitespace. Both drop the separator whitespace; joining
-// the parts of a passage back and stripping whitespace restores it
-// exactly, which is the property the acceptance asserts.
-std::vector<std::string> splitSentences(std::string_view text);
-std::vector<std::string> splitWords(std::string_view text);
 
 }  // namespace openshow::importer
 

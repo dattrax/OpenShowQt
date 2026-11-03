@@ -117,6 +117,24 @@ theme draws **byte-identically** before and after the theme grows the
 context, and the save/load round-trip draws byte-identically
 (`domain_tests`, `scene_render_tests` CPU rasters; gates 63/63 desktop
 serial, 45/45 headless).
+**TF.2 is DONE the same day:** the packing core left the scripture
+paginator and became **`openshow::importer::textflow`** — the generic
+measured text-flow engine, which knows blocks (an id and lines), a box, a
+typography, a reserved height and the measuring port, and nothing about
+verses. Greedy whole-block packing, the sentence-then-word split, the
+continuation edges, the `measureReservation` sum and every honest refusal
+live there once; `paginateScripture` is now verses-as-blocks plus the
+verse-range labeler plus the caption-type reservation, and BI.4's suite
+passes it **unchanged** — the extraction moved code, not behaviour.
+The design rule is measured as a property: the same four stanzas packed
+under a stanza labeler come out 4/2/1 slides for 20/40/80 px of box,
+because the engine input carries **no line count to override the
+measurement** — a reading theme says "reading box, reading size" and the
+worker's answer decides how many lines ride. A block that fits is never
+even probed as a fragment; a split carries the block's id through both
+halves with `(cont.)` and `(continues)` said by the caller's labeler; the
+single-word dead end refuses naming the block (`textflow_tests`; gates
+64/64 desktop serial, 46/46 headless).
 The operator's paging note
 — flow the whole downloaded passage with the theme deciding how much text
 a slide carries (their examples: two display lines for songs, six for a

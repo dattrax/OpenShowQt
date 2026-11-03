@@ -8,6 +8,7 @@ add_library(openshow_importer STATIC
   biblepassage.cpp
   bookindex.cpp
   scripturepagination.cpp
+  textflow.cpp
 )
 target_include_directories(openshow_importer PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
