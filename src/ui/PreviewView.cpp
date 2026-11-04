@@ -41,6 +41,7 @@ void PreviewView::setController(WorkerController* controller) {
 void PreviewView::paint(QPainter* painter) {
     painter->fillRect(boundingRect(), Qt::black);
     if (!fController) {
+        setHasFrame(false);
         return;
     }
     // The stream carries three pictures (task 6.16a, and the list's band in
@@ -63,8 +64,10 @@ void PreviewView::paint(QPainter* painter) {
         break;
     }
     if (image.isNull()) {
+        setHasFrame(false);
         return;
     }
+    setHasFrame(true);
     // Aspect-fit, centred — the frame already carries the output rule's
     // letterboxing, so this only fits the pane itself. (drawImage with a
     // QPoint paints the image at native size: first acceptance 2026-10-23

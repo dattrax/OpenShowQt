@@ -4,8 +4,45 @@ Updated: 2026-11-04 (Europe/London).
 
 ## Current checkpoint
 
-**CS.1 complete (2026-11-04): the shared-control catalogue exists — twelve named
-parts, one contract each, before any extraction.**
+**CS.2 complete (2026-11-04): four hand-built preview panes became one surface
+and one card — and every pane still paints only its own worker target.**
+
+`SlidePreviewSurface.qml` wraps `PreviewView` (still the only pixel painter)
+with the arithmetic four pages used to keep re-inventing: the fitted
+`contentRect`, `zoom` for authored-unit overlays, an honest `placeholder` that
+names WHY there are no pixels, `pixelsVisible` for scenes a page does not hold,
+and an overlay slot pinned to the fitted rect so box outlines and placement
+handles ride the picture through a resize. `SlidePreviewCard.qml` puts that
+surface in selectable chrome — hover body, worker-LIVE vs operator-selected
+border, caption strip, `activated`/`contextRequested` — while what a click
+MEANS stays with the host. Migrated in this leaf: OutputPanel's Audience
+monitor (`audiencePreview`, `previewOfflineNote` preserved), EditCanvas's
+selection stage, the Theme Editor's centre canvas and both view tiles, and the
+ShowPage cue tiles (now `SlidePreviewCard` delegates keeping `operatorCueTile`,
+`index`, `modelData`, the ack chip and keyboard semantics). Registered flat
+through `OPENSHOW_WORKSPACE_QML_NAMES` per the CS.1 convention.
+
+Readiness needed one C++ fact the surfaces could trust: `PreviewView::hasFrame`
+(NOTIFY, refreshed on the paint path) — a property of the image THIS item
+painted, including a keyed thumbnail's own arrival, so no tile can report
+another target's frame as its `ready`. The catalogue records two contract
+refinements alongside: `contextRequested` carries card coordinates (the host
+maps), and a card's text fallback is the surface's placeholder, not a second
+input.
+
+Gates: desktop `ctest -j1` **65/65** (~409 s), headless build + `ctest -j1`
+**36/36**, `git diff --check` clean. New workspace_ui_tests pins: the cue card
+captions its own row and names the thumbnail target and its own key; the
+painter under each pane reads Audience/Thumbnail exactly as bound and nothing
+else; unready surfaces hold their placeholders with no worker on the wire;
+the view tiles are keyed `theme-view-songs-<id>` thumbnails; the monitor
+claims no frame it lacks.
+
+**Next action:** CS.3 — the Bible import workspace: generated-slide cards and
+a labelled off-air Selection canvas on the compiled scripture appearance, keyed
+`scripture:<planGen>:<index>` thumbnails, corrected preview wording.
+
+### Earlier checkpoint: CS.1
 
 `docs/ui/control-sets.md` is the contract document PLAN.md CS.1 promised: for
 every named part (surface, card, collection, five control sections, picker, and
@@ -157,11 +194,12 @@ closing leaf TA.1 (architecture and captures sweep).
 
 2026-11-04 planning update: PLAN.md now records the **CS shared Qt control-set
 work before FO**, including themed Bible previews, common appearance controls
-and a new preview row for each running-order entry. CS.0 (source review) and
-**CS.1 (the component catalogue, `docs/ui/control-sets.md`)** are DONE; CS.2–CS.9
-remain. **Next action: CS.2**, extracting the shared preview surface/card and
-migrating Audience, Edit, Themes and Show onto it. Complete the remaining TV/TA
-and M7 gates before FO. No application behavior changed in CS.1.
+and a new preview row for each running-order entry. CS.0 (source review),
+**CS.1 (the component catalogue, `docs/ui/control-sets.md`)** and
+**CS.2 (shared `SlidePreviewSurface`/`SlidePreviewCard`, all four preview hosts
+migrated)** are DONE; CS.3–CS.9 remain. **Next action: CS.3**, the Bible import
+workspace on worker previews. Complete the remaining TV/TA and M7 gates before
+FO.
 
 ## How to pick up
 
@@ -241,6 +279,10 @@ and M7 gates before FO. No application behavior changed in CS.1.
    `document_present_tests` ~2 s of 90 s.
 
 ## Recent commits
+
+- `3150e55` docs(ui): CS.1 - the control-set contracts and component catalogue
+- CS.2 (this commit) feat(ui): the shared preview surface and slide card, with
+  Audience, Edit, Themes and Show all wearing them
 
 - TR.3 — the transition UI with the audience as witness:
   `DocumentViews::transitionRecordMap` as the one author of the record's QML

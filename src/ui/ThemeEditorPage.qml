@@ -1077,32 +1077,25 @@ Item {
         Accessible.name: tileButton.label
         contentItem: Column {
             spacing: 3
-            Rectangle {
+            // The worker's own picture of THIS view's fixture — the same key
+            // the batch asked with — in the shared surface. With no lane open
+            // the tile is an honest black frame and a glyph, never a QML
+            // guess at the theme's look.
+            SlidePreviewSurface {
                 width: tileButton.picWidth
                 height: tileButton.picWidth * 9 / 16
-                color: "#000000"
-                border.width: 1
-                border.color: themeEditor.selectedView === tileButton.view
-                              ? "#1685f8" : "#4a4a4a"
-                // The worker's own picture of THIS view's fixture — the
-                // same key the batch asked with. With no lane open the
-                // tile is an honest black frame and a glyph, never a QML
-                // guess at the theme's look.
-                PreviewView {
-                    anchors.fill: parent
-                    visible: worker.thumbnailSupported
-                    controller: worker
-                    target: PreviewView.Thumbnail
-                    key: themeEditor.selectedId === ""
-                         ? "" : themeEditor.viewThumbKey(tileButton.view)
-                }
-                Text {
-                    anchors.centerIn: parent
-                    visible: !worker.thumbnailSupported
-                    color: "#888888"
-                    font.pixelSize: 18
-                    text: tileButton.view === "" ? "\u266a" : "\u271d"
-                }
+                controller: worker
+                target: "thumbnail"
+                key: themeEditor.selectedId === ""
+                     ? "" : themeEditor.viewThumbKey(tileButton.view)
+                pixelsVisible: worker.thumbnailSupported
+                borderColor: themeEditor.selectedView === tileButton.view
+                             ? "#1685f8" : "#4a4a4a"
+                borderWidth: 1
+                placeholder: tileButton.view === "" ? "\u266a" : "\u271d"
+                placeholderVisible: !worker.thumbnailSupported
+                placeholderColor: "#888888"
+                placeholderPixelSize: 18
             }
             Text {
                 width: tileButton.picWidth
@@ -1336,7 +1329,10 @@ Item {
             }
         }
 
-        Rectangle {
+        // The centre canvas (task CS.2): a SlidePreviewSurface on the
+        // Selection target — this theme's sample rendered by the worker —
+        // with the placement chrome riding the fitted content rectangle.
+        SlidePreviewSurface {
             id: previewFrame
             objectName: "themeEditorPreview"
             // TV.2: fit the 16:9 picture to the room the columns leave —
@@ -1349,26 +1345,17 @@ Item {
                             Math.max(160, (centerColumn.height - chrome) * 16 / 9))
             height: width * 9 / 16
             x: (centerColumn.width - width) / 2
-            color: "#000000"
-            border.color: "#4a4a4a"
-            clip: true
-            PreviewView {
-                anchors.fill: parent
-                controller: worker
-                target: PreviewView.Selection
-                visible: worker.selectionReady
-            }
+            controller: worker
+            target: "selection"
+            borderColor: "#4a4a4a"
+            borderWidth: 0
+            clipOverlays: true
             // No picture (no worker, the first ask still in flight): the
             // frame says which, rather than painting a QML guess at it.
-            Text {
-                anchors.centerIn: parent
-                visible: !worker.selectionReady
-                color: "#888888"
-                font.pixelSize: 12
-                text: themeEditor.selectedId === "" ? "No theme selected"
-                      : worker.statusNeedsAttention ? "Preview unavailable"
-                                                    : "Waiting for the preview"
-            }
+            placeholder: themeEditor.selectedId === "" ? "No theme selected"
+                  : worker.selectionReady ? ""
+                  : (worker.statusNeedsAttention ? "Preview unavailable"
+                                                 : "Waiting for the preview")
 
             // The lyric box this theme places (themes plan amendment
             // 2026-11-01), drawn over the sample at the same 1920-unit scale

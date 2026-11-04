@@ -182,21 +182,23 @@ SidePanel {
             anchors.top: title.bottom
             width: parent.width
             spacing: 8
-            Rectangle {
+            // The Audience monitor (task CS.2): one SlidePreviewSurface, the
+            // only wearer of the Audience target. The clears beside it are
+            // operations ON the output and stay outside the surface.
+            SlidePreviewSurface {
                 id: previewBox
                 objectName: "audiencePreview"
                 width: monitorRow.width - clears.width - monitorRow.spacing
                 height: width * 9 / 16
-                color: "black"
-                border.color: "#505050"
-                PreviewView { anchors.fill: parent; anchors.margins: 1; controller: worker }
-                Text {
-                    objectName: "previewOfflineNote"
-                    anchors.centerIn: parent
-                    visible: !worker.outputLive
-                    color: "#aaaaaa"; font.pixelSize: 12
-                    text: "Output disconnected"
-                }
+                controller: worker
+                target: "audience"
+                borderColor: "#505050"
+                borderWidth: 0
+                placeholder: "Output disconnected"
+                placeholderVisible: !worker.outputLive
+                placeholderColor: "#aaaaaa"
+                placeholderPixelSize: 12
+                placeholderObjectName: "previewOfflineNote"
             }
             Column {
                 id: clears

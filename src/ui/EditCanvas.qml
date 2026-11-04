@@ -146,45 +146,36 @@ Item {
         boxH = bottom - y0
     }
 
-    Rectangle {
+    // The stage (task CS.2): a SlidePreviewSurface on the Selection target —
+    // the worker's off-air render of THIS slide, letterboxed honestly — with
+    // the box chrome riding the fitted content rectangle the pixels occupy.
+    // The surface never asks for a scene: preparing this slide stays the
+    // page's and the controller's business.
+    SlidePreviewSurface {
         id: stage
         x: (canvas.width - canvas.stageWidth) / 2
         y: (canvas.height - canvas.stageHeight) / 2
         width: canvas.stageWidth
         height: canvas.stageHeight
-        color: canvas.canvasColor
-        border.color: "#4a4a4a"
-
-        // The slide as the WORKER draws it, rendered off the air (task 6.16a,
-        // review R16). This replaced a QML Text that laid the same slide out
-        // a second time — Qt's wrapping, Qt's fit, Qt's font fallbacks
-        // against Skia's — so the operator composed one picture and the
-        // audience saw another. Now the text, the background image and the
-        // media under the boxes are the production render of the WHOLE
-        // stack, and the only thing this canvas paints over them is the
-        // chrome below: the outlines and the handles.
-        PreviewView {
-            id: workerPicture
-            anchors.fill: parent
-            controller: worker
-            target: PreviewView.Selection
-            visible: canvas.hasSlide && worker.selectionReady
-        }
-
-        // No picture yet (a first ask still in flight, a worker that cannot
-        // draw an off-air scene at all): say which, rather than approximate
-        // the slide. Any Qt layout of the text here would put the two
-        // renderers back exactly where the review found them.
-        Text {
-            anchors.centerIn: parent
-            visible: canvas.hasSlide && !worker.selectionReady
-            color: "#929292"
-            font.pixelSize: 13
-            horizontalAlignment: Text.AlignHCenter
-            text: worker.selectionSupported
-                  ? "waiting for the worker's render of this slide…"
-                  : "this worker cannot render a slide that is not on air"
-        }
+        controller: worker
+        target: "selection"
+        frameColor: canvas.canvasColor
+        borderWidth: 0
+        pixelsVisible: canvas.hasSlide && worker.selectionReady
+        // What the emptiness means, in one honest sentence per case — the
+        // worker's inability, an in-flight render, an empty slide — never a
+        // Qt layout of the words standing in for the render (review R16).
+        placeholder: !canvas.hasSlide
+                     ? "Select or create a slide to edit its text boxes"
+                     : (canvas.currentBox < 0
+                        ? "this slide has no text boxes — use \"New box\" below"
+                        : (!worker.selectionReady
+                           ? (worker.selectionSupported
+                              ? "waiting for the worker's render of this slide…"
+                              : "this worker cannot render a slide that is not on air")
+                           : ""))
+        placeholderColor: "#929292"
+        placeholderPixelSize: 13
 
         // One outline per box, in the model's draw order — every box the
         // worker paints is framed here, and the selected one wears the
@@ -227,16 +218,6 @@ Item {
                     + (modelData.y === 0 ? -height / 2
                                          : canvas.boxH * canvas.zoom - height / 2)
             }
-        }
-
-        Text {
-            anchors.centerIn: parent
-            visible: !canvas.hasSlide || canvas.currentBox < 0
-            color: "#929292"
-            font.pixelSize: 13
-            text: !canvas.hasSlide
-                  ? "Select or create a slide to edit its text boxes"
-                  : "this slide has no text boxes — use \"New box\" below"
         }
 
         MouseArea {

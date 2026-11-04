@@ -1079,7 +1079,7 @@ TV/TA and M7 work. CS.0 records this review only.
 |---|---|---|---|
 | CS.0 | DONE | Source review, named-part proposal and pre-FO dependency gate | Findings, source map and executable handoff below; documentation only |
 | CS.1 | DONE | Establish part contracts, catalogue and QML resource registration convention | Explicit pixel targets, adapter/event contracts, stable names and module/resource rules documented for subsequent extractions |
-| CS.2 | TODO | Extract common preview surface and slide card | Edit, Themes, Show and Audience wrappers share pixel/chrome controls; aspect, overlays, state and target isolation preserved |
+| CS.2 | DONE | Extract common preview surface and slide card | Edit, Themes, Show and Audience wrappers share pixel/chrome controls; aspect, overlays, state and target isolation preserved |
 | CS.3 | TODO | Replace Bible generated-slide text presentation with themed worker previews | Generated cards and selected off-air canvas use the current compiled scripture appearance; selection never presents; no overlapping controls or misleading preview instructions |
 | CS.4 | TODO | Normalize inspector read state and mutation adapters | Shared field shape with resolved/own/source/capability state; theme, context and slide writes remain distinct, atomic and undoable |
 | CS.5 | TODO | Extract style/geometry/font/transition sections and migrate Themes/Settings | Common controls replace duplicated sections; Songs/Bible differences and existing sparse-context limits explicit; all supported fields reachable |

@@ -87,6 +87,7 @@ set(OPENSHOW_WORKSPACE_QML_NAMES
   ShortcutMap.qml OutputPanel.qml PlaylistPanel.qml ShowPage.qml
   EditPage.qml SettingsPage.qml PanelField.qml PanelButton.qml
   ThemeEditorPage.qml BibleImportPage.qml
+  SlidePreviewSurface.qml SlidePreviewCard.qml
 )
 set(OPENSHOW_WORKSPACE_QML_FILES)
 foreach(qml IN LISTS OPENSHOW_WORKSPACE_QML_NAMES)

@@ -174,6 +174,19 @@ int main(int argc, char** argv) {
             if (item->objectName() == QLatin1String(name)) out.append(item);
             for (auto* child : item->childItems()) collectNamed(child, name, out);
         };
+    // CS.2: target isolation is asserted on the PIXEL PAINTER inside each
+    // pane (the one PreviewView item the surface wraps), not on the wrapper —
+    // a pane may describe itself however it likes, the painter's target and
+    // key are the wire truth it will paint from.
+    std::function<QQuickItem*(QQuickItem*, const char*)> findByClass =
+        [&](QQuickItem* item, const char* cls) -> QQuickItem* {
+            if (QString::fromLatin1(item->metaObject()->className())
+                        .endsWith(QLatin1String(cls)))
+                return item;
+            for (auto* child : item->childItems())
+                if (auto* hit = findByClass(child, cls)) return hit;
+            return nullptr;
+        };
     auto* showPageItem = window->findChild<QQuickItem*>("showPage");
     auto* cueGrid = window->findChild<QQuickItem*>("operatorSlideGrid");
     check(showPageItem && cueGrid, "the Show page and its cue grid are in the operator shell");
@@ -221,6 +234,39 @@ int main(int argc, char** argv) {
                   "a click selects without claiming anything is live");
             check(worker.liveCueKey().isEmpty() && worker.pendingCueKey().isEmpty(),
                   "a go the worker never received leaves no marker pending");
+            // CS.2: what the cue tile wears. The card captions its own row;
+            // the surface underneath is bound to the keyed Thumbnail target
+            // with THIS row's identity, and the pixel painter it wraps reads
+            // exactly that target — never the audience frame, whatever the
+            // rail is painting.
+            const QVariantMap firstRow = rows[0].toMap();
+            auto* tileSurface = firstTile->property("surface").value<QQuickItem*>();
+            check(firstTile->property("caption").toString()
+                      .contains(QStringLiteral("1  ")
+                                + firstRow.value(QStringLiteral("preview")).toString()),
+                  "the cue card wears the caption of the row it stands for");
+            check(tileSurface
+                      && tileSurface->property("target").toString()
+                             == QLatin1String("thumbnail")
+                      && tileSurface->property("key").toString()
+                             == firstRow.value(QStringLiteral("slideId")).toString(),
+                  "the cue card's surface names the thumbnail target and its own key");
+            auto* tilePainter = tileSurface ? findByClass(tileSurface, "PreviewView")
+                                            : nullptr;
+            check(tilePainter && tilePainter->property("target").toInt() == 2,
+                  "the painter under the cue card reads keyed thumbnails, never the audience");
+            const QRectF tileRect = tileSurface ? tileSurface->property("contentRect").toRectF()
+                                                : QRectF();
+            check(qAbs(tileRect.width() * 9 - tileRect.height() * 16) < 1.0
+                      && tilePainter
+                      && qAbs(tilePainter->width() - tileRect.width()) < 1.0,
+                  "the card surface letterboxes 16:9 and its painter rides the fitted rect");
+            // With no worker on the wire NOTHING is `ready`: the flag follows
+            // the pixels this one item painted, so a tile can never report a
+            // frame it does not hold and swap its placeholder out.
+            check(tileSurface && !tileSurface->property("ready").toBool()
+                      && tilePainter && !tilePainter->property("hasFrame").toBool(),
+                  "an unanswered thumbnail ask leaves the surface honestly unready");
         }
         // The presenter keys walk the running order ACROSS the presentation
         // boundary (cue 18 of Good Grace into Welcome) and clamp at the ends.
@@ -1127,6 +1173,21 @@ int main(int argc, char** argv) {
         auto* offlineNote = findNamed(window->contentItem(), "previewOfflineNote");
         check(offlineNote && offlineNote->isVisible() && !worker.outputLive(),
               "no cue and no combo choice makes the monitor claim air it does not have");
+        {
+            // CS.2: the rail's monitor is the shared surface bound explicitly
+            // to the Audience target — the one painter on the whole screen
+            // that may show the output — and it is the offline note's frame,
+            // still reachable under its old automation name.
+            auto* audiencePainter = preview ? findByClass(preview, "PreviewView") : nullptr;
+            check(audiencePainter && audiencePainter->property("target").toInt() == 0
+                      && !audiencePainter->property("hasFrame").toBool()
+                      && !preview->property("ready").toBool(),
+                  "the rail's monitor paints the Audience target and claims no frame it lacks");
+            check(preview && preview->property("placeholder").toString()
+                                == QLatin1String("Output disconnected")
+                      && qAbs(preview->width() * 9 - preview->height() * 16) < 1.0,
+                  "the monitor says it is disconnected inside a 16:9 frame");
+        }
         combo->setProperty("currentIndex", 0);
         QTest::qWait(20);
     }
@@ -1720,6 +1781,17 @@ int main(int argc, char** argv) {
                   && editorPage->property("selectedView").toString().isEmpty()
                   && editorPage->property("selectedId").toString() == viewedId,
               "the editor browses in the Songs view, with a view navigator beside the list");
+        {
+            // CS.2: the navigator tiles are shared surfaces on the keyed
+            // thumbnail target — each tile paints only ITS view's fixture,
+            // and with the lane closed an honest glyph, not borrowed pixels.
+            auto* songsPainter = viewSongs ? findByClass(viewSongs, "PreviewView") : nullptr;
+            check(songsPainter
+                      && songsPainter->property("target").toInt() == 2
+                      && songsPainter->property("key").toString()
+                             == QStringLiteral("theme-view-songs-") + viewedId,
+                  "the view tiles paint their own keyed thumbnails, never borrowed frames");
+        }
         clickAt(viewBible, viewBible->width() / 2, viewBible->height() / 2);
         QTest::qWait(80);
         check(editorPage->property("selectedView").toString() == QLatin1String("scripture")

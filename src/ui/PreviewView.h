@@ -30,6 +30,7 @@ class PreviewView : public QQuickPaintedItem {
     // fails to load — which is how the first version of the slide list's rows
     // broke, found by running the binary rather than by reading it.
     Q_PROPERTY(QString key READ key WRITE setKey NOTIFY keyChanged)
+    Q_PROPERTY(bool hasFrame READ hasFrame NOTIFY hasFrameChanged)
 
 public:
     // Which of the pictures on the stream this item shows.
@@ -72,15 +73,33 @@ public:
         update();  // the cache may already hold this slide
     }
 
+    // Whether THIS item's target currently has pixels (task CS.2): the shared
+    // surface asks the painter rather than re-deriving readiness from a global
+    // property that answers for the wrong target. The paint path is the only
+    // place the frames are looked up, so the flag is refreshed there — every
+    // arriving frame already calls update(), and the property follows the
+    // exact image this item painted, never another target's.
+    bool hasFrame() const { return fHasFrame; }
+
 signals:
     void controllerChanged();
     void targetChanged();
     void keyChanged();
+    void hasFrameChanged();
 
 private:
+    void setHasFrame(bool has) {
+        if (has == fHasFrame) {
+            return;
+        }
+        fHasFrame = has;
+        emit hasFrameChanged();
+    }
+
     WorkerController* fController = nullptr;
     Target fTarget = Target::Audience;
     QString fKey;
+    bool fHasFrame = false;
 };
 
 }  // namespace openshow::ui

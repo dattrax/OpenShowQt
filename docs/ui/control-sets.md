@@ -120,11 +120,16 @@ refusal re-reads the authoritative record.
 `src/ui/SlidePreviewSurface.qml` (extracted in CS.2). Aspect-fit worker
 pixels in a frame, with status/placeholder and an overlay slot. Wraps the
 existing `PreviewView`; it is the only place the fit arithmetic lives.
+Migrated in CS.2: the Audience monitor in `OutputPanel`, the `EditCanvas`
+stage, the Theme Editor centre canvas and view tiles, and the Show cue cards
+through `SlidePreviewCard`. Readiness grew as `PreviewView::hasFrame` for it:
+a property of the PAINTED image, so a tile with no pixels of its own never
+reports another target's frame as its `ready`.
 
 | | |
 |---|---|
-| Inputs | `controller` (WorkerController*, required); `target` (`"audience"` \| `"selection"` \| `"thumbnail"`, default `"audience"`); `key` (thumbnail identity, ignored otherwise); `placeholder` (string shown when not ready); `frameBorder` (color, default `#4a4a4a`) |
-| Outputs | `contentRect` — the fitted, letterboxed rect **in this item's coordinates** (overlays anchor to it); `ready` — pixels for the newest ask are in hand (audience: `previewActive`; selection: `selectionReady`; thumbnail: `thumbnail(key)` non-null); `zoom` — `contentRect.width/1920` |
+| Inputs | `controller` (WorkerController*, required); `target` (`"audience"` \| `"selection"` \| `"thumbnail"`, default `"audience"`); `key` (thumbnail identity, ignored otherwise); `aspectRatio` (default 16:9); `frameColor`, `borderColor`, `borderWidth` (hosts keep the frames their screens are known by); `placeholder` (string naming WHY there are no pixels) with `placeholderColor`/`placeholderPixelSize` and `placeholderObjectName` for the page's tests; `placeholderVisible` (defaults to `placeholder !== "" && !ready`; a host may override it to show a CAPABILITY statement — "this worker cannot draw thumbnails" — ahead of an in-flight ask); `pixelsVisible` (the page shows pixels only for a scene it actually holds); `clipOverlays` |
+| Outputs | `contentRect` — the fitted, letterboxed rect **in this item's coordinates** (overlays anchor to it); `ready` — pixels for THIS item are in hand (`PreviewView::hasFrame`, refreshed on the paint path, so a keyed tile reports its OWN key's arrival, never another target's); `zoom` — `contentRect.width/1920`; `preview` — the wrapped `PreviewView` for hosts that map coordinates |
 | Events | none of its own beyond the controller's (`ready` is a tracked property) |
 | Adapter | none — display only. The owning page schedules `requestSelectionPreview` / `requestThumbnails` and stands the target down on exit |
 | Consumers | AudienceMonitor (`OutputPanel`, Audience), `EditCanvas` (Selection + box chrome in `overlay`), ThemeEditor centre canvas (Selection + placement overlay), Show cue cards and Bible cards via `SlidePreviewCard` (Thumbnail), Bible selected canvas (Selection) |
@@ -138,8 +143,8 @@ focusable button (cue stepping must keep the keyboard).
 
 | | |
 |---|---|
-| Inputs | everything `SlidePreviewSurface` takes (bound through); `caption` (string); `selected`, `live`, `pending` (booleans — chrome only, the host computes them from acknowledged worker state); `textFallback` (string shown only where the page already offers a text row when the thumbnail lane is closed, e.g. Show); `cardWidth`/`cardHeight` |
-| Events | `activated()` (primary click), `contextRequested(mapPoint)` (right click, already mapped to the host's coordinates) |
+| Inputs | the embedded `SlidePreviewSurface` via the `surface` alias (bound through by the host: target, key, controller, text fallback as `surface.placeholder` with `placeholderVisible`); `caption` (string; the strip fills the room under the picture); `selected`, `live` (booleans — chrome only, the host computes them from acknowledged worker state; a pending go wears a host chip, not the card border); `idleColor`/`hoverColor` |
+| Events | `activated()` (primary click), `contextRequested(mouseX, mouseY)` (right click, in CARD coordinates — the host maps it to wherever its menu lives) |
 | Adapter | the host decides what `activated()` means: Show presents the cue; Bible selects the generated slide off air; Themes selects the view. The card itself never calls a presentation verb |
 | Consumers | ShowPage cue tiles, Bible generated-slide cards, ThemeEditor Songs/Bible view tiles |
 | Automation | `objectName` per host (`operatorCueTile` keeps its `index`/`modelData`-compatible properties for the cue tests); Accessible.name assembled by the host |

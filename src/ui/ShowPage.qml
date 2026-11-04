@@ -351,7 +351,11 @@ Rectangle {
         // A cue tile is a click target, not a focusable button: an
         // AbstractButton would squat the presenter's Space after every
         // click, and clicking a cue must leave the keyboard still walking.
-        delegate: Item {
+        // Task CS.2 put that tile in the shared card: the state border and
+        // caption strip are the card's chrome, the picture is the shared
+        // surface on the keyed Thumbnail target, and what a click MEANS
+        // (present this cue) stays here, on the Show screen.
+        delegate: SlidePreviewCard {
             id: tile
             objectName: "operatorCueTile"
             required property var modelData
@@ -364,95 +368,53 @@ Rectangle {
                                             && modelData.cueKey === worker.liveCueKey
             readonly property bool rowPending: modelData.cueKey !== ""
                                                && modelData.cueKey === worker.pendingCueKey
+            selected: rowSelected
+            live: rowLive
+            caption: (modelData.groupStart && showPage.sourceShowId === ""
+                      ? modelData.showName + " \u00b7 " : "")
+                     + (modelData.slideIndex + 1) + "  " + modelData.preview
             Accessible.role: Accessible.Button
             Accessible.name: "Cue " + (index + 1) + ": " + modelData.showName
                              + (modelData.section !== "" ? ", " + modelData.section : "")
                              + (tile.rowLive ? ", live"
                                 : (tile.rowPending ? ", presenting" : ""))
+            surface.controller: worker
+            surface.target: "thumbnail"
+            surface.key: modelData.slideId
+            surface.pixelsVisible: worker.thumbnailSupported
+            // With no thumbnail lane the operator still sees the words the
+            // cue carries — a text row, plainly styled, never advertised as
+            // the rendered slide.
+            surface.placeholder: modelData.preview
+            surface.placeholderVisible: !worker.thumbnailSupported
+            surface.placeholderColor: "#eeeeee"
+            surface.placeholderPixelSize: 13
+
+            // The acknowledgement chip: only ever shown from the worker's
+            // own state, never from the click that asked.
             Rectangle {
-                anchors.fill: parent
-                color: tileMouse.containsMouse ? "#393939" : "#2d2d2d"
-                // Live is the worker's fact (red, thickest); the operator's
-                // own pick is blue; a pending go wears its chip, not a border.
-                border.width: tile.rowLive ? 3 : (tile.rowSelected ? 2 : 1)
-                border.color: tile.rowLive ? "#d24b4b"
-                             : (tile.rowSelected ? "#1685f8" : "#505050")
-            }
-            Item {
-                anchors.fill: parent
-                Rectangle {
-                    id: picture
-                    anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
-                    anchors.margins: 3
-                    height: width * 9 / 16
-                    color: "black"
-                    Text {
-                        anchors.fill: parent; anchors.margins: 12
-                        visible: !worker.thumbnailSupported
-                        text: tile.modelData.preview
-                        color: "#eeeeee"; font.pixelSize: 13
-                        wrapMode: Text.WordWrap
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                    PreviewView {
-                        visible: worker.thumbnailSupported
-                        anchors.fill: parent
-                        controller: worker
-                        target: PreviewView.Thumbnail
-                        key: tile.modelData.slideId
-                    }
-                    // The acknowledgement chip: only ever shown from the
-                    // worker's own state, never from the click that asked.
-                    Rectangle {
-                        visible: tile.rowLive || tile.rowPending
-                        anchors.top: parent.top; anchors.left: parent.left
-                        anchors.margins: 5
-                        width: chipLabel.implicitWidth + 10; height: 18
-                        radius: 3
-                        color: tile.rowLive ? "#d24b4b" : "#8a6d1f"
-                        Text {
-                            id: chipLabel
-                            anchors.centerIn: parent
-                            font.pixelSize: 10; font.bold: true
-                            color: "#ffffff"
-                            text: tile.rowLive ? "LIVE" : "GO\u2026"
-                        }
-                    }
-                }
-                Rectangle {
-                    anchors.top: picture.bottom; anchors.bottom: parent.bottom
-                    anchors.left: parent.left; anchors.right: parent.right
-                    anchors.margins: 2
-                    color: tile.rowLive ? "#7c2c28"
-                         : (tile.rowSelected ? "#1678cf" : "#414141")
-                    Text {
-                        anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6
-                        verticalAlignment: Text.AlignVCenter
-                        text: (tile.modelData.groupStart && showPage.sourceShowId === ""
-                               ? tile.modelData.showName + " \u00b7 " : "")
-                              + (tile.modelData.slideIndex + 1) + "  " + tile.modelData.preview
-                        color: "#eeeeee"; font.pixelSize: 12
-                        elide: Text.ElideRight
-                    }
+                visible: tile.rowLive || tile.rowPending
+                anchors.top: parent.top; anchors.left: parent.left
+                anchors.margins: 5
+                width: chipLabel.implicitWidth + 10; height: 18
+                radius: 3
+                color: tile.rowLive ? "#d24b4b" : "#8a6d1f"
+                Text {
+                    id: chipLabel
+                    anchors.centerIn: parent
+                    font.pixelSize: 10; font.bold: true
+                    color: "#ffffff"
+                    text: tile.rowLive ? "LIVE" : "GO\u2026"
                 }
             }
-            MouseArea {
-                id: tileMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                onClicked: function (mouse) {
-                    if (mouse.button === Qt.RightButton) {
-                        // The menu acts on the tile that was clicked, at
-                        // the moment it was clicked — capture then.
-                        showPage.contextSlideId = tile.modelData.slideId
-                        const at = tile.mapToItem(showPage, mouse.x, mouse.y)
-                        cueThemeMenu.popup(at.x, at.y)
-                    } else {
-                        showPage.presentCue(index)
-                    }
-                }
+
+            onActivated: showPage.presentCue(index)
+            onContextRequested: function (mouseX, mouseY) {
+                // The menu acts on the tile that was clicked, at the moment
+                // it was clicked — capture then.
+                showPage.contextSlideId = tile.modelData.slideId
+                const at = tile.mapToItem(showPage, mouseX, mouseY)
+                cueThemeMenu.popup(at.x, at.y)
             }
         }
     }
