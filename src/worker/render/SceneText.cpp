@@ -199,6 +199,73 @@ bool SceneTextEngine::create(std::string* error) {
     return true;
 }
 
+bool SceneTextEngine::listFonts(std::vector<FontFamily>* families, std::string* error) const {
+    // Task TS.4: the manager's own scan, once per worker lifetime. The
+    // answer deliberately stops at metadata — family names and the faces
+    // each holds — because the wire is a control channel and font files
+    // are megabytes; the renderer already knows how to resolve a name
+    // through this same manager, which is exactly why THIS list is the
+    // honest one for a picker. An empty scan (the fallback-empty manager
+    // `create` fell back to) is an honest empty list, not a failure: the
+    // picker then says the worker has no families to offer, which is what
+    // is true, and typed names keep working as they always did.
+    std::lock_guard<std::mutex> lock(fFontsMutex);
+    if (fFontsCache.empty()) {
+        std::vector<FontFamily> scanned;
+        const int count = fFontMgr ? fFontMgr->countFamilies() : 0;
+        scanned.reserve(count > 0 ? static_cast<std::size_t>(count) : 0);
+        for (int i = 0; i < count; ++i) {
+            SkString name;
+            fFontMgr->getFamilyName(i, &name);
+            FontFamily entry;
+            entry.family = std::string(name.c_str(), name.size());
+            if (entry.family.empty()) {
+                continue;
+            }
+            // The family's own style set. A family whose set will not
+            // build still lists itself with no faces: the name resolves
+            // (the FontCollection matches families, not sets), and a
+            // picker showing the name is more honest than one that hid
+            // it behind a portability detail.
+            const sk_sp<SkFontStyleSet> styles = fFontMgr->createStyleSet(i);
+            if (styles) {
+                const int faces = styles->count();
+                for (int j = 0; j < faces; ++j) {
+                    SkFontStyle style;
+                    SkString styleName;  // human label; the numbers are the contract
+                    styles->getStyle(j, &style, &styleName);
+                    FontFace face;
+                    face.weight = style.weight();
+                    // Anything slanted (italic or oblique) is the scene
+                    // contract's "italic": the contract has two slants and
+                    // an oblique face is not a roman one.
+                    face.italic = style.slant() != SkFontStyle::kUpright_Slant;
+                    if (std::find(entry.faces.begin(), entry.faces.end(), face) ==
+                        entry.faces.end()) {
+                        entry.faces.push_back(face);
+                    }
+                }
+            }
+            std::sort(entry.faces.begin(), entry.faces.end(),
+                      [](const FontFace& a, const FontFace& b) {
+                          return a.weight != b.weight ? a.weight < b.weight : (!a.italic && b.italic);
+                      });
+            scanned.push_back(std::move(entry));
+        }
+        // Sorted by name so paging is stable for one cached scan: page 2
+        // continues where page 1 stopped because the scan, not a hash
+        // walk, is what the pages slice.
+        std::sort(scanned.begin(), scanned.end(),
+                  [](const FontFamily& a, const FontFamily& b) { return a.family < b.family; });
+        fFontsCache.swap(scanned);
+    }
+    if (families != nullptr) {
+        *families = fFontsCache;
+    }
+    (void)error;
+    return true;
+}
+
 sk_sp<skia::textlayout::FontCollection> SceneTextEngine::fontCollection() const {
     // The per-thread rule (6.22a, review A1): one mutable FontCollection per
     // threading context, over the shared font manager. The map lock covers

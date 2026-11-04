@@ -84,13 +84,9 @@ int connectRetry() {
 
 proto::Decoder gDecoder;
 
-bool call(int fd, std::int64_t id, const char* method, boost::json::object params,
-          boost::json::value* reply) {
-    std::string wire;
-    proto::appendFrame(proto::makeRequest(id, method, std::move(params)), &wire);
-    if (::send(fd, wire.data(), wire.size(), MSG_NOSIGNAL) < 0) {
-        return false;
-    }
+// Waits (10 s) for the reply whose id matches, discarding anything else —
+// the correlation an id-based protocol owes its asker.
+bool awaitReply(int fd, std::int64_t id, boost::json::value* reply) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (std::chrono::steady_clock::now() < deadline) {
         pollfd pending{fd, POLLIN, 0};
@@ -120,6 +116,34 @@ bool call(int fd, std::int64_t id, const char* method, boost::json::object param
         }
     }
     return false;
+}
+
+bool call(int fd, std::int64_t id, const char* method, boost::json::object params,
+          boost::json::value* reply) {
+    std::string wire;
+    proto::appendFrame(proto::makeRequest(id, method, std::move(params)), &wire);
+    if (::send(fd, wire.data(), wire.size(), MSG_NOSIGNAL) < 0) {
+        return false;
+    }
+    return awaitReply(fd, id, reply);
+}
+
+// The same ask with PARAMS OF ANY SHAPE — the seam that lets a fixture put
+// a malformed params (a string where the contract wants an object) on the
+// wire, which makeRequest's object params cannot spell.
+bool callRaw(int fd, std::int64_t id, const char* method, boost::json::value params,
+             boost::json::value* reply) {
+    boost::json::object request;
+    request["jsonrpc"] = "2.0";
+    request["id"] = id;
+    request["method"] = std::string(method);
+    request["params"] = std::move(params);
+    std::string wire;
+    proto::appendFrame(boost::json::value(std::move(request)), &wire);
+    if (::send(fd, wire.data(), wire.size(), MSG_NOSIGNAL) < 0) {
+        return false;
+    }
+    return awaitReply(fd, id, reply);
 }
 
 boost::json::object block(const std::string& key, std::vector<std::string> lines,
@@ -246,6 +270,14 @@ int main(int argc, char* argv[]) {
         // TS.3: a frontend may only put a styled block to a worker that
         // names this. The check here is the worker half of that gate.
         check(hasMeasureV2, "the hello names text.measure.v2");
+        bool hasFontList = false;
+        for (const boost::json::value& capability :
+             reply.at("result").at("capabilities").as_array()) {
+            hasFontList = hasFontList || capability.as_string() == proto::kCapabilityFontListV1;
+        }
+        // TS.4: the family list a picker may trust is the one this worker
+        // answers about itself.
+        check(hasFontList, "the hello names font.list.v1");
     }
 
     // Same words, twice the size: taller, still one line. SkParagraph
@@ -637,6 +669,116 @@ int main(int argc, char* argv[]) {
                                           &error);
         check(after.ok && after.height > 0.0,
               "style refusals are per-request; the measurement session lives on");
+    }
+
+    // --- Task TS.4: the worker enumerates ITS OWN shaper -----------------
+    {
+        boost::json::value first;
+        if (!call(fd, nextId++, proto::kMethodFontList, boost::json::object{}, &first) ||
+            first.as_object().contains("error")) {
+            check(false, "font.list answers a no-params ask");
+        } else {
+            const boost::json::object& result = first.at("result").as_object();
+            const boost::json::array& families = result.at("families").as_array();
+            const std::int64_t total = result.at("total").to_number<std::int64_t>();
+            check(result.at("from").to_number<std::int64_t>() == 0 && total > 0 &&
+                      !families.empty(),
+                  "font.list lists families from the real fontconfig");
+            check(result.at("truncated").as_bool() ==
+                      (static_cast<std::size_t>(total) > families.size()),
+                  "truncated says exactly when the page ended at the cap");
+            bool wellFormed = true;
+            bool sorted = true;
+            for (std::size_t i = 0; i < families.size(); ++i) {
+                const boost::json::object& entry = families[i].as_object();
+                if (entry.at("family").as_string().empty()) {
+                    wellFormed = false;
+                }
+                int previousWeight = -1;
+                for (const boost::json::value& faceValue : entry.at("faces").as_array()) {
+                    const boost::json::object& face = faceValue.as_object();
+                    const int weight = face.at("weight").to_number<int>();
+                    if (weight < 100 || weight > 950 || !face.at("italic").is_bool() ||
+                        weight < previousWeight) {
+                        wellFormed = false;
+                    }
+                    previousWeight = weight;
+                }
+                if (i > 0 &&
+                    !(std::string(families[i - 1].as_object().at("family").as_string()) <
+                      std::string(entry.at("family").as_string()))) {
+                    sorted = false;
+                }
+            }
+            check(wellFormed, "every entry is a family name and faces of {weight, italic}, "
+                              "weights ascending");
+            check(sorted, "the page is sorted by family name — one cached scan, stable paging");
+
+            // The cache is per worker lifetime, and the reply proves it:
+            // the same ask answers with the same whole result, and page 2
+            // continues page 1 exactly (there is no re-scan between calls
+            // to move a name).
+            boost::json::value again;
+            const bool againOk =
+                call(fd, nextId++, proto::kMethodFontList, boost::json::object{}, &again) &&
+                !again.as_object().contains("error");
+            check(againOk && again.at("result") == first.at("result"),
+                  "a repeated ask answers identically — one scan, cached");
+            if (total > 1) {
+                boost::json::value second;
+                if (call(fd, nextId++, proto::kMethodFontList,
+                         boost::json::object{{"from", 1}}, &second) &&
+                    !second.as_object().contains("error")) {
+                    const boost::json::object& page2 = second.at("result").as_object();
+                    const boost::json::array& more = page2.at("families").as_array();
+                    check(page2.at("from").to_number<std::int64_t>() == 1 &&
+                              page2.at("total").to_number<std::int64_t>() == total &&
+                              !more.empty() &&
+                              more[0].as_object().at("family") ==
+                                  families[1].as_object().at("family"),
+                              "page two continues the same sorted scan, name for name");
+                } else {
+                    check(false, "font.list answers from=1");
+                }
+            }
+            // A from past the end is an EMPTY page, not an error: the list
+            // shrinking under a mid-walk asker is legal, and an empty page
+            // is the honest answer.
+            boost::json::value past;
+            if (call(fd, nextId++, proto::kMethodFontList,
+                     boost::json::object{{"from", total + 10}}, &past) &&
+                !past.as_object().contains("error")) {
+                const boost::json::object& gone = past.at("result").as_object();
+                check(gone.at("families").as_array().empty() &&
+                          !gone.at("truncated").as_bool() &&
+                          gone.at("total").to_number<std::int64_t>() == total,
+                      "a from past the end answers an empty page, not an error");
+            } else {
+                check(false, "font.list answers a from past the end");
+            }
+        }
+        // Refusals name what they refused, and the session lives on.
+        boost::json::value refused;
+        call(fd, nextId++, proto::kMethodFontList, boost::json::object{{"from", -1}}, &refused);
+        check(refused.as_object().contains("error") &&
+                  refused.at("error").at("message").as_string().find("from") !=
+                      std::string::npos,
+              "a negative from is refused naming it");
+        call(fd, nextId++, proto::kMethodFontList,
+             boost::json::object{{"from", "first"}}, &refused);
+        check(refused.as_object().contains("error"), "a non-integer from is refused");
+        call(fd, nextId++, proto::kMethodFontList, boost::json::object{{"page", 1}}, &refused);
+        check(refused.as_object().contains("error") &&
+                  refused.at("error").at("message").as_string().find("page") !=
+                      std::string::npos,
+              "an unknown font.list parameter is refused by name");
+        callRaw(fd, nextId++, proto::kMethodFontList, boost::json::value(true), &refused);
+        check(refused.as_object().contains("error"),
+              "params that are not an object are refused");
+        boost::json::value alive;
+        check(call(fd, nextId++, proto::kMethodFontList, boost::json::object{}, &alive) &&
+                  !alive.as_object().contains("error"),
+              "font.list refusals are per-request; the session lives on");
     }
 
     // An empty batch is legal and answers empty.

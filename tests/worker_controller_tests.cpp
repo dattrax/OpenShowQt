@@ -429,6 +429,13 @@ private:
                 result["capabilities"] =
                     boost::json::array{"text.measure.v1", proto::kCapabilityTextMeasureV2};
             }
+            // Task TS.4: peers that enumerate their families. Both answer
+            // font.list from a scripted five-family scan paged two-at-a-
+            // time; the ERROR one refuses instead, so a fixture can watch
+            // the walk land in "unavailable" on the worker's own sentence.
+            if (fScenario == "font-list" || fScenario == "font-list-error") {
+                result["capabilities"] = boost::json::array{proto::kCapabilityFontListV1};
+            }
             sendResult(id, std::move(result));
             return;
         }
@@ -1249,6 +1256,59 @@ private:
             sendResult(id, boost::json::object{{"measured", std::move(measured)}});
             return;
         }
+        if (method == proto::kMethodFontList) {
+            // Task TS.4: the scripted family scan, paged by the ASKER's
+            // `from` and this peer's own two-per-page cap. Recording every
+            // `from` is the fixture's proof of the walk's shape — which
+            // asks the controller sent, in what order, and whether a
+            // superseded refresh retired its own pages cleanly.
+            std::int64_t from = 0;
+            if (request.contains("params") && request.at("params").is_object()) {
+                const auto asked = request.at("params").as_object().find("from");
+                if (asked != request.at("params").as_object().end() &&
+                    asked->value().is_int64()) {
+                    from = asked->value().as_int64();
+                }
+            }
+            fFontListFroms.push_back(from);
+            writeReport();
+            if (fScenario == "font-list-error") {
+                sendError(id, "fake: this peer has no font manager to enumerate");
+                return;
+            }
+            // Five scripted families, sorted, faces ascending — the shape
+            // the real worker's scan answers with, small enough that the
+            // fixture can pin every name. The page cap here is TWO, not
+            // the protocol's 128: the controller follows `truncated`, and
+            // a fixture-provable walk needs more than one page.
+            struct FakeFamily {
+                const char* name;
+                std::initializer_list<std::pair<int, bool>> faces;
+            };
+            static const FakeFamily kFamilies[] = {
+                {"Alpha Sans", {{400, false}, {700, false}}},
+                {"Beta Serif", {{400, false}, {400, true}}},
+                {"Gamma Mono", {{300, false}, {500, false}, {700, false}}},
+                {"Delta Display", {{400, true}}},
+                {"Epsilon Round", {{400, false}}},
+            };
+            const std::int64_t total = 5;
+            boost::json::array page;
+            for (std::int64_t i = from; i < total && page.size() < 2; ++i) {
+                boost::json::array faces;
+                for (const auto& face : kFamilies[i].faces) {
+                    faces.push_back(
+                        boost::json::object{{"weight", face.first}, {"italic", face.second}});
+                }
+                page.push_back(boost::json::object{{"family", kFamilies[i].name},
+                                                   {"faces", std::move(faces)}});
+            }
+            sendResult(id, boost::json::object{{"families", std::move(page)},
+                                               {"from", from},
+                                               {"total", total},
+                                               {"truncated", from + 2 < total}});
+            return;
+        }
         if (method == "shutdown") {
             sendResult(id, boost::json::object{{"ok", true}});
             writeReport();
@@ -1306,6 +1366,7 @@ private:
             {"resumed", fResumed},
             {"mediaOps", fMediaOps},  // task 6.15a: every transport command, verbatim
             {"measureOps", fMeasureOps},  // task TS.3: every measurement ask, verbatim
+            {"fontListFroms", fFontListFroms},  // task TS.4: the font walk, page by page
             // Task 6.16a: every preview.select verbatim (the generations the
             // client actually put on the wire), plus what the scripted
             // producer did with them and how many slot releases came back.
@@ -1712,6 +1773,7 @@ private:
     std::uint64_t fStandaloneLoops = 0;
     boost::json::array fMediaOps;
     boost::json::array fMeasureOps;  // task TS.3: every text.measure verbatim
+    boost::json::array fFontListFroms;  // task TS.4: every font.list `from`, in order
 
     std::string fSocketPath;
     std::string fScenario;
@@ -2832,6 +2894,182 @@ void scenarioMeasureStyleGate() {
                   shadow.at("enabled").as_bool() && shadow.at("offsetY").to_number<double>() == 14.0,
               "measure gate: the effect records arrive whole, colour packed to an int");
     }
+}
+
+// S8d (task TS.4): the family walk. The picker's list is the WORKER'S, so
+// the controller's surface must say exactly which workers can answer
+// (hello), walk the pages in order (truncated -> ask again), stop cleanly
+// (refusal lands in "unavailable" with the worker's sentence), retire a
+// superseded walk (two refreshes still land ONE list, no weaving), and
+// forget the whole thing when the session dies.
+void scenarioFontListWalk() {
+    // (a) A peer that names no font.list: the state says "unsupported"
+    // from the hello onward, refresh says so in the status line — and the
+    // socket never carries a font.list frame, because there is nobody on
+    // the other end who could answer it honestly.
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "text-measure", 1);
+    const std::string blindReport = tempPath("font-list-blind");
+    ::unlink(blindReport.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", blindReport.c_str(), 1);
+
+    WorkerController blind;
+    bool changed = false;
+    QObject::connect(&blind, &WorkerController::fontListChanged, [&changed] { changed = true; });
+    blind.start();
+    if (!check(waitUntil([&blind] {
+                   return blind.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "font walk: handshake with a peer that lists nothing")) {
+        blind.shutdownNow();
+        return;
+    }
+    check(!blind.fontListSupported() && blind.fontListState() == QStringLiteral("unsupported"),
+          "font walk: a hello without font.list.v1 says so, in the state");
+    changed = false;
+    blind.refreshFontFamilies();
+    check(blind.fontListState() == QStringLiteral("unsupported") && changed &&
+              blind.statusText().contains(QStringLiteral("does not enumerate")),
+          "font walk: refresh toward an unsupported peer is refused locally, by name");
+    check(blind.fontFamilies().isEmpty(), "font walk: the refused list stays empty");
+    blind.shutdownNow();
+    check(methodCount(readReport(blindReport), "font.list") == 0,
+          "font walk: the unsupported peer never saw a font.list request");
+
+    // (b) The paging peer: the walk lands page after page, in the scan's
+    // own order, faces and all. The report shows the walk's shape — ask 0,
+    // then ask 2, because the reply said "truncated".
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "font-list", 1);
+    const std::string walkReport = tempPath("font-list-walk");
+    ::unlink(walkReport.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", walkReport.c_str(), 1);
+
+    WorkerController walker;
+    walker.start();
+    if (!check(waitUntil([&walker] {
+                   return walker.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "font walk: handshake with the enumerating peer")) {
+        walker.shutdownNow();
+        return;
+    }
+    check(walker.fontListSupported() && walker.fontListState() == QStringLiteral("idle"),
+          "font walk: the enumerating hello lands the surface in idle");
+    walker.refreshFontFamilies();
+    check(walker.fontListState() == QStringLiteral("loading"),
+          "font walk: the ask starts as loading, not a hopeful empty ready");
+    if (check(waitUntil([&walker] { return walker.fontListState() == QStringLiteral("ready"); }),
+              "font walk: the paged scan reaches ready")) {
+        const QStringList expected{QStringLiteral("Alpha Sans"), QStringLiteral("Beta Serif"),
+                                   QStringLiteral("Gamma Mono"), QStringLiteral("Delta Display"),
+                                   QStringLiteral("Epsilon Round")};
+        check(walker.fontFamilies() == expected,
+              "font walk: all five families arrive, in the worker's sorted order");
+        const QVariantList beta = walker.fontFaces().value(QStringLiteral("Beta Serif")).toList();
+        bool betaOk = beta.size() == 2 &&
+                      beta[0].toMap().value(QStringLiteral("weight")) == 400 &&
+                      !beta[0].toMap().value(QStringLiteral("italic")).toBool() &&
+                      beta[1].toMap().value(QStringLiteral("weight")) == 400 &&
+                      beta[1].toMap().value(QStringLiteral("italic")).toBool();
+        check(betaOk, "font walk: each family's faces carry weight and slant");
+    }
+    // A second walk re-reads from zero — the list is replaced, not
+    // appended to, so a re-open cannot double every name.
+    walker.refreshFontFamilies();
+    if (check(waitUntil([&walker] {
+                  return walker.fontListState() == QStringLiteral("ready") &&
+                         walker.fontFamilies().size() == 5;
+              }),
+              "font walk: a second refresh answers again with exactly five")) {
+        check(walker.fontFamilies().count(QStringLiteral("Alpha Sans")) == 1,
+              "font walk: the re-walk replaces the list instead of appending it");
+    }
+    walker.shutdownNow();
+    // The session's forgetting runs on the socket's disconnected signal,
+    // which the shutdown wait does not itself deliver — the beat is the
+    // event loop catching up, and then the list is gone.
+    if (check(waitUntil([&walker] { return walker.fontListState().isEmpty(); }),
+              "font walk: the dead session's list and state are forgotten")) {
+        check(walker.fontFamilies().isEmpty() && !walker.fontListSupported(),
+              "font walk: a dead session offers no list and no capability");
+    }
+    {
+        const boost::json::object report = readReport(walkReport);
+        const boost::json::array& froms = report.at("fontListFroms").as_array();
+        // The peer pages TWO families per reply, so five names walk
+        // 0, 2, 4 — and the re-walk restarts at 0 rather than resuming.
+        bool walkOk = froms.size() == 6 && froms[0].to_number<std::int64_t>() == 0 &&
+                      froms[1].to_number<std::int64_t>() == 2 &&
+                      froms[2].to_number<std::int64_t>() == 4 &&
+                      froms[3].to_number<std::int64_t>() == 0 &&
+                      froms[4].to_number<std::int64_t>() == 2 &&
+                      froms[5].to_number<std::int64_t>() == 4;
+        check(walkOk, "font walk: the asks walked 0, 2, 4, and the re-walk restarted at 0");
+    }
+
+    // (c) Two refreshes before any page answers: both first pages are on
+    // the wire, but only the CURRENT walk's id passes the reply gate, so
+    // the superseded page lands nowhere and the finished list carries the
+    // scan once, not twice.
+    const std::string raceReport = tempPath("font-list-race");
+    ::unlink(raceReport.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", raceReport.c_str(), 1);
+    WorkerController racy;
+    racy.start();
+    if (!check(waitUntil([&racy] {
+                   return racy.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "font walk: handshake for the superseded-walk race")) {
+        racy.shutdownNow();
+        return;
+    }
+    racy.refreshFontFamilies();
+    racy.refreshFontFamilies();
+    if (check(waitUntil([&racy] { return racy.fontListState() == QStringLiteral("ready"); }),
+              "font walk: the surviving walk still completes after being superseded")) {
+        check(racy.fontFamilies().size() == 5,
+              "font walk: one finished list of five — the superseded page wove nothing in");
+    }
+    // Give any late continuation of the dead walk a beat to arrive before
+    // the count is taken: a stray page AFTER ready would mean the gate
+    // leaked. (waitUntil's false predicate IS the beat: it pumps events.)
+    waitUntil([] { return false; }, 200);
+    racy.shutdownNow();
+    {
+        const boost::json::object report = readReport(raceReport);
+        const boost::json::array& froms = report.at("fontListFroms").as_array();
+        bool raceOk = froms.size() == 4 && froms[0].to_number<std::int64_t>() == 0 &&
+                      froms[1].to_number<std::int64_t>() == 0 &&
+                      froms[2].to_number<std::int64_t>() == 2 &&
+                      froms[3].to_number<std::int64_t>() == 4;
+        check(raceOk, "font walk: two first asks went out (the socket is honest), the walk "
+                      "continued once");
+    }
+
+    // (d) The refusing peer: the worker's own sentence is the status line
+    // and the state is "unavailable" — the picker can say "this worker
+    // would not tell me" instead of showing an empty box that reads as
+    // "no fonts installed".
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "font-list-error", 1);
+    const std::string denyReport = tempPath("font-list-deny");
+    ::unlink(denyReport.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", denyReport.c_str(), 1);
+    WorkerController refused;
+    refused.start();
+    if (!check(waitUntil([&refused] {
+                   return refused.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "font walk: handshake with the refusing peer")) {
+        refused.shutdownNow();
+        return;
+    }
+    refused.refreshFontFamilies();
+    if (check(waitUntil([&refused] { return refused.fontListState() == QStringLiteral("unavailable"); }),
+              "font walk: the refused walk lands in unavailable")) {
+        check(refused.statusText().contains(QStringLiteral("no font manager")) &&
+                  refused.fontFamilies().isEmpty(),
+              "font walk: the worker's own refusal sentence reaches the status line");
+    }
+    refused.shutdownNow();
 }
 
 // S9 (task 6.8b, review R11): a worker that takes every command and answers
@@ -4468,6 +4706,7 @@ int main(int argc, char* argv[]) {
     scenarioRefusedLocally();
     scenarioTextStyleGate();
     scenarioMeasureStyleGate();
+    scenarioFontListWalk();
     scenarioUnansweredRequestsStayBounded();
     scenarioWriteStallIsRefusedBoundedAndClosed();
     scenarioStalledThenResumingPeerKeepsItsSession();

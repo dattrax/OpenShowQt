@@ -6,6 +6,7 @@
 #include <QStringList>
 
 #include <algorithm>
+#include <cmath>
 
 #include "openshow/scene/scene.h"
 
@@ -894,6 +895,211 @@ bool DocumentController::setThemeTextStyle(const QString& themeId, const QVarian
     return true;
 }
 
+bool DocumentController::setThemeTextStyleField(const QString& themeId, const QString& field,
+                                                const QVariant& value) {
+    flushText();
+    std::string error;
+    const bool clears = !value.isValid() || value.isNull();
+    // The merge reads the CURRENT record inside the edit and writes the
+    // WHOLE block through setThemeTextStyle — the same domain mutator and
+    // the same vetting the whole-set verb uses, so a field edit and a
+    // whole-set edit can never disagree about what is legal. Effect
+    // members merge into the theme's record if it has one and the
+    // contract's default record otherwise; the default is exactly what
+    // the audience draws for a silent theme, so enabling one effect
+    // changes that one thing and inherits the rest honestly.
+    if (!edit([&] {
+            const openshow::domain::Theme* theme = fDocuments.findTheme(themeId.toStdString());
+            if (theme == nullptr) {
+                error = "no theme '" + themeId.toStdString() + "'";
+                return false;
+            }
+            openshow::domain::ThemeTextStyle next;
+            next.fontWeight = theme->fontWeight;
+            next.fontStyle = theme->fontStyle;
+            next.fitMode = theme->fitMode;
+            next.minFontSize = theme->minFontSize;
+            next.stroke = theme->stroke;
+            next.shadow = theme->shadow;
+
+            // Whole-record names: the inherit button's clear, nothing else.
+            if (field == QLatin1String("stroke")) {
+                if (!clears) {
+                    error = "'stroke' names the whole record; clear it with null or set "
+                            "it with setThemeTextStyle, or edit one stroke* field";
+                    return false;
+                }
+                next.stroke = std::nullopt;
+                return fDocuments.setThemeTextStyle(themeId.toStdString(), next, &error);
+            }
+            if (field == QLatin1String("shadow")) {
+                if (!clears) {
+                    error = "'shadow' names the whole record; clear it with null or set "
+                            "it with setThemeTextStyle, or edit one shadow* field";
+                    return false;
+                }
+                next.shadow = std::nullopt;
+                return fDocuments.setThemeTextStyle(themeId.toStdString(), next, &error);
+            }
+
+            // A single number, refusing a string that only looks like one.
+            const auto number = [](const QVariant& v, double* out) {
+                bool ok = false;
+                const double parsed = v.toDouble(&ok);
+                if (out != nullptr) {
+                    *out = parsed;
+                }
+                return ok && (v.userType() == QMetaType::Double ||
+                              v.userType() == QMetaType::Float ||
+                              v.userType() == QMetaType::Int ||
+                              v.userType() == QMetaType::LongLong ||
+                              v.userType() == QMetaType::UInt ||
+                              v.userType() == QMetaType::ULongLong);
+            };
+            const auto boolean = [](const QVariant& v) {
+                return v.userType() == QMetaType::Bool;
+            };
+
+            if (field == QLatin1String("fontWeight")) {
+                if (clears) {
+                    next.fontWeight = std::nullopt;
+                } else {
+                    // An INTEGER answer, which is what QML spin boxes send
+                    // as JS doubles exactly as much as as C++ ints: an
+                    // integral double is the same answer (no rounding
+                    // happened), while 400.5 or "700" is a different one
+                    // and stays refused, as the whole-set verb refuses
+                    // them — with one loosening the map verb cannot make:
+                    // QML cannot put an int into a QVariant parameter.
+                    const int type = value.userType();
+                    const bool integral = type == QMetaType::Int || type == QMetaType::UInt ||
+                                          type == QMetaType::LongLong || type == QMetaType::ULongLong;
+                    double asDouble = 0.0;
+                    const bool integralDouble =
+                        !integral && number(value, &asDouble) && std::isfinite(asDouble) &&
+                        std::floor(asDouble) == asDouble;
+                    if (!integral && !integralDouble) {
+                        error = "font weight must be an integer, not a string or a decimal";
+                        return false;
+                    }
+                    next.fontWeight = integral ? value.toInt() : static_cast<int>(asDouble);
+                }
+            } else if (field == QLatin1String("fontStyle") || field == QLatin1String("fitMode")) {
+                if (clears) {
+                    if (field == QLatin1String("fontStyle")) {
+                        next.fontStyle = std::nullopt;
+                    } else {
+                        next.fitMode = std::nullopt;
+                    }
+                } else {
+                    const std::string word = value.toString().toStdString();
+                    if (field == QLatin1String("fontStyle")) {
+                        next.fontStyle = word;
+                    } else {
+                        next.fitMode = word;
+                    }
+                }
+            } else if (field == QLatin1String("minFontSize")) {
+                if (clears) {
+                    next.minFontSize = std::nullopt;
+                } else {
+                    double numberValue = 0.0;
+                    if (!number(value, &numberValue)) {
+                        error = "minimum font size must be a number";
+                        return false;
+                    }
+                    next.minFontSize = numberValue;
+                }
+            } else if (field == QLatin1String("strokeEnabled") ||
+                       field == QLatin1String("strokeColor") ||
+                       field == QLatin1String("strokeWidth") ||
+                       field == QLatin1String("shadowEnabled") ||
+                       field == QLatin1String("shadowColor") ||
+                       field == QLatin1String("shadowOpacity") ||
+                       field == QLatin1String("shadowOffsetX") ||
+                       field == QLatin1String("shadowOffsetY") ||
+                       field == QLatin1String("shadowBlurSigma")) {
+                if (clears) {
+                    // Clearing one member is not a sentence: an effect is
+                    // one whole record. The inherit button clears the
+                    // whole record by name instead.
+                    error = "'" + field.toStdString() +
+                            "' is an effect member; an effect inherits only whole (clear "
+                            "'stroke' or 'shadow')";
+                    return false;
+                }
+                const bool isStroke = field.startsWith(QLatin1String("stroke"));
+                if (isStroke) {
+                    openshow::domain::TextStroke stroke =
+                        theme->stroke.value_or(openshow::domain::TextStroke{});
+                    if (field == QLatin1String("strokeEnabled")) {
+                        if (!boolean(value)) {
+                            error = "stroke 'enabled' must be true or false";
+                            return false;
+                        }
+                        stroke.enabled = value.toBool();
+                    } else if (field == QLatin1String("strokeColor")) {
+                        stroke.color = value.toString().toStdString();
+                    } else {
+                        double width = 0.0;
+                        if (!number(value, &width)) {
+                            error = "stroke 'width' must be a number";
+                            return false;
+                        }
+                        stroke.width = width;
+                    }
+                    next.stroke = stroke;
+                } else {
+                    openshow::domain::TextShadow shadow =
+                        theme->shadow.value_or(openshow::domain::TextShadow{});
+                    double numeric = 0.0;
+                    if (field == QLatin1String("shadowEnabled")) {
+                        if (!boolean(value)) {
+                            error = "shadow 'enabled' must be true or false";
+                            return false;
+                        }
+                        shadow.enabled = value.toBool();
+                    } else if (field == QLatin1String("shadowColor")) {
+                        shadow.color = value.toString().toStdString();
+                    } else if (field == QLatin1String("shadowOpacity")) {
+                        if (!number(value, &numeric)) {
+                            error = "shadow 'opacity' must be a number";
+                            return false;
+                        }
+                        shadow.opacity = numeric;
+                    } else if (field == QLatin1String("shadowOffsetX")) {
+                        if (!number(value, &numeric)) {
+                            error = "shadow 'offsetX' must be a number";
+                            return false;
+                        }
+                        shadow.offsetX = numeric;
+                    } else if (field == QLatin1String("shadowOffsetY")) {
+                        if (!number(value, &numeric)) {
+                            error = "shadow 'offsetY' must be a number";
+                            return false;
+                        }
+                        shadow.offsetY = numeric;
+                    } else {
+                        if (!number(value, &numeric)) {
+                            error = "shadow 'blurSigma' must be a number";
+                            return false;
+                        }
+                        shadow.blurSigma = numeric;
+                    }
+                    next.shadow = shadow;
+                }
+            } else {
+                error = "'" + field.toStdString() + "' is not a text-style field";
+                return false;
+            }
+            return fDocuments.setThemeTextStyle(themeId.toStdString(), next, &error);
+        })) {
+        setStatus(QStringLiteral("theme style: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
 QVariantMap DocumentController::themeContext(const QString& themeId, const QString& name) const {
     QVariantMap out;
     out.insert(QStringLiteral("set"), false);
@@ -1320,6 +1526,30 @@ QVariantMap DocumentController::themeSampleAppearance(const QString& themeId,
         out.insert(QStringLiteral("align"), QString::fromStdString(item.align));
         out.insert(QStringLiteral("fontFamily"), QString::fromStdString(item.fontFamily));
         out.insert(QStringLiteral("context"), QString::fromStdString(look.contextName));
+        // The RESOLVED typography and effects the audience would draw with
+        // this theme, for the inspector's "inherited from …" badges and
+        // for the sample's own picture (task TS.4). These are the concrete
+        // answers the chain produced (customization → carrying theme → the
+        // contract's defaults), so a theme silent on its weight still
+        // shows what 400 normal shrink black-no-ink it actually means. The
+        // effect records travel whole, exactly as a scene's do.
+        out.insert(QStringLiteral("fontStyle"), QString::fromStdString(look.fontStyle));
+        out.insert(QStringLiteral("fontWeight"), look.fontWeight);
+        out.insert(QStringLiteral("fitMode"), QString::fromStdString(look.fitMode));
+        out.insert(QStringLiteral("minFontSize"), look.minFontSize);
+        QVariantMap stroke;
+        stroke.insert(QStringLiteral("enabled"), look.stroke.enabled);
+        stroke.insert(QStringLiteral("color"), QString::fromStdString(look.stroke.color));
+        stroke.insert(QStringLiteral("width"), look.stroke.width);
+        out.insert(QStringLiteral("stroke"), stroke);
+        QVariantMap shadow;
+        shadow.insert(QStringLiteral("enabled"), look.shadow.enabled);
+        shadow.insert(QStringLiteral("color"), QString::fromStdString(look.shadow.color));
+        shadow.insert(QStringLiteral("opacity"), look.shadow.opacity);
+        shadow.insert(QStringLiteral("offsetX"), look.shadow.offsetX);
+        shadow.insert(QStringLiteral("offsetY"), look.shadow.offsetY);
+        shadow.insert(QStringLiteral("blurSigma"), look.shadow.blurSigma);
+        out.insert(QStringLiteral("shadow"), shadow);
         return out;
     }
     return out;  // no text box at all: the page keeps the box it was shown

@@ -1395,6 +1395,85 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
         proto::appendFrame(
             proto::makeResult(id, boost::json::object{{"measured", std::move(measured)}}),
             outbound);
+    } else if (name == proto::kMethodFontList) {
+        // Task TS.4: "which families can THIS worker's shaper resolve?" —
+        // answered by the renderer's own engine, which is the entire reason
+        // the method is the worker's: a family list assembled anywhere else
+        // is a list of names the audience's pixels may silently fall back
+        // from. The scan is cached per worker lifetime inside the engine
+        // (one fontconfig walk, on this RPC thread — never a presentation
+        // or audio callback), and every page copies a slice of it.
+        // Metadata only, never font bytes: the wire is a control channel.
+        std::size_t from = 0;
+        if (!given.is_null()) {
+            if (!given.is_object()) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "font.list takes no params or {\"from\": index}"),
+                    outbound);
+                return;
+            }
+            const boost::json::object& args = given.as_object();
+            for (const auto& member : args) {
+                if (member.key() != "from") {
+                    proto::appendFrame(
+                        proto::makeError(id, proto::kInvalidParams,
+                                         "font.list has no \"" + std::string(member.key()) +
+                                             "\" parameter"),
+                        outbound);
+                    return;
+                }
+            }
+            const auto entry = args.find("from");
+            if (entry != args.end()) {
+                if (!entry->value().is_int64() || entry->value().as_int64() < 0) {
+                    proto::appendFrame(
+                        proto::makeError(id, proto::kInvalidParams,
+                                         "font.list \"from\" must be an integer index of 0 or "
+                                         "more"),
+                        outbound);
+                    return;
+                }
+                from = static_cast<std::size_t>(entry->value().as_int64());
+            }
+        }
+        std::vector<SceneTextEngine::FontFamily> families;
+        std::string error;
+        if (!fSession.listFonts(&families, &error)) {
+            // The session's own sentence: no engine, no honest list — a
+            // reply of zero families from HERE would read as "this box has
+            // no fonts", which is not what happened.
+            proto::appendFrame(proto::makeError(id, proto::kInternalError, error), outbound);
+            return;
+        }
+        // The page: sorted-scan slice, capped so one reply stays far inside
+        // the 1 MiB frame however many long PostScript names fontconfig
+        // knows. `total` tells the asker whether to keep walking; a `from`
+        // past the end (the list shrank under a mid-walk reconnect) answers
+        // an empty page, not an error — an empty page IS the honest answer,
+        // and re-reading from 0 is the asker's, not the protocol's, repair.
+        boost::json::array page;
+        const std::size_t total = families.size();
+        for (std::size_t i = from;
+             i < total && page.size() < proto::kMaxFontListPageFamilies; ++i) {
+            boost::json::array faces;
+            faces.reserve(families[i].faces.size());
+            for (const SceneTextEngine::FontFace& face : families[i].faces) {
+                faces.push_back(boost::json::object{{"weight", face.weight},
+                                                    {"italic", face.italic}});
+            }
+            page.push_back(boost::json::object{{"family", families[i].family},
+                                               {"faces", std::move(faces)}});
+        }
+        proto::appendFrame(proto::makeResult(id,
+                                             boost::json::object{{"families", std::move(page)},
+                                                                 {"from",
+                                                                  static_cast<std::int64_t>(from)},
+                                                                 {"total",
+                                                                  static_cast<std::int64_t>(total)},
+                                                                 {"truncated",
+                                                                  from + page.size() < total}}),
+                           outbound);
     } else if (name == "shutdown") {
         proto::appendFrame(proto::makeResult(id, boost::json::object{{"ok", true}}),
                            outbound);

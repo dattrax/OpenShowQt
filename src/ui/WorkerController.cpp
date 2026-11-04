@@ -369,6 +369,15 @@ void WorkerController::onRpcDisconnected() {
     fTextMeasureCapable = false;  // a capability belongs to a live hello (BI.4)
     fTextStyleCapable = false;    // TS.1: same, for the style-block claim
     fTextMeasureV2Capable = false;  // TS.3: same, for styled measurement
+    // TS.4: the font walk belongs to the connection that asked. A page in
+    // flight when the worker dies answers to nothing, and a list from the
+    // dead session must not sit in a picker bound to the next one.
+    fFontListCapable = false;
+    fFontListWalkId = 0;
+    fFontListState.clear();
+    fFontFamilies.clear();
+    fFontFaces.clear();
+    emit fontListChanged();
     fStatusRequestId = 0;
     fPreview->setSessionLive(false);
     fPreview->closeStream();
@@ -491,6 +500,16 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             // built to forbid (task BI.4).
             emit textMeasureFailed(id, reason);
         }
+        if (pending.method == proto::kMethodFontList) {
+            // TS.4: a refused walk ends the walk. The picker shows the
+            // state, the status line carries the worker's own sentence
+            // (below, as for every method), and the general rule that a
+            // refusal names its method makes "font.list: ..." appear
+            // without this branch duplicating it.
+            fFontListWalkId = 0;
+            fFontListState = QStringLiteral("unavailable");
+            emit fontListChanged();
+        }
         setStatus(QStringLiteral("worker error (%1): %2")
                       .arg(QString::fromStdString(pending.method), reason));
         return;
@@ -561,6 +580,7 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         bool measureCapable = false;
         bool styleCapable = false;
         bool measureV2Capable = false;
+        bool fontListCapable = false;
         if (payload.contains("capabilities") && payload.at("capabilities").is_array()) {
             for (const auto& capability : payload.at("capabilities").as_array()) {
                 if (!capability.is_string()) {
@@ -606,12 +626,21 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                     // would answer a styled ask with default-metric numbers
                     // and no way for anyone to tell.
                     measureV2Capable = true;
+                } else if (capability.as_string() == proto::kCapabilityFontListV1) {
+                    // The worker enumerates its own shaper's families
+                    // (task TS.4): the picker gets its list from here and
+                    // nowhere else.
+                    fontListCapable = true;
                 }
             }
         }
         fTextMeasureCapable = measureCapable;
         fTextStyleCapable = styleCapable;
         fTextMeasureV2Capable = measureV2Capable;
+        fFontListCapable = fontListCapable;
+        fFontListState = fontListCapable ? QStringLiteral("idle")
+                                         : QStringLiteral("unsupported");
+        emit fontListChanged();
         // Both targets at once, before anything is asked of them: the hello
         // reply is the only place either answer changes, and the consumer's
         // gates are what stop a worker that dropped a capability from being
@@ -747,6 +776,123 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             }
         }
         emit textMeasureFailed(id, QStringLiteral("the worker's measurement reply was malformed"));
+        return;
+    }
+
+    if (pending.method == proto::kMethodFontList) {
+        // Task TS.4: one page of the worker's family scan. The reply gate
+        // is the REQUEST ID: a page whose id is not the walk's current one
+        // belongs to a superseded walk (a second refresh) or to a session
+        // that died (the disconnect zeroed it) — nobody's list, dropped
+        // silently, because the picker already shows the newer state.
+        if (fFontListWalkId == 0 || id != fFontListWalkId) {
+            return;
+        }
+        const boost::json::object& body = payload;
+        const auto families = body.find("families");
+        const auto fromValue = body.find("from");
+        const auto totalValue = body.find("total");
+        const auto truncatedValue = body.find("truncated");
+        bool wellFormed = families != body.end() && families->value().is_array() &&
+                          fromValue != body.end() && fromValue->value().is_int64() &&
+                          totalValue != body.end() && totalValue->value().is_int64() &&
+                          truncatedValue != body.end() && truncatedValue->value().is_bool();
+        QStringList pageNames;
+        QVariantMap pageFaces;
+        if (wellFormed) {
+            for (const boost::json::value& entry : families->value().as_array()) {
+                if (!entry.is_object()) {
+                    wellFormed = false;
+                    break;
+                }
+                const boost::json::object& one = entry.as_object();
+                const auto name = one.find("family");
+                const auto faces = one.find("faces");
+                if (name == one.end() || !name->value().is_string() || faces == one.end() ||
+                    !faces->value().is_array()) {
+                    wellFormed = false;
+                    break;
+                }
+                const QString family = QString::fromStdString(std::string(name->value().as_string()));
+                QVariantList faceList;
+                for (const boost::json::value& faceValue : faces->value().as_array()) {
+                    if (!faceValue.is_object()) {
+                        wellFormed = false;
+                        break;
+                    }
+                    const boost::json::object& face = faceValue.as_object();
+                    const auto weight = face.find("weight");
+                    const auto italic = face.find("italic");
+                    if (weight == face.end() || !weight->value().is_int64() ||
+                        italic == face.end() || !italic->value().is_bool()) {
+                        wellFormed = false;
+                        break;
+                    }
+                    QVariantMap entryMap;
+                    entryMap.insert(QStringLiteral("weight"),
+                                    static_cast<qint64>(weight->value().to_number<std::int64_t>()));
+                    entryMap.insert(QStringLiteral("italic"), italic->value().as_bool());
+                    faceList.push_back(entryMap);
+                }
+                if (!wellFormed) {
+                    break;
+                }
+                // Appended in the worker's order, which is sorted: the
+                // picker's list is the scan, page after page, never a
+                // re-sorted guess (paging stability IS the sorted scan).
+                if (!pageNames.contains(family)) {
+                    pageNames.push_back(family);
+                }
+                pageFaces.insert(family, faceList);
+            }
+        }
+        if (!wellFormed) {
+            fFontListWalkId = 0;
+            fFontListState = QStringLiteral("unavailable");
+            setStatus(QStringLiteral("font list: the worker's reply was malformed"));
+            emit fontListChanged();
+            return;
+        }
+        if (fromValue->value().to_number<std::int64_t>() != fFontListConsumed) {
+            // The echoed `from` must be exactly where this walk stopped:
+            // a page from elsewhere means two walks are weaving, and one
+            // list carrying two scans is worse than an honest failure.
+            fFontListWalkId = 0;
+            fFontListState = QStringLiteral("unavailable");
+            setStatus(QStringLiteral("font list: the worker answered a page this "
+                                     "walk did not ask for"));
+            emit fontListChanged();
+            return;
+        }
+        fFontFamilies.append(pageNames);
+        for (auto it = pageFaces.cbegin(); it != pageFaces.cend(); ++it) {
+            fFontFaces.insert(it.key(), it.value());
+        }
+        const std::int64_t landed =
+            fromValue->value().to_number<std::int64_t>() +
+            static_cast<std::int64_t>(families->value().as_array().size());
+        fFontListConsumed = landed;
+        if (truncatedValue->value().as_bool()) {
+            // The cap ended the page, not the list: ask for the next one
+            // with the same walk's generation. A send that cannot even
+            // leave (queue full) fails the walk honestly rather than
+            // reporting "ready" on half a list.
+            fFontListWalkId = sendRequest(proto::kMethodFontList,
+                                          boost::json::object{{"from", landed}});
+            if (fFontListWalkId == 0) {
+                fFontListState = QStringLiteral("unavailable");
+                setStatus(QStringLiteral("font list: the walk could not continue"));
+                emit fontListChanged();
+            }
+            // Still "loading" while the next page is in flight.
+            else {
+                emit fontListChanged();
+            }
+            return;
+        }
+        fFontListWalkId = 0;
+        fFontListState = QStringLiteral("ready");
+        emit fontListChanged();
         return;
     }
 
@@ -1067,6 +1213,41 @@ qint64 WorkerController::measureText(const QVariantList& blocks) {
     const std::int64_t id =
         sendRequest(proto::kMethodTextMeasure, boost::json::object{{"blocks", std::move(jsonBlocks)}});
     return id;
+}
+
+void WorkerController::refreshFontFamilies() {
+    // Task TS.4: the picker asks the DRAWING engine, once per open (or
+    // once the operator asks again). Every guard says WHY in the status
+    // line and moves the state, because a picker that silently shows an
+    // empty list reads as "this box has no fonts" — which is not what any
+    // of these branches means.
+    if (!fConnected || !fHandshakeDone) {
+        setStatus(QStringLiteral("font list: the worker is not connected"));
+        return;
+    }
+    if (!fFontListCapable) {
+        fFontListState = QStringLiteral("unsupported");
+        setStatus(QStringLiteral(
+            "font list: this worker does not enumerate its fonts; family names "
+            "can still be typed"));
+        emit fontListChanged();
+        return;
+    }
+    // A new walk retires the last: the reply gate matches the request id,
+    // so a page of a superseded walk lands nowhere and two opens of the
+    // picker cannot weave two scans into one list.
+    fFontListWalkId = 0;
+    fFontFamilies.clear();
+    fFontFaces.clear();
+    fFontListConsumed = 0;
+    fFontListState = QStringLiteral("loading");
+    emit fontListChanged();
+    fFontListWalkId =
+        sendRequest(proto::kMethodFontList, boost::json::object{{"from", 0}});
+    if (fFontListWalkId == 0) {
+        fFontListState = QStringLiteral("unavailable");
+        emit fontListChanged();
+    }
 }
 
 void WorkerController::presentScene(qint64 revision) {

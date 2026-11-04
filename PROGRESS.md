@@ -4,139 +4,179 @@ Updated: 2026-11-04 (Europe/London).
 
 ## Current checkpoint
 
-**TS.3 complete (2026-11-04): one typography now answers measurement and
-drawing, and the worker that can say so is the only one asked.** Layout,
-`text.measure`, the text-flow engine and the Scripture importer all carry
-the resolved style block; every measurement reply grows `fits` + `bounds`;
-protocol minor 16 names `text.measure.v2`; and a styled question toward a
-pre-16 worker is refused locally, by capability name, with nothing sent.
+**TS.4 complete (2026-11-04): the operator picks fonts the AUDIENCE's renderer
+actually has, and every typography control edits exactly one field.**
+`font.list` (protocol minor **17**, capability `font.list.v1`, hello now 20)
+is answered by `SceneTextEngine::listFonts()` — the same font manager the
+frame loop shapes with, which is the only honest answerer because that
+renderer falls back silently from names it cannot match. Metadata only,
+never font bytes.
 
-The two answer-shaped numbers divide honestly, and the division is the
-design (`SceneText.h` says it at the struct): `LaidOutItem.ink` is where
-any pixel may land — the fill's line-metrics box grown half a pen each
-side by an enabled stroke and unioned with the offset copy grown by the
-finite ~3.1σ blur support (Skia's real support measured ≈3.09σ; the code
-claims 3.1 and the fixtures bound it from both sides) — while `fillInk` is
-the pre-effect box and `fits` judges ONLY that. Why: an enabled shadow's
-spill is the author's choice and no repagination shortens it, so folding
-effects into the verdict would refuse every page of a theme that so much
-as shadows its text. `fits=false` therefore arises where words genuinely
-cannot live (the optional `height` key → `boxHeight` leg; SkParagraph
-char-breaks a too-wide word so the fill stays inside and the words keep
-their verdict — the promise "nothing clips, words move"). The new
-`fitMode:"fixed"` branch lays out once at the authored size and answers;
-the legacy shrink loop is untouched (pinned).
+The wire is bounded and the list is one scan: params are nothing or
+`{from}` (any other key, and a negative/non-integer `from`, refused by
+name); a page is capped at `kMaxFontListPageFamilies` **128** so one reply
+stays far inside the 1 MiB frame however many long PostScript names
+fontconfig knows, and answers `{families, from, total, truncated}`. The
+scan happens ONCE per worker lifetime under its own mutex, on the RPC
+dispatch thread — never a presentation or audio callback — and every later
+ask copies the cache. A `from` past the end is an EMPTY page, not an error:
+a list shrinking under a mid-walk asker is legal, and re-reading from 0 is
+the asker's repair, not the protocol's. A session with no engine returns
+its own error sentence instead of zero families, because "this box has no
+fonts" is not what happened.
 
-The wire (minor 16, `kCapabilityTextMeasureV2`, hello now 19): blocks may
-carry `fontWeight`/`fontStyle`/`fitMode`/`minFontSize` and whole
-packed-int-colour effect records — every band refused by name, split
-`offsetX`/`offsetY` sentences, closed records reject unknown members by
-name — and EVERY reply grows the additive `fits` +
-`bounds{empty,left,top,right,bottom}` (v1 readers ignore; a v1-shaped ask
-still gets them). The frontend gate is the honest half: `WorkerController`
-packs hex→int (`attachMeasureStyle`) and refuses a style-DEVIATING batch
-toward a peer that never named v2 — pre-16 workers silently ignore unknown
-keys, so a bold-italic ask would come back answered in the default face,
-a wrong page with no trace. Deviation = weight≠400, slant≠normal, stroke
-enabled+width>0, shadow enabled+opacity>0; disabled-loud records and
-spelled defaults travel (proved bit-identical measurements).
+`WorkerController` owns the walk per CONNECTION
+(`fontListSupported`/`fontListState` idle→loading→ready, `unsupported` for a
+hello without the flag, `unavailable` for a failed ask/`fontFamilies`/
+`fontFaces` + `refreshFontFamilies()`), and retirement is keyed by REQUEST ID
+with a continuity check on the echoed `from` — a page from a dead session or
+a superseded walk is dropped silently, so two sessions can never splice one
+list.
 
-The flow (`src/importer/textflow.{h,cpp}`): `FlowStyle`/`MeasureRequest`
-carry the domain's own `TextStroke`/`TextShadow` (importer links the
-Qt-free `openshow_domain` — "identical inputs" is a type-level claim), the
-style rides every ask verbatim, and `Answer{height,fits}` judges
-`height <= available && fits != 0` — with fits=-1 (a pre-v2 answer)
-leaving the height as the whole judgment, the pre-TS.3 floor honoured
-rather than guessed over. `validateFlowStyle` vets the style bands (NaN σ
-included) before the port is touched. `measureCacheKey` — one canonical
-length-prefixed serializer over content, box AND the whole style — is
-shared by the engine's per-run cache and `ScriptureImport`'s across-run
-cache (a theme changed mid-session is a different question; the wire
-correlation key is NOT part of it), capped at `kMaxMeasureCacheEntries`
-4096. `DocumentController::scriptureBoxStyle` now reads the FULL style off
-the compiled fixture's first text item — the very item the slide draws —
-so packer and audience cannot drift by construction.
+The inspector writes through a new one-field merge verb,
+`setThemeTextStyleField(themeId, field, value)`, beside TS.1's whole-set
+verb: 13 leaf fields plus `"stroke"`/`"shadow"` for the inherit buttons;
+null clears a scalar to inherit or names a whole-record clear and is REFUSED
+on an effect member (an effect means one thing whole); merging a member into
+a theme with no such record materialises the contract's defaults — exactly
+the pixels the audience draws today — so enabling an outline gives
+`{true, #000000, 2}`, never a fragment or another theme's leftover; exactly
+one `edit()` per call, and the merged block passes the domain's one
+`validThemeTextStyle` sentence, so a refusal changes nothing and costs no
+undo. Controls show the theme's own value where it carries one and the
+RESOLVED answer otherwise, read through `themeSampleAppearance`'s new
+resolved-style extension, with a badge naming which. Because TV.3 has not
+promoted the reading context to a view of its own, these route to the base
+theme (Songs); the scripture context carries no style fields until then.
 
-Evidence shape: the raster fixture (`testInkBoundsContainEveryEffectPixel`)
-renders the 0.5-scale canvas and proves every drawn pixel lands inside
-`ink` mapped through the device scale for fill / stroke / shadow /
-negative-offset / both, plus the growth arithmetic (±half-pen; offset plus
-3.0..3.1σ) and fixed-vs-shrink. The IPC suite pins spelled-defaults
-bit-identical to absent, weight-800 measuring wider than 100, stroke
-bounds at ±half-pen, shadow union bounds honest in both directions,
-spill-still-fits, the char-break line, the height-leg verdict, and 15
-by-name refusals. The flow fixtures pin the style riding every ask,
-verdict-No refusing by its named dead end, the no-verdict floor packing
-unchanged, and the cache-key field matrix. `worker_controller_tests` S8c
-choreographs the gate closed (styled refused naming `text.measure.v2`,
-ZERO `text.measure` frames on the socket, defaults answered with no
-verdict row) and open (records arrive whole with colour packed,
-verdict+bounds parse back), reconnect included.
+Gesture discipline is the tested half, not an intention: sliders commit ON
+RELEASE (`onPressedChanged`, Qt 6.12 `Slider` has **no** `onReleased`) and
+write nothing while held; a field committed unchanged writes nothing AND
+costs no undo; a refused write re-reads the record and snaps the control
+back; the typed family works with no worker at all; the note refuses to
+invent a verdict ("this worker cannot list its fonts" / "checking…" / "not
+installed on the audience's machine — it will fall back"), MISSING is judged
+only from a COMPLETED worker list, and the stored name is NEVER rewritten;
+Browse sleeps until a listing worker is ready, so no click opens an empty
+picker.
 
-Gates: desktop `ctest -j1` **64/64** (~378 s), headless build + `ctest
--j1` **35/35**, `git diff --check` clean.
+The tests also found a real bug: the rail's scroll verbs asked
+`inspectorContent.parent` for `contentY` — that is the Flickable's own
+content item, which cannot scroll — so scrolling did nothing at all. They
+now walk parents for a node carrying BOTH `contentY` and `contentHeight`,
+compute the end themselves (a Flickable does NOT clamp a handed `contentY`;
+past the last row is blank paper), and gained `scrollInspectorTo(name)` —
+reachability is a promise about every control, not only about the ends.
 
-Earlier this plan: TS.2 (`e4258e9`) shipped the styled renderer and the
-advertised `scene.text-style.v1`; TS.1 (`c5acad7`) the style contract
-across domain/storage/scene/protocol/controller (service format 8, scene
-format 4, minor 15); TV.2 (`7331a10`) the Themes layout; TV.1 (`0f1cf84`)
-the sample-based inspector previews.
+Evidence shape: `text_measure_tests` pins the real fontconfig answer (sorted
+page, ascending faces, `truncated` exactly at the cap, a repeated ask
+byte-identical to the first = one cached scan, page 2 continuing name for
+name, from-past-end empty, by-name refusals with the session living on);
+`worker_controller_tests::scenarioFontListWalk` choreographs a blind peer
+(`unsupported`, ZERO `font.list` frames on the socket), a two-per-reply fake
+paging a five-family scan through `from` 0,2,4, disconnect mid-walk retiring
+the state and dropping late pages, a superseded refresh retiring the older
+walk by request id, and an error reply landing `unavailable` with the
+worker's sentence; `document_controller_tests` covers every field band and
+refusal, defaults materialising around one member, whole-record clears, one
+undo per gesture, the disk round-trip, and preview-vs-saved agreement (the
+sample scene's first text item carries the same `stroke`/`fontWeight` as the
+compiled audience slide); `workspace_ui_tests` drives the real controls
+(combo writes its own field while neighbours keep silence, undo repaints the
+control from the record, unchanged commits cost no undo, an off-band minimum
+size snaps back, the outline toggle materialises `{true, #000000, 2}`,
+un-ticking keeps `enabled: false`, "Off" clears and sleeps, a held blur
+handle writes nothing while held / commits once on release / one undo backs
+the whole drag, a typed family saves with the "cannot list" note while Browse
+sleeps and opens nothing), with the geometry loop now checking the true last
+control `themeEditorShadowBlur` at all three window sizes and the keyboard
+leg scrolling by name.
+
+Gates: desktop `ctest -j1` **64/64** (~381 s), headless build + `ctest -j1`
+**35/35**, `git diff --check` clean.
+
+Earlier this plan: TS.3 (`c2e6645`) styled measurement end to end (minor 16,
+`text.measure.v2`, `ink`/`fillInk`); TS.2 (`e4258e9`) the styled renderer and
+the advertised `scene.text-style.v1`; TS.1 (`c5acad7`) the style contract
+(service format 8, scene format 4, minor 15); TV.2 (`7331a10`) the Themes
+layout; TV.1 (`0f1cf84`) the sample-based inspector previews.
 
 ## Where the work stands
 
 Phases 0–5 complete. Phase 6 complete through 6.26i. The Bible plan
-(BA.1–BA.8) is DONE. The themes plan: TV.1, TV.2, TS.1, TS.2, TS.3 DONE.
-Next is **TS.4** — the installed font/face picker and the selected-view
-typography/effect controls (family list from the worker's own FontCollection,
-unavailable-family feedback, inherit/revert, validated stroke/shadow/fit
-fields, one undo per edit/gesture; `workspace_ui_tests`). Then TS.5
-(pinned Inter/Lora/Oswald offline raster/perf fixtures), then TR.1–TR.3
-(transitions; TR.1 claims service format 9).
+(BA.1–BA.8) is DONE. The themes plan: TV.1, TV.2, TS.1, TS.2, TS.3, TS.4
+DONE. Next is **TS.5** — reproducible font/effect raster and performance
+acceptance: pin the review's Inter/Lora/Oswald revision with TTF hashes and
+each `OFL.txt` in an isolated OFFLINE fixture setup, then test fallback and
+Unicode coverage, the weight ramp, effect edges and negative offsets and
+midpoint fades, with missing fixtures failing (or skipping) VISIBLY and no
+unbounded preparation/render cost. Then TR.1–TR.3 (transitions; **TR.1 claims
+service format 9**), then the TV.3/TV.4/TV.5/TA.1 leaves this run excluded.
 
 ## How to pick up
 
 1. `PLAN.md` is the contract: ledger rows carry acceptance evidence, the
-   themes runbook paragraphs give each leaf's boundary, "Format allocation"
-   records the current 8 / 4 / 0.16 numbers (TS.3 bumped minor to 16 and
-   ADVERTISED `text.measure.v2` — the name was reserved with the version).
-   `docs/reviews/theme-editor-2026-11-03.md` is the design authority.
+   themes runbook paragraphs give each leaf's boundary, and "Format
+   allocation" records the current **8 / 4 / 0.17** (TS.4 took the minor for
+   `font.list.v1`; it adds no persisted meaning, so service and scene stay
+   where TS.1 left them). `docs/reviews/theme-editor-2026-11-03.md` is the
+   design authority.
 2. Build `cmake --build --preset desktop --parallel 2` (build dir `build/`);
    test `ctest --preset desktop -j1` (~6.5 min). Headless: `--preset
    headless` (`build-headless/`, 35 tests). Individual binaries:
-   `./build/tests/<name>`; `live_fade_tests` takes the worker binary as
-   argv[1] (`./build/src/worker/openshow-worker`). Rebuild the worker
-   binary after renderer/protocol changes — a stale `openshow-worker` once
-   faked a green `live_fade_tests`.
-3. TS.4 starts in the UI: the theme/workspace QML and `DocumentController`
-   verbs (TS.1 already shipped `setThemeTextStyle` and the `...Set`
-   badges), plus a font-listing seam — the worker is the only honest
-   answerer of "which families resolve", and TS.2's face resolution
-   (`setFontStyle` through the FontCollection) is what a picker must match.
-   The measure seam is now styled end to end: `scriptureBoxStyle` →
-   `FlowStyle` → `measureText` → v2 blocks, so editor probes can reuse it
-   for styled fit read-outs.
-4. Measurement lore, still true: the blur sigma is device-space (the
-   painter rescales), stroke width is CTM-scaled by Skia, the fork's
-   shadow pass fires `drawTextShadow` once per run BEFORE the blobs. New:
-   `LineMetrics` fields are `fLeft/fWidth/fBaseline/fAscent/fDescent`
-   (`modules/skparagraph/include/Metrics.h`); Skia's blur support is
-   ~3.09σ and the code's 3.1 claim is fixture-bounded from both sides;
-   SkParagraph CHAR-breaks words wider than the box (fill stays inside,
-   lineCount≥2 — the width leg of `fits` is unreachable in practice, the
-   height leg is where verdicts arise); fixture renders are 960×540 = the
-   authored canvas at 0.5, so containment checks map ink through that
-   scale with 2 px slack.
-5. Boost 1.90 spells doubles in exponent form; manifest assertions match
+   `./build/tests/<name>`; `text_measure_tests`, `worker_controller_tests`
+   and `live_fade_tests` take the worker binary as argv[1]
+   (`./build/src/worker/openshow-worker`). ctest names are target-ish, not
+   file-ish: `rpc_ipc_tests` runs as `worker_rpc_lifecycle`. Rebuild the
+   worker binary after renderer/protocol changes — a stale one once faked a
+   green suite.
+3. TS.5 starts in the test fixtures, not the product: a pinned, offline,
+   checksummed font set that the raster suites load explicitly (the CI
+   machine's fontconfig set is not a reproducible input — today's fixtures
+   lean on DejaVu). The renderer surfaces it must exercise are all shipped:
+   `TextStyle::setFontStyle` for weight/slant faces, `addShadow`, the
+   `GroupAlphaPainter` outline-then-fill pass, and the fade multipliers
+   TS.2 measured. TS.4's `listFonts()` is a useful cross-check that a pinned
+   family is really resolvable, but the acceptance is about PIXELS and cost,
+   not about the list.
+4. UI test lore, learned the hard way this leaf:
+   `QMetaObject::invokeMethod(item, "toggle")` flips `checked` but does NOT
+   fire `onToggled` — drive checkboxes with a real `clickAt`. A closed
+   `Popup` is not a `QQuickItem` and not in the item tree at all: find it
+   with `window->findChild<QObject*>("name")`. `console.warn`/`log` from QML
+   is invisible here (warnings are captured and filtered) — diagnose by
+   setting a QML property and reading it from C++. QML changes only reach
+   the binary through a FULL `cmake --build --preset desktop`; `--target
+   <test>` alone does not rebuild the QML resource. Flickable `contentY`
+   assignments are not clamped. In `workspace_ui_tests`, `docs.status()` is
+   overwritten by "autosave refused after edit: asset 'ghost.mp3'…" planted
+   earlier — never assert a refusal through `status()` there.
+5. Measurement lore, still true: the blur sigma is device-space (the painter
+   rescales), stroke width is CTM-scaled by Skia, the fork's shadow pass
+   fires `drawTextShadow` once per run BEFORE the blobs; `LineMetrics`
+   fields are `fLeft/fWidth/fBaseline/fAscent/fDescent`; Skia's blur support
+   is ~3.09σ (the code claims 3.1, fixture-bounded both sides); SkParagraph
+   CHAR-breaks words wider than the box, so the width leg of `fits` is
+   unreachable and the height leg is where verdicts arise; fixture renders
+   are 960×540 = the authored canvas at 0.5, so containment checks map ink
+   through that scale with 2 px slack.
+6. Boost 1.90 spells doubles in exponent form; manifest assertions match
    style keys by NAME. JSON fixtures use decimal integers. Never hold a
    `const Theme*` across a call that can grow the theme vector. Qt6 has no
    `QMetaType::QMap`. A ctest "Passed" after a failed build means a stale
-   binary — rebuild first; multi-main UI tests print nothing on pass.
+   binary — rebuild first, and grep piped builds for `error:|Error [0-9]`;
+   multi-main UI tests print nothing on pass.
 
 ## Recent commits
 
-- TS.3 — styled measurement end to end: `ink`/`fillInk` split, `fits`+
-  `bounds` replies, `fitMode:"fixed"`, minor 16 + `text.measure.v2` gate,
-  shared full-style cache keys, flow verdict criterion.
+- TS.4 — worker-owned `font.list` (minor 17, `font.list.v1`, capped paging,
+  request-id walk retirement), the one-field `setThemeTextStyleField` merge
+  verb, the inspector's typography/effect controls and font picker with
+  commit-on-release gestures and inherit/revert, and the fixed
+  inspector-rail scroll helpers.
+- TS.3 (`c2e6645`) — styled measurement end to end: `ink`/`fillInk` split,
+  `fits`+`bounds` replies, `fitMode:"fixed"`, minor 16 + `text.measure.v2`
+  gate, shared full-style cache keys, flow verdict criterion.
 - TS.2 (`e4258e9`) — faces/stroke/shadow through public Skia, fade-aware
   painter, measured device-space blur rescale, `scene.text-style.v1`
   advertised, raster + GPU-live fixtures.

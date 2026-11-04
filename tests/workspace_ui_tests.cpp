@@ -1533,6 +1533,169 @@ int main(int argc, char** argv) {
               "No placement takes the theme's opinion away, puts the offered box back in "
               "the fields, and leaves the theme itself intact");
 
+        // --- typography and effects (task TS.4) -------------------------
+        // The style block is SHARED, so every control here owns exactly one
+        // field of it: the weight combo cannot disturb the outline, a value
+        // the model refuses snaps its control back, and one gesture costs
+        // one undo — including the gestures that change nothing (tabbing
+        // through a field is not an edit). No worker runs in this fixture,
+        // which is also the story the family picker tells.
+        const auto styleRow = [&docs](const QString& id) {
+            for (const QVariant& theme : docs.themes()) {
+                if (theme.toMap().value(QStringLiteral("id")).toString() == id) {
+                    return theme.toMap();
+                }
+            }
+            return QVariantMap{};
+        };
+        auto* weightCombo = findNamed(window->contentItem(), "themeEditorWeight");
+        auto* weightInherit = findNamed(window->contentItem(), "themeEditorWeightInherit");
+        auto* minSizeField = findNamed(window->contentItem(), "themeEditorMinSize");
+        auto* strokeEnable = findNamed(window->contentItem(), "themeEditorStrokeEnable");
+        auto* strokeOff = findNamed(window->contentItem(), "themeEditorStrokeInherit");
+        auto* blurSlider = findNamed(window->contentItem(), "themeEditorShadowBlur");
+        auto* browseFonts = findNamed(window->contentItem(), "themeEditorBrowseFonts");
+        // A closed Popup is not in the visible item tree at all — in Qt 6 it
+        // is not even an Item — so the QObject tree is where the picker is
+        // looked for, and "no picker" is read the same way.
+        auto* fontPopup = window->findChild<QObject*>(QStringLiteral("themeEditorFontPopup"));
+        auto* familyField = findNamed(window->contentItem(), "themeEditorFontField");
+        auto* fontStatus = findNamed(window->contentItem(), "themeEditorFontStatus");
+        check(weightCombo && weightInherit && minSizeField && strokeEnable && strokeOff
+                  && blurSlider && browseFonts && fontPopup && familyField && fontStatus,
+              "the Songs inspector carries the typography, effect and family controls");
+        check(!weightInherit->property("enabled").toBool()
+                  && !strokeOff->property("enabled").toBool()
+                  && styleRow(placedId).value(QStringLiteral("fontWeightSet")).toBool() == false
+                  && styleRow(placedId).value(QStringLiteral("strokeSet")).toBool() == false,
+              "a silent theme's style controls start asleep and its row says nothing is set");
+
+        // One combo choice is ONE field: the neighbours keep their silence.
+        weightCombo->setProperty("currentIndex", 6);  // the model's 700
+        QMetaObject::invokeMethod(weightCombo, "activated", Q_ARG(int, 6));
+        QTest::qWait(80);
+        check(styleRow(placedId).value(QStringLiteral("fontWeightSet")).toBool()
+                  && styleRow(placedId).value(QStringLiteral("fontWeight")).toInt() == 700
+                  && styleRow(placedId).value(QStringLiteral("strokeSet")).toBool() == false
+                  && styleRow(placedId).value(QStringLiteral("minFontSizeSet")).toBool() == false,
+              "the weight combo writes its own field and no other");
+        check(weightInherit->property("enabled").toBool(),
+              "the Inherit button wakes when the theme has something to give back");
+        docs.undo();
+        QTest::qWait(80);
+        check(!styleRow(placedId).value(QStringLiteral("fontWeightSet")).toBool()
+                  && !weightInherit->property("enabled").toBool()
+                  && weightCombo->property("currentIndex").toInt() == 3,
+              "one undo takes the weight back to silence, and the combo repaints from the record");
+
+        // A field committed UNCHANGED writes nothing — and so it costs no
+        // undo: the step back after it is still the weight, not a phantom.
+        weightCombo->setProperty("currentIndex", 6);
+        QMetaObject::invokeMethod(weightCombo, "activated", Q_ARG(int, 6));
+        QTest::qWait(80);
+        minSizeField->setProperty("text", minSizeField->property("text").toString());
+        QMetaObject::invokeMethod(minSizeField, "editingFinished");
+        QTest::qWait(80);
+        check(!styleRow(placedId).value(QStringLiteral("minFontSizeSet")).toBool(),
+              "committing the minimum size the same as shown writes nothing");
+        docs.undo();
+        QTest::qWait(80);
+        check(!styleRow(placedId).value(QStringLiteral("fontWeightSet")).toBool(),
+              "and the unchanged commit cost no undo: the step back is still the weight");
+
+        // A value the model turns down never lands, and the field snaps
+        // back to where the record says it is.
+        minSizeField->setProperty("text", "18");
+        QMetaObject::invokeMethod(minSizeField, "editingFinished");
+        QTest::qWait(80);
+        check(styleRow(placedId).value(QStringLiteral("minFontSizeSet")).toBool()
+                  && styleRow(placedId).value(QStringLiteral("minFontSize")).toDouble() == 18.0,
+              "typing a minimum size commits it");
+        minSizeField->setProperty("text", "0.5");
+        QMetaObject::invokeMethod(minSizeField, "editingFinished");
+        QTest::qWait(80);
+        check(styleRow(placedId).value(QStringLiteral("minFontSize")).toDouble() == 18.0
+                  && minSizeField->property("text").toString() == QLatin1String("18"),
+              "an off-band minimum size is refused and the field snaps back to the record");
+
+        // Enabling an outline on a theme that carries NO stroke record
+        // materialises the contract's defaults around the one member — the
+        // audience already draws black width 2, so flipping the switch
+        // changes the switch and nothing else.
+        QMetaObject::invokeMethod(editorPage, "scrollInspectorTo",
+                                  Q_ARG(QVariant, QStringLiteral("themeEditorStrokeEnable")));
+        QTest::qWait(80);
+        clickAt(strokeEnable, 8, strokeEnable->height() / 2);
+        QTest::qWait(80);
+        QVariantMap stroke = styleRow(placedId).value(QStringLiteral("stroke")).toMap();
+        check(styleRow(placedId).value(QStringLiteral("strokeSet")).toBool()
+                  && stroke.value(QStringLiteral("enabled")).toBool()
+                  && stroke.value(QStringLiteral("color")).toString() == QLatin1String("#000000")
+                  && stroke.value(QStringLiteral("width")).toDouble() == 2.0,
+              "toggling the outline materialises the default record around it: black, width 2");
+        clickAt(strokeEnable, 8, strokeEnable->height() / 2);
+        QTest::qWait(80);
+        stroke = styleRow(placedId).value(QStringLiteral("stroke")).toMap();
+        check(styleRow(placedId).value(QStringLiteral("strokeSet")).toBool()
+                  && !stroke.value(QStringLiteral("enabled")).toBool()
+                  && !strokeEnable->property("checked").toBool(),
+              "un-ticking keeps the record with enabled false — a real answer, not silence");
+        clickAt(strokeOff, strokeOff->width() / 2, strokeOff->height() / 2);
+        QTest::qWait(80);
+        check(!styleRow(placedId).value(QStringLiteral("strokeSet")).toBool()
+                  && styleRow(placedId).value(QStringLiteral("stroke")).toMap().isEmpty()
+                  && !strokeOff->property("enabled").toBool(),
+              "\"Off\" hands the outline back to inherit and then sleeps again");
+
+        // A slider is ONE gesture: nothing is written while the handle is
+        // held (a drag that wrote per pixel would bury the undo stack), the
+        // release commits the handle's answer once, and one undo takes the
+        // whole drag back.
+        QMetaObject::invokeMethod(editorPage, "scrollInspectorTo",
+                                  Q_ARG(QVariant, QStringLiteral("themeEditorShadowBlur")));
+        QTest::qWait(60);
+        const QPointF grip = blurSlider->mapToScene(
+            QPointF(blurSlider->width() * 0.25, blurSlider->height() / 2));
+        const QPointF carried = blurSlider->mapToScene(
+            QPointF(blurSlider->width() * 0.75, blurSlider->height() / 2));
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, grip.toPoint());
+        QTest::qWait(40);
+        QTest::mouseMove(window, carried.toPoint(), 20);
+        QTest::qWait(60);
+        check(!styleRow(placedId).value(QStringLiteral("shadowSet")).toBool(),
+              "dragging the blur handle writes nothing while it is held");
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, carried.toPoint());
+        QTest::qWait(80);
+        const double blurred = styleRow(placedId).value(QStringLiteral("shadow")).toMap()
+                                   .value(QStringLiteral("blurSigma")).toDouble();
+        check(styleRow(placedId).value(QStringLiteral("shadowSet")).toBool()
+                  && blurred > 0.0
+                  && qAbs(blurred - blurSlider->property("value").toDouble()) <= 0.51,
+              "the release commits the handle's own answer, and only that member");
+        docs.undo();
+        QTest::qWait(80);
+        check(!styleRow(placedId).value(QStringLiteral("shadowSet")).toBool(),
+              "one undo backs out the whole drag — not one pixel of it");
+
+        // The family field is the way in that needs NOTHING of the worker,
+        // and the note refuses to guess: with no worker connected there is
+        // no verdict on whether "Lora" exists, so it says exactly that. The
+        // picker, which is nothing but the worker's answer, sleeps.
+        familyField->setProperty("text", "Lora");
+        QMetaObject::invokeMethod(familyField, "editingFinished");
+        QTest::qWait(80);
+        check(styleRow(placedId).value(QStringLiteral("fontFamily")).toString()
+                  == QLatin1String("Lora")
+                  && fontStatus->property("text").toString().contains(
+                          QStringLiteral("cannot list")),
+              "a typed family saves while the worker is away, and the note will not invent a verdict");
+        check(!browseFonts->property("enabled").toBool(),
+              "Browse sleeps until a worker that can enumerate its fonts is connected");
+        clickAt(browseFonts, browseFonts->width() / 2, browseFonts->height() / 2);
+        QTest::qWait(60);
+        check(fontPopup && !fontPopup->property("visible").toBool(),
+              "clicking the sleeping Browse opens no empty picker");
+
         // The scripture reading context (task TF.4): the toggle CREATES the
         // entry out of the theme's current look and box, the fields commit
         // one property at a time, refusals snap back, and the line note
@@ -1772,7 +1935,16 @@ int main(int argc, char** argv) {
         // inside the viewport, and both view tiles are clickable where
         // they actually are.
         auto* lastField = findNamed(window->contentItem(), "themeEditorSpacingField");
-        check(lastField != nullptr, "the Songs section's final control exists");
+        check(lastField != nullptr, "the field the keyboard leg types into exists");
+        // Task TS.4 lengthened the Songs section, and the reachability
+        // promise is a promise about the END of the rail — so the control
+        // that gets "scrolled to, not assumed" is the one that is last now.
+        auto* lastControl = findNamed(window->contentItem(), "themeEditorShadowBlur");
+        check(lastControl != nullptr, "the shadow blur handle is the Songs section's last control");
+        // The rail being measured is the Songs one, whatever view the browsing
+        // above left the page in.
+        clickAt(viewSongs, viewSongs->width() / 2, viewSongs->height() / 2);
+        QTest::qWait(60);
         for (const auto size : {QSize(1000, 680), QSize(1380, 800), QSize(1680, 1020)}) {
             window->resize(size);
             QTest::qWait(80);
@@ -1788,15 +1960,16 @@ int main(int argc, char** argv) {
                   "the canvas fits below the header and inside the window, never clipped");
             QMetaObject::invokeMethod(editorPage, "scrollInspectorToEnd");
             QTest::qWait(50);
-            const QPointF field = lastField->mapToScene(
-                QPointF(lastField->width() / 2, lastField->height() / 2));
+            const QPointF tail = lastControl->mapToScene(
+                QPointF(lastControl->width() / 2, lastControl->height() / 2));
             const QPointF bibleCentre = viewBible->mapToScene(
                 QPointF(viewBible->width() / 2, viewBible->height() / 2));
-            check(field.x() >= 0.0 && field.x() <= window->width()
-                      && field.y() >= 0.0 && field.y() <= window->height()
+            check(lastControl->isVisible()
+                      && tail.x() >= 0.0 && tail.x() <= window->width()
+                      && tail.y() >= 0.0 && tail.y() <= window->height()
                       && bibleCentre.x() >= 0.0 && bibleCentre.y() >= 0.0
                       && bibleCentre.y() <= window->height(),
-                  "the final inspector control and the view tiles are all inside the window");
+                  "the rail's last control and the view tiles are all inside the window");
             clickAt(viewBible, viewBible->width() / 2, viewBible->height() / 2);
             QTest::qWait(60);
             check(editorPage->property("selectedView").toString() == QLatin1String("scripture"),
@@ -1806,13 +1979,14 @@ int main(int argc, char** argv) {
             check(editorPage->property("selectedView").toString().isEmpty(),
                   "the Songs tile switches back at this size too");
         }
-        // Reachable is also a TYPING story at the minimum size: scroll the
-        // rail to the end, click the final field, and commit it with real
-        // keys. The click must be what takes the focus, the keys what
-        // writes the value, and one undo what takes it back.
+        // Reachable is also a TYPING story at the minimum size: bring the
+        // named field into the rail, click it, and commit it with real keys.
+        // The click must be what takes the focus, the keys what writes the
+        // value, and one undo what takes it back.
         window->resize(1000, 680);
         QTest::qWait(80);
-        QMetaObject::invokeMethod(editorPage, "scrollInspectorToEnd");
+        QMetaObject::invokeMethod(editorPage, "scrollInspectorTo",
+                                  Q_ARG(QVariant, QStringLiteral("themeEditorSpacingField")));
         QTest::qWait(50);
         lastField->setProperty("text", "");
         clickAt(lastField, lastField->width() / 2, lastField->height() / 2);

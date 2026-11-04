@@ -3061,6 +3061,179 @@ void exerciseTextStyleSurfaces(const std::filesystem::path& root) {
           "the styled theme reads back from disk through the next session's load");
 }
 
+// TS.4's one-field merge verb: the inspector edits one property of the
+// shared style block at a time (a drag of the shadow-blur slider lands ONE
+// undo, not one per intermediate value), and a field edit cannot disagree
+// with the whole-set verb because both hand the same merged block to the
+// same domain mutator. The behaviours that matter: silence stays silence
+// except for the field touched; merging a member into a theme that carries
+// no record materialises the CONTRACT defaults around it (never a
+// fragment); null clears a scalar to inherit but is refused on an effect
+// member; refusals cost no undo; and the sample's appearance now carries
+// the resolved typography and effects for the inherit badges.
+void exerciseTextStyleFieldMerge(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong("Merged");
+    docs.addSlide();
+    docs.selectSlide(0);
+    check(docs.createBlankTheme("House"), "a blank theme exists to merge into");
+    QString house;
+    for (const QVariant& theme : docs.themes()) {
+        if (theme.toMap().value(QStringLiteral("name")).toString() == QStringLiteral("House")) {
+            house = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    const auto slideId = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+    check(!house.isEmpty() && docs.applyThemeToCurrentSlide(house), "the slide wears House");
+    const auto rowOf = [&docs, &house] {
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("id")).toString() == house) {
+                return theme.toMap();
+            }
+        }
+        return QVariantMap{};
+    };
+
+    // One scalar onto a silent theme: the neighbours stay silent (their
+    // Set flags do not flip) and the compiled slide still draws defaults
+    // for everything else.
+    check(docs.setThemeTextStyleField(house, QStringLiteral("fontWeight"), 700),
+          "the merge verb sets one scalar");
+    {
+        const QVariantMap row = rowOf();
+        check(row.value(QStringLiteral("fontWeightSet")).toBool() &&
+                  row.value(QStringLiteral("fontWeight")).toInt() == 700 &&
+                  row.value(QStringLiteral("fontStyleSet")).toBool() == false &&
+                  row.value(QStringLiteral("strokeSet")).toBool() == false,
+              "and only that field: the silent ones stay silent");
+    }
+    // A member merged into a theme with NO stroke record materialises the
+    // contract's default record and changes the one member. Enabling a
+    // stroke on a silent theme must give the audience black width 2 —
+    // exactly what it drew as the default — not an uninitialised colour.
+    check(docs.setThemeTextStyleField(house, QStringLiteral("strokeEnabled"), true),
+          "enabling a stroke on a theme that carries none");
+    check(docs.setThemeTextStyleField(house, QStringLiteral("strokeWidth"), 5.0),
+          "and merging a second member of the same record");
+    {
+        openshow::scene::Scene drawn = compiledFor(docs, slideId);
+        check(drawn.items[0].stroke.enabled && drawn.items[0].stroke.color == "#000000" &&
+                  drawn.items[0].stroke.width == 5.0,
+              "the stroke materialised around the defaults: black, and the ONE member changed");
+    }
+    // A refused merge costs NOTHING: an unknown name, a member's null, a
+    // whole record handed to a member verb, a stringy width — after all of
+    // them the theme is byte-for-byte what the last accepted merge made it.
+    const auto snapshot = compiledFor(docs, slideId);
+    check(!docs.setThemeTextStyleField(house, QStringLiteral("blurSigma"), 4.0) &&
+                  docs.status().contains(QStringLiteral("is not a text-style field")),
+          "an unknown field is refused naming itself");
+    check(!docs.setThemeTextStyleField(house, QStringLiteral("strokeColor"), QVariant()),
+          "null on an effect MEMBER is refused: an effect inherits only whole");
+    check(!docs.setThemeTextStyleField(house, QStringLiteral("stroke"),
+                                       QVariantMap{{QStringLiteral("enabled"), true}}),
+          "a whole record handed to the whole-record NAME is refused (it means: clear it)");
+    check(!docs.setThemeTextStyleField(house, QStringLiteral("strokeWidth"),
+                                       QStringLiteral("5")) &&
+                  docs.status().contains(QStringLiteral("must be a number")),
+          "a stringy width is refused, not coerced");
+    check(!docs.setThemeTextStyleField(house, QStringLiteral("minFontSize"), 0.5),
+          "an off-band floor is refused by the domain, verb or no verb");
+    {
+        openshow::scene::Scene still = compiledFor(docs, slideId);
+        check(still.items[0].stroke.width == snapshot.items[0].stroke.width &&
+                  still.items[0].fontWeight == snapshot.items[0].fontWeight,
+              "every refusal changed nothing");
+    }
+
+    // One undo is one merge — the weight-700 merge survives five refusals,
+    // and walking the stack back unwinds one FIELD at a time, not the
+    // whole block. The merges so far: weight 700, strokeEnabled true,
+    // strokeWidth 5 → three undos land back on silence.
+    docs.undo();
+    check(compiledFor(docs, slideId).items[0].stroke.width == 2.0,
+          "one undo backs out ONE merge: the width, not the enabled flag");
+    docs.undo();
+    check(!compiledFor(docs, slideId).items[0].stroke.enabled,
+          "and the next undo backs out the enable");
+    docs.undo();
+    check(rowOf().value(QStringLiteral("fontWeightSet")).toBool() == false,
+          "and the third backs out the scalar: the theme is silent again");
+
+    // null clears a scalar to inherit, and clears a whole effect by its
+    // record name — the two ways the inspector's Inherit buttons write.
+    check(docs.setThemeTextStyleField(house, QStringLiteral("fontStyle"),
+                                      QStringLiteral("italic")) &&
+              docs.setThemeTextStyleField(house, QStringLiteral("fontStyle"), QVariant()),
+          "a scalar set then nulled");
+    check(rowOf().value(QStringLiteral("fontStyleSet")).toBool() == false,
+          "null cleared the slant back to inherit");
+    check(docs.setThemeTextStyleField(house, QStringLiteral("shadowOpacity"), 0.3) &&
+              docs.setThemeTextStyleField(house, QStringLiteral("shadow"), QVariant()) &&
+                  rowOf().value(QStringLiteral("shadowSet")).toBool() == false,
+          "and the whole shadow record clears by its record name");
+
+    // QML sends integers as JS doubles: an integral double is the SAME
+    // answer and is accepted; a decimal weight is still refused.
+    check(docs.setThemeTextStyleField(house, QStringLiteral("fontWeight"), 800.0) &&
+              compiledFor(docs, slideId).items[0].fontWeight == 800,
+          "a spin box's double-valued weight is accepted as the integer it is");
+    check(!docs.setThemeTextStyleField(house, QStringLiteral("fontWeight"), 800.5),
+          "but a decimal weight is refused: no rounding happens behind the operator's back");
+
+    // The sample appearance carries the RESOLVED style for the badges: a
+    // silent theme reports the contract's concrete answers, because those
+    // are what the audience draws today.
+    check(docs.setThemeTextStyleField(house, QStringLiteral("stroke"), QVariant()),
+          "clear the stroke for the sample's honest baseline");
+    {
+        docs.undo();  // back to the 800-weight theme with the stroke merged away
+        const QVariantMap sample = docs.themeSampleAppearance(house);
+        check(sample.value(QStringLiteral("ok")).toBool() &&
+                  sample.value(QStringLiteral("fontWeight")).toInt() == 800 &&
+                  sample.value(QStringLiteral("fontStyle")).toString() == QStringLiteral("normal") &&
+                  sample.value(QStringLiteral("fitMode")).toString() == QStringLiteral("shrink") &&
+                  sample.value(QStringLiteral("stroke")).toMap().value(QStringLiteral("enabled"))
+                          .toBool() == false,
+              "the sample reports the resolved typography and effects (800 normal shrink, "
+              "stroke off)");
+    }
+
+    // The preview's PICTURE agrees with what the audience would be shown:
+    // the sample is compiled by the same compiler from the same theme, so a
+    // merged style appears in both scenes with the same numbers. An editor
+    // whose preview flattered the theme — or ignored the outline the operator
+    // just enabled — is the failure this pins (task TS.4's "preview and saved
+    // output match").
+    check(docs.setThemeTextStyleField(house, QStringLiteral("strokeEnabled"), true) &&
+                  docs.setThemeTextStyleField(house, QStringLiteral("strokeWidth"), 5.0),
+              "merge an outline for the preview to draw");
+    {
+        openshow::scene::Scene previewed;
+        const QString json = docs.themeSampleSceneJson(house);
+        check(!json.isEmpty() &&
+                  openshow::scene::fromJson(boost::json::parse(json.toStdString()), &previewed),
+              "the sample scene compiles");
+        const openshow::scene::Scene worn = compiledFor(docs, slideId);
+        check(!previewed.items.empty() && !worn.items.empty() &&
+                  previewed.items[0].stroke.enabled && previewed.items[0].stroke.width == 5.0 &&
+                  previewed.items[0].fontWeight == worn.items[0].fontWeight &&
+                  previewed.items[0].stroke == worn.items[0].stroke,
+              "the editor's preview draws the merged style the audience's slide does");
+    }
+
+    // And it all survives the disk exactly as the whole-set verb would.
+    check(docs.setThemeTextStyleField(house, QStringLiteral("shadowEnabled"), true) &&
+                  docs.save(),
+              "a merged shadow saves");
+    openshow::domain::Documents reopened;
+    std::string loadError;
+    check(openshow::domain::loadService(&reopened, root / "service", &loadError) &&
+              reopened.findTheme(house.toStdString())->shadow->enabled &&
+                  reopened.findTheme(house.toStdString())->fontWeight == 800,
+          "the merged style block reads back from disk whole");
+}
+
 // The sample gains a VIEW (task TV.1): the Theme Editor's Songs view is the
 // theme's own look and its Bible view is the theme's `scripture` context —
 // both compiled through a fixture that walks the SAME chain the audience
@@ -3344,6 +3517,7 @@ int main(int argc, char* argv[]) {
     exercisePlacementSurfaces(tempRoot / "placementsurfaces");
     exerciseReadingContexts(tempRoot / "readingcontexts");
     exerciseTextStyleSurfaces(tempRoot / "textstyle");
+    exerciseTextStyleFieldMerge(tempRoot / "stylefields");
     exerciseThemeSampleViews(tempRoot / "sampleviews");
     exerciseScripturePassage(tempRoot / "scripturepassage");
     exerciseMultiBoxSession(tempRoot / "multibox");

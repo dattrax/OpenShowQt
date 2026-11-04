@@ -258,7 +258,12 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                             // worker ignores style keys silently, and a
                             // measurement answered in the wrong face is the
                             // one answer a measurement contract cannot give.
-                            kCapabilityTextMeasureV2}}};
+                            kCapabilityTextMeasureV2,
+                            // TS.4: this worker answers font.list from the
+                            // same font manager the frame loop shapes with,
+                            // so a picker built on it can only offer names
+                            // the audience's pixels can actually honour.
+                            kCapabilityFontListV1}}};
     return true;
 }
 

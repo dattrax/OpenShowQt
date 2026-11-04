@@ -112,6 +112,32 @@ public:
     sk_sp<skia::textlayout::FontCollection> fontCollection() const;
     const sk_sp<SkUnicode>& unicode() const { return fUnicode; }
 
+    // The installed families THIS shaper can resolve (task TS.4, the
+    // `font.list` answer). One family as the manager's own scan reports
+    // it: the name a scene may REQUEST, and the faces it holds.
+    struct FontFace {
+        int weight = 400;
+        bool italic = false;
+        bool operator==(const FontFace&) const = default;
+    };
+    struct FontFamily {
+        std::string family;
+        std::vector<FontFace> faces;  // sorted: weight up, roman before italic
+    };
+
+    // Families sorted by name, from the engine's own font manager — the
+    // same manager the frame loop shapes the audience's words with, which
+    // is the whole reason this answer belongs to the worker: a picker
+    // built on the OPERATOR's desktop fonts, or on guesses, offers names
+    // this renderer would silently fall back from. The scan runs ONCE per
+    // worker lifetime (a fontconfig walk; nothing in the product depends
+    // on seeing a system font change mid-session) and every later call
+    // copies the cache. Safe from any thread: the RPC dispatch thread is
+    // its only caller and the shared manager guards its own caches.
+    // const like layoutScene() (6.9b's shape): the cache is mutable, the
+    // engine is not.
+    bool listFonts(std::vector<FontFamily>* families, std::string* error) const;
+
     // One item laid out: wrapped at its authored box width, centred,
     // explicit line height. The box fields are the item's authored box
     // (task 4.3) — the region drawLayout centres the paragraph in.
@@ -338,6 +364,11 @@ private:
     mutable std::mutex fCollectionsMutex;
     mutable std::map<std::thread::id, sk_sp<skia::textlayout::FontCollection>> fCollections;
     sk_sp<SkUnicode> fUnicode;
+    // The one font scan (listFonts, task TS.4): built on first ask under
+    // this lock, read (as a copy) under it ever after. Mutable like the
+    // layout machinery — listFonts() is a const method on a shared engine.
+    mutable std::mutex fFontsMutex;
+    mutable std::vector<FontFamily> fFontsCache;
 };
 
 // Decodes and holds scene background images, within a byte budget.

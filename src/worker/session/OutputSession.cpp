@@ -702,6 +702,20 @@ bool OutputSession::measureText(const MeasureBlock& block, float* heightOut,
     return true;
 }
 
+bool OutputSession::listFonts(std::vector<SceneTextEngine::FontFamily>* families,
+                              std::string* error) {
+    // Task TS.4: the renderer's engine answers, or nothing does. This runs
+    // on the RPC thread; the scan (and its once-per-lifetime cache) lives
+    // in the engine, so repeat asks and page-walks cost a vector copy.
+    if (fScene == nullptr) {
+        if (error != nullptr) {
+            *error = "font.list has no text engine to enumerate with (the output is closed)";
+        }
+        return false;
+    }
+    return fScene->textEngine().listFonts(families, error);
+}
+
 /*
  * The background-media seam (tasks 5.5–6.15b; BackgroundTransport is the
  * owner since 6.18b). Everything the audience-side media does lives behind

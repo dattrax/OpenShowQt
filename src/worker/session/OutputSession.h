@@ -392,6 +392,13 @@ public:
                      std::string* error, SceneTextEngine::InkRect* inkOut = nullptr,
                      bool* fitsOut = nullptr);
 
+    // The families the production renderer's OWN text engine can resolve
+    // (task TS.4, `font.list`): the engine's cached scan, copied out on the
+    // RPC thread. Same refusal shape as measureText — no renderer, no
+    // answer, because a list from anywhere but the drawing engine is the
+    // guess the whole method exists to avoid.
+    bool listFonts(std::vector<SceneTextEngine::FontFamily>* families, std::string* error);
+
     // --- background media (task 5.5d) ---
 
     // Pops the pending media.error notification (RPC thread, from

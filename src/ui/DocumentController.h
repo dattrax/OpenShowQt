@@ -274,6 +274,25 @@ public:
     // bands are the domain's, so what this accepts the save can store and
     // the resolver can honour.
     Q_INVOKABLE bool setThemeTextStyle(const QString& themeId, const QVariantMap& style);
+    // The one-FIELD merge beside the whole-set verb (task TS.4): a control
+    // that edits one property of a shared block must not have to know the
+    // other five, and a drag gesture that lands many values must cost ONE
+    // undo, not one per intermediate. `field` names a leaf — fontWeight,
+    // fontStyle, fitMode, minFontSize, strokeEnabled, strokeColor,
+    // strokeWidth, shadowEnabled, shadowColor, shadowOpacity,
+    // shadowOffsetX, shadowOffsetY, shadowBlurSigma — or a whole effect
+    // record ("stroke"/"shadow") for the inherit button to clear. A null
+    // value clears a scalar to inherit, or names the whole-record clear;
+    // null on an effect MEMBER is refused (an effect means one thing
+    // whole — clearing one of its members is not a sentence). Merging a
+    // member into a theme that carries no such record starts from the
+    // contract's defaults — exactly what the audience draws today — so
+    // enabling a stroke materialises {true, black, 2}, never a fragment
+    // or a leftover of some other theme. One edit() per call: the merged
+    // block is vetted by the domain's one sentence before it lands, and a
+    // refusal changes nothing and costs no undo.
+    Q_INVOKABLE bool setThemeTextStyleField(const QString& themeId, const QString& field,
+                                            const QVariant& value);
     // The theme's named TEXT CONTEXTS (task TF.4, text-flow plan): a
     // context carries typography and a box ONLY — never colours, and never
     // a line count, because how many lines fit is what the worker's

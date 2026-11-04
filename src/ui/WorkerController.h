@@ -117,6 +117,16 @@ class WorkerController : public QObject {
     Q_PROPERTY(double mediaDuration READ mediaDuration NOTIFY mediaChanged)
     Q_PROPERTY(bool mediaLoop READ mediaLoop NOTIFY mediaChanged)
     Q_PROPERTY(QVariantList mediaSources READ mediaSources NOTIFY mediaChanged)
+    // Installed fonts (task TS.4): the family list a picker may offer,
+    // because it is the WORKER'S own — the engine that shapes the
+    // audience's words is the only honest answerer of which families it
+    // can resolve. fontListState walks idle/loading/ready/unsupported/
+    // unavailable; fontFamilies is sorted; fontFaces maps family name to
+    // [{weight, italic}]. See refreshFontFamilies() below.
+    Q_PROPERTY(bool fontListSupported READ fontListSupported NOTIFY fontListChanged)
+    Q_PROPERTY(QString fontListState READ fontListState NOTIFY fontListChanged)
+    Q_PROPERTY(QStringList fontFamilies READ fontFamilies NOTIFY fontListChanged)
+    Q_PROPERTY(QVariantMap fontFaces READ fontFaces NOTIFY fontListChanged)
     // Standalone production track (task 6.15b, review R15): the independent
     // transport, selected by path and confirmed by the status block of the
     // same name. standaloneOnAir is its commandability mirror
@@ -359,6 +369,26 @@ public:
     // ignore unknown block keys silently — so measureText refuses such an
     // ask outright, by name, rather than ship a silent face swap.
     bool styledMeasureSupported() const { return fTextMeasureV2Capable; }
+    // --- installed fonts (task TS.4) ------------------------------------
+    // The worker's hello names font.list.v1: it answers "which families
+    // can THIS shaper resolve?" about its own font manager, which is the
+    // only honest answerer — the renderer falls back silently from names
+    // it cannot match, so a picker listing anything else offers families
+    // the audience will never see.
+    bool fontListSupported() const { return fFontListCapable; }
+    // The walk's state for the picker: "idle" (nothing asked on this
+    // connection yet), "loading" (paging), "ready", "unsupported" (this
+    // worker names no font.list), "unavailable" (the ask failed — the
+    // worker's sentence is in statusText).
+    QString fontListState() const { return fFontListState; }
+    // Sorted family names and each family's faces ({weight, italic}) once
+    // a walk completed (or partway through one: the names arrive in
+    // order, page by page).
+    QStringList fontFamilies() const { return fFontFamilies; }
+    QVariantMap fontFaces() const { return fFontFaces; }
+    // Re-walk the worker's list from zero. Any walk in flight is retired
+    // first: the newest ask is the only one whose pages may land.
+    Q_INVOKABLE void refreshFontFamilies();
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
@@ -389,6 +419,9 @@ signals:
     // carries the id of the ask it belongs to and a retired ask ignores it.
     void textMeasured(qint64 requestId, const QVariantList& measured);
     void textMeasureFailed(qint64 requestId, const QString& reason);
+    // The font walk moved (task TS.4): a page landed, the state changed,
+    // or the session retired the list. The picker binds to this alone.
+    void fontListChanged();
     void sceneChanged();
     void mediaChanged();
 
@@ -445,6 +478,15 @@ private:
     bool fTextStyleCapable = false;
     // text.measure.v2 (task TS.3): see styledMeasureSupported().
     bool fTextMeasureV2Capable = false;
+    // font.list.v1 (task TS.4): see fontListSupported(). The walk state
+    // beside it belongs to the CONNECTION: a page that never gets sent,
+    // or an answer that arrives after the session died, is nobody's list.
+    bool fFontListCapable = false;
+    QString fFontListState;  // "" until a connection says anything
+    QStringList fFontFamilies;
+    QVariantMap fFontFaces;
+    qint64 fFontListWalkId = 0;  // the in-flight page's request id, 0 = none
+    std::int64_t fFontListConsumed = 0;  // families landed so far (next `from`)
     // The SESSION's view of the link, not the socket's: it also goes false when
     // the process is gone, which is a fact the transport is not told about. The
     // QML `connected` property reads this.

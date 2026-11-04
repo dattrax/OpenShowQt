@@ -155,8 +155,24 @@ namespace openshow::protocol {
 // Measurement never shrinks whatever fitMode says: the reply is always
 // the size asked plus an honest verdict, because a height taken at a
 // quietly-shrunken size is the guess the flow forbids.
+// Minor 17 (task TS.4, theme-editor review) adds `font.list`: "which
+// families can THIS worker's shaper resolve, and in which faces?" The
+// question matters because the scene contract stores the REQUESTED family
+// name and the renderer falls back silently when it cannot match one — an
+// editor that listed the OPERATOR's desktop fonts (or guessed) would offer
+// names the audience's worker cannot draw. Only the answering worker's own
+// SkFontMgr answers, over the same manager the frame loop shapes with;
+// the reply is family names plus each face's {weight, slant} — metadata
+// only, never font bytes, because the wire is a control channel and font
+// files are megabytes. The answer is paged (`from`, cap below) because a
+// large fontconfig install reaches hundreds of families, and it is CACHED
+// per worker lifetime so the scan runs once, on the RPC thread — never on
+// a presentation or audio callback. The capability "font.list.v1" names a
+// worker that answers the method at all; a frontend talking to a pre-17
+// worker keeps the free-typed family field it always had and simply cannot
+// offer the list.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 16;
+inline constexpr std::uint32_t kProtocolMinor = 17;
 
 // The capability that names a worker DRAWING the scene 4 style block.
 // Defined here so the frontend's pre-send gate and the worker's hello name
@@ -172,6 +188,12 @@ inline constexpr const char* kCapabilityTextStyle = "scene.text-style.v1";
 // asked, so WorkerController refuses the send by name rather than ship a
 // silent typography swap.
 inline constexpr const char* kCapabilityTextMeasureV2 = "text.measure.v2";
+
+// The capability that names a worker ANSWERING font.list (minor 17). The
+// frontend offers the searchable picker only to a hello that carries it;
+// without the name there is no honest family list to show, and typed
+// names — which never needed the worker — keep working.
+inline constexpr const char* kCapabilityFontListV1 = "font.list.v1";
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without
@@ -338,6 +360,22 @@ inline constexpr std::size_t kMaxMeasureBatch = 32;
 inline constexpr std::size_t kMaxMeasureKeyLength = 128;
 inline constexpr std::size_t kMaxMeasureBlockLines = 256;
 inline constexpr std::size_t kMaxMeasureLineChars = 1024;
+
+// `font.list` (task TS.4, minor 17): the families THIS worker's shaper can
+// resolve. Request {"from": index} — optional, default 0 — and the answer is
+// {"families":[{"family":name,"faces":[{"weight":w,"italic":bool}, ...]},
+//  ...], "from": index, "total": count, "truncated": bool}: families sorted
+// by name from the cached scan, this page starting at `from`, `total` the
+// whole scan (so the asker knows whether to ask again at from+page), and
+// `truncated` true exactly when the page ended at the cap rather than the
+// list. Metadata only — family and face names, weights, slants — never
+// font bytes. Pages are capped at kMaxFontListPageFamilies so one reply
+// stays far inside the 1 MiB frame even with long PostScript names; a
+// `from` past the end answers an empty page rather than an error (the list
+// SHRANK under the asker — a fontconfig reload between pages is legal, and
+// the asker re-reads from 0 exactly as it would after a reconnect).
+inline constexpr const char* kMethodFontList = "font.list";
+inline constexpr std::size_t kMaxFontListPageFamilies = 128;
 
 // A framed message larger than this is a protocol error: the only legitimate
 // payloads are control messages, never pixels. The number is BOTH directions'

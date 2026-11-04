@@ -131,7 +131,43 @@ Item {
         placeWField.text = String(Math.round(box.width))
         placeHField.text = String(Math.round(box.height))
         themeEditor.refreshViewLook()
+        // The style controls read the RESOLVED look, so they sync after it
+        // is refreshed — one source of truth, the compiled sample.
+        themeEditor.syncStyleControls(row)
         themeEditor.syncContext()
+    }
+    // Put the typography/effect controls where the record (or the resolved
+    // look, where the theme is silent) says they belong. Assignment, not
+    // binding, for the same reason as every other field here: a control the
+    // operator is mid-drag on must not be yanked, and a successful commit
+    // re-reads through documentsChanged anyway. The row comes in from
+    // syncInspector's own rowFor, for the reason that function states: read
+    // from inside the documentsChanged emit, the `row` property can still
+    // hold the numbers the write just replaced, and a control repainted
+    // from them would be a control showing a value the model does not have.
+    function syncStyleControls(rowIn) {
+        const row = rowIn !== undefined ? rowIn : themeEditor.row
+        if (row === null)
+            return
+        const weights = [100, 200, 300, 400, 500, 600, 700, 800, 900]
+        const w = weights.indexOf(Number(themeEditor.styleValue("fontWeight", "fontWeightSet", row)))
+        weightCombo.currentIndex = w >= 0 ? w : 3
+        slantCombo.currentIndex =
+                themeEditor.styleValue("fontStyle", "fontStyleSet", row) === "italic" ? 1 : 0
+        fitCombo.currentIndex =
+                themeEditor.styleValue("fitMode", "fitModeSet", row) === "fixed" ? 1 : 0
+        minSizeField.text = String(themeEditor.styleValue("minFontSize", "minFontSizeSet", row))
+        const s = themeEditor.strokeShown(row)
+        strokeEnable.checked = s.enabled === true
+        strokeColorField.text = s.color !== undefined ? s.color : ""
+        strokeWidthSlider.value = s.width !== undefined ? s.width : 0
+        const sh = themeEditor.shadowShown(row)
+        shadowEnable.checked = sh.enabled === true
+        shadowColorField.text = sh.color !== undefined ? sh.color : ""
+        shadowOpacitySlider.value = sh.opacity !== undefined ? sh.opacity : 0
+        shadowOffsetXSlider.value = sh.offsetX !== undefined ? sh.offsetX : 0
+        shadowOffsetYSlider.value = sh.offsetY !== undefined ? sh.offsetY : 0
+        shadowBlurSlider.value = sh.blurSigma !== undefined ? sh.blurSigma : 0
     }
     // Every inspector edit writes the record back WHOLE — editTheme's
     // contract that one omitted field cannot silently flatten a gradient.
@@ -149,6 +185,101 @@ Item {
                        name === "fontSize" ? value : row.fontSize,
                        name === "align" ? value : row.align,
                        name === "lineSpacing" ? value : row.lineSpacing)
+    }
+
+    /* --- typography, effects and the family picker (task TS.4) ------------
+     * The style block is SHARED, so these controls use the ONE-FIELD merge
+     * rather than re-spelling the whole record every keystroke: dragging
+     * the blur slider lands ONE undo (commit on release, not per pixel),
+     * and a field the operator tabs through without changing writes
+     * NOTHING. A refused write snaps the control back to the record — a
+     * field showing a number the model turned down is a field about to be
+     * trusted. (The plan routes these to the theme while TV.3 has not
+     * promoted the reading context to a view of its own; the scripture
+     * context carries no style fields until then.)
+     *
+     * The controls show the theme's OWN value when it carries one, and the
+     * value the audience actually draws today otherwise — read through the
+     * sample's resolved appearance — with a badge naming which. The family
+     * field stays a free-typed field always: it worked before the worker
+     * could answer and still works disconnected. The Browse popup is the
+     * one thing that needs the worker, and only a worker that named
+     * font.list can fill it; a requested family the worker cannot resolve
+     * is flagged MISSING but the stored name is never rewritten, because
+     * the scene must keep what the author asked for, not the accident of
+     * which worker was connected when it was typed.
+     */
+    function applyStyleField(field, value) {
+        // A failure has no documentsChanged to repaint from, so re-read the
+        // record here; a success repaints through the model's own emit.
+        if (!docs.setThemeTextStyleField(themeEditor.selectedId, field, value))
+            themeEditor.syncInspector()
+    }
+    // A slider drag is ONE gesture, so it commits once — on release — and
+    // not at all when the handle ended where it began (the current value is
+    // read before the write, so a no-move click writes nothing and costs no
+    // undo, exactly like tabbing through a text field unchanged).
+    function commitSlider(field, value, current) {
+        if (Math.abs(Number(value) - Number(current)) < 1e-6)
+            return
+        themeEditor.applyStyleField(field, value)
+    }
+    // The number a control shows and the number it must compare a commit
+    // against: the theme's own when set, the resolved answer otherwise. The
+    // optional row is the caller's fresh read (syncInspector's); a binding
+    // leaves it out and takes the property, which is current by then.
+    function styleValue(ownKey, setKey, rowIn) {
+        const row = rowIn !== undefined ? rowIn : themeEditor.row
+        if (row === null)
+            return null
+        if (row[setKey] === true)
+            return row[ownKey]
+        const look = themeEditor.viewLook
+        return look !== null && look.ok === true ? look[ownKey] : row[ownKey]
+    }
+    function styleInherited(setKey) {
+        const row = themeEditor.row
+        return row === null || row[setKey] !== true
+    }
+    // The effect a row of members edits: the theme's own record when it
+    // carries one, the resolved one otherwise (silence has no record — the
+    // badge says so and the members preview what will draw).
+    function strokeShown(rowIn) {
+        const row = rowIn !== undefined ? rowIn : themeEditor.row
+        if (row === null)
+            return {}
+        if (row.strokeSet === true)
+            return row.stroke
+        const look = themeEditor.viewLook
+        return look !== null && look.ok === true ? look.stroke : {}
+    }
+    function shadowShown(rowIn) {
+        const row = rowIn !== undefined ? rowIn : themeEditor.row
+        if (row === null)
+            return {}
+        if (row.shadowSet === true)
+            return row.shadow
+        const look = themeEditor.viewLook
+        return look !== null && look.ok === true ? look.shadow : {}
+    }
+    // The family list narrowed by the search box. Re-derived from BOTH the
+    // query text and the worker's arriving pages, so a search typed while
+    // the walk is mid-page completes against the full list as it lands.
+    function fontMatches(query) {
+        const needle = query.trim().toLowerCase()
+        return worker.fontFamilies.filter(f => needle === ""
+                                               || f.toLowerCase().indexOf(needle) >= 0)
+    }
+    // "Can THIS worker draw the family the theme asks for?" Only a COMPLETED
+    // list can answer, and only the WORKER'S list counts: absent means
+    // missing; no list, an in-flight walk, or a worker that cannot list all
+    // say nothing (they are not a verdict on the name).
+    function fontMissing(row) {
+        if (row === null || row.fontFamily === "" || !worker.fontListSupported
+                || worker.fontListState !== "ready")
+            return false
+        const want = row.fontFamily.toLowerCase()
+        return !worker.fontFamilies.some(f => f.toLowerCase() === want)
     }
 
     /* --- the scripture reading context (task TF.4, text-flow plan) -------
@@ -524,18 +655,68 @@ Item {
         viewThumbAsk.restart()
     }
 
-    // The inspector rail's two scroll-to-the-ends verbs. ScrollView keeps
-    // its Flickable one level in — the content column's parent — and
-    // "reachable" is a statement about the END of that Flickable, so the
-    // end is what gets asked for, in one place, by the workspace suite
-    // that proves every control can be clicked and typed into at the
+    // The inspector rail's scroll verbs. ScrollView does NOT put its
+    // Flickable at "the content column's parent": between the column and the
+    // Flickable that owns contentY sits the Flickable's own content item, so
+    // asking the column's parent to scroll silently asks something that
+    // cannot scroll (task TS.4 found it reaching for the rail's last
+    // control). The Flickable is therefore found by asking each parent
+    // whether it scrolls at all, and "reachable" stays a statement about the
+    // END of that Flickable — the promise the workspace suite checks at the
     // smallest window (task TV.2).
+    function inspectorFlickable() {
+        for (let node = inspectorContent.parent; node !== null; node = node.parent) {
+            if (node.contentY !== undefined && node.contentHeight !== undefined)
+                return node
+        }
+        return null
+    }
     function scrollInspectorToTop() {
-        inspectorContent.parent.contentY = 0
+        const rail = themeEditor.inspectorFlickable()
+        if (rail !== null)
+            rail.contentY = 0
     }
     function scrollInspectorToEnd() {
-        const rail = inspectorContent.parent
-        rail.contentY = rail.contentHeight
+        const rail = themeEditor.inspectorFlickable()
+        if (rail !== null) {
+            // A Flickable does NOT clamp a contentY it is handed, so the end
+            // is computed, not asserted: past the last row is a rail showing
+            // blank paper with the controls somewhere above it.
+            rail.contentY = Math.max(0, rail.contentHeight - rail.height)
+        }
+    }
+    // Bring ONE named control of the rail into view. Reachability is a
+    // promise about every control, not only about the ends — the Songs
+    // section is now taller than the smallest window shows at once, so a
+    // test (or an operator) that wants a particular field has to be able to
+    // ask for it by name and get it inside the viewport, not a rail scrolled
+    // to some other row.
+    function findInRail(item, objectName) {
+        if (item.objectName === objectName)
+            return item
+        const kids = item.children
+        for (let i = 0; i < kids.length; ++i) {
+            const hit = themeEditor.findInRail(kids[i], objectName)
+            if (hit !== null)
+                return hit
+        }
+        return null
+    }
+    function scrollInspectorTo(objectName) {
+        const rail = themeEditor.inspectorFlickable()
+        if (rail === null)
+            return false
+        const target = themeEditor.findInRail(inspectorContent, objectName)
+        if (target === null)
+            return false
+        const top = target.mapToItem(inspectorContent, 0, 0).y
+        const bottom = top + target.height
+        const limit = Math.max(0, rail.contentHeight - rail.height)
+        if (top < rail.contentY)
+            rail.contentY = Math.max(0, top - 12)
+        else if (bottom > rail.contentY + rail.height)
+            rail.contentY = Math.min(limit, bottom - rail.height + 12)
+        return true
     }
     // The measured lines the passage's box holds (information, never a
     // setting): one "M" at the resolved size and spacing, measured by the
@@ -1192,11 +1373,52 @@ Item {
                     onEditingFinished: themeEditor.applyField("backgroundGradient", text)
                 }
                 Text { text: "Font family (\"\" = platform)"; color: "#b0b0b0"; font.pixelSize: 11 }
-                PanelField {
-                    id: fontField
-                    objectName: "themeEditorFontField"
+                // The typed name is the real control: it always worked and
+                // works with the worker gone. "Browse" only opens a list the
+                // audience's OWN worker can honour; a worker that named no
+                // font.list gets a disabled button and a word why, never a
+                // list of the operator's desktop fonts the show would fall
+                // back from (task TS.4).
+                Row {
+                    spacing: 4
+                    PanelField {
+                        id: fontField
+                        objectName: "themeEditorFontField"
+                        width: parent.width - browseFontsButton.width - parent.spacing
+                        onEditingFinished: themeEditor.applyField("fontFamily", text)
+                    }
+                    PanelButton {
+                        id: browseFontsButton
+                        objectName: "themeEditorBrowseFonts"
+                        text: "Browse"
+                        enabled: worker.fontListSupported && themeEditor.selectedId !== ""
+                        onClicked: {
+                            fontSearchField.text = ""
+                            if (worker.fontListState === "idle")
+                                worker.refreshFontFamilies()
+                            fontPopup.open()
+                        }
+                    }
+                }
+                Text {
+                    objectName: "themeEditorFontStatus"
                     width: parent.width
-                    onEditingFinished: themeEditor.applyField("fontFamily", text)
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 10
+                    color: themeEditor.fontMissing(themeEditor.row) ? "#e0a94a" : "#888888"
+                    text: {
+                        const row = themeEditor.row
+                        if (row === null || row.fontFamily === "")
+                            return ""
+                        if (!worker.fontListSupported)
+                            return "typed name — this worker cannot list its fonts"
+                        if (worker.fontListState !== "ready")
+                            return "checking the audience's fonts…"
+                        return themeEditor.fontMissing(row)
+                                ? "\"" + row.fontFamily + "\" is not installed on the "
+                                  + "audience's machine — it will fall back"
+                                : "installed on the audience's machine"
+                    }
                 }
                 Text { text: "Font size (0 = renderer default)"; color: "#b0b0b0"; font.pixelSize: 11 }
                 PanelField {
@@ -1273,6 +1495,249 @@ Item {
                         font.pixelSize: 11
                         text: themeEditor.hasPlacement ? "this theme places its slides"
                                                        : "no opinion — slides keep their own boxes"
+                    }
+                }
+
+                // --- typography & effects (task TS.4) ---------------------
+                // Each control commits ONE field through the merge verb, so
+                // a change here never disturbs the others and never costs
+                // more than one undo. The badge beside each name says
+                // whether this theme speaks or inherits the value the
+                // audience draws today; "Inherit"/"Off" buttons write that
+                // back (a scalar to null, an effect cleared whole). Sliders
+                // commit on release only — a drag is one gesture is one
+                // undo. A refused write re-reads the record (applyStyleField).
+                Text {
+                    text: "Typography & effects"
+                    color: "#bbbbbb"
+                    font.pixelSize: 11
+                    font.bold: true
+                }
+                Row {
+                    spacing: 6
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Weight"; color: "#b0b0b0"; font.pixelSize: 11
+                    }
+                    ComboBox {
+                        id: weightCombo
+                        objectName: "themeEditorWeight"
+                        model: [100, 200, 300, 400, 500, 600, 700, 800, 900]
+                        onActivated: themeEditor.applyStyleField("fontWeight",
+                                                                 Number(currentValue))
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.pixelSize: 10
+                        color: themeEditor.styleInherited("fontWeightSet") ? "#888888" : "#8ec9f5"
+                        text: themeEditor.styleInherited("fontWeightSet") ? "inherited" : "own"
+                    }
+                    PanelButton {
+                        objectName: "themeEditorWeightInherit"
+                        text: "Inherit"
+                        enabled: !themeEditor.styleInherited("fontWeightSet")
+                        onClicked: themeEditor.applyStyleField("fontWeight", null)
+                    }
+                }
+                Row {
+                    spacing: 6
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Slant"; color: "#b0b0b0"; font.pixelSize: 11
+                    }
+                    ComboBox {
+                        id: slantCombo
+                        objectName: "themeEditorSlant"
+                        model: ["normal", "italic"]
+                        onActivated: themeEditor.applyStyleField("fontStyle", currentValue)
+                    }
+                    PanelButton {
+                        objectName: "themeEditorSlantInherit"
+                        text: "Inherit"
+                        enabled: !themeEditor.styleInherited("fontStyleSet")
+                        onClicked: themeEditor.applyStyleField("fontStyle", null)
+                    }
+                }
+                Row {
+                    spacing: 6
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Fit"; color: "#b0b0b0"; font.pixelSize: 11
+                    }
+                    ComboBox {
+                        id: fitCombo
+                        objectName: "themeEditorFit"
+                        model: ["shrink", "fixed"]
+                        onActivated: themeEditor.applyStyleField("fitMode", currentValue)
+                    }
+                    PanelButton {
+                        objectName: "themeEditorFitInherit"
+                        text: "Inherit"
+                        enabled: !themeEditor.styleInherited("fitModeSet")
+                        onClicked: themeEditor.applyStyleField("fitMode", null)
+                    }
+                }
+                Text { text: "Minimum size (1..4096)"; color: "#b0b0b0"; font.pixelSize: 11 }
+                Row {
+                    spacing: 4
+                    PanelField {
+                        id: minSizeField
+                        objectName: "themeEditorMinSize"
+                        width: parent.width - parent.spacing - 60
+                        onEditingFinished: {
+                            if (text.trim() === String(themeEditor.styleValue("minFontSize",
+                                                                              "minFontSizeSet")))
+                                return  // focus-out with no change writes nothing
+                            const v = Number(text)
+                            if (isFinite(v) && v >= 1 && v <= 4096)
+                                themeEditor.applyStyleField("minFontSize", v)
+                            else
+                                themeEditor.syncStyleControls()
+                        }
+                    }
+                    PanelButton {
+                        objectName: "themeEditorMinSizeInherit"
+                        text: "Inherit"
+                        width: 60
+                        enabled: !themeEditor.styleInherited("minFontSizeSet")
+                        onClicked: themeEditor.applyStyleField("minFontSize", null)
+                    }
+                }
+
+                // Stroke: enable is the record's own materialise — a theme
+                // that carried nothing gains {true, black, 2} (the audience
+                // already draws that as the default); members then merge.
+                Row {
+                    spacing: 6
+                    CheckBox {
+                        id: strokeEnable
+                        objectName: "themeEditorStrokeEnable"
+                        text: "outline"; font.pixelSize: 11
+                        onToggled: themeEditor.applyStyleField("strokeEnabled", checked)
+                    }
+                    PanelButton {
+                        objectName: "themeEditorStrokeInherit"
+                        text: "Off"
+                        enabled: themeEditor.row !== null && themeEditor.row.strokeSet === true
+                        onClicked: themeEditor.applyStyleField("stroke", null)
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.pixelSize: 10
+                        color: themeEditor.styleInherited("strokeSet") ? "#888888" : "#8ec9f5"
+                        text: themeEditor.styleInherited("strokeSet") ? "inherited" : "own"
+                    }
+                }
+                Row {
+                    spacing: 4
+                    Text { text: "colour"; color: "#b0b0b0"; font.pixelSize: 11 }
+                    PanelField {
+                        id: strokeColorField
+                        objectName: "themeEditorStrokeColour"
+                        width: 110
+                        onEditingFinished: {
+                            if (text.trim() === String(themeEditor.strokeShown().color))
+                                return
+                            themeEditor.applyStyleField("strokeColor", text.trim())
+                        }
+                    }
+                }
+                Row {
+                    spacing: 4
+                    Text { text: "width"; color: "#b0b0b0"; font.pixelSize: 11 }
+                    Slider {
+                        id: strokeWidthSlider
+                        objectName: "themeEditorStrokeWidth"
+                        from: 0; to: 32; stepSize: 0.5
+                        onPressedChanged: if (!pressed)
+                            themeEditor.commitSlider("strokeWidth", value,
+                                                     themeEditor.strokeShown().width)
+                    }
+                }
+
+                // Shadow: same shape — enable materialises the default
+                // record, the four sliders merge one member on release.
+                Row {
+                    spacing: 6
+                    CheckBox {
+                        id: shadowEnable
+                        objectName: "themeEditorShadowEnable"
+                        text: "shadow"; font.pixelSize: 11
+                        onToggled: themeEditor.applyStyleField("shadowEnabled", checked)
+                    }
+                    PanelButton {
+                        objectName: "themeEditorShadowInherit"
+                        text: "Off"
+                        enabled: themeEditor.row !== null && themeEditor.row.shadowSet === true
+                        onClicked: themeEditor.applyStyleField("shadow", null)
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.pixelSize: 10
+                        color: themeEditor.styleInherited("shadowSet") ? "#888888" : "#8ec9f5"
+                        text: themeEditor.styleInherited("shadowSet") ? "inherited" : "own"
+                    }
+                }
+                Row {
+                    spacing: 4
+                    Text { text: "colour"; color: "#b0b0b0"; font.pixelSize: 11 }
+                    PanelField {
+                        id: shadowColorField
+                        objectName: "themeEditorShadowColour"
+                        width: 110
+                        onEditingFinished: {
+                            if (text.trim() === String(themeEditor.shadowShown().color))
+                                return
+                            themeEditor.applyStyleField("shadowColor", text.trim())
+                        }
+                    }
+                }
+                Row {
+                    spacing: 4
+                    Text { text: "opacity"; color: "#b0b0b0"; font.pixelSize: 11 }
+                    Slider {
+                        id: shadowOpacitySlider
+                        objectName: "themeEditorShadowOpacity"
+                        from: 0; to: 1; stepSize: 0.05
+                        onPressedChanged: if (!pressed)
+                            themeEditor.commitSlider("shadowOpacity", value,
+                                                     themeEditor.shadowShown().opacity)
+                    }
+                }
+                Row {
+                    spacing: 4
+                    Text { text: "offset X"; color: "#b0b0b0"; font.pixelSize: 11 }
+                    Slider {
+                        id: shadowOffsetXSlider
+                        objectName: "themeEditorShadowOffsetX"
+                        from: -256; to: 256; stepSize: 1
+                        onPressedChanged: if (!pressed)
+                            themeEditor.commitSlider("shadowOffsetX", value,
+                                                     themeEditor.shadowShown().offsetX)
+                    }
+                }
+                Row {
+                    spacing: 4
+                    Text { text: "offset Y"; color: "#b0b0b0"; font.pixelSize: 11 }
+                    Slider {
+                        id: shadowOffsetYSlider
+                        objectName: "themeEditorShadowOffsetY"
+                        from: -256; to: 256; stepSize: 1
+                        onPressedChanged: if (!pressed)
+                            themeEditor.commitSlider("shadowOffsetY", value,
+                                                     themeEditor.shadowShown().offsetY)
+                    }
+                }
+                Row {
+                    spacing: 4
+                    Text { text: "blur σ"; color: "#b0b0b0"; font.pixelSize: 11 }
+                    Slider {
+                        id: shadowBlurSlider
+                        objectName: "themeEditorShadowBlur"
+                        from: 0; to: 64; stepSize: 0.5
+                        onPressedChanged: if (!pressed)
+                            themeEditor.commitSlider("shadowBlurSigma", value,
+                                                     themeEditor.shadowShown().blurSigma)
                     }
                 }
             }
@@ -1435,6 +1900,109 @@ Item {
                               + "what the renderer measures"
                     }
                 }
+            }
+        }
+    }
+
+    // The family picker (task TS.4). It lists ONLY the audience worker's own
+    // families — the ones its shaper can actually resolve — because a picker
+    // of the operator's desktop fonts would offer names the show silently
+    // falls back from. Search narrows the (still-arriving) list live; the
+    // sample renders the hovered family in its own face; choosing writes the
+    // family name through the ordinary typed-field verb, so it is exactly as
+    // if the operator had typed it. It opens only for a worker that named
+    // font.list; a disconnected worker leaves the typed field, which needs
+    // nothing of the sort.
+    Popup {
+        id: fontPopup
+        objectName: "themeEditorFontPopup"
+        x: Math.max(0, (themeEditor.width - width) / 2)
+        y: 60
+        width: 360
+        height: 440
+        modal: true
+        focus: true
+        padding: 12
+        background: Rectangle { color: "#2b2b2b"; border.color: "#555555"; radius: 4 }
+        // The page standing down (mode exit, another page) takes its popup
+        // with it — an orphaned modal overlay would keep the keyboard the
+        // shell is trying to hand back.
+        Connections {
+            target: themeEditor
+            function onVisibleChanged() {
+                if (!themeEditor.visible)
+                    fontPopup.close()
+            }
+        }
+        Column {
+            width: parent.width
+            spacing: 8
+            Text { text: "Fonts the audience's worker can draw"; color: "#dddddd"
+                   font.pixelSize: 12; font.bold: true }
+            PanelField {
+                id: fontSearchField
+                objectName: "themeEditorFontSearch"
+                width: parent.width
+                placeholderText: "search families…"
+            }
+            Row {
+                spacing: 8
+                Rectangle {
+                    width: 90; height: 40; color: "#ffffff"; radius: 3
+                    Text {
+                        anchors.centerIn: parent
+                        font.family: fontPreviewList.currentFamily
+                        font.pixelSize: 20
+                        color: "#000000"
+                        text: "Ag"
+                    }
+                }
+                Text {
+                    objectName: "themeEditorFontListStatus"
+                    width: parent.width - 98
+                    anchors.verticalCenter: parent.verticalCenter
+                    wrapMode: Text.WordWrap
+                    color: "#888888"
+                    font.pixelSize: 10
+                    text: worker.fontListState === "loading" ? "asking the audience's worker…"
+                                                              : ""
+                }
+            }
+            ListView {
+                id: fontPreviewList
+                objectName: "themeEditorFontList"
+                width: parent.width
+                height: 300
+                clip: true
+                property string currentFamily: ""
+                // Re-derived whenever the query changes OR another page of
+                // the walk lands — the two triggers the list can move on.
+                model: themeEditor.fontMatches(fontSearchField.text)
+                Connections {
+                    target: worker
+                    function onFontListChanged() {
+                        fontPreviewList.model = themeEditor.fontMatches(fontSearchField.text)
+                    }
+                }
+                delegate: ItemDelegate {
+                    width: fontPreviewList.width
+                    objectName: "themeEditorFontRow"
+                    required property string modelData
+                    text: modelData
+                    font.family: modelData
+                    onClicked: {
+                        themeEditor.applyField("fontFamily", modelData)
+                        fontPopup.close()
+                    }
+                    hoverEnabled: true
+                    onHoveredChanged: if (hovered)
+                                          fontPreviewList.currentFamily = modelData
+                }
+            }
+            PanelButton {
+                objectName: "themeEditorFontCancel"
+                text: "Close"
+                onClicked: fontPopup.close()
             }
         }
     }
