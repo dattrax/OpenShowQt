@@ -1,6 +1,7 @@
 # OpenShowQt: implementation plan
 
-Accepted 2026-10-21; condensed 2026-10-30; theme architecture reviewed 2026-11-03.
+Accepted 2026-10-21; condensed 2026-10-30; theme architecture reviewed 2026-11-03;
+Qt control-set review and pre-FO work added 2026-11-04.
 Current checkpoint and verification: [PROGRESS.md](PROGRESS.md).
 Current code boundaries and open differences: [docs/architecture.md](docs/architecture.md).
 Detailed completed-task evidence: [history](docs/history/README.md).
@@ -71,7 +72,7 @@ estimate is historical; re-estimate remaining work before productization.
   decode were added during M1, with an explicit copying fallback.
 - **Bible import:** online, passage-only lookup into today's schedule, with
   measured theme-sized slides and a named scripture context (BI/TF delivered).
-  View/editor follow-ups are TV below. No installed Bible or passage cache.
+  View/editor follow-ups are TV and CS below. No installed Bible or passage cache.
 - **Deferred:** FreeShow import/round-trip, stage/additional outputs,
   Vulkan display-plane output, effects beyond TS below, remote control, streaming,
   NDI/SDI, cloud services, Windows and macOS.
@@ -134,7 +135,7 @@ remain **7.3**. Do not use old machine paths as current dependency configuration
    contracts in architecture documentation and detailed completed evidence in history.
    Add or split work items only when scope requires it, with brief descriptions.
    The implementation runbook below is an intentional exception for unfinished
-   TV/TS/TR work: retain actionable steps until delivered, then move detailed
+   TV/TS/TR/CS work: retain actionable steps until delivered, then move detailed
    implementation evidence to history and keep the completed ledger concise.
 
 ## Work breakdown
@@ -572,7 +573,8 @@ Expose Cut/Crossfade and separate foreground/background durations; preserve
 |---|---|---|---|
 | TA.1 | TODO | Close TV/TS/TR together; update architecture, captures, fixtures and handoff | New journeys prove selected view → styling/measurement → save/reopen → presentation; all leaf tests plus desktop serial/headless presets and source guards pass; report skips, font provenance, budgets and remaining physical gates separately |
 
-Suggested order: TV.1 → TV.2 → TS.1 → TV.3 → TS.2 → TS.3 → TV.4a →
+Original suggested order (partly delivered; see CS for the current priority):
+TV.1 → TV.2 → TS.1 → TV.3 → TS.2 → TS.3 → TV.4a →
 TV.4b → TS.4 → TV.5 → TS.5 → TR.1 → TR.2 → TR.3 → TA.1, then M7.
 Initial estimate **21.5 engineer-days**, 0.5–2 days per leaf including tests;
 re-estimate after schema/renderer prototypes. Detailed dependencies and test
@@ -597,7 +599,7 @@ Paths below are relative to the repository root. Header `documents.h` means
 | Responsibility | Starting files / existing functions |
 |---|---|
 | Domain types, mutations and resolution | `documents.h`, `src/domain/documents.cpp`: `Theme`, `TextContext`, `SlideCustomization`, `ResolvedAppearance`, `SlideItem`, `setThemeContexts`, `appearanceForSlide` |
-| Service persistence and migrations | `src/domain/storage.cpp`: `kServiceFormat` (currently 7), theme/context/customization/item readers and writers; `src/domain/history.cpp` for value snapshots |
+| Service persistence and migrations | `src/domain/storage.cpp`: `kServiceFormat` (currently 9), theme/context/customization/item readers and writers; `src/domain/history.cpp` for value snapshots |
 | Controller, QML adapters and undo | `src/ui/DocumentController.h/.cpp`: `edit`, `themeSampleSceneJson`, `themeContext`, `applyThemeContext`, `removeThemeContext`, `setThemePlacement`, `duplicateTheme`, `scriptureBoxStyle`, `scriptureSlideSceneJson`, `addScripturePassage`; `src/ui/DocumentViews.cpp` for exposed appearance rows |
 | Workspace and theme gestures | `src/ui/Main.qml`, `ThemeEditorPage.qml`, `WorkspacePanels.h/.cpp`, `TopBar.qml`: page anchors, `syncInspector`, `syncContext`, `boxFor`, `endGesture`, `applyPlacementFields`, `sampleAsk`, `linesAsk` |
 | Static compilation and scene validation | `src/scene/scene.cpp`, `scene.h`: `compileSlide`, equality, `toJson`, `fromJson`, scene format and strict per-kind keys |
@@ -994,9 +996,287 @@ remaining physical gates, and preserve old DONE evidence. This user's current
 GitHub publishing authorization covers the documentation update; follow the
 session's authorization for later implementation commits.
 
+### Shared Qt control sets and preview corrections (CS) — before FO
+
+Review date: **2026-11-04**. This work addresses the operator's Bible Import,
+Theme Editor and Edit screenshots. This is a source review and implementation
+brief; no runtime fix or visual acceptance is claimed by this documentation.
+Keep the existing DONE ledger intact. FO remains deferred.
+
+#### Findings and boundaries
+
+- `PreviewView.h/.cpp` already supplies the common worker-pixel item with
+  **Audience**, **Selection** and keyed **Thumbnail** targets. It aspect-fits
+  the frame; Qt does not render the slide's words. Reuse it and extract the
+  surrounding QML surface/card controls rather than introducing a renderer.
+- `BibleImportPage.qml` uses verse checkboxes followed by a `Repeater` of
+  `Frame`/`Text` generated-slide rows. `ScriptureImport::publish()` calls
+  `previewSlide(0)`, which sends a Selection request, but the Bible page has no
+  Selection surface. `OutputPanel.qml` displays **Audience**, so the existing
+  sentence promising an off-air picture in the right preview panel is wrong.
+  Add a clearly labelled off-air canvas in the Bible page itself. Keep the
+  right Audience monitor showing the live output.
+- `ThemeEditorPage.qml` and `EditPage.qml` independently implement colour,
+  family, size, alignment, spacing, placement and field synchronization. The
+  former also has TS typography/effects, a worker font browser and transitions;
+  the latter's appearance panel only exposes the basic fields. Domain records
+  and controller verbs already share many of these meanings; the visible
+  controls and their write routing are the missing shared layer.
+- `EditCanvas.qml` and the Theme Editor each put handles over worker pixels,
+  but edit different geometry: the selected authored item versus the theme's
+  primary placement/context box. Share the surface and geometry fields first;
+  keep these gesture owners separate until their differences are explicit.
+- `ShowPage.qml::cueRows` already carries `entryId`, `cueKey`, `slideId` and
+  `groupStart`, but one `GridView` packs all cues continuously. Its `slideBand()`
+  assumes visual cell number equals cue index. Adding row breaks must change
+  both layout and viewport scheduling, while preserving cue identities.
+- Existing useful containers include `OutputPanel`, `PlaylistPanel`, `SidePanel`,
+  `PanelField` and `PanelButton`. Compose with these; keep audience clears,
+  transport and audio in `OutputPanel`. This scope does not require splitting
+  every QML file or moving presentation logic into generic widgets.
+
+#### Named parts — vocabulary and intended ownership
+
+These names are **proposed**, except `PreviewView` and `OutputPanel`, which
+already exist. Use the names verbatim in future requests (for example,
+“BibleImportWorkspace's SlidePreviewSurface” or “Edit's TextStyleControls”).
+Prefer QML composition with explicit properties/signals over a page inheritance
+hierarchy. A theme view and a slide customization inherit appearance values
+through the domain resolver; QML inheritance must not reimplement that chain.
+
+| Part name / proposed file in `src/ui/` | Responsibility and intended consumers |
+|---|---|
+| `SlidePreviewSurface.qml` | Aspect-fit worker pixels, frame/status/placeholder and overlay slot; Bible, Edit, Themes, Show card and Audience monitor wrappers; wraps existing `PreviewView` |
+| `SlidePreviewCard.qml` | Surface plus caption, selected/pending/live chrome and activation/context signals; Show cues, Bible generated slides and Themes view tiles |
+| `SlidePreviewCollection.qml` | Virtualized responsive preview collection, group boundaries, index mapping and visible-band reporting; Show first, reusable ungrouped mode for Bible |
+| `AppearanceInspector.qml` | Scrollable composition of supported style sections; Edit and Themes supply different target adapters |
+| `TextStyleControls.qml` | Family, size, alignment, line spacing, weight, slant, fit and minimum size; same controls for supported theme/view/slide targets |
+| `TextEffectsControls.qml` | Outline/shadow whole-record editing, enable/off/inherit state and resolved values; Themes and Edit |
+| `BackgroundControls.qml` | Colours/gradient plus supported image/fit controls; expose only operations the current target can store and render |
+| `BoxGeometryControls.qml` | Shared X/Y/W/H inputs and follow/inherit action; Edit item/customization and Themes placement/context adapters |
+| `TransitionControls.qml` | Cut/Crossfade, durations and optional Inherit/source text; Themes and Settings; no new slide transition override |
+| `WorkerFontPicker.qml` | Search/browse worker-owned family/face metadata, missing-font state and typed-name path; TextStyleControls |
+| `BibleImportWorkspace` (`BibleImportPage.qml`) | Lookup, verse selection, generated-slide collection, selected off-air canvas and Add/Cancel; owns import interactions |
+| `AudienceMonitor` (inside existing `OutputPanel.qml`) | Live picture/status and existing clears; instance of the common surface, with output-specific operations outside it |
+
+CS.1 must record each part's inputs, events, adapter and consumers in a new
+`docs/ui/control-sets.md` (a component catalogue, not a second task ledger).
+When implementing a part, add a short source header such as
+`// UI part: SlidePreviewSurface; contract: docs/ui/control-sets.md#slidepreviewsurface`.
+Use stable, unique per-instance `objectName`s, meaningful `Accessible.name`s and
+stable field names for tests. Preserve existing automation names where possible;
+document and update legitimate changes together. Names are source/UI vocabulary,
+not service-format keys. Do not add persisted component identifiers.
+
+#### Work ledger and order
+
+Each implementation leaf targets 0.5–2 engineer-days including its focused
+checks; split before starting if its prototype exceeds that. The estimate is
+provisional, roughly **11–16 engineer-days for CS.1–CS.9**, excluding the open
+TV/TA and M7 work. CS.0 records this review only.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| CS.0 | DONE | Source review, named-part proposal and pre-FO dependency gate | Findings, source map and executable handoff below; documentation only |
+| CS.1 | TODO | Establish part contracts, catalogue and QML resource registration convention | Explicit pixel targets, adapter/event contracts, stable names and module/resource rules documented for subsequent extractions |
+| CS.2 | TODO | Extract common preview surface and slide card | Edit, Themes, Show and Audience wrappers share pixel/chrome controls; aspect, overlays, state and target isolation preserved |
+| CS.3 | TODO | Replace Bible generated-slide text presentation with themed worker previews | Generated cards and selected off-air canvas use the current compiled scripture appearance; selection never presents; no overlapping controls or misleading preview instructions |
+| CS.4 | TODO | Normalize inspector read state and mutation adapters | Shared field shape with resolved/own/source/capability state; theme, context and slide writes remain distinct, atomic and undoable |
+| CS.5 | TODO | Extract style/geometry/font/transition sections and migrate Themes/Settings | Common controls replace duplicated sections; Songs/Bible differences and existing sparse-context limits explicit; all supported fields reachable |
+| CS.6 | TODO | Migrate Edit to the shared inspector and expose supported advanced styling | Same typography/effects/font controls as Themes; writes customize only the current slide, reverts restore inheritance; authored item tools remain intact |
+| CS.7 | TODO | Group Show previews by running-order entry with a fresh row per item | Every item starts at column zero, repeated entries stay separate, cue count/order/keyboard/live semantics unchanged |
+| CS.8 | TODO | Make preview requests and scroll-to-cue use grouped layout geometry | Actual visible cues plus bounded look-ahead requested, gaps omitted, 32-scene cap/dedupe/coalescing preserved; bottom and zoom cases verified |
+| CS.9 | TODO | Integrated reuse, accessibility, screenshot and regression acceptance | New controls exercised by real gestures and worker pixels; cross-page state isolation, save/reopen and current TV/TA completion recorded before FO |
+
+Current priority: **CS.1 → CS.2 → CS.3 → CS.4 → CS.5 → CS.6 → CS.7 → CS.8**.
+Then complete open **TV.3 → TV.4a → TV.4b → TV.5 → TA.1 → CS.9**, then M7.
+TS.1–TS.5/TR.1–TR.3 and TV.1–TV.2 remain DONE. Their original suggested order
+above is historical, not an instruction to redo them. Shared controls can land
+against today's sparse Bible context; TV.3 later adds independent view style
+fields to its adapter. TV.4 owns caption roles, and TV.5 owns full import-plan
+validity across mode/theme/worker/target changes; reuse those leaves instead of
+inventing competing schemas or duplicating their acceptance.
+
+#### CS.1–CS.2 — shared preview contracts and extraction
+
+1. Inspect `PreviewView`, `EditCanvas`, Themes' `previewFrame`/`ViewTile`, Show's
+   tile delegate and OutputPanel's `previewBox`. Define required controller,
+   explicit target/key, aspect ratio, loading/unavailable/current-frame state,
+   caption/chrome and overlay slot. The surface displays only; page/session
+   owners schedule scene requests and decide what activation does. A Show card
+   may present; a Bible or Themes card only selects off air. Never put a default
+   Go/clear operation in a reusable preview part.
+2. Extract the smallest common surface/card and migrate existing consumers
+   before adding Bible use. Keep `PreviewView` as the only pixel painter and
+   keep worker text layout, shared-memory ownership and image caches unchanged.
+   Bind Audience/Selection/Thumbnail explicitly. Missing thumbnail or selection
+   pixels show an honest placeholder, never the Audience frame or a Qt text
+   recreation advertised as the rendered slide.
+3. Keep overlay coordinates in the same fitted content rectangle as the pixels,
+   including letterboxing/resizing. Edit retains selection/stack hit testing;
+   Themes retains theme-placement gesture routing. Controls/handles must not
+   obscure the actual content or intercept unrelated card actions.
+4. Register new QML files in `src/ui/CMakeLists.txt` through
+   `OPENSHOW_WORKSPACE_QML_NAMES`; preserve resource aliases used by
+   `tests/CMakeLists.txt` (it currently flattens filenames). Prefer flat files
+   for this extraction unless aliases in both modules are deliberately updated.
+   Build the application AND workspace fixture. Extend `workspace_ui_tests`
+   and `preview_selection_tests` for fitting, target isolation, overlay mapping,
+   captions, missing-worker state and unchanged output clears.
+
+#### CS.3 — BibleImportWorkspace
+
+1. Use a responsive layout: lookup/status first, a compact scrollable verse
+   selection area, a generated `SlidePreviewCollection` (initially ungrouped),
+   a substantial selected `SlidePreviewSurface`, then reachable Add/Cancel.
+   Checkboxes are source selection controls; keep their readable verse text.
+   Replace the generated-slide plain-text frames with rendered cards; optional
+   text/details remain secondary and must not pretend to show final layout.
+2. `ScriptureImport` owns selected generated-slide index and stable transient
+   preview identity. Compile from `scriptureSlideSceneJson` and the same
+   scripture fixture/resolver used by `scriptureBoxStyle`/Add. Use the active
+   theme's Bible (`scripture`) context with its documented inheritance. Browsing
+   an unrelated theme in Themes must not substitute that theme for the import.
+   No network refetch or temporary document/history edit is needed for previews.
+3. Introduce the collection's ungrouped virtualized mode here. Publish a bounded
+   scene/key list for the current generated plan so cards can
+   request worker thumbnails. Keys must distinguish plan generation and slide,
+   not merely index `0`, `1`, etc. Use the existing thumbnail limits/cache and
+   selected Selection target. Reuse the collection's visible-band mechanism;
+   the grouped Show migration is CS.7–CS.8. Retire/disable hidden-page requests
+   so Show, Themes and Bible cannot overwrite each other's active batches.
+4. Clear or mask obsolete selected pixels on selection/plan/page/connection
+   changes until the matching request is ready. Audit the current unkeyed
+   Selection image's readiness/correlation before relying on it; extend the
+   frontend request/readiness seam if needed. Cancel/Add completion must not
+   leave old plan cards labelled current. TV.5 still supplies the full
+   generation-bound Add/measurement validity contract before CS.9 closes.
+5. Correct the preview-help/status wording. Do not add Present to this page or
+   change the live Audience monitor. Preserve one Add = one undoable schedule
+   item, double-Add prevention, notes/attribution and passage word conservation.
+   Caption rendering itself remains TV.4; show exactly the scenes supported now.
+   Verify through `workspace_ui_tests`, `bible_import_page_tests`,
+   `bible_import_e2e_tests` and `preview_selection_tests`: multiple slides,
+   current scripture font/box/colours/effects, selection, no worker, delayed
+   replies, page changes, Add/save/reopen and zero audience presents from browsing.
+
+#### CS.4–CS.6 — shared appearance controls with separate write adapters
+
+1. Define a read model per field, for example
+   `{value, ownValue, isSet, source, editable, canReset}` plus explicit target
+   identity and supported sections. This is a proposed UI adapter shape; map
+   existing `slideAppearance`, theme rows, `themeContext` and
+   `themeSampleAppearance` into it in one place. Domain resolution remains the
+   authority. A controls file must not walk theme chains or synthesize new
+   inherited overrides merely to populate a text field.
+2. Define `commit(field, value)` and `reset(field)` events. The host adapter
+   translates them to `editTheme`/`setThemeTextStyleField`, context mutations,
+   or `customizeCurrentSlide`/`revertCurrentSlideField` as appropriate. Settings
+   supplies the concrete service transition target. Preserve the active theme,
+   selected theme, view, slide and selected item as distinct identities. Capture
+   the target at gesture start; cancel a pending gesture if that target changes.
+3. Theme context writes currently replace a context via `applyThemeContext`.
+   Preserve untouched members (including transition) and unknown contexts;
+   centralize merge/preservation in the adapter/controller, not copied QML
+   handlers. Avoid carrying stale snapshots across navigation. If controller
+   helpers are required, add focused tests for preservation and refusals.
+4. Keep “inherit/reset” separate from explicit flat gradient, platform family,
+   renderer-default size, Cut and disabled effects. Effects commit complete
+   records; a member edit merges once through a shared helper, and a reset
+   removes the whole override where the existing contract requires it. Retain
+   current domain validation bands and report refusals, resynchronizing from
+   the authoritative record. Unchanged commits and rejected edits cost no undo;
+   slider/geometry gestures commit once on release and undo once.
+5. Move family browsing into `WorkerFontPicker`, fed by worker metadata. Typed
+   names remain usable offline; missing-family warnings require a completed
+   worker list. Do not use Qt's installed fonts as the audience font authority.
+   Keep scalar/style controls, effect controls, background controls, geometry
+   fields and transitions as composable sections with capability flags. Where
+   today's Bible context cannot store an advanced field, state its inherited
+   source and disable that edit until TV.3; never silently write the Songs base.
+6. Migrate Themes and Settings first (CS.5), then Edit (CS.6). Edit gains the
+   existing supported weight/slant/fit/minimum/stroke/shadow controls through
+   customization verbs, with the same font picker and reset conventions. Extend
+   its customized-field badges and “Remove customizations” enablement to cover
+   advanced-only changes. Keep theme assignment and item-stack commands in host
+   wrappers; selected extra-item geometry must not become theme placement.
+7. Test both hosts with the same gesture scenarios: commit, no-op, invalid
+   input, reset, undo/redo, switch target mid-edit and save/reopen. Assert theme
+   edits affect intended users, slide edits leave the theme and other slides
+   unchanged, and the compiled preview matches the stored effective values.
+   Entry points: `document_controller_tests`, `workspace_ui_tests`,
+   `document_present_tests`, `preview_selection_tests`; extend `domain_tests`
+   only when domain behavior changes. No format/protocol bump for extraction;
+   TV.3/TV.4 retain ownership of new persisted view/role meaning.
+
+#### CS.7–CS.8 — show-item row boundaries and visible preview requests
+
+1. Group by **running-order entry occurrence**, using `entryId`, not show name,
+   theme, Bible context or `showId`. Two occurrences of one show are two groups.
+   Library browsing is one group. Each nonempty group begins at column zero;
+   slides within it flow left to right and wrap normally. The next group begins
+   on the next row, even when the previous row has spare columns. No forced
+   blank row if the previous group ends on a full row. A small heading/gap may
+   identify the item; it is not a cue or a keyboard stop.
+2. Implement `SlidePreviewCollection` using virtualized visual rows (group
+   metadata plus up to N real cards per row), or an equivalently bounded model.
+   Avoid an eager Column/Repeater of every slide or unlimited nested grids.
+   Preserve flat `cueRows` as presentation order; maintain explicit mappings
+   between cue index/key and visual row/cell. Empty shows create no phantom cue.
+   Padding cells, if used, cannot receive focus, clicks, context menus or Go.
+3. Replace `GridView.Contain`/index arithmetic with the mapped cue rectangle.
+   Previous/next/PageUp/PageDown/Space cross group boundaries in flat cue order.
+   Preserve cue keys across resize/zoom and keep live/pending markers based on
+   worker acknowledgements. Right-click actions still address the clicked slide;
+   repeated occurrences retain separate live identity despite sharing pixels.
+4. Derive the thumbnail band from actual visible rectangles and at most one
+   visual row of look-ahead, excluding headings/gaps/padding. Dedupe by slide
+   identity, retain existing coalescing and the protocol's 32-scene/extent/cache
+   bounds. If visible demand exceeds a batch, ensure all visible pictures are
+   eventually served without a request loop; never let overscan displace visible
+   demand permanently. Exercise top/middle/bottom, partial rows, resize, all five
+   thumb sizes and scroll-to-last-cue. No unbounded request per group.
+5. Extend `workspace_ui_tests` with deterministic services: a three-slide song
+   followed by a three-slide Bible item with four columns (Bible starts on a
+   new row), exact-full and multirow groups, repeated show entries, empty items
+   and a single library show. Assert actual card positions, logical cue order,
+   pointer/keyboard behavior and bounded visible-band contents. Update old tests
+   that assume `cellIndex == cueIndex`; retain the behavior they protect.
+   Run `frontend_journey_tests` and `production_journey_tests` for presenting
+   across boundaries and ack-backed live markers with a real worker.
+
+#### CS.9 — completion and handoff to other models
+
+Read PLAN.md/PROGRESS.md, the component catalogue once CS.1 creates it, the
+named source and tests, and Git status before each leaf. Deliver one leaf at a
+time with changed files, exact checks/results, remaining limitations and next
+task. Update this ledger and the short handoff; do not mark a part DONE from
+file extraction or a control value alone. Keep unfinished behavior disabled.
+
+Use the existing TA.1 build/test commands, adding the leaf-specific entry
+points above. A full desktop build is needed to embed changed QML resources
+in the application and fixture. At closure run desktop/headless serial gates,
+`git diff --check`, and captures of **Show, Bible Import, Edit, Themes Songs and
+Themes Bible** at 1000×680, 1380×800 and 1680×1020, including scale factors 1.5/2.
+At narrow sizes allow a deliberate stacked layout/scrolling, with a useful
+preview size and all form actions reachable. Check Tab/Enter/Escape, field focus
+on page exit, accessible names, first/last inspector controls and no overlap.
+
+Use real worker-frame evidence for theme fidelity and Audience/Selection/
+Thumbnail isolation; mouse/keyboard tests must operate on visible controls.
+Verify edits in one host refresh the other, no duplicate hidden-page requests,
+no document/history change from browsing, and no audience change without Go.
+Finish remaining TV/TA acceptance and update `docs/architecture.md`, captures,
+the catalogue and PROGRESS.md with actual results. Physical M7 output checks
+remain separate. FO is not the next task merely because these new controls exist.
+
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
-Deferred beyond TV/TS/TR and the current one-audience release. Content view
+**Entry gate: CS.1–CS.9, the remaining TV leaves and TA.1 must be DONE, with
+the current one-audience release gates satisfied, before starting FO.1.**
+Section order is not authorization to bypass those dependencies.
+
+Deferred beyond TV/TS/TR/CS and the current one-audience release. Content view
 (Songs/Bible) and destination (audience/broadcast/stage) are separate dimensions.
 Do not implement NDI as a slide context or advertise an active sender from an
 editor placeholder. Spike first and split any leaf exceeding two days.

@@ -126,6 +126,13 @@ the run this session was asked for ("Text styling and effects" and
 in the plan but out of this run by request: TV.3, TV.4a, TV.4b, TV.5 and the
 closing leaf TA.1 (architecture and captures sweep).
 
+2026-11-04 planning update: PLAN.md now records the **CS shared Qt control-set
+work before FO**, including themed Bible previews, common appearance controls
+and a new preview row for each running-order entry. CS.0 is a source review
+only; CS.1–CS.9 are TODO. **Next action: CS.1**, defining part contracts and the
+component catalogue. Complete the remaining TV/TA and M7 gates before FO. No
+application behavior changed in this planning update.
+
 ## How to pick up
 
 1. `PLAN.md` is the contract: ledger rows carry acceptance evidence, the themes
