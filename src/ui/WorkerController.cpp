@@ -313,6 +313,9 @@ const QImage& WorkerController::selectionImage() const {
 bool WorkerController::selectionReady() const {
     return fPreview->selectionReady();
 }
+bool WorkerController::selectionCurrent() const {
+    return fPreview->selectionCurrent();
+}
 qint64 WorkerController::selectionFrames() const {
     return fPreview->selectionFrames();
 }

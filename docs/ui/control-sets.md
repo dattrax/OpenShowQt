@@ -45,7 +45,7 @@ write back what the controller's rows and verbs expose.
 | Surface target | `PreviewView.Target` | Fed by | Rules |
 |---|---|---|---|
 | Audience | `Audience` | `WorkerController::previewImage()` (the presenting mirror) | Only the AudienceMonitor shows it; clears live beside it in `OutputPanel`, never inside the surface |
-| Selection | `Selection` | `WorkerController::requestSelectionPreview(sceneJson)` / `clearSelectionPreview()` | Off-air render of one scene. Readiness is `worker.selectionReady`; idempotent per payload with request generations. One page owns the lane at a time (the visible page); leaving calls `clearSelectionPreview()` |
+| Selection | `Selection` | `WorkerController::requestSelectionPreview(sceneJson)` / `clearSelectionPreview()` | Off-air render of one scene. Readiness is `worker.selectionReady`; CURRENTNESS is `worker.selectionCurrent` — whether the held frame answers the newest ask (CS.3): pages that must not caption a dead plan mask on it. One page owns the lane at a time (the visible page: Edit, Themes and Bible each stand down on exit and re-ask on entry) |
 | Thumbnail | `Thumbnail` + `key` | `WorkerController::requestThumbnails([{key, scene}], w, h)` / `clearThumbnails()` | Bounded batch, REPLACES the previous ask; cap 32 scenes; keyed arrival via `thumbnailReady(key)`. Keys must be stable and unique per producer (see each part) |
 
 Every thumbnail ask is 16:9 with each dimension inside **32..512** — the
@@ -153,8 +153,15 @@ focusable button (cue stepping must keep the keyboard).
 
 `src/ui/SlidePreviewCollection.qml` (introduced ungrouped in CS.3, grouped
 in CS.7). Virtualized responsive preview collection with group boundaries,
-index mapping and visible-band reporting. Implemented as a ListView over
-computed visual rows so only visible rows have live delegates.
+index mapping and visible-band reporting. Implemented as a GridView over
+computed visual rows so only visible rows have live delegates. CS.3 ships
+the ungrouped flow (`grouped: false`, `cardWidth`, `visibleIndexes()`,
+debounced `visibleBandChanged()`); the grouped row-break arithmetic and its
+mapped geometry land with the Show migration, and hosts go through
+`visibleIndexes()` in either era. First consumer: `BibleImportPage`
+(`bibleSlideCollection`, cards `bibleSlideCard`, keys
+`scripture:<planGeneration>:<index>` — plan identity is transient session
+vocabulary, bumped by every publish/Add/cancel, never persisted).
 
 | | |
 |---|---|

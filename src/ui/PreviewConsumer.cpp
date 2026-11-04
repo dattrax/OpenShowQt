@@ -221,6 +221,11 @@ void PreviewConsumer::requestSelectionPreview(const QString& sceneJson) {
     ++fSelectionRequest;
     ask->selectionRequest = fSelectionRequest;
     fSelectionAskedJson = sceneJson;
+    // CS.3: the newest ask is a FACT the UI must learn at ask time, not when
+    // the frame answers it — `selectionCurrent` falls to false here so a
+    // page that masks between plans can do so the moment the question
+    // changes, while the painted frame itself stays (no flicker mid-typing).
+    emit changed();
 }
 
 void PreviewConsumer::clearSelectionPreview() {

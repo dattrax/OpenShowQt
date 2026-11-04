@@ -55,6 +55,16 @@ class ScriptureImport final : public QObject {
     // passage is set by it, "" when the words wear the theme's own look.
     // The page's plan sentence names this word; it never guesses.
     Q_PROPERTY(QString context READ context NOTIFY stateChanged)
+    // Task CS.3: which generated slide the page's off-air canvas shows
+    // (-1 while there is no plan). Selection is a browse state: it presents
+    // nothing, but the cards must be able to say WHICH one the canvas paints.
+    Q_PROPERTY(int selectedIndex READ selectedIndex NOTIFY stateChanged)
+    // The transient identity of the generated plan (CS.3). Thumbnail keys
+    // carry it — `scripture:<plan>:<index>` — so a re-pagination or a new
+    // lookup can never leave a NEW card wearing the OLD plan's pixels, nor
+    // an old card claiming a slot the new plan filled. It is session
+    // vocabulary only: nothing here is persisted or sent on the wire.
+    Q_PROPERTY(qint64 planGeneration READ planGeneration NOTIFY stateChanged)
 
 public:
     ScriptureImport(BibleImport* bible, DocumentController* documents,
@@ -65,6 +75,8 @@ public:
     QString context() const { return fContext; }
     bool canAdd() const { return !fSlides.isEmpty() && !measuring(); }
     QVariantList slides() const { return fSlides; }
+    int selectedIndex() const { return fSelectedIndex; }
+    qint64 planGeneration() const { return fPlanGeneration; }
 
     // Rebuild the generated slides from the current selection and the
     // CURRENT theme: a pure function of those inputs, so selection changes,
@@ -73,8 +85,19 @@ public:
     Q_INVOKABLE void regenerate();
     // The off-air picture of one generated slide, drawn by the worker into
     // the preview stream it already owns. Nothing is prepared for air and
-    // nothing is presented.
+    // nothing is presented. CS.3: this also records WHICH slide the canvas
+    // answers, so the cards can mark the one the picture belongs to.
     Q_INVOKABLE void previewSlide(int index);
+    // The thumbnail key of one generated slide (CS.3): plan generation and
+    // slide, never the index alone — a card of the old plan and a card of
+    // the new one cannot collide, and a cached frame of a dead plan can
+    // never paint a live card. Ephemeral session vocabulary, never stored.
+    Q_INVOKABLE QString previewKey(int index) const;
+    // The compiled scene behind a generated slide (CS.3): the same
+    // `scriptureSlideSceneJson` the preview and Add use, compiled once when
+    // the plan published and answered from the cache after. The page builds
+    // its bounded thumbnail asks from these; nothing schedules here.
+    Q_INVOKABLE QString previewSceneJson(int index) const;
     // The plan's one destination action: today's schedule only, one
     // undoable item, labels in notes, and a successful Add consumes the
     // generated batch so the next click cannot insert a copy of it.
@@ -125,6 +148,12 @@ private:
     QVariantList fSlides;
     QString fStatus;
     QString fContext;  // the context the newest style answered with
+    // CS.3: the plan's transient identity and the canvas's pick. fScenes
+    // parallels fSlides, holding each slide's compiled scene so the ask,
+    // the cards and the canvas all describe one compile.
+    QStringList fScenes;
+    int fSelectedIndex = -1;
+    qint64 fPlanGeneration = 0;
 };
 
 }  // namespace openshow::ui

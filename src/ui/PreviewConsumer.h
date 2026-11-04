@@ -107,6 +107,15 @@ public:
     // edit — callers paint the document's own placeholder then.
     const QImage& selectionImage() const { return fSelectionImage; }
     bool selectionReady() const { return !fSelectionImage.isNull(); }
+    // Task CS.3: whether that image ANSWERS the newest ask. A newer ask
+    // deliberately keeps the previous frame painted (the edit canvas should
+    // not flicker mid-typing), but a page that must not show one plan's
+    // picture under another plan's name — the Bible canvas between
+    // generations — masks on this instead.
+    bool selectionCurrent() const {
+        return !fSelectionImage.isNull() && fSelectionImageRequest != 0
+               && fSelectionImageRequest == fSelectionRequest;
+    }
     qint64 selectionFrames() const { return fSelectionFrames; }
     qint64 selectionStale() const { return fSelectionStale; }
     bool selectionSupported() const { return fSelectionCapable; }

@@ -335,6 +335,21 @@ int main(int argc, char* argv[]) {
         QTest::qWait(120);
         check(!worker.wordsOnAir(), "a clicked preview is still off air");
 
+        // --- CS.3: the plan owns an identity, the canvas knows its answer --
+        // Thumbnail keys name the plan GENERATION and the slide, so a new
+        // plan's card cannot be painted by the old plan's cached frame, and
+        // index alone can never collide. The scene behind each key was
+        // compiled once when the plan published.
+        check(scripture.selectedIndex() == (scripture.slides().size() > 1 ? 1 : 0),
+              "the clicked preview is the slide the session calls current");
+        const qint64 firstPlan = scripture.planGeneration();
+        const QString keyA = scripture.previewKey(0);
+        check(keyA == QStringLiteral("scripture:%1:0").arg(firstPlan)
+                  && scripture.previewKey(0) != scripture.previewKey(1),
+              "thumbnail keys name plan generation and slide, never index alone");
+        check(!scripture.previewSceneJson(0).isEmpty(),
+              "the plan compiled its picture scenes once, beside the list");
+
         // --- a theme change re-paginates, with no second request -----------
         const int requestsAfterLookup = manager.requests;
         const qsizetype slidesBefore = scripture.slides().size();
@@ -367,6 +382,29 @@ int main(int argc, char* argv[]) {
                   scripture.slides().size() >= 2,
               "the narrow box split the passage into more slides, never smaller words");
         check(identityHolds(scripture, bible), "the narrow re-pagination preserved the passage");
+        // CS.3: republishing is a NEW plan — its keys never inherit the old
+        // plan's answers, and its canvas starts on its first slide.
+        check(scripture.planGeneration() > firstPlan
+                  && scripture.previewKey(0) != keyA,
+              "a republished plan retires the old keys instead of re-wearing them");
+        check(scripture.selectedIndex() == 0, "the new plan previews its first slide");
+
+        // The masking seam, where the split guarantees a second slide to
+        // ask for: changing the selection retires the ANSWER the moment
+        // the ask changes — the old frame stays painted for pages that
+        // want steadiness, but `selectionCurrent` says plainly it is no
+        // longer the reply — and the arriving frame restores the truth.
+        check(scripture.slides().size() > 1, "the narrow plan has a second slide to select");
+        scripture.previewSlide(1);
+        check(!worker.selectionCurrent(),
+              "a new selection masks at once: the frame held is not the newest answer");
+        QElapsedTimer frameWait;
+        frameWait.start();
+        while (!worker.selectionCurrent() && frameWait.elapsed() < 5000) {
+            QTest::qWait(25);
+        }
+        check(worker.selectionCurrent() && worker.selectionReady(),
+              "the selected slide's own frame answers and the mask lifts");
 
         // Long-verse continuation is labelled, and the label says so.
         bool sawContinuation = false;
@@ -398,6 +436,14 @@ int main(int argc, char* argv[]) {
               "the Library gained nothing — the page has no door there");
         check(!scripture.canAdd() && !scripture.addToSchedule(),
               "the batch was consumed: a repeated Add cannot duplicate the insertion");
+        // CS.3: the consumed plan took its pictures and keys down with it —
+        // no old card keeps a "current" label for words the schedule has
+        // absorbed, and the canvas has stood its selection down.
+        check(scripture.selectedIndex() == -1
+                  && scripture.previewSceneJson(0).isEmpty()
+                  && scripture.previewKey(0) != keyA
+                  && !worker.selectionReady(),
+              "Add retires the plan's cards, keys and off-air picture together");
         const QString passageShow =
             docs.playlistEntries().at(0).toMap().value(QStringLiteral("showId")).toString();
         check(!passageShow.isEmpty() && docs.slidesOf(passageShow).size() == slidesAtAdd,

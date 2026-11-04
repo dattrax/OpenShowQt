@@ -80,6 +80,11 @@ class WorkerController : public QObject {
     // the slide's text with QML until the worker's version arrives — is the
     // second text layout this task removes.
     Q_PROPERTY(bool selectionReady READ selectionReady NOTIFY previewChanged)
+    // CS.3: the READY picture's correlation with the newest ask. `selectionReady`
+    // says a picture is in hand; `selectionCurrent` says it answers the scene
+    // the page last asked for. A canvas that must never caption one plan's
+    // frame under another's waits on this.
+    Q_PROPERTY(bool selectionCurrent READ selectionCurrent NOTIFY previewChanged)
     // The slide list's pictures (task 6.16b, review R16): the worker's own
     // render of the visible band, small and off the air, on the same stream.
     // `thumbnailSupported` is the whole negotiation — a worker without the
@@ -343,6 +348,7 @@ public:
     // slide under edit — callers paint the document's own placeholder then.
     const QImage& selectionImage() const;
     bool selectionReady() const;
+    bool selectionCurrent() const;
     qint64 selectionFrames() const;
     qint64 selectionStale() const;
     bool selectionSupported() const;

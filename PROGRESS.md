@@ -4,6 +4,52 @@ Updated: 2026-11-04 (Europe/London).
 
 ## Current checkpoint
 
+**CS.3 complete (2026-11-04): the Bible page shows the worker's pictures it
+had always promised — keyed to a plan that can die honestly.**
+
+`BibleImportPage` is restructured to the CS.1 shape: notice and status first,
+a bounded scrolling verse list (`bibleVerseList` — checkboxes stay source
+selection controls with their readable text), the generated plan as a
+`SlidePreviewCollection` in its **ungrouped mode** (new file; `grouped` stays
+false until CS.7's row arithmetic) whose delegates are `SlidePreviewCard`s on
+the keyed **Thumbnail** target, and a substantial **off-air canvas**
+(`biblePreviewCanvas`) on the **Selection** target. The old sentence
+promising pictures "in the preview panel on the right" was never true of the
+Audience monitor; the footer now says what actually happens and where.
+
+`ScriptureImport` grew the plan's transient identity: `planGeneration` bumps
+on every publish/Add/cancel/failure, `previewKey(i)` is
+`scripture:<plan>:<index>` (a new plan cannot inherit an old plan's cached
+frames; the key is session vocabulary, never persisted), `previewSceneJson(i)`
+answers from the one compile done at publish (same
+`scriptureSlideSceneJson` the preview and Add use), and `selectedIndex` says
+which card the canvas paints. Add and Cancel now stand the selection down
+with the plan — no card keeps a "current" label for words the schedule
+absorbed. The page owns both lanes while visible and clears both on exit, so
+Show/Themes/Bible batches cannot race each other across a page turn.
+
+Correlation landed at the seam the plan asked to audit:
+`PreviewConsumer::selectionCurrent` (mirrored by WorkerController, and the
+consumer now announces ask-time with `changed()`), distinguishing "a frame is
+in hand" from "the held frame answers the newest ask". The Bible canvas masks
+on it between plans; the Edit/Themes canvases keep their steadiness and
+existing readiness untouched.
+
+Gates: desktop `ctest -j1` **65/65**, headless **36/36**, `git diff --check`
+clean. New pins (bible_import_page_tests): keys name generation and slide and
+never collide; republish retires the old keys; Add retires cards, keys and
+the off-air picture together; selection masks at ask time and the mask lifts
+when the selected slide's own frame answers (run where the split guarantees a
+second slide, so it cannot be skipped). workspace_ui_tests: the page carries
+the verse scroll, the card collection and a Selection-only canvas; existing
+BIB lookup/pagination/Add/persistence journeys untouched.
+
+**Next action:** CS.4 — the `InspectorAdapter` read model
+(`{value, ownValue, isSet, source, editable, canReset}`) mapped once from the
+existing controller reads, with `commit`/`reset` routed per target.
+
+### Earlier checkpoint: CS.2
+
 **CS.2 complete (2026-11-04): four hand-built preview panes became one surface
 and one card — and every pane still paints only its own worker target.**
 
@@ -195,11 +241,11 @@ closing leaf TA.1 (architecture and captures sweep).
 2026-11-04 planning update: PLAN.md now records the **CS shared Qt control-set
 work before FO**, including themed Bible previews, common appearance controls
 and a new preview row for each running-order entry. CS.0 (source review),
-**CS.1 (the component catalogue, `docs/ui/control-sets.md`)** and
-**CS.2 (shared `SlidePreviewSurface`/`SlidePreviewCard`, all four preview hosts
-migrated)** are DONE; CS.3–CS.9 remain. **Next action: CS.3**, the Bible import
-workspace on worker previews. Complete the remaining TV/TA and M7 gates before
-FO.
+**CS.1 (the catalogue)**, **CS.2 (shared surface/card, all preview hosts
+migrated)** and **CS.3 (Bible import on worker previews, plan-keyed, honest
+off-air canvas)** are DONE; CS.4–CS.9 remain. **Next action: CS.4**, the
+inspector read model and mutation adapters. Complete the remaining TV/TA and
+M7 gates before FO.
 
 ## How to pick up
 
@@ -281,8 +327,10 @@ FO.
 ## Recent commits
 
 - `3150e55` docs(ui): CS.1 - the control-set contracts and component catalogue
-- CS.2 (this commit) feat(ui): the shared preview surface and slide card, with
-  Audience, Edit, Themes and Show all wearing them
+- `c627ef0` feat(ui): CS.2 - one preview surface, one slide card, four honest
+  wearers
+- CS.3 (this commit) feat(ui): the Bible import on worker previews - plan-keyed
+  cards, an off-air Selection canvas and an honest retirement of both lanes
 
 - TR.3 — the transition UI with the audience as witness:
   `DocumentViews::transitionRecordMap` as the one author of the record's QML

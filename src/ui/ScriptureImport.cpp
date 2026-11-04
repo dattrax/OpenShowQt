@@ -326,6 +326,7 @@ bool ScriptureImport::measure(const std::vector<importer::MeasureRequest>& reque
 void ScriptureImport::publish(const std::vector<importer::GeneratedSlide>& generated,
                               const importer::PaginationOutcome& outcome) {
     fSlides.clear();
+    fScenes.clear();
     for (const importer::GeneratedSlide& slide : generated) {
         QVariantMap row;
         QStringList lines;
@@ -335,7 +336,17 @@ void ScriptureImport::publish(const std::vector<importer::GeneratedSlide>& gener
         row.insert(QStringLiteral("lines"), lines);
         row.insert(QStringLiteral("label"), QString::fromStdString(slide.label));
         fSlides.push_back(row);
+        // CS.3: compile the picture's scene ONCE per plan, from the same
+        // resolver the preview and Add use, so the cards' thumbnail asks
+        // and the canvas's selection ask describe the SAME compile the
+        // page lists. (A slide that will not compile keeps an empty entry;
+        // previewSlide still reports it honestly.)
+        fScenes.push_back(fDocuments->scriptureSlideSceneJson(lines));
     }
+    // CS.3: a published plan is a NEW plan. Its keys are its own; whatever
+    // the worker was drawing for the old one belongs to no card here.
+    ++fPlanGeneration;
+    fSelectedIndex = -1;
     fMeasuring = false;
     if (fRerunWanted) {
         fRerunWanted = false;
@@ -364,18 +375,26 @@ void ScriptureImport::previewSlide(int index) {
     if (index < 0 || index >= fSlides.size()) {
         return;
     }
-    const QStringList lines =
-        fSlides.at(index).toMap().value(QStringLiteral("lines")).toStringList();
-    const QString sceneJson = fDocuments->scriptureSlideSceneJson(lines);
+    // CS.3: the canvas answers ONE slide, and the cards know which. The
+    // request itself is unchanged: the editor's off-air selection transport
+    // (task 6.16a), never a present.
+    fSelectedIndex = index;
+    emit stateChanged();
+    const QString sceneJson = fScenes.value(index);
     if (sceneJson.isEmpty()) {
         setStatus(QStringLiteral("preview: this slide could not be compiled — nothing was "
                                  "written and the schedule is untouched"));
         return;
     }
-    // Off air, by construction: this is the editor's selection-preview ask
-    // (task 6.16a's transport), not a present. The audience's picture is
-    // whatever it was; the preview stream is the operator's.
     fWorker->requestSelectionPreview(sceneJson);
+}
+
+QString ScriptureImport::previewKey(int index) const {
+    return QStringLiteral("scripture:%1:%2").arg(fPlanGeneration).arg(index);
+}
+
+QString ScriptureImport::previewSceneJson(int index) const {
+    return fScenes.value(index);
 }
 
 bool ScriptureImport::addToSchedule() {
@@ -414,10 +433,17 @@ bool ScriptureImport::addToSchedule() {
     // The schedule owns the words now, as one item. The transient batch
     // dies HERE, so a second click has nothing left to duplicate — the
     // plan's "repeated Add cannot duplicate an insertion" made structural
-    // rather than advisory.
+    // rather than advisory. CS.3 takes the plan's PICTURES down with it:
+    // the cards retire, the canvas stands its selection down, and no old
+    // card keeps a "current" label for words the schedule has absorbed.
     fSlides.clear();
+    fScenes.clear();
+    fSelectedIndex = -1;
+    ++fPlanGeneration;
+    fWorker->clearSelectionPreview();
     fMeasured.clear();
     emit slidesChanged();
+    emit stateChanged();
     setStatus(QStringLiteral("added to today's schedule as one item — one undo removes the "
                              "whole passage. Look up again to import more."));
     emit stateChanged();
@@ -437,6 +463,14 @@ void ScriptureImport::cancel() {
         fSlides.clear();
         emit slidesChanged();
     }
+    // CS.3: a dead plan keeps no picture and no keys. The canvas clears to
+    // its placeholder instead of going on showing slide 3 of a plan that
+    // no longer exists.
+    fScenes.clear();
+    fSelectedIndex = -1;
+    ++fPlanGeneration;
+    fWorker->clearSelectionPreview();
+    emit stateChanged();
     setStatus(QStringLiteral("cancelled — the fetched words and the generated slides are gone. "
                              "Nothing was written%1")
                   .arg(hadSlides ? QStringLiteral(" to the schedule") : QString()));
@@ -446,7 +480,12 @@ void ScriptureImport::finishWithFailure(const QString& sentence) {
     fMeasuring = false;
     fSlides.clear();
     fContext.clear();  // there is no plan left to name a context of
+    // CS.3: the failed plan takes its pictures and keys with it.
+    fScenes.clear();
+    fSelectedIndex = -1;
+    ++fPlanGeneration;
     emit slidesChanged();
+    emit stateChanged();
     setStatus(sentence);
 }
 

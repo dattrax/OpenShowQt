@@ -2557,6 +2557,17 @@ int main(int argc, char** argv) {
         auto* notice = window->findChild<QQuickItem*>("bibleNoticeLabel");
         check(notice && notice->property("text").toString().contains(QStringLiteral("internet")),
               "the page opens on the online notice");
+        // CS.3: the page's shape — a bounded verse scroll, a worker-card
+        // collection, and an OFF-AIR canvas on the Selection target: the
+        // one picture lane this page may use, never the Audience monitor's.
+        auto* verseScroll = findNamed(window->contentItem(), "bibleVerseList");
+        auto* cardGrid = findNamed(window->contentItem(), "bibleSlideCollection");
+        auto* bibleCanvas = findNamed(window->contentItem(), "biblePreviewCanvas");
+        auto* biblePainter = bibleCanvas ? findByClass(bibleCanvas, "PreviewView") : nullptr;
+        check(verseScroll && cardGrid && bibleCanvas && biblePainter
+                  && biblePainter->property("target").toInt() == 1
+                  && bibleCanvas->property("target").toString() == QLatin1String("selection"),
+              "the import page lists verses, cards the plan and paints only its off-air canvas");
         // BIF.2: the picker must OPEN on the session's translation — the
         // operator's NIV default appeared only after they clicked the menu
         // by hand because the old currentIndex binding never recomputed.
