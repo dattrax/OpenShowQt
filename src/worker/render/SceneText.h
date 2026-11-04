@@ -133,6 +133,21 @@ public:
         float boxHeight = 0.0f;
         bool isImage = false;    // an image entry: box + assetPath, nothing else
         std::string assetPath;
+        // The TS.2 effect state drawLayout needs beside the paragraph.
+        // A SHADOW needs nothing here: it rides the paragraph's own text
+        // style, so the fork's shadow pass hands the very same shaped blobs
+        // to the painter (TextLine.cpp — background → shadow → blobs). A
+        // STROKE cannot ride the style, because one style cannot say
+        // "outline behind fill" in one pass; the painter draws that from
+        // these fields over the same blob. A disabled effect leaves every
+        // field at its default AND draws exactly what it drew before
+        // scene 4 existed.
+        bool strokeEnabled = false;
+        std::uint32_t strokeColor = 0x000000u;  // packed RGB, like item.color
+        float strokeWidth = 0.0f;               // authored px, 0..32
+        bool shadowEnabled = false;             // routing only: which items
+                                                // must draw through the
+                                                // effect-aware painter
     };
 
     // scale multiplies the item's size before layout (the fit pass).
@@ -231,6 +246,15 @@ public:
     // composition pass keeps no intermediate render target (task 6.11b,
     // review R13); a fading image item takes the same alpha on its own
     // paint. A null `images` draws only the text items.
+    //
+    // The same painter carries the TS.2 style effects (task TS.2): a
+    // paragraph whose style names a shadow hands the shadow's copy of the
+    // shaped blob to the painter BEFORE its glyphs, and the painter draws
+    // an item's stroke pass behind its fill pass from the same blob —
+    // shadow → stroke → fill, one shaping, and the frame's fade alpha
+    // multiplied into each effect's own alpha exactly once. An item with
+    // both effects disabled reaches the plain fast path and draws
+    // byte-identical pixels to any scene this build drew before.
     //
     // `textItems=false` is the mirror half of the same switch (task 6.20d):
     // the words toggle drawn off, the stack's IMAGE entries still draw, in

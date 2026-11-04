@@ -20,6 +20,8 @@
 *~
 VP_VULKANINFO_*.json
 /media-fixtures/
-# Self-generated test fixtures when a test is run from the repo root
+# Self-generated test fixtures and render output when a test is run from the
+# repo root (the render fixtures write scene-render-*.png into the CWD)
 /background-media-fixtures/
 /playback-fixtures/
+/scene-render-*.png

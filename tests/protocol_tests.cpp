@@ -213,7 +213,7 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 17, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 18, "hello lists capabilities");
         {  // Task 6.17b's scene 2 (kinded items) is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasImageItems = std::any_of(
@@ -261,21 +261,22 @@ void testHello() {
                 });
             check(hasMeasure, "capabilities name text.measure.v1");
         }
-        {  // TS.1 defines the scene-text-style spelling in the contract but
-           // this build does NOT advertise it: the wire carries the fields
-           // (scene 4) while the renderer still ignores them, so claiming
-           // "I draw styles" would let a frontend ship an enabled stroke to
-           // a worker that silently drops it. TS.2 draws them and adds the
-           // name; until then the honest answer is absence — and this
-           // tripwire is what TS.2 must consciously update.
+        {  // TS.2 draws the scene 4 style block — faces, stroke behind
+           // fill, shadow from the shaped run — so this build DOES
+           // advertise the name TS.1 defined but withheld. The frontend's
+           // pre-send gate opens on it; a pre-TS.2 worker's hello lacks
+           // it, and the same gate keeps styled scenes from shipping to
+           // that worker. This replaced TS.1's absence tripwire, which
+           // existed precisely so this update would be a conscious one
+           // (worker_controller_tests' gate scenario still refuses a
+           // NON-default scene toward a peer that names nothing).
             const auto& caps = result.at("capabilities").as_array();
             const bool hasTextStyle = std::any_of(
                 caps.begin(), caps.end(), [](const boost::json::value& v) {
                     return v.is_string() && v.as_string() == proto::kCapabilityTextStyle;
                 });
-            check(!hasTextStyle,
-                  "scene.text-style.v1 is spelled by the contract but not yet "
-                  "advertised — TS.2's renderer earns it");
+            check(hasTextStyle,
+                  "scene.text-style.v1 is advertised now that the renderer draws the fields");
         }
         {  // Task 5.5d's media visibility is named by a capability.
             const auto& caps = result.at("capabilities").as_array();

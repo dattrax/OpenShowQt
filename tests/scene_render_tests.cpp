@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <filesystem>
@@ -816,6 +817,402 @@ void testTypographyAlignsAndSpaces() {
               "lineSpacing 2.5 doubles the pitch (" + std::to_string(loosePitch) + " vs " +
                   std::to_string(tightPitch) + ")");
     }
+}
+
+void testTextStyleFacesAndEffectsRender() {
+    // Task TS.2: the renderer draws the scene 4 style block. Weight and
+    // slant resolve through the font FACE, the stroke paints BEHIND the
+    // fill from the same shaped blob, and the shadow follows the very same
+    // run — and none of it disturbs the legacy pixels: an effect that is
+    // disabled draws nothing however loud its record reads, and the
+    // contract defaults are the pre-scene-4 picture byte for byte.
+    std::string error;
+
+    // --- disabled is silent ------------------------------------------------------
+    // Same word, same size, and a stroke and shadow switched OFF behind
+    // values that would be impossible to miss if they drew: a 28-unit red
+    // band and a full-opacity cyan crescent offset 60 units right.
+    const scene::Scene plain = singleItemScene({"Hallelujah"}, 144.0);
+    scene::Scene disabledEffects = plain;
+    disabledEffects.items[0].stroke.enabled = false;
+    disabledEffects.items[0].stroke.color = "#ff0000";
+    disabledEffects.items[0].stroke.width = 28.0;
+    disabledEffects.items[0].shadow.enabled = false;
+    disabledEffects.items[0].shadow.color = "#00ffff";
+    disabledEffects.items[0].shadow.opacity = 1.0;
+    disabledEffects.items[0].shadow.offsetX = 60.0;
+    disabledEffects.items[0].shadow.offsetY = 0.0;
+    disabledEffects.items[0].shadow.blurSigma = 8.0;
+    disabledEffects.items[0].fontWeight = 400;
+    disabledEffects.items[0].fontStyle = "normal";
+    Frame plainFrame, disabledFrame;
+    if (!check(renderFixture(plain, "style-plain", &plainFrame, &error),
+               "plain style fixture rendered: " + error) ||
+        !check(renderFixture(disabledEffects, "style-disabled", &disabledFrame, &error),
+               "disabled-effect fixture rendered: " + error)) {
+        return;
+    }
+    check(plainFrame.pixels == disabledFrame.pixels,
+          "disabled effects are byte-identical to no effects at all");
+
+    // --- weight and slant through the face ---------------------------------------
+    // One shared wrap (the contract forbids bolding into a different line
+    // count), one shared vertical rhythm, visibly heavier ink.
+    const scene::Scene regular = singleItemScene({"Grace and peace", "to you all"}, 96.0);
+    scene::Scene bold = regular;
+    bold.items[0].fontWeight = 700;
+    scene::Scene italic = regular;
+    italic.items[0].fontStyle = "italic";
+    Frame regularFrame, boldFrame, italicFrame;
+    if (!check(renderFixture(regular, "style-regular", &regularFrame, &error),
+               "regular fixture rendered: " + error) ||
+        !check(renderFixture(bold, "style-bold", &boldFrame, &error),
+               "bold fixture rendered: " + error) ||
+        !check(renderFixture(italic, "style-italic", &italicFrame, &error),
+               "italic fixture rendered: " + error)) {
+        return;
+    }
+    const int regularBands = inkBands(regularFrame);
+    check(inkBands(boldFrame) == regularBands && inkBands(italicFrame) == regularBands,
+          "bold and italic keep the regular wrap (" + std::to_string(regularBands) +
+              " bands each)");
+    const std::vector<double> regularCentres = bandCenterYs(regularFrame);
+    const std::vector<double> boldCentres = bandCenterYs(boldFrame);
+    bool bandsAlign = regularCentres.size() == boldCentres.size() && !regularCentres.empty();
+    for (std::size_t i = 0; bandsAlign && i < regularCentres.size(); ++i) {
+        bandsAlign = std::abs(regularCentres[i] - boldCentres[i]) <= 2.0;
+    }
+    check(bandsAlign, "bold lays its lines at the regular line centres");
+    const Ink regularInk = measureInk(regularFrame);
+    const Ink boldInk = measureInk(boldFrame);
+    std::printf("measured: style faces regular %d px, bold %d px\n", regularInk.count,
+                boldInk.count);
+    check(boldInk.count > regularInk.count * 6 / 5,
+          "weight 700 draws a heavier face (" + std::to_string(boldInk.count) + " vs " +
+              std::to_string(regularInk.count) + " ink px)");
+    int italicDiffers = 0;
+    for (std::size_t i = 0; i < italicFrame.pixels.size(); ++i) {
+        if (differs(italicFrame.pixels[i], regularFrame.pixels[i])) {
+            ++italicDiffers;
+        }
+    }
+    check(italicDiffers > 500,
+          "italic is a slanted face, not the regular one (" + std::to_string(italicDiffers) +
+              " px changed)");
+
+    // --- stroke: behind the fill, outside its edge, scaled with the canvas -------
+    // 28 authored units at the 0.5 output scale is a 14-device pen centred
+    // on the outline: 7 device pixels of red beyond the white, with the
+    // fill surviving on top (a stroke ON TOP would eat the glyph cores).
+    constexpr double kStrokeWidth = 28.0;
+    constexpr int kStrokeGrowth = static_cast<int>(kStrokeWidth * kScale / 2.0);  // 7
+    scene::Scene stroked = plain;
+    stroked.items[0].stroke.enabled = true;
+    stroked.items[0].stroke.color = "#ff0000";
+    stroked.items[0].stroke.width = kStrokeWidth;
+    Frame strokedFrame;
+    if (!check(renderFixture(stroked, "style-stroke", &strokedFrame, &error),
+               "stroked fixture rendered: " + error)) {
+        return;
+    }
+    const Ink plainInk = measureInk(plainFrame);
+    const Ink strokedInk = measureInk(strokedFrame);
+    const int growthLeft = plainInk.left - strokedInk.left;
+    const int growthRight = strokedInk.right - plainInk.right;
+    const int growthTop = plainInk.top - strokedInk.top;
+    const int growthBottom = strokedInk.bottom - plainInk.bottom;
+    std::printf("measured: stroke growth L%d R%d T%d B%d (expected ~%d)\n", growthLeft,
+                growthRight, growthTop, growthBottom, kStrokeGrowth);
+    check(std::abs(growthLeft - kStrokeGrowth) <= 3 &&
+              std::abs(growthRight - kStrokeGrowth) <= 3 &&
+              std::abs(growthTop - kStrokeGrowth) <= 3 &&
+              std::abs(growthBottom - kStrokeGrowth) <= 3,
+          "the stroke extends the ink by half its authored width on every side");
+    auto redDominant = [](const Frame& frame, int x, int y) {
+        const SkColor c = frame.at(x, y);
+        return SkColorGetR(c) >= 150 && SkColorGetR(c) >= SkColorGetG(c) + 80 &&
+               SkColorGetR(c) >= SkColorGetB(c) + 80;
+    };
+    int ringPixels = 0;
+    for (int y = 0; y < strokedFrame.height; ++y) {
+        for (int x = 0; x < strokedFrame.width; ++x) {
+            if (redDominant(strokedFrame, x, y)) {
+                ++ringPixels;
+            }
+        }
+    }
+    check(ringPixels >= 1500,
+          "the ring around every glyph is red (" + std::to_string(ringPixels) + " px)");
+    // Outside the plain ink's own left edge, a column that can only be
+    // stroke: nothing white was ever drawn there.
+    int outsideFillStroke = 0;
+    for (int y = plainInk.top; y <= plainInk.bottom; ++y) {
+        for (int x = strokedInk.left + 1; x < plainInk.left - 1; ++x) {
+            if (redDominant(strokedFrame, x, y)) {
+                ++outsideFillStroke;
+            }
+        }
+    }
+    check(outsideFillStroke >= 20,
+          "the stroke reaches beyond the plain fill's edge (" +
+              std::to_string(outsideFillStroke) + " px outside it)");
+    auto pureWhite = [](const Frame& frame) {
+        int white = 0;
+        for (const SkColor c : frame.pixels) {
+            if (SkColorGetR(c) >= 240 && SkColorGetG(c) >= 240 && SkColorGetB(c) >= 240) {
+                ++white;
+            }
+        }
+        return white;
+    };
+    const int plainWhite = pureWhite(plainFrame);
+    const int strokedWhite = pureWhite(strokedFrame);
+    check(strokedWhite >= plainWhite * 9 / 10,
+          "the fill survives on top of its outline (" + std::to_string(strokedWhite) +
+              " white px vs " + std::to_string(plainWhite) + ")");
+
+    // --- shadow: the same glyphs, offset in authored units ------------------------
+    // Hard (blur 0) cyan offset 60 authored: a crisp crescent exactly 30
+    // device pixels right of the plain ink, at the same top and bottom —
+    // the SHAPED geometry, not a re-wrap.
+    scene::Scene shadowed = plain;
+    shadowed.items[0].shadow.enabled = true;
+    shadowed.items[0].shadow.color = "#00ffff";
+    shadowed.items[0].shadow.opacity = 1.0;
+    shadowed.items[0].shadow.offsetX = 60.0;
+    shadowed.items[0].shadow.offsetY = 0.0;
+    shadowed.items[0].shadow.blurSigma = 0.0;
+    Frame hardFrame;
+    if (!check(renderFixture(shadowed, "style-shadow", &hardFrame, &error),
+               "hard-shadow fixture rendered: " + error)) {
+        return;
+    }
+    const Ink hardInk = measureInk(hardFrame);
+    std::printf("measured: shadow edge delta %d (expected ~30), top %d bottom %d\n",
+                hardInk.right - plainInk.right, hardInk.top - plainInk.top,
+                hardInk.bottom - plainInk.bottom);
+    check(std::abs((hardInk.right - plainInk.right) - 30) <= 4,
+          "the hard shadow's right edge sits offset x scaled with the canvas");
+    check(std::abs(hardInk.top - plainInk.top) <= 2 &&
+              std::abs(hardInk.bottom - plainInk.bottom) <= 2 &&
+              std::abs(hardInk.left - plainInk.left) <= 2,
+          "the shadow does not move the glyphs' own extent");
+    auto cyanDominant = [](const Frame& frame, int x, int y, int greenMin) {
+        const SkColor c = frame.at(x, y);
+        return SkColorGetG(c) >= greenMin && SkColorGetB(c) >= greenMin * 3 / 4 &&
+               SkColorGetG(c) >= SkColorGetR(c) + 30;
+    };
+    // The crescent is counted over the WHOLE frame — the shifted glyphs
+    // show between letters and inside counters, not only beyond the fill's
+    // right edge — but its strength is read in the zone right of the plain
+    // ink, where only the shadow can paint.
+    int hardCyan = 0, hardPeak = 0;
+    for (int y = 0; y < hardFrame.height; ++y) {
+        for (int x = 0; x < hardFrame.width; ++x) {
+            if (cyanDominant(hardFrame, x, y, 60)) {
+                ++hardCyan;
+                if (x > plainInk.right + 10) {
+                    hardPeak =
+                        std::max(hardPeak, static_cast<int>(SkColorGetG(hardFrame.at(x, y))));
+                }
+            }
+        }
+    }
+    check(hardCyan >= 1500 && hardPeak >= 250,
+          "the shadow is full-strength cyan, on the shaped run (" +
+              std::to_string(hardCyan) + " px, right-zone peak g " + std::to_string(hardPeak) +
+              ")");
+
+    // Blur spreads the SAME shadow further and dilutes its peak — the
+    // authored sigma times the canvas scale, so the tail is in output
+    // proportion to the glyphs.
+    scene::Scene blurred = shadowed;
+    blurred.items[0].shadow.blurSigma = 8.0;
+    Frame blurFrame;
+    if (!check(renderFixture(blurred, "style-shadow-blur", &blurFrame, &error),
+               "blurred-shadow fixture rendered: " + error)) {
+        return;
+    }
+    const Ink blurInk = measureInk(blurFrame);
+    int blurCyan = 0, blurPeak = 0;
+    for (int y = 0; y < blurFrame.height; ++y) {
+        for (int x = 0; x < blurFrame.width; ++x) {
+            if (cyanDominant(blurFrame, x, y, 60)) {
+                ++blurCyan;
+                if (x > plainInk.right + 10) {
+                    blurPeak =
+                        std::max(blurPeak, static_cast<int>(SkColorGetG(blurFrame.at(x, y))));
+                }
+            }
+        }
+    }
+    std::printf("measured: shadow blur right %d vs hard %d, cyan %d vs %d, peak %d vs %d\n",
+                blurInk.right, hardInk.right, blurCyan, hardCyan, blurPeak, hardPeak);
+    check(blurInk.right >= hardInk.right + 3,
+          "blur pushes the shadow's ink beyond the hard edge");
+    check(blurCyan >= hardCyan + 1500,
+          "the blurred tail covers far more pixels than the hard crescent");
+    check(blurPeak <= 210,
+          "blur dilutes the peak (g " + std::to_string(blurPeak) + " vs " +
+              std::to_string(hardPeak) + ")");
+
+    // Opacity folds into the shadow's own alpha once: half strength reads
+    // half bright, nowhere near full.
+    scene::Scene translucent = shadowed;
+    translucent.items[0].shadow.opacity = 0.5;
+    Frame translucentFrame;
+    if (!check(renderFixture(translucent, "style-shadow-half", &translucentFrame, &error),
+               "half-opacity fixture rendered: " + error)) {
+        return;
+    }
+    int fadedPeak = 0;
+    for (int y = 0; y < translucentFrame.height; ++y) {
+        for (int x = plainInk.right + 10; x < translucentFrame.width; ++x) {
+            if (cyanDominant(translucentFrame, x, y, 60)) {
+                fadedPeak =
+                    std::max(fadedPeak, static_cast<int>(SkColorGetG(translucentFrame.at(x, y))));
+            }
+        }
+    }
+    std::printf("measured: opacity 0.5 shadow peak g %d\n", fadedPeak);
+    check(fadedPeak >= 100 && fadedPeak <= 200,
+          "shadow opacity 0.5 composites half-bright (peak g " + std::to_string(fadedPeak) + ")");
+
+    // --- the fade multiplies each effect's alpha exactly once ---------------------
+    // Measured on ONE big glyph, whose outline band outside the fill and
+    // whose hard shadow beyond that are painted by exactly one part each:
+    // the brightest pixel of each region at half text fade is that part's
+    // alpha and nothing else. (Inside the glyph the stroke legitimately
+    // stacks under the fill — both already faded once — and across several
+    // glyphs adjacent outlines overlap, where two half-strokes would
+    // composite into a brighter seam. Neither stack says anything about
+    // how often the fade rode a part.) The fill's own claim rides the same
+    // fade on the same glyph with the effects off.
+    const scene::Scene glyphBase = singleItemScene({"W"}, 300.0);
+    scene::Scene glyphStyled = glyphBase;
+    glyphStyled.items[0].fontWeight = 700;
+    glyphStyled.items[0].stroke.enabled = true;
+    glyphStyled.items[0].stroke.color = "#ff0000";
+    glyphStyled.items[0].stroke.width = kStrokeWidth;
+    glyphStyled.items[0].shadow.enabled = true;
+    glyphStyled.items[0].shadow.color = "#00ffff";
+    glyphStyled.items[0].shadow.opacity = 1.0;
+    glyphStyled.items[0].shadow.offsetX = 60.0;
+    glyphStyled.items[0].shadow.blurSigma = 0.0;
+    scene::Scene glyphPlain = glyphBase;
+    glyphPlain.items[0].fontWeight = 700;
+
+    scene::Scene blank = plain;
+    blank.items.clear();
+    worker::SnapshotOptions half;
+    half.fadeFrom = &blank;
+    half.mediaBlend = 1.0f;
+    half.textBlend = 0.5f;
+
+    Frame glyphFull, glyphMid, glyphPlainFull, glyphPlainMid;
+    if (!check(renderFixture(glyphStyled, "style-glyph-full", &glyphFull, &error),
+               "styled glyph rendered: " + error) ||
+        !check(renderFixture(glyphStyled, "style-glyph-mid", half, &glyphMid, &error),
+               "styled glyph mid-fade rendered: " + error) ||
+        !check(renderFixture(glyphPlain, "style-glyph-plain", &glyphPlainFull, &error),
+               "plain glyph rendered: " + error) ||
+        !check(renderFixture(glyphPlain, "style-glyph-plain-mid", half, &glyphPlainMid, &error),
+               "plain glyph mid-fade rendered: " + error)) {
+        return;
+    }
+    const SkColor background = glyphMid.at(2, 2);
+    auto ratio = [](int mid, int full, int bg) {
+        return static_cast<double>(mid - bg) / static_cast<double>(full - bg);
+    };
+    auto peakWhite = [](const Frame& frame, int minChannel) {
+        int peak = 0;
+        for (const SkColor c : frame.pixels) {
+            if (SkColorGetR(c) >= minChannel && SkColorGetG(c) >= minChannel &&
+                SkColorGetB(c) >= minChannel) {
+                peak = std::max(peak, static_cast<int>(SkColorGetR(c)));
+            }
+        }
+        return peak;
+    };
+    auto peakRedBand = [](const Frame& frame, int xLo, int xHi, int minChannel) {
+        int peak = 0;
+        for (int y = 0; y < frame.height; ++y) {
+            for (int x = xLo; x <= xHi; ++x) {
+                const SkColor c = frame.at(x, y);
+                if (SkColorGetR(c) >= minChannel && SkColorGetR(c) >= SkColorGetG(c) + 60 &&
+                    SkColorGetR(c) >= SkColorGetB(c) + 60) {
+                    peak = std::max(peak, static_cast<int>(SkColorGetR(c)));
+                }
+            }
+        }
+        return peak;
+    };
+    auto peakCyanZone = [cyanDominant](const Frame& frame, int xFrom, int minChannel) {
+        int peak = 0;
+        for (int y = 0; y < frame.height; ++y) {
+            for (int x = xFrom; x < frame.width; ++x) {
+                if (cyanDominant(frame, x, y, minChannel)) {
+                    peak = std::max(peak, static_cast<int>(SkColorGetG(frame.at(x, y))));
+                }
+            }
+        }
+        return peak;
+    };
+    const Ink glyphInk = measureInk(glyphFull);
+    const Ink glyphPlainInk = measureInk(glyphPlainFull);
+    // The stroke band beside the fill's own left edge: outline pixels the
+    // fill never touches, in both frames' columns.
+    const int bandLeft = glyphInk.left + 1;
+    const int bandRight = glyphPlainInk.left - 2;
+    const bool bandExists = check(bandRight > bandLeft,
+                                  "the styled glyph leaves a stroke band beside its fill");
+    const double fillRatio =
+        bandExists
+            ? ratio(peakWhite(glyphPlainMid, 100), peakWhite(glyphPlainFull, 200),
+                    static_cast<int>(SkColorGetR(background)))
+            : -1.0;
+    const double strokeRatio =
+        bandExists ? ratio(peakRedBand(glyphMid, bandLeft, bandRight, 90),
+                           peakRedBand(glyphFull, bandLeft, bandRight, 150),
+                           static_cast<int>(SkColorGetR(background)))
+                   : -1.0;
+    const double shadowRatio =
+        ratio(peakCyanZone(glyphMid, glyphPlainInk.right + 10, 90),
+              peakCyanZone(glyphFull, glyphPlainInk.right + 10, 150),
+              static_cast<int>(SkColorGetG(background)));
+    std::printf("measured: single-glyph mid-fade ratios fill %.2f stroke %.2f shadow %.2f\n",
+                fillRatio, strokeRatio, shadowRatio);
+    check(fillRatio >= 0.40 && fillRatio <= 0.68, "the fill rides the 50% text fade");
+    check(strokeRatio >= 0.40 && strokeRatio <= 0.68, "the stroke rides the same 50% fade");
+    check(shadowRatio >= 0.40 && shadowRatio <= 0.68, "the shadow rides the same 50% fade");
+    const Ink glyphMidInk = measureInk(glyphMid);
+    check(std::abs(glyphMidInk.left - glyphInk.left) <= 4 &&
+              std::abs(glyphMidInk.right - glyphInk.right) <= 4 &&
+              std::abs(glyphMidInk.top - glyphInk.top) <= 4 &&
+              std::abs(glyphMidInk.bottom - glyphInk.bottom) <= 4,
+          "the mid-fade frame keeps the styled geometry (same ink bounds within 4 px)");
+
+    // --- the styled scene travels the wire unchanged -------------------------------
+    // scene.prepare serialises exactly what the renderer drew: compile to
+    // JSON, re-validate, render again — byte-equal, so a frontend and a
+    // worker can never disagree about a style block by transport.
+    const std::string wire = boost::json::serialize(scene::toJson(glyphStyled));
+    boost::system::error_code ec;
+    const boost::json::value parsed = boost::json::parse(wire, ec);
+    if (!check(!ec, "styled scene serialises to wire JSON")) {
+        return;
+    }
+    scene::Scene restored;
+    if (!check(scene::fromJson(parsed, &restored), "styled wire JSON re-validates")) {
+        return;
+    }
+    Frame restoredFrame;
+    if (!check(renderFixture(restored, "style-all-wire", &restoredFrame, &error),
+               "wire-styled fixture rendered: " + error)) {
+        return;
+    }
+    check(restoredFrame.pixels == glyphFull.pixels,
+          "the wire round-trip renders byte-identically");
 }
 
 void testWireSceneRendersIdentically() {
@@ -3237,6 +3634,7 @@ int main() {
     testAuthoredBoxStackRenders();
     testThemeTextContextsRender();
     testTypographyAlignsAndSpaces();
+    testTextStyleFacesAndEffectsRender();
     testWireSceneRendersIdentically();
     testDemoSlidesRender();
     testImageBackgroundCover();

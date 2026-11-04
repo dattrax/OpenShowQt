@@ -121,6 +121,51 @@ struct Sample {
 bool gRecording = false;
 std::vector<Sample> gSamples;
 
+// Task TS.2's second recorder: a pixel mask picked from the SETTLED styled
+// frame — the pixels that are the red stroke, and the pixels that are the
+// cyan shadow — and, for every delivered frame while recording, the mean
+// value of the telling channel over exactly those pixels. The mask is the
+// point: over one fixed set of pixels, brightness is the fade's alpha and
+// nothing else, so a stroke whose fade alpha rode the text track reads as
+// a smooth decay of the masked mean, and one that ignored the fade reads
+// as a cliff to zero. (The scene_render_tests fixtures pin the exact
+// numbers; this proves the live GPU path produces the shape.)
+bool gStyleRecording = false;
+std::vector<std::uint32_t> gStyleMaskStroke;  // pixel indices
+std::vector<std::uint32_t> gStyleMaskShadow;
+
+struct StyleFade {
+    double strokeRed = 0.0;   // mean red over the stroke mask
+    double shadowGreen = 0.0;  // mean green over the shadow mask
+};
+std::vector<StyleFade> gStyleSamples;
+
+bool isStrokeRed(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+    return r >= 150 && r >= 80 + g && r >= 80 + b;
+}
+
+bool isShadowCyan(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+    return g >= 150 && b >= 150 && g >= 60 + r;
+}
+
+StyleFade styleMeanOf(const std::vector<std::uint8_t>& rgba) {
+    StyleFade sample;
+    double sumR = 0.0, sumG = 0.0;
+    for (const std::uint32_t index : gStyleMaskStroke) {
+        sumR += rgba[static_cast<std::size_t>(index) * 4];
+    }
+    for (const std::uint32_t index : gStyleMaskShadow) {
+        sumG += rgba[static_cast<std::size_t>(index) * 4 + 1];
+    }
+    sample.strokeRed = gStyleMaskStroke.empty()
+                           ? 0.0
+                           : sumR / static_cast<double>(gStyleMaskStroke.size());
+    sample.shadowGreen = gStyleMaskShadow.empty()
+                            ? 0.0
+                            : sumG / static_cast<double>(gStyleMaskShadow.size());
+    return sample;
+}
+
 Sample meanOf(const std::vector<std::uint8_t>& rgba) {
     Sample sample;
     const std::size_t pixels = rgba.size() / 4;
@@ -206,6 +251,9 @@ void handlePreviewReady(int fd, const boost::json::object& params) {
                 ++gPreview.delivered;
                 if (gRecording) {
                     gSamples.push_back(meanOf(gPreview.latest));
+                }
+                if (gStyleRecording) {
+                    gStyleSamples.push_back(styleMeanOf(gPreview.latest));
                 }
             }
         }
@@ -532,6 +580,174 @@ void exercisePictureFade(int fd, std::int64_t& nextId) {
     ::unlink(blueStill.c_str());
 }
 
+/* --- task TS.2: the style block on the GPU, through a live fade ---------- */
+
+// A scene-4 word on black, styled loudly: a heavy face, a thick red stroke
+// and a hard cyan shadow offset right. The colours are chosen so each
+// effect owns a signature a preview frame can be counted for: white fill
+// alone would balance the channels, red-dominant pixels can only be the
+// stroke, cyan-dominant pixels only the shadow.
+boost::json::object styledScene(const char* slideId, const char* word) {
+    return boost::json::object{
+        {"scene", 4},
+        {"showId", "live-fade"},
+        {"slideId", slideId},
+        {"backgroundColor", 0x000000u},
+        {"background",
+         boost::json::object{{"image", false}, {"fit", "cover"}, {"assetId", ""}, {"assetPath", ""}}},
+        {"items",
+         boost::json::array{boost::json::object{
+             {"kind", "text"},
+             {"lines", boost::json::array{word}},
+             {"color", 0xFFFFFFu},
+             {"fontFamily", ""},
+             {"fontSize", 300.0},
+             {"x", 160.0},
+             {"y", 100.0},
+             {"width", 1600.0},
+             {"height", 880.0},
+             {"align", "center"},
+             {"lineSpacing", 1.25},
+             {"fontWeight", 700},
+             {"fontStyle", "normal"},
+             {"fitMode", "shrink"},
+             {"minFontSize", 12.0},
+             {"stroke", boost::json::object{{"enabled", true},
+                                            {"color", 0xFF0000u},
+                                            {"width", 24.0}}},
+             {"shadow", boost::json::object{{"enabled", true},
+                                            {"color", 0x00FFFFu},
+                                            {"opacity", 1.0},
+                                            {"offsetX", 60.0},
+                                            {"offsetY", 0.0},
+                                            {"blurSigma", 8.0}}}}}}};
+}
+
+// The same canvas with nothing on it: the fade target. The background is
+// black on both sides, so what the masked pixels carry across the fade is
+// the text track's alpha and nothing else — not a lerp of two fills.
+boost::json::object blankScene(const char* slideId) {
+    return boost::json::object{
+        {"scene", 4},
+        {"showId", "live-fade"},
+        {"slideId", slideId},
+        {"backgroundColor", 0x000000u},
+        {"background",
+         boost::json::object{{"image", false}, {"fit", "cover"}, {"assetId", ""}, {"assetPath", ""}}},
+        {"items", boost::json::array{}},
+    };
+}
+
+std::size_t countStylePixels(const std::vector<std::uint8_t>& rgba, bool stroke, int* whiteOut) {
+    std::size_t counted = 0;
+    std::size_t white = 0;
+    for (std::size_t pixel = 0; pixel * 4 + 3 < rgba.size(); ++pixel) {
+        const std::uint8_t r = rgba[pixel * 4];
+        const std::uint8_t g = rgba[pixel * 4 + 1];
+        const std::uint8_t b = rgba[pixel * 4 + 2];
+        if (stroke ? isStrokeRed(r, g, b) : isShadowCyan(r, g, b)) {
+            ++counted;
+        }
+        if (r >= 150 && g >= 150 && b >= 150) {
+            ++white;
+        }
+    }
+    if (whiteOut != nullptr) {
+        *whiteOut = static_cast<int>(white);
+    }
+    return counted;
+}
+
+void exerciseStyleFade(int fd, std::int64_t& nextId) {
+    // Start from dark so the media track cannot contaminate the samples:
+    // black under, styled word on top, and the fade runs styled -> black.
+    if (presentAndWait(fd, nextId, blankScene("STYLE-0")) == 0) {
+        check(false, "the styled fade starts from a black scene");
+        return;
+    }
+    pump(fd, 1000);
+    {
+        const std::size_t onBlack = countStylePixels(gPreview.latest, true, nullptr);
+        check(onBlack == 0, "the black scene carries no stroke red at all");
+    }
+    if (presentAndWait(fd, nextId, styledScene("STYLE-A", "WWW")) == 0) {
+        check(false, "the styled scene is presented");
+        return;
+    }
+    pump(fd, 1400);  // both tracks (500/800 ms) have landed
+    const std::size_t strokePixels = countStylePixels(gPreview.latest, true, nullptr);
+    const std::size_t shadowPixels = countStylePixels(gPreview.latest, false, nullptr);
+    int whitePixels = 0;
+    countStylePixels(gPreview.latest, true, &whitePixels);
+    std::printf("measured: settled styled frame — %zu stroke, %zu shadow, %d white px\n",
+                strokePixels, shadowPixels, whitePixels);
+    check(whitePixels > 2000,
+          "the bold word is on the GPU picture (white fill: " + std::to_string(whitePixels) + ")");
+    check(strokePixels >= 1000,
+          "the live worker draws the STROKE: red-dominant ring of " +
+              std::to_string(strokePixels) + " px around the glyphs");
+    check(shadowPixels >= 100,
+          "the live worker draws the SHADOW: cyan crescent of " +
+              std::to_string(shadowPixels) + " px offset right of the glyphs");
+
+    // Fix the masks, then fade to black and watch those exact pixels dim.
+    gStyleMaskStroke.clear();
+    gStyleMaskShadow.clear();
+    for (std::size_t pixel = 0; pixel * 4 + 3 < gPreview.latest.size(); ++pixel) {
+        const std::uint8_t r = gPreview.latest[pixel * 4];
+        const std::uint8_t g = gPreview.latest[pixel * 4 + 1];
+        const std::uint8_t b = gPreview.latest[pixel * 4 + 2];
+        if (isStrokeRed(r, g, b)) {
+            gStyleMaskStroke.push_back(static_cast<std::uint32_t>(pixel));
+        } else if (isShadowCyan(r, g, b)) {
+            gStyleMaskShadow.push_back(static_cast<std::uint32_t>(pixel));
+        }
+    }
+    const StyleFade settled = styleMeanOf(gPreview.latest);
+    check(settled.strokeRed > 150.0 && settled.shadowGreen > 150.0,
+          "the settled masked means are the effects at full strength (stroke r=" +
+              std::to_string(static_cast<int>(settled.strokeRed)) + ", shadow g=" +
+              std::to_string(static_cast<int>(settled.shadowGreen)) + ")");
+
+    gStyleSamples.clear();
+    gStyleRecording = true;
+    const std::uint64_t gone = presentAndWait(fd, nextId, blankScene("STYLE-B"));
+    check(gone != 0, "the blank fade target is presented");
+    pump(fd, 1400);
+    gStyleRecording = false;
+
+    const StyleFade landed = styleMeanOf(gPreview.latest);
+    check(landed.strokeRed < 15.0 && landed.shadowGreen < 15.0,
+          "the fade lands clean: neither effect survives on the settled black (r=" +
+              std::to_string(static_cast<int>(landed.strokeRed)) + ", g=" +
+              std::to_string(static_cast<int>(landed.shadowGreen)) + ")");
+
+    // The claim: across the fade, the SAME pixels that were the stroke and
+    // the shadow pass through mid brightness. A stroke that ignored the
+    // text alpha would sit at full until the fade ended (no mid frames); a
+    // double fold would fall below 25% before its neighbours did. Some
+    // frame in every effect's ramp must be caught between a quarter and
+    // three-quarters of full.
+    int strokeMid = 0, shadowMid = 0;
+    for (const StyleFade& frame : gStyleSamples) {
+        if (frame.strokeRed > settled.strokeRed * 0.25 &&
+            frame.strokeRed < settled.strokeRed * 0.75) {
+            ++strokeMid;
+        }
+        if (frame.shadowGreen > settled.shadowGreen * 0.25 &&
+            frame.shadowGreen < settled.shadowGreen * 0.75) {
+            ++shadowMid;
+        }
+    }
+    std::printf("measured: %zu frames across the styled fade, %d mid-stroke, %d mid-shadow\n",
+                gStyleSamples.size(), strokeMid, shadowMid);
+    check(strokeMid >= 1,
+          "the stroke rides the fade alpha: its pixels dim through the middle, they do not "
+          "cliff at the end");
+    check(shadowMid >= 1,
+          "the shadow rides the fade alpha too, opacity folded once");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -599,6 +815,10 @@ int main(int argc, char* argv[]) {
     // Task 6.11b (review R13): the same fade with a PICTURE in it, measured
     // against the frames the GPU delivered mid-transition.
     exercisePictureFade(fd, nextId);
+
+    // Task TS.2: the scene 4 style block — face, stroke and shadow — on the
+    // live GPU path, dimming through a fade the text track owns.
+    exerciseStyleFade(fd, nextId);
 
     call(fd, nextId++, "shutdown", {}, &reply);
     int status = 0;

@@ -122,22 +122,25 @@ namespace openshow::protocol {
 // 12/no ink), which are the pixels every scene-3 worker drew — an absent
 // style is complete information, where a scene-2 background's missing
 // "fit" never was. The capability that names DRAWING these fields is
-// "scene.text-style.v1", and this minor deliberately does NOT advertise
-// it: TS.1 makes the model, the storage and the wire speak style; TS.2's
-// renderer is what makes a worker deserve the claim. A frontend may only
-// send a NON-default style block to a worker whose hello names it — and
-// must refuse such a send otherwise, because drawing an enabled stroke
-// that nobody told the worker about is the silent omission the wire has
-// refused since 6.8a. Scene 4 with the contract defaults is always safe:
-// it is what a scene-3 payload means.
+// "scene.text-style.v1": TS.1 defined the spelling and deliberately
+// withheld it from the hello list — the wire carried style the renderer
+// ignored — and TS.2's renderer earned it: weight and slant resolve to
+// faces, the stroke draws behind the fill from the shaped blob, and the
+// shadow follows the same run, all riding the frame's fade. This minor's
+// hello therefore names it. A frontend may only send a NON-default style
+// block to a worker whose hello carries it — and must refuse such a send
+// otherwise, because drawing an enabled stroke that nobody told the worker
+// about is the silent omission the wire has refused since 6.8a. Scene 4
+// with the contract defaults is always safe: it is what a scene-3 payload
+// means.
 inline constexpr std::uint32_t kProtocolMajor = 0;
 inline constexpr std::uint32_t kProtocolMinor = 15;
 
 // The capability that names a worker DRAWING the scene 4 style block.
-// Defined here so the frontend's pre-send gate and TS.2's hello name one
-// spelling; until the renderer draws the fields the hello list omits it,
-// and protocol_tests pin both halves — the constant exists and the
-// advertised list does not carry it.
+// Defined here so the frontend's pre-send gate and the worker's hello name
+// one spelling; TS.2's renderer draws the fields, so the advertised list
+// carries it, and protocol_tests pin both halves — the constant exists and
+// the hello list contains it.
 inline constexpr const char* kCapabilityTextStyle = "scene.text-style.v1";
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):

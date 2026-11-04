@@ -49,6 +49,7 @@
 #include "modules/skparagraph/include/ParagraphBuilder.h"
 #include "modules/skparagraph/include/ParagraphPainter.h"
 #include "modules/skparagraph/include/ParagraphStyle.h"
+#include "modules/skparagraph/include/TextShadow.h"
 #include "modules/skparagraph/include/TextStyle.h"
 #include "modules/skunicode/include/SkUnicode.h"
 #include "modules/skunicode/include/SkUnicode_icu.h"
@@ -62,6 +63,51 @@ namespace {
 // domain's default, so it looks exactly as scenes did before task 4.4.
 constexpr float kDefaultLineSpacing =
     static_cast<float>(openshow::domain::kDefaultLineSpacing);
+
+// Packed RGB out of the domain's canonical "#rgb"/"#rrggbb" spelling — the
+// form scene 4 carries the effect colours in (`item.color` itself is already
+// packed; the effect records carry hex because that is how the DOMAIN spells
+// a colour). Unparsable means an item hand-built outside the wire: black is
+// the conservative read for ink that must not paint a surprise.
+std::uint32_t hexToRgb(const std::string& hex, std::uint32_t fallback) {
+    if (hex.size() != 4 && hex.size() != 7) {
+        return fallback;
+    }
+    std::uint32_t value = 0;
+    for (std::size_t i = 1; i < hex.size(); ++i) {
+        const char c = hex[i];
+        std::uint32_t digit = 0;
+        if (c >= '0' && c <= '9') {
+            digit = static_cast<std::uint32_t>(c - '0');
+        } else if (c >= 'a' && c <= 'f') {
+            digit = static_cast<std::uint32_t>(c - 'a' + 10);
+        } else if (c >= 'A' && c <= 'F') {
+            digit = static_cast<std::uint32_t>(c - 'A' + 10);
+        } else {
+            return fallback;
+        }
+        value = (value << 4) | digit;
+    }
+    if (hex.size() == 4) {
+        // #rgb — each nibble stands for its own byte, the CSS reading.
+        const std::uint32_t r = (value >> 8) & 0xF;
+        const std::uint32_t g = (value >> 4) & 0xF;
+        const std::uint32_t b = value & 0xF;
+        value = (r << 16) | (r << 8) | r | ((g << 16) | (g << 8) | g) | ((b << 16) | (b << 8) | b);
+    }
+    return value;
+}
+
+// An authored effect number, read the way this file reads every authored
+// number: finite and inside its band, or the safe edge instead. Scene 4's
+// wire has already refused what it will not carry; this is the hand-built
+// item's guard, and a shadow offset that arrived as NaN draws nothing.
+double authored(double value, double low, double high, double safe) {
+    if (!std::isfinite(value) || value < low || value > high) {
+        return safe;
+    }
+    return value;
+}
 
 }  // namespace
 
@@ -290,6 +336,55 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Scen
     textStyle.setHalfLeading(true);
     textStyle.setColor(SkColorSetARGB(0xFF, (item.color >> 16) & 0xFF, (item.color >> 8) & 0xFF,
                                      item.color & 0xFF));
+    // TS.2: weight and slant enter shaping through the public font style,
+    // so FontCollection resolves the family list to a bold or italic FACE
+    // (or a synthesised one, if the family has neither) — the same way a
+    // browser picks a face for `font-weight`. A scene-4 weight has been
+    // domain-vetted within 100..900; out-of-band or nonsense lands on 400,
+    // which resolves to exactly the Normal style this engine passed before
+    // scene 4 existed. `normal` is likewise the upright default, so the
+    // contract's default style is this build's legacy pixels.
+    int weight = 400;
+    if (item.fontWeight >= 100 && item.fontWeight <= 900) {
+        weight = item.fontWeight;
+    }
+    textStyle.setFontStyle(SkFontStyle(weight, 100, item.fontStyle == "italic"
+                                                      ? SkFontStyle::kItalic_Slant
+                                                      : SkFontStyle::kUpright_Slant));
+    // The shadow rides the paragraph's own text style: the fork's shadow
+    // pass copies the SHAPED run and hands that copy to the painter before
+    // the glyphs (TextLine.cpp — background, shadow, blobs, decorations),
+    // so shadow and fill share wrap and position by construction. Opacity
+    // folds into the shadow colour's alpha once; the frame fade multiplies
+    // it once more in the painter. Offsets are authored units, scaled by
+    // the canvas transform with the geometry; the blur sigma is rescaled
+    // to device space in the painter (drawTextShadow, measured not
+    // assumed). Disabled is byte-identical to absent: no record is even
+    // added, and the line takes its no-shadow fast path.
+    if (item.shadow.enabled) {
+        const int shadowAlpha = static_cast<int>(
+            authored(item.shadow.opacity, 0.0, 1.0, 0.0) * 255.0 + 0.5);
+        const std::uint32_t shadowRgb = hexToRgb(item.shadow.color, 0x000000u);
+        const double offsetX = authored(item.shadow.offsetX, -256.0, 256.0, 0.0);
+        const double offsetY = authored(item.shadow.offsetY, -256.0, 256.0, 0.0);
+        const double blur = authored(item.shadow.blurSigma, 0.0, 64.0, 0.0);
+        textStyle.addShadow(skia::textlayout::TextShadow(
+            SkColorSetARGB(static_cast<SkAlpha>(shadowAlpha), (shadowRgb >> 16) & 0xFF,
+                           (shadowRgb >> 8) & 0xFF, shadowRgb & 0xFF),
+            SkPoint::Make(static_cast<SkScalar>(offsetX), static_cast<SkScalar>(offsetY)),
+            blur));
+        out.shadowEnabled = true;
+    }
+    // The stroke cannot ride the style: one style paints one way, and
+    // "outline BEHIND fill" is two passes of the SAME shaped blob. The
+    // painter draws them; these fields say with what. A nonsense width
+    // lands on 0 — no ink — rather than on a giant outline.
+    out.strokeEnabled = item.stroke.enabled;
+    out.strokeColor = hexToRgb(item.stroke.color, 0x000000u);
+    {
+        const double width = authored(item.stroke.width, 0.0, 32.0, 0.0);
+        out.strokeWidth = static_cast<float>(width);
+    }
     // Named first (if any), our default family second: FontCollection
     // resolves names through fontconfig, and per-run fallback covers glyphs
     // the named family lacks.
@@ -398,16 +493,48 @@ namespace {
 // units brighter on edge pixels — measured at worst 10/255 with three
 // overlapping lines, and within rounding (1/255) wherever coverage does not
 // overlap. Ink placement, weight and colour are untouched.
+//
+// Task TS.2 gave this painter the scene-4 style effects for the same
+// reason: an outline that lives behind the fill needs a second pass over
+// the shaped blob, and a fade needs every effect's alpha folded exactly
+// once — fill, stroke and shadow all ride the frame's single fade value
+// through the one painter, with no intermediate target between them.
 class GroupAlphaPainter final : public skia::textlayout::ParagraphPainter {
 public:
     GroupAlphaPainter(SkCanvas* canvas, uint8_t alpha) : fCanvas(canvas), fAlpha(alpha) {}
+
+    // Task TS.2: the stroke of the paragraph about to be painted through
+    // this painter — set per item by drawLayout, cleared to 0 width ("no
+    // stroke pass") otherwise. A width above 0 makes every text blob draw
+    // as outline-then-fill from THE SAME blob at THE SAME position: one
+    // shaping, and the fill settles over the outline it shares with no
+    // second differently-styled paragraph anywhere.
+    void setStroke(std::uint32_t rgb, float authoredWidth) {
+        fStrokeColor = rgb;
+        fStrokeWidth = authoredWidth;
+    }
 
     void drawTextBlob(const sk_sp<SkTextBlob>& blob, SkScalar x, SkScalar y,
                       const SkPaintOrID& paint) override {
         if (!holdsSkPaint(paint)) {
             return;
         }
-        fCanvas->drawTextBlob(blob, x, y, faded(std::get<SkPaint>(paint)));
+        const SkPaint fill = faded(std::get<SkPaint>(paint));
+        if (fStrokeWidth > 0.0f) {
+            // Outline first; the fill lands on top. The stroke's own alpha
+            // is the authored colour's (opaque RGB) multiplied by the fade
+            // exactly once, and the authored width rides the canvas
+            // transform: Skia strokes a blob's paths with a device-scaled
+            // pen, so the authored unit is what belongs here (measured at
+            // 1.0 and 0.5 — see scene_render_tests).
+            SkPaint stroke(fill);
+            stroke.setStyle(SkPaint::kStroke_Style);
+            stroke.setStrokeWidth(fStrokeWidth);
+            stroke.setColor(SkColorSetARGB(fAlpha, (fStrokeColor >> 16) & 0xFF,
+                                           (fStrokeColor >> 8) & 0xFF, fStrokeColor & 0xFF));
+            fCanvas->drawTextBlob(blob, x, y, stroke);
+        }
+        fCanvas->drawTextBlob(blob, x, y, fill);
     }
 
     void drawTextShadow(const sk_sp<SkTextBlob>& blob, SkScalar x, SkScalar y, SkColor color,
@@ -415,7 +542,7 @@ public:
         SkPaint paint;
         paint.setColor(scaled(color));
         if (blurSigma != 0.0f) {
-            paint.setMaskFilter(SkMaskFilter::MakeBlur(kNormal_SkBlurStyle, blurSigma, false));
+            paint.setMaskFilter(blurFor(blurSigma));
         }
         fCanvas->drawTextBlob(blob, x, y, paint);
     }
@@ -471,8 +598,32 @@ private:
         return paint;
     }
 
+    // The shadow blur, in the space Skia actually measures it in: a mask
+    // filter's sigma is DEVICE-space (measured — the same sigma spreads
+    // the same pixels at canvas scales 1.0 and 0.5 while the glyphs
+    // halve), so the authored-unit sigma must be multiplied by the canvas
+    // scale for the blur to grow with the output like every other effect.
+    // The build is memoised on the last sigma: one frame's shadowed lines
+    // all share it, so the preparation is O(1) and no per-glyph path pays
+    // for a MakeBlur.
+    sk_sp<SkMaskFilter> blurFor(SkScalar authoredSigma) {
+        const SkMatrix device = fCanvas->getLocalToDeviceAs3x3();
+        const float scale = std::abs(device.getScaleX());
+        const float sigma = std::max(0.0f, authoredSigma * scale);
+        if (sigma != fBlurSigma) {
+            fBlurSigma = sigma;
+            fBlur = SkMaskFilter::MakeBlur(kNormal_SkBlurStyle, sigma, false);
+        }
+        return fBlur;
+    }
+
     SkCanvas* fCanvas;
     uint8_t fAlpha;
+    // Per-item stroke state (see setStroke) and the blur memo (see blurFor).
+    std::uint32_t fStrokeColor = 0x000000u;
+    float fStrokeWidth = 0.0f;
+    float fBlurSigma = -1.0f;
+    sk_sp<SkMaskFilter> fBlur;
 };
 
 }  // namespace
@@ -512,7 +663,21 @@ void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
                               SkSamplingOptions(SkFilterMode::kLinear), &imagePaint,
                               SkCanvas::kFast_SrcRectConstraint);
     };
-    if (paint == nullptr || paint->getAlpha() >= 255) {
+    // Task TS.2 routing: an item whose text carries an enabled stroke or
+    // shadow must draw through the effect-aware painter even at full alpha
+    // — the stroke is a painter pass over the blob, and the shadow's
+    // authored blur is rescaled to device space there. An all-plain stack
+    // at full alpha keeps the pre-TS.2 call exactly.
+    bool effects = false;
+    for (const auto& item : layout.items) {
+        if (!item.isImage && item.paragraph && item.hasText &&
+            (item.strokeEnabled || item.shadowEnabled)) {
+            effects = true;
+            break;
+        }
+    }
+    const std::uint8_t blockAlpha = paint == nullptr ? 255 : paint->getAlpha();
+    if (blockAlpha >= 255 && !effects) {
         for (const auto& item : layout.items) {
             if (item.isImage) {
                 drawImageItem(item, 255);
@@ -522,11 +687,13 @@ void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
         }
         return;
     }
-    GroupAlphaPainter painter(canvas, paint->getAlpha());
+    GroupAlphaPainter painter(canvas, blockAlpha);
     for (const auto& item : layout.items) {
         if (item.isImage) {
-            drawImageItem(item, paint->getAlpha());
+            drawImageItem(item, blockAlpha);
         } else if (textItems && item.paragraph && item.hasText) {
+            painter.setStroke(item.strokeEnabled ? item.strokeColor : 0u,
+                              item.strokeEnabled ? item.strokeWidth : 0.0f);
             item.paragraph->paint(&painter, item.boxX, centerY(item));
         }
     }
