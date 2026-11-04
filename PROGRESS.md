@@ -4,6 +4,56 @@ Updated: 2026-11-04 (Europe/London).
 
 ## Current checkpoint
 
+**CS.4 complete (2026-11-04): one read model, one verb pair, one place —
+and the domain verbs never noticed.**
+
+`InspectorAdapter` (`src/ui/InspectorAdapter.h/.cpp`, a `QML_ELEMENT` in the
+`OpenShow` module) maps the controller's existing reads (`themes()` rows,
+`themeSampleAppearance`, `themeContext`, `slideAppearance`,
+`serviceDefaultTransition`) into the catalogue's per-field shape
+`{value, ownValue, isSet, source, editable, canReset}` for four explicit
+targets — `{kind: "theme"|"context"|"slide"|"service", id, view}` — and
+routes `commit(field, value)`/`reset(field)` onto the hosts' existing verbs,
+which stay separate, atomic and undoable. `source` is a token
+(`"this theme" | "this view" | "this slide" | "the service" |
+"the renderer default" | ""`); unset style/effect values report the
+contract defaults (the domain's own constants, so "unset" and "draws today"
+cannot drift); refusals return false AND emit `refused(field, reason)` —
+the TV.3 colour wall on context rails, the slide's absent movement, the
+concrete service floor, "an effect inherits only whole", "the theme is the
+root of its own typography". `fields()` answers what a target can commit,
+so CS.5 builds sections from capability.
+
+The context's WHOLE-entry merge (read back the entry's own set, replace one
+member, write once through `applyThemeContext`; a box write retires the
+legacy inset in the same edit — and vice versa) is centralized here;
+ThemeEditorPage's private `commitContext` arithmetic keeps its deliberately
+identical copy until CS.5 moves the page onto the adapter, making that
+migration a move rather than a change. The slide's box routes through
+`setTextBoxGeometry` — the same single `placement` customization a drag
+records — while `customizeCurrentSlide`/`revertCurrentSlideField` carry
+every scalar and whole record; effect MEMBERS merge once into the record
+the row already carries.
+
+Registration lore learned the hard way: a dynamic `qmlRegisterType` into
+the URI of a STATIC qml module shadows that module's own types (`PreviewView
+is not a type`) — new C++ QML types belong in the module's `SOURCES` with
+`QML_ELEMENT`, like `PreviewView`, in the app and the interaction fixture
+alike; the headless adapter test compiles the same `.cpp` directly.
+
+Gates: desktop **66/66** (new `inspector_adapter_tests`: four fixtures —
+the service floor, the theme's every route, the context's merge/preservation
+and refusals, the slide's customization/revert/box/member rules — over the
+REAL controller), headless **36/36**, `git diff --check` clean.
+workspace_ui_tests gained a pin that a QML FILE resolves the type and gets
+the canonical shape back through the same namespace the app loads.
+
+**Next action:** CS.5 — extract `AppearanceInspector` and the
+style/effects/background/box/transition/font sections from the Theme
+Editor's rails and Settings' transition section onto the adapter.
+
+### Earlier checkpoint: CS.3
+
 **CS.3 complete (2026-11-04): the Bible page shows the worker's pictures it
 had always promised — keyed to a plan that can die honestly.**
 
@@ -329,8 +379,10 @@ M7 gates before FO.
 - `3150e55` docs(ui): CS.1 - the control-set contracts and component catalogue
 - `c627ef0` feat(ui): CS.2 - one preview surface, one slide card, four honest
   wearers
-- CS.3 (this commit) feat(ui): the Bible import on worker previews - plan-keyed
+- `182996a` feat(ui): CS.3 - the Bible import on worker previews - plan-keyed
   cards, an off-air Selection canvas and an honest retirement of both lanes
+- CS.4 (this commit) feat(ui): the InspectorAdapter - one field-shaped read
+  model and one routed verb pair over the four inspector targets
 
 - TR.3 — the transition UI with the audience as witness:
   `DocumentViews::transitionRecordMap` as the one author of the record's QML

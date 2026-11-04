@@ -101,6 +101,7 @@ qt_add_qml_module(openshow-ui
   VERSION 1.0
   QML_FILES ${OPENSHOW_WORKSPACE_QML_FILES}
   SOURCES PreviewView.h PreviewView.cpp
+          InspectorAdapter.h InspectorAdapter.cpp
 )
 
 target_link_libraries(openshow-ui PRIVATE

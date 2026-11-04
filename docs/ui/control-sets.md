@@ -88,24 +88,40 @@ fieldState(target, field) -> {
   value,      // what the audience draws today (resolved), for display
   ownValue,   // what this target stores itself, when isSet
   isSet,      // does THIS target carry the field
-  source,     // who answers when silence falls ("this theme", "the service",
-              // "the Songs look", "the renderer default", "")
+  source,     // who answers when silence falls: "this theme", "this view",
+              // "this slide", "the service", "the renderer default", ""
   editable,   // can this target store this field at all (capability)
   canReset    // is there an own value to remove (the Inherit button)
 }
 ```
 
+Implemented in CS.4 exactly in this shape, with `ok` false plus a `reason`
+when the TARGET itself is missing (unknown theme id, no such context, no
+current slide) and a `reason` on non-storable fields (TV.3 colours, the
+slide's absent transition, the concrete service floor). The adapter also
+answers `fields()` — the spellings THIS target can commit, so a section is
+built from capability — relays `changed()` off the controller's
+documents/navigation edges in whichever order host pages bind `document`
+and `target`, and emits `refused(field, reason)` for every declined
+commit/reset: a refusal changes nothing (the verbs guarantee that) and the
+control shows the same sentence the status line keeps.
+
+Field spellings are the domain's; the inspector adds `box`, which routes to
+whatever a host calls its rectangle (`placement` on themes and slides, the
+merged `box` on contexts — a context `box` commit whose map carries an
+`inset` member switches the legacy spelling instead).
+
 `target` is explicit identity, not “whatever is selected”:
 `{kind: "theme"|"context"|"slide"|"service", id, view}` — theme identity,
 view, slide and selected item stay distinct. Controls emit
-`commit(field, value)` and `reset(field)`; the **host adapter** translates
+`commit(field, value)` and `reset(field)`; the **adapter** translates
 them to the domain verbs, which remain separate, atomic and undoable:
 
 | Target | Scalars (family/size/align/spacing/weight/slant/fit/min) | Effects | Box | Transition |
 |---|---|---|---|---|
 | `theme` (Songs) | `editTheme` for the base fields, `setThemeTextStyleField` for the style block | `setThemeTextStyleField("stroke"/"shadow", null)` whole-record clear | `setThemePlacement` / `clearThemePlacement` | `setThemeTransition` |
 | `context` (Bible view) | whole-entry merge through `applyThemeContext` (carries untouched members incl. `transition`) | not storable until TV.3 — state the inherited source and disable | merged `box` (retires `inset` in the same edit) | `setTextContextTransition` |
-| `slide` (Edit) | `customizeCurrentSlide` + `revertCurrentSlideField` | same verbs with the effect-record fields | primary-box geometry customizes `placement` | none (no per-slide override) |
+| `slide` (Edit) | `customizeCurrentSlide` + `revertCurrentSlideField` | same verbs with the effect-record fields | `setTextBoxGeometry` — the same single `placement` customization a drag makes | none (no per-slide override) |
 | `service` | — | — | — | `setServiceDefaultTransition` |
 
 A controls file must not walk theme chains or synthesize inherited
@@ -171,6 +187,25 @@ vocabulary, bumped by every publish/Add/cancel, never persisted).
 | Adapter | hosts keep their own flat presentation-order model (`cueRows` for Show; `scripture.slides` for Bible) and the collection maps visual cells onto it; the collection never reorders cues |
 | Consumers | ShowPage (grouped), BibleImportPage (ungrouped) |
 | Automation | `objectName` per host (`operatorSlideGrid` keeps its role for the cue suite); delegate instances keep `operatorCueTile` + `index` |
+
+### InspectorAdapter
+
+`src/ui/InspectorAdapter.h/.cpp` (CS.4). The read model and write router
+above, as a `QML_ELEMENT` in the `OpenShow` module — it travels in the
+qml-module SOURCES exactly like `PreviewView` (a dynamic `qmlRegisterType`
+into the same URI shadows the static module's own types; the interaction
+fixture compiles the same source, so QML resolves it identically in app and
+test). Pinned headless by `inspector_adapter_tests` over the REAL
+controller: the per-field shape for all four targets, every route landing
+on its verb, and every refusal naming itself.
+
+| | |
+|---|---|
+| Inputs | `document` (DocumentController*), `target` (`{kind, id, view}` above) |
+| Outputs | `fieldState(field)` — the shape above; `fields()` — this target's committable spellings |
+| Events | `changed()` (documents or cursor moved), `refused(field, reason)`, and the `document`/`target` property signals |
+| Centralised | the context's WHOLE-entry merge (read back the entry's own set, replace one member, write once). ThemeEditorPage keeps its private copy of this arithmetic until CS.5 migrates it onto the adapter; the semantics are deliberately identical so the migration is a move, not a change |
+| Automation | none — not a visible part; hosts bind it inside their rails |
 
 ### AppearanceInspector
 

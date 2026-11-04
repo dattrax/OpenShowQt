@@ -235,6 +235,8 @@ if(OPENSHOW_BUILD_UI)
     QML_FILES ${OPENSHOW_WORKSPACE_QML_FILES}
     SOURCES ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.h
             ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/InspectorAdapter.h
+            ${PROJECT_SOURCE_DIR}/src/ui/InspectorAdapter.cpp
   )
   target_link_libraries(workspace_ui_tests PRIVATE openshow::ui-core
     Qt6::Quick Qt6::QuickControls2 Qt6::Test)
@@ -274,6 +276,15 @@ if(OPENSHOW_BUILD_UI)
   add_executable(document_controller_tests document_controller_tests.cpp)
   target_link_libraries(document_controller_tests PRIVATE openshow::ui-core)
   add_test(NAME document_controller_tests COMMAND document_controller_tests)
+
+  # Task CS.4: the inspector read model and the one verb pair every shared
+  # style control speaks, pinned headless against the real controller — the
+  # per-field shape for all four targets and every commit/reset route (Qt
+  # Core only, exactly like the controller fixtures above).
+  add_executable(inspector_adapter_tests inspector_adapter_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/ui/InspectorAdapter.cpp)
+  target_link_libraries(inspector_adapter_tests PRIVATE openshow::ui-core Qt6::Qml)
+  add_test(NAME inspector_adapter_tests COMMAND inspector_adapter_tests)
 
   # Milestone BI (task BI.2): the Bible importer's session rules on a
   # scripted network manager — success, offline and retry, timeout,

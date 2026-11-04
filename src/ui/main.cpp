@@ -137,6 +137,9 @@ int main(int argc, char* argv[]) {
         "uiSize", uiSize.width() >= 400 && uiSize.height() >= 400 ? uiSize
                                                                   : QSize(1380, 800));
 
+    // The inspector read model (task CS.4) travels with the module itself
+    // (QML_ELEMENT), so the app and the interaction fixture resolve it the
+    // same way they resolve PreviewView.
     engine.loadFromModule("OpenShow", "Main");
     if (engine.rootObjects().isEmpty()) {
         return -1;

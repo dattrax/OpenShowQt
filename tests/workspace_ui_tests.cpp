@@ -2,6 +2,7 @@
 #include <QGuiApplication>
 #include <QElapsedTimer>
 #include <QQmlApplicationEngine>
+#include <QQmlComponent>
 #include <QQmlContext>
 #include <QQuickItem>
 #include <QQuickStyle>
@@ -98,6 +99,28 @@ int main(int argc, char** argv) {
     if (!left || !right || !mediaBin || !grid || !editor || !preview) return 1;
     auto* destination = window->findChild<QQuickItem*>("audienceDestinationPicker");
     check(destination && !destination->isVisible(), "Show hides audience routing configuration");
+    // CS.4: the ONE read model the shared rails will wear is instantiable
+    // from a QML file in the same OpenShow namespace the app resolves, and
+    // answers through QML in the canonical shape.
+    {
+        QQmlComponent inspectorType(&engine);
+        inspectorType.setData(
+            "import QtQuick\nimport OpenShow\n"
+            "InspectorAdapter { document: docs; target: ({kind: \"service\"}) }\n",
+            QUrl());
+        check(!inspectorType.isError(), "QML can name the InspectorAdapter type");
+        QObject* rail = inspectorType.isError() ? nullptr : inspectorType.create(nullptr);
+        QVariantMap state;
+        const bool asked =
+            rail != nullptr &&
+            QMetaObject::invokeMethod(rail, "fieldState", Q_RETURN_ARG(QVariantMap, state),
+                                      Q_ARG(QString, QStringLiteral("transition")));
+        check(asked && state.value(QStringLiteral("ok")).toBool() &&
+                  state.value(QStringLiteral("source")).toString() ==
+                      QStringLiteral("the service"),
+              "the read model answers through QML in the canonical shape");
+        delete rail;
+    }
     // Walk the actual visible tree: destination/layer setup and arbitrary
     // writable fields cannot leak back into the operator screen.
     std::function<void(QQuickItem*)> auditOperator = [&](QQuickItem* item) {
