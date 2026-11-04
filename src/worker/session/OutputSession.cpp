@@ -1028,15 +1028,15 @@ bool OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
     }
     fStore.landScene(desired);
     fRenderScene = snapshot.content;
-    // The landed handoff (task TR.1): the WHOLE record reached this point with
-    // the scene it belongs to, and the renderer today can only honour the
-    // kind, so the record is narrowed HERE at the one named seam (see
-    // render/Layer.h). Until TR.2 draws the durations the audience's fade is
-    // the library's own 0.5 / 0.8 s whatever the record says — which is why
-    // the frontend sends only legacy-equivalent timings until this worker
-    // advertises `scene.transition-options.v1`, rather than shipping a
-    // promise the pixels do not keep.
-    fScene->setActiveScene(snapshot.content, sceneTransitionKind(snapshot.transition));
+    // The landed handoff (task TR.1, drawn from TR.2 on): the whole record
+    // arrives here beside the scene it belongs to, and it crosses to the
+    // renderer undivided — the kind picks cut or crossfade and the two
+    // durations are the clocks each track blends on. Nothing here consults a
+    // default or a constant: the numbers the audience gets are the ones this
+    // cue carried, which is what lets the worker advertise
+    // `scene.transition-options.v1` now instead of narrowing the promise at
+    // the last step.
+    fScene->setActiveScene(snapshot.content, snapshot.transition);
     fDeferredSceneRevision = 0;
     return true;
 }

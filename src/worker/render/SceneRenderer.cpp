@@ -61,6 +61,20 @@ public:
     void draw(const FrameContext& ctx) override {
         const SceneFrame& frame = *ctx.frame;
         if (frame.scene) {
+            // Video is never dissolved, and TR.2's durations do not change
+            // that. A crossfade here would composite two still images while
+            // the decoders run underneath them: the blend would be a picture
+            // of a frame nobody decoded, and the two transports' own first
+            // frames would arrive whenever codecs feel like it. So the
+            // background's media duration buys what it can honestly buy — the
+            // colour fill and still-image composition — and a background that
+            // involves video in either direction swaps at full strength on the
+            // first frame of the fade: a CUT, whatever the record asked for.
+            // (Switching between two different videos therefore stays a cut,
+            // while a cue that keeps the same video background keeps playing
+            // it continuously, because the session restarts nothing when the
+            // background identity is unchanged — background_media_tests holds
+            // that half of the rule.)
             const bool videoInvolved =
                 frame.scene->background.isVideo ||
                 (frame.fadeFrom != nullptr && frame.fadeFrom->background.isVideo);
@@ -321,13 +335,19 @@ private:
     sk_sp<SkTypeface> fRegular;
 };
 
-// Crossfade durations, matching FreeShow's two transition-tab defaults
-// (docs/reference.md §7): text 500ms, media 800ms. A presented scene's
-// words dissolve on the faster clock, its background on the slower one.
-constexpr double kTextFadeSeconds = 0.5;
-constexpr double kMediaFadeSeconds = 0.8;
-
+// Where a fade's blend stands at `elapsed` seconds into a track that takes
+// `duration` seconds.
+//
+// The two guards are in this order on purpose (task TR.2). A 0 ms duration is
+// an answer the operator gave — "this track lands immediately" — and the fade's
+// FIRST captured frame has elapsed 0.0, so testing elapsed first would return
+// 0 there and hold the audience on the outgoing scene for a frame that was
+// promised the new one: a 500/0 cue would show words that appeared a frame
+// late, and a 0/0 fade would take a frame to do what a cut does at once.
 float fadeBlend(double elapsed, double duration) {
+    if (duration <= 0.0) {
+        return 1.0f;  // the track is already landed, whatever the clock says
+    }
     if (elapsed <= 0.0) {
         return 0.0f;
     }
@@ -397,13 +417,16 @@ bool SceneRenderer::buildLayers(std::string* error, const DemoBuilder& demo) {
     return true;
 }
 
-void SceneRenderer::setActiveScene(ActiveScene scene, SceneTransitionKind kind) {
+void SceneRenderer::setActiveScene(ActiveScene scene,
+                                   const openshow::domain::TransitionOptions& options) {
+    using openshow::domain::TransitionKind;
     if (scene == fActiveScene) {
         return;  // already on air; a re-present of the same revision is a no-op
     }
     // A cut, or the first presentation (nothing to fade from), swaps in one
-    // frame and clears any fade in flight.
-    if (kind == SceneTransitionKind::kCut || !fActiveScene) {
+    // frame and clears any fade in flight — including one this cue supersedes,
+    // whose outgoing scene is dropped rather than blended again.
+    if (options.kind == TransitionKind::kCut || !fActiveScene) {
         fActiveScene = std::move(scene);
         fTransition = SceneTransition{};
         fTransitionRunning = false;
@@ -411,9 +434,14 @@ void SceneRenderer::setActiveScene(ActiveScene scene, SceneTransitionKind kind) 
     }
     // A fade keeps the outgoing scene alive as fFrom and starts its clock on
     // the next captureFrame, so the blend is measured in the same monotonic
-    // timeSeconds the audience loop drives — and by nothing else.
+    // timeSeconds the audience loop drives — and by nothing else. The record's
+    // two lengths cross here from milliseconds into that clock and are then
+    // fixed for the fade's whole life: this is the one conversion, on the
+    // render thread, once per cue (task TR.2).
     fTransition.fFrom = fActiveScene;
     fTransition.fStartSeconds = -1.0;
+    fTransition.fTextSeconds = static_cast<double>(options.textDurationMs) / 1000.0;
+    fTransition.fMediaSeconds = static_cast<double>(options.mediaDurationMs) / 1000.0;
     fActiveScene = std::move(scene);
     fTransitionRunning = true;
 }
@@ -432,8 +460,12 @@ SceneFrame SceneRenderer::captureFrame(double timeSeconds, std::uint64_t revisio
         fTransition.fStartSeconds = timeSeconds;  // first frame of the fade
     }
     const double elapsed = timeSeconds - fTransition.fStartSeconds;
-    frame.mediaBlend = fadeBlend(elapsed, kMediaFadeSeconds);
-    frame.textBlend = fadeBlend(elapsed, kTextFadeSeconds);
+    // The two tracks on their OWN clocks, from the record this cue brought
+    // (task TR.2): a 100 ms words fade with an 800 ms background is a normal
+    // thing to ask for, and each layer takes its blend from its own track, so
+    // one fade can be brisk where the words are and slow where the colour is.
+    frame.mediaBlend = fadeBlend(elapsed, fTransition.fMediaSeconds);
+    frame.textBlend = fadeBlend(elapsed, fTransition.fTextSeconds);
     if (frame.mediaBlend >= 1.0f && frame.textBlend >= 1.0f) {
         // The fade's last blend: this frame is the on-air scene alone. The
         // state machine keeps the outgoing scene until commitFrame() credits

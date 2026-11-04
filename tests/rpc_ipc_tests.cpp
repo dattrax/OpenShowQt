@@ -434,7 +434,11 @@ void testServedSession() {
         const boost::json::value& result = reply.at("result");
         check(result.as_object().at("protocol").as_object().at("major").is_number(),
               "hello negotiates a protocol version");
-        check(result.as_object().at("capabilities").as_array().size() == 20,
+        // The count is a tripwire (see protocol_tests): the hello growing or
+        // shrinking is a wire change, and it should cost a looked-at line.
+        // TR.2's scene.transition-options.v1 made this 21 — the real worker,
+        // drawing the record's durations, now claims it for itself.
+        check(result.as_object().at("capabilities").as_array().size() == 21,
               "hello lists worker capabilities");
     }
 

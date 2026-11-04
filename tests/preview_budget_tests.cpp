@@ -99,14 +99,23 @@ constexpr int kMaxPublishesInWindow = 8;
 constexpr int kMinGapBetweenPublishesMs = 100;
 constexpr int kMinDeferredInWindow = 3;
 
-// The media crossfade's duration (FreeShow's 800 ms default), and how far a
-// preview frame may read ahead of the audience's own clock. The slack is not
-// generous by accident: fadeStart is the moment the CLIENT learned the new
-// scene was active, which is after the render pass that applied it and stamped
-// the fade's origin, so a correct preview is always behind (measured: never
-// ahead). 0.2 is 160 ms of slack for the status round trip and the fixture's
-// own 50 ms poll, and it is still three times below the +0.63 a preview that
-// composes its own later moment reads.
+// The media crossfade's duration, which since TR.2 is the CONTRACT's default
+// rather than a constant the renderer owns: the presents below carry no
+// duration keys, so the worker fades on 500 ms words / 800 ms background
+// because that is what an unconfigured document resolves to — which is exactly
+// why this ruler stays honest while the numbers around it become negotiable.
+// A fixture that moved the numbers would have to move this one with them, and
+// the fact that it does not is the point: an unconfigured show blends as it
+// always blended.
+//
+// How far a preview frame may read ahead of the audience's own clock is the
+// other half of the ruler, and the slack is not generous by accident:
+// fadeStart is the moment the CLIENT learned the new scene was active, which is
+// after the render pass that applied it and stamped the fade's origin, so a
+// correct preview is always behind (measured: never ahead). 0.2 is 160 ms of
+// slack for the status round trip and the fixture's own 50 ms poll, and it is
+// still three times below the +0.63 a preview that composes its own later
+// moment reads.
 constexpr double kMediaFadeSeconds = 0.8;
 constexpr double kMaxPreviewLead = 0.2;
 

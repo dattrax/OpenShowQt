@@ -37,6 +37,7 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkImage.h"
 #include "include/core/SkRefCnt.h"
+#include "openshow/domain/documents.h"  // TransitionOptions drives the blend (task TR.2)
 #include "openshow/scene/scene.h"
 
 #include "render/Layer.h"
@@ -44,25 +45,37 @@
 
 namespace openshow::worker {
 
-// SceneTransitionKind lives in render/Layer.h with the scene types it travels
-// beside: the reveal is a property of the COMMAND, and the store that carries it
-// from the RPC thread to the frame that reveals it (task 6.18a) has no business
-// depending on Skia to name it. TR.1 put the whole record — kind and both
-// durations — on the store's snapshot; this renderer still draws the kind only,
-// and TR.2 hands the durations across.
+// How a cue moves is not named in this header any more (task TR.2). The
+// command's whole answer — `domain::TransitionOptions`, the kind plus both
+// durations — travels from `scene.present` through the store and lands here
+// undivided, because a record narrowed on the way is a promise dropped on the
+// way: the renderer used to keep its own fade/cut vocabulary and its own two
+// millisecond constants, which is why the worker's hello could not claim
+// `scene.transition-options.v1`. Drawing the record is what earns that name.
 
 // The live crossfade: the state machine the audience's frame clock drives.
 // In steady state fFrom is null. It holds NO blend: the blends belong to a
-// frame (SceneFrame), and this one only says who is fading and when the
-// fade began, so asking about the composition cannot move it along
-// (task 6.11a, review R13). Owned by SceneRenderer.
+// frame (SceneFrame), and this one only says who is fading, when the fade
+// began, and how long each track takes, so asking about the composition cannot
+// move it along (task 6.11a, review R13). Owned by SceneRenderer.
 struct SceneTransition {
     ActiveScene fFrom;
     double fStartSeconds = -1.0;  // the frame clock the fade began at
     // Negative until the fade's first audience frame stamps it: a fade
     // begun between two frames is measured from the first one drawn, which
-    // is what makes its 800 ms the audience's 800 ms rather than a race
+    // is what makes its durations the audience's durations rather than a race
     // against the command thread.
+    //
+    // The two tracks' lengths, in the seconds this struct's own clock
+    // measures in (task TR.2). Converted ONCE, when the cue lands, rather
+    // than per frame: captureFrame runs at the panel's rate, and a divide in
+    // it would be paid sixty times a second for a number that cannot change
+    // while the fade runs — the record belongs to the cue, so nothing that
+    // happens after it is stamped can retime it. A zero means that track
+    // lands on the fade's first frame, which is an answer the operator gave,
+    // not a missing value; fadeBlend tests it before the elapsed-time rule.
+    double fTextSeconds = openshow::domain::kDefaultTransitionTextMs / 1000.0;
+    double fMediaSeconds = openshow::domain::kDefaultTransitionMediaMs / 1000.0;
 
     bool fading() const { return fFrom != nullptr; }
 };
@@ -201,11 +214,19 @@ public:
     // scene colour (or its cover-fitted image / video frame), the words
     // layer lays the scene's text out through SceneTextEngine, and any
     // demo decoration stands down. Render-thread only, like draw(); the
-    // layers pick the change up on their next draw. A fade (the default)
-    // crossfades the outgoing scene into this one over the media and text
-    // durations; a cut swaps in one frame.
-    void setActiveScene(ActiveScene scene,
-                        SceneTransitionKind kind = SceneTransitionKind::kFade);
+    // layers pick the change up on their next draw.
+    //
+    // The record is the cue's whole answer, and the renderer draws all of it
+    // (task TR.2): a Cut swaps in one frame, and a Fade crossfades the
+    // outgoing scene into this one on the record's OWN two clocks — the words
+    // and foreground items on `textDurationMs`, the background composition on
+    // `mediaDurationMs`, either of which may be 0 to land on the fade's first
+    // captured frame. There is NO default argument, deliberately: every call
+    // states how the audience is about to get this slide, because the entry
+    // points that have no cue to ask (the development harness, the snapshot
+    // CLI) are exactly where a record invented silently would be invisible,
+    // and they say `TransitionOptions::defaults()` in the open.
+    void setActiveScene(ActiveScene scene, const openshow::domain::TransitionOptions& options);
     const ActiveScene& activeScene() const { return fActiveScene; }
     // The background image cache (task 5.5): the session prefetches a
     // prepared scene's background through it from its RPC thread, so the

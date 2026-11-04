@@ -53,6 +53,7 @@
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkSurface.h"
 
+#include "openshow/domain/documents.h"  // TransitionOptions drives the blend (task TR.2)
 #include "openshow/scene/scene.h"
 
 #include "render/Layer.h"
@@ -63,7 +64,19 @@ namespace {
 using openshow::worker::ActiveScene;
 using openshow::worker::SceneFrame;
 using openshow::worker::SceneRenderer;
-using openshow::worker::SceneTransitionKind;
+using openshow::domain::TransitionKind;
+using openshow::domain::TransitionOptions;
+
+// The two records every fixture here can stage with: the contract's own fade
+// spelled at the call, and a cut. A record is what `setActiveScene` takes now
+// (task TR.2), so the fixtures name the answer the cue brought rather than a
+// kind the renderer used to complete with its own constants.
+const TransitionOptions kFade = TransitionOptions::defaults();
+TransitionOptions cut() {
+    TransitionOptions options;
+    options.kind = TransitionKind::kCut;
+    return options;
+}
 
 int gFailures = 0;
 
@@ -270,7 +283,7 @@ void testBothTargetsDrawTheSameComposition() {
     Target preview(*renderer, kPreviewWidth, kPreviewHeight);
 
     const ActiveScene red = stage(kRed, "ALPHA");
-    renderer->setActiveScene(red, SceneTransitionKind::kCut);
+    renderer->setActiveScene(red, cut());
     const SceneFrame steady = renderer->captureFrame(10.0, 1, kFixedWall);
     check(steady.fadeFrom == nullptr, "a cut leaves nothing to fade from");
     check(steady.mediaBlend >= 1.0f && steady.textBlend >= 1.0f,
@@ -285,7 +298,7 @@ void testBothTargetsDrawTheSameComposition() {
     check(preview.inkAgainst(kRed, 12) > kPreviewInkFloor,
           "the preview composed the words too, not just the colour fill");
 
-    renderer->setActiveScene(stage(kBlue, "BETA"), SceneTransitionKind::kFade);
+    renderer->setActiveScene(stage(kBlue, "BETA"), kFade);
     check(renderer->transitionRunning(), "a fade is running after a fade presentation");
 
     // Fade origin: the first capture stamps the start, so this frame is
@@ -369,12 +382,12 @@ void testDrawingMovesNeitherPixelsNorClock() {
     Target panel(*renderer, kPanelWidth, kPanelHeight);
     Target preview(*renderer, kPreviewWidth, kPreviewHeight);
 
-    renderer->setActiveScene(stage(kRed, "ALPHA"), SceneTransitionKind::kCut);
+    renderer->setActiveScene(stage(kRed, "ALPHA"), cut());
     const SceneFrame first = renderer->captureFrame(10.0, 3, kFixedWall);
     panel.draw(first);
     renderer->commitFrame(first);
 
-    renderer->setActiveScene(stage(kBlue, "BETA"), SceneTransitionKind::kFade);
+    renderer->setActiveScene(stage(kBlue, "BETA"), kFade);
     renderer->captureFrame(kAudienceStart, 20, kFixedWall);  // stamps the origin
     const SceneFrame middle =
         renderer->captureFrame(kAudienceStart + kHalfFade, 20, kFixedWall);
@@ -422,9 +435,9 @@ void testCapturedFrameDoesNotFollowTheShow() {
     std::unique_ptr<SceneRenderer> renderer = createRenderer();
     Target panel(*renderer, kPanelWidth, kPanelHeight);
 
-    renderer->setActiveScene(stage(kRed, "ALPHA"), SceneTransitionKind::kCut);
+    renderer->setActiveScene(stage(kRed, "ALPHA"), cut());
     renderer->captureFrame(10.0, 10, kFixedWall);
-    renderer->setActiveScene(stage(kBlue, "BETA"), SceneTransitionKind::kFade);
+    renderer->setActiveScene(stage(kBlue, "BETA"), kFade);
     renderer->captureFrame(kAudienceStart, 11, kFixedWall);
     const SceneFrame held =
         renderer->captureFrame(kAudienceStart + kHalfFade, 12, kFixedWall);
@@ -433,7 +446,7 @@ void testCapturedFrameDoesNotFollowTheShow() {
     check(std::abs(heldRedness) < kMidpointCeiling, "the held frame is the mid-fade mix");
 
     // The show moves on underneath it: a hard cut to green.
-    renderer->setActiveScene(stage(kGreen, "GAMMA"), SceneTransitionKind::kCut);
+    renderer->setActiveScene(stage(kGreen, "GAMMA"), cut());
     Target replay(*renderer, kPanelWidth, kPanelHeight);
     replay.draw(held);
     check(replay.identicalTo(panel),
@@ -460,7 +473,7 @@ void testLayersDrawTheFrameNotTheLiveState() {
 
     const ActiveScene red = stage(kRed, "ALPHA");
     const ActiveScene blue = stage(kBlue, "BETA");
-    renderer->setActiveScene(red, SceneTransitionKind::kCut);
+    renderer->setActiveScene(red, cut());
     renderer->captureFrame(10.0, 30, kFixedWall);
 
     // A frame hand-built as "all incoming blue", while the renderer itself
@@ -505,9 +518,9 @@ void testFadeEndsWhenTheAudienceHasTheFrame() {
     Target panel(*renderer, kPanelWidth, kPanelHeight);
     Target preview(*renderer, kPreviewWidth, kPreviewHeight);
 
-    renderer->setActiveScene(stage(kRed, "ALPHA"), SceneTransitionKind::kCut);
+    renderer->setActiveScene(stage(kRed, "ALPHA"), cut());
     renderer->commitFrame(renderer->captureFrame(10.0, 40, kFixedWall));
-    renderer->setActiveScene(stage(kBlue, "BETA"), SceneTransitionKind::kFade);
+    renderer->setActiveScene(stage(kBlue, "BETA"), kFade);
 
     const SceneFrame opening = renderer->captureFrame(kAudienceStart, 41, kFixedWall);
     panel.draw(opening);
@@ -538,7 +551,7 @@ void testFadeEndsWhenTheAudienceHasTheFrame() {
     // A stale completion cannot retire a fade a NEWER presentation started:
     // `done` fades to blue, blue is no longer on air.
     const ActiveScene green = stage(kGreen, "GAMMA");
-    renderer->setActiveScene(green, SceneTransitionKind::kFade);
+    renderer->setActiveScene(green, kFade);
     renderer->captureFrame(200.0, 44, kFixedWall);
     const SceneFrame midNew = renderer->captureFrame(200.4, 45, kFixedWall);
     check(midNew.fadeFrom != nullptr, "a new fade is in flight");
@@ -554,6 +567,219 @@ void testFadeEndsWhenTheAudienceHasTheFrame() {
     check(renderer->activeScene() == green, "and the on-air scene is the newer one");
 }
 
+// --- the record's durations are what the audience gets --------------------
+//
+// Task TR.2: the renderer used to own the crossfade's two numbers and read the
+// command's kind, so every cue moved on the same 0.5 s / 0.8 s no matter what
+// the documents said. Now the record decides, and what these fixtures pin is
+// the difference between "a kind was honoured" and "these milliseconds are on
+// the panel":
+//
+//   a duration is a LENGTH, not a label — 100 ms is a tenth of a second, so the
+//     blend at +50 ms is a quarter of the way along the media track and half
+//     along the words track, and one fade can be brisk where the words are and
+//     slow where the colour is;
+//   0 ms is an ANSWER, not a missing value — the track lands on the fade's
+//     first captured frame, which means the outgoing words are gone from a
+//     frame the background still has 800 ms to cross;
+//   the record belongs to the CUE — a Go that arrives mid-fade is measured by
+//     its own lengths, from its own first frame, and the picture it replaces is
+//     the scene that was coming up rather than a composite nobody asked for;
+//   and the default record is still exactly the old output: a service that
+//     never opens the transition settings moves on 500 ms and 800 ms, because
+//     that is what the contract's numbers are.
+void testDurationsComeFromTheCue() {
+    const auto record = [](TransitionKind kind, int textMs, int mediaMs) {
+        TransitionOptions options;
+        options.kind = kind;
+        options.textDurationMs = textMs;
+        options.mediaDurationMs = mediaMs;
+        return options;
+    };
+    // A background with no words of its own: the only way to see, in pixels,
+    // that a 0 ms words track took the OUTGOING words with it — ink on a frame
+    // of this scene means some scene's words are on screen.
+    const auto backgroundOnly = [](std::uint32_t colour) {
+        auto scene = std::make_shared<openshow::scene::Scene>();
+        scene->showId = "tr2";
+        scene->slideId = "flat";
+        scene->background.color = colour;
+        return ActiveScene(scene);
+    };
+
+    // --- both tracks at zero: the fade lands on its first frame -----------
+    {
+        std::unique_ptr<SceneRenderer> renderer = createRenderer();
+        renderer->setActiveScene(stage(kRed, "ALPHA"), cut());
+        renderer->commitFrame(renderer->captureFrame(10.0, 1, kFixedWall));
+        renderer->setActiveScene(stage(kBlue, "BETA"), record(TransitionKind::kFade, 0, 0));
+        const SceneFrame first = renderer->captureFrame(kAudienceStart, 2, kFixedWall);
+        check(first.textBlend >= 1.0f && first.mediaBlend >= 1.0f && first.fadeFrom == nullptr,
+              "a 0 ms / 0 ms fade is the settled picture on its very first frame — "
+              "elapsed is 0 there, so an elapsed-first blend would have shown the "
+              "old scene to an operator who asked for nothing to fade");
+        check(renderer->transitionRunning(),
+              "and it still owes the present that retires it, like any other fade");
+    }
+
+    // --- 0 ms words over an 800 ms background: words gone, colour crossing --
+    {
+        std::unique_ptr<SceneRenderer> renderer = createRenderer();
+        Target panel(*renderer, kPanelWidth, kPanelHeight);
+        renderer->setActiveScene(stage(kRed, "ALPHA"), cut());
+        renderer->commitFrame(renderer->captureFrame(10.0, 3, kFixedWall));
+        renderer->setActiveScene(backgroundOnly(kBlue), record(TransitionKind::kFade, 0, 800));
+
+        const SceneFrame first = renderer->captureFrame(kAudienceStart, 4, kFixedWall);
+        check(first.textBlend >= 1.0f && nearBlend(first.mediaBlend, 0.0),
+              "0 ms words means the words track is landed at the first frame while the "
+              "background has all its 800 ms to run");
+        panel.draw(first);
+        check(panel.inkAgainst(kRed, 24) < 40,
+              "and the audience sees it: the outgoing word is gone from a frame whose "
+              "background is still the outgoing red");
+        renderer->commitFrame(first);
+
+        const SceneFrame middle = renderer->captureFrame(kAudienceStart + 0.4, 5, kFixedWall);
+        check(nearBlend(middle.mediaBlend, 0.5) && middle.textBlend >= 1.0f,
+              "half a second into an 800 ms background is half way, with the words "
+              "long since settled");
+        renderer->commitFrame(middle);
+        const SceneFrame last = renderer->captureFrame(kAudienceStart + 0.8, 6, kFixedWall);
+        check(last.mediaBlend >= 1.0f, "and the background is landed at 0.8 s");
+        renderer->commitFrame(last);
+        check(!renderer->transitionRunning(), "the longer track is what the fade ends on");
+    }
+
+    // --- 500 ms words over an instant background: colour there, words crossing
+    {
+        std::unique_ptr<SceneRenderer> renderer = createRenderer();
+        Target panel(*renderer, kPanelWidth, kPanelHeight);
+        renderer->setActiveScene(stage(kRed, "ALPHA"), cut());
+        renderer->commitFrame(renderer->captureFrame(10.0, 7, kFixedWall));
+        renderer->setActiveScene(stage(kBlue, "BETA"), record(TransitionKind::kFade, 500, 0));
+
+        const SceneFrame first = renderer->captureFrame(kAudienceStart, 8, kFixedWall);
+        check(nearBlend(first.textBlend, 0.0) && first.mediaBlend >= 1.0f,
+              "a 0 ms background is landed while the words still have 500 ms");
+        panel.draw(first);
+        check(panel.redness() < -kEndDistance,
+              "the panel is already the new background");
+        check(panel.inkAgainst(kBlue, 24) > kPanelInkFloor,
+              "with the outgoing word still on it: the two tracks are not one");
+        renderer->commitFrame(first);
+
+        const SceneFrame quarter = renderer->captureFrame(kAudienceStart + 0.125, 9, kFixedWall);
+        check(nearBlend(quarter.textBlend, 0.25),
+              "125 ms of a 500 ms words track is a quarter, not a half");
+        renderer->commitFrame(quarter);
+        const SceneFrame done = renderer->captureFrame(kAudienceStart + 0.5, 10, kFixedWall);
+        check(done.textBlend >= 1.0f, "and the words are landed at 0.5 s");
+        renderer->commitFrame(done);
+    }
+
+    // --- 100 ms / 200 ms: milliseconds, on both tracks, at the same time ---
+    {
+        std::unique_ptr<SceneRenderer> renderer = createRenderer();
+        Target panel(*renderer, kPanelWidth, kPanelHeight);
+        Target preview(*renderer, kPreviewWidth, kPreviewHeight);
+        renderer->setActiveScene(stage(kRed, "ALPHA"), cut());
+        renderer->commitFrame(renderer->captureFrame(10.0, 11, kFixedWall));
+        renderer->setActiveScene(stage(kBlue, "BETA"), record(TransitionKind::kFade, 100, 200));
+        // The origin frame: a fade begun between two frames is measured from
+        // the first one drawn, so this capture is where 0 ms is.
+        const SceneFrame origin = renderer->captureFrame(kAudienceStart, 12, kFixedWall);
+        check(nearBlend(origin.textBlend, 0.0) && nearBlend(origin.mediaBlend, 0.0),
+              "a fade's first frame is all the outgoing scene, on any record");
+        renderer->commitFrame(origin);
+
+        const SceneFrame early = renderer->captureFrame(kAudienceStart + 0.05, 12, kFixedWall);
+        check(nearBlend(early.textBlend, 0.5) && nearBlend(early.mediaBlend, 0.25),
+              "50 ms into a 100 / 200 record is half the words and a quarter of the "
+              "background — the unit is the millisecond, not a frame count");
+        panel.draw(early);
+        preview.draw(early);
+        check(std::abs(panel.redness() - preview.redness()) < kTargetAgreement,
+              "and both targets draw that one asymmetric frame in agreement: a preview "
+              "cannot be further along the operator's own clock than the audience");
+        renderer->commitFrame(early);
+
+        const SceneFrame wordsLanded =
+            renderer->captureFrame(kAudienceStart + 0.1, 13, kFixedWall);
+        check(wordsLanded.textBlend >= 1.0f && nearBlend(wordsLanded.mediaBlend, 0.5),
+              "at 100 ms the words are done and the background is half way");
+        renderer->commitFrame(wordsLanded);
+        const SceneFrame landed = renderer->captureFrame(kAudienceStart + 0.2, 14, kFixedWall);
+        check(landed.mediaBlend >= 1.0f && landed.textBlend >= 1.0f,
+              "and the cue is over at 200 ms, not 800");
+        renderer->commitFrame(landed);
+        check(!renderer->transitionRunning(), "a brisk record means a brisk show");
+
+        // Idle after completion: nothing is owed, and the loop's next frame is
+        // the settled picture rather than a fresh blend of anything.
+        const SceneFrame muchLater =
+            renderer->captureFrame(kAudienceStart + 60.0, 15, kFixedWall);
+        check(muchLater.fadeFrom == nullptr && muchLater.mediaBlend >= 1.0f,
+              "a minute on, the frame is still the settled one");
+        Target then(*renderer, kPanelWidth, kPanelHeight);
+        Target now(*renderer, kPanelWidth, kPanelHeight);
+        now.draw(landed);
+        then.draw(muchLater);
+        check(then.identicalTo(now),
+              "byte for byte: an idle show costs no blend, whatever the durations were");
+    }
+
+    // --- a newer cue is measured by its OWN record ------------------------
+    {
+        std::unique_ptr<SceneRenderer> renderer = createRenderer();
+        const ActiveScene alpha = stage(kRed, "ALPHA");
+        const ActiveScene beta = stage(kBlue, "BETA");
+        renderer->setActiveScene(alpha, cut());
+        renderer->commitFrame(renderer->captureFrame(10.0, 16, kFixedWall));
+        renderer->setActiveScene(beta, record(TransitionKind::kFade, 800, 800));
+        renderer->captureFrame(kAudienceStart, 17, kFixedWall);
+        check(nearBlend(renderer->captureFrame(kAudienceStart + 0.4, 18, kFixedWall).mediaBlend,
+                        0.5),
+              "a long fade is under way");
+
+        // Rapid Go: a slow fade is overtaken by a cut-and-replace, and the
+        // record that decides the new one is the NEW cue's.
+        const ActiveScene gamma = stage(kGreen, "GAMMA");
+        renderer->setActiveScene(gamma, record(TransitionKind::kFade, 50, 50));
+        const SceneFrame restart = renderer->captureFrame(kAudienceStart + 0.45, 19, kFixedWall);
+        check(restart.fadeFrom == beta && restart.textBlend <= 0.01f,
+              "the in-flight fade is replaced from the scene that was coming up, at its "
+              "own first frame — the outgoing is BETA, not ALPHA, and there is no "
+              "composite of a half-fade in it");
+        renderer->commitFrame(restart);
+        const SceneFrame done = renderer->captureFrame(kAudienceStart + 0.5, 20, kFixedWall);
+        check(done.textBlend >= 1.0f && done.mediaBlend >= 1.0f,
+              "50 ms is 50 ms: the cue that asked for it is over in 50 ms even though "
+              "it interrupted an 800 ms one");
+        renderer->commitFrame(done);
+        check(!renderer->transitionRunning() && renderer->activeScene() == gamma,
+              "and the show is on the newest cue, idle");
+    }
+
+    // --- the default record is the old output, to the millisecond ---------
+    {
+        std::unique_ptr<SceneRenderer> renderer = createRenderer();
+        renderer->setActiveScene(stage(kRed, "ALPHA"), cut());
+        renderer->commitFrame(renderer->captureFrame(10.0, 21, kFixedWall));
+        renderer->setActiveScene(stage(kBlue, "BETA"), kFade);
+        renderer->captureFrame(kAudienceStart, 22, kFixedWall);
+        const SceneFrame middle = renderer->captureFrame(kAudienceStart + 0.4, 23, kFixedWall);
+        check(nearBlend(middle.mediaBlend, 0.5) && nearBlend(middle.textBlend, 0.8),
+              "the contract's default record is the 500 ms / 800 ms crossfade every "
+              "present performed before the setting existed — a service that never "
+              "opened the page keeps its exact pixels");
+        renderer->commitFrame(middle);
+        check(renderer->captureFrame(kAudienceStart + 0.799, 24, kFixedWall).fadeFrom != nullptr,
+              "and it is 800 ms, not rounded down to the media track's own default: "
+              "one millisecond short is still mid fade");
+    }
+}
+
 // --- the revision belongs to the frame ----------------------------------
 //
 // Task 6.4's rule, moved inside the snapshot: the tag a preview publishes
@@ -564,14 +790,14 @@ void testRevisionTravelsWithTheFrame() {
     std::unique_ptr<SceneRenderer> renderer = createRenderer();
     Target preview(*renderer, kPreviewWidth, kPreviewHeight);
 
-    renderer->setActiveScene(stage(kRed, "ALPHA"), SceneTransitionKind::kCut);
+    renderer->setActiveScene(stage(kRed, "ALPHA"), cut());
     const SceneFrame tagged = renderer->captureFrame(10.0, 41, kFixedWall);
     check(tagged.revision == 41, "captureFrame stamps the revision it was given");
     check(tagged.timeSeconds == 10.0 && tagged.wallClock == kFixedWall,
           "and the frame carries its own clock");
     preview.draw(tagged);
 
-    renderer->setActiveScene(stage(kBlue, "BETA"), SceneTransitionKind::kCut);
+    renderer->setActiveScene(stage(kBlue, "BETA"), cut());
     const SceneFrame next = renderer->captureFrame(10.5, 42, kFixedWall);
     check(next.revision == 42 && tagged.revision == 41, "each frame keeps its own tag");
 
@@ -609,7 +835,7 @@ void testLayoutCacheServesTwoTargets() {
     Target editor(*renderer, kPreviewWidth, kPreviewHeight);
 
     const ActiveScene onAir = stage(kRed, "AUDIENCE");
-    renderer->setActiveScene(onAir, SceneTransitionKind::kCut);
+    renderer->setActiveScene(onAir, cut());
 
     // The pinned selection copy: same content as its store entry, a pointer
     // of its own, exactly as the session builds it at the accept.
@@ -653,7 +879,7 @@ void testLayoutCacheServesTwoTargets() {
     // And a fade, which puts a THIRD scene in play — the outgoing one — on
     // top of the two targets. This is the frame the R13 snapshot is captured
     // for, so the audience's half of it is one capture per pass.
-    renderer->setActiveScene(stage(kGreen, "NEXT"), SceneTransitionKind::kFade);
+    renderer->setActiveScene(stage(kGreen, "NEXT"), kFade);
     const SceneFrame midFade = renderer->captureFrame(kAudienceStart + kHalfFade, 8, kFixedWall);
     check(midFade.fadeFrom != nullptr, "the fade really has an outgoing scene to lay out");
     panel.draw(midFade);
@@ -739,7 +965,7 @@ void testACompanionIsSeparateFromTheShow() {
           "tell them apart because the budgets differ");
 
     const ActiveScene onAir = stage(kRed, "AUDIENCE");
-    show->setActiveScene(onAir, SceneTransitionKind::kCut);
+    show->setActiveScene(onAir, cut());
 
     auto buildFrame = [](const ActiveScene& content, double clock, std::uint64_t revision) {
         SceneFrame frame;
@@ -802,7 +1028,7 @@ void testACompanionIsSeparateFromTheShow() {
 
     // Non-vacuity, the show's direction: a real change on air is real work
     // and is still charged to the show's own meter.
-    show->setActiveScene(stage(kGreen, "NEXT"), SceneTransitionKind::kCut);
+    show->setActiveScene(stage(kGreen, "NEXT"), cut());
     const SceneFrame next = show->captureFrame(kAudienceStart + kFullFade, 8, kFixedWall);
     panel.draw(next);
     check(show->textLayoutBuilds() == showBuilds + 1,
@@ -851,12 +1077,90 @@ void testACompanionIsSeparateFromTheShow() {
 
 }  // namespace
 
+// --- video is not dissolved, at any duration --------------------------------
+//
+// The contract's other half, stated rather than promised (the review is
+// explicit: do not sell a dual-video dissolve). A crossfade composites two
+// STILL images; with video involved, the blend would be a picture of frames
+// nobody decoded while two transports each find their own first frame. So the
+// background layer takes the media cut: whatever the record asks, a fade with
+// video on either side swaps the background at full strength on its first
+// frame — while the WORDS still fade, because they were never the problem.
+// The other half of the rule (a cue that keeps the same video background keeps
+// playing it continuously, because the session restarts nothing when the
+// identity is unchanged) belongs to the transport and is held by
+// background_media_tests.
+void testVideoBackgroundNeverDissolves() {
+    const auto videoStage = [](std::uint32_t colour, const char* clip, const char* word) {
+        auto scene = std::make_shared<openshow::scene::Scene>();
+        scene->showId = "tr2";
+        scene->slideId = word;
+        scene->background.color = colour;
+        scene->background.hasImage = true;
+        scene->background.assetPath = clip;
+        scene->background.isVideo = true;
+        openshow::scene::SceneItem item;
+        item.lines = {word};
+        item.color = 0xFFFFFFu;
+        item.fontSize = 120.0;
+        scene->items.push_back(item);
+        return ActiveScene(scene);
+    };
+    const auto record = [](int textMs, int mediaMs) {
+        TransitionOptions options;
+        options.kind = TransitionKind::kFade;
+        options.textDurationMs = textMs;
+        options.mediaDurationMs = mediaMs;
+        return options;
+    };
+
+    std::unique_ptr<SceneRenderer> renderer = createRenderer();
+    Target panel(*renderer, kPanelWidth, kPanelHeight);
+    renderer->setActiveScene(videoStage(kRed, "clip-a.mp4", "ALPHA"), cut());
+    renderer->commitFrame(renderer->captureFrame(10.0, 30, kFixedWall));
+    // The slowest background anyone can ask for, aimed at another video.
+    renderer->setActiveScene(videoStage(kBlue, "clip-b.mp4", "BETA"), record(500, 10000));
+    renderer->captureFrame(kAudienceStart, 31, kFixedWall);
+
+    // Halfway along the WORDS track, a quarter of the way into a 10 s
+    // background: the text is mid crossfade and the background is already the
+    // incoming one, which is the whole limitation in a single frame.
+    const SceneFrame words = renderer->captureFrame(kAudienceStart + 0.25, 32, kFixedWall);
+    check(words.fadeFrom != nullptr && words.textBlend > 0.1f && words.textBlend < 0.9f &&
+              words.mediaBlend < 0.05f,
+          "the state machine runs the fade it was commanded to: half the words, "
+          "a fortieth of the background");
+    panel.draw(words);
+    std::unique_ptr<SceneRenderer> settled = createRenderer();
+    Target settledPanel(*settled, kPanelWidth, kPanelHeight);
+    settled->setActiveScene(videoStage(kBlue, "clip-b.mp4", "BETA"), cut());
+    settledPanel.draw(settled->captureFrame(kAudienceStart, 33, kFixedWall));
+    check(panel.redness() < -kEndDistance,
+          "but the background the panel was handed is the NEW one already: no media "
+          "duration buys a dissolve between two videos");
+    check(panel.inkAgainst(kBlue, 24) > settledPanel.inkAgainst(kBlue, 24) * 6 / 5,
+          "and both words are on that frame, so the text crossfade survived: the "
+          "limitation is the background's, not a licence to cut the whole cue in one frame");
+
+    // Outgoing video with a still incoming: the same bypass, other direction.
+    renderer->setActiveScene(stage(kGreen, "GAMMA"), record(500, 4000));
+    renderer->captureFrame(300.0, 34, kFixedWall);
+    const SceneFrame stillIn = renderer->captureFrame(300.2, 35, kFixedWall);
+    panel.draw(stillIn);
+    check(stillIn.fadeFrom != nullptr, "a fade from video is in flight");
+    check(panel.meanGreen() > 90.0,
+          "and it lands the incoming background at once rather than blending out of a "
+          "picture of a video frame");
+}
+
 int main() {
     testBothTargetsDrawTheSameComposition();
     testDrawingMovesNeitherPixelsNorClock();
     testCapturedFrameDoesNotFollowTheShow();
     testLayersDrawTheFrameNotTheLiveState();
     testFadeEndsWhenTheAudienceHasTheFrame();
+    testDurationsComeFromTheCue();
+    testVideoBackgroundNeverDissolves();
     testRevisionTravelsWithTheFrame();
     testLayoutCacheServesTwoTargets();
     testACompanionIsSeparateFromTheShow();

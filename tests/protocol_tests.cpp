@@ -213,7 +213,11 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 20, "hello lists capabilities");
+        // The count is a tripwire, not a fact to preserve: a new capability
+        // belongs in the hello (TR.2's scene.transition-options.v1 made it 21),
+        // and reading this fail means a name was added or dropped — which is
+        // exactly the kind of change that should cost a looked-at line.
+        check(result.at("capabilities").as_array().size() == 21, "hello lists capabilities");
         {  // Task 6.17b's scene 2 (kinded items) is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasImageItems = std::any_of(
@@ -302,26 +306,23 @@ void testHello() {
             check(hasTextStyle,
                   "scene.text-style.v1 is advertised now that the renderer draws the fields");
         }
-        {  // Task TR.1 defines the name for a worker that takes its fade
-           // LENGTHS from scene.present's durations and deliberately does NOT
-           // list it: this build's renderer still crossfades on its own 0.5 /
-           // 0.8 s constants, so the hello would claim something the pixels do
-           // not do. TS.1 ran the same debt against TS.2, whose arrival turned
-           // this very assertion into a presence check; TR.2 earns the name the
-           // same way. Reading this line fail on a TR.2 branch means the
-           // renderer grew — flip it to presence there, and the frontend's
-           // downgrade path stops being reachable for a current worker.
+        {  // Task TR.2 EARNED this name: the hello now lists
+           // scene.transition-options.v1, because the renderer blends on the
+           // durations a present carries instead of on the two constants it
+           // used to own. This assertion is the mirror of the tripwire TR.1
+           // left here — reading it fail means the renderer stopped drawing the
+           // record, and the honest repair is to draw it or withhold the name,
+           // never to leave a peer sending numbers the panel ignores.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasTransitionOptions = std::any_of(
                 caps.begin(), caps.end(), [](const boost::json::value& v) {
                     return v.is_string() &&
                            v.as_string() == proto::kCapabilityTransitionOptions;
                 });
-            check(!hasTransitionOptions,
-                  "scene.transition-options.v1 is defined but withheld until the "
-                  "renderer draws the durations");
+            check(hasTransitionOptions,
+                  "capabilities name scene.transition-options.v1 now the durations are drawn");
             check(proto::kCapabilityTransitionOptions == std::string("scene.transition-options.v1"),
-                  "and the name it will carry is the one the contract spells");
+                  "and the name is the one the contract spells");
         }
         {  // Task 5.5d's media visibility is named by a capability.
             const auto& caps = result.at("capabilities").as_array();

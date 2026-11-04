@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 
 #include "SceneAsk.h"
 #include "SceneEdit.h"
@@ -182,15 +183,30 @@ private:
     // clears issued before an earlier clear's confirmation must compose with it,
     // not resurrect what it removed).
     QString clearSourceScene() const;
+    // The documents' answer for a payload this class already holds as JSON
+    // (task TR.2): the same question an ordinary Go asks, for the scene a clear
+    // is about to retain. Unreadable or absent JSON answers with the contract's
+    // default, because a reveal is owed either way and the default is exactly
+    // what every present performed before the setting existed.
+    openshow::domain::TransitionOptions resolveTransitionFor(const QString& sceneJson) const;
+    // A cue's move when the caller already knows it (task TR.2): an explicit
+    // clear's Cut, or the record a restore's retained content was captured
+    // with. Empty means "ask the documents", which is what an ordinary Go does.
+    using ForcedTransition = std::optional<openshow::domain::TransitionOptions>;
     // Attach the per-request prepare context (payload, and the go intent when
-    // this prepare should present its ack).
-    void armPrepare(std::int64_t requestId, const boost::json::object& scene,
-                    bool autoPresent);
+    // this prepare should present its ack). `forced`, when it holds a record,
+    // is how this cue moves REGARDLESS of what the documents say now: an
+    // explicit clear cuts (task TR.2), and a restore moves with the record its
+    // own retained point captured, because by then the operator may be
+    // browsing another theme entirely. A plain Go passes an empty optional and
+    // asks the documents, which is task TR.1's contract.
+    void armPrepare(std::int64_t requestId, const boost::json::object& scene, bool autoPresent,
+                    const ForcedTransition& forced);
     // Prepare then present-on-ack; the restore slot is NOT touched here, so the
     // clear controls can stage a derived scene without forgetting what they
     // cleared. Returns the request id, or 0 when the JSON was unreadable or the
     // session not live.
-    std::int64_t presentSceneInternal(const QString& sceneJson);
+    std::int64_t presentSceneInternal(const QString& sceneJson, const ForcedTransition& forced);
     // Parse, check against the worker's own budgets, and refuse locally with the
     // reason on the status line; false leaves every truth untouched.
     bool readableScene(const QString& sceneJson, const char* verb, boost::json::value& parsed);
@@ -245,6 +261,13 @@ private:
     // the id of a restore whose prepare is still in flight; and the revision
     // that must reach "active" before the snapshot retires.
     QString fRestoreJson;
+    // How the retained content comes back (task TR.2), captured WITH it at the
+    // moment the first clear of a sequence retained the payload. A restore that
+    // asked the documents again when the button was pressed would move with
+    // whatever theme the operator happened to be browsing by then; the slide
+    // the audience is getting back is owed the move it had before it was
+    // cleared away. Only meaningful beside a non-empty fRestoreJson.
+    openshow::domain::TransitionOptions fRestoreTransition;
     std::int64_t fRestoreArmedGo = 0;
     qint64 fRestoreDoneRevision = 0;
     // The payload of the newest go: what the output will show once that go is

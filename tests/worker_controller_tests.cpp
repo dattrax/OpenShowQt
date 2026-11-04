@@ -3271,6 +3271,84 @@ void scenarioTransitionIntent() {
         check(!params.contains("textDurationMs") && !params.contains("mediaDurationMs"),
               "with no duration keys: byte-for-byte the command a pre-TR.1 frontend sent");
     }
+
+    // --- (d) a clear cuts, and a restore keeps the record it was retained WITH
+    //
+    // Task TR.2's two frontend rules, read off the wire. A clear is not a cue:
+    // whatever the theme of the slide being cleared says about how it ARRIVES,
+    // taking something OFF the output is a cut. And the content a clear retains
+    // for restore keeps the record resolved at the moment of retention, because
+    // by the time the operator presses Restore they may have moved the setting
+    // or browsed to another theme — and the slide coming back is owed the move
+    // it had before it was cleared away. So this fixture moves the setting
+    // between the clear and the restore precisely so the two answers differ.
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "transition", 1);
+    const std::string clearReport = tempPath("transition-clears");
+    ::unlink(clearReport.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", clearReport.c_str(), 1);
+    domain::TransitionOptions current;
+    current.textDurationMs = 100;
+    current.mediaDurationMs = 200;
+    WorkerController clearer;
+    clearer.setTransitionResolver([&current](const boost::json::object&) { return current; });
+    clearer.start();
+    if (!check(waitUntil([&clearer] {
+                   return clearer.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "transition: handshake for the clear and restore sequence")) {
+        clearer.shutdownNow();
+        return;
+    }
+    clearer.presentSceneJson(QString::fromStdString(sceneWordsAndBackground("FULL", 0x550000)));
+    if (!check(waitUntil([&clearer] { return clearer.sceneActive() == 1; }),
+               "transition: the go is on air before the clear")) {
+        clearer.shutdownNow();
+        return;
+    }
+    clearer.clearSlide();
+    const bool cleared = waitUntil([&clearer] { return clearer.sceneActive() == 2; });
+    // The setting moves NOW: after the clear retained its content, before the
+    // restore is asked for. A restore that resolved again here would perform
+    // 900 / 1000, and the third check below would fail.
+    current.textDurationMs = 900;
+    current.mediaDurationMs = 1000;
+    clearer.restoreOutput();
+    const bool restored = waitUntil([&clearer] { return clearer.sceneActive() == 3; });
+    clearer.shutdownNow();
+    check(cleared, "transition: the clear reaches the audience");
+    check(restored, "transition: the restore brings the cleared words back");
+    const boost::json::object clearCounts = readReport(clearReport);
+    if (check(clearCounts.contains("presentOps") &&
+                  clearCounts.at("presentOps").is_array() &&
+                  clearCounts.at("presentOps").as_array().size() == 3,
+              "transition: go, clear and restore each put one present on the wire")) {
+        const auto paramsOf = [&](std::size_t index) -> boost::json::object {
+            return clearCounts.at("presentOps").as_array()[index].as_object().at("params")
+                .as_object();
+        };
+        const auto numberOf = [](const boost::json::object& params, const char* key) {
+            const auto found = params.find(key);
+            return found == params.end() || !found->value().is_number()
+                       ? -1LL
+                       : static_cast<long long>(found->value().to_number<double>());
+        };
+        const auto kindOf = [](const boost::json::object& params) {
+            const auto found = params.find("transition");
+            return found == params.end() || !found->value().is_string()
+                       ? std::string()
+                       : std::string(found->value().as_string());
+        };
+        check(kindOf(paramsOf(1)) == "cut",
+              "transition: the clear's present says CUT — an emergency clear that crossfaded "
+              "for the cleared slide's own 200 ms is not what taking it off the output means");
+        check(kindOf(paramsOf(0)) == "fade" && numberOf(paramsOf(0), "textDurationMs") == 100 &&
+                  numberOf(paramsOf(0), "mediaDurationMs") == 200,
+              "transition: and the go beside it still moves with the documents' record");
+        check(kindOf(paramsOf(2)) == "fade" && numberOf(paramsOf(2), "textDurationMs") == 100 &&
+                  numberOf(paramsOf(2), "mediaDurationMs") == 200,
+              "transition: the restore carries the record captured WITH its retained content "
+              "(100 / 200), not the 900 / 1000 the setting holds when the button is pressed");
+    }
 }
 
 // S9 (task 6.8b, review R11): a worker that takes every command and answers

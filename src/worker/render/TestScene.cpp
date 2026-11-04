@@ -273,6 +273,23 @@ bool checkLayerRegion(SceneRenderer& scene, const RasterFrame& baseline, LayerId
     return true;
 }
 
+// The two records a selftest stages with (task TR.2). `setActiveScene` takes
+// the whole answer now, so a selftest says WHICH one it means: `fades()` is the
+// contract's own 500 ms / 800 ms — the durations every present performed before
+// the setting existed, which is why the blend checks below still land at 0.5
+// and 0.8 seconds — and `cuts()` swaps in one frame. Non-default numbers are
+// the point of their own fixtures in scene_frame_tests, where a record's
+// milliseconds are what is being measured rather than the fixture's plumbing.
+openshow::domain::TransitionOptions fades() {
+    return openshow::domain::TransitionOptions::defaults();
+}
+
+openshow::domain::TransitionOptions cuts() {
+    openshow::domain::TransitionOptions options;
+    options.kind = openshow::domain::TransitionKind::kCut;
+    return options;
+}
+
 }  // namespace
 
 SceneRenderer::DemoBuilder demoBuilder() {
@@ -448,7 +465,7 @@ bool verifySceneTransition(std::string* error) {
 
     // 1. The first presentation pops in: with nothing to fade from, the
     //    very first frame already carries the scene's background.
-    scene.setActiveScene(stage(0xE03030u, "ONE"));  // fade requested, none possible
+    scene.setActiveScene(stage(0xE03030u, "ONE"), fades());  // fade asked, none possible
     if (!frame.render(scene, error, 0.0)) {
         return false;
     }
@@ -461,7 +478,7 @@ bool verifySceneTransition(std::string* error) {
 
     // 2. A fade is measured from the first frame it draws...
     const auto blueScene = stage(0x3030E0u, nullptr);
-    scene.setActiveScene(blueScene);
+    scene.setActiveScene(blueScene, fades());
     if (!frame.render(scene, error, 10.0)) {
         return false;
     }
@@ -508,7 +525,7 @@ bool verifySceneTransition(std::string* error) {
     }
 
     // 3. A cut swaps in one frame.
-    scene.setActiveScene(stage(0xE03030u, "ONE"), SceneTransitionKind::kCut);
+    scene.setActiveScene(stage(0xE03030u, "ONE"), cuts());
     if (!frame.render(scene, error, 21.0)) {
         return false;
     }
@@ -518,11 +535,11 @@ bool verifySceneTransition(std::string* error) {
 
     // 4. A cut cancels a fade in flight: the next frame is the cut scene
     //    exactly, not a blend.
-    scene.setActiveScene(blueScene);  // fade starts
+    scene.setActiveScene(blueScene, fades());  // fade starts
     if (!frame.render(scene, error, 30.0) || !frame.render(scene, error, 30.3)) {
         return false;
     }
-    scene.setActiveScene(stage(0xE03030u, "ONE"), SceneTransitionKind::kCut);
+    scene.setActiveScene(stage(0xE03030u, "ONE"), cuts());
     if (!frame.render(scene, error, 30.4)) {
         return false;
     }
@@ -591,7 +608,7 @@ bool verifyProductionCompositor(std::string* error) {
 
     const SkIRect footer = SkIRect::MakeLTRB(0, static_cast<int>(kClockRegion.fTop) - 5,
                                              frame.width, frame.height);
-    production.setActiveScene(subject, SceneTransitionKind::kCut);
+    production.setActiveScene(subject, cuts());
     if (!frame.render(production, error, 5.0)) {
         return false;
     }
@@ -629,7 +646,7 @@ bool verifyProductionCompositor(std::string* error) {
         return fail("a decorated renderer reports itself as production");
     }
     dev.setLayerEnabled(LayerId::kClock, false);  // production's default
-    dev.setActiveScene(subject, SceneTransitionKind::kCut);
+    dev.setActiveScene(subject, cuts());
     RasterFrame devFrame;
     if (!devFrame.render(dev, error, 5.0)) {
         return false;

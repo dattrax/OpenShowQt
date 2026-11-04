@@ -181,15 +181,14 @@ namespace openshow::protocol {
 // and whatever the kind says: the record is atomic, so a Cut still CARRIES
 // durations and still has to carry honest ones.
 // The capability that names a worker HONOURING those numbers is
-// "scene.transition-options.v1", and TR.1 deliberately withholds it from the
-// hello list: this build's renderer draws the KIND and fades on its own
-// library constants, so advertising the name now would be the wire claiming
-// something the pixels do not do — the same debt TS.1 ran against TS.2. A
-// frontend therefore sends non-default durations only to a hello that names
-// it, and toward anything older it sends the legacy-shaped present and says on
-// the status line that the cue moves on the worker's own clock: an operator
-// who pressed Go is owed the next slide, so this gate downgrades and speaks
-// rather than stranding the audience on the previous cue.
+// "scene.transition-options.v1". TR.1 defined it and withheld it, because its
+// renderer drew the KIND and faded on its own library constants; TR.2 put the
+// record's durations into the blend, so the hello lists it and a frontend may
+// send numbers a peer will actually perform. The gate still governs anything
+// older: toward a hello without the name, the durations are left off the
+// present and the status line says the cue moves on the worker's own clock —
+// an operator who pressed Go is owed the next slide, so the gate downgrades and
+// speaks rather than stranding the audience on the previous cue.
 inline constexpr std::uint32_t kProtocolMajor = 0;
 inline constexpr std::uint32_t kProtocolMinor = 18;
 
@@ -215,13 +214,14 @@ inline constexpr const char* kCapabilityTextMeasureV2 = "text.measure.v2";
 inline constexpr const char* kCapabilityFontListV1 = "font.list.v1";
 
 // The capability that names a worker HONOURING the scene.present durations
-// (minor 18, task TR.1): not merely one that parses the two keys — every
-// build since TR.1 parses and vetoes them — but one whose OUTPUT takes its
-// fade lengths from them. TR.1's renderer still crossfades on its own library
-// constants, so this build does NOT list the name: the claim is earned by the
-// renderer, not by the parser, exactly as scene.text-style.v1 waited for the
-// stroke that actually drew. Frontends ask it before putting a deviating
-// duration on the wire (PresentationModel::Outbound::honoursDurations).
+// (minor 18): not merely one that parses the two keys — every build since TR.1
+// parses and vetoes them — but one whose OUTPUT takes its fade lengths from
+// them. TR.1 could only define the name, because its renderer still crossfaded
+// on its own library constants; TR.2's blend reads the record, so the hello
+// carries it and protocol_tests pins both halves — the constant exists and the
+// advertised list contains it. Frontends still ask it before putting a
+// deviating duration on the wire (PresentationModel::Outbound::honoursDurations),
+// which is how a 0.17 worker keeps receiving the legacy-shaped present.
 inline constexpr const char* kCapabilityTransitionOptions = "scene.transition-options.v1";
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):

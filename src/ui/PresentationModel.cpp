@@ -46,7 +46,7 @@ void PresentationModel::prepareScene(const QString& sceneJson) {
     }
     // The scene object itself is the params (the worker validates it too).
     const std::int64_t id = fOut.request("scene.prepare", parsed.as_object());
-    armPrepare(id, parsed.as_object(), /*autoPresent=*/false);
+    armPrepare(id, parsed.as_object(), /*autoPresent=*/false, std::nullopt);
 }
 
 void PresentationModel::presentScene(qint64 revision, bool fromGoIntent,
@@ -95,11 +95,12 @@ void PresentationModel::presentSceneJson(const QString& sceneJson) {
     // content is actually on its way (task 6.8a): a scene this client refuses
     // to send leaves the audience exactly where it was, and the snapshot that
     // could put it back is still worth having.
-    const std::int64_t id = presentSceneInternal(sceneJson);
+    const std::int64_t id = presentSceneInternal(sceneJson, std::nullopt);
     if (id == 0) {
         return;
     }
     fRestoreJson.clear();
+    fRestoreTransition = {};
     fRestoreArmedGo = 0;
     fRestoreDoneRevision = 0;
     invalidateCue();  // an untagged present moves to a revision the cue markers cannot name
@@ -110,7 +111,7 @@ void PresentationModel::presentCueJson(const QString& cueKey, const QString& sce
     // tag attaches only once the request is on its way — a dead session or
     // an unreadable scene marks no cue pending, because no cue was asked of
     // the worker.
-    const std::int64_t id = presentSceneInternal(sceneJson);
+    const std::int64_t id = presentSceneInternal(sceneJson, std::nullopt);
     if (id == 0) {
         return;
     }
@@ -136,8 +137,25 @@ void PresentationModel::presentCompiledScene(const boost::json::object& scene) {
     // Present on the prepare acknowledgement: the revision is the
     // worker's to hand out, and the store only names it once stored.
     const std::int64_t id = fOut.request("scene.prepare", scene);
-    armPrepare(id, scene, /*autoPresent=*/true);
+    armPrepare(id, scene, /*autoPresent=*/true, std::nullopt);
 }
+
+namespace {
+
+// The record an EXPLICIT clear moves with (task TR.2). A clear is not a cue:
+// the operator is telling the output to take something off the screen now, and
+// an emergency clear that crossfaded for 800 ms is the wrong answer whatever
+// the theme worn by the slide being cleared says. Its durations ride along at
+// the contract's numbers because the record is atomic — a Cut with lengths it
+// ignores is still a whole record — and a worker that honours durations has
+// nothing to negotiate about a cut.
+openshow::domain::TransitionOptions clearTransition() {
+    openshow::domain::TransitionOptions options;
+    options.kind = openshow::domain::TransitionKind::kCut;
+    return options;
+}
+
+}  // namespace
 
 // --- output controls (task 3.4, hardened by task 6.3b) -----------------------
 //
@@ -171,8 +189,13 @@ void PresentationModel::clearSlide() {
     }
     if (fRestoreJson.isEmpty()) {
         fRestoreJson = source;
+        // The record the retained content is owed comes with it (task TR.2):
+        // resolved from THAT payload now, so a restore does not ask the
+        // documents again later, when the operator may have browsed to another
+        // theme or moved the setting.
+        fRestoreTransition = resolveTransitionFor(source);
     }
-    if (presentSceneInternal(cleared) != 0) {
+    if (presentSceneInternal(cleared, clearTransition()) != 0) {
         invalidateCue();  // the audience is owed the cleared scene, not a named cue (UI.3b)
     }
 }
@@ -188,8 +211,13 @@ void PresentationModel::clearBackground() {
     }
     if (fRestoreJson.isEmpty()) {
         fRestoreJson = source;
+        // The record the retained content is owed comes with it (task TR.2):
+        // resolved from THAT payload now, so a restore does not ask the
+        // documents again later, when the operator may have browsed to another
+        // theme or moved the setting.
+        fRestoreTransition = resolveTransitionFor(source);
     }
-    if (presentSceneInternal(cleared) != 0) {
+    if (presentSceneInternal(cleared, clearTransition()) != 0) {
         invalidateCue();  // the audience is owed the cleared scene, not a named cue (UI.3b)
     }
 }
@@ -205,8 +233,13 @@ void PresentationModel::clearAll() {
     }
     if (fRestoreJson.isEmpty()) {
         fRestoreJson = source;
+        // The record the retained content is owed comes with it (task TR.2):
+        // resolved from THAT payload now, so a restore does not ask the
+        // documents again later, when the operator may have browsed to another
+        // theme or moved the setting.
+        fRestoreTransition = resolveTransitionFor(source);
     }
-    if (presentSceneInternal(cleared) != 0) {
+    if (presentSceneInternal(cleared, clearTransition()) != 0) {
         invalidateCue();  // the audience is owed the cleared scene, not a named cue (UI.3b)
     }
 }
@@ -222,7 +255,7 @@ void PresentationModel::restoreOutput() {
     // revision on air the snapshot stays, so canRestore never goes quiet
     // on a restore the output has not taken — and an error reply leaves it
     // here, keeping the retry available.
-    const std::int64_t id = presentSceneInternal(fRestoreJson);
+    const std::int64_t id = presentSceneInternal(fRestoreJson, fRestoreTransition);
     if (id != 0) {
         fRestoreArmedGo = id;
         invalidateCue();  // the audience is owed the restored scene, not a named cue (UI.3b)
@@ -471,6 +504,7 @@ void PresentationModel::reset() {
     fForegroundErrors.clear();
     fForegroundFailureEvents = 0;
     fRestoreJson.clear();
+    fRestoreTransition = {};
     fRestoreArmedGo = 0;
     fRestoreDoneRevision = 0;
     fDesiredSceneJson.clear();
@@ -489,7 +523,8 @@ void PresentationModel::reset() {
 
 // --- shared plumbing ------------------------------------------------------------
 
-std::int64_t PresentationModel::presentSceneInternal(const QString& sceneJson) {
+std::int64_t PresentationModel::presentSceneInternal(const QString& sceneJson,
+                                                     const ForcedTransition& forced) {
     if (!fOut.live()) {
         return 0;
     }
@@ -500,8 +535,25 @@ std::int64_t PresentationModel::presentSceneInternal(const QString& sceneJson) {
     // Same hand-off as presentCompiledScene: present on the prepare ack, so
     // the audience switch lands as soon as the store names the revision.
     const std::int64_t id = fOut.request("scene.prepare", parsed.as_object());
-    armPrepare(id, parsed.as_object(), /*autoPresent=*/true);
+    armPrepare(id, parsed.as_object(), /*autoPresent=*/true, forced);
     return id;
+}
+
+openshow::domain::TransitionOptions PresentationModel::resolveTransitionFor(
+    const QString& sceneJson) const {
+    // The same question an ordinary Go asks, for a payload this class already
+    // holds (task TR.2). Unreadable JSON answers with the contract's default
+    // rather than nothing: the audience is owed a reveal either way, and the
+    // default is what every present before the setting existed performed.
+    if (sceneJson.isEmpty()) {
+        return openshow::domain::TransitionOptions::defaults();
+    }
+    boost::system::error_code parseError;
+    const boost::json::value parsed = boost::json::parse(sceneJson.toStdString(), parseError);
+    if (parseError || !parsed.is_object()) {
+        return openshow::domain::TransitionOptions::defaults();
+    }
+    return fOut.resolveTransition(parsed.as_object());
 }
 
 bool PresentationModel::readableScene(const QString& sceneJson, const char* verb,
@@ -517,7 +569,7 @@ bool PresentationModel::readableScene(const QString& sceneJson, const char* verb
 }
 
 void PresentationModel::armPrepare(std::int64_t requestId, const boost::json::object& scene,
-                                   bool autoPresent) {
+                                   bool autoPresent, const ForcedTransition& forced) {
     // The prepare's payload is recorded on the request itself, not on a side
     // table keyed by id: when the ack lands it brings this record with it, so a
     // mirror entry can only ever be written from the payload THAT prepare sent
@@ -539,7 +591,7 @@ void PresentationModel::armPrepare(std::int64_t requestId, const boost::json::ob
     // the ack. handlePrepareAck must not consult the settings again — by then
     // "the settings" are whatever the operator has moved on to, and the cue
     // they asked for is already owed the fade it was promised.
-    ask->transition = fOut.resolveTransition(scene);
+    ask->transition = forced.has_value() ? *forced : fOut.resolveTransition(scene);
     if (autoPresent) {
         // This go supersedes any older one still awaiting its ack; only
         // the newest go's acknowledgement moves the audience. Its payload

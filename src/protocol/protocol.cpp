@@ -263,7 +263,17 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                             // same font manager the frame loop shapes with,
                             // so a picker built on it can only offer names
                             // the audience's pixels can actually honour.
-                            kCapabilityFontListV1}}};
+                            kCapabilityFontListV1,
+                            // TR.2: this worker BLENDS on the durations a
+                            // scene.present carries — the words track and the
+                            // background track each on their own length, 0 ms
+                            // landing on the fade's first frame — rather than
+                            // on the two constants it used to own. TR.1
+                            // defined the name and withheld it precisely
+                            // because the pixels did not do this yet; earning
+                            // it means a peer may now send numbers it would
+                            // otherwise have had to leave off the socket.
+                            kCapabilityTransitionOptions}}};
     return true;
 }
 
