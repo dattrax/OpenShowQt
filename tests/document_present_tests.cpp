@@ -149,6 +149,27 @@ std::uint64_t prepareRevision(int fd, std::int64_t& nextId, const QString& scene
     return numberValue(reply.at("result").as_object().at("revision"));
 }
 
+// output.status reporting this revision as the one on air — "presented" means
+// acknowledged, not requested. Kept apart from the present that needs it
+// because task TR.3 presents with a transition record of its own and still
+// owes the same proof: the revision the record rode on is the landed one.
+bool revisionOnAir(int fd, std::int64_t& nextId, std::uint64_t revision, int budgetMs = 6000) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budgetMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        boost::json::value statusReply;
+        if (call(fd, nextId++, "output.status", {}, &statusReply)) {
+            const boost::json::value& status = statusReply.at("result");
+            if (status.as_object().contains("scene") &&
+                status.at("scene").as_object().contains("active") &&
+                numberValue(status.at("scene").as_object().at("active")) == revision) {
+                return true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+}
+
 // scene.present, then wait for output.status to report the revision
 // actually on air — "presented" means acknowledged, not requested.
 // Returns the revision once it is on air, 0 otherwise.
@@ -162,20 +183,7 @@ std::uint64_t presentRevision(int fd, std::int64_t& nextId, std::uint64_t revisi
         !reply.as_object().contains("result")) {
         return 0;
     }
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
-    while (std::chrono::steady_clock::now() < deadline) {
-        boost::json::value statusReply;
-        if (call(fd, nextId++, "output.status", {}, &statusReply)) {
-            const boost::json::value& status = statusReply.at("result");
-            if (status.as_object().contains("scene") &&
-                status.at("scene").as_object().contains("active") &&
-                numberValue(status.at("scene").as_object().at("active")) == revision) {
-                return revision;
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    return 0;
+    return revisionOnAir(fd, nextId, revision) ? revision : 0;
 }
 
 // The panel's one-call hand-off (WorkerController::presentSceneJson with
@@ -515,6 +523,148 @@ int main(int argc, char* argv[]) {
               "the flat answer drops the gradient key and keeps the worn text colour");
         check(presentJson(fd, nextId, flatJson) != 0,
               "and the customized revision goes on air acknowledged");
+    }
+
+    // --- task TR.3: the record the controls write is the record this worker
+    // takes its lengths from ------------------------------------------------
+    // The two ends of the transition contract are tested where they live:
+    // workspace_ui_tests proves a gesture lands on a Theme's record or its
+    // context's, and scene_frame_tests proves the two numbers drive the blend.
+    // What sits between them is the promise that no door re-spells the record,
+    // and that is only testable over a real socket with a real worker: the
+    // answer DocumentController's resolver gives for a slide a UI-written theme
+    // wears goes on scene.present on the keys the cue lane uses and LANDS; a
+    // duration outside the band earns the domain's ONE sentence here, naming
+    // the key and the range the settings page named; a Cut still carries its
+    // durations whole; and a present that says nothing about movement is still
+    // the 500/800 this worker has always performed.
+    {
+        check(docs.createSong(QStringLiteral("Timed")) && docs.addSlide(),
+              "the transition leg authors a slide of its own");
+        docs.setSlideText(QStringLiteral("Move gently, audience"));
+        docs.flushText();
+        QString briskId;
+        check(docs.createBlankTheme(QStringLiteral("Brisk")),
+              "a theme exists to be given a movement");
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("name")).toString()
+                    == QStringLiteral("Brisk"))
+                briskId = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+        check(!briskId.isEmpty() && docs.applyThemeToCurrentSlide(briskId),
+              "the slide wears it");
+
+        // The payload the panel would send, and the answer main.cpp's callback
+        // gives for it — the same resolver, the same documents, no second walk
+        // invented for the test.
+        const auto resolvedForScene = [&docs]() {
+            const boost::json::value parsed =
+                boost::json::parse(docs.currentSceneJson().toStdString());
+            const openshow::domain::TransitionOptions options =
+                docs.transitionForSceneJson(parsed.as_object());
+            return boost::json::object{{"transition",
+                                        openshow::domain::transitionKindName(options.kind)},
+                                       {"textDurationMs", options.textDurationMs},
+                                       {"mediaDurationMs", options.mediaDurationMs}};
+        };
+        const auto messageOf = [](const boost::json::value& reply) {
+            if (!reply.as_object().contains("error")) {
+                return std::string();
+            }
+            return std::string(reply.at("error").as_object().at("message").as_string());
+        };
+
+        const boost::json::object inherited = resolvedForScene();
+        check(inherited.at("transition").as_string() == "fade"
+                  && inherited.at("textDurationMs").as_int64() == 500
+                  && inherited.at("mediaDurationMs").as_int64() == 800,
+              "a theme that says nothing resolves to the service's standing 500 / 800 — the "
+              "inheritance the inspector shows is the inheritance the wire carries");
+
+        QVariantMap brisk;
+        brisk.insert(QStringLiteral("kind"), QStringLiteral("fade"));
+        brisk.insert(QStringLiteral("textDurationMs"), 1800);
+        brisk.insert(QStringLiteral("mediaDurationMs"), 2400);
+        check(docs.setThemeTransition(briskId, brisk),
+              "the Theme Editor gives the view a record of its own");
+        const boost::json::object answer = resolvedForScene();
+        check(answer.at("textDurationMs").as_int64() == 1800
+                  && answer.at("mediaDurationMs").as_int64() == 2400,
+              "and the walk reaches it: the theme's milliseconds, over the service's");
+
+        // Each landing below needs its OWN revision — a repeat present of what
+        // is already on air is a no-op by design, and a no-op that reports the
+        // revision it was already showing is not evidence of anything.
+        const std::uint64_t timed = prepareRevision(fd, nextId, docs.currentSceneJson());
+        boost::json::object params = answer;
+        params["revision"] = timed;
+        boost::json::value presentReply;
+        check(timed != 0 && call(fd, nextId++, "scene.present", params, &presentReply)
+                  && presentReply.as_object().contains("result")
+                  && revisionOnAir(fd, nextId, timed),
+              "the real worker accepts the record the operator's controls wrote, and the "
+              "acknowledged revision is the one that record rode on");
+
+        // The refusal half of the one sentence: the settings page refused 10001
+        // naming the key and the band; this worker refuses the same number with
+        // the same words, because both doors quote Documents rather than each
+        // keeping a ceiling of its own. A record that got through would move
+        // the audience by a duration nothing in this build could have stored.
+        boost::json::object over = answer;
+        over["revision"] = timed;
+        over["textDurationMs"] = 10001;
+        boost::json::value overReply;
+        const std::string overWords = call(fd, nextId++, "scene.present", over, &overReply)
+                                          ? messageOf(overReply)
+                                          : std::string();
+        check(overWords.find("textDurationMs") != std::string::npos
+                  && overWords.find("0..10000") != std::string::npos,
+              "an over-band words duration is refused on the wire quoting the key and the range "
+                  "the settings page quoted");
+        check(revisionOnAir(fd, nextId, timed),
+              "and the refused cue left the audience where it was");
+
+        // A Cut is a decision about the KIND, and the record is atomic on the
+        // wire exactly as it is in the file: the durations ride along, vetted,
+        // rather than being dropped because they are ignored.
+        docs.addSlide();
+        docs.applyThemeToCurrentSlide(briskId);
+        docs.setSlideText(QStringLiteral("Or simply be"));
+        docs.flushText();
+        const std::uint64_t cutRev = prepareRevision(fd, nextId, docs.currentSceneJson());
+        boost::json::object cut = answer;
+        cut["revision"] = cutRev;
+        cut["transition"] = "cut";
+        boost::json::value cutReply;
+        check(cutRev != 0 && cutRev != timed && call(fd, nextId++, "scene.present", cut, &cutReply)
+                  && cutReply.as_object().contains("result") && revisionOnAir(fd, nextId, cutRev),
+              "a Cut carries its durations and lands a fresh revision — the record is whole on "
+                  "the wire as it is in the document");
+
+        // Silence on the wire means what it has always meant: a peer that says
+        // nothing about movement gets the contract's 500 / 800, so a frontend
+        // from before TR.1 still cues this worker, and this build's own
+        // inherit-and-not-yet-written slide behaves the same way.
+        check(presentRevision(fd, nextId, timed) == timed,
+              "and a present with no duration keys still lands — the 500 / 800 this worker has "
+                  "always performed");
+
+        // Inherit, seen from the wire: taking the view's record off moves the
+        // resolver's answer back to the service's, and the record the cue lane
+        // would then send is one this worker accepts unchanged.
+        check(docs.setThemeTransition(briskId, QVariantMap{}),
+              "the view hands its movement back to the chain");
+        const boost::json::object back = resolvedForScene();
+        check(back.at("textDurationMs").as_int64() == 500
+                  && back.at("mediaDurationMs").as_int64() == 800,
+              "and the answer is the service's again, not a stuck copy of the theme's");
+        boost::json::object backParams = back;
+        backParams["revision"] = cutRev;
+        boost::json::value backReply;
+        check(call(fd, nextId++, "scene.present", backParams, &backReply)
+                  && backReply.as_object().contains("result") && revisionOnAir(fd, nextId, cutRev),
+              "which the worker accepts on the same keys, so the door the UI opens and the door "
+                  "the wire has are one door");
     }
 
     call(fd, nextId++, "shutdown", {}, &reply);

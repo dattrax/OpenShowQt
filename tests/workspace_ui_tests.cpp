@@ -1936,11 +1936,13 @@ int main(int argc, char** argv) {
         // they actually are.
         auto* lastField = findNamed(window->contentItem(), "themeEditorSpacingField");
         check(lastField != nullptr, "the field the keyboard leg types into exists");
-        // Task TS.4 lengthened the Songs section, and the reachability
-        // promise is a promise about the END of the rail — so the control
-        // that gets "scrolled to, not assumed" is the one that is last now.
-        auto* lastControl = findNamed(window->contentItem(), "themeEditorShadowBlur");
-        check(lastControl != nullptr, "the shadow blur handle is the Songs section's last control");
+        // TS.4's effects and TR.3's transition section both lengthened the
+        // Songs column, and the reachability promise is a promise about the
+        // END of the rail — so the control that gets "scrolled to, not
+        // assumed" is the one that is last now: the view's background duration.
+        auto* lastControl = findNamed(window->contentItem(), "themeEditorTransitionMedia");
+        check(lastControl != nullptr,
+              "the transition section's last field is the Songs section's last control");
         // The rail being measured is the Songs one, whatever view the browsing
         // above left the page in.
         clickAt(viewSongs, viewSongs->width() / 2, viewSongs->height() / 2);
@@ -2075,6 +2077,385 @@ int main(int argc, char** argv) {
             focusTrappedInEditor = up == editorPage;
         check(!focusTrappedInEditor && !window->property("typingIntoField").toBool(),
               "exiting Themes leaves no field of the editor holding the keyboard");
+    }
+
+    // --- task TR.3: the transition controls, in both doors ------------------
+    // The two seats TR.1's contract gives an operator: the service's standing
+    // answer in Settings, and a view's own override in the Theme Editor. The
+    // claims this fixture can make honestly are about the CONTROL and the
+    // RECORD — a real choice writes the record the model holds, a refused
+    // value lands nowhere and repaints the control from the model, an
+    // unchanged commit costs no undo, and "disabled for a Cut" means disabled
+    // WITHOUT the numbers being erased. What a widget test could never show is
+    // that the number on the screen is the number the audience takes, so that
+    // half lives with a real worker: frontend_journey_tests measures a landed
+    // fade's length, and document_present_tests puts the same record on the
+    // wire for a real scene.
+    {
+        auto clickAt = [window](QQuickItem* item, qreal x, qreal y) {
+            if (item) {
+                QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                  item->mapToScene(QPointF(x, y)).toPoint());
+            }
+        };
+        const QSize sizeBeforeTransition = window->size();
+        window->resize(1380, 800);
+        QTest::qWait(80);
+        const auto service = [&docs] { return docs.serviceDefaultTransition(); };
+        const auto ms = [](const QVariantMap& record, const char* key) {
+            return record.value(QLatin1String(key)).toInt();
+        };
+        window->setProperty("page", "settings");
+        QTest::qWait(80);
+        auto* kindCombo = findNamed(window->contentItem(), "serviceTransitionKind");
+        auto* wordsField = findNamed(window->contentItem(), "serviceTransitionWords");
+        auto* backField = findNamed(window->contentItem(), "serviceTransitionBack");
+        auto* serviceNote = findNamed(window->contentItem(), "serviceTransitionNote");
+        check(kindCombo && wordsField && backField && serviceNote,
+              "Settings carries the service default's kind and both durations");
+        check(ms(service(), "textDurationMs") == 500 && ms(service(), "mediaDurationMs") == 800
+                  && kindCombo->property("currentIndex").toInt() == 0
+                  && wordsField->property("text").toString() == QLatin1String("500")
+                  && backField->property("text").toString() == QLatin1String("800"),
+              "the controls start on the concrete 500 / 800 crossfade this service always "
+                  "performed — there is no unset service default to explain");
+
+        // One field commits the WHOLE record: the kind travels with the
+        // numbers, because half a transition is not a thing the file, the wire
+        // or the domain will hold.
+        wordsField->setProperty("text", "120");
+        QMetaObject::invokeMethod(wordsField, "editingFinished");
+        QTest::qWait(80);
+        check(service().value(QStringLiteral("kind")).toString() == QLatin1String("fade")
+                  && ms(service(), "textDurationMs") == 120
+                  && ms(service(), "mediaDurationMs") == 800,
+              "typing the words duration moves that number inside the same whole record");
+
+        // Two refusals, both from the domain's one sentence, and the field goes
+        // back to what the service actually holds: a number the model turned
+        // down must not stay on the screen looking stored.
+        backField->setProperty("text", "10001");
+        QMetaObject::invokeMethod(backField, "editingFinished");
+        QTest::qWait(80);
+        check(ms(service(), "mediaDurationMs") == 800
+                  && backField->property("text").toString() == QLatin1String("800"),
+              "an over-band background duration is refused and the field snaps back to the model");
+        backField->setProperty("text", "soon");
+        QMetaObject::invokeMethod(backField, "editingFinished");
+        QTest::qWait(80);
+        check(ms(service(), "mediaDurationMs") == 800
+                  && backField->property("text").toString() == QLatin1String("800"),
+              "and so is a value that is not a count of milliseconds at all — 0 is a duration "
+                  "an operator might mean, so a page may not quietly type one");
+
+        // One gesture, one undo — and the refusals above cost none of their own.
+        docs.undo();
+        QTest::qWait(80);
+        check(ms(service(), "textDurationMs") == 500
+                  && wordsField->property("text").toString() == QLatin1String("500"),
+              "one undo takes the one real commit back and the field repaints from the model");
+
+        // Cut: the kind moves, the numbers stay. Disabled, not deleted — the
+        // record underneath still says what it said, so coming back to
+        // Crossfade comes back to the times that were there.
+        kindCombo->setProperty("currentIndex", 1);
+        QMetaObject::invokeMethod(kindCombo, "activated", Q_ARG(int, 1));
+        QTest::qWait(80);
+        check(service().value(QStringLiteral("kind")).toString() == QLatin1String("cut")
+                  && ms(service(), "textDurationMs") == 500
+                  && ms(service(), "mediaDurationMs") == 800,
+              "choosing Cut commits the kind and keeps both durations stored");
+        check(!wordsField->property("enabled").toBool() && !backField->property("enabled").toBool()
+                  && wordsField->property("text").toString() == QLatin1String("500")
+                  && backField->property("text").toString() == QLatin1String("800"),
+              "a Cut disables the duration fields WITHOUT erasing them");
+        kindCombo->setProperty("currentIndex", 0);
+        QMetaObject::invokeMethod(kindCombo, "activated", Q_ARG(int, 0));
+        QTest::qWait(80);
+        check(service().value(QStringLiteral("kind")).toString() == QLatin1String("fade")
+                  && ms(service(), "textDurationMs") == 500
+                  && wordsField->property("enabled").toBool()
+                  && backField->property("enabled").toBool(),
+              "and Crossfade finds the same numbers exactly where they were left");
+        check(serviceNote->property("text").toString().contains(QStringLiteral("VIDEO"))
+                  && serviceNote->property("text").toString().contains(
+                          QStringLiteral("NEXT cue")),
+              "the video-background limitation and the next-cue rule are stated beside the "
+                  "controls that set them");
+        docs.undo();
+        QTest::qWait(80);
+        check(service().value(QStringLiteral("kind")).toString() == QLatin1String("cut"),
+              "and the picker's two moves were two gestures: one undo back is the cut");
+        docs.redo();
+        QTest::qWait(80);
+
+        // --- the view's own record, in the Theme Editor ---------------------
+        window->setProperty("page", "themes");
+        QTest::qWait(160);
+        auto* viewEditor = findNamed(window->contentItem(), "themeEditorPage");
+        const auto themeRow = [&docs](const QString& id) {
+            for (const QVariant& theme : docs.themes()) {
+                if (theme.toMap().value(QStringLiteral("id")).toString() == id) {
+                    return theme.toMap();
+                }
+            }
+            return QVariantMap{};
+        };
+        const QString movedId = viewEditor ? viewEditor->property("selectedId").toString()
+                                           : QString();
+        auto* moveCombo = findNamed(window->contentItem(), "themeEditorTransitionKind");
+        auto* moveInherit = findNamed(window->contentItem(), "themeEditorTransitionInherit");
+        auto* moveWords = findNamed(window->contentItem(), "themeEditorTransitionWords");
+        auto* moveBack = findNamed(window->contentItem(), "themeEditorTransitionMedia");
+        auto* moveSource = findNamed(window->contentItem(), "themeEditorTransitionSource");
+        check(viewEditor && viewEditor->isVisible() && !movedId.isEmpty() && moveCombo
+                  && moveInherit && moveWords && moveBack && moveSource,
+              "the Songs inspector carries the view's Transition controls on a selected theme");
+        check(!themeRow(movedId).value(QStringLiteral("transitionSet")).toBool()
+                  && !moveInherit->property("enabled").toBool()
+                  && !moveWords->property("enabled").toBool()
+                  && moveWords->property("text").toString() == QLatin1String("500")
+                  && moveSource->property("text").toString().contains(QStringLiteral("inherits")),
+              "a theme with no record shows the numbers it is BORROWING, says which seat they "
+                  "come from, and gives Inherit nothing to take off");
+
+        // Crossfade gives the view a record of its own out of the numbers on
+        // show: a click states the answer, and nobody gets a silent 0.
+        moveCombo->setProperty("currentIndex", 2);
+        QMetaObject::invokeMethod(moveCombo, "activated", Q_ARG(int, 2));
+        QTest::qWait(80);
+        QVariantMap own = themeRow(movedId).value(QStringLiteral("transition")).toMap();
+        check(themeRow(movedId).value(QStringLiteral("transitionSet")).toBool()
+                  && own.value(QStringLiteral("kind")).toString() == QLatin1String("fade")
+                  && own.value(QStringLiteral("textDurationMs")).toInt() == 500
+                  && own.value(QStringLiteral("mediaDurationMs")).toInt() == 800,
+              "Crossfade writes a whole record for the view, seeded from what was on show");
+        check(moveInherit->property("enabled").toBool() && moveWords->property("enabled").toBool()
+                  && moveBack->property("enabled").toBool()
+                  && !moveSource->property("text").toString().contains(
+                          QStringLiteral("inherits")),
+              "and the section wakes: this theme answers for its own cues now");
+        moveWords->setProperty("text", "90");
+        QMetaObject::invokeMethod(moveWords, "editingFinished");
+        QTest::qWait(80);
+        own = themeRow(movedId).value(QStringLiteral("transition")).toMap();
+        check(own.value(QStringLiteral("textDurationMs")).toInt() == 90
+                  && own.value(QStringLiteral("mediaDurationMs")).toInt() == 800,
+              "typing the view's words duration moves that number and keeps its neighbour");
+        moveWords->setProperty("text", "90");
+        QMetaObject::invokeMethod(moveWords, "editingFinished");
+        QTest::qWait(80);
+        docs.undo();
+        QTest::qWait(80);
+        own = themeRow(movedId).value(QStringLiteral("transition")).toMap();
+        check(own.value(QStringLiteral("textDurationMs")).toInt() == 500,
+              "committing the same number again wrote nothing: the step back is the "
+              "Crossfade, not a phantom edit");
+        docs.redo();
+        QTest::qWait(80);
+        moveWords->setProperty("text", "10001");
+        QMetaObject::invokeMethod(moveWords, "editingFinished");
+        QTest::qWait(80);
+        own = themeRow(movedId).value(QStringLiteral("transition")).toMap();
+        check(own.value(QStringLiteral("textDurationMs")).toInt() == 90
+                  && moveWords->property("text").toString() == QLatin1String("90"),
+              "an over-band view duration is refused and the field snaps back to the record");
+        moveCombo->setProperty("currentIndex", 1);
+        QMetaObject::invokeMethod(moveCombo, "activated", Q_ARG(int, 1));
+        QTest::qWait(80);
+        own = themeRow(movedId).value(QStringLiteral("transition")).toMap();
+        check(own.value(QStringLiteral("kind")).toString() == QLatin1String("cut")
+                  && own.value(QStringLiteral("textDurationMs")).toInt() == 90
+                  && !moveWords->property("enabled").toBool()
+                  && moveWords->property("text").toString() == QLatin1String("90")
+                  && moveSource->property("text").toString().contains(QStringLiteral("Cut")),
+              "a Cut for the view keeps its 90 disabled and says, in the source line, that "
+                  "the cue is simply on");
+        // The Inherit button lives at the bottom of a column longer than the
+        // window: it is scrolled to, then clicked where it actually is.
+        QMetaObject::invokeMethod(viewEditor, "scrollInspectorTo",
+                                  Q_ARG(QVariant, QStringLiteral("themeEditorTransitionInherit")));
+        QTest::qWait(80);
+        clickAt(moveInherit, moveInherit->width() / 2, moveInherit->height() / 2);
+        QTest::qWait(80);
+        check(!themeRow(movedId).value(QStringLiteral("transitionSet")).toBool()
+                  && themeRow(movedId).value(QStringLiteral("transition")).toMap().isEmpty()
+                  && moveCombo->property("currentIndex").toInt() == 0
+                  && moveSource->property("text").toString().contains(QStringLiteral("inherits")),
+              "Inherit removes the record — the view is silent again, not storing a copy of "
+                  "what silence would resolve to");
+        check(worker.outputLive() == false && worker.sceneActive() == 0,
+              "and none of it moved an audience: every write on this page is to a document, "
+              "and a theme the operator is editing is often nowhere near the output");
+
+        // The undo half of Inherit: the removal is a write like any other, so
+        // the record the operator just gave back comes back with one step.
+        docs.undo();
+        QTest::qWait(80);
+        check(themeRow(movedId).value(QStringLiteral("transitionSet")).toBool()
+                  && themeRow(movedId).value(QStringLiteral("transition")).toMap().value(
+                             QStringLiteral("kind")).toString()
+                         == QLatin1String("cut")
+                  && moveCombo->property("currentIndex").toInt() == 1,
+              "one undo brings the surrendered record back, picker and all");
+
+        // Give the theme a Crossfade of its own before changing seats, at a
+        // number the service does not use: what the silent Bible view shows
+        // next is the theme's answer, and 90/800 tells it apart from the
+        // service's 500/800 in a way a Cut's ignored numbers would not. The
+        // fields had gone back to the service's numbers with Inherit — silence
+        // shows what silence resolves to — so the view is typed rather than
+        // assumed.
+        moveCombo->setProperty("currentIndex", 2);
+        QMetaObject::invokeMethod(moveCombo, "activated", Q_ARG(int, 2));
+        QTest::qWait(80);
+        moveWords->setProperty("text", "90");
+        QMetaObject::invokeMethod(moveWords, "editingFinished");
+        QTest::qWait(80);
+        check(themeRow(movedId).value(QStringLiteral("transition")).toMap().value(
+                          QStringLiteral("kind")).toString()
+                      == QLatin1String("fade")
+                  && themeRow(movedId).value(QStringLiteral("transition")).toMap().value(
+                             QStringLiteral("textDurationMs")).toInt()
+                 == 90,
+              "the theme now answers its own cues with a 90 ms words crossfade");
+
+        // --- the BIBLE view's own record ------------------------------------
+        // The context is the NEARER seat: a passage moves the way its view
+        // says, and says nothing until the operator says something. This
+        // theme carries no reading context yet, so the toggle makes one — the
+        // same real click an operator makes — and from here every claim is
+        // about which of the two records a Go would read.
+        auto* viewBibleMove = findNamed(window->contentItem(), "themeViewBible");
+        clickAt(viewBibleMove, viewBibleMove->width() / 2, viewBibleMove->height() / 2);
+        QTest::qWait(80);
+        QMetaObject::invokeMethod(viewEditor, "scrollInspectorToTop");
+        QTest::qWait(60);
+        const auto contextRow = [&docs](const QString& id) {
+            return docs.themeContext(id, QStringLiteral("scripture"));
+        };
+        auto* ctxToggleMove = findNamed(window->contentItem(), "themeEditorContextToggle");
+        auto* ctxMoveCombo = findNamed(window->contentItem(), "themeEditorContextTransitionKind");
+        auto* ctxMoveInherit = findNamed(window->contentItem(),
+                                         "themeEditorContextTransitionInherit");
+        auto* ctxMoveWords = findNamed(window->contentItem(), "themeEditorContextTransitionWords");
+        auto* ctxMoveBack = findNamed(window->contentItem(), "themeEditorContextTransitionMedia");
+        auto* ctxMoveSource = findNamed(window->contentItem(),
+                                        "themeEditorContextTransitionSource");
+        auto* ctxMoveNote = findNamed(window->contentItem(), "themeEditorContextTransitionNote");
+        auto* ctxSizeField = findNamed(window->contentItem(), "themeEditorContextSize");
+        check(ctxToggleMove && ctxMoveCombo && ctxMoveInherit && ctxMoveWords && ctxMoveBack
+                  && ctxMoveSource && ctxMoveNote && ctxSizeField,
+              "the Bible inspector carries the view's own Transition controls");
+        if (!contextRow(movedId).value(QStringLiteral("set")).toBool()) {
+            clickAt(ctxToggleMove, ctxToggleMove->width() / 2, ctxToggleMove->height() / 2);
+            QTest::qWait(80);
+        }
+        check(contextRow(movedId).value(QStringLiteral("set")).toBool(),
+              "the Bible view has a record of its own to say something with");
+        check(!contextRow(movedId).value(QStringLiteral("transitionSet")).toBool()
+                  && contextRow(movedId).value(QStringLiteral("transition")).toMap().isEmpty()
+                  && ctxMoveCombo->property("currentIndex").toInt() == 0
+                  && !ctxMoveInherit->property("enabled").toBool(),
+              "a new reading context says nothing about movement: no record to inherit away, "
+              "and the picker sits on Inherit");
+        check(ctxMoveWords->property("text").toString() == QLatin1String("90")
+                  && ctxMoveBack->property("text").toString() == QLatin1String("800")
+                  && ctxMoveSource->property("text").toString().contains(
+                             QStringLiteral("inherits this theme"))
+                  && !ctxMoveSource->property("text").toString().contains(
+                             QStringLiteral("inherits the service")),
+              "the silent view shows the THEME's numbers rather than the service's and names the "
+                  "nearer seat — the same order a Go walks");
+
+        // A Cut for the view is a DECISION recorded in its own entry: the same
+        // audience result as inheriting the theme's Cut, and a different
+        // document, because inheriting means the next theme edit changes this
+        // view and a recorded Cut does not.
+        QMetaObject::invokeMethod(viewEditor, "scrollInspectorTo",
+                                  Q_ARG(QVariant,
+                                        QStringLiteral("themeEditorContextTransitionKind")));
+        QTest::qWait(80);
+        ctxMoveCombo->setProperty("currentIndex", 1);
+        QMetaObject::invokeMethod(ctxMoveCombo, "activated", Q_ARG(int, 1));
+        QTest::qWait(80);
+        QVariantMap ctxMove = contextRow(movedId).value(QStringLiteral("transition")).toMap();
+        check(contextRow(movedId).value(QStringLiteral("transitionSet")).toBool()
+                  && ctxMove.value(QStringLiteral("kind")).toString() == QLatin1String("cut")
+                  && ctxMove.value(QStringLiteral("textDurationMs")).toInt() == 90
+                  && ctxMove.value(QStringLiteral("mediaDurationMs")).toInt() == 800,
+              "Cut writes the view a whole record of its own, seeded from what was on show");
+        check(!ctxMoveWords->property("enabled").toBool()
+                  && !ctxMoveBack->property("enabled").toBool()
+                  && ctxMoveWords->property("text").toString() == QLatin1String("90")
+                  && ctxMoveSource->property("text").toString().contains(
+                             QStringLiteral("this view"))
+                  && ctxMoveNote->property("text").toString().contains(QStringLiteral("VIDEO")),
+              "the view's durations are disabled without being erased, the source line names the "
+                  "view itself, and the video-background limit is stated here too");
+
+        // The rule TR.1 could not express as a widget and TR.3 must not lose:
+        // this entry is REPLACED by a typography commit, so the movement has
+        // to travel with it. Changing the reading size is the ordinary edit
+        // that would otherwise take the view's Cut off in silence.
+        ctxSizeField->setProperty("text", "34");
+        QMetaObject::invokeMethod(ctxSizeField, "editingFinished");
+        QTest::qWait(80);
+        const QVariantMap afterType = contextRow(movedId);
+        ctxMove = afterType.value(QStringLiteral("transition")).toMap();
+        check(afterType.value(QStringLiteral("fontSizeSet")).toBool()
+                  && afterType.value(QStringLiteral("fontSize")).toDouble() == 34.0
+                  && afterType.value(QStringLiteral("transitionSet")).toBool()
+                  && ctxMove.value(QStringLiteral("kind")).toString() == QLatin1String("cut")
+                  && ctxMove.value(QStringLiteral("textDurationMs")).toInt() == 90,
+              "changing the reading size keeps the view's movement: the context verb replaces "
+                  "the entry, and this is the one field its absent keys do not silence");
+
+        // Inherit hands the movement back to the theme and touches nothing
+        // else — the typography it was not about stays exactly where it was.
+        QMetaObject::invokeMethod(viewEditor, "scrollInspectorTo",
+                                  Q_ARG(QVariant,
+                                        QStringLiteral("themeEditorContextTransitionInherit")));
+        QTest::qWait(80);
+        clickAt(ctxMoveInherit, ctxMoveInherit->width() / 2, ctxMoveInherit->height() / 2);
+        QTest::qWait(80);
+        const QVariantMap afterInherit = contextRow(movedId);
+        check(!afterInherit.value(QStringLiteral("transitionSet")).toBool()
+                  && afterInherit.value(QStringLiteral("transition")).toMap().isEmpty()
+                  && afterInherit.value(QStringLiteral("fontSizeSet")).toBool()
+                  && ctxMoveCombo->property("currentIndex").toInt() == 0
+                  && ctxMoveSource->property("text").toString()
+                             .contains(QStringLiteral("this theme")),
+              "Inherit gives the movement back to the theme, leaves the reading size it was not "
+                  "about, and points the source line down the chain again");
+
+        // Leave the fixture as the operator left it: the reading context the
+        // toggle made goes back off and the theme's own record goes back to
+        // silence, so no later leg reads a movement this fixture invented. The
+        // undo stack keeps the steps, which is what an operator would have.
+        QMetaObject::invokeMethod(viewEditor, "scrollInspectorToTop");
+        QTest::qWait(60);
+        clickAt(ctxToggleMove, ctxToggleMove->width() / 2, ctxToggleMove->height() / 2);
+        QTest::qWait(80);
+        // Back to the Songs seat for the legs that follow: the rail they read
+        // is the theme's own column, and a page left in the Bible view would
+        // have them edit a context nobody meant to open.
+        auto* viewSongsMove = findNamed(window->contentItem(), "themeViewSongs");
+        clickAt(viewSongsMove, viewSongsMove->width() / 2, viewSongsMove->height() / 2);
+        QTest::qWait(80);
+        check(viewEditor->property("selectedView").toString().isEmpty(),
+              "the fixture hands the page back in the Songs view");
+        docs.setThemeTransition(movedId, QVariantMap{});
+        QTest::qWait(80);
+        check(!themeRow(movedId).value(QStringLiteral("transitionSet")).toBool()
+                  && !contextRow(movedId).value(QStringLiteral("set")).toBool()
+                  && ms(service(), "textDurationMs") == 500
+                  && service().value(QStringLiteral("kind")).toString()
+                             == QLatin1String("fade"),
+              "the transition fixture leaves nothing behind for the legs that follow");
+        window->setProperty("page", "show");
+        window->resize(sizeBeforeTransition);
+        QTest::qWait(100);
     }
 
     // --- task BI.5: the import page in the shell (off-air surface only) ----

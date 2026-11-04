@@ -20,6 +20,20 @@
 
 namespace openshow::ui {
 
+QVariantMap transitionRecordMap(
+    const std::optional<openshow::domain::TransitionOptions>& options) {
+    QVariantMap record;
+    if (!options.has_value()) {
+        return record;  // silence, spelled as an empty map: there is no
+                        // half-record default to invent
+    }
+    record.insert(QStringLiteral("kind"),
+                  QString::fromLatin1(openshow::domain::transitionKindName(options->kind)));
+    record.insert(QStringLiteral("textDurationMs"), options->textDurationMs);
+    record.insert(QStringLiteral("mediaDurationMs"), options->mediaDurationMs);
+    return record;
+}
+
 namespace {
 
 // The slide's PRIMARY lyric box (amendment 2026-11-01/2026-11-02): the
@@ -345,6 +359,17 @@ void insertThemeStyleRow(QVariantMap& entry, const openshow::domain::Theme& them
     entry.insert(QStringLiteral("shadow"), shadow);
 }
 
+// The theme's OWN answer about how a wearing cue moves (task TR.3). The row
+// carries the record in the shape `setThemeTransition` takes, plus the
+// ...Set flag that separates "this theme says nothing" from a record that
+// happens to match what it would inherit — the same distinction every other
+// inspector field keeps, because an operator deciding whether to press
+// Inherit needs to know whether there is anything of their own to take off.
+void insertThemeTransitionRow(QVariantMap& entry, const openshow::domain::Theme& theme) {
+    entry.insert(QStringLiteral("transitionSet"), theme.transition.has_value());
+    entry.insert(QStringLiteral("transition"), transitionRecordMap(theme.transition));
+}
+
 }  // namespace
 
 QVariantList DocumentViews::themes() const {
@@ -382,6 +407,7 @@ QVariantList DocumentViews::themes() const {
         }
         entry.insert(QStringLiteral("placement"), rect);
         insertThemeStyleRow(entry, *theme);
+        insertThemeTransitionRow(entry, *theme);
         // The seeded Default theme (amendment 2026-11-02): editable like
         // any theme, but the application will not delete it, and the
         // editor's Delete button says so before the domain refuses.
@@ -430,6 +456,10 @@ QVariantMap DocumentViews::currentTheme(const Cursor& cursor) const {
     // list and the wearing-theme view telling the same story about one
     // theme's weight, face, fit and effects.
     insertThemeStyleRow(map, *theme);
+    // ... and so does the transition record (task TR.3): the theme the Show
+    // page says is wearing a slide is the theme whose move a Go on that slide
+    // reads, so the two rows must tell one story about it too.
+    insertThemeTransitionRow(map, *theme);
     return map;
 }
 

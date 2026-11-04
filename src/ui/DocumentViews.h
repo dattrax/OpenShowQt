@@ -36,6 +36,17 @@
 
 namespace openshow::ui {
 
+// The QML shape of one transition record (task TR.3): {kind, textDurationMs,
+// mediaDurationMs}, or an EMPTY map for a view that says nothing about
+// movement. Authored here for the same reason every other row shape is: the
+// row a page reads is the record it hands straight back to the verb, so a
+// read can never offer a key the write would refuse — and a page that wanted
+// to re-spell the shape would be a page with its own idea of what a
+// transition looks like, which is exactly what TR.1's one-sentence contract
+// rules out.
+QVariantMap transitionRecordMap(
+    const std::optional<openshow::domain::TransitionOptions>& options);
+
 class DocumentViews {
 public:
     // Where the operator is, as a value: the controller builds this from the

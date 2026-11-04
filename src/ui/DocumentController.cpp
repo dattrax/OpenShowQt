@@ -936,14 +936,9 @@ bool transitionFromMap(const QVariantMap& record, std::optional<openshow::domain
     return true;
 }
 
-QVariantMap transitionToMap(const openshow::domain::TransitionOptions& options) {
-    QVariantMap record;
-    record.insert(QStringLiteral("kind"),
-                  QString::fromLatin1(openshow::domain::transitionKindName(options.kind)));
-    record.insert(QStringLiteral("textDurationMs"), options.textDurationMs);
-    record.insert(QStringLiteral("mediaDurationMs"), options.mediaDurationMs);
-    return record;
-}
+// The rows a page reads are written by DocumentViews::transitionRecordMap,
+// the one author of the shape, so a record the inspector can see is a record
+// it can hand back to the verb above without a key added or lost.
 
 }  // namespace
 
@@ -1004,12 +999,12 @@ bool DocumentController::setTextContextTransition(const QString& themeId,
 }
 
 QVariantMap DocumentController::serviceDefaultTransition() const {
-    return transitionToMap(fDocuments.serviceDefaultTransition());
+    return transitionRecordMap(fDocuments.serviceDefaultTransition());
 }
 
 QVariantMap DocumentController::transitionForSlide(const QString& showId,
                                                    const QString& slideId) const {
-    return transitionToMap(
+    return transitionRecordMap(
         fDocuments.resolveTransitionForSlide(showId.toStdString(), slideId.toStdString()));
 }
 
@@ -1290,6 +1285,12 @@ QVariantMap DocumentController::themeContext(const QString& themeId, const QStri
         out.insert(QStringLiteral("height"), box.height);
         out.insert(QStringLiteral("insetSet"), context.inset.has_value());
         out.insert(QStringLiteral("inset"), context.inset.value_or(0.0));
+        // The view's own answer about how it MOVES (task TR.3): the record a
+        // Go on a passage in this context reads, spelled the way
+        // `setTextContextTransition` takes it, with the ...Set flag saying
+        // whether the context speaks or the themes under it answer.
+        out.insert(QStringLiteral("transitionSet"), context.transition.has_value());
+        out.insert(QStringLiteral("transition"), transitionRecordMap(context.transition));
         return out;
     }
     return out;  // no entry with that name: `set` false, nothing else
@@ -1321,6 +1322,20 @@ bool DocumentController::applyThemeContext(const QString& themeId, const QString
             std::vector<openshow::domain::TextContext> contexts = current->contexts;
             openshow::domain::TextContext context;
             context.name = contextName;
+            // Movement travels with the entry it belongs to (task TR.3). This
+            // verb REPLACES the entry, and a caller that came here to change
+            // the reading font has named nothing about how the view arrives —
+            // absent keys are silence about the field they name, and this one
+            // was not named at all. Carrying the old record across is the
+            // difference between a typography edit and a typography edit that
+            // quietly took the view's Crossfade off; the record's own door is
+            // setTextContextTransition, which vets it as a whole.
+            for (const openshow::domain::TextContext& existing : current->contexts) {
+                if (existing.name == contextName) {
+                    context.transition = existing.transition;
+                    break;
+                }
+            }
             if (fields.contains(QStringLiteral("fontFamily"))) {
                 context.fontFamily = fields.value(QStringLiteral("fontFamily")).toString().toStdString();
             }

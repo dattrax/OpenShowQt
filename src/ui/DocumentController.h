@@ -296,10 +296,14 @@ public:
     // view its TextContext's. An INHERIT is a removal, so it is a different
     // call from setting a record: `record` carries kind/textDurationMs/
     // mediaDurationMs, and an empty map takes the override off (the view says
-    // nothing about movement and whatever is under it answers). A theme that
-    // does not exist, or a context no theme of that name carries, is refused
-    // naming what was not found: an override silently dropped on the floor is
-    // how an operator ends up believing a view has a transition it never got.
+    // nothing about movement and whatever is under it answers). The reads wear
+    // the same shape (task TR.3): `themes()` and `currentTheme` carry
+    // `transitionSet` beside a `transition` record, and `themeContext` carries
+    // them for the named context, so what an inspector shows is a record its
+    // own write accepts. A theme that does not exist, or a context no theme of
+    // that name carries, is refused naming what was not found: an override
+    // silently dropped on the floor is how an operator ends up believing a
+    // view has a transition it never got.
     Q_INVOKABLE bool setThemeTransition(const QString& themeId, const QVariantMap& record);
     Q_INVOKABLE bool setTextContextTransition(const QString& themeId, const QString& contextName,
                                               const QVariantMap& record);
@@ -341,9 +345,14 @@ public:
     // context carries typography and a box ONLY — never colours, and never
     // a line count, because how many lines fit is what the worker's
     // measurement says. `themeContext` answers {set, name, fontFamily,
-    // fontSize, lineSpacing, align, x, y, width, height, inset} with a
-    // ...Set flag per field (silence is a real state — an unset field
-    // falls through to the themes); absent set means no such context.
+    // fontSize, lineSpacing, align, x, y, width, height, inset, transition}
+    // with a ...Set flag per field (silence is a real state — an unset field
+    // falls through to the themes); absent set means no such context. The
+    // transition rides as {kind, textDurationMs, mediaDurationMs} plus
+    // `transitionSet` (task TR.3), and it is the ONE field a replacing write
+    // carries over by itself: `applyThemeContext`'s absent keys are silence
+    // about the field they name, and a caller editing the reading font has
+    // named nothing about how the view arrives.
     // `applyThemeContext` replaces (or adds) the named entry from a map
     // whose ABSENT keys are silence, exactly like absent keys in the file;
     // the vetting is the loader's. `removeThemeContext` takes one entry

@@ -44,6 +44,12 @@
  *   9. the theme chain (TH.3): a domain-compiled slide, the service's current
  *      theme over it, and an explicit-flat customization all reach the
  *      operator's frame as acknowledgement-backed re-skins.
+ *  10. the operator's transition numbers (TR.3): a service default and a
+ *      view's override cross the audience's ground for the milliseconds they
+ *      name, a Cut crosses nothing, an edit cannot shorten the fade already
+ *      crossing, an off-air theme moves nobody, an explicit clear is a Cut
+ *      while a restore keeps the record its own snapshot carried, and the
+ *      measured numbers are the stored ones.
  *
  * Needs a display (the worker opens its output window) and ffmpeg (the plates
  * are real PNGs through the real decode path). Desktop preset, label display.
@@ -70,8 +76,10 @@
 #include "openshow/domain/documents.h"
 #include "openshow/scene/scene.h"
 
+#include "DocumentController.h"
 #include "WorkerController.h"
 
+using openshow::ui::DocumentController;
 using openshow::ui::WorkerController;
 
 namespace {
@@ -181,7 +189,8 @@ int yellowPixels(const QImage& image) {
     return yellow;
 }
 
-bool uniformlyBlack(const QImage& image, int tolerance = 10) {    if (image.isNull()) {
+bool uniformlyBlack(const QImage& image, int tolerance = 10) {
+    if (image.isNull()) {
         return false;
     }
     for (double u : {0.02, 0.25, 0.5, 0.75, 0.98}) {
@@ -708,6 +717,382 @@ int main(int argc, char* argv[]) {
                          yellowPixels(frame) > 10;
               }),
               "chain: the floor holds the ground colour — the ramp is gone, the words stay");
+    }
+
+    // --- 10. the operator's numbers are the audience's seconds (task TR.3) ---
+    // Every leg above faded on lengths the documents had no way to name. Now
+    // they do, and only this fixture can prove the whole line at once: a number
+    // written through DocumentController — the class every transition control
+    // commits through — reaches the audience's PIXELS through main.cpp's own
+    // resolver wiring, at the length that number says. workspace_ui_tests
+    // proves a gesture lands on a record and scene_frame_tests proves a record
+    // drives a blend; that a gesture drives a blend is a different claim, and
+    // it is the one "do not infer success from the widget value alone" asks for.
+    {
+        DocumentController docs(nullptr, scratch / "transition-night");
+        // main.cpp's wiring, one callback for one question: the cue lane asks
+        // the DOCUMENTS how this slide's cue moves, at the instant Go is
+        // issued, and that answer belongs to the cue for as long as it flies.
+        controller.setTransitionResolver(
+            [&docs](const boost::json::object& scene) {
+                return docs.transitionForSceneJson(scene);
+            });
+        if (!check(controller.transitionOptionsSupported(),
+                   "this worker honours the durations the documents now write")) {
+            std::fprintf(stderr, "FAIL: the fade lengths below could not be honoured — the whole "
+                                 "leg would measure the worker's own defaults\n");
+            controller.shutdownNow();
+            return 1;
+        }
+
+        // Two grounds no frame can be mistaken for both, authored the way the
+        // Edit page authors them: a fade's halfway point is near NEITHER, which
+        // is what makes a blend evidence rather than an assumption.
+        check(docs.createSong(QStringLiteral("Fade Night")) && docs.addSlide(),
+              "the transition journey authors a slide");
+        docs.setSlideText(QStringLiteral("MERCY"));
+        docs.flushText();
+        const QString showId = docs.currentSongId();
+        const QString goldSlide =
+            docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+        check(docs.customizeCurrentSlide(QStringLiteral("backgroundColor"),
+                                         QVariant(QStringLiteral("#f0e030"))),
+              "the first slide's ground is gold");
+        docs.addSlide();
+        docs.setSlideText(QStringLiteral("WRATH"));
+        docs.flushText();
+        const QString magentaSlide =
+            docs.slides().at(1).toMap().value(QStringLiteral("id")).toString();
+        check(docs.customizeCurrentSlide(QStringLiteral("backgroundColor"),
+                                         QVariant(QStringLiteral("#dc28c8"))),
+              "the second slide's ground is magenta");
+        const QString gold = docs.sceneJsonForSlide(goldSlide);
+        const QString magenta = docs.sceneJsonForSlide(magentaSlide);
+
+        // The watch: every frame the operator's own picture carried between two
+        // cues, sorted into the ground it is near and the blend it is not. A
+        // blend says the two cues were drawn together; the moment the second
+        // ground stands alone says for how long the record said they would be.
+        struct FadeWatch {
+            bool blended = false;
+            int blendMs = 0;
+            bool landed = false;
+            int landMs = 0;
+        };
+        const auto elapsedMsFrom = [](const std::chrono::steady_clock::time_point& started) {
+            return int(std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - started).count());
+        };
+        const auto watch = [&controller, &elapsedMsFrom](uint32_t from, uint32_t to,
+                                                         int budgetMs) {
+            FadeWatch seen;
+            const auto started = std::chrono::steady_clock::now();
+            while (elapsedMsFrom(started) < budgetMs) {
+                QCoreApplication::processEvents();
+                const uint32_t rgb = rgbAt(controller.previewImage(), kBgU, kBgV);
+                const bool here = nearColor(rgb, from, 10);
+                const bool there = nearColor(rgb, to, 10);
+                if (!here && !there && !seen.blended) {
+                    seen.blended = true;
+                    seen.blendMs = elapsedMsFrom(started);
+                }
+                if (there) {
+                    seen.landed = true;
+                    seen.landMs = elapsedMsFrom(started);
+                    return seen;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            return seen;
+        };
+        // The same watch for a clear, which has no second ground to arrive: the
+        // clock stops the first time the audience is uniformly black. A budget's
+        // worth means it never was, which fails the check that reads it.
+        const auto msToBlack = [&controller, &elapsedMsFrom](int budgetMs) {
+            const auto started = std::chrono::steady_clock::now();
+            while (elapsedMsFrom(started) < budgetMs) {
+                QCoreApplication::processEvents();
+                if (uniformlyBlack(controller.previewImage())) {
+                    return elapsedMsFrom(started);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            return budgetMs * 2;
+        };
+        const auto settledOn = [&controller](uint32_t ground) {
+            return waitUntil([&controller] { return controller.scenePending() == 0; })
+                   && pixelsSettled(controller, [ground](const QImage& frame) {
+                          return nearColor(rgbAt(frame, kBgU, kBgV), ground, 12);
+                      });
+        };
+
+        constexpr int kAskingMs = 2600;     // a length no renderer ever had
+        constexpr int kFadeFloorMs = 1700;  // "at least what was asked", with
+                                            // the prepare's own round trip
+                                            // counted in the same clock
+        constexpr int kCutCeilingMs = 1600;  // and what a Cut clearly is not
+        constexpr int kRestoreBudgetMs = 9000;  // patience for a re-prepare that
+                                                // mints a fresh revision
+
+        // --- (a) the service default, inherited by a slide that says nothing --
+        check(docs.setServiceDefaultTransition(QStringLiteral("fade"), kAskingMs, kAskingMs),
+              "Settings is set to a crossfade longer than this renderer ever owned");
+        controller.presentSceneJson(gold);
+        if (!check(settledOn(kGold),
+                   "the gold cue is acknowledged and lands before the first fade is measured")) {
+            controller.shutdownNow();
+            return 1;
+        }
+        controller.presentSceneJson(magenta);
+        const FadeWatch serviceFade = watch(kGold, kMagenta, 9000);
+        check(serviceFade.blended && serviceFade.blendMs < 900,
+              "the two grounds are drawn together early in the cue — the number in Settings is on "
+                  "the wire, not just on the panel");
+        check(serviceFade.landed && serviceFade.landMs >= kFadeFloorMs,
+              "and they are drawn together for the length the operator typed: a service default "
+                  "is a duration the audience obeys, which is the half of TR.3 no widget test "
+                  "could ever show");
+
+        // --- (b) the view's own override, saying Cut ------------------------
+        check(docs.createBlankTheme(QStringLiteral("Snap")),
+              "a theme exists to answer for its own cues");
+        QString snapId;
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Snap"))
+                snapId = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+        check(!snapId.isEmpty() && docs.applyThemeToSlide(goldSlide, snapId)
+                  && docs.applyThemeToSlide(magentaSlide, snapId),
+              "both slides wear it, so their cues read the view's answer over the service's");
+        QVariantMap cut;
+        cut.insert(QStringLiteral("kind"), QStringLiteral("cut"));
+        cut.insert(QStringLiteral("textDurationMs"), kAskingMs);
+        cut.insert(QStringLiteral("mediaDurationMs"), kAskingMs);
+        check(docs.setThemeTransition(snapId, cut),
+              "and the view's answer is a Cut that still carries the numbers it ignores");
+        QVariantMap cross;
+        cross.insert(QStringLiteral("kind"), QStringLiteral("fade"));
+        cross.insert(QStringLiteral("textDurationMs"), kAskingMs);
+        cross.insert(QStringLiteral("mediaDurationMs"), kAskingMs);
+        controller.presentSceneJson(gold);
+        check(settledOn(kGold), "the gold cue is on air again under the view's Cut");
+        controller.presentSceneJson(magenta);
+        const FadeWatch cutFade = watch(kGold, kMagenta, 6000);
+        check(!cutFade.blended,
+              "no frame of a Cut holds both grounds: the view's override stopped the crossfade "
+                  "the service would otherwise have performed");
+        check(cutFade.landed && cutFade.landMs <= kCutCeilingMs,
+              "and the cue is simply on — a fraction of the length the same slide's service would "
+                  "have taken");
+
+        // --- (c) a fade already crossing keeps its own length ---------------
+        check(docs.setThemeTransition(snapId, cross), "the view crosses at that length again");
+        controller.presentSceneJson(gold);
+        check(settledOn(kGold), "and the crossing cue is on air and settled");
+        controller.presentSceneJson(magenta);
+        // The record is the CUE's, captured when Go was issued. What the
+        // operator writes while the two grounds are crossing therefore belongs
+        // to the next cue, and the pixels are the only honest witness.
+        check(docs.setThemeTransition(snapId, cut),
+              "mid-fade, the operator changes their mind and cuts the view");
+        const FadeWatch inFlight = watch(kGold, kMagenta, 9000);
+        check(inFlight.blended && inFlight.landed && inFlight.landMs >= kFadeFloorMs,
+              "the fade already crossing finishes at the length it was given at Go: an edit "
+                  "cannot shorten a cue the audience is inside of");
+        controller.presentSceneJson(gold);
+        const FadeWatch nextCue = watch(kMagenta, kGold, 6000);
+        check(!nextCue.blended && nextCue.landed && nextCue.landMs <= kCutCeilingMs,
+              "and the edit is exactly as prompt as it has to be on the NEXT cue: that one is a "
+                  "Cut with no blend in it");
+
+        // --- (d) an off-air theme presents nothing -------------------------
+        // The number to compare against is the ACKNOWLEDGED one, and the two
+        // clocks this fixture reads are not the same clock: `scenePending`
+        // sleeps when the present's REPLY lands, while `sceneActive` moves when
+        // the next status poll reports it — every half second. A baseline taken
+        // at the first quiet moment is therefore the cue BEFORE the one the
+        // operator last gave, and the check below would blame the off-air edit
+        // for that cue's acknowledgement. So wait for the acknowledged number to
+        // hold still for longer than a poll, and take it from there.
+        waitUntil([&controller] { return controller.scenePending() == 0; });
+        const auto quiescentRevision = [&controller]() {
+            qint64 before = controller.sceneActive();
+            for (int waited = 0; waited < 6000; waited += 700) {
+                // Longer than one poll: the number only proves anything once a
+                // status message has had its chance to disagree with it.
+                settle(700);
+                const qint64 after = controller.sceneActive();
+                if (after == before) {
+                    return after;
+                }
+                before = after;
+            }
+            return before;
+        };
+        const qint64 activeBeforeOffAir = quiescentRevision();
+        check(docs.createBlankTheme(QStringLiteral("Nobody wears this")),
+              "a theme exists that is nowhere on air");
+        QString offId;
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("name")).toString()
+                    == QStringLiteral("Nobody wears this"))
+                offId = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+        QVariantMap lingering;
+        lingering.insert(QStringLiteral("kind"), QStringLiteral("fade"));
+        lingering.insert(QStringLiteral("textDurationMs"), 9000);
+        lingering.insert(QStringLiteral("mediaDurationMs"), 9000);
+        check(!offId.isEmpty() && docs.setThemeTransition(offId, lingering),
+              "and it is given a nine-second crossfade nobody is looking at");
+        settle(600);
+        check(controller.sceneActive() == activeBeforeOffAir && controller.scenePending() == 0,
+              "editing a theme that is not on air presents nothing: no new revision, nothing "
+                  "pending");
+        check(nearColor(rgbAt(controller.previewImage(), kBgU, kBgV), kGold, 12),
+              "and the picture the operator is looking at did not move either");
+
+        // --- (e) an explicit clear is a Cut; a restore keeps the cue's own --
+        // Two rules, both about which record the audience obeys when the
+        // documents have moved since the cue. First the clear: the operator
+        // said "gone", so the ground crosses to black at nothing, even with the
+        // view set to cross — magenta→black passes through dark magenta, so the
+        // clock here cannot mistake a 2.6 s cross for the instant the operator
+        // asked for. Then the restore, which is measured where a blend is
+        // possible: the WORDS clear leaves the ground on air, so the restored
+        // words have an outgoing scene to cross in against, and the length of
+        // that crossing tells whether the restore brought the cue's own record
+        // or whatever the theme says by now. (The theme says Cut.)
+        check(docs.setThemeTransition(snapId, cross), "the view crosses at 2.6 s");
+        controller.presentSceneJson(magenta);
+        if (!check(settledOn(kMagenta), "a crossing magenta cue is on air, words included")) {
+            controller.shutdownNow();
+            return 1;
+        }
+        const int wordsFull = whitePixels(controller.previewImage());
+        check(wordsFull > 60,
+              "the settled cue's words are a real count for the restore to come back to");
+        controller.clearSlide();
+        check(waitUntil([&controller] {
+                  return !controller.wordsOnAir() && controller.backgroundOnAir()
+                         && controller.scenePending() == 0;
+              }),
+              "the words clear is acknowledged with the ground still on air");
+        check(waitUntil([&controller] { return whitePixels(controller.previewImage()) < 5; }),
+              "and the operator's own frame has no words in it");
+        check(controller.canRestore(), "restore is offered against the words the clear took");
+        // The record travels WITH the retained content from the moment the clear
+        // takes it, so the documents are never consulted again for a restore.
+        // Which is exactly what the edit below is: it happens after the clear,
+        // and the audience must not hear about it.
+        check(docs.setThemeTransition(snapId, cut),
+              "the operator cuts the view AFTER the clear took its snapshot");
+        const auto restoreStarted = std::chrono::steady_clock::now();
+        controller.restoreOutput();
+        int wordsBackIn = kRestoreBudgetMs + 1;
+        while (elapsedMsFrom(restoreStarted) <= kRestoreBudgetMs) {
+            QCoreApplication::processEvents();
+            if (whitePixels(controller.previewImage()) >= wordsFull * 9 / 10) {
+                wordsBackIn = elapsedMsFrom(restoreStarted);
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        check(wordsBackIn >= kFadeFloorMs,
+              "the restored words cross in over the length the snapshot carried, not at the "
+                  "instant the theme now says: the record the retained content is owed was "
+                  "resolved when the clear took it, and an edit since then changes nothing");
+        check(waitUntil([&controller, wordsFull] {
+                  return controller.wordsOnAir() && controller.backgroundOnAir()
+                         && whitePixels(controller.previewImage()) >= wordsFull * 9 / 10
+                         && controller.scenePending() == 0;
+              }),
+              "and the restore lands whole — acknowledged and on the operator's frame");
+        // Now the full clear, with the view set to cross so a Cut is something
+        // the fixture had to earn rather than the default it fell into.
+        check(docs.setThemeTransition(snapId, cross), "the view crosses again");
+        controller.clearAll();
+        const int clearedIn = msToBlack(4000);
+        check(waitUntil([&controller] {
+                  return !controller.wordsOnAir() && !controller.backgroundOnAir()
+                         && controller.scenePending() == 0;
+              }),
+              "the full clear is acknowledged with nothing left on air");
+        check(clearedIn <= kCutCeilingMs,
+              "and the audience is black without crossing: an explicit clear is a Cut whatever "
+                  "the view's numbers say");
+
+        // --- (f) live markers still wait for the worker's own ack ----------
+        controller.presentCueJson(QStringLiteral("cue-long"), gold);
+        check(controller.pendingCueKey() == QStringLiteral("cue-long"),
+              "a cued go carrying duration keys is pending the moment it leaves");
+        check(waitUntil([&controller] {
+                  return controller.liveCueKey() == QStringLiteral("cue-long")
+                         && controller.pendingCueKey().isEmpty() && controller.scenePending() == 0;
+              }),
+              "and the LIVE claim still lights only when this worker says the revision those "
+                  "durations rode on is active");
+
+        // --- (g) the number that drove tonight is tomorrow's number --------
+        check(docs.save(), "the service saves with the view's record");
+        openshow::domain::Documents reopened;
+        std::string loadError;
+        if (check(openshow::domain::loadService(&reopened, scratch / "transition-night" / "service",
+                                                &loadError),
+                  "the next session reads the service back")) {
+            const openshow::domain::TransitionOptions carried =
+                reopened.resolveTransitionForSlide(showId.toStdString(),
+                                                   magentaSlide.toStdString());
+            check(carried.kind == openshow::domain::TransitionKind::kFade
+                      && carried.textDurationMs == kAskingMs
+                      && carried.mediaDurationMs == kAskingMs,
+                  "and the cue lane's answer for that slide tomorrow is the record that drove the "
+                      "audience tonight — the measured milliseconds are the stored ones");
+        }
+
+        // --- (h) a restarted worker is black, and the numbers stay ----------
+        // The runbook's last clause. production_output_tests owns the audience's
+        // pixels for a brand-new worker (every pixel black, footer included);
+        // what belongs HERE is that the frontend's OWN preview of a fresh
+        // session shows that black, that the new session still speaks the
+        // duration contract it never negotiated before, and that the record the
+        // cue lane answers with did not go down with the process: tonight's
+        // milliseconds live in the document, not in a worker's memory.
+        controller.shutdownNow();
+        {
+            WorkerController restarted;
+            restarted.setTransitionResolver(
+                [&docs](const boost::json::object& scene) {
+                    return docs.transitionForSceneJson(scene);
+                });
+            restarted.start();
+            if (!check(waitUntil(
+                           [&restarted] {
+                               return restarted.outputLive() && restarted.previewActive()
+                                      && !restarted.previewImage().isNull();
+                           },
+                           15000),
+                       "a restarted worker is up and streaming the operator's frame again")) {
+                restarted.shutdownNow();
+                std::filesystem::remove_all(scratch);
+                return 1;
+            }
+            check(restarted.transitionOptionsSupported(),
+                  "a session that never saw tonight's cues still honours the duration keys, so "
+                      "the contract is the build's and not one worker's");
+            check(!restarted.wordsOnAir() && !restarted.backgroundOnAir()
+                      && uniformlyBlack(restarted.previewImage()),
+                  "and it starts on black: no words, no ground, and every corner of the "
+                      "operator's preview dark");
+            const QString magentaScene = docs.sceneJsonForSlide(magentaSlide);
+            const openshow::domain::TransitionOptions afterRestart = docs.transitionForSceneJson(
+                boost::json::parse(magentaScene.toStdString()).as_object());
+            check(afterRestart.kind == openshow::domain::TransitionKind::kFade
+                      && afterRestart.textDurationMs == kAskingMs
+                      && afterRestart.mediaDurationMs == kAskingMs,
+                  "while the answer for the same slide is the 2.6 s the audience crossed: the next "
+                      "Go is asked the documents, and the documents kept their word");
+            restarted.shutdownNow();
+        }
     }
 
     std::printf("frontend_journey: go/gradient/composed clears/restore across a 16-deep prune, "

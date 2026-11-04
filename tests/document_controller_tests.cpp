@@ -3249,6 +3249,92 @@ void exerciseTransitionSurfaces(const std::filesystem::path& root) {
               "service's: inherit walks, it does not reset");
     }
 
+    // --- the rows the controls read (task TR.3) -----------------------------
+    // The Settings page and the Theme Editor's Transition section are the
+    // operator's side of the contract, and what they read is these projections,
+    // so the shape they carry is the acceptance: a record in the shape the verb
+    // takes (a page must never re-spell one), and a silence that reads back as
+    // NOTHING rather than as the numbers silence happens to resolve to. A row
+    // that filled an inheriting theme in with 500/800 would leave the operator
+    // unable to tell its own answer from the one it borrows — and the Inherit
+    // button would have nothing to point at.
+    const auto rowOf = [&docs](const QString& id) {
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("id")).toString() == id) {
+                return theme.toMap();
+            }
+        }
+        return QVariantMap{};
+    };
+    const QVariantMap houseRow = rowOf(house);
+    check(houseRow.value(QStringLiteral("transitionSet")).toBool() &&
+              houseRow.value(QStringLiteral("transition")).toMap() == brisk,
+          "the theme row carries its own record, spelled the way setThemeTransition takes it");
+    QVariantMap silentRow;
+    for (const QVariant& theme : docs.themes()) {
+        if (!theme.toMap().value(QStringLiteral("transitionSet")).toBool()) {
+            silentRow = theme.toMap();
+            break;
+        }
+    }
+    check(!silentRow.isEmpty() && silentRow.value(QStringLiteral("transition")).toMap().isEmpty(),
+          "a theme that says nothing reads back as an EMPTY record and a false flag, not as a "
+          "filled-in 500/800 — the page has to be able to show that this view is borrowing");
+    const QVariantMap worn = docs.currentTheme();
+    check(worn.value(QStringLiteral("id")).toString() == house &&
+              worn.value(QStringLiteral("transitionSet")).toBool() &&
+              worn.value(QStringLiteral("transition")).toMap() == brisk,
+          "and the wearing-theme row tells the same story about the same theme, so the Show "
+          "page and the editor cannot show one theme moving two ways");
+
+    // The context's own seat, and the one field a replacing write keeps.
+    QVariantMap ctxRow = docs.themeContext(house, QStringLiteral("scripture"));
+    check(ctxRow.value(QStringLiteral("set")).toBool() &&
+              !ctxRow.value(QStringLiteral("transitionSet")).toBool() &&
+              ctxRow.value(QStringLiteral("transition")).toMap().isEmpty(),
+          "the context read answers transitionSet false with an empty record while the view "
+          "says nothing about how it arrives");
+    const QVariantMap pageMove = record("fade", 1500, 1800);
+    check(docs.setTextContextTransition(house, QStringLiteral("scripture"), pageMove),
+          "the Bible view is given a move of its own");
+    ctxRow = docs.themeContext(house, QStringLiteral("scripture"));
+    check(ctxRow.value(QStringLiteral("transitionSet")).toBool() &&
+              ctxRow.value(QStringLiteral("transition")).toMap() == pageMove,
+          "and the read shows exactly the keys the write took");
+    QVariantMap typographyOnly;
+    typographyOnly.insert(QStringLiteral("fontSize"), 30.0);
+    check(docs.applyThemeContext(house, QStringLiteral("scripture"), typographyOnly),
+          "a typography-only write on that same entry succeeds");
+    ctxRow = docs.themeContext(house, QStringLiteral("scripture"));
+    check(ctxRow.value(QStringLiteral("fontSizeSet")).toBool() &&
+              ctxRow.value(QStringLiteral("transitionSet")).toBool() &&
+              ctxRow.value(QStringLiteral("transition")).toMap() == pageMove,
+          "and it carries the entry's movement ACROSS: applyThemeContext replaces the entry, "
+          "so unless it preserved the record, an operator changing the reading font would "
+          "quietly take the view's Crossfade off — the one field absent keys do not silence");
+    check(docs.setTextContextTransition(house, QStringLiteral("scripture"), QVariantMap{}),
+          "the view can be handed back to the theme again");
+    ctxRow = docs.themeContext(house, QStringLiteral("scripture"));
+    check(!ctxRow.value(QStringLiteral("transitionSet")).toBool() &&
+              ctxRow.value(QStringLiteral("fontSizeSet")).toBool(),
+          "and taking the movement off leaves the typography it was not about");
+
+    // One gesture, one undo — and a refusal costs none. The refusal is written
+    // BETWEEN two real writes so a single undo step answers the question no
+    // count of stack entries would: if the refused write had pushed anything,
+    // this undo would land on the refusal and the record would still be there.
+    check(docs.setThemeTransition(house, QVariantMap{}), "the theme's record is taken off");
+    check(docs.setThemeTransition(house, brisk), "and put back: two writes, two undo steps");
+    check(!docs.setThemeTransition(house, half), "a half record is refused again");
+    docs.undo();
+    check(!rowOf(house).value(QStringLiteral("transitionSet")).toBool(),
+          "ONE undo takes the record back off — which it could only do if the refusal in "
+          "between had cost no undo of its own");
+    docs.redo();
+    check(rowOf(house).value(QStringLiteral("transitionSet")).toBool() &&
+              rowOf(house).value(QStringLiteral("transition")).toMap() == brisk,
+          "and redo puts it back, so the service saved below still carries the record");
+
     // --- and the whole thing survives the disk -------------------------------
     check(docs.setServiceDefaultTransition("fade", 250, 350), "the service default moves again");
     check(docs.save(), "the service saves with its transition records");

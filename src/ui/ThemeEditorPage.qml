@@ -134,6 +134,7 @@ Item {
         // The style controls read the RESOLVED look, so they sync after it
         // is refreshed — one source of truth, the compiled sample.
         themeEditor.syncStyleControls(row)
+        themeEditor.syncTransition(row)
         themeEditor.syncContext()
     }
     // Put the typography/effect controls where the record (or the resolved
@@ -344,6 +345,15 @@ Item {
         ctxYField.text = String(Math.round(box.y))
         ctxWField.text = String(Math.round(box.width))
         ctxHField.text = String(Math.round(box.height))
+        // The view's own move (task TR.3), synced with the rest of the entry:
+        // the picker on the seat that answers, the numbers on what that seat
+        // says, and the label naming it.
+        const move = themeEditor.contextTransitionShown(row, ctx)
+        contextTransitionCombo.currentIndex = ctx.transitionSet === true
+                ? (ctx.transition.kind === "cut" ? 1 : 2) : 0
+        contextTransitionWordsField.text = String(move.textDurationMs)
+        contextTransitionBackField.text = String(move.mediaDurationMs)
+        themeEditor.contextTransition = move
         linesAsk.restart()
     }
     // Toggle on CREATES the context from this theme's current look and box:
@@ -421,6 +431,187 @@ Item {
             return
         }
         themeEditor.commitContext({box: {x: x, y: y, width: w, height: h}})
+    }
+
+    /* --- how a view moves (task TR.3) --------------------------------------
+     * A transition is a property of how a VIEW presents, so the Songs section
+     * edits the theme's own record and the Bible section the `scripture`
+     * context's — the two seats TR.1's resolver walks, in the order it walks
+     * them: the context first, then the theme that carries it, then whatever
+     * else the chain speaks with, then the service. This page READS those
+     * records rather than re-walking a chain of its own — a second walk is a
+     * second opinion about priority, and the one door is
+     * DocumentController::transitionForSlide, which the cue lane asks the same
+     * question at Go. So the numbers a silent view shows are the numbers the
+     * seat below it answers with today.
+     *
+     * Three choices, no more. Inherit writes NOTHING at all — the record is
+     * removed, which is a different act from writing a record that happens to
+     * match what the view would inherit (and the reason the Inherit button is
+     * enabled only when there is a record to take off). Cut and Crossfade each
+     * write a WHOLE record, kind plus both durations, because a transition is
+     * atomic at the file, on the wire and in the domain, and this is not the
+     * place that gets loosened.
+     *
+     * A Cut disables the two durations without erasing them: the record still
+     * holds them, so coming back to Crossfade comes back to the times that
+     * were there. An edit here changes the NEXT cue wearing this theme — the
+     * record a cue moves with is captured when Go is pressed, so a fade
+     * already crossing finishes at the lengths it was given. And none of this
+     * can present anything: the theme under edit may not be on air at all, and
+     * the picture in the canvas is a fixture the audience never sees.
+     */
+    // The answer the view under edit shows: which seat speaks, and with what.
+    property var themeTransition: ({own: false, kind: "fade", textDurationMs: 500,
+                                    mediaDurationMs: 800, seat: "the service"})
+    property var contextTransition: ({own: false, kind: "fade", textDurationMs: 500,
+                                      mediaDurationMs: 800, seat: "the service"})
+    // The Inherit button's honest enable: there is a record to take off only
+    // when this view is the seat that speaks. (A button that wrote "nothing"
+    // over nothing would cost an undo for no change.)
+    readonly property bool contextTransitionOwn: contextTransition.own === true
+    // The service's standing record, for the note under a view that says
+    // nothing: the seat at the bottom of every chain.
+    function serviceTransition() {
+        return docs.serviceDefaultTransition()
+    }
+    // The SONGS view: the theme's own record when it carries one, the
+    // service's otherwise. A theme that says nothing defers to the chain a
+    // slide wearing it builds — lower themes answer before the service does —
+    // and the note under the control says so rather than pretending the
+    // service is the only answer beneath it.
+    function themeTransitionShown(row) {
+        if (row !== null && row.transitionSet === true) {
+            return {own: true, kind: row.transition.kind,
+                    textDurationMs: row.transition.textDurationMs,
+                    mediaDurationMs: row.transition.mediaDurationMs, seat: "this theme"}
+        }
+        const service = themeEditor.serviceTransition()
+        return {own: false, kind: service.kind, textDurationMs: service.textDurationMs,
+                mediaDurationMs: service.mediaDurationMs, seat: "the service"}
+    }
+    // The BIBLE view: its own context, then the theme carrying it, then the
+    // service — the same priority, read from the two records in front of the
+    // page instead of from a walk this page could get wrong.
+    function contextTransitionShown(row, ctx) {
+        if (ctx.transitionSet === true) {
+            return {own: true, kind: ctx.transition.kind,
+                    textDurationMs: ctx.transition.textDurationMs,
+                    mediaDurationMs: ctx.transition.mediaDurationMs, seat: "this view"}
+        }
+        if (row !== null && row.transitionSet === true) {
+            return {own: false, kind: row.transition.kind,
+                    textDurationMs: row.transition.textDurationMs,
+                    mediaDurationMs: row.transition.mediaDurationMs, seat: "this theme"}
+        }
+        const service = themeEditor.serviceTransition()
+        return {own: false, kind: service.kind, textDurationMs: service.textDurationMs,
+                mediaDurationMs: service.mediaDurationMs, seat: "the service"}
+    }
+    // The sentence the source label shows: who answers, and with what numbers.
+    // A Cut is said on its own terms — quoting times it ignores as if they
+    // applied would be the page lying about the move the audience gets.
+    function describeTransition(shown) {
+        const who = shown.own === true ? shown.seat + " answers for itself"
+                                       : "inherits " + shown.seat
+        if (shown.kind === "cut")
+            return who + " — Cut: the cue is simply on"
+        return who + " — Crossfade " + shown.textDurationMs + " ms words / "
+               + shown.mediaDurationMs + " ms background"
+    }
+    // A typed millisecond count, or -1 for "that is not a duration" — shape
+    // only. The BAND is the domain's one sentence: a 99999 that gets here is
+    // the verb's to refuse, and the refusal re-reads the record, so the
+    // control snaps back to the model instead of to a ceiling copied twice.
+    function msOr(textIn) {
+        const t = String(textIn).trim()
+        if (t === "" || !/^[0-9]+$/.test(t))
+            return -1
+        return Math.round(Number(t))
+    }
+    // The two writes, each ONE record and therefore one undo. A refusal has no
+    // documentsChanged to repaint from, so the section re-reads itself; a
+    // success repaints through the model's own emit.
+    function writeThemeTransition(record) {
+        if (!docs.setThemeTransition(themeEditor.selectedId, record))
+            themeEditor.syncInspector()
+    }
+    function writeContextTransition(record) {
+        if (!docs.setTextContextTransition(themeEditor.selectedId, "scripture", record))
+            themeEditor.syncContext()
+    }
+    // Inherit is the removal, and only ever offered against a record that
+    // exists: pressing it when the view already says nothing writes nothing and
+    // would cost an undo for no change.
+    function inheritThemeTransition() {
+        const row = themeEditor.themeRow()
+        if (row !== null && row.transitionSet === true)
+            themeEditor.writeThemeTransition({})
+    }
+    function inheritContextTransition() {
+        if (themeEditor.contextRecord().transitionSet === true)
+            themeEditor.writeContextTransition({})
+    }
+    // The SONGS commit: the kind the picker shows plus the two numbers the
+    // fields show. Inherit is the picker's first entry, and a number that is
+    // not a count of milliseconds is refused by the page rather than turned
+    // into one — 0 would be a duration the operator did not type.
+    function commitThemeTransitionView() {
+        if (themeEditor.selectedId === "")
+            return
+        if (transitionCombo.currentIndex === 0) {
+            themeEditor.inheritThemeTransition()
+            return
+        }
+        const kind = transitionCombo.currentIndex === 1 ? "cut" : "fade"
+        const words = themeEditor.msOr(transitionWordsField.text)
+        const back = themeEditor.msOr(transitionBackField.text)
+        if (words < 0 || back < 0) {
+            themeEditor.syncInspector()
+            return
+        }
+        const shown = themeEditor.themeTransitionShown(themeEditor.themeRow())
+        if (shown.own === true && shown.kind === kind
+                && shown.textDurationMs === words && shown.mediaDurationMs === back)
+            return  // focus moved with nothing changed: no write, no undo
+        themeEditor.writeThemeTransition({kind: kind, textDurationMs: words,
+                                          mediaDurationMs: back})
+    }
+    // The BIBLE commit, same shape, and the same refusal to write anything a
+    // context that does not exist could not hold.
+    function commitContextTransitionView() {
+        const ctx = themeEditor.contextRecord()
+        if (themeEditor.selectedId === "" || ctx.set !== true)
+            return
+        if (contextTransitionCombo.currentIndex === 0) {
+            themeEditor.inheritContextTransition()
+            return
+        }
+        const kind = contextTransitionCombo.currentIndex === 1 ? "cut" : "fade"
+        const words = themeEditor.msOr(contextTransitionWordsField.text)
+        const back = themeEditor.msOr(contextTransitionBackField.text)
+        if (words < 0 || back < 0) {
+            themeEditor.syncContext()
+            return
+        }
+        const shown = themeEditor.contextTransitionShown(themeEditor.themeRow(), ctx)
+        if (shown.own === true && shown.kind === kind
+                && shown.textDurationMs === words && shown.mediaDurationMs === back)
+            return
+        themeEditor.writeContextTransition({kind: kind, textDurationMs: words,
+                                            mediaDurationMs: back})
+    }
+    // Put the Songs section's three controls where the record says they
+    // belong. Assignment, not binding, like every other field here: a control
+    // the operator is mid-edit on must not be yanked from under them.
+    function syncTransition(rowIn) {
+        const row = rowIn !== undefined ? rowIn : themeEditor.row
+        const shown = themeEditor.themeTransitionShown(row)
+        transitionCombo.currentIndex = row !== null && row.transitionSet === true
+                ? (row.transition.kind === "cut" ? 1 : 2) : 0
+        transitionWordsField.text = String(shown.textDurationMs)
+        transitionBackField.text = String(shown.mediaDurationMs)
+        themeEditor.themeTransition = shown
     }
 
     /* --- the placement (themes plan amendment 2026-11-01) ---------------
@@ -1740,6 +1931,93 @@ Item {
                                                      themeEditor.shadowShown().blurSigma)
                     }
                 }
+
+                // --- transition (task TR.3) -------------------------------
+                // The view's own answer about how a wearing cue ARRIVES. The
+                // picker's three entries are the whole contract: Inherit
+                // removes the record, Cut and Crossfade each write one whole
+                // record. A silent view shows the numbers the seat under it
+                // answers with today, and the label under the fields says
+                // which seat that is — the page reads the records rather than
+                // re-walking the chain, so it cannot disagree with the
+                // resolver a Go asks.
+                Text {
+                    text: "Transition"
+                    color: "#bbbbbb"
+                    font.pixelSize: 11
+                    font.bold: true
+                }
+                ComboBox {
+                    id: transitionCombo
+                    objectName: "themeEditorTransitionKind"
+                    width: parent.width
+                    enabled: themeEditor.selectedId !== ""
+                    model: ["Inherit", "Cut", "Crossfade"]
+                    onActivated: themeEditor.commitThemeTransitionView()
+                }
+                Row {
+                    spacing: 6
+                    PanelButton {
+                        objectName: "themeEditorTransitionInherit"
+                        text: "Inherit"
+                        enabled: themeEditor.row !== null
+                                 && themeEditor.row.transitionSet === true
+                        onClicked: themeEditor.inheritThemeTransition()
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.pixelSize: 10
+                        color: themeEditor.themeTransition.own === true ? "#8ec9f5" : "#888888"
+                        text: themeEditor.themeTransition.own === true ? "own" : "inherited"
+                    }
+                }
+                Text { text: "Words duration (ms, 0 to 10000)"
+                       color: "#b0b0b0"; font.pixelSize: 11 }
+                PanelField {
+                    id: transitionWordsField
+                    objectName: "themeEditorTransitionWords"
+                    width: parent.width
+                    // A Cut ignores the numbers, and Inherit has none of its
+                    // own to edit — both disable the fields WITHOUT clearing
+                    // them, because the record still holds what is shown and
+                    // coming back to Crossfade comes back to the times.
+                    enabled: themeEditor.themeTransition.own === true
+                             && themeEditor.themeTransition.kind === "fade"
+                    onEditingFinished: themeEditor.commitThemeTransitionView()
+                }
+                Text { text: "Background duration (ms, 0 to 10000)"
+                       color: "#b0b0b0"; font.pixelSize: 11 }
+                PanelField {
+                    id: transitionBackField
+                    objectName: "themeEditorTransitionMedia"
+                    width: parent.width
+                    enabled: themeEditor.themeTransition.own === true
+                             && themeEditor.themeTransition.kind === "fade"
+                    onEditingFinished: themeEditor.commitThemeTransitionView()
+                }
+                Text {
+                    objectName: "themeEditorTransitionSource"
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 10
+                    color: themeEditor.themeTransition.own === true ? "#8ec9f5" : "#888888"
+                    text: themeEditor.describeTransition(themeEditor.themeTransition)
+                          + (themeEditor.themeTransition.own === true
+                             ? ""
+                             : " — a theme lower in a wearing slide's chain answers first")
+                }
+                Text {
+                    objectName: "themeEditorTransitionNote"
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 10
+                    color: "#888888"
+                    text: "Words covers the text and any foreground picture; the background is "
+                        + "a colour, a gradient or a still image. A background that is a VIDEO "
+                        + "still cuts either way, so no background number dissolves one clip "
+                        + "into the next. What is set here is the NEXT cue wearing this theme: "
+                        + "a fade already crossing keeps the lengths it was given at Go."
+                }
             }
 
             Column {
@@ -1898,6 +2176,83 @@ Item {
                         text: "the Bible view sets type and a box — never a colour, "
                               + "and never a line count: how many lines ride a slide is "
                               + "what the renderer measures"
+                    }
+
+                    // The view's own move (task TR.3): the context's record,
+                    // which a Go on a passage in this view reads BEFORE the
+                    // theme that carries it — the nearer answer about how the
+                    // view it is drawn in arrives. Same three choices, same
+                    // atomic record, same disabled-not-erased numbers.
+                    Text {
+                        text: "Transition"
+                        color: "#bbbbbb"
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+                    ComboBox {
+                        id: contextTransitionCombo
+                        objectName: "themeEditorContextTransitionKind"
+                        width: parent.width
+                        model: ["Inherit", "Cut", "Crossfade"]
+                        onActivated: themeEditor.commitContextTransitionView()
+                    }
+                    Row {
+                        spacing: 6
+                        PanelButton {
+                            objectName: "themeEditorContextTransitionInherit"
+                            text: "Inherit"
+                            enabled: themeEditor.contextTransitionOwn === true
+                            onClicked: themeEditor.inheritContextTransition()
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            font.pixelSize: 10
+                            color: themeEditor.contextTransition.own === true
+                                     ? "#8ec9f5" : "#888888"
+                            text: themeEditor.contextTransition.own === true ? "own"
+                                                                              : "inherited"
+                        }
+                    }
+                    Text { text: "Words duration (ms, 0 to 10000)"
+                           color: "#b0b0b0"; font.pixelSize: 11 }
+                    PanelField {
+                        id: contextTransitionWordsField
+                        objectName: "themeEditorContextTransitionWords"
+                        width: parent.width
+                        enabled: themeEditor.contextTransition.own === true
+                                 && themeEditor.contextTransition.kind === "fade"
+                        onEditingFinished: themeEditor.commitContextTransitionView()
+                    }
+                    Text { text: "Background duration (ms, 0 to 10000)"
+                           color: "#b0b0b0"; font.pixelSize: 11 }
+                    PanelField {
+                        id: contextTransitionBackField
+                        objectName: "themeEditorContextTransitionMedia"
+                        width: parent.width
+                        enabled: themeEditor.contextTransition.own === true
+                                 && themeEditor.contextTransition.kind === "fade"
+                        onEditingFinished: themeEditor.commitContextTransitionView()
+                    }
+                    Text {
+                        objectName: "themeEditorContextTransitionSource"
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 10
+                        color: themeEditor.contextTransition.own === true ? "#8ec9f5" : "#888888"
+                        text: themeEditor.describeTransition(themeEditor.contextTransition)
+                              + (themeEditor.contextTransition.own === true
+                                 ? ""
+                                 : " — the theme carrying this view answers before the service")
+                    }
+                    Text {
+                        objectName: "themeEditorContextTransitionNote"
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 10
+                        color: "#888888"
+                        text: "a passage's view can move differently from the song's words; a "
+                            + "Cut here is a decision, not an absence, and it stops the walk. "
+                            + "A background that is a VIDEO still cuts whatever these say."
                     }
                 }
             }
