@@ -440,6 +440,23 @@ set_source_files_properties(unicode_text_tests.cpp PROPERTIES
 add_test(NAME unicode_text_tests COMMAND unicode_text_tests)
 set_tests_properties(unicode_text_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 
+# Task TS.5: the PINNED font corpus (Inter / Lora / Oswald plus a pinned
+# fallback), rendered through the production CPU path inside an isolated
+# fontconfig configuration. argv[1] is the manifest and argv[2] the review
+# document that pinned it (the two are compared before any skip decision); the
+# bytes live in a developer-prepared cache (tools/setup-font-fixtures.sh), so an
+# unprepared machine reports a visible skip (77) rather than a pass it did not
+# earn, and the suite never downloads.
+add_executable(font_fixture_tests font_fixture_tests.cpp)
+target_link_libraries(font_fixture_tests PRIVATE openshow::worker_render)
+set_source_files_properties(font_fixture_tests.cpp PROPERTIES
+  COMPILE_OPTIONS "-fno-rtti"
+)
+add_test(NAME font_fixture_tests COMMAND font_fixture_tests
+  ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fonts/manifest.json
+  ${CMAKE_SOURCE_DIR}/docs/reviews/theme-editor-2026-11-03.md)
+set_tests_properties(font_fixture_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+
 # Task 1.5 media foundation, linked straight into the Qt-free test binary.
 # Fixtures are generated with the ffmpeg CLI; the test exits 77 (skipped)
 # when the CLI is not available to produce them.

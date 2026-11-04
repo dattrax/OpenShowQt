@@ -1,0 +1,78 @@
+{
+  "_comment": [
+    "Pinned font corpus for the TS.5 raster/performance fixtures.",
+    "This file lists what the fixtures REQUIRE; it is not a list of what is",
+    "installed on the machine, and ctest never downloads anything. Run",
+    "tools/setup-font-fixtures.sh prepare to fill the cache directory, then",
+    "font_fixture_tests renders through these exact bytes. The test re-checks",
+    "every sha256 here before it trusts a file: a corpus that quietly became",
+    "another face would make every pixel assertion below a lie.",
+    "Licence: each family ships under the SIL Open Font License 1.1 and its",
+    "own OFL.txt (copyright lines differ per family, so each licence is",
+    "pinned too). The fonts are NOT vendored into this repository - see",
+    "tests/fixtures/fonts/README.md for the policy note."
+  ],
+  "corpus": "openshow-theme-fonts",
+  "format": 1,
+  "upstream": {
+    "repository": "google/fonts",
+    "revision": "2fe1e8c6b137fb13041a7cfca6fdcd8a910ea4dc",
+    "tree": "ofl",
+    "licence": "SIL Open Font License, Version 1.1",
+    "urlTemplate": "https://raw.githubusercontent.com/google/fonts/{revision}/{path}"
+  },
+  "fonts": [
+    {
+      "role": "sans",
+      "family": "Inter",
+      "purpose": "Song typography: the sans body face, and the numeric weight ramp",
+      "file": "Inter[opsz,wght].ttf",
+      "upstreamPath": "ofl/inter/Inter[opsz,wght].ttf",
+      "bytes": 876576,
+      "sha256": "29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031",
+      "licenceFile": "Inter-OFL.txt",
+      "licenceUpstreamPath": "ofl/inter/OFL.txt",
+      "licenceBytes": 4377,
+      "licenceSha256": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57"
+    },
+    {
+      "role": "serif",
+      "family": "Lora",
+      "purpose": "Reading: the serif face, whose metrics must differ from the sans",
+      "file": "Lora[wght].ttf",
+      "upstreamPath": "ofl/lora/Lora[wght].ttf",
+      "bytes": 212196,
+      "sha256": "822a6621ccbe8d97d20ac88c1c41f5615c9c2c202eaa75f272cd452aac6475a7",
+      "licenceFile": "Lora-OFL.txt",
+      "licenceUpstreamPath": "ofl/lora/OFL.txt",
+      "licenceBytes": 4423,
+      "licenceSha256": "1d9a970809ac804b582a6ce7f0ebc4e7fefcbfd7ff6299cad35ee656a21be716"
+    },
+    {
+      "role": "condensed",
+      "family": "Oswald",
+      "purpose": "Lower-third stimulus: the condensed face, narrower than the sans by design",
+      "file": "Oswald[wght].ttf",
+      "upstreamPath": "ofl/oswald/Oswald[wght].ttf",
+      "bytes": 172088,
+      "sha256": "5b38c246e255a12f5712d640d56bcced0472466fc68983d2d0410ec0457c2817",
+      "licenceFile": "Oswald-OFL.txt",
+      "licenceUpstreamPath": "ofl/oswald/OFL.txt",
+      "licenceBytes": 4483,
+      "licenceSha256": "0fd731a904b729a4e02eaf5e8ebd06783edd9abe400e8882760160230675b652"
+    },
+    {
+      "role": "fallback",
+      "family": "Noto Sans",
+      "purpose": "The pinned face a request the corpus cannot satisfy falls back through; broadest coverage of the four",
+      "file": "NotoSans[wdth,wght].ttf",
+      "upstreamPath": "ofl/notosans/NotoSans[wdth,wght].ttf",
+      "bytes": 2049096,
+      "sha256": "bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d",
+      "licenceFile": "NotoSans-OFL.txt",
+      "licenceUpstreamPath": "ofl/notosans/OFL.txt",
+      "licenceBytes": 4396,
+      "licenceSha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a"
+    }
+  ]
+}
