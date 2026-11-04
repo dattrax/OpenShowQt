@@ -13,5 +13,10 @@ add_library(openshow_importer STATIC
 target_include_directories(openshow_importer PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+# Task TS.3: the flow's typography IS the domain's — FlowStyle and
+# MeasureRequest carry domain::TextStroke/TextShadow and vet the scene
+# bands through domain's own predicates. "Identical font/style inputs"
+# is a type-level claim, not a comment; domain is Qt-free like this lib.
+target_link_libraries(openshow_importer PUBLIC openshow_domain)
 target_compile_features(openshow_importer PUBLIC cxx_std_20)
 add_library(openshow::importer ALIAS openshow_importer)

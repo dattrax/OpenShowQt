@@ -353,6 +353,12 @@ public:
     // names it, and sceneIsSendable refuses a non-default style rather than
     // letting an enabled stroke silently not appear on air.
     bool textStyleSupported() const { return fTextStyleCapable; }
+    // The worker's hello names text.measure.v2 (task TS.3): that worker
+    // MEASURES with the style block. A styled ask sent to a worker without
+    // it would come back answered in the WRONG typography — pre-16 workers
+    // ignore unknown block keys silently — so measureText refuses such an
+    // ask outright, by name, rather than ship a silent face swap.
+    bool styledMeasureSupported() const { return fTextMeasureV2Capable; }
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
@@ -437,6 +443,8 @@ private:
     bool fTextMeasureCapable = false;
     // scene.text-style.v1 (task TS.1): see textStyleSupported().
     bool fTextStyleCapable = false;
+    // text.measure.v2 (task TS.3): see styledMeasureSupported().
+    bool fTextMeasureV2Capable = false;
     // The SESSION's view of the link, not the socket's: it also goes false when
     // the process is gone, which is a fact the transport is not told about. The
     // QML `connected` property reads this.

@@ -213,7 +213,7 @@ void testHello() {
               "hello result carries the version");
         check(result.at("protocol").as_object().at("major").is_number(),
               "hello result negotiates a protocol");
-        check(result.at("capabilities").as_array().size() == 18, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 19, "hello lists capabilities");
         {  // Task 6.17b's scene 2 (kinded items) is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasImageItems = std::any_of(
@@ -260,6 +260,19 @@ void testHello() {
                     return v.is_string() && v.as_string() == "text.measure.v1";
                 });
             check(hasMeasure, "capabilities name text.measure.v1");
+        }
+        {  // Task TS.3's styled measurement names its own successor: the
+           // frontend may only send a style-deviating measure block to a
+           // worker whose hello carries this, because a pre-16 worker
+           // ignores the unknown keys and answers a styled ask with
+           // default-metric numbers — the wrong typography, silently.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasMeasureV2 = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() &&
+                           v.as_string() == proto::kCapabilityTextMeasureV2;
+                });
+            check(hasMeasureV2, "capabilities name text.measure.v2");
         }
         {  // TS.2 draws the scene 4 style block — faces, stroke behind
            // fill, shadow from the shaped run — so this build DOES

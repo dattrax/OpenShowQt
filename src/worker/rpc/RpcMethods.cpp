@@ -8,6 +8,9 @@
 
 #include "rpc/RpcMethods.h"
 
+#include <cmath>
+#include <cstdio>
+#include <initializer_list>
 #include <limits>
 #include <string>
 #include <utility>
@@ -117,6 +120,195 @@ bool jsonDoubleInRange(const boost::json::object& args, const char* key, double 
         return false;
     }
     *out = value;
+    return true;
+}
+
+// Task TS.3: text.measure's optional style block, parsed to the scene
+// wire's own discipline — every value inside its band, effect records
+// closed-member and whole-record, every refusal naming the key it
+// refuses. Frontends may only send these to a worker advertising
+// text.measure.v1's successor, but this handler, answering the question
+// actually asked, must never measure a typography other than the one it
+// was given — an out-of-band weight here is a refusal, never a coercion.
+// The domain records carry "#rrggbb"; the wire carries packed ints like
+// every other wire colour, and the packed int is hex-formatted into the
+// record the layout reads.
+std::string packedToHex(std::uint64_t packed) {
+    char buffer[8];
+    std::snprintf(buffer, sizeof(buffer), "#%06llx",
+                  static_cast<unsigned long long>(packed & 0xFFFFFFu));
+    return std::string(buffer);
+}
+
+bool parsePackedColor(const boost::json::object& record, const char* key, std::string* hex,
+                      std::string* why) {
+    const auto entry = record.find(key);
+    std::uint64_t packed = 0;
+    if (entry == record.end()) {
+        *why = std::string("\"") + key + "\" missing";
+        return false;
+    }
+    if (entry->value().is_uint64()) {
+        packed = entry->value().as_uint64();
+    } else if (entry->value().is_int64()) {
+        const std::int64_t signedValue = entry->value().as_int64();
+        if (signedValue < 0) {
+            *why = std::string("\"") + key + "\" must be a packed 0xRRGGBB colour";
+            return false;
+        }
+        packed = static_cast<std::uint64_t>(signedValue);
+    } else {
+        *why = std::string("\"") + key + "\" must be a packed 0xRRGGBB colour";
+        return false;
+    }
+    if (packed > 0xFFFFFFu) {
+        *why = std::string("\"") + key + "\" is over 0xFFFFFF";
+        return false;
+    }
+    *hex = packedToHex(packed);
+    return true;
+}
+
+// The closed-member check both effect records share: a member this
+// contract does not define is a refusal naming it, never a guess.
+bool closedMembers(const boost::json::object& record, std::initializer_list<const char*> names,
+                   std::string* why) {
+    for (const auto& member : record) {
+        bool known = false;
+        for (const char* name : names) {
+            if (member.key() == name) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            *why = "has no member \"" + std::string(member.key()) + "\"";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool parseMeasureStyle(const boost::json::object& block, OutputSession::MeasureBlock* out,
+                       std::string* why) {
+    const auto weight = block.find("fontWeight");
+    if (weight != block.end()) {
+        double value = 0.0;
+        if (!jsonDoubleInRange(block, "fontWeight", 100.0, 900.0, &value) ||
+            value != std::floor(value)) {
+            *why = "\"fontWeight\" must be an integer weight 100..900";
+            return false;
+        }
+        out->fontWeight = static_cast<int>(value);
+    }
+    for (const std::pair<const char*, std::initializer_list<const char*>> field :
+         {std::pair{"fontStyle", std::initializer_list<const char*>{"normal", "italic"}},
+          std::pair{"fitMode", std::initializer_list<const char*>{"shrink", "fixed"}}}) {
+        const auto entry = block.find(field.first);
+        if (entry == block.end()) {
+            continue;
+        }
+        if (!entry->value().is_string()) {
+            *why = std::string("\"") + field.first + "\" must be a string";
+            return false;
+        }
+        bool known = false;
+        for (const char* name : field.second) {
+            if (entry->value().as_string() == name) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            *why = std::string("\"") + field.first + "\" must be " +
+                   std::string(*field.second.begin()) + " or " +
+                   std::string(*(field.second.begin() + 1));
+            return false;
+        }
+        if (field.first == std::string("fontStyle")) {
+            out->fontStyle = std::string(entry->value().as_string());
+        } else {
+            out->fitMode = std::string(entry->value().as_string());
+        }
+    }
+    const auto minSize = block.find("minFontSize");
+    if (minSize != block.end() &&
+        !jsonDoubleInRange(block, "minFontSize", 1.0, 4096.0, &out->minFontSize)) {
+        *why = "\"minFontSize\" must be finite and between 1 and 4096";
+        return false;
+    }
+    const auto height = block.find("height");
+    if (height != block.end() &&
+        !jsonDoubleInRange(block, "height", 1.0, 65536.0, &out->boxHeight)) {
+        *why = "\"height\" must be finite and between 1 and 65536";
+        return false;
+    }
+    const auto stroke = block.find("stroke");
+    if (stroke != block.end()) {
+        if (!stroke->value().is_object()) {
+            *why = "\"stroke\" must be an object carrying the whole record";
+            return false;
+        }
+        const auto& record = stroke->value().as_object();
+        if (!closedMembers(record, {"enabled", "color", "width"}, why)) {
+            *why = "\"stroke\" " + *why;
+            return false;
+        }
+        const auto enabled = record.find("enabled");
+        if (enabled == record.end() || !enabled->value().is_bool()) {
+            *why = "\"stroke\" wants a boolean \"enabled\"";
+            return false;
+        }
+        out->stroke.enabled = enabled->value().as_bool();
+        if (!parsePackedColor(record, "color", &out->stroke.color, why)) {
+            *why = "\"stroke\" " + *why;
+            return false;
+        }
+        if (!jsonDoubleInRange(record, "width", 0.0, 32.0, &out->stroke.width)) {
+            *why = "\"stroke\" \"width\" must be finite and between 0 and 32";
+            return false;
+        }
+    }
+    const auto shadow = block.find("shadow");
+    if (shadow != block.end()) {
+        if (!shadow->value().is_object()) {
+            *why = "\"shadow\" must be an object carrying the whole record";
+            return false;
+        }
+        const auto& record = shadow->value().as_object();
+        if (!closedMembers(record, {"enabled", "color", "opacity", "offsetX", "offsetY",
+                                    "blurSigma"},
+                           why)) {
+            *why = "\"shadow\" " + *why;
+            return false;
+        }
+        const auto enabled = record.find("enabled");
+        if (enabled == record.end() || !enabled->value().is_bool()) {
+            *why = "\"shadow\" wants a boolean \"enabled\"";
+            return false;
+        }
+        out->shadow.enabled = enabled->value().as_bool();
+        if (!parsePackedColor(record, "color", &out->shadow.color, why)) {
+            *why = "\"shadow\" " + *why;
+            return false;
+        }
+        if (!jsonDoubleInRange(record, "opacity", 0.0, 1.0, &out->shadow.opacity)) {
+            *why = "\"shadow\" \"opacity\" must be finite and between 0 and 1";
+            return false;
+        }
+        if (!jsonDoubleInRange(record, "offsetX", -256.0, 256.0, &out->shadow.offsetX)) {
+            *why = "\"shadow\" \"offsetX\" must be finite and between -256 and 256";
+            return false;
+        }
+        if (!jsonDoubleInRange(record, "offsetY", -256.0, 256.0, &out->shadow.offsetY)) {
+            *why = "\"shadow\" \"offsetY\" must be finite and between -256 and 256";
+            return false;
+        }
+        if (!jsonDoubleInRange(record, "blurSigma", 0.0, 64.0, &out->shadow.blurSigma)) {
+            *why = "\"shadow\" \"blurSigma\" must be finite and between 0 and 64";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -1156,6 +1348,13 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
                 }
                 parsedBlock.fontFamily = std::string(family->value().as_string());
             }
+            std::string styleError;
+            if (!parseMeasureStyle(block, &parsedBlock, &styleError)) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams, at + styleError),
+                    outbound);
+                return;
+            }
             keys.push_back(std::string(rawKey));
             parsed.push_back(std::move(parsedBlock));
         }
@@ -1164,7 +1363,15 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
             float height = 0.0f;
             int lineCount = 0;
             std::string error;
-            if (!fSession.measureText(parsed[i], &height, &lineCount, &error)) {
+            // TS.3: the same layout answers with its VISUAL extent — the
+            // laid-out runs' bounds grown by stroke and the finite blur
+            // shadow — and the width verdict, so a frontend packs pages
+            // on the numbers its own styled slides will obey. The extra
+            // reply keys are additive: a v1 reader keeps reading
+            // key/height/lineCount and ignores them.
+            openshow::worker::SceneTextEngine::InkRect ink;
+            bool fits = true;
+            if (!fSession.measureText(parsed[i], &height, &lineCount, &error, &ink, &fits)) {
                 // No engine means no honest number for ANY block; the whole
                 // ask fails with the session's own sentence rather than a
                 // reply half full of zeros a frontend could read as "fits".
@@ -1174,7 +1381,16 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
             }
             measured.push_back(boost::json::object{{"key", keys[i]},
                                                    {"height", static_cast<double>(height)},
-                                                   {"lineCount", lineCount}});
+                                                   {"lineCount", lineCount},
+                                                   {"fits", fits},
+                                                   {"bounds",
+                                                    boost::json::object{
+                                                        {"empty", ink.empty},
+                                                        {"left", static_cast<double>(ink.left)},
+                                                        {"top", static_cast<double>(ink.top)},
+                                                        {"right", static_cast<double>(ink.right)},
+                                                        {"bottom",
+                                                         static_cast<double>(ink.bottom)}}}});
         }
         proto::appendFrame(
             proto::makeResult(id, boost::json::object{{"measured", std::move(measured)}}),

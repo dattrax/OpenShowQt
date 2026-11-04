@@ -4,116 +4,142 @@ Updated: 2026-11-04 (Europe/London).
 
 ## Current checkpoint
 
-**TS.2 complete (2026-11-04): the renderer draws the scene 4 style block,
-and the worker now says so.** Weight and slant resolve through the font
-face, the stroke paints behind the fill from the shaped blob, the shadow
-follows the very same run, and all three ride the frame's fade alpha
-exactly once — with the contract's defaults and disabled effects still
-producing the pre-scene-4 pixels byte for byte.
+**TS.3 complete (2026-11-04): one typography now answers measurement and
+drawing, and the worker that can say so is the only one asked.** Layout,
+`text.measure`, the text-flow engine and the Scripture importer all carry
+the resolved style block; every measurement reply grows `fits` + `bounds`;
+protocol minor 16 names `text.measure.v2`; and a styled question toward a
+pre-16 worker is refused locally, by capability name, with nothing sent.
 
-How each part reaches the canvas matters, so it is written down where the
-code lives (`src/worker/render/SceneText.cpp`). Faces enter shaping through
-the public `TextStyle::setFontStyle(weight, 100, slant)`, so the
-FontCollection picks the bold/italic FACE (or synthesises) exactly like a
-browser. The shadow rides `TextStyle::addShadow`: the pinned fork paints
-background → shadow → blobs → decorations, and its shadow pass hands the
-painter a copy of the SHAPED run — so shadow and fill share wrap and
-position by construction, never a re-wrap. Opacity folds into the shadow
-colour's alpha once. The stroke CANNOT ride the style (one style paints one
-pass; "outline behind fill" is two passes of one blob), so `GroupAlphaPainter`
-gained a per-item stroke state and draws outline-then-fill from the same
-`drawTextBlob` call's blob at the same position. Two Skia facts were
-MEASURED against the pinned build, not assumed: a blur mask-filter sigma is
-DEVICE-space (the same sigma spreads the same pixels at canvas scales 1.0
-and 0.5 while glyphs halve — so the painter multiplies the authored sigma
-by the canvas scale, memoised on the last sigma), while stroke widths ride
-the CTM (the authored width passes through). `drawLayout` routes through
-the painter whenever the fade is below full OR any text item carries an
-effect, and keeps the old `Paragraph::paint(canvas…)` fast path byte-for-byte
-otherwise. No `saveLayer`, no render target — the guards stay green.
+The two answer-shaped numbers divide honestly, and the division is the
+design (`SceneText.h` says it at the struct): `LaidOutItem.ink` is where
+any pixel may land — the fill's line-metrics box grown half a pen each
+side by an enabled stroke and unioned with the offset copy grown by the
+finite ~3.1σ blur support (Skia's real support measured ≈3.09σ; the code
+claims 3.1 and the fixtures bound it from both sides) — while `fillInk` is
+the pre-effect box and `fits` judges ONLY that. Why: an enabled shadow's
+spill is the author's choice and no repagination shortens it, so folding
+effects into the verdict would refuse every page of a theme that so much
+as shadows its text. `fits=false` therefore arises where words genuinely
+cannot live (the optional `height` key → `boxHeight` leg; SkParagraph
+char-breaks a too-wide word so the fill stays inside and the words keep
+their verdict — the promise "nothing clips, words move"). The new
+`fitMode:"fixed"` branch lays out once at the authored size and answers;
+the legacy shrink loop is untouched (pinned).
 
-The hello now advertises `scene.text-style.v1` (18 capabilities; protocol
-minor stays 15, which RESERVED the name), and the protocol_tests absence
-tripwire consciously flipped to presence. `WorkerController`'s gate is
-unchanged and still earns its keep: a peer that names nothing still gets
-non-default scenes refused, which is exactly what a pre-TS.2 worker is.
+The wire (minor 16, `kCapabilityTextMeasureV2`, hello now 19): blocks may
+carry `fontWeight`/`fontStyle`/`fitMode`/`minFontSize` and whole
+packed-int-colour effect records — every band refused by name, split
+`offsetX`/`offsetY` sentences, closed records reject unknown members by
+name — and EVERY reply grows the additive `fits` +
+`bounds{empty,left,top,right,bottom}` (v1 readers ignore; a v1-shaped ask
+still gets them). The frontend gate is the honest half: `WorkerController`
+packs hex→int (`attachMeasureStyle`) and refuses a style-DEVIATING batch
+toward a peer that never named v2 — pre-16 workers silently ignore unknown
+keys, so a bold-italic ask would come back answered in the default face,
+a wrong page with no trace. Deviation = weight≠400, slant≠normal, stroke
+enabled+width>0, shadow enabled+opacity>0; disabled-loud records and
+spelled defaults travel (proved bit-identical measurements).
 
-Evidence shape: the raster fixture (`testTextStyleFacesAndEffectsRender` in
-`scene_render_tests`) pins loud-but-disabled effects byte-identical to none;
-bold/italic sharing the regular wrap and band centres (+32% measured bold
-ink); a 28-unit stroke growing ink by half its scaled width ≈7 px per side
-with the red band provably outside the fill's own edge and the fill keeping
-≥90% of its white pixels; the hard cyan shadow landing exactly at
-fill.right + offset×scale with unchanged top/bottom; blur spreading (9967 vs
-4774 cyan px) and diluting (peak g 157 vs 255); opacity 0.5 compositing
-half-bright; and the 50% fade measured on regions painted by exactly ONE
-part each — the single-glyph fill, the outline band beside the fill's edge,
-the shadow zone right of it — giving ratios 0.50/0.50/0.50. (The first cut
-measured the whole styled word and read 0.88 for fill: a legitimate STACK
-of fill@½ over stroke@½ over doubled glyph-seam stroke, which says nothing
-about how often the fade rode a part — single-painter regions are the
-contract's claim.) The GPU live path (`live_fade_tests`) settles a styled
-scene with 5892 stroke-red / 3762 shadow-cyan / 10171 white preview pixels,
-lands clean to black, and carries each effect's masked mean through the
-middle of its ramp across four separate frames — a stroke ignoring the fade
-would cliff to zero at the end, a double fold would leave the window early.
+The flow (`src/importer/textflow.{h,cpp}`): `FlowStyle`/`MeasureRequest`
+carry the domain's own `TextStroke`/`TextShadow` (importer links the
+Qt-free `openshow_domain` — "identical inputs" is a type-level claim), the
+style rides every ask verbatim, and `Answer{height,fits}` judges
+`height <= available && fits != 0` — with fits=-1 (a pre-v2 answer)
+leaving the height as the whole judgment, the pre-TS.3 floor honoured
+rather than guessed over. `validateFlowStyle` vets the style bands (NaN σ
+included) before the port is touched. `measureCacheKey` — one canonical
+length-prefixed serializer over content, box AND the whole style — is
+shared by the engine's per-run cache and `ScriptureImport`'s across-run
+cache (a theme changed mid-session is a different question; the wire
+correlation key is NOT part of it), capped at `kMaxMeasureCacheEntries`
+4096. `DocumentController::scriptureBoxStyle` now reads the FULL style off
+the compiled fixture's first text item — the very item the slide draws —
+so packer and audience cannot drift by construction.
 
-Gates: desktop `ctest -j1` **64/64** (378 s; includes `unicode_text_tests`,
-`scene_frame_tests`, `live_fade_tests`, `skia_public_api_guard`,
-`render_layer_guard`, and the still-closed `worker_controller_tests` gate
-scenario), headless build + `ctest -j1` **35/35**, `git diff --check` clean.
+Evidence shape: the raster fixture (`testInkBoundsContainEveryEffectPixel`)
+renders the 0.5-scale canvas and proves every drawn pixel lands inside
+`ink` mapped through the device scale for fill / stroke / shadow /
+negative-offset / both, plus the growth arithmetic (±half-pen; offset plus
+3.0..3.1σ) and fixed-vs-shrink. The IPC suite pins spelled-defaults
+bit-identical to absent, weight-800 measuring wider than 100, stroke
+bounds at ±half-pen, shadow union bounds honest in both directions,
+spill-still-fits, the char-break line, the height-leg verdict, and 15
+by-name refusals. The flow fixtures pin the style riding every ask,
+verdict-No refusing by its named dead end, the no-verdict floor packing
+unchanged, and the cache-key field matrix. `worker_controller_tests` S8c
+choreographs the gate closed (styled refused naming `text.measure.v2`,
+ZERO `text.measure` frames on the socket, defaults answered with no
+verdict row) and open (records arrive whole with colour packed,
+verdict+bounds parse back), reconnect included.
 
-Earlier this plan: TS.1 (`c5acad7`) shipped the style contract across
-domain/storage/scene/protocol/controller (service format 8, scene format 4,
-protocol minor 15, capability gate, the `duplicateTheme` dangling-pointer
-fix); TV.2 (`7331a10`) the full-workspace Themes layout with view
-thumbnails; TV.1 (`0f1cf84`) the sample-based inspector previews.
+Gates: desktop `ctest -j1` **64/64** (~378 s), headless build + `ctest
+-j1` **35/35**, `git diff --check` clean.
+
+Earlier this plan: TS.2 (`e4258e9`) shipped the styled renderer and the
+advertised `scene.text-style.v1`; TS.1 (`c5acad7`) the style contract
+across domain/storage/scene/protocol/controller (service format 8, scene
+format 4, minor 15); TV.2 (`7331a10`) the Themes layout; TV.1 (`0f1cf84`)
+the sample-based inspector previews.
 
 ## Where the work stands
 
 Phases 0–5 complete. Phase 6 complete through 6.26i. The Bible plan
-(BA.1–BA.8) is DONE. The themes plan: TV.1, TV.2, TS.1, TS.2 DONE. Next is
-**TS.3** — shared ink bounds and effect-aware fit/measurement: layout and
-`text.measure` grow an ink-bounds result expanded for stroke and shadow,
-`fitMode`/`minFontSize` finally drive the shrink pass (fixed = wrap-only),
-and style joins the layout cache keys. Then TR.1–TR.3 (transitions; TR.1
-claims service format 9).
+(BA.1–BA.8) is DONE. The themes plan: TV.1, TV.2, TS.1, TS.2, TS.3 DONE.
+Next is **TS.4** — the installed font/face picker and the selected-view
+typography/effect controls (family list from the worker's own FontCollection,
+unavailable-family feedback, inherit/revert, validated stroke/shadow/fit
+fields, one undo per edit/gesture; `workspace_ui_tests`). Then TS.5
+(pinned Inter/Lora/Oswald offline raster/perf fixtures), then TR.1–TR.3
+(transitions; TR.1 claims service format 9).
 
 ## How to pick up
 
 1. `PLAN.md` is the contract: ledger rows carry acceptance evidence, the
    themes runbook paragraphs give each leaf's boundary, "Format allocation"
-   records the current 8 / 4 / 0.15 numbers (TS.2 needed no bump — it
-   advertised the capability TS.1 reserved).
+   records the current 8 / 4 / 0.16 numbers (TS.3 bumped minor to 16 and
+   ADVERTISED `text.measure.v2` — the name was reserved with the version).
    `docs/reviews/theme-editor-2026-11-03.md` is the design authority.
 2. Build `cmake --build --preset desktop --parallel 2` (build dir `build/`);
    test `ctest --preset desktop -j1` (~6.5 min). Headless: `--preset
    headless` (`build-headless/`, 35 tests). Individual binaries:
    `./build/tests/<name>`; `live_fade_tests` takes the worker binary as
-   argv[1] (`./build/src/worker/openshow-worker`).
-3. TS.3 lives where TS.2 just was — `src/worker/render/SceneText.cpp`
-   (`layout()` already carries the effect fields on `LaidOutItem`; the
-   shrink loop and `OutputSession::measureText` are the untouched pieces).
-   The review's TS.3 contract: ink bounds relative to text origin, glyph
-   bounds from the same laid-out runs, stroke expansion half-width, shadow
-   expansion the offset-shadow's union with fill (Skia's blur support is
-   finite — do not report infinite tails), fitMode "fixed" never enlarges
-   or shrinks, and `text.measure` answers with the styled numbers so the
-   Bible importer and a styled slide agree.
-4. Measurement lore for anyone touching the fade or effects painter: the
-   blur sigma is device-space (the painter rescales), stroke width is
-   CTM-scaled by Skia, and the fork's shadow pass fires `drawTextShadow`
-   once per run BEFORE the blobs — one painter, one fold, no second pass
-   needed to suppress duplicates.
+   argv[1] (`./build/src/worker/openshow-worker`). Rebuild the worker
+   binary after renderer/protocol changes — a stale `openshow-worker` once
+   faked a green `live_fade_tests`.
+3. TS.4 starts in the UI: the theme/workspace QML and `DocumentController`
+   verbs (TS.1 already shipped `setThemeTextStyle` and the `...Set`
+   badges), plus a font-listing seam — the worker is the only honest
+   answerer of "which families resolve", and TS.2's face resolution
+   (`setFontStyle` through the FontCollection) is what a picker must match.
+   The measure seam is now styled end to end: `scriptureBoxStyle` →
+   `FlowStyle` → `measureText` → v2 blocks, so editor probes can reuse it
+   for styled fit read-outs.
+4. Measurement lore, still true: the blur sigma is device-space (the
+   painter rescales), stroke width is CTM-scaled by Skia, the fork's
+   shadow pass fires `drawTextShadow` once per run BEFORE the blobs. New:
+   `LineMetrics` fields are `fLeft/fWidth/fBaseline/fAscent/fDescent`
+   (`modules/skparagraph/include/Metrics.h`); Skia's blur support is
+   ~3.09σ and the code's 3.1 claim is fixture-bounded from both sides;
+   SkParagraph CHAR-breaks words wider than the box (fill stays inside,
+   lineCount≥2 — the width leg of `fits` is unreachable in practice, the
+   height leg is where verdicts arise); fixture renders are 960×540 = the
+   authored canvas at 0.5, so containment checks map ink through that
+   scale with 2 px slack.
 5. Boost 1.90 spells doubles in exponent form; manifest assertions match
    style keys by NAME. JSON fixtures use decimal integers. Never hold a
-   `const Theme*` across a call that can grow the theme vector.
+   `const Theme*` across a call that can grow the theme vector. Qt6 has no
+   `QMetaType::QMap`. A ctest "Passed" after a failed build means a stale
+   binary — rebuild first; multi-main UI tests print nothing on pass.
 
 ## Recent commits
 
-- TS.2 — faces/stroke/shadow through public Skia, fade-aware painter,
-  measured device-space blur rescale, `scene.text-style.v1` advertised,
-  raster + GPU-live fixtures.
+- TS.3 — styled measurement end to end: `ink`/`fillInk` split, `fits`+
+  `bounds` replies, `fitMode:"fixed"`, minor 16 + `text.measure.v2` gate,
+  shared full-style cache keys, flow verdict criterion.
+- TS.2 (`e4258e9`) — faces/stroke/shadow through public Skia, fade-aware
+  painter, measured device-space blur rescale, `scene.text-style.v1`
+  advertised, raster + GPU-live fixtures.
 - TS.1 (`c5acad7`) — shared text-style contract, service 8, scene 4,
   protocol minor 15, capability gate, controller surfaces.
 - TV.2 (`7331a10`) — full-workspace Themes layout, view thumbnails.

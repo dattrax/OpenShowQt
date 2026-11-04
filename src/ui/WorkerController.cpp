@@ -17,7 +17,9 @@
 #include <QTimer>
 
 #include <chrono>
+#include <cmath>
 
+#include "openshow/domain/documents.h"
 #include "openshow/protocol/preview_wire.h"
 
 #include "PreviewConsumer.h"
@@ -30,6 +32,154 @@ namespace proto = openshow::protocol;
 namespace {
 
 constexpr int kStatusPollMs = 500;
+
+// Task TS.3: the optional style block of a text.measure ask, in the UI's
+// own terms (the resolved scene fields, effect records with the domain's
+// "#rrggbb" colours) rendered onto the wire (validated values, packed
+// ints). The checks mirror the worker's handler bands because the
+// worker's refusal must never be the first time anyone noticed, and the
+// deviation flag feeds the text.measure.v2 gate: weight and slant change
+// WHICH FACE measures the words and the effects change the reply's
+// bounds, so toward a worker that ignores those keys the answer would be
+// a different question than was asked. fitMode and minFontSize are not
+// deviations — measurement never shrinks, whatever either version says.
+bool measureHexColor(const QVariant& value, std::uint64_t* packed, QString* why) {
+    const QString text = value.toString();
+    if (text.size() != 7 || !text.startsWith(QLatin1Char('#'))) {
+        *why = QStringLiteral("an effect colour must read like \"#rrggbb\"");
+        return false;
+    }
+    bool ok = false;
+    const uint number = text.mid(1).toUInt(&ok, 16);
+    if (!ok) {
+        *why = QStringLiteral("an effect colour must read like \"#rrggbb\"");
+        return false;
+    }
+    *packed = number;
+    return true;
+}
+
+bool measureNumberInRange(const QVariantMap& record, const QString& key, double low, double high,
+                          double* out) {
+    const QVariant value = record.value(key);
+    bool ok = false;
+    const double number = value.toDouble(&ok);
+    if (!ok || !(number >= low) || !(number <= high)) {
+        return false;
+    }
+    *out = number;
+    return true;
+}
+
+bool attachMeasureStyle(const QVariantMap& block, boost::json::object* jsonBlock, bool* deviates,
+                        QString* why) {
+    const QVariant weight = block.value(QStringLiteral("fontWeight"));
+    if (weight.isValid()) {
+        bool ok = false;
+        const double value = weight.toDouble(&ok);
+        if (!ok || value != std::floor(value) || value < 100.0 || value > 900.0) {
+            *why = QStringLiteral("fontWeight must be an integer weight from 100 to 900");
+            return false;
+        }
+        (*jsonBlock)["fontWeight"] = static_cast<std::int64_t>(value);
+        if (static_cast<int>(value) != openshow::domain::kDefaultFontWeight) {
+            *deviates = true;
+        }
+    }
+    const QVariant slant = block.value(QStringLiteral("fontStyle"));
+    if (slant.isValid() && !slant.toString().isEmpty()) {
+        const QString name = slant.toString();
+        if (name != QLatin1String("normal") && name != QLatin1String("italic")) {
+            *why = QStringLiteral("fontStyle must be \"normal\" or \"italic\"");
+            return false;
+        }
+        (*jsonBlock)["fontStyle"] = name.toStdString();
+        if (name != QLatin1String("normal")) {
+            *deviates = true;
+        }
+    }
+    const QVariant fit = block.value(QStringLiteral("fitMode"));
+    if (fit.isValid() && !fit.toString().isEmpty()) {
+        const QString name = fit.toString();
+        if (name != QLatin1String("shrink") && name != QLatin1String("fixed")) {
+            *why = QStringLiteral("fitMode must be \"shrink\" or \"fixed\"");
+            return false;
+        }
+        (*jsonBlock)["fitMode"] = name.toStdString();
+    }
+    const QVariant minSize = block.value(QStringLiteral("minFontSize"));
+    if (minSize.isValid()) {
+        double value = 0.0;
+        if (!measureNumberInRange(block, QStringLiteral("minFontSize"), 1.0, 4096.0, &value)) {
+            *why = QStringLiteral("minFontSize must be between 1 and 4096");
+            return false;
+        }
+        (*jsonBlock)["minFontSize"] = value;
+    }
+    const QVariant stroke = block.value(QStringLiteral("stroke"));
+    if (stroke.isValid() && !stroke.toMap().isEmpty()) {
+        const QVariantMap record = stroke.toMap();
+        const QVariant enabled = record.value(QStringLiteral("enabled"));
+        if (!enabled.isValid()) {
+            *why = QStringLiteral("a stroke record needs its whole shape: \"enabled\" is missing");
+            return false;
+        }
+        boost::json::object out;
+        out["enabled"] = enabled.toBool();
+        std::uint64_t packed = 0;
+        double width = 0.0;
+        if (!measureHexColor(record.value(QStringLiteral("color")), &packed, why)) {
+            return false;
+        }
+        if (!measureNumberInRange(record, QStringLiteral("width"), 0.0, 32.0, &width)) {
+            *why = QStringLiteral("a stroke width must be between 0 and 32");
+            return false;
+        }
+        out["color"] = packed;
+        out["width"] = width;
+        if (enabled.toBool() && width > 0.0) {
+            *deviates = true;
+        }
+        (*jsonBlock)["stroke"] = std::move(out);
+    }
+    const QVariant shadow = block.value(QStringLiteral("shadow"));
+    if (shadow.isValid() && !shadow.toMap().isEmpty()) {
+        const QVariantMap record = shadow.toMap();
+        const QVariant enabled = record.value(QStringLiteral("enabled"));
+        if (!enabled.isValid()) {
+            *why = QStringLiteral("a shadow record needs its whole shape: \"enabled\" is missing");
+            return false;
+        }
+        boost::json::object out;
+        out["enabled"] = enabled.toBool();
+        std::uint64_t packed = 0;
+        double opacity = 0.0;
+        double offsetX = 0.0;
+        double offsetY = 0.0;
+        double blur = 0.0;
+        if (!measureHexColor(record.value(QStringLiteral("color")), &packed, why)) {
+            return false;
+        }
+        if (!measureNumberInRange(record, QStringLiteral("opacity"), 0.0, 1.0, &opacity) ||
+            !measureNumberInRange(record, QStringLiteral("offsetX"), -256.0, 256.0, &offsetX) ||
+            !measureNumberInRange(record, QStringLiteral("offsetY"), -256.0, 256.0, &offsetY) ||
+            !measureNumberInRange(record, QStringLiteral("blurSigma"), 0.0, 64.0, &blur)) {
+            *why = QStringLiteral("a shadow needs opacity 0..1, offsets -256..256 and "
+                                  "blur 0..64");
+            return false;
+        }
+        out["color"] = packed;
+        out["opacity"] = opacity;
+        out["offsetX"] = offsetX;
+        out["offsetY"] = offsetY;
+        out["blurSigma"] = blur;
+        if (enabled.toBool() && opacity > 0.0) {
+            *deviates = true;
+        }
+        (*jsonBlock)["shadow"] = std::move(out);
+    }
+    return true;
+}
 
 }  // namespace
 
@@ -218,6 +368,7 @@ void WorkerController::onRpcDisconnected() {
     fHandshakeDone = false;
     fTextMeasureCapable = false;  // a capability belongs to a live hello (BI.4)
     fTextStyleCapable = false;    // TS.1: same, for the style-block claim
+    fTextMeasureV2Capable = false;  // TS.3: same, for styled measurement
     fStatusRequestId = 0;
     fPreview->setSessionLive(false);
     fPreview->closeStream();
@@ -409,6 +560,7 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         bool thumbnailCapable = false;
         bool measureCapable = false;
         bool styleCapable = false;
+        bool measureV2Capable = false;
         if (payload.contains("capabilities") && payload.at("capabilities").is_array()) {
             for (const auto& capability : payload.at("capabilities").as_array()) {
                 if (!capability.is_string()) {
@@ -447,11 +599,19 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                     // the send on the operator's side rather than ship an
                     // enabled stroke the audience would never see.
                     styleCapable = true;
+                } else if (capability.as_string() == proto::kCapabilityTextMeasureV2) {
+                    // The worker MEASURES with the style block and answers
+                    // with bounds (task TS.3). The name decides whether
+                    // measureText may carry a style at all: a pre-16 worker
+                    // would answer a styled ask with default-metric numbers
+                    // and no way for anyone to tell.
+                    measureV2Capable = true;
                 }
             }
         }
         fTextMeasureCapable = measureCapable;
         fTextStyleCapable = styleCapable;
+        fTextMeasureV2Capable = measureV2Capable;
         // Both targets at once, before anything is asked of them: the hello
         // reply is the only place either answer changes, and the consumer's
         // gates are what stop a worker that dropped a capability from being
@@ -545,6 +705,40 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                 item.insert(QStringLiteral("height"), height->value().to_number<double>());
                 item.insert(QStringLiteral("lineCount"),
                             static_cast<qint64>(lineCount->value().to_number<std::int64_t>()));
+                // Task TS.3's additive keys. Both are OPTIONAL here in both
+                // directions: a v1 reply simply lacks them (the flow then
+                // packs on the height alone, its pre-TS.3 criterion), and a
+                // malformed additive is dropped rather than failing a reply
+                // whose core {key, height, lineCount} answers the ask —
+                // those three stay required above, because a pager waits
+                // on heights.
+                const auto fits = row.find("fits");
+                if (fits != row.end() && fits->value().is_bool()) {
+                    item.insert(QStringLiteral("fits"), fits->value().as_bool());
+                }
+                const auto bounds = row.find("bounds");
+                if (bounds != row.end() && bounds->value().is_object()) {
+                    const boost::json::object& box = bounds->value().as_object();
+                    const auto empty = box.find("empty");
+                    QVariantMap boundsMap;
+                    bool wellFormedBox =
+                        empty != box.end() && empty->value().is_bool();
+                    if (wellFormedBox) {
+                        boundsMap.insert(QStringLiteral("empty"), empty->value().as_bool());
+                        for (const char* name : {"left", "top", "right", "bottom"}) {
+                            const auto edge = box.find(name);
+                            if (edge == box.end() || !edge->value().is_number()) {
+                                wellFormedBox = false;
+                                break;
+                            }
+                            boundsMap.insert(QString::fromLatin1(name),
+                                             edge->value().to_number<double>());
+                        }
+                    }
+                    if (wellFormedBox) {
+                        item.insert(QStringLiteral("bounds"), boundsMap);
+                    }
+                }
                 rows.push_back(item);
             }
             if (wellFormed) {
@@ -849,6 +1043,24 @@ qint64 WorkerController::measureText(const QVariantList& blocks) {
         const QVariant family = block.value(QStringLiteral("fontFamily"));
         if (family.isValid() && !family.toString().isEmpty()) {
             jsonBlock["fontFamily"] = family.toString().toStdString();
+        }
+        // Task TS.3: the style block, then the capability gate. The gate
+        // is checked for every block BEFORE the send — a batch half styled
+        // toward a v1-only worker is refused whole, with nothing sent —
+        // because the failure it prevents (default-metric numbers answering
+        // a bold italic ask) leaves no trace anyone downstream could read.
+        bool deviates = false;
+        QString styleError;
+        if (!attachMeasureStyle(block, &jsonBlock, &deviates, &styleError)) {
+            setStatus(QStringLiteral("measure text: %1").arg(styleError));
+            return 0;
+        }
+        if (deviates && !fTextMeasureV2Capable) {
+            setStatus(QStringLiteral(
+                "measure text: this worker measures with its default type only — it does "
+                "not offer text.measure.v2, and a styled ask would be answered in the "
+                "wrong face; nothing was sent"));
+            return 0;
         }
         jsonBlocks.push_back(std::move(jsonBlock));
     }

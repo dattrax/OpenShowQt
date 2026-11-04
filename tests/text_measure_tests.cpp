@@ -17,6 +17,7 @@
 
 #include <boost/json.hpp>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <poll.h>
 #include <sys/socket.h>
@@ -140,6 +142,14 @@ struct Measured {
     std::string key;
     double height = 0.0;
     int lineCount = 0;
+    // Task TS.3's additive reply keys: -1 unknown (no key), 0 no, 1 yes.
+    int fits = -1;
+    bool hasBounds = false;
+    bool boundsEmpty = true;
+    double left = 0.0;
+    double top = 0.0;
+    double right = 0.0;
+    double bottom = 0.0;
 };
 
 // One block, one answer — the failure sentences come back through here too
@@ -168,10 +178,28 @@ Measured measureOne(int fd, std::int64_t& nextId, const boost::json::object& one
         }
         return measured;
     }
+    const boost::json::object& row = rows[0].as_object();
     measured.ok = true;
-    measured.key = std::string(rows[0].as_object().at("key").as_string());
-    measured.height = rows[0].as_object().at("height").to_number<double>();
-    measured.lineCount = static_cast<int>(rows[0].as_object().at("lineCount").to_number<int>());
+    measured.key = std::string(row.at("key").as_string());
+    measured.height = row.at("height").to_number<double>();
+    measured.lineCount = row.at("lineCount").to_number<int>();
+    // TS.3: the additive keys. The rows the worker answers carry them now;
+    // reading them optionally keeps the harness honest about what is a
+    // verdict and what is silence.
+    const auto fitsEntry = row.find("fits");
+    if (fitsEntry != row.end() && fitsEntry->value().is_bool()) {
+        measured.fits = fitsEntry->value().as_bool() ? 1 : 0;
+    }
+    const auto boundsEntry = row.find("bounds");
+    if (boundsEntry != row.end() && boundsEntry->value().is_object()) {
+        const boost::json::object& box = boundsEntry->value().as_object();
+        measured.hasBounds = true;
+        measured.boundsEmpty = box.at("empty").as_bool();
+        measured.left = box.at("left").to_number<double>();
+        measured.top = box.at("top").to_number<double>();
+        measured.right = box.at("right").to_number<double>();
+        measured.bottom = box.at("bottom").to_number<double>();
+    }
     return measured;
 }
 
@@ -208,11 +236,16 @@ int main(int argc, char* argv[]) {
         check(negotiated.at("minor").to_number<std::uint64_t>() >= 14,
               "the worker serves protocol minor 14");
         bool hasMeasure = false;
+        bool hasMeasureV2 = false;
         for (const boost::json::value& capability :
              reply.at("result").at("capabilities").as_array()) {
             hasMeasure = hasMeasure || capability.as_string() == "text.measure.v1";
+            hasMeasureV2 = hasMeasureV2 || capability.as_string() == proto::kCapabilityTextMeasureV2;
         }
         check(hasMeasure, "the hello names text.measure.v1");
+        // TS.3: a frontend may only put a styled block to a worker that
+        // names this. The check here is the worker half of that gate.
+        check(hasMeasureV2, "the hello names text.measure.v2");
     }
 
     // Same words, twice the size: taller, still one line. SkParagraph
@@ -364,6 +397,246 @@ int main(int argc, char* argv[]) {
         const Measured after = measureOne(fd, nextId, block("ok", {"still here"}, 40.0, 800.0),
                                           &error2);
         check(after.ok && after.height > 0.0, "a refusal is per-request; the session lives on");
+    }
+
+    // --- Task TS.3: the style block measures, the bounds answer, the
+    // verdict says what it means ---
+    {
+        std::string error;
+        const auto refusedWith = [&](const boost::json::object& oneBlock, const char* needle,
+                                     const char* what) {
+            std::string refusal;
+            measureOne(fd, nextId, oneBlock, &refusal);
+            check(refusal.find(needle) != std::string::npos, what);
+        };
+
+        // Every answer grows the additive keys — even a v1-shaped ask.
+        const Measured plain =
+            measureOne(fd, nextId, block("t1", {"Hello world"}, 40.0, 800.0), &error);
+        check(plain.ok && plain.fits == 1 && plain.hasBounds && !plain.boundsEmpty,
+              "a v1-shaped measurement still answers with fits and bounds");
+        check(plain.right > plain.left && plain.bottom > plain.top &&
+                  plain.left >= -2.0 && plain.right <= 802.0 &&
+                  plain.bottom - plain.top <= plain.height + 2.0,
+              "the bounds sit inside the measured line-metrics box when no effect is enabled");
+
+        // The spelled defaults ARE the absent keys: a v1 payload means
+        // exactly what it meant before — same numbers, same verdict,
+        // same box, to the last bit the layout produced.
+        const Measured implicitDefault =
+            measureOne(fd, nextId, block("t2", {"Hello world again"}, 40.0, 800.0), &error);
+        boost::json::object explicitDefault = block("t2", {"Hello world again"}, 40.0, 800.0);
+        explicitDefault["fontWeight"] = 400;
+        explicitDefault["fontStyle"] = "normal";
+        explicitDefault["fitMode"] = "shrink";
+        explicitDefault["minFontSize"] = 12.0;
+        explicitDefault["stroke"] = boost::json::object{
+            {"enabled", false}, {"color", std::uint64_t(0x000000)}, {"width", 2.0}};
+        explicitDefault["shadow"] = boost::json::object{{"enabled", false},
+                                                        {"color", std::uint64_t(0x000000)},
+                                                        {"opacity", 0.65},
+                                                        {"offsetX", 2.0},
+                                                        {"offsetY", 2.0},
+                                                        {"blurSigma", 4.0}};
+        const Measured spelledDefault = measureOne(fd, nextId, explicitDefault, &error);
+        check(spelledDefault.ok && implicitDefault.ok &&
+                  spelledDefault.height == implicitDefault.height &&
+                  spelledDefault.lineCount == implicitDefault.lineCount &&
+                  spelledDefault.left == implicitDefault.left &&
+                  spelledDefault.right == implicitDefault.right &&
+                  spelledDefault.top == implicitDefault.top &&
+                  spelledDefault.bottom == implicitDefault.bottom &&
+                  spelledDefault.fits == implicitDefault.fits,
+              "spelling the style defaults measures bit-identically to sending no style at all");
+
+        // Weight is not decoration: it changes WHICH FACE measures the
+        // words, and the face is wider. The single-line probe proves the
+        // typography swapped; the wrap probe proves the growth reaches
+        // the packer's numbers (more width cannot fit fewer lines).
+        boost::json::object light = block("w100", {"Handgloves and weight"}, 40.0, 800.0);
+        light["fontWeight"] = 100;
+        boost::json::object heavy = block("w800", {"Handgloves and weight"}, 40.0, 800.0);
+        heavy["fontWeight"] = 800;
+        const Measured lightLine = measureOne(fd, nextId, light, &error);
+        const Measured heavyLine = measureOne(fd, nextId, heavy, &error);
+        std::string flowing;
+        for (int i = 0; i < 10; ++i) {
+            flowing += "the quick brown fox jumps over the lazy dog ";
+        }
+        boost::json::object lightWrap = block("w100b", {flowing}, 40.0, 700.0);
+        lightWrap["fontWeight"] = 100;
+        boost::json::object heavyWrap = block("w800b", {flowing}, 40.0, 700.0);
+        heavyWrap["fontWeight"] = 800;
+        const Measured lightWrapped = measureOne(fd, nextId, lightWrap, &error);
+        const Measured heavyWrapped = measureOne(fd, nextId, heavyWrap, &error);
+        check(lightLine.ok && heavyLine.ok && heavyLine.right > lightLine.right + 0.5,
+              "weight 800 measures WIDER than weight 100 — the ask reached the face, "
+              "not the defaults");
+        check(lightWrapped.ok && heavyWrapped.ok &&
+                  heavyWrapped.lineCount >= lightWrapped.lineCount &&
+                  heavyWrapped.height >= lightWrapped.height,
+              "bolder words wrap to no fewer lines in the same box");
+
+        // A named slant measures without disturbing the verdict.
+        boost::json::object italic = block("it", {"Slanted words"}, 40.0, 800.0);
+        italic["fontStyle"] = "italic";
+        const Measured slanted = measureOne(fd, nextId, italic, &error);
+        check(slanted.ok && slanted.height > 0.0 && slanted.fits == 1,
+              "italic measures with its own verdict");
+
+        // The stroke grows the visual extent by exactly half its pen on
+        // every side — the pen reaches that far beyond the outline.
+        const Measured bare = measureOne(fd, nextId, block("e1", {"Edged words"}, 40.0, 800.0),
+                                         &error);
+        boost::json::object stroked = block("e2", {"Edged words"}, 40.0, 800.0);
+        stroked["stroke"] = boost::json::object{
+            {"enabled", true}, {"color", std::uint64_t(0xFFFFFF)}, {"width", 20.0}};
+        const Measured edged = measureOne(fd, nextId, stroked, &error);
+        check(bare.ok && edged.ok && edged.left <= bare.left - 9.0 &&
+                  edged.right >= bare.right + 9.0 && edged.top <= bare.top - 9.0 &&
+                  edged.bottom >= bare.bottom + 9.0,
+              "an enabled stroke grows the bounds by its half-width on every side");
+
+        // The shadow unions the offset copy grown by the finite blur
+        // support (~3.1 sigma): the extent must be honest in both
+        // directions — big enough for any pixel (the reach uses a
+        // deliberately smaller 3.0 sigma), and no wild margin beyond
+        // the 3.1 the code claims. A positive offset still lets the
+        // blur pull the OPPOSITE edge in: dx=10 with a 12.4 reach moves
+        // the left edge to fill.left − 2.4, and dy=14 pulls nothing off
+        // the top while lifting nothing above bare.top either.
+        boost::json::object shaded = block("s1", {"Edged words"}, 40.0, 800.0);
+        shaded["shadow"] = boost::json::object{{"enabled", true},
+                                               {"color", std::uint64_t(0x000000)},
+                                               {"opacity", 0.5},
+                                               {"offsetX", 10.0},
+                                               {"offsetY", 14.0},
+                                               {"blurSigma", 4.0}};
+        const Measured castShadow = measureOne(fd, nextId, shaded, &error);
+        const double reachLow = 3.0 * 4.0;   // below Skia's ~3.09 sigma support
+        const double reachHigh = 3.1 * 4.0;  // the support the code claims
+        check(castShadow.ok &&
+                  castShadow.right >= bare.right + 10.0 + reachLow &&
+                  castShadow.bottom >= bare.bottom + 14.0 + reachLow &&
+                  castShadow.right <= bare.right + 10.0 + reachHigh + 0.5 &&
+                  castShadow.bottom <= bare.bottom + 14.0 + reachHigh + 0.5 &&
+                  castShadow.left >= bare.left + std::min(0.0, 10.0 - reachHigh) - 0.5 &&
+                  castShadow.left <= bare.left + 0.5 &&
+                  castShadow.top >= bare.top + std::min(0.0, 14.0 - reachHigh) - 0.5 &&
+                  castShadow.top <= bare.top + 0.5,
+              "an offset blur shadow unions the offset copy grown by its blur support — "
+              "and nothing further");
+
+        // The fits verdict is about the FILL; the bounds carry the spill.
+        // Words that fit stay "fits" even when the stroke's outer half
+        // hangs past the box — moving words cannot shorten a pen. The
+        // box here is the fill's natural width plus a hair: the centred
+        // lines stay inside it (verdict: fits) while the pen's outer
+        // half clearly crosses the edge (bounds: past width).
+        {
+            const double naturalWidth = bare.right - bare.left;  // centred at 800
+            boost::json::object tight = block("spill", {"Edged words"}, 40.0, naturalWidth + 5.0);
+            tight["stroke"] = boost::json::object{
+                {"enabled", true}, {"color", std::uint64_t(0xFFFFFF)}, {"width", 20.0}};
+            const Measured spilled = measureOne(fd, nextId, tight, &error);
+            check(spilled.ok && spilled.fits == 1 && spilled.right > naturalWidth + 5.0,
+                  "a stroke whose outer edge passes the box still measures fits — "
+                  "the spill is reported in the bounds, not decided in the verdict");
+        }
+
+        // A word wider than the box does not overflow it: the layout
+        // breaks the word across lines, so the FILL stays inside and the
+        // words keep their verdict. (This is the promise the packer
+        // relies on: nothing is ever clipped; the words move.)
+        const Measured wideWord = measureOne(
+            fd, nextId, block("t4", {"Supercalifragilisticexpialidocious"}, 60.0, 120.0), &error);
+        check(wideWord.ok && wideWord.lineCount >= 2 && wideWord.fits == 1 &&
+                  wideWord.right <= 122.0,
+              "a word wider than the box breaks across lines — words move, nothing clips");
+        boost::json::object shortBox =
+            block("t5", {"line one", "line two", "line three"}, 40.0, 800.0);
+        shortBox["height"] = 30.0;
+        const Measured squeezed = measureOne(fd, nextId, shortBox, &error);
+        check(squeezed.ok && squeezed.fits == 0,
+              "a block asked against a box shorter than itself answers fits=false");
+        boost::json::object tallBox =
+            block("t6", {"line one", "line two", "line three"}, 40.0, 800.0);
+        tallBox["height"] = 400.0;
+        const Measured roomy = measureOne(fd, nextId, tallBox, &error);
+        check(roomy.ok && roomy.fits == 1, "the same block against a tall enough box fits");
+
+        // Refusals: the style block keeps the wire's discipline — every
+        // band, every closed record, every key said by name.
+        boost::json::object badWeight = block("r", {"words"}, 40.0, 800.0);
+        badWeight["fontWeight"] = 50;
+        refusedWith(badWeight, "fontWeight", "a weight under 100 is refused naming it");
+        badWeight["fontWeight"] = 450.5;
+        refusedWith(badWeight, "fontWeight", "a fractional weight is refused naming it");
+        boost::json::object badSlant = block("r", {"words"}, 40.0, 800.0);
+        badSlant["fontStyle"] = "oblique";
+        refusedWith(badSlant, "fontStyle", "a slant outside normal/italic is refused naming it");
+        boost::json::object badFit = block("r", {"words"}, 40.0, 800.0);
+        badFit["fitMode"] = "squeeze";
+        refusedWith(badFit, "fitMode", "a fit mode outside shrink/fixed is refused naming it");
+        boost::json::object badFloor = block("r", {"words"}, 40.0, 800.0);
+        badFloor["minFontSize"] = 0.5;
+        refusedWith(badFloor, "minFontSize", "a floor under one pixel is refused naming it");
+        boost::json::object badHeight = block("r", {"words"}, 40.0, 800.0);
+        badHeight["height"] = 0.0;
+        refusedWith(badHeight, "height", "a zero box height is refused naming it");
+        boost::json::object strokeNotRecord = block("r", {"words"}, 40.0, 800.0);
+        strokeNotRecord["stroke"] = 3;
+        refusedWith(strokeNotRecord, "stroke", "a stroke that is not a record is refused naming it");
+        boost::json::object strokeNoColor = block("r", {"words"}, 40.0, 800.0);
+        strokeNoColor["stroke"] = boost::json::object{
+            {"enabled", true}, {"width", 2.0}};
+        refusedWith(strokeNoColor, "color", "a half-written stroke record is refused naming the member");
+        boost::json::object strokeWide = block("r", {"words"}, 40.0, 800.0);
+        strokeWide["stroke"] = boost::json::object{
+            {"enabled", true}, {"color", std::uint64_t(0)}, {"width", 40.0}};
+        refusedWith(strokeWide, "width", "a stroke over the pen cap is refused naming it");
+        boost::json::object strokeUnknown = block("r", {"words"}, 40.0, 800.0);
+        strokeUnknown["stroke"] = boost::json::object{
+            {"enabled", true}, {"color", std::uint64_t(0)}, {"width", 2.0}, {"glow", false}};
+        refusedWith(strokeUnknown, "glow", "a stroke member this contract does not have is refused by name");
+        boost::json::object shadowOpacity = block("r", {"words"}, 40.0, 800.0);
+        shadowOpacity["shadow"] = boost::json::object{{"enabled", true},
+                                                      {"color", std::uint64_t(0)},
+                                                      {"opacity", 2.0},
+                                                      {"offsetX", 0.0},
+                                                      {"offsetY", 0.0},
+                                                      {"blurSigma", 0.0}};
+        refusedWith(shadowOpacity, "opacity", "a shadow opacity over 1 is refused naming it");
+        boost::json::object shadowOffset = block("r", {"words"}, 40.0, 800.0);
+        shadowOffset["shadow"] = boost::json::object{{"enabled", true},
+                                                     {"color", std::uint64_t(0)},
+                                                     {"opacity", 0.5},
+                                                     {"offsetX", 0.0},
+                                                     {"offsetY", -300.0},
+                                                     {"blurSigma", 0.0}};
+        refusedWith(shadowOffset, "offsetY", "a shadow offset past its band is refused naming it");
+        boost::json::object shadowBlur = block("r", {"words"}, 40.0, 800.0);
+        shadowBlur["shadow"] = boost::json::object{{"enabled", true},
+                                                   {"color", std::uint64_t(0)},
+                                                   {"opacity", 0.5},
+                                                   {"offsetX", 0.0},
+                                                   {"offsetY", 0.0},
+                                                   {"blurSigma", 100.0}};
+        refusedWith(shadowBlur, "blurSigma", "a blur past the cap is refused naming it");
+        boost::json::object shadowColor = block("r", {"words"}, 40.0, 800.0);
+        shadowColor["shadow"] = boost::json::object{{"enabled", true},
+                                                    {"color", std::uint64_t(0x1000000)},
+                                                    {"opacity", 0.5},
+                                                    {"offsetX", 0.0},
+                                                    {"offsetY", 0.0},
+                                                    {"blurSigma", 0.0}};
+        refusedWith(shadowColor, "color", "a colour past 0xFFFFFF is refused naming it");
+
+        // And the session lives on after all of it.
+        const Measured after = measureOne(fd, nextId, block("live", {"still here"}, 40.0, 800.0),
+                                          &error);
+        check(after.ok && after.height > 0.0,
+              "style refusals are per-request; the measurement session lives on");
     }
 
     // An empty batch is legal and answers empty.

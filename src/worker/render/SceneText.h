@@ -116,6 +116,19 @@ public:
     // explicit line height. The box fields are the item's authored box
     // (task 4.3) — the region drawLayout centres the paragraph in.
     //
+    // A text item's visual extent, authored units, relative to the
+    // paragraph's paint origin (boxX horizontally, paragraphTop()
+    // vertically). Left/top can be negative: a negative shadow offset,
+    // an italic overhang, or a stroke's outer half are all legal ink
+    // outside the text's own metric box.
+    struct InkRect {
+        bool empty = true;
+        float left = 0.0f;
+        float top = 0.0f;
+        float right = 0.0f;
+        float bottom = 0.0f;
+    };
+
     // Task 6.17b makes the laid-out stack heterogeneous: an image entry
     // has no paragraph and no text; its box is where the picture is
     // stretched and assetPath names what to look up in the image cache.
@@ -148,7 +161,40 @@ public:
         bool shadowEnabled = false;             // routing only: which items
                                                 // must draw through the
                                                 // effect-aware painter
+        // Task TS.3: the item's VISUAL extent — the shaped lines' metric
+        // box grown by the enabled effects — in authored units, relative
+        // to the point drawLayout paints the paragraph at (boxX,
+        // paragraphTop()). Glyph bounds come from the SAME laid-out runs
+        // the pixels are drawn from (LineMetrics over the line layout);
+        // an enabled stroke grows every side by half its width, and the
+        // enabled shadow unions the offset copy of the fill's box grown
+        // by Skia's FINITE blur support. This is the answer to "where can
+        // a pixel of this item land", so a region check that ignored it
+        // would clip a styled slide the measurement called fitting.
+        // Empty when the item draws nothing; never a font-size guess.
+        InkRect ink;
+        // The line-metrics box BEFORE any effect growth — the fill's own
+        // extent, which is what `fits`-style verdicts about the WORDS
+        // judge. (The measurement seam answers "do these words fit" with
+        // this box and reports `ink` as the pixel truth; an enabled
+        // effect's spill past the box is the author's choice, visible on
+        // the canvas, and no amount of moving words fixes it, so it must
+        // not poison a packer's verdict — see OutputSession::measureText.)
+        InkRect fillInk;
+        // layoutScene's verdict: the whole visual extent (fill AND any
+        // enabled effect) inside the authored box. The shrink loop keeps
+        // its pre-TS.3 height criterion — old scenes keep their exact
+        // sizes — so this is the honest overflow report, and for a
+        // "fixed" item it is the ONLY fit answer the pipeline gives.
+        bool fits = true;
     };
+
+    // Where drawLayout places a paragraph's top edge inside its box: the
+    // box's own vertical centring, exposed because TS.3's bounds travel
+    // RELATIVE to this point — the layout cache's consumer (the test, the
+    // measurement) computes the absolute extent from the same arithmetic
+    // the drawing uses, never a copy that could drift.
+    static float paragraphTop(const LaidOutItem& item);
 
     // scale multiplies the item's size before layout (the fit pass).
     LaidOutItem layout(const openshow::scene::SceneItem& item, float scale,

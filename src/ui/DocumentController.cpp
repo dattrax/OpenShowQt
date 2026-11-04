@@ -1382,6 +1382,28 @@ QVariantMap DocumentController::scriptureBoxStyle() const {
         style.insert(QStringLiteral("fontSize"), item.fontSize);
         style.insert(QStringLiteral("lineSpacing"), item.lineSpacing);
         style.insert(QStringLiteral("fontFamily"), QString::fromStdString(item.fontFamily));
+        // Task TS.3: the style block off the SAME item — the packer that
+        // measures with these numbers and the slide that draws these
+        // words then cannot drift, because both read one SceneItem. The
+        // effect records stay in the domain's terms ("#rrggbb"); the wire
+        // packing is the controller's seam.
+        style.insert(QStringLiteral("fontWeight"), item.fontWeight);
+        style.insert(QStringLiteral("fontStyle"), QString::fromStdString(item.fontStyle));
+        style.insert(QStringLiteral("fitMode"), QString::fromStdString(item.fitMode));
+        style.insert(QStringLiteral("minFontSize"), item.minFontSize);
+        QVariantMap stroke;
+        stroke.insert(QStringLiteral("enabled"), item.stroke.enabled);
+        stroke.insert(QStringLiteral("color"), QString::fromStdString(item.stroke.color));
+        stroke.insert(QStringLiteral("width"), item.stroke.width);
+        style.insert(QStringLiteral("stroke"), stroke);
+        QVariantMap shadow;
+        shadow.insert(QStringLiteral("enabled"), item.shadow.enabled);
+        shadow.insert(QStringLiteral("color"), QString::fromStdString(item.shadow.color));
+        shadow.insert(QStringLiteral("opacity"), item.shadow.opacity);
+        shadow.insert(QStringLiteral("offsetX"), item.shadow.offsetX);
+        shadow.insert(QStringLiteral("offsetY"), item.shadow.offsetY);
+        shadow.insert(QStringLiteral("blurSigma"), item.shadow.blurSigma);
+        style.insert(QStringLiteral("shadow"), shadow);
         return style;
     }
     return style;  // no text box at all: the importer refuses with its own sentence

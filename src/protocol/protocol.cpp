@@ -250,7 +250,15 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                             // weight and slant through the face, stroke behind
                             // fill, shadow from the shaped run, all riding the
                             // fade. The claim the renderer just earned.
-                            kCapabilityTextStyle}}};
+                            kCapabilityTextStyle,
+                            // TS.3: this worker MEASURES with that same style
+                            // block and answers with visual bounds, so the
+                            // importer's pages and the audience's pixels obey
+                            // one typography. The name is the gate: a pre-16
+                            // worker ignores style keys silently, and a
+                            // measurement answered in the wrong face is the
+                            // one answer a measurement contract cannot give.
+                            kCapabilityTextMeasureV2}}};
     return true;
 }
 

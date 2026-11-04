@@ -640,13 +640,22 @@ bool OutputSession::takePreviewReady(PreviewReady* out) {
 }
 
 bool OutputSession::measureText(const MeasureBlock& block, float* heightOut,
-                                int* lineCountOut, std::string* error) {
+                                int* lineCountOut, std::string* error,
+                                SceneTextEngine::InkRect* inkOut, bool* fitsOut) {
     // Task BI.4: the ONE measurer. This runs the block through the same
     // engine, at scale 1.0 — no shrink pass — that draws the audience's
     // slides, so a page the importer packed by these numbers packs the
     // same way the worker will draw it. Off-thread layout is 6.22a's
     // sanctioned shape (per-thread FontCollection); nothing here touches
     // the store, the caches, the output or the frame loop.
+    //
+    // Task TS.3 hands the style block to the same layout, so "how tall is
+    // this reading at weight 600 with this shadow" is answered by the
+    // engine that will draw it, and the reply carries the visual extent:
+    // the laid-out runs' bounds grown by the enabled effects. The verdict
+    // is the SAME containment arithmetic layoutScene reports (the measure
+    // box is the item box here: x 0, top the centred paragraph top at
+    // scale 1.0 with no vertical shrink by definition).
     if (fScene == nullptr) {
         if (error != nullptr) {
             *error = "text.measure has no text engine to measure with (the output is closed)";
@@ -659,10 +668,37 @@ bool OutputSession::measureText(const MeasureBlock& block, float* heightOut,
     item.fontSize = block.fontSize;
     item.width = block.width;
     item.lineSpacing = block.lineSpacing;
+    item.fontWeight = block.fontWeight;
+    item.fontStyle = block.fontStyle;
+    item.fitMode = block.fitMode;
+    item.minFontSize = block.minFontSize;
+    item.stroke = block.stroke;
+    item.shadow = block.shadow;
     const SceneTextEngine::LaidOutItem laid =
         fScene->textEngine().layout(item, 1.0f, static_cast<float>(block.width));
     *heightOut = laid.height;
     *lineCountOut = laid.lineCount;
+    if (inkOut != nullptr) {
+        *inkOut = laid.ink;
+    }
+    if (fitsOut != nullptr) {
+        // The FILL verdict: do the laid-out lines themselves stay inside
+        // the box. An enabled effect's spill is deliberately not folded
+        // in — it comes back in the bounds, and no repagination can fix
+        // it, so folding it in here would refuse every page of a theme
+        // that so much as shadows its text. This is the question a
+        // packer can act on, and it is the one this verdict answers.
+        bool fits = true;
+        if (laid.hasText && !laid.fillInk.empty) {
+            constexpr float kEps = 0.75f;
+            fits = laid.fillInk.left >= -kEps &&
+                   laid.fillInk.right <= static_cast<float>(block.width) + kEps &&
+                   (block.boxHeight <= 0.0 || laid.fillInk.bottom - laid.fillInk.top <=
+                                                 static_cast<float>(block.boxHeight) +
+                                                     2.0f * kEps);
+        }
+        *fitsOut = fits;
+    }
     return true;
 }
 

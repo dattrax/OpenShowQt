@@ -133,8 +133,30 @@ namespace openshow::protocol {
 // about is the silent omission the wire has refused since 6.8a. Scene 4
 // with the contract defaults is always safe: it is what a scene-3 payload
 // means.
+// Minor 16 (task TS.3, theme-editor review) grows text.measure into its
+// second version: blocks may carry the resolved STYLE — fontWeight,
+// fontStyle, fitMode, minFontSize and the whole stroke/shadow effect
+// records — and every answer grows a visual "bounds" (the laid-out runs'
+// extents grown by the enabled effects, authored units relative to the
+// paragraph's paint origin) plus a "fits" verdict. The two divide the
+// honest way: "fits" judges the FILL — the laid-out lines inside the
+// box, the one question repagination can answer — and "bounds" carries
+// where any pixel may land, so a consumer with its own region (a safe
+// area, a test's canvas) judges the effect spill from the same numbers
+// the drawing uses. Additive the way minor
+// 14 was: v1 payloads still measure exactly what they always measured, and
+// a v1 reader ignores the two new keys. The capability "text.measure.v2"
+// names a worker that HONOURS the style keys — and that is load-bearing:
+// a pre-16 worker ignores unknown block keys silently, so a styled ask
+// sent to it would come back answered in the WRONG typography, the one
+// failure mode a measurement contract cannot have. Frontends therefore
+// refuse any style-deviating block toward a hello without the name
+// (WorkerController), exactly as scene.text-style.v1 gates the scene.
+// Measurement never shrinks whatever fitMode says: the reply is always
+// the size asked plus an honest verdict, because a height taken at a
+// quietly-shrunken size is the guess the flow forbids.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 15;
+inline constexpr std::uint32_t kProtocolMinor = 16;
 
 // The capability that names a worker DRAWING the scene 4 style block.
 // Defined here so the frontend's pre-send gate and the worker's hello name
@@ -142,6 +164,14 @@ inline constexpr std::uint32_t kProtocolMinor = 15;
 // carries it, and protocol_tests pin both halves — the constant exists and
 // the hello list contains it.
 inline constexpr const char* kCapabilityTextStyle = "scene.text-style.v1";
+
+// The capability that names a worker MEASURING with the style block and
+// answering with visual bounds (minor 16). The gate is one-directional on
+// purpose: defaults-only v1-shaped asks are safe everywhere, but a styled
+// block toward a v1-only worker answers a different question than was
+// asked, so WorkerController refuses the send by name rather than ship a
+// silent typography swap.
+inline constexpr const char* kCapabilityTextMeasureV2 = "text.measure.v2";
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without

@@ -347,12 +347,30 @@ public:
     // changes how tall wrapped lines are, and the question asked is "how
     // tall at this width and size", at scale 1.0 — the shrink-to-fit pass
     // belongs to layoutScene and is deliberately NOT part of a measurement.
+    // Task TS.3 adds the style block (the scene 4 fields, concrete) so the
+    // importer's numbers and the audience's pixels answer to ONE typography,
+    // plus a visual-bounds answer: a measurement that ignored weight,
+    // slant and effects would pack a page the styled slide overflows.
+    // Measurement never shrinks whatever fitMode says — `fitMode` "fixed"
+    // is what a measurement IS, "shrink" is accepted (the theme's own
+    // answer may be handed straight through) but the reply is still the
+    // size asked plus an honest `fits`, because a number quietly taken at
+    // a shrunken size is exactly the guess the flow forbids.
     struct MeasureBlock {
         std::vector<std::string> lines;
         std::string fontFamily;                              // "" = platform default
         double fontSize = 0.0;                               // 0 = renderer default
         double width = 0.0;                                  // finite, > 0
         double lineSpacing = openshow::domain::kDefaultLineSpacing;
+        int fontWeight = openshow::domain::kDefaultFontWeight;
+        std::string fontStyle = "normal";                    // "normal" | "italic"
+        std::string fitMode = "fixed";                       // v1 never shrinks
+        double minFontSize = openshow::domain::kDefaultMinFontSize;
+        openshow::domain::TextStroke stroke;                 // disabled = no ink
+        openshow::domain::TextShadow shadow;
+        // Optional box height for the fits verdict (0 = judge the width
+        // only; the wire's v1 shape carries none).
+        double boxHeight = 0.0;
     };
 
     // Runs the block through the production renderer's OWN text engine on
@@ -363,9 +381,16 @@ public:
     // prepare executor has been building layouts off the render thread
     // since 6.9b. Nothing is stored, cached, presented or woken. Refused
     // only when there is no renderer — the reply must be an honest failure,
-    // never a guessed height.
+    // never a guessed height. TS.3's optional outs carry the VISUAL extent
+    // (authored units, relative to the paragraph's top-left) and the box
+    // verdict: the extent is the laid-out runs' own metrics grown by the
+    // enabled effects, never a font-size guess, while `fits` judges the
+    // FILL alone against the box — the question word movement answers. An
+    // effect's spill is reported in the extent, not decided in the verdict
+    // (a shadow no repagination can shorten must not refuse every page).
     bool measureText(const MeasureBlock& block, float* heightOut, int* lineCountOut,
-                     std::string* error);
+                     std::string* error, SceneTextEngine::InkRect* inkOut = nullptr,
+                     bool* fitsOut = nullptr);
 
     // --- background media (task 5.5d) ---
 

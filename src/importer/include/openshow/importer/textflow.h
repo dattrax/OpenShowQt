@@ -32,17 +32,23 @@
 #ifndef OPENSHOW_IMPORTER_TEXTFLOW_H
 #define OPENSHOW_IMPORTER_TEXTFLOW_H
 
+#include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "openshow/domain/documents.h"
 
 namespace openshow::importer {
 
 // One thing put to the measuring engine: exactly the knobs the worker's
 // layout reads (see protocol.h's text.measure contract). `key` correlates
-// the answer; the engine keys its cache on the CONTENT at a given size,
-// so an identical block is measured at most once per run.
+// the answer; the engine keys its cache on the COMPLETE typography of a
+// question (measureCacheKey), so an identical block at identical type is
+// measured at most once per run — and the same block at a different
+// weight, face or effect is a DIFFERENT question, never a cache hit.
 struct MeasureRequest {
     std::string key;
     std::vector<std::string> lines;
@@ -50,12 +56,31 @@ struct MeasureRequest {
     double width = 0.0;
     double lineSpacing = 1.25;
     std::string fontFamily;
+    // Task TS.3: the resolved style block — the same scene fields the
+    // item the audience sees will wear. A packer that measured bold italic
+    // words with default metrics packed a page the styled slide overflows.
+    int fontWeight = openshow::domain::kDefaultFontWeight;
+    std::string fontStyle = "normal";
+    std::string fitMode = "fixed";  // measurement never shrinks whatever says
+    double minFontSize = openshow::domain::kDefaultMinFontSize;
+    openshow::domain::TextStroke stroke;
+    openshow::domain::TextShadow shadow;
 };
 
 struct MeasureReply {
     std::string key;
     double height = 0.0;
     int lineCount = 0;
+    // Task TS.3: the worker's verdict on whether the block's FILL — the
+    // laid-out lines themselves, effects not folded in — stays inside the
+    // measured width (and height, if the ask carried one). Effects belong
+    // to the reply's bounds at the RPC seam, not to this verdict: a
+    // shadow's spill is the theme author's choice and no repagination
+    // shortens it, so folding it in would refuse every page of a shadowed
+    // theme. Absent (a pre-16 worker) means unknown, never "yes": the
+    // packer then judges with the height criterion alone, exactly as it
+    // did before the verdict existed — the honest floor, not a claim.
+    std::optional<bool> fits;
 };
 
 // The measuring port (the engine's AwaitingMeasurement edge: a run that
@@ -74,6 +99,23 @@ using MeasureFn = std::function<bool(const std::vector<MeasureRequest>& requests
 // kMaxMeasureBatch; kept here so this Qt-free library stands alone).
 inline constexpr int kMaxMeasureChunk = 32;
 
+// Task TS.3: the canonical string form of a question's COMPLETE
+// typography — content, box and style. Two requests with equal keys are
+// answered by equal layouts, and only the wire's correlation `key` is
+// left out (no answer depends on it). The engine's per-run cache and the
+// frontend's across-run cache share this one serializer on purpose: a
+// second hand-rolled key is exactly how a stale measurement — the same
+// words answered at a theme the operator has since changed — slips back
+// in through the door the key was supposed to shut.
+std::string measureCacheKey(const MeasureRequest& request);
+
+// The ceiling on a measurement cache (per-run here, across-run in the
+// frontend). A whole-Bible import probes tens of thousands of distinct
+// fragments, and an unbounded map of them is a cost with no operator
+// in front of it to justify it; past the cap a run keeps its hits and
+// stops keeping new answers (measuring fresh is correct, just not cheap).
+inline constexpr std::size_t kMaxMeasureCacheEntries = 4096;
+
 // The box and the CHOSEN typography, in output-canvas pixels. Nothing
 // here is a suggestion the engine may scale: it measures at exactly these
 // numbers or the ask fails. `fontSize` follows the scene's own contract:
@@ -86,6 +128,16 @@ struct FlowStyle {
     double fontSize = 0.0;
     double lineSpacing = 1.25;
     std::string fontFamily;
+    // Task TS.3: the resolved style the packed slides will wear, on the
+    // same scene-field terms MeasureRequest carries (the packer forwards
+    // it verbatim), so the box is packed with the metrics of the type
+    // the audience gets. validateFlowStyle vettes the bands.
+    int fontWeight = openshow::domain::kDefaultFontWeight;
+    std::string fontStyle = "normal";
+    std::string fitMode = "fixed";  // the flow's own premise: the size is the size
+    double minFontSize = openshow::domain::kDefaultMinFontSize;
+    openshow::domain::TextStroke stroke;
+    openshow::domain::TextShadow shadow;
 };
 
 // One ordered unit of words. `id` is whatever the caller needs its slides
@@ -136,7 +188,11 @@ struct FlowOutcome {
 
 // Vet the box and typography the same way the packer does before any
 // measurement — an adapter that wants to refuse an unusable box before it
-// even reserves gets the engine's own sentence rather than a copy.
+// even reserves gets the engine's own sentence rather than a copy. Task
+// TS.3 vets the style block in the same pass: the scene bands for weight,
+// slant, fit mode and floor, and the effect records' own ranges, refusal
+// naming the field. A half-checked style is how a NaN sigma reaches the
+// wire and the whole batch answers with nothing.
 bool validateFlowStyle(const FlowStyle& style, std::string* error);
 
 // Measure a block's height through the port at a given size and sum it —

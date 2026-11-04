@@ -1215,6 +1215,164 @@ void testTextStyleFacesAndEffectsRender() {
           "the wire round-trip renders byte-identically");
 }
 
+void testInkBoundsContainEveryEffectPixel() {
+    // Task TS.3: layout()'s ink rect is the answer to "where can a pixel
+    // of this item land". The fixture renders the authored 1920x1080
+    // canvas at 960x540 — a 0.5 device scale — so every drawn pixel must
+    // fall inside the item's ink rect mapped through the same scale, for
+    // the fill AND for the loud cases: a wide stroke, an offset blur
+    // shadow, and a NEGATIVE offset whose shadow reaches outside the
+    // text's own metric box on the other side. The same layouts also pin
+    // the growth arithmetic (half a pen each side; offset plus the finite
+    // blur support) and the `fits` verdict, box and all.
+    std::string error;
+    worker::SceneTextEngine engine;
+    if (!engine.create(&error)) {
+        check(false, "ink-bounds fixture: engine created: " + error);
+        return;
+    }
+    constexpr float kDeviceScale = 0.5f;
+    constexpr int kSlack = 2;  // device px of antialiasing generosity
+
+    scene::Scene base = singleItemScene({"Bound words"}, 96.0);
+    base.items[0].x = 560.0;  // a box narrower than the canvas: edges matter
+    base.items[0].y = 340.0;
+    base.items[0].width = 800.0;
+    base.items[0].height = 400.0;
+
+    scene::Scene stroked = base;
+    stroked.items[0].stroke.enabled = true;
+    stroked.items[0].stroke.color = "#ffffff";
+    stroked.items[0].stroke.width = 24.0;
+
+    scene::Scene shaded = base;
+    shaded.items[0].shadow.enabled = true;
+    shaded.items[0].shadow.color = "#00ffff";
+    shaded.items[0].shadow.opacity = 1.0;
+    shaded.items[0].shadow.offsetX = 40.0;
+    shaded.items[0].shadow.offsetY = 30.0;
+    shaded.items[0].shadow.blurSigma = 10.0;
+
+    scene::Scene northWest = base;
+    northWest.items[0].shadow.enabled = true;
+    northWest.items[0].shadow.color = "#00ffff";
+    northWest.items[0].shadow.opacity = 1.0;
+    northWest.items[0].shadow.offsetX = -60.0;
+    northWest.items[0].shadow.offsetY = -25.0;
+    northWest.items[0].shadow.blurSigma = 6.0;
+
+    scene::Scene both = stroked;
+    both.items[0].shadow = shaded.items[0].shadow;
+
+    struct Row {
+        const char* name;
+        const scene::Scene* scene;
+    };
+    const Row rows[] = {
+        {"ink-fill", &base},     {"ink-stroke", &stroked},
+        {"ink-shadow", &shaded}, {"ink-northwest", &northWest},
+        {"ink-both", &both},
+    };
+    // The layouts are read once, up front, into plain values: the engine's
+    // own layout objects belong to their calls, and the pixel checks below
+    // run against these copies.
+    struct Saved {
+        worker::SceneTextEngine::InkRect ink;
+        float boxX = 0.0f;
+        float top = 0.0f;
+    };
+    Saved saved[5];
+    for (int i = 0; i < 5; ++i) {
+        const auto layout = engine.layoutScene(*rows[i].scene);
+        const worker::SceneTextEngine::LaidOutItem& item = layout.items[0];
+        saved[i].ink = item.ink;
+        saved[i].boxX = item.boxX;
+        saved[i].top = worker::SceneTextEngine::paragraphTop(item);
+    }
+    for (int i = 0; i < 5; ++i) {
+        Frame frame;
+        if (!check(renderFixture(*rows[i].scene, rows[i].name, &frame, &error),
+                   std::string(rows[i].name) + " rendered: " + error)) {
+            return;
+        }
+        const Ink pixels = measureInk(frame);
+        const Saved& item = saved[i];
+        const double devLeft = (item.boxX + item.ink.left) * kDeviceScale;
+        const double devRight = (item.boxX + item.ink.right) * kDeviceScale;
+        const double devTop = (item.top + item.ink.top) * kDeviceScale;
+        const double devBottom = (item.top + item.ink.bottom) * kDeviceScale;
+        const bool inside = pixels.count > 0 && static_cast<double>(pixels.left) >=
+                                                    std::floor(devLeft) - kSlack &&
+                            pixels.right <= std::ceil(devRight) + kSlack &&
+                            pixels.top >= std::floor(devTop) - kSlack &&
+                            pixels.bottom <= std::ceil(devBottom) + kSlack;
+        std::printf("measured: %s ink px [%d,%d,%d,%d] bounds [%d,%d,%d,%d]\n", rows[i].name,
+                    pixels.left, pixels.top, pixels.right, pixels.bottom, static_cast<int>(devLeft),
+                    static_cast<int>(devTop), static_cast<int>(devRight),
+                    static_cast<int>(devBottom));
+        check(inside, std::string(rows[i].name) +
+                          ": every drawn pixel lands inside the item's ink rect at 0.5 scale");
+    }
+
+    // The growth arithmetic, on the extents themselves: the pen adds half
+    // its width to every side; the shadow reaches past the fill by its
+    // offset plus the finite support — no less than a 3.0 sigma reading,
+    // no more than the 3.1 the code claims. A negative offset extends
+    // the OPPOSITE side and can push the rect past the box's own edge.
+    {
+        const auto& fill = saved[0];
+        const auto& pen = saved[1];
+        const bool penGrew = std::abs((pen.ink.right - pen.ink.left) -
+                                      (fill.ink.right - fill.ink.left) - 24.0f) < 0.05f &&
+                             std::abs((pen.ink.bottom - pen.ink.top) -
+                                      (fill.ink.bottom - fill.ink.top) - 24.0f) < 0.05f &&
+                             pen.ink.left <= fill.ink.left - 11.9f &&
+                             pen.ink.right >= fill.ink.right + 11.9f;
+        check(penGrew, "a width-24 stroke grows the ink rect exactly half a pen each side");
+
+        const auto& shade = saved[2];
+        check(shade.ink.right >= fill.ink.right + 40.0f + 30.0f &&
+                  shade.ink.bottom >= fill.ink.bottom + 30.0f + 30.0f &&
+                  shade.ink.right <= fill.ink.right + 40.0f + 31.1f + 0.05f &&
+                  shade.ink.top >= fill.ink.top + 30.0f - 31.1f - 0.05f,
+              "a 40x30 shadow with sigma-10 blur reaches offset plus the blur support");
+
+        const auto& northwest = saved[3];
+        check(northwest.ink.left <= fill.ink.left - 60.0f - 18.0f &&
+                  northwest.ink.top <= fill.ink.top - 25.0f - 18.0f &&
+                  northwest.ink.right <= fill.ink.right + 0.05f &&
+                  northwest.ink.bottom <= fill.ink.bottom + 0.05f,
+              "a negative-offset shadow extends the left and top and leaves the "
+              "fill's own edges alone");
+    }
+
+    // The fits verdict on an authored box: the same loud shadow inside a
+    // roomy box fits; inside a shallow one it does not; and the shrink
+    // loop still never runs for a "fixed" item — its authored size is its
+    // drawn size and `fits` is the only answer it gets.
+    {
+        scene::Scene roomy = shaded;  // 800x400: the words fit with the shadow
+        const auto roomyLayout = engine.layoutScene(roomy);
+        check(roomyLayout.items[0].fits && roomyLayout.items[0].fontSize == 96.0f,
+              "the shadowed words in their roomy authored box report fits");
+
+        scene::Scene shallow = shaded;
+        shallow.items[0].fitMode = "fixed";  // the scene default is "shrink"
+        shallow.items[0].height = 60.0;
+        const auto shallowLayout = engine.layoutScene(shallow);
+        check(!shallowLayout.items[0].fits && shallowLayout.items[0].fontSize == 96.0f,
+              "fitMode fixed lays out once at the authored size and says fits=false "
+              "when the ink cannot stay in the box");
+
+        scene::Scene shrinking = shaded;
+        shrinking.items[0].fitMode = "shrink";
+        shrinking.items[0].height = 60.0;
+        const auto shrinkingLayout = engine.layoutScene(shrinking);
+        check(shrinkingLayout.items[0].fontSize < 96.0f,
+              "the legacy shrink still shrinks — TS.3 changed nothing about the old policy");
+    }
+}
+
 void testWireSceneRendersIdentically() {
     // The scene.prepare payload path: serialise, re-validate, render — the
     // worker draws byte-equal pictures from wire scenes.
@@ -3635,6 +3793,7 @@ int main() {
     testThemeTextContextsRender();
     testTypographyAlignsAndSpaces();
     testTextStyleFacesAndEffectsRender();
+    testInkBoundsContainEveryEffectPixel();
     testWireSceneRendersIdentically();
     testDemoSlidesRender();
     testImageBackgroundCover();

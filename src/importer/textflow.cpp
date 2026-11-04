@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <map>
 
 namespace openshow::importer {
@@ -49,56 +50,77 @@ std::string join(const std::vector<std::string>& parts, std::size_t from, std::s
 }
 
 // Per-run measurement state: a content cache (an identical block is asked
-// about exactly once AT A GIVEN SIZE — the same words at two sizes are two
-// different answers) and a failure latch (a dead engine is not re-asked
-// block after block; the first failure's sentence is the run's).
+// about exactly once AT ITS COMPLETE TYPOGRAPHY — the same words at two
+// sizes, weights, faces or effect settings are different questions with
+// different answers, and TS.3's whole point is that the packer asks about
+// the typography the audience will get) and a failure latch (a dead
+// engine is not re-asked block after block; the first failure's sentence
+// is the run's).
 class Measurer {
 public:
+    // One block's measured answer: height plus the worker's fit verdict
+    // when the reply carried one (-1 unknown — a pre-v2 answer — 0 no,
+    // 1 yes).
+    struct Answer {
+        double height = 0.0;
+        int fits = -1;
+    };
+
     explicit Measurer(const MeasureFn& fn) : fFn(fn) {}
 
-    bool height(const std::vector<std::string>& lines, double availableBoxWidth,
-                double fontSize, double lineSpacing, const std::string& fontFamily,
-                double* out) {
-        return measureAll({lines}, out, availableBoxWidth, fontSize, lineSpacing, fontFamily);
+    // One block's answer at the given box and typography: height plus the
+    // worker's fit verdict when it sent one (-1 unknown / 0 no / 1 yes).
+    bool block(const std::vector<std::string>& lines, const FlowStyle& style, double fontSize,
+               double* heightOut, int* fitsOut) {
+        std::vector<std::vector<std::string>> one{lines};
+        std::vector<Answer> answers(1);
+        if (!measureAll(one, answers.data(), style, fontSize)) {
+            return false;
+        }
+        if (heightOut != nullptr) {
+            *heightOut = answers[0].height;
+        }
+        if (fitsOut != nullptr) {
+            *fitsOut = answers[0].fits;
+        }
+        return true;
     }
 
-    // One height per block, measured at the given box and typography.
-    // Every block not already cached for that size goes to the port in
-    // chunks of at most kMaxMeasureChunk (the wire's batch cap, mirrored
-    // so a legal run never meets a refusal).
-    bool measureAll(const std::vector<std::vector<std::string>>& blocks, double* out,
-                    double boxWidth, double fontSize, double lineSpacing,
-                    const std::string& fontFamily) {
+    // One answer per block, at the given box and typography. Every block
+    // not already cached under its full key goes to the port in chunks of
+    // at most kMaxMeasureChunk (the wire's batch cap, mirrored so a legal
+    // run never meets a refusal).
+    bool measureAll(const std::vector<std::vector<std::string>>& blocks, Answer* out,
+                    const FlowStyle& style, double fontSize) {
         if (fFailed) {
             return false;
         }
-        std::vector<std::vector<std::string>> fresh;
+        std::vector<MeasureRequest> fresh;
         std::vector<std::size_t> slots;
+        std::vector<std::string> freshKeys;
         for (std::size_t i = 0; i < blocks.size(); ++i) {
-            const auto cached = fCache.find({blocks[i], fontSize});
+            MeasureRequest request = requestFor(blocks[i], style, fontSize);
+            const std::string cacheKey = measureCacheKey(request);
+            const auto cached = fCache.find(cacheKey);
             if (cached != fCache.end()) {
                 out[i] = cached->second;
                 continue;
             }
-            fresh.push_back(blocks[i]);
+            freshKeys.push_back(cacheKey);
+            fresh.push_back(std::move(request));
             slots.push_back(i);
         }
         if (fresh.empty()) {
             return true;
         }
-        std::vector<double> heights(fresh.size(), 0.0);
+        std::vector<Answer> answers(fresh.size(), Answer{0.0, -1});
         for (std::size_t start = 0; start < fresh.size(); start += kMaxMeasureChunk) {
             const std::size_t end = std::min<std::size_t>(start + kMaxMeasureChunk, fresh.size());
             std::vector<MeasureRequest> requests;
             requests.reserve(end - start);
             for (std::size_t i = start; i < end; ++i) {
-                MeasureRequest request;
+                MeasureRequest request = fresh[i];
                 request.key = "m" + std::to_string(fKeyCounter++);
-                request.lines = fresh[i];
-                request.fontSize = fontSize;
-                request.width = boxWidth;
-                request.lineSpacing = lineSpacing;
-                request.fontFamily = fontFamily;
                 requests.push_back(std::move(request));
             }
             std::vector<MeasureReply> replies;
@@ -130,21 +152,45 @@ public:
                     }
                     return false;
                 }
-                fCache[{requests[i].lines, fontSize}] = reply.height;
-                heights[start + i] = reply.height;
+                Answer answer{reply.height, reply.fits.has_value() ? (*reply.fits ? 1 : 0) : -1};
+                if (fCache.size() < kMaxMeasureCacheEntries) {
+                    fCache.emplace(freshKeys[start + i], answer);
+                }
+                answers[start + i] = answer;
             }
         }
         for (std::size_t k = 0; k < slots.size(); ++k) {
-            out[slots[k]] = heights[k];
+            out[slots[k]] = answers[k];
         }
         return true;
     }
 
     const std::string& error() const { return fError; }
 
+    // The request a block of words asks at this box and typography — the
+    // style block forwarded VERBATIM, so the engine's question names the
+    // same numbers the drawing will use. Shared with the cache key so the
+    // two can never disagree about what was asked.
+    static MeasureRequest requestFor(const std::vector<std::string>& lines,
+                                     const FlowStyle& style, double fontSize) {
+        MeasureRequest request;
+        request.lines = lines;
+        request.fontSize = fontSize;
+        request.width = style.boxWidth;
+        request.lineSpacing = style.lineSpacing;
+        request.fontFamily = style.fontFamily;
+        request.fontWeight = style.fontWeight;
+        request.fontStyle = style.fontStyle;
+        request.fitMode = style.fitMode;
+        request.minFontSize = style.minFontSize;
+        request.stroke = style.stroke;
+        request.shadow = style.shadow;
+        return request;
+    }
+
 private:
     const MeasureFn& fFn;
-    std::map<std::pair<std::vector<std::string>, double>, double> fCache;
+    std::map<std::string, Answer> fCache;
     bool fFailed = false;
     std::string fError;
     std::uint64_t fKeyCounter = 0;
@@ -162,6 +208,17 @@ private:
 template <typename BuildFn>
 bool largestFitting(Measurer& measurer, std::size_t n, const FlowStyle& style, double available,
                     const BuildFn& candidate, std::size_t* out) {
+    // TS.3's fit criterion, in one place: the measured HEIGHT must clear
+    // the room AND the worker's FILL verdict must not have said no — a
+    // word too long for the width wraps to a line that overhangs the box,
+    // and no re-paging fixes it, so that candidate does not suit. A
+    // `fits` the answer does not carry (a pre-16 worker, which also has
+    // no styled effects to overflow) leaves the height as the whole
+    // judgment — the pre-TS.3 behaviour, honoured rather than guessed
+    // over.
+    const auto suits = [](const Measurer::Answer& answer) {
+        return answer.fits != 0;
+    };
     if (n == 0) {
         *out = 0;
         return true;
@@ -177,14 +234,13 @@ bool largestFitting(Measurer& measurer, std::size_t n, const FlowStyle& style, d
     for (const std::size_t p : probes) {
         probeBlocks.push_back(candidate(p));
     }
-    std::vector<double> heights(probes.size(), 0.0);
-    if (!measurer.measureAll(probeBlocks, heights.data(), style.boxWidth, style.fontSize,
-                             style.lineSpacing, style.fontFamily)) {
+    std::vector<Measurer::Answer> answers(probes.size());
+    if (!measurer.measureAll(probeBlocks, answers.data(), style, style.fontSize)) {
         return false;
     }
     std::size_t over = probes.size();  // index of the first probe that does NOT fit
     for (std::size_t i = 0; i < probes.size(); ++i) {
-        if (heights[i] > available) {
+        if (answers[i].height > available || !suits(answers[i])) {
             over = i;
             break;
         }
@@ -202,11 +258,11 @@ bool largestFitting(Measurer& measurer, std::size_t n, const FlowStyle& style, d
     while (hi - lo > 1) {
         const std::size_t mid = lo + (hi - lo) / 2;
         double height = 0.0;
-        if (!measurer.height(candidate(mid), style.boxWidth, style.fontSize, style.lineSpacing,
-                              style.fontFamily, &height)) {
+        int fits = -1;
+        if (!measurer.block(candidate(mid), style, style.fontSize, &height, &fits)) {
             return false;
         }
-        if (height <= available) {
+        if (height <= available && fits != 0) {
             lo = mid;
         } else {
             hi = mid;
@@ -321,36 +377,116 @@ bool validateFlowStyle(const FlowStyle& style, std::string* error) {
     // The measurement is only as honest as the numbers asked with: the
     // box must be a real area and the typography the layout's own band.
     // Nothing is "corrected" here — an unusable box is exactly the case
-    // that blocks the caller with an explanation.
+    // that blocks the caller with an explanation. Task TS.3 vets the
+    // style block in the same pass: a NaN sigma or a weight of 10^9 that
+    // reaches the wire costs the whole batch its answer, and the worker
+    // refusing it is the LAST place anyone should find out.
+    const auto fail = [error](const std::string& sentence) {
+        if (error != nullptr) {
+            *error = sentence;
+        }
+        return false;
+    };
     if (!std::isfinite(style.boxWidth) || style.boxWidth < 1.0 ||
         !std::isfinite(style.boxHeight) || style.boxHeight < 1.0 ||
         !std::isfinite(style.fontSize) || style.fontSize < 0.0 ||
         !isUsableSpacing(style.lineSpacing)) {
-        if (error != nullptr) {
-            *error =
-                "this theme's text area or chosen text size cannot be measured — the box must "
-                "have a real width, height and a size (0 is the renderer's own default)";
-        }
-        return false;
+        return fail(
+            "this theme's text area or chosen text size cannot be measured — the box must "
+            "have a real width, height and a size (0 is the renderer's own default)");
+    }
+    if (!openshow::domain::isFontWeightInBand(style.fontWeight)) {
+        return fail("this theme's text weight cannot be measured — it must be an integer "
+                    "weight from 100 to 900");
+    }
+    if (!openshow::domain::isFontStyleName(style.fontStyle)) {
+        return fail("this theme's text style cannot be measured — it must be normal or italic");
+    }
+    if (!openshow::domain::isFitModeName(style.fitMode)) {
+        return fail("this theme's fit mode cannot be measured — it must be shrink or fixed");
+    }
+    if (!std::isfinite(style.minFontSize) || style.minFontSize < 1.0 ||
+        style.minFontSize > 4096.0) {
+        return fail("this theme's smallest readable size cannot be measured — it must be "
+                    "between 1 and 4096");
+    }
+    if (!std::isfinite(style.stroke.width) || style.stroke.width < 0.0 ||
+        style.stroke.width > 32.0) {
+        return fail("this theme's text outline width cannot be measured — it must be "
+                    "between 0 and 32");
+    }
+    if (!std::isfinite(style.shadow.opacity) || style.shadow.opacity < 0.0 ||
+        style.shadow.opacity > 1.0 || !std::isfinite(style.shadow.offsetX) ||
+        style.shadow.offsetX < -256.0 || style.shadow.offsetX > 256.0 ||
+        !std::isfinite(style.shadow.offsetY) || style.shadow.offsetY < -256.0 ||
+        style.shadow.offsetY > 256.0 || !std::isfinite(style.shadow.blurSigma) ||
+        style.shadow.blurSigma < 0.0 || style.shadow.blurSigma > 64.0) {
+        return fail("this theme's text shadow cannot be measured — its opacity must be "
+                    "between 0 and 1, its offsets between -256 and 256, and its blur "
+                    "between 0 and 64");
     }
     return true;
+}
+
+std::string measureCacheKey(const MeasureRequest& request) {
+    // One canonical string for one full question. Strings carry their
+    // byte length, so no family name or line can be written to imitate a
+    // field boundary; numbers go out at %.9g, which distinguishes every
+    // float a layout can actually see (the worker narrows to float) and
+    // is stable across runs and machines. The whole style is in the key
+    // — colour and opacity included, though they cannot move a metric —
+    // because "the key misses only what cannot change the answer" is a
+    // claim about today's layout, and a cache should not rest on one.
+    std::string key;
+    const auto putString = [&key](const std::string& value) {
+        key += std::to_string(value.size());
+        key.push_back(':');
+        key += value;
+    };
+    const auto putNumber = [&key](double value) {
+        char buffer[32];
+        std::snprintf(buffer, sizeof(buffer), "%.9g", value);
+        key += buffer;
+        key.push_back('|');
+    };
+    putNumber(request.fontSize);
+    putNumber(request.width);
+    putNumber(request.lineSpacing);
+    putString(request.fontFamily);
+    putNumber(request.fontWeight);
+    putString(request.fontStyle);
+    putString(request.fitMode);
+    putNumber(request.minFontSize);
+    putNumber(request.stroke.enabled ? 1.0 : 0.0);
+    putString(request.stroke.color);
+    putNumber(request.stroke.width);
+    putNumber(request.shadow.enabled ? 1.0 : 0.0);
+    putString(request.shadow.color);
+    putNumber(request.shadow.opacity);
+    putNumber(request.shadow.offsetX);
+    putNumber(request.shadow.offsetY);
+    putNumber(request.shadow.blurSigma);
+    key.push_back('#');
+    for (const std::string& line : request.lines) {
+        putString(line);
+    }
+    return key;
 }
 
 bool measureReservation(const std::vector<std::vector<std::string>>& blocks,
                         const FlowStyle& style, double fontSize, const MeasureFn& measure,
                         double* height, std::string* error) {
     Measurer measurer(measure);
-    std::vector<double> heights(blocks.size(), 0.0);
-    if (!measurer.measureAll(blocks, heights.data(), style.boxWidth, fontSize, style.lineSpacing,
-                             style.fontFamily)) {
+    std::vector<Measurer::Answer> answers(blocks.size());
+    if (!measurer.measureAll(blocks, answers.data(), style, fontSize)) {
         if (error != nullptr) {
             *error = measurer.error();
         }
         return false;
     }
     double sum = 0.0;
-    for (const double h : heights) {
-        sum += h;
+    for (const Measurer::Answer& answer : answers) {
+        sum += answer.height;
     }
     if (height != nullptr) {
         *height = sum;

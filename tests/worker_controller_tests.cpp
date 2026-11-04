@@ -417,6 +417,18 @@ private:
             if (fScenario == "text-style") {
                 result["capabilities"] = boost::json::array{"scene.text-style.v1"};
             }
+            // Task TS.3: two measuring peers. "text-measure" answers v1-shaped
+            // asks only — a styled question sent to it would be answered in
+            // the DEFAULT face silently, which is exactly what the frontend
+            // gate exists to refuse. "text-measure-v2" names the successor
+            // and answers with the verdict and bounds.
+            if (fScenario == "text-measure") {
+                result["capabilities"] = boost::json::array{"text.measure.v1"};
+            }
+            if (fScenario == "text-measure-v2") {
+                result["capabilities"] =
+                    boost::json::array{"text.measure.v1", proto::kCapabilityTextMeasureV2};
+            }
             sendResult(id, std::move(result));
             return;
         }
@@ -1191,6 +1203,52 @@ private:
             writeReport();
             return;
         }
+        if (method == proto::kMethodTextMeasure) {
+            // Scripted measurement (task TS.3): every question is recorded
+            // verbatim so a fixture can see exactly what reached the peer —
+            // the gate's whole claim is about what the socket does NOT carry —
+            // and the answer is shaped as the real worker shapes it:
+            // {key, height, lineCount} for both versions, with the fit
+            // verdict and bounds riding only the v2 peer's rows. The height
+            // is arithmetic on the ask (one 1.25-row per line at its own
+            // size), so no fixture can mistake it for a real layout.
+            fMeasureOps.push_back(request.contains("params") && request.at("params").is_object()
+                                      ? request.at("params")
+                                      : boost::json::object{});
+            boost::json::array measured;
+            const bool v2 = fScenario == "text-measure-v2";
+            if (request.contains("params") && request.at("params").is_object()) {
+                const auto params = request.at("params").as_object().find("blocks");
+                if (params != request.at("params").as_object().end() &&
+                    params->value().is_array()) {
+                    for (const boost::json::value& entry : params->value().as_array()) {
+                        const boost::json::object& one = entry.as_object();
+                        const double size = one.at("fontSize").to_number<double>();
+                        const double width = one.at("width").to_number<double>();
+                        const std::size_t lines = one.at("lines").as_array().size();
+                        const double height = lines * size * 1.25;
+                        boost::json::object row{
+                            {"key", one.at("key")},
+                            {"height", height},
+                            {"lineCount", static_cast<std::int64_t>(lines)},
+                        };
+                        if (v2) {
+                            row["fits"] = true;
+                            row["bounds"] = boost::json::object{{"empty", false},
+                                                                {"left", 0.0},
+                                                                {"top", 0.0},
+                                                                {"right", width < 700.0 ? width
+                                                                                         : 700.0},
+                                                                {"bottom", height}};
+                        }
+                        measured.push_back(std::move(row));
+                    }
+                }
+            }
+            writeReport();
+            sendResult(id, boost::json::object{{"measured", std::move(measured)}});
+            return;
+        }
         if (method == "shutdown") {
             sendResult(id, boost::json::object{{"ok", true}});
             writeReport();
@@ -1247,6 +1305,7 @@ private:
             {"stoppedReading", fStoppedReading},
             {"resumed", fResumed},
             {"mediaOps", fMediaOps},  // task 6.15a: every transport command, verbatim
+            {"measureOps", fMeasureOps},  // task TS.3: every measurement ask, verbatim
             // Task 6.16a: every preview.select verbatim (the generations the
             // client actually put on the wire), plus what the scripted
             // producer did with them and how many slot releases came back.
@@ -1652,6 +1711,7 @@ private:
     bool fStandaloneMuted = false;
     std::uint64_t fStandaloneLoops = 0;
     boost::json::array fMediaOps;
+    boost::json::array fMeasureOps;  // task TS.3: every text.measure verbatim
 
     std::string fSocketPath;
     std::string fScenario;
@@ -2591,6 +2651,187 @@ void scenarioTextStyleGate() {
           }),
           "style gate: the second session refuses styled text too");
     secondSession.shutdownNow();
+}
+
+// S8c (task TS.3): the styled-MEASUREMENT gate. text.measure.v2 means the
+// worker measures WITH the style block; a pre-16 worker ignores unknown
+// block keys silently, so a bold-italic ask would come back answered in the
+// default face — a page packed on the wrong typography, invisible to anyone.
+// So: a styled ask is refused toward a v1-only peer, by name, with nothing
+// sent; defaults spelled out pass (they ARE the v1 question); and the styled
+// ask reaches exactly the peer that claimed it, whose reply rows carry the
+// verdict and bounds back through the controller's parse.
+void scenarioMeasureStyleGate() {
+    const auto bareBlock = [](const QString& key) {
+        QVariantMap block;
+        block.insert(QStringLiteral("key"), key);
+        block.insert(QStringLiteral("lines"), QVariantList{QStringLiteral("Measure me")});
+        block.insert(QStringLiteral("fontSize"), 40.0);
+        block.insert(QStringLiteral("width"), 800.0);
+        block.insert(QStringLiteral("lineSpacing"), 1.25);
+        return block;
+    };
+    const auto styledBlock = [&bareBlock](const QString& key) {
+        QVariantMap block = bareBlock(key);
+        block.insert(QStringLiteral("fontWeight"), 700);
+        block.insert(QStringLiteral("fontStyle"), QStringLiteral("italic"));
+        QVariantMap stroke;
+        stroke.insert(QStringLiteral("enabled"), true);
+        stroke.insert(QStringLiteral("color"), QStringLiteral("#ffffff"));
+        stroke.insert(QStringLiteral("width"), 4.0);
+        block.insert(QStringLiteral("stroke"), stroke);
+        QVariantMap shadow;
+        shadow.insert(QStringLiteral("enabled"), true);
+        shadow.insert(QStringLiteral("color"), QStringLiteral("#000000"));
+        shadow.insert(QStringLiteral("opacity"), 0.5);
+        shadow.insert(QStringLiteral("offsetX"), 2.0);
+        shadow.insert(QStringLiteral("offsetY"), 14.0);
+        shadow.insert(QStringLiteral("blurSigma"), 4.0);
+        block.insert(QStringLiteral("shadow"), shadow);
+        return block;
+    };
+
+    // (a) The v1-only peer: styled asks are refused by name and the socket
+    // sees nothing; the spelled-defaults ask travels and answers exactly as
+    // it did before TS.3 — no verdict, because a v1 row carries none.
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "text-measure", 1);
+    const std::string report = tempPath("measure-gate-v1");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    QVariantList lastRows;
+    qint64 lastRowsId = 0;
+    QObject::connect(&controller, &WorkerController::textMeasured,
+                     [&lastRows, &lastRowsId](qint64 id, const QVariantList& rows) {
+                         lastRowsId = id;
+                         lastRows = rows;
+                     });
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "measure gate: handshake with the v1-only measuring peer")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(controller.textMeasureSupported() && !controller.styledMeasureSupported(),
+          "measure gate: v1 named, v2 not — measurement yes, styled measurement no");
+
+    check(controller.measureText({styledBlock(QStringLiteral("s1"))}) == 0,
+          "measure gate: the styled ask toward a v1-only peer returns 0");
+    check(controller.statusText().contains(QStringLiteral("text.measure.v2")),
+          "measure gate: the refusal names the capability the worker never spoke");
+    QVariantMap heavyButPlain = bareBlock(QStringLiteral("s2"));
+    heavyButPlain.insert(QStringLiteral("fontWeight"), 800);
+    check(controller.measureText({heavyButPlain}) == 0,
+          "measure gate: a lone non-default weight is a styled ask too");
+    QVariantMap loudOff = bareBlock(QStringLiteral("s3"));
+    QVariantMap offStroke;
+    offStroke.insert(QStringLiteral("enabled"), false);
+    offStroke.insert(QStringLiteral("color"), QStringLiteral("#000000"));
+    offStroke.insert(QStringLiteral("width"), 30.0);  // disabled: no ink, no deviation
+    loudOff.insert(QStringLiteral("stroke"), offStroke);
+    QVariantMap offShadow;
+    offShadow.insert(QStringLiteral("enabled"), false);
+    offShadow.insert(QStringLiteral("color"), QStringLiteral("#000000"));
+    offShadow.insert(QStringLiteral("opacity"), 0.0);  // opacity 0: no ink, no deviation
+    offShadow.insert(QStringLiteral("offsetX"), 2.0);
+    offShadow.insert(QStringLiteral("offsetY"), 2.0);
+    offShadow.insert(QStringLiteral("blurSigma"), 4.0);
+    loudOff.insert(QStringLiteral("shadow"), offShadow);
+    const qint64 defaultsId = controller.measureText({loudOff});
+    check(defaultsId != 0,
+          "measure gate: effects that are OFF (however loud their records) are the "
+          "v1 question and travel");
+    if (check(waitUntil([&lastRowsId, defaultsId] { return lastRowsId == defaultsId; }),
+              "measure gate: the defaults ask is answered")) {
+        const QVariantMap row = lastRows.size() == 1 ? lastRows[0].toMap() : QVariantMap();
+        check(row.value(QStringLiteral("key")) == QStringLiteral("s3") &&
+                  row.value(QStringLiteral("height")).toDouble() == 50.0,
+              "measure gate: the reply row carries the echoed key and the scripted height");
+        check(!row.contains(QStringLiteral("fits")) && !row.contains(QStringLiteral("bounds")),
+              "measure gate: a v1 reply grows no verdict — the flow's honest floor");
+    }
+    controller.shutdownNow();
+    const boost::json::object closedCounts = readReport(report);
+    check(methodCount(closedCounts, "text.measure") == 1 &&
+              closedCounts.at("measureOps").as_array().size() == 1,
+          "measure gate: the v1-only peer saw the defaults ask and never a styled one");
+    {
+        const boost::json::object& sent =
+            closedCounts.at("measureOps").as_array()[0].as_object().at("blocks").as_array()[0]
+                .as_object();
+        const auto strokeOnWire = sent.find("stroke");
+        check(strokeOnWire != sent.end() && !strokeOnWire->value().at("enabled").as_bool(),
+              "measure gate: the sent block spells its effects off, as asked");
+    }
+
+    // (b) The v2 peer: the styled ask travels whole — colour packed, slant
+    // named — and the reply rows carry the verdict and bounds through the
+    // controller's parse. Then an out-of-band style is refused locally even
+    // where the capability exists: the gate is the capability, not a mood.
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "text-measure-v2", 1);
+    const std::string openReport = tempPath("measure-gate-v2");
+    ::unlink(openReport.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", openReport.c_str(), 1);
+
+    WorkerController styledSession;
+    QVariantList styledRows;
+    qint64 styledRowsId = 0;
+    QObject::connect(&styledSession, &WorkerController::textMeasured,
+                     [&styledRows, &styledRowsId](qint64 id, const QVariantList& rows) {
+                         styledRowsId = id;
+                         styledRows = rows;
+                     });
+    styledSession.start();
+    if (!check(waitUntil([&styledSession] {
+                   return styledSession.statusText().contains(
+                       QStringLiteral("connected to worker"));
+               }),
+               "measure gate: handshake with the styled-measuring peer")) {
+        styledSession.shutdownNow();
+        return;
+    }
+    check(styledSession.styledMeasureSupported(),
+          "measure gate: the hello named text.measure.v2 and the session remembers");
+    const qint64 styledId = styledSession.measureText({styledBlock(QStringLiteral("w1"))});
+    check(styledId != 0, "measure gate: the styled ask reaches the peer that claimed to answer it");
+    QVariantMap outOfBand = styledBlock(QStringLiteral("r"));
+    outOfBand.insert(QStringLiteral("fontWeight"), 50);  // outside the wire's band
+    check(styledSession.measureText({outOfBand}) == 0 &&
+              styledSession.statusText().contains(QStringLiteral("fontWeight")),
+          "measure gate: an out-of-band weight is refused locally naming it, v2 or not");
+    if (check(waitUntil([&styledRowsId, styledId] { return styledRowsId == styledId; }),
+              "measure gate: the styled ask is answered")) {
+        const QVariantMap row = styledRows.size() == 1 ? styledRows[0].toMap() : QVariantMap();
+        check(row.value(QStringLiteral("fits")).toBool(),
+              "measure gate: the v2 reply's verdict parses into the row");
+        const QVariantMap bounds = row.value(QStringLiteral("bounds")).toMap();
+        check(bounds.contains(QStringLiteral("empty")) && bounds.contains(QStringLiteral("left")) &&
+                  bounds.contains(QStringLiteral("top")) && bounds.contains(QStringLiteral("right")) &&
+                  bounds.contains(QStringLiteral("bottom")),
+              "measure gate: the v2 reply's bounds parse whole into the row");
+    }
+    styledSession.shutdownNow();
+    const boost::json::object openCounts = readReport(openReport);
+    check(methodCount(openCounts, "text.measure") == 1 &&
+              openCounts.at("measureOps").as_array().size() == 1,
+          "measure gate: only the styled ask went out; the refused one never touched the wire");
+    {
+        const boost::json::object& sent =
+            openCounts.at("measureOps").as_array()[0].as_object().at("blocks").as_array()[0]
+                .as_object();
+        check(sent.at("fontWeight").to_number<std::int64_t>() == 700 &&
+                  sent.at("fontStyle").as_string() == "italic",
+              "measure gate: weight and slant arrive on the wire as sent");
+        const boost::json::object& stroke = sent.at("stroke").as_object();
+        const boost::json::object& shadow = sent.at("shadow").as_object();
+        check(stroke.at("enabled").as_bool() &&
+                  stroke.at("color").to_number<std::uint64_t>() == 0xFFFFFF &&
+                  shadow.at("enabled").as_bool() && shadow.at("offsetY").to_number<double>() == 14.0,
+              "measure gate: the effect records arrive whole, colour packed to an int");
+    }
 }
 
 // S9 (task 6.8b, review R11): a worker that takes every command and answers
@@ -4226,6 +4467,7 @@ int main(int argc, char* argv[]) {
     scenarioFailedRestoreRetry();
     scenarioRefusedLocally();
     scenarioTextStyleGate();
+    scenarioMeasureStyleGate();
     scenarioUnansweredRequestsStayBounded();
     scenarioWriteStallIsRefusedBoundedAndClosed();
     scenarioStalledThenResumingPeerKeepsItsSession();

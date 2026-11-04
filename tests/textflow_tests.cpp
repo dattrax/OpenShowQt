@@ -46,11 +46,26 @@ size_t codepoints(const std::string& s) {
 
 // The scripted engine, same model as the scripture fixture's: charWidth =
 // size/2, every line at least one row, row height = size × lineSpacing.
+// Task TS.3: it also records the STYLE of every ask (the style block the
+// engine forwards must be the flow's, verbatim) and can answer with fit
+// verdicts — with `unfitWord` set, any block containing that word answers
+// fits=false, which is how the width verdict's bite is scripted.
+inline std::string styleSig(const MeasureRequest& request) {
+    return std::to_string(request.fontWeight) + "|" + request.fontStyle + "|" + request.fitMode +
+           "|" + (request.stroke.enabled ? "stroke" : "no-stroke") + ":" +
+           std::to_string(request.stroke.width) + "|" +
+           (request.shadow.enabled ? "shadow" : "no-shadow") + ":" +
+           std::to_string(request.shadow.offsetY) + ":" + std::to_string(request.shadow.blurSigma);
+}
+
 struct MeasureScript {
     struct State {
-        std::vector<std::string> asked;  // every block asked about, serialized
-        std::vector<double> sizes;       // every fontSize the port was asked with
+        std::vector<std::string> asked;   // every block asked about, serialized
+        std::vector<double> sizes;        // every fontSize the port was asked with
+        std::vector<std::string> styles;  // the full style signature of every ask
         int calls = 0;
+        bool answerFits = false;          // replies carry verdicts
+        std::string unfitWord;            // asks containing it answer fits=false
     };
     std::shared_ptr<State> state = std::make_shared<State>();
 
@@ -64,19 +79,26 @@ struct MeasureScript {
             }
             state->asked.push_back(std::move(line));
             state->sizes.push_back(request.fontSize);
+            state->styles.push_back(styleSig(request));
         }
         replies->clear();
         for (const MeasureRequest& request : requests) {
             double rows = 0.0;
             const double charWidth = request.fontSize / 2.0;
+            std::string joined;
             for (const std::string& text : request.lines) {
                 rows += text.empty() ? 1.0
                                      : std::ceil(codepoints(text) * charWidth / request.width);
+                joined += text + " ";
             }
             MeasureReply reply;
             reply.key = request.key;
             reply.height = rows * request.fontSize * request.lineSpacing;
             reply.lineCount = static_cast<int>(rows);
+            if (state->answerFits) {
+                reply.fits = state->unfitWord.empty() ||
+                             joined.find(state->unfitWord) == std::string::npos;
+            }
             replies->push_back(reply);
         }
         return true;
@@ -362,6 +384,205 @@ void testAnonymousSlidesCarryNoLabelsButCarryIds() {
           "without a labeler the slides are words and ids only");
 }
 
+// --- Task TS.3: one typography through the port, verdicts with teeth ---
+
+void testTheStyleRidesEveryAskVerbatim() {
+    MeasureScript script;
+    script.state->answerFits = true;  // a v2 port answers verdicts too
+    FlowInput input;
+    input.style = style(100.0, 400.0);
+    input.style.fontWeight = 700;
+    input.style.fontStyle = "italic";
+    input.style.stroke.enabled = true;
+    input.style.stroke.width = 5.0;
+    input.style.shadow.enabled = true;
+    input.style.shadow.offsetY = 14.0;
+    input.style.shadow.blurSigma = 3.0;
+    input.blocks = {stanza("1", 2, 'a'), stanza("2", 2, 'b')};
+    const FlowOutcome out = runTextFlow(input, script);
+    check(out.ok && !script.state->styles.empty(), "a styled flow packs on the verdicts");
+    const std::string wanted =
+        std::to_string(700) + "|italic|fixed|stroke:" + std::to_string(5.0) + "|shadow:" +
+        std::to_string(14.0) + ":" + std::to_string(3.0);
+    bool allStyled = true;
+    for (const std::string& signature : script.state->styles) {
+        allStyled = allStyled && signature == wanted;
+    }
+    check(allStyled,
+          "every measurement ask carried the resolved style block verbatim — "
+          "the packer's question names the typography the audience gets");
+
+    // And without verdicts (a pre-16 port): the flow still packs, on the
+    // height criterion alone. The verdict is honoured when it exists,
+    // never invented when it does not.
+    MeasureScript plain;
+    const FlowOutcome old = runTextFlow(input, plain);
+    bool sameShape = old.ok && old.slides.size() == out.slides.size();
+    for (std::size_t i = 0; sameShape && i < old.slides.size(); ++i) {
+        sameShape = old.slides[i].lines == out.slides[i].lines;
+    }
+    check(sameShape,
+          "a port that answers no verdicts packs exactly as before — the honest floor");
+}
+
+void testTheWidthVerdictRefusesWhatHeightCannotSee() {
+    // The scripted box fits one 20-codepoint row at size 10: height alone
+    // can never see a horizontal overflow. The verdict does: a block
+    // whose every fragment carries the unfit word has no honest page, and
+    // the flow refuses with its named dead end instead of shipping a
+    // slide the worker would draw cut.
+    MeasureScript script;
+    script.state->answerFits = true;
+    script.state->unfitWord = "WIDE";
+    FlowInput input;
+    input.style = style(100.0, 20.0);
+    input.blocks = {FlowBlock{"v", {"small words WIDEword tail words"}}};
+    const FlowOutcome out = runTextFlow(input, script);
+    check(!out.ok && out.error.find("single word") != std::string::npos,
+          "a verdict of NO refuses the run by its named dead end, where height saw nothing");
+    check(script.state->calls > 0, "and the refusal came from real measurement, not a guess");
+
+    // The same words with a clean verdict pack.
+    MeasureScript clean;
+    clean.state->answerFits = true;
+    const FlowOutcome packed = runTextFlow(input, clean);
+    check(packed.ok, "the same words pack when the verdict says yes");
+}
+
+void testTheCacheKeyCoversTheWholeQuestion() {
+    MeasureRequest base;
+    base.key = "wire-1";
+    base.lines = {"a line of words"};
+    base.fontSize = 40.0;
+    base.width = 800.0;
+    base.lineSpacing = 1.25;
+    base.fontFamily = "DejaVu Serif";
+    const std::string key = measureCacheKey(base);
+    check(!key.empty() && measureCacheKey(base) == key,
+          "the cache key is deterministic for one question");
+
+    MeasureRequest otherWire = base;
+    otherWire.key = "wire-2";
+    check(measureCacheKey(otherWire) == key,
+          "the correlation key is not part of the question");
+
+    const std::pair<const char*, void (*)(MeasureRequest&)> changes[] = {
+        {"a heavier weight", [](MeasureRequest& r) { r.fontWeight = 700; }},
+        {"an italic slant", [](MeasureRequest& r) { r.fontStyle = "italic"; }},
+        {"another fit mode", [](MeasureRequest& r) { r.fitMode = "shrink"; }},
+        {"a different floor", [](MeasureRequest& r) { r.minFontSize = 8.0; }},
+        {"an enabled stroke", [](MeasureRequest& r) { r.stroke.enabled = true; }},
+        {"a wider pen", [](MeasureRequest& r) { r.stroke.width = 9.0; }},
+        {"a different stroke colour", [](MeasureRequest& r) { r.stroke.color = "#ff0000"; }},
+        {"an enabled shadow", [](MeasureRequest& r) { r.shadow.enabled = true; }},
+        {"a shifted shadow", [](MeasureRequest& r) { r.shadow.offsetX = -4.0; }},
+        {"a blurrier shadow", [](MeasureRequest& r) { r.shadow.blurSigma = 12.0; }},
+        {"a shadow opacity", [](MeasureRequest& r) { r.shadow.opacity = 0.25; }},
+        {"a new family", [](MeasureRequest& r) { r.fontFamily = "Lora"; }},
+        {"another width", [](MeasureRequest& r) { r.width = 801.0; }},
+        {"another size", [](MeasureRequest& r) { r.fontSize = 41.0; }},
+        {"another spacing", [](MeasureRequest& r) { r.lineSpacing = 1.5; }},
+        {"one more line", [](MeasureRequest& r) { r.lines.push_back(""); }},
+        {"a reworded line", [](MeasureRequest& r) { r.lines[0] = "a line of word"; }},
+    };
+    bool everyChange = true;
+    for (const auto& change : changes) {
+        MeasureRequest moved = base;
+        change.second(moved);
+        const bool differs = measureCacheKey(moved) != key;
+        if (!differs) {
+            std::printf("FAIL: the cache key ignored %s\n", change.first);
+            ++gFailed;
+        }
+        everyChange = everyChange && differs;
+    }
+    check(everyChange, "every field of the question — content, box AND full style — "
+                       "separates cache keys");
+
+    // Strings carry their length, so no family name can spell a field
+    // boundary and impersonate another question.
+    MeasureRequest tricky = base;
+    tricky.fontFamily = "12:x|40DejaVu";
+    MeasureRequest tricky2 = base;
+    tricky2.fontFamily = "12:x|40DejaVu";
+    MeasureRequest innocent = base;
+    innocent.fontFamily = "x";
+    innocent.fontSize = 40.0;
+    check(measureCacheKey(tricky) == measureCacheKey(tricky2) &&
+              measureCacheKey(tricky) != measureCacheKey(innocent) &&
+              measureCacheKey(tricky) != key,
+          "length-prefixed strings keep field boundaries honest");
+}
+
+void testTheStyleBlockIsVettedBeforeAnythingIsAsked() {
+    FlowStyle clean = style(100.0, 40.0);
+    std::string error;
+    check(validateFlowStyle(clean, &error), "the contract's own style vets clean");
+
+    FlowStyle heavy = clean;
+    heavy.fontWeight = 50;
+    check(!validateFlowStyle(heavy, &error) && error.find("weight") != std::string::npos,
+          "a weight under the band is refused naming it");
+    heavy.fontWeight = 450;
+    heavy.fontStyle = "oblique";
+    check(!validateFlowStyle(heavy, &error) && error.find("italic") != std::string::npos,
+          "a slant outside normal/italic is refused naming its options");
+    heavy = clean;
+    heavy.fitMode = "squeeze";
+    check(!validateFlowStyle(heavy, &error) && error.find("fit mode") != std::string::npos,
+          "a fit mode outside shrink/fixed is refused naming it");
+    heavy = clean;
+    heavy.minFontSize = 0.0;
+    check(!validateFlowStyle(heavy, &error) && error.find("readable") != std::string::npos,
+          "a floor below one pixel is refused in its own sentence");
+    heavy = clean;
+    heavy.stroke.width = 40.0;
+    check(!validateFlowStyle(heavy, &error) && error.find("outline") != std::string::npos,
+          "a pen over the stroke cap is refused naming the outline");
+    heavy = clean;
+    heavy.shadow.opacity = 2.0;
+    check(!validateFlowStyle(heavy, &error) && error.find("shadow") != std::string::npos,
+          "a shadow opacity over 1 is refused naming the shadow");
+    heavy = clean;
+    heavy.shadow.offsetY = -300.0;
+    check(!validateFlowStyle(heavy, &error) && error.find("shadow") != std::string::npos,
+          "a shadow offset past its band is refused naming the shadow");
+    heavy = clean;
+    heavy.shadow.blurSigma = std::nan("");
+    check(!validateFlowStyle(heavy, &error) && error.find("shadow") != std::string::npos,
+          "a NaN blur is refused — the wire never sees it");
+
+    // And through the flow itself: the vetting answers before the port is
+    // ever touched, so a bad theme blocks with a sentence, not a hang.
+    MeasureScript script;
+    FlowInput input;
+    input.style = heavy;
+    input.blocks = {stanza("1", 1, 'a')};
+    const FlowOutcome out = runTextFlow(input, script);
+    check(!out.ok && script.state->calls == 0,
+          "a styled flow vetted bad asks the port nothing");
+}
+
+void testTheReservationCarriesTheStyleAtItsOwnSize() {
+    // The caption reservation is the same words set twice: same style
+    // block, the reservation's own size. The engine forwards both halves
+    // of that sentence to the port without editing either.
+    MeasureScript script;
+    FlowStyle styled = style(100.0, 400.0);
+    styled.fontWeight = 600;
+    styled.fontStyle = "italic";
+    std::string error;
+    double height = 0.0;
+    const bool ok = measureReservation({{"Reference"}}, styled, 8.0, script, &height, &error);
+    const std::string wanted = std::to_string(600) + "|italic|fixed|no-stroke:" +
+                               std::to_string(2.0) + "|no-shadow:" + std::to_string(2.0) + ":" +
+                               std::to_string(4.0);
+    check(ok && height > 0.0 && script.state->sizes.size() == 1 &&
+              script.state->sizes[0] == 8.0 && !script.state->styles.empty() &&
+              script.state->styles[0] == wanted,
+          "the reservation measures at its own size with the flow's full style");
+}
+
 }  // namespace
 
 int main() {
@@ -374,6 +595,11 @@ int main() {
     testMeasureReservationSumsAtTheAskedSize();
     testEmptyAndUnusableInputsRefuseThemselves();
     testAnonymousSlidesCarryNoLabelsButCarryIds();
+    testTheStyleRidesEveryAskVerbatim();
+    testTheWidthVerdictRefusesWhatHeightCannotSee();
+    testTheCacheKeyCoversTheWholeQuestion();
+    testTheStyleBlockIsVettedBeforeAnythingIsAsked();
+    testTheReservationCarriesTheStyleAtItsOwnSize();
 
     if (gFailed > 0) {
         std::printf("textflow_tests: %d FAILURES\n", gFailed);

@@ -11,6 +11,7 @@
 #include "BibleImport.h"
 #include "DocumentController.h"
 #include "WorkerController.h"
+#include "openshow/domain/documents.h"
 
 namespace {
 
@@ -56,7 +57,19 @@ ScriptureImport::ScriptureImport(BibleImport* bible, DocumentController* documen
                     if (found == fPendingSends.end()) {
                         continue;  // a row for something else measures nothing
                     }
-                    fMeasured[found->second] = map.value(QStringLiteral("height")).toDouble();
+                    MeasuredAnswer answer;
+                    answer.height = map.value(QStringLiteral("height")).toDouble();
+                    // TS.3's verdict rides the reply when the worker sends
+                    // one; a v1 answer stays UNKNOWN (-1), which the flow
+                    // judges by height alone — never a fabricated yes.
+                    const QVariant fits = map.value(QStringLiteral("fits"));
+                    if (fits.isValid()) {
+                        answer.fits = fits.toBool() ? 1 : 0;
+                    }
+                    if (fMeasured.size() >= importer::kMaxMeasureCacheEntries) {
+                        fMeasured.clear();  // bounded: re-ask rather than grow
+                    }
+                    fMeasured[found->second] = answer;
                 }
                 fPendingSends.clear();
                 if (fRerunWanted) {
@@ -139,6 +152,49 @@ void ScriptureImport::runPagination() {
                                   ? style.value(QStringLiteral("lineSpacing")).toDouble()
                                   : 1.25;
     input.style.fontFamily = style.value(QStringLiteral("fontFamily")).toString().toStdString();
+    // Task TS.3: the style block the same chain resolved for the item
+    // these words will fill — scriptureBoxStyle reads it off the compiled
+    // fixture's FIRST TEXT ITEM, the very item scriptureSlideSceneJson
+    // draws, so the packer's question and the audience's slide answer to
+    // one typography by construction. Absent keys stay contract defaults,
+    // which is what a pre-TS.3 fixture answers with.
+    input.style.fontWeight = style.contains(QStringLiteral("fontWeight"))
+                                 ? style.value(QStringLiteral("fontWeight")).toInt()
+                                 : openshow::domain::kDefaultFontWeight;
+    input.style.fontStyle = style.contains(QStringLiteral("fontStyle"))
+                                ? style.value(QStringLiteral("fontStyle")).toString().toStdString()
+                                : "normal";
+    input.style.fitMode = style.contains(QStringLiteral("fitMode"))
+                              ? style.value(QStringLiteral("fitMode")).toString().toStdString()
+                              : "fixed";
+    input.style.minFontSize = style.contains(QStringLiteral("minFontSize"))
+                                  ? style.value(QStringLiteral("minFontSize")).toDouble()
+                                  : openshow::domain::kDefaultMinFontSize;
+    if (style.contains(QStringLiteral("stroke"))) {
+        const QVariantMap stroke = style.value(QStringLiteral("stroke")).toMap();
+        input.style.stroke.enabled = stroke.value(QStringLiteral("enabled")).toBool();
+        input.style.stroke.color = stroke.value(QStringLiteral("color")).toString().toStdString();
+        if (stroke.contains(QStringLiteral("width"))) {
+            input.style.stroke.width = stroke.value(QStringLiteral("width")).toDouble();
+        }
+    }
+    if (style.contains(QStringLiteral("shadow"))) {
+        const QVariantMap shadow = style.value(QStringLiteral("shadow")).toMap();
+        input.style.shadow.enabled = shadow.value(QStringLiteral("enabled")).toBool();
+        input.style.shadow.color = shadow.value(QStringLiteral("color")).toString().toStdString();
+        if (shadow.contains(QStringLiteral("opacity"))) {
+            input.style.shadow.opacity = shadow.value(QStringLiteral("opacity")).toDouble();
+        }
+        if (shadow.contains(QStringLiteral("offsetX"))) {
+            input.style.shadow.offsetX = shadow.value(QStringLiteral("offsetX")).toDouble();
+        }
+        if (shadow.contains(QStringLiteral("offsetY"))) {
+            input.style.shadow.offsetY = shadow.value(QStringLiteral("offsetY")).toDouble();
+        }
+        if (shadow.contains(QStringLiteral("blurSigma"))) {
+            input.style.shadow.blurSigma = shadow.value(QStringLiteral("blurSigma")).toDouble();
+        }
+    }
     // Which context answered the chain (task TF.4). "" means none did and
     // the words wear the theme's own look; the plan sentence says exactly
     // which of the two the operator is about to add.
@@ -174,12 +230,16 @@ bool ScriptureImport::measure(const std::vector<importer::MeasureRequest>& reque
                               std::string* error) {
     QVariantList blocks;
     for (const importer::MeasureRequest& request : requests) {
-        const auto cached = fMeasured.find({request.lines, request.fontSize});
+        const std::string cacheKey = importer::measureCacheKey(request);
+        const auto cached = fMeasured.find(cacheKey);
         if (cached != fMeasured.end()) {
             importer::MeasureReply reply;
             reply.key = request.key;
-            reply.height = cached->second;
+            reply.height = cached->second.height;
             reply.lineCount = 0;  // the fitting reads the height; nothing else
+            if (cached->second.fits >= 0) {
+                reply.fits = cached->second.fits == 1;
+            }
             replies->push_back(std::move(reply));
             continue;
         }
@@ -197,8 +257,31 @@ bool ScriptureImport::measure(const std::vector<importer::MeasureRequest>& reque
             block.insert(QStringLiteral("fontFamily"),
                          QString::fromStdString(request.fontFamily));
         }
+        // Task TS.3: the whole resolved style rides every ask, so the
+        // numbers come back from the typography the packed slides will
+        // wear. The records go out complete (the wire treats a partial
+        // effect record as a refusal, and the chain always knows both
+        // answers); the controller validates the bands and refuses a
+        // style-deviating batch toward a worker without text.measure.v2.
+        block.insert(QStringLiteral("fontWeight"), request.fontWeight);
+        block.insert(QStringLiteral("fontStyle"), QString::fromStdString(request.fontStyle));
+        block.insert(QStringLiteral("fitMode"), QString::fromStdString(request.fitMode));
+        block.insert(QStringLiteral("minFontSize"), request.minFontSize);
+        QVariantMap stroke;
+        stroke.insert(QStringLiteral("enabled"), request.stroke.enabled);
+        stroke.insert(QStringLiteral("color"), QString::fromStdString(request.stroke.color));
+        stroke.insert(QStringLiteral("width"), request.stroke.width);
+        block.insert(QStringLiteral("stroke"), stroke);
+        QVariantMap shadow;
+        shadow.insert(QStringLiteral("enabled"), request.shadow.enabled);
+        shadow.insert(QStringLiteral("color"), QString::fromStdString(request.shadow.color));
+        shadow.insert(QStringLiteral("opacity"), request.shadow.opacity);
+        shadow.insert(QStringLiteral("offsetX"), request.shadow.offsetX);
+        shadow.insert(QStringLiteral("offsetY"), request.shadow.offsetY);
+        shadow.insert(QStringLiteral("blurSigma"), request.shadow.blurSigma);
+        block.insert(QStringLiteral("shadow"), shadow);
         blocks.push_back(block);
-        fPendingSends[request.key] = {request.lines, request.fontSize};
+        fPendingSends[request.key] = cacheKey;
     }
     if (blocks.isEmpty()) {
         return true;  // the whole batch was cache

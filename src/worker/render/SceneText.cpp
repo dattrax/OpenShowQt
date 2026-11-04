@@ -46,6 +46,7 @@
 #include "include/ports/SkFontMgr_fontconfig.h"
 #include "include/ports/SkFontScanner_FreeType.h"
 #include "modules/skparagraph/include/FontCollection.h"
+#include "modules/skparagraph/include/Metrics.h"
 #include "modules/skparagraph/include/ParagraphBuilder.h"
 #include "modules/skparagraph/include/ParagraphPainter.h"
 #include "modules/skparagraph/include/ParagraphStyle.h"
@@ -412,8 +413,102 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Scen
     out.paragraph->layout(maxWidth);
     out.height = out.paragraph->getHeight();
     out.lineCount = static_cast<int>(out.paragraph->lineNumber());
+    // Task TS.3: the VISUAL extent, read off the lines THIS layout just
+    // produced (never a font-size guess). LineMetrics fLeft/fWidth/
+    // fBaseline/fAscent/fDescent are the laid-out runs' own metric box —
+    // a safe superset of glyph ink, and exactly the geometry the pixels
+    // are drawn from, so fill and bounds can never disagree the way a
+    // second measurement could. The enabled effects then grow it: the
+    // stroke's pen reaches half its width beyond the outline, and the
+    // shadow (which the fork casts from a copy of the GLYPH run, not the
+    // stroke) unions the offset box grown by Skia's FINITE blur support
+    // — SkBlurMask spreads at most ~3.09 sigma, so the bound is honest
+    // in both directions: big enough for any pixel, small enough that
+    // "fits" still means something. Offsets are authored units like the
+    // bounds themselves; the device blur rides the canvas scale with the
+    // geometry, so 1:1 in authored units is the right arithmetic.
+    {
+        std::vector<skia::textlayout::LineMetrics> lines;
+        out.paragraph->getLineMetrics(lines);
+        InkRect ink;
+        for (const skia::textlayout::LineMetrics& m : lines) {
+            if (!std::isfinite(m.fBaseline) || !std::isfinite(m.fAscent) ||
+                !std::isfinite(m.fDescent) || !std::isfinite(m.fLeft) ||
+                !std::isfinite(m.fWidth)) {
+                continue;
+            }
+            const float left = static_cast<float>(m.fLeft);
+            const float right = static_cast<float>(m.fLeft + m.fWidth);
+            const float top = static_cast<float>(m.fBaseline - m.fAscent);
+            const float bottom = static_cast<float>(m.fBaseline + m.fDescent);
+            if (ink.empty) {
+                ink.empty = false;
+                ink.left = left;
+                ink.top = top;
+                ink.right = right;
+                ink.bottom = bottom;
+            } else {
+                ink.left = std::min(ink.left, left);
+                ink.top = std::min(ink.top, top);
+                ink.right = std::max(ink.right, right);
+                ink.bottom = std::max(ink.bottom, bottom);
+            }
+        }
+        // The metrics box as such, before any effect grew it: the fill's
+        // own extent, kept for verdicts about the WORDS (see the header).
+        out.fillInk = ink;
+        if (!ink.empty) {
+            if (out.strokeEnabled && out.strokeWidth > 0.0f) {
+                const float half = out.strokeWidth * 0.5f;
+                ink.left -= half;
+                ink.top -= half;
+                ink.right += half;
+                ink.bottom += half;
+            }
+            if (item.shadow.enabled) {
+                const float dx = static_cast<float>(authored(item.shadow.offsetX, -256.0, 256.0,
+                                                             0.0));
+                const float dy = static_cast<float>(authored(item.shadow.offsetY, -256.0, 256.0,
+                                                             0.0));
+                const float grow =
+                    static_cast<float>(authored(item.shadow.blurSigma, 0.0, 64.0, 0.0)) * 3.1f;
+                ink.left = std::min(ink.left, ink.left + dx - grow);
+                ink.top = std::min(ink.top, ink.top + dy - grow);
+                ink.right = std::max(ink.right, ink.right + dx + grow);
+                ink.bottom = std::max(ink.bottom, ink.bottom + dy + grow);
+            }
+        }
+        out.ink = ink;
+    }
     return out;
 }
+
+float SceneTextEngine::paragraphTop(const LaidOutItem& item) {
+    // The block sits at the box's vertical middle (4.3) — a taller-than-box
+    // block's top rides up over the box edge rather than clipping at the
+    // bottom, which is what drawLayout has always done and what TS.3's
+    // bounds are relative to.
+    return item.boxY + std::max(0.0f, (item.boxHeight - item.height) * 0.5f);
+}
+
+namespace {
+
+// Is the item's WHOLE visual extent inside its authored box? Half a
+// pixel of slack for antialiasing and rounding; beyond that the box said
+// it held the pixels and it does not.
+bool inkInsideBox(const openshow::worker::SceneTextEngine::LaidOutItem& item) {
+    if (!item.hasText || item.ink.empty) {
+        return true;
+    }
+    constexpr float kEps = 0.75f;
+    const float top = openshow::worker::SceneTextEngine::paragraphTop(item);
+    return item.boxX + item.ink.left >= item.boxX - kEps &&
+           item.boxX + item.ink.right <= item.boxX + item.boxWidth + kEps &&
+           top + item.ink.top >= item.boxY - kEps &&
+           top + item.ink.bottom <= item.boxY + item.boxHeight + kEps;
+}
+
+}  // namespace
 
 SceneTextEngine::SceneLayout SceneTextEngine::layoutScene(
     const openshow::scene::Scene& scene) const {
@@ -448,6 +543,14 @@ SceneTextEngine::SceneLayout SceneTextEngine::layoutScene(
         // the scale, so height is not linear in it — lay out, shrink,
         // re-lay out. Three shrinks converge long before the cap; the
         // floor keeps even an impossible box readable (kSceneMinFontSize).
+        // Task TS.3's "fixed" fit mode is the same code with the loop
+        // never taken: lay out ONCE at the authored size and report
+        // overflow through `fits` — Bible flow repaginates WORDS at the
+        // chosen size rather than silently shrinking a bad plan into
+        // unreadable type. The shrink branch's height criterion is
+        // deliberately untouched: scenes that fit before TS.3 pick the
+        // same size and draw the same pixels today.
+        const bool fixed = item.fitMode == "fixed";
         const float base = effectiveSize(item, 1.0f);
         const float minScale = base > 0.0f ? kSceneMinFontSize / base : 1.0f;
         float scale = 1.0f;
@@ -458,11 +561,13 @@ SceneTextEngine::SceneLayout SceneTextEngine::layoutScene(
             laid.boxWidth = boxWidth;
             laid.boxHeight = boxHeight;
             const bool fits = !laid.hasText || laid.height <= boxHeight;
-            const float next =
-                fits || pass >= 3 ? scale : std::max(scale * boxHeight / laid.height, minScale);
-            const bool keep = next >= scale;  // done, or the floor stopped the shrink
+            const float next = fits || pass >= 3 || fixed
+                                   ? scale
+                                   : std::max(scale * boxHeight / laid.height, minScale);
+            const bool keep = next >= scale || fixed;  // done, floor, or no shrink at all
             scale = next;
             if (keep) {
+                laid.fits = inkInsideBox(laid);
                 out.items.push_back(std::move(laid));
                 break;
             }
@@ -632,10 +737,9 @@ void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
                                  const SkPaint* paint, SceneImageCache* images,
                                  bool textItems) const {
     // Centred: the paragraph aligns its lines inside boxWidth, and the block
-    // sits at the box's vertical middle.
-    const auto centerY = [](const LaidOutItem& item) {
-        return item.boxY + std::max(0.0f, (item.boxHeight - item.height) * 0.5f);
-    };
+    // sits at the box's vertical middle — paragraphTop(), the same arithmetic
+    // TS.3's ink bounds are measured relative to.
+    const auto centerY = [](const LaidOutItem& item) { return paragraphTop(item); };
     // A foreground picture (task 6.17b) draws beside the paragraphs, in the
     // stack's array order, so the composition honours the order the operator
     // authored: later items over earlier ones, either kind. LOOKUP ONLY —

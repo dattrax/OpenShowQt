@@ -102,17 +102,24 @@ private:
     DocumentController* fDocuments = nullptr;
     WorkerController* fWorker = nullptr;
 
-    // Content-AND-size keyed across the rounds of one run: an identical
-    // block is measured once at a given size (the words and the caption
-    // are the same words set twice, so they are two measured answers), and
-    // the run's determinism is what makes the restart converge instead of
-    // churn. Cleared whenever the inputs change.
-    std::map<std::pair<std::vector<std::string>, double>, double> fMeasured;
+    // Typography-keyed across the rounds of one run (task TS.3): the key
+    // is textflow's measureCacheKey of the request — content, box AND the
+    // whole style, through the engine's own serializer — so a theme that
+    // changed mid-session is a different question, not a stale answer
+    // (the same words at a new weight MUST be re-asked). The answer keeps
+    // the fit verdict beside the height. Cleared whenever the inputs
+    // change, and whenever it reaches the cap: a bounded cache re-asks
+    // rather than growing without limit.
+    struct MeasuredAnswer {
+        double height = 0.0;
+        int fits = -1;  // -1 unknown (a pre-v2 worker) / 0 no / 1 yes
+    };
+    std::map<std::string, MeasuredAnswer> fMeasured;
     // The batch in flight: the worker's reply keys mapped back to the
-    // content and size they measured, so the cache is keyed by words, not
-    // by ids.
+    // cache key each row measured, so the cache stays keyed by question,
+    // not by ids.
     qint64 fPendingMeasureId = 0;
-    std::map<std::string, std::pair<std::vector<std::string>, double>> fPendingSends;
+    std::map<std::string, std::string> fPendingSends;
     bool fMeasuring = false;
     bool fRerunWanted = false;  // asked again while suspended: the newest wins
     QVariantList fSlides;
