@@ -63,6 +63,11 @@
  *                    that does not follow the accepted one, and delivers one
  *                    frame deliberately LATE — the only way to watch the
  *                    consumer drop imagery of an ask it has superseded
+ *   transition       hello names scene.transition-options.v1 (task TR.1)
+ *   transition-late  the same, and holds the FIRST prepare's ack 400 ms — the
+ *                    window in which the operator moves the transition setting
+ *                    and the only way to see which record the acked Go presents
+ *                    with
  *
  * scene.present of a revision more than kStoreWindow (16, mirroring the
  * real worker's bounded store) behind the newest handed out is refused, so
@@ -139,6 +144,8 @@
 #include "openshow/protocol/preview_wire.h"
 #include "openshow/protocol/protocol.h"
 #include "openshow/scene/scene.h"
+
+#include "openshow/domain/documents.h"  // TransitionOptions (task TR.1)
 
 #include "WorkerController.h"
 
@@ -436,6 +443,14 @@ private:
             if (fScenario == "font-list" || fScenario == "font-list-error") {
                 result["capabilities"] = boost::json::array{proto::kCapabilityFontListV1};
             }
+            // Task TR.1: the peer that takes its fade LENGTHS from a present's
+            // durations names scene.transition-options.v1. "transition" answers
+            // every ack inline; "transition-late" holds the FIRST prepare's ack
+            // for 400 ms, which is the only way to watch the setting move while
+            // a Go is in flight and still see which record the present carried.
+            if (fScenario == "transition" || fScenario == "transition-late") {
+                result["capabilities"] = boost::json::array{proto::kCapabilityTransitionOptions};
+            }
             sendResult(id, std::move(result));
             return;
         }
@@ -706,6 +721,17 @@ private:
                                   std::move(wire)});
                 return;
             }
+            if (fScenario == "transition-late" && fPrepares == 1) {
+                // TR.1: the go's prepare is acknowledged LATE, so the parent
+                // has a real window to move the transition setting between the
+                // Go and the present that its ack triggers. Without this the
+                // fixture could only prove the happy path where the setting
+                // never changed, which is the case that cannot go wrong.
+                fQueue.push_back({std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(400),
+                                  std::move(wire)});
+                return;
+            }
             if (fScenario == "hold3") {
                 fHeld.push_back(std::move(wire));
                 if (fPrepares >= 3) {
@@ -721,6 +747,15 @@ private:
         }
         if (method == "scene.present") {
             ++fPresents;
+            // Task TR.1: every present recorded VERBATIM, because the whole
+            // acceptance is which transition record the command carried — a
+            // count cannot tell 100/200 from 900/1000, and "the operator moved
+            // the setting mid-flight" is only visible in the bytes that left.
+            fPresentOps.push_back(boost::json::object{
+                {"method", method},
+                {"params", request.contains("params") ? request.at("params")
+                                                      : boost::json::object{}},
+            });
             if (request.contains("params") && request.at("params").is_object() &&
                 request.at("params").as_object().contains("revision")) {
                 const std::int64_t revision =
@@ -734,6 +769,7 @@ private:
                 fActive = static_cast<int>(revision);
                 fPresented.push_back(fActive);
             }
+            writeReport();  // live: the parent reads the record the present carried
             sendResult(id, boost::json::object{{"presented", static_cast<std::uint64_t>(fActive)}});
             return;
         }
@@ -1365,6 +1401,10 @@ private:
             {"stoppedReading", fStoppedReading},
             {"resumed", fResumed},
             {"mediaOps", fMediaOps},  // task 6.15a: every transport command, verbatim
+            // Task TR.1: every present verbatim, which is how a fixture proves
+            // the cue's OWN record reached the wire and not the settings the
+            // operator moved after pressing Go.
+            {"presentOps", fPresentOps},
             {"measureOps", fMeasureOps},  // task TS.3: every measurement ask, verbatim
             {"fontListFroms", fFontListFroms},  // task TS.4: the font walk, page by page
             // Task 6.16a: every preview.select verbatim (the generations the
@@ -1740,6 +1780,9 @@ private:
     std::vector<std::string> fHeld;  // hold3: acks awaiting the burst
     std::vector<DelayedReply> fQueue;  // slow-first: acks awaiting their due
     std::vector<int> fPresented;       // revisions the controller went to
+    // Task TR.1: every scene.present verbatim, params and all — the ledger a
+    // fixture reads to see WHICH transition record the command carried.
+    boost::json::array fPresentOps;
     std::vector<std::string> fAssetPaths;  // each prepare's background file (task 6.12)
     std::vector<std::string> fItemPaths;   // and its path-bearing items, space-joined (task 6.21b)
     std::vector<std::string> fGradients;   // and its background gradient, or "" (task 6.21e)
@@ -3070,6 +3113,164 @@ void scenarioFontListWalk() {
               "font walk: the worker's own refusal sentence reaches the status line");
     }
     refused.shutdownNow();
+}
+
+// S?? (task TR.1): WHICH transition record a cue moves with. The review's
+// contract is that the answer is taken once, when Go is issued, and carried as
+// a value to the present that ack triggers — because by the time the ack
+// arrives, "the settings" are whatever the operator has moved on to, and the
+// cue they already asked for is owed the reveal it was promised. Three things
+// are pinned here, and only the first is the easy one:
+//
+//   a) the record resolved at Go reaches the wire even when the setting moves
+//      while the prepare is in flight (the scripted peer holds A's ack 400 ms,
+//      which is the only way this branch is reachable at all);
+//   b) toward a worker that never claimed to honour durations, a deviating
+//      record is DROPPED from the payload and said out loud — the audience
+//      still gets its next cue, because an operator who pressed Go is owed the
+//      slide, and a fade on the worker's own clock is a lesser loss than a
+//      slide that did not come up;
+//   c) toward that same worker, a document nobody configured sends exactly the
+//      payload pre-TR.1 sent, and says nothing.
+void scenarioTransitionIntent() {
+    namespace domain = openshow::domain;
+
+    // --- (a) the record is the cue's, not the settings' ---------------------
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "transition-late", 1);
+    const std::string lateReport = tempPath("transition-late");
+    ::unlink(lateReport.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", lateReport.c_str(), 1);
+
+    // What "the documents" answer right now. The fixture IS the resolver, and
+    // moving these numbers between the Go and the ack is the operator dragging
+    // the slider while the prepare is still on the socket.
+    domain::TransitionOptions standing;
+    standing.textDurationMs = 100;
+    standing.mediaDurationMs = 200;
+
+    WorkerController controller;
+    controller.setTransitionResolver(
+        [&standing](const boost::json::object&) { return standing; });
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "transition: handshake with the duration-honouring peer")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(controller.transitionOptionsSupported(),
+          "transition: a hello naming scene.transition-options.v1 opens the gate");
+
+    controller.presentSceneJson(QString::fromStdString(sceneWordsOnly("AAA")));
+    // The prepare is held; the setting moves NOW.
+    standing.textDurationMs = 900;
+    standing.mediaDurationMs = 1000;
+    check(waitUntil([&controller] { return controller.sceneActive() == 1; }),
+          "transition: the delayed ack still presents the cue it acknowledged");
+    check(!controller.statusText().contains(QStringLiteral("does not honour")),
+          "transition: a peer that honours durations is not lectured about them");
+    controller.shutdownNow();
+
+    const boost::json::object lateCounts = readReport(lateReport);
+    if (check(lateCounts.contains("presentOps") && lateCounts.at("presentOps").is_array() &&
+                  lateCounts.at("presentOps").as_array().size() == 1,
+              "transition: exactly one present reached the wire")) {
+        const boost::json::object& params =
+            lateCounts.at("presentOps").as_array()[0].as_object().at("params").as_object();
+        const auto number = [&params](const char* key) -> long long {
+            const auto found = params.find(key);
+            return found == params.end() || !found->value().is_number()
+                       ? -1
+                       : static_cast<long long>(found->value().to_number<double>());
+        };
+        check(number("textDurationMs") == 100 && number("mediaDurationMs") == 200,
+              "transition: the present carried the record resolved at Go (100 / 200), not "
+              "the 900 / 1000 the settings hold now");
+        const auto kind = params.find("transition");
+        check(kind != params.end() && kind->value().is_string() &&
+                  kind->value().as_string() == "fade",
+              "and the kind the record named travels beside the numbers");
+    }
+
+    // --- (b) a deviating record toward a peer that cannot honour it ---------
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
+    const std::string plainReport = tempPath("transition-plain");
+    ::unlink(plainReport.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", plainReport.c_str(), 1);
+    domain::TransitionOptions asked;
+    asked.textDurationMs = 100;
+    asked.mediaDurationMs = 200;
+    WorkerController legacy;
+    legacy.setTransitionResolver(
+        [&asked](const boost::json::object&) { return asked; });
+    legacy.start();
+    if (!check(waitUntil([&legacy] {
+                   return legacy.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "transition: handshake with the capability-less peer")) {
+        legacy.shutdownNow();
+        return;
+    }
+    check(!legacy.transitionOptionsSupported(),
+          "transition: no hello claim, no durations on the wire");
+    legacy.presentSceneJson(QString::fromStdString(sceneWordsOnly("AAA")));
+    const bool movedAnyway = waitUntil([&legacy] { return legacy.sceneActive() == 1; });
+    check(movedAnyway,
+          "transition: the gate DOWNGRADES rather than refuses — the operator pressed Go "
+          "and the audience got its slide");
+    if (check(waitUntil([&legacy] {
+                  return legacy.statusText().contains(QStringLiteral("does not honour"));
+              }),
+              "transition: the downgrade is said out loud, not performed silently")) {
+        check(legacy.statusText().contains(QStringLiteral("500 ms / 800 ms")) &&
+                  legacy.statusText().contains(QStringLiteral("100 ms / 200 ms")),
+              "and it names both the clock the cue actually moved on and the one asked for");
+    }
+    legacy.shutdownNow();
+    const boost::json::object plainCounts = readReport(plainReport);
+    if (check(plainCounts.contains("presentOps") &&
+                  plainCounts.at("presentOps").is_array() &&
+                  plainCounts.at("presentOps").as_array().size() == 1,
+              "transition: the downgraded present still reached the peer")) {
+        const boost::json::object& params =
+            plainCounts.at("presentOps").as_array()[0].as_object().at("params").as_object();
+        check(!params.contains("textDurationMs") && !params.contains("mediaDurationMs"),
+              "and it carries neither duration: an old worker is sent the payload it has "
+              "always understood, not numbers it would ignore");
+    }
+
+    // --- (c) an unconfigured document is the pre-TR.1 wire, silence included -
+    const std::string quietReport = tempPath("transition-quiet");
+    ::unlink(quietReport.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", quietReport.c_str(), 1);
+    WorkerController quiet;
+    // No resolver at all: the documents are not in the room (the demo fixture's
+    // own scene, a headless session), and the contract's defaults answer.
+    quiet.start();
+    if (!check(waitUntil([&quiet] {
+                   return quiet.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "transition: handshake with no documents and no capability")) {
+        quiet.shutdownNow();
+        return;
+    }
+    quiet.presentSceneJson(QString::fromStdString(sceneWordsOnly("AAA")));
+    check(waitUntil([&quiet] { return quiet.sceneActive() == 1; }),
+          "transition: an unconfigured session presents like it always did");
+    check(!quiet.statusText().contains(QStringLiteral("does not honour")),
+          "and the default record earns no warning — there was nothing to downgrade");
+    quiet.shutdownNow();
+    const boost::json::object quietCounts = readReport(quietReport);
+    if (check(quietCounts.contains("presentOps") &&
+                  quietCounts.at("presentOps").is_array() &&
+                  quietCounts.at("presentOps").as_array().size() == 1,
+              "transition: the unconfigured present reached the peer")) {
+        const boost::json::object& params =
+            quietCounts.at("presentOps").as_array()[0].as_object().at("params").as_object();
+        check(!params.contains("textDurationMs") && !params.contains("mediaDurationMs"),
+              "with no duration keys: byte-for-byte the command a pre-TR.1 frontend sent");
+    }
 }
 
 // S9 (task 6.8b, review R11): a worker that takes every command and answers
@@ -4705,6 +4906,7 @@ int main(int argc, char* argv[]) {
     scenarioFailedRestoreRetry();
     scenarioRefusedLocally();
     scenarioTextStyleGate();
+    scenarioTransitionIntent();
     scenarioMeasureStyleGate();
     scenarioFontListWalk();
     scenarioUnansweredRequestsStayBounded();

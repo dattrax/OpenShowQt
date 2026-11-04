@@ -507,16 +507,17 @@ void OutputSession::prewarmScene(
 }
 
 bool OutputSession::presentScene(uint64_t prepared, uint64_t* revisionOut,
-                                 SceneTransitionKind kind) {
+                                 const openshow::domain::TransitionOptions& transition) {
     {
         std::lock_guard<std::mutex> lock(fMutex);
         // One call, one truth (task 6.18a): the store refuses 0 and an id it
         // does not hold, queues the ask as pending until a presented frame
         // carries it, and says whether the desired scene moved. Re-presenting
         // exactly what is confirmed on air starts no frame, so it queues
-        // nothing and re-pins nothing.
+        // nothing and re-pins nothing — and it re-times nothing either: the
+        // repeat's record is dropped with the change it came with (TR.1).
         bool changed = false;
-        if (!fStore.present(prepared, kind, revisionOut, &changed)) {
+        if (!fStore.present(prepared, transition, revisionOut, &changed)) {
             return false;
         }
         if (changed) {
@@ -1027,7 +1028,15 @@ bool OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
     }
     fStore.landScene(desired);
     fRenderScene = snapshot.content;
-    fScene->setActiveScene(snapshot.content, snapshot.kind);
+    // The landed handoff (task TR.1): the WHOLE record reached this point with
+    // the scene it belongs to, and the renderer today can only honour the
+    // kind, so the record is narrowed HERE at the one named seam (see
+    // render/Layer.h). Until TR.2 draws the durations the audience's fade is
+    // the library's own 0.5 / 0.8 s whatever the record says — which is why
+    // the frontend sends only legacy-equivalent timings until this worker
+    // advertises `scene.transition-options.v1`, rather than shipping a
+    // promise the pixels do not keep.
+    fScene->setActiveScene(snapshot.content, sceneTransitionKind(snapshot.transition));
     fDeferredSceneRevision = 0;
     return true;
 }

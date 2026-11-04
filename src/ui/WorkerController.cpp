@@ -261,6 +261,19 @@ WorkerController::WorkerController(QObject* parent) : QObject(parent), fRpc(this
                     }
                 });
             },
+            [this](const boost::json::object& scene) {
+                // Resolved at Go, from the documents, once (task TR.1): the
+                // record this returns is copied onto the intent and is what
+                // the present will carry, whatever the operator edits between
+                // now and the ack.
+                if (!fTransitionResolver) {
+                    return openshow::domain::TransitionOptions::defaults();
+                }
+                return fTransitionResolver(scene);
+            },
+            [this](const openshow::domain::TransitionOptions&) {
+                return fTransitionOptionsCapable;
+            },
             [this](const QString& text) { setStatus(text); },
         },
         this);
@@ -369,6 +382,9 @@ void WorkerController::onRpcDisconnected() {
     fTextMeasureCapable = false;  // a capability belongs to a live hello (BI.4)
     fTextStyleCapable = false;    // TS.1: same, for the style-block claim
     fTextMeasureV2Capable = false;  // TS.3: same, for styled measurement
+    // TR.1: same again. A worker that has not said it takes its fade lengths
+    // from the durations does not get them, and the next hello decides.
+    fTransitionOptionsCapable = false;
     // TS.4: the font walk belongs to the connection that asked. A page in
     // flight when the worker dies answers to nothing, and a list from the
     // dead session must not sit in a picker bound to the next one.
@@ -581,6 +597,7 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         bool styleCapable = false;
         bool measureV2Capable = false;
         bool fontListCapable = false;
+        bool transitionOptionsCapable = false;
         if (payload.contains("capabilities") && payload.at("capabilities").is_array()) {
             for (const auto& capability : payload.at("capabilities").as_array()) {
                 if (!capability.is_string()) {
@@ -631,12 +648,21 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                     // (task TS.4): the picker gets its list from here and
                     // nowhere else.
                     fontListCapable = true;
+                } else if (capability.as_string() == proto::kCapabilityTransitionOptions) {
+                    // The worker takes its fade LENGTHS from the durations a
+                    // present carries (task TR.1). Its absence is the common
+                    // case today: the name waits for the renderer that draws
+                    // them, so PresentationModel keeps the durations off the
+                    // wire and says out loud that the cue moves on the
+                    // worker's own clock.
+                    transitionOptionsCapable = true;
                 }
             }
         }
         fTextMeasureCapable = measureCapable;
         fTextStyleCapable = styleCapable;
         fTextMeasureV2Capable = measureV2Capable;
+        fTransitionOptionsCapable = transitionOptionsCapable;
         fFontListCapable = fontListCapable;
         fFontListState = fontListCapable ? QStringLiteral("idle")
                                          : QStringLiteral("unsupported");

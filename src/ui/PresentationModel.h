@@ -65,6 +65,29 @@ public:
         // Visit every prepare still awaiting its ack, so a payload the worker
         // has but this side now believes different can be corrected.
         std::function<void(const std::function<void(ScenePrepareAsk&)>& visit)> visitPrepares;
+        // The documents' answer to "how does this cue's slide move?" (task
+        // TR.1), asked ONCE at Go. The scene is the payload about to be sent,
+        // whose showId/slideId say which slide the audience is being asked to
+        // see; the answer is the record for THAT slide at THAT instant — the
+        // service default, or the theme/context override the chain resolves
+        // to. A host with no documents at all (the demo fixture's own scene)
+        // still answers: the service default is a value, not a maybe.
+        std::function<openshow::domain::TransitionOptions(const boost::json::object& scene)>
+            resolveTransition;
+        // Whether the peer on this socket HONOURS transition durations —
+        // i.e. whether its hello named `scene.transition-options.v1` (task
+        // TR.1). One rule sits behind this question: a value a peer has never
+        // heard of is never quietly sent to it.
+        //
+        // What the model does with a "no" is a downgrade, not a refusal, and
+        // that is a deliberate departure from the scene-style gate: an
+        // operator who pressed Go is owed the next cue, and a fade that took
+        // the worker's own 500 ms instead of the 100 ms asked for is a lesser
+        // loss than a slide that did not come up. So the durations are left
+        // off the payload — an old worker receives exactly the legacy-shaped
+        // present it has always understood — and the status line says so out
+        // loud. Silence is the thing being avoided, not refusal.
+        std::function<bool(const openshow::domain::TransitionOptions&)> honoursDurations;
         // The operator-facing line, for the failures this class names itself.
         std::function<void(const QString& text)> statusLine;
     };
@@ -77,7 +100,19 @@ public:
     // Present a revision the store has already handed out. fromGoIntent is
     // true only for the present a cue's own prepare-ack triggers; any other
     // explicit present retargets the audience off a nameable cue (UI.3b).
-    void presentScene(qint64 revision, bool fromGoIntent = false);
+    // `transition` is the record THIS command moves with (task TR.1): the
+    // acked Go hands over the copy its own intent carried, and nothing else
+    // has one to give.
+    void presentScene(qint64 revision, bool fromGoIntent,
+                      const openshow::domain::TransitionOptions& transition);
+    // The legacy shape of the same call: a present with no resolved record
+    // asks for the 500 ms / 800 ms crossfade the worker has always performed.
+    // It is spelled out here, in one place, rather than hidden behind a
+    // defaulted argument, because "this present invented no timings" is a
+    // fact a caller should say rather than imply.
+    void presentScene(qint64 revision, bool fromGoIntent = false) {
+        presentScene(revision, fromGoIntent, openshow::domain::TransitionOptions::defaults());
+    }
     // Prepare this JSON and present it on the acknowledgement.
     void presentSceneJson(const QString& sceneJson);
     // The cue lane (task UI.3b): the same one-step go, tagged with the

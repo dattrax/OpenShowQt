@@ -475,12 +475,20 @@ public:
     // scene. The applied scene is what the production layers draw
     // (task 3.1): the background fills its colour (or its cover-fitted
     // image, task 3.2) and the words layer lays out its text; with
-    // nothing presented the demo picture renders. `kind` decides how the
-    // switch is revealed: a fade crossfades the outgoing scene (FreeShow's
-    // default, task 3.2), a cut swaps in one frame; the first
-    // presentation always pops in — there is nothing to fade from.
+    // nothing presented the demo picture renders.
+    //
+    // `transition` is the record the COMMAND named (task TR.1 takes the WHOLE
+    // record, not just a kind): its kind decides how the switch is revealed —
+    // a fade crossfades the outgoing scene (FreeShow's default, task 3.2), a
+    // cut swaps in one frame — and the first presentation always pops in,
+    // there being nothing to fade from. Its durations ride along and are drawn
+    // by TR.2. The caller owns this record: a legacy entry point with nothing
+    // resolved says so by handing over `TransitionOptions::defaults()` in the
+    // open, because a present that quietly invented one is how a queued reveal
+    // ends up timed by whatever the settings screen held when the frame was
+    // built.
     bool presentScene(uint64_t prepared, uint64_t* revisionOut,
-                      SceneTransitionKind kind = SceneTransitionKind::kFade);
+                      const openshow::domain::TransitionOptions& transition);
 
     // --- video (task 1.5e) ---
 

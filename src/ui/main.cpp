@@ -90,6 +90,16 @@ int main(int argc, char* argv[]) {
     QObject::connect(&documents, &openshow::ui::DocumentController::assetsAdopted, &worker,
                      &openshow::ui::WorkerController::adoptAssetPaths);
 
+    // Task TR.1: the cue lane asks the DOCUMENTS how a slide's cue moves, at
+    // the instant Go is issued, and carries the answer as a value through the
+    // prepare intent to scene.present. The worker controller never learns what
+    // a Theme is — it asks, this callback answers, and the record is that
+    // cue's for as long as the prepare is in flight.
+    worker.setTransitionResolver(
+        [&documents](const boost::json::object& scene) {
+            return documents.transitionForSceneJson(scene);
+        });
+
     std::signal(SIGTERM, handleQuitSignal);
     std::signal(SIGINT, handleQuitSignal);
     QTimer signalPoll;

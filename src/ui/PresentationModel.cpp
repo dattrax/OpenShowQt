@@ -49,7 +49,8 @@ void PresentationModel::prepareScene(const QString& sceneJson) {
     armPrepare(id, parsed.as_object(), /*autoPresent=*/false);
 }
 
-void PresentationModel::presentScene(qint64 revision, bool fromGoIntent) {
+void PresentationModel::presentScene(qint64 revision, bool fromGoIntent,
+                                     const openshow::domain::TransitionOptions& transition) {
     if (!fOut.live()) {
         return;
     }
@@ -61,9 +62,28 @@ void PresentationModel::presentScene(qint64 revision, bool fromGoIntent) {
     // An explicit present re-targets the logical presentation: later
     // clears derive from what this revision was prepared with (task 6.3b).
     fDesiredSceneJson = fSceneJson.value(revision);
-    const std::int64_t id = fOut.request(
-        "scene.present",
-        boost::json::object{{"revision", static_cast<std::uint64_t>(revision)}});
+    boost::json::object params{
+        {"revision", static_cast<std::uint64_t>(revision)},
+        {"transition", openshow::domain::transitionKindName(transition.kind)},
+    };
+    // The durations travel only to a peer that said it honours them (task
+    // TR.1). A pre-TR.1 worker takes the two keys and ignores them, which is
+    // how a cue asked to move in 100 ms ends up crossing in 500 without
+    // anything ever saying so; a payload without them means the 500/800 it
+    // has always meant. When the record the intent carried deviates AND the
+    // peer cannot honour it, the operator hears about it here — the audience
+    // still gets its next cue, on the worker's own clock.
+    if (!transition.durationsAreDefault() && !fOut.honoursDurations(transition)) {
+        fOut.statusLine(QStringLiteral(
+            "this worker does not honour transition durations: the cue moves "
+            "on its own 500 ms / 800 ms fade instead of %1 ms / %2 ms")
+                             .arg(transition.textDurationMs)
+                             .arg(transition.mediaDurationMs));
+    } else if (fOut.honoursDurations(transition)) {
+        params["textDurationMs"] = transition.textDurationMs;
+        params["mediaDurationMs"] = transition.mediaDurationMs;
+    }
+    const std::int64_t id = fOut.request("scene.present", std::move(params));
     if (fromGoIntent) {
         fPendingPresent.presentId = id;  // a refused present un-pends its cue (UI.3b)
     }
@@ -331,7 +351,10 @@ void PresentationModel::handlePrepareAck(std::int64_t requestId, const ScenePrep
     if (intent.autoPresent && requestId == fLatestGoId) {
         fLatestGoId = 0;
         fPendingPresent = CueGo{};
-        presentScene(revision, /*fromGoIntent=*/true);
+        // The record this intent carried, not a fresh read of anything: a
+        // settings change between this Go and its ack retimes the NEXT cue,
+        // never this one (task TR.1).
+        presentScene(revision, /*fromGoIntent=*/true, intent.transition);
         // This revision went out for the newest go; if a cue tagged it,
         // the cue becomes LIVE when a poll names this revision active, and
         // reads as PENDING until then (task UI.3b).
@@ -505,6 +528,18 @@ void PresentationModel::armPrepare(std::int64_t requestId, const boost::json::ob
     }
     ask->prepareJson = QString::fromStdString(boost::json::serialize(scene));
     ask->autoPresent = autoPresent;
+    // The transition this intent moves with, resolved NOW and stored as a
+    // value (task TR.1). Only a go needs one — a preview prepare never
+    // presents — but it is resolved for both rather than keeping two shapes of
+    // ask, because the question is cheap and the alternative is a record whose
+    // field means something only sometimes.
+    //
+    // THIS is the moment the review's contract names: the operator pressed Go,
+    // so the documents are asked once, and the answer rides the intent through
+    // the ack. handlePrepareAck must not consult the settings again — by then
+    // "the settings" are whatever the operator has moved on to, and the cue
+    // they asked for is already owed the fade it was promised.
+    ask->transition = fOut.resolveTransition(scene);
     if (autoPresent) {
         // This go supersedes any older one still awaiting its ack; only
         // the newest go's acknowledgement moves the audience. Its payload

@@ -875,6 +875,162 @@ bool styleFromMap(const QVariantMap& style, openshow::domain::ThemeTextStyle* ou
 
 }  // namespace
 
+// --- transitions (task TR.1) --------------------------------------------------
+//
+// The three doors the workspace opens on the transition contract, and the two
+// reads the cue lane and a settings page share. Everything numeric is vetted by
+// the domain's ONE sentence — the same one the service file's reader and the
+// worker's `scene.present` parse quote — so "10001" costs the same words at
+// every door, and nothing here keeps a private copy of a band that could drift.
+
+namespace {
+
+// The QML shape of a transition record (task TR.1): {kind, textDurationMs,
+// mediaDurationMs}, whole or absent. An EMPTY map is the inherit button and
+// means "this view says nothing about movement"; a NON-empty one missing a
+// member is refused rather than completed, because half a transition has
+// nothing to resolve — the same atomicity the effect records hold. Values are
+// range-checked by the domain verb, not here: this parses shapes, the domain
+// decides what they may say.
+bool transitionFromMap(const QVariantMap& record, std::optional<openshow::domain::TransitionOptions>*
+                           out,
+                       std::string* error) {
+    if (record.isEmpty()) {
+        *out = std::nullopt;  // inherit
+        return true;
+    }
+    for (const QString& key : record.keys()) {
+        if (key != QLatin1String("kind") && key != QLatin1String("textDurationMs") &&
+            key != QLatin1String("mediaDurationMs")) {
+            *error = "a transition record has no field '" + key.toStdString() + "'";
+            return false;
+        }
+    }
+    const QVariant kind = record.value(QStringLiteral("kind"));
+    const QVariant text = record.value(QStringLiteral("textDurationMs"));
+    const QVariant media = record.value(QStringLiteral("mediaDurationMs"));
+    if (!kind.isValid() || !text.isValid() || !media.isValid()) {
+        *error = "a transition record is whole or absent: it needs \"kind\", "
+                 "\"textDurationMs\" and \"mediaDurationMs\" (inherit with an empty record)";
+        return false;
+    }
+    openshow::domain::TransitionOptions options;
+    if (!kind.canConvert<QString>() ||
+        !openshow::domain::transitionKindFromName(kind.toString().toStdString(), &options.kind)) {
+        *error = "transition kind is '" + kind.toString().toStdString() +
+                 "', not \"fade\" or \"cut\"";
+        return false;
+    }
+    bool ok = false;
+    options.textDurationMs = static_cast<int>(text.toLongLong(&ok));
+    if (!ok) {
+        *error = "transition \"textDurationMs\" must be a whole number of milliseconds";
+        return false;
+    }
+    options.mediaDurationMs = static_cast<int>(media.toLongLong(&ok));
+    if (!ok) {
+        *error = "transition \"mediaDurationMs\" must be a whole number of milliseconds";
+        return false;
+    }
+    *out = options;
+    return true;
+}
+
+QVariantMap transitionToMap(const openshow::domain::TransitionOptions& options) {
+    QVariantMap record;
+    record.insert(QStringLiteral("kind"),
+                  QString::fromLatin1(openshow::domain::transitionKindName(options.kind)));
+    record.insert(QStringLiteral("textDurationMs"), options.textDurationMs);
+    record.insert(QStringLiteral("mediaDurationMs"), options.mediaDurationMs);
+    return record;
+}
+
+}  // namespace
+
+bool DocumentController::setServiceDefaultTransition(const QString& kind, int textDurationMs,
+                                                     int mediaDurationMs) {
+    flushText();
+    openshow::domain::TransitionOptions options;
+    std::string error;
+    if (!openshow::domain::transitionKindFromName(kind.toStdString(), &options.kind)) {
+        setStatus(QStringLiteral("transition: kind is '%1', not \"fade\" or \"cut\"")
+                      .arg(kind));
+        return false;
+    }
+    options.textDurationMs = textDurationMs;
+    options.mediaDurationMs = mediaDurationMs;
+    if (!edit([&] { return fDocuments.setServiceDefaultTransition(options, &error); })) {
+        setStatus(QStringLiteral("transition: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::setThemeTransition(const QString& themeId, const QVariantMap& record) {
+    flushText();
+    std::optional<openshow::domain::TransitionOptions> options;
+    std::string error;
+    if (!transitionFromMap(record, &options, &error)) {
+        setStatus(QStringLiteral("transition: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    if (!edit([&] {
+            return fDocuments.setThemeTransition(themeId.toStdString(), options, &error);
+        })) {
+        setStatus(QStringLiteral("transition: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::setTextContextTransition(const QString& themeId,
+                                                  const QString& contextName,
+                                                  const QVariantMap& record) {
+    flushText();
+    std::optional<openshow::domain::TransitionOptions> options;
+    std::string error;
+    if (!transitionFromMap(record, &options, &error)) {
+        setStatus(QStringLiteral("transition: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    if (!edit([&] {
+            return fDocuments.setTextContextTransition(themeId.toStdString(),
+                                                       contextName.toStdString(), options, &error);
+        })) {
+        setStatus(QStringLiteral("transition: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+QVariantMap DocumentController::serviceDefaultTransition() const {
+    return transitionToMap(fDocuments.serviceDefaultTransition());
+}
+
+QVariantMap DocumentController::transitionForSlide(const QString& showId,
+                                                   const QString& slideId) const {
+    return transitionToMap(
+        fDocuments.resolveTransitionForSlide(showId.toStdString(), slideId.toStdString()));
+}
+
+openshow::domain::TransitionOptions DocumentController::transitionForSceneJson(
+    const boost::json::object& scene) const {
+    // A compiled scene names its own provenance (scene.h's showId/slideId),
+    // which is the slide the audience is being asked to see. A payload that
+    // names neither — the demo fixture, a hand-built test scene — is not a
+    // refusal and not a guess: the resolver walks nothing and answers with the
+    // service's own record, which is exactly what a document that never opened
+    // the transition settings resolves every cue to anyway.
+    const auto text = [&scene](const char* key) -> std::string {
+        const auto entry = scene.find(key);
+        if (entry == scene.end() || !entry->value().is_string()) {
+            return {};
+        }
+        return std::string(entry->value().as_string());
+    };
+    return fDocuments.resolveTransitionForSlide(text("showId"), text("slideId"));
+}
+
 bool DocumentController::setThemeTextStyle(const QString& themeId, const QVariantMap& style) {
     flushText();
     openshow::domain::ThemeTextStyle next;
@@ -1398,6 +1554,16 @@ bool DocumentController::duplicateTheme(const QString& themeId) {
             style.stroke = source.stroke;
             style.shadow = source.shadow;
             if (!fDocuments.setThemeTextStyle(copy, style, &error)) {
+                fDocuments.removeTheme(copy, nullptr);
+                return false;
+            }
+            // And the view's own movement (task TR.1). Absent stays absent —
+            // the copy inherits whatever the chain answers, exactly as the
+            // source did — and present travels whole, because a duplicate that
+            // dropped an explicit Cut would start crossfading cues the operator
+            // had told it to cut.
+            if (source.transition.has_value() &&
+                !fDocuments.setThemeTransition(copy, source.transition, &error)) {
                 fDocuments.removeTheme(copy, nullptr);
                 return false;
             }

@@ -171,8 +171,27 @@ namespace openshow::protocol {
 // worker that answers the method at all; a frontend talking to a pre-17
 // worker keeps the free-typed family field it always had and simply cannot
 // offer the list.
+// Minor 18 (task TR.1, transition contract) grows `scene.present` with two
+// OPTIONAL whole-millisecond fields, "textDurationMs" and "mediaDurationMs",
+// beside the "transition" kind it has carried since task 3.2. Absent means
+// 500 and 800, which is the fade every present before this performed, so a
+// pre-18 frontend's payload means exactly what it meant yesterday and a pre-18
+// worker ignores the two keys it cannot honour. A fractional, negative or
+// out-of-band value is refused naming the key — before the store is touched,
+// and whatever the kind says: the record is atomic, so a Cut still CARRIES
+// durations and still has to carry honest ones.
+// The capability that names a worker HONOURING those numbers is
+// "scene.transition-options.v1", and TR.1 deliberately withholds it from the
+// hello list: this build's renderer draws the KIND and fades on its own
+// library constants, so advertising the name now would be the wire claiming
+// something the pixels do not do — the same debt TS.1 ran against TS.2. A
+// frontend therefore sends non-default durations only to a hello that names
+// it, and toward anything older it sends the legacy-shaped present and says on
+// the status line that the cue moves on the worker's own clock: an operator
+// who pressed Go is owed the next slide, so this gate downgrades and speaks
+// rather than stranding the audience on the previous cue.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 17;
+inline constexpr std::uint32_t kProtocolMinor = 18;
 
 // The capability that names a worker DRAWING the scene 4 style block.
 // Defined here so the frontend's pre-send gate and the worker's hello name
@@ -194,6 +213,16 @@ inline constexpr const char* kCapabilityTextMeasureV2 = "text.measure.v2";
 // without the name there is no honest family list to show, and typed
 // names — which never needed the worker — keep working.
 inline constexpr const char* kCapabilityFontListV1 = "font.list.v1";
+
+// The capability that names a worker HONOURING the scene.present durations
+// (minor 18, task TR.1): not merely one that parses the two keys — every
+// build since TR.1 parses and vetoes them — but one whose OUTPUT takes its
+// fade lengths from them. TR.1's renderer still crossfades on its own library
+// constants, so this build does NOT list the name: the claim is earned by the
+// renderer, not by the parser, exactly as scene.text-style.v1 waited for the
+// stroke that actually drew. Frontends ask it before putting a deviating
+// duration on the wire (PresentationModel::Outbound::honoursDurations).
+inline constexpr const char* kCapabilityTransitionOptions = "scene.transition-options.v1";
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without

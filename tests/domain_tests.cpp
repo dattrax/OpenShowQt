@@ -1788,8 +1788,11 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                   manifest.find("\"backgroundGradient\":\"\"") != std::string::npos,
               "the gradient AND the flat are both written by name — leaving the "
               "default to an absent key is the rule this project refuses");
-        check(manifest.find("\"format\":8") != std::string::npos,
-              "the manifest says format 8");
+        check(manifest.find("\"format\":9") != std::string::npos,
+              "the manifest says format 9 (TR.1: the service carries its own"
+              " transition record)");
+        check(manifest.find("\"transition\":{") != std::string::npos,
+              "the root transition is written by name, not left to an absent key");
         check(openshow::domain::saveService(back, tempRoot / "v5-regraded", &error) &&
                   readFile(tempRoot / "v5-regraded" / "service.json") == manifest,
               "re-saving a graded service writes a byte-identical manifest");
@@ -3190,6 +3193,409 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
     }
 }
 
+// --- task TR.1: the transition contract, in the model -----------------------
+//
+// One question — "how does the audience get to this slide?" — with exactly one
+// answer at runtime, found by walking named seats in a fixed order. These
+// fixtures pin the three things that make that true: the band every door
+// quotes, the priority the walk follows, and the fact that silence (an absent
+// override) is different from an answer that happens to look like the default.
+void exerciseTransition() {
+    using openshow::domain::TransitionKind;
+    using openshow::domain::TransitionOptions;
+    std::string error;
+
+    // --- the band, and what the gate asks about it --------------------------
+    {
+        const TransitionOptions& quiet = TransitionOptions::defaults();
+        check(quiet.kind == TransitionKind::kFade && quiet.textDurationMs == 500 &&
+                  quiet.mediaDurationMs == 800 && quiet.isDefault() &&
+                  quiet.durationsAreDefault(),
+              "the contract's defaults are the 500 ms words / 800 ms media crossfade "
+              "every present before TR.1 performed");
+
+        TransitionOptions cut;
+        cut.kind = TransitionKind::kCut;
+        check(cut.durationsAreDefault() && !cut.isDefault() &&
+                  openshow::domain::Documents::validTransitionOptions(cut, &error),
+              "a Cut with default lengths is NOT a default record but IS legacy-expressible: "
+              "scene.present has spelled \"cut\" since task 3.2, so the gate lets it travel");
+
+        TransitionOptions slower;
+        slower.textDurationMs = 501;
+        check(!slower.durationsAreDefault(),
+              "one moved millisecond is a value a pre-TR.1 worker has never met");
+
+        const auto refusedBand = [&](const TransitionOptions& candidate,
+                                     const std::string& expectIn, const char* what) {
+            error.clear();
+            const bool rejected = !openshow::domain::Documents::validTransitionOptions(
+                candidate, &error);
+            if (!check(rejected && error.find(expectIn) != std::string::npos, what)) {
+                std::fprintf(stderr, "   wanted \"%s\", sentence said: %s\n", expectIn.c_str(),
+                             error.c_str());
+            }
+        };
+        for (int tooLong : {10001, 2147483647}) {
+            TransitionOptions longWay;
+            longWay.textDurationMs = tooLong;
+            refusedBand(longWay, "words duration",
+                        "a words duration above the band is refused naming the track");
+            TransitionOptions longMedia;
+            longMedia.mediaDurationMs = tooLong;
+            refusedBand(longMedia, "background duration",
+                        "and a background duration above it naming the other");
+        }
+        for (int negative : {-1, -2000}) {
+            TransitionOptions backwards;
+            backwards.mediaDurationMs = negative;
+            refusedBand(backwards, "background duration",
+                        "a negative duration is refused rather than clamped to zero — "
+                        "an operator who typed -1 did not ask for an instant cut");
+        }
+        // The ends of the band are IN: 0 means "this track lands immediately",
+        // and 10000 is a long fade somebody has a use for.
+        TransitionOptions bothEnds;
+        bothEnds.textDurationMs = 0;
+        bothEnds.mediaDurationMs = openshow::domain::kMaxTransitionDurationMs;
+        check(openshow::domain::Documents::validTransitionOptions(bothEnds, &error),
+              "0 ms on one track and 10 s on the other are both inside the band");
+        check(openshow::domain::transitionKindName(TransitionKind::kFade) == std::string("fade") &&
+                  openshow::domain::transitionKindName(TransitionKind::kCut) == std::string("cut"),
+              "the two kinds are spelled \"fade\" and \"cut\" — the names the wire and the "
+              "service file share");
+        TransitionKind named = TransitionKind::kCut;
+        check(!openshow::domain::transitionKindFromName("dissolve", &named) &&
+                  named == TransitionKind::kCut,
+              "an unknown kind name is refused and leaves the value it was handed alone");
+    }
+
+    // --- the walk: context, then first theme in chain order, then service ---
+    Documents docs;
+    const Id show = docs.createShow("Moving");
+    const Id plain = docs.appendSlide(show);
+    const Id scripture = docs.appendSlide(show);
+    const Id current = docs.createTheme("Current", "#555555", "#666666", "", "Current Sans",
+                                        60.0, "center", 1.5, &error);
+    const Id base = docs.createTheme("Base", "#111111", "#222222", "", "Base Serif", 40.0,
+                                     "left", 1.1, &error);
+    const auto options = [](TransitionKind kind, int textMs, int mediaMs) {
+        TransitionOptions out;
+        out.kind = kind;
+        out.textDurationMs = textMs;
+        out.mediaDurationMs = mediaMs;
+        return out;
+    };
+    check(!show.empty() && !plain.empty() && !scripture.empty() && !current.empty() &&
+              !base.empty() && docs.setShowDefaultTheme(show, base, &error) &&
+              docs.setCurrentTheme(current, &error) &&
+              docs.setSlideTextContext(show, scripture, "scripture", &error),
+          "a show with a current theme worn over a show default, and a slide set in "
+          "the scripture context, exists");
+
+    // Nothing anywhere has said anything: the service's own concrete answer.
+    check(docs.resolveTransitionForSlide(show, plain) == TransitionOptions::defaults() &&
+              docs.serviceDefaultTransition() == TransitionOptions::defaults() &&
+              !docs.findTheme(current)->transition.has_value() &&
+              !docs.findTheme(base)->transition.has_value(),
+          "a service nobody configured resolves every slide to the contract's 500 / 800 "
+          "and carries no override key anywhere");
+
+    // The service default is a value, not a maybe, and it moves the answer for
+    // every slide no layer speaks for.
+    const TransitionOptions service = options(TransitionKind::kCut, 0, 0);
+    check(docs.setServiceDefaultTransition(service, &error) &&
+              docs.resolveTransitionForSlide(show, plain) == service,
+          "setting the service default makes every unclaimed slide cut");
+
+    // A theme in the chain answers for the slides wearing it, and the first
+    // theme in chain order wins — here the current theme, worn over the
+    // show's default.
+    const TransitionOptions brisk = options(TransitionKind::kFade, 200, 300);
+    const TransitionOptions house = options(TransitionKind::kCut, 40, 60);
+    check(docs.setThemeTransition(current, brisk, &error) &&
+              docs.setThemeTransition(base, house, &error) &&
+                  docs.resolveTransitionForSlide(show, plain) == brisk,
+          "the first theme in chain order answers, and an explicit Cut under it is "
+          "not consulted — a decision is not an absence");
+
+    // Silencing the nearer theme lets the walk fall through to the NEXT named
+    // layer, which is not the service: absence and an answer that merely LOOKS
+    // like a default are different things, three seats deep.
+    check(docs.setThemeTransition(current, std::nullopt, &error) &&
+              docs.resolveTransitionForSlide(show, plain) == house,
+          "taking the nearer theme's override off is a real inherit: the walk reaches "
+          "the show default's record, not the service's");
+
+    // The context speaks for the slide it set, ahead of every theme.
+    const TransitionOptions slow = options(TransitionKind::kFade, 1000, 1200);
+    openshow::domain::TextContext verse;
+    verse.name = "scripture";
+    verse.transition = slow;
+    check(docs.setThemeContexts(base, {verse}, &error) &&
+              docs.resolveTransitionForSlide(show, scripture) == slow &&
+                  docs.resolveTransitionForSlide(show, plain) == house,
+          "a context's override answers for the slide set in it while the slide "
+          "without a context keeps the theme's answer");
+
+    // A context that carries no transition is silence, not a zero-length fade.
+    verse.transition = std::nullopt;
+    check(docs.setThemeContexts(base, {verse}, &error) &&
+              docs.resolveTransitionForSlide(show, scripture) == house,
+          "a context with no transition inherits like anything else — the slide it set "
+          "still gets the theme's answer");
+
+    // The whole-set write cannot smuggle past the sentence the verb quotes.
+    openshow::domain::TextContext tooFar;
+    tooFar.name = "scripture";
+    tooFar.transition = options(TransitionKind::kFade, 10001, 800);
+    error.clear();
+    check(!docs.setThemeContexts(base, {tooFar}, &error) &&
+              error.find("transition") != std::string::npos &&
+                  docs.resolveTransitionForSlide(show, scripture) == house,
+          "a context set carrying an out-of-band duration is refused by the same sentence "
+          "the single-field verb quotes, and the context keeps what it had");
+
+    // --- the verbs refuse the wrong clicks, naming them ---------------------
+    error.clear();
+    check(!docs.setServiceDefaultTransition(options(TransitionKind::kFade, -5, 800), &error) &&
+              error.find("words duration") != std::string::npos &&
+                  docs.serviceDefaultTransition() == service,
+          "a refused service-default write leaves the standing value exactly where it was");
+    error.clear();
+    check(!docs.setThemeTransition("no-such-theme", options(TransitionKind::kCut, 0, 0), &error) &&
+              error.find("no-such-theme") != std::string::npos,
+          "overriding a theme that does not exist is refused naming it");
+    error.clear();
+    check(!docs.setTextContextTransition(current, "scripture",
+                                         options(TransitionKind::kCut, 0, 0),
+                                         &error) &&
+              error.find("scripture") != std::string::npos,
+          "overriding a context the theme does not carry is refused naming the context — "
+          "a silent success would teach the operator the view has no override");
+    check(docs.setTextContextTransition(base, "scripture", options(TransitionKind::kCut, 10, 20),
+                                        &error) &&
+              !docs.findTheme(base)->contexts.empty() &&
+              docs.findTheme(base)->contexts[0].transition ==
+                  options(TransitionKind::kCut, 10, 20) &&
+                  docs.resolveTransitionForSlide(show, scripture) ==
+                      options(TransitionKind::kCut, 10, 20),
+          "the single-context verb sets one context's record and the walk finds it");
+    check(docs.setTextContextTransition(base, "scripture", std::nullopt, &error) &&
+              !docs.findTheme(base)->contexts[0].transition.has_value() &&
+                  docs.resolveTransitionForSlide(show, scripture) == house,
+          "and the same verb with no record takes the override off, back to the theme");
+
+    // An unknown slide or show is not a failure: the cue still has to move.
+    check(docs.resolveTransitionForSlide(show, "no-such-slide") == service &&
+              docs.resolveTransitionForSlide("no-such-show", plain) == service,
+          "a slide the model cannot name resolves to the service's own record rather "
+          "than to nothing — the audience is owed a reveal either way");
+}
+
+// --- task TR.1: the same contract, in the bytes -----------------------------
+void exerciseTransitionStorage(const fs::path& tempRoot) {
+    using openshow::domain::TransitionKind;
+    using openshow::domain::TransitionOptions;
+    const auto options = [](TransitionKind kind, int textMs, int mediaMs) {
+        TransitionOptions out;
+        out.kind = kind;
+        out.textDurationMs = textMs;
+        out.mediaDurationMs = mediaMs;
+        return out;
+    };
+    std::string error;
+    int seq = 0;
+    const auto refusesJson = [&](const std::string& manifest, const std::string& expectIn,
+                                 const char* what) {
+        const fs::path dir = tempRoot / ("transition-refuse-" + std::to_string(++seq));
+        std::filesystem::create_directories(dir);
+        writeFile(dir / "service.json", manifest);
+        Documents attempt;
+        error.clear();
+        const bool refused = openshow::domain::loadService(&attempt, dir, &error);
+        if (!check(!refused && error.find(expectIn) != std::string::npos, what)) {
+            std::fprintf(stderr, "   wanted \"%s\", load %s: %s\n", expectIn.c_str(),
+                         refused ? "succeeded" : "said", error.c_str());
+        }
+    };
+
+    // --- written, read back, and written again identically ------------------
+    {
+        const fs::path dir = tempRoot / "transition-round";
+        Documents docs;
+        const Id show = docs.createShow("Timed");
+        const Id slide = docs.appendSlide(show);
+        const Id theme = docs.createTheme("Brisk", "#ffffff", "#000000", "", "Serif", 64.0,
+                                          "center", 1.5, &error);
+        openshow::domain::TextContext verse;
+        verse.name = "scripture";
+        verse.transition = options(TransitionKind::kFade, 1500, 1800);
+        check(!theme.empty() && !slide.empty() &&
+                  docs.setServiceDefaultTransition(options(TransitionKind::kCut, 0, 0), &error) &&
+                  docs.setThemeTransition(theme, options(TransitionKind::kFade, 100, 200), &error) &&
+                  docs.setShowDefaultTheme(show, theme, &error) &&
+                  docs.setThemeContexts(theme, {verse}, &error) &&
+                  openshow::domain::saveService(docs, dir, &error),
+              "a service with a moved service default, a theme override and a context "
+              "override saves");
+        const std::string manifest = readFile(dir / "service.json");
+        check(manifest.find("\"kind\":\"cut\"") != std::string::npos &&
+                  manifest.find("\"kind\":\"fade\"") != std::string::npos,
+              "both kinds are written by name");
+        Documents back;
+        check(openshow::domain::loadService(&back, dir, &error) && sameService(back, docs) &&
+                  back.serviceDefaultTransition() == options(TransitionKind::kCut, 0, 0) &&
+                  back.findTheme(theme)->transition ==
+                      options(TransitionKind::kFade, 100, 200) &&
+                  !back.findTheme(theme)->contexts.empty() &&
+                  back.findTheme(theme)->contexts[0].transition ==
+                      options(TransitionKind::kFade, 1500, 1800),
+              "all three seats read back field for field and the whole service compares");
+        check(back.resolveTransitionForSlide(show, slide) ==
+                  options(TransitionKind::kFade, 100, 200),
+              "and the reloaded document resolves the same slide to the same record — "
+              "a cue's move survives save and reopen");
+        check(openshow::domain::saveService(back, tempRoot / "transition-again", &error) &&
+                  readFile(tempRoot / "transition-again" / "service.json") == manifest,
+              "re-saving a transition-carrying service writes a byte-identical manifest");
+    }
+
+    // Silence is written as silence at the two OVERRIDE seats — an unconfigured
+    // document keeps the shape it had before the contract existed — while the
+    // ROOT record is always there, because a service's own answer has no
+    // "absent" state to fall back to.
+    {
+        Documents docs;
+        const Id show = docs.createShow("Quiet");
+        docs.appendSlide(show);
+        const Id theme = docs.createTheme("Still", "#ffffff", "#000000", "", "Serif", 64.0,
+                                          "center", 1.5, &error);
+        openshow::domain::TextContext bare;
+        bare.name = "scripture";
+        const fs::path dir = tempRoot / "transition-silent";
+        check(!theme.empty() && docs.setShowDefaultTheme(show, theme, &error) &&
+                  docs.setThemeContexts(theme, {bare}, &error) &&
+                  openshow::domain::saveService(docs, dir, &error),
+              "a service nobody configured saves");
+        const std::string manifest = readFile(dir / "service.json");
+        check(manifest.find("\"transition\":{") != std::string::npos,
+              "the root transition record is written even when nobody opened the settings "
+              "— the service's answer is a value, not a maybe");
+        // Count them: exactly one in the file (the root's), so neither the
+        // theme nor the context wrote a key for carrying nothing.
+        std::size_t occurrences = 0;
+        for (std::size_t at = manifest.find("\"transition\""); at != std::string::npos;
+             at = manifest.find("\"transition\"", at + 1)) {
+            ++occurrences;
+        }
+        check(occurrences == 1,
+              "and exactly one — a theme or a context that says nothing about movement "
+              "writes no key, so old documents keep their shape through this build");
+    }
+
+    // --- the era guards -----------------------------------------------------
+    // One theme fixture, spelled complete, waiting for one transition key to
+    // be appended before its closing brace, plus a root that may or may not
+    // carry the service's own record.
+    const std::string themeStart =
+        R"({"id":"theme1","name":"House","textColor":"#ffffff","backgroundColor":"#000000",)"
+        R"("backgroundGradient":"","fontFamily":"","fontSize":64,"align":"center",)"
+        R"("lineSpacing":1.5)";
+    const std::string serviceHead =
+        R"({"format":)" + std::string("{F}") +
+        R"(,"nextOrdinal":99,"currentThemeId":"",{R}"shows":[],"themes":[)";
+    const std::string themesTail = R"(],"assets":[],"playlists":[]})";
+    const auto themed = [&](unsigned long long format, const std::string& rootRecord,
+                            const std::string& extraThemeKey) {
+        std::string head = serviceHead;
+        head.replace(head.find("{F}"), 3, std::to_string(format));
+        head.replace(head.find("{R}"), 3, rootRecord);
+        return head + themeStart + extraThemeKey + "}" + themesTail;
+    };
+    const std::string rootFade =
+        R"("transition":{"kind":"fade","textDurationMs":500,"mediaDurationMs":800},)";
+    const std::string goodRecord =
+        R"(,"transition":{"kind":"cut","textDurationMs":0,"mediaDurationMs":0})";
+
+    // Format 8 never knew the key, in the root or on a theme.
+    refusesJson(themed(8, "", goodRecord), "theme 'theme1' carries \"transition\" in a format 8",
+                "a theme transition in a format-8 file is refused naming the era");
+    const std::string rootOnly8 =
+        R"({"format":8,"nextOrdinal":99,"currentThemeId":"","transition":{"kind":"fade",)"
+        R"("textDurationMs":500,"mediaDurationMs":800},"shows":[],"themes":[],)"
+        R"("assets":[],"playlists":[]})";
+    refusesJson(rootOnly8, "\"transition\" is present in a format 8 file",
+                "and a root transition in that era is refused the same way — it is another "
+                "build's meaning of a key this writer never emitted");
+    // Format 9 knows the key, so a bad VALUE in it is refused by the sentence,
+    // and a missing root record is not a package this build produced.
+    refusesJson(themed(9, rootFade, R"(,"transition":{"kind":"fade","textDurationMs":10001,)"
+                                    R"("mediaDurationMs":800})"),
+                "words duration",
+                "a format-9 theme override outside the band meets the domain's own sentence");
+    refusesJson(themed(9, rootFade, R"(,"transition":{"kind":"fade","textDurationMs":300})"),
+                "whole record or nothing",
+                "half a transition record is refused: kind and both lengths travel together");
+    refusesJson(themed(9, rootFade,
+                       R"(,"transition":{"kind":"fade","textDurationMs":300,"mediaDurationMs":400,)"
+                       R"("curve":"ease"})"),
+                "transition has no field 'curve'",
+                "and a member the record never had is refused naming itself");
+    refusesJson(themed(9, rootFade, R"(,"transition":{"kind":"wipe","textDurationMs":1,)"
+                                     R"("mediaDurationMs":2})"),
+                "kind is 'wipe'",
+                "an unknown kind name in the file is refused, not read as a fade");
+    refusesJson(themed(9, "", goodRecord), "has no \"transition\" record of its own",
+                "a format-9 package with no root transition is refused — a 9-file always "
+                "carries its service's answer");
+    refusesJson(themed(9,
+                       R"("transition":{"kind":"fade","textDurationMs":500,"mediaDurationMs":-1},)",
+                       goodRecord),
+                "background duration",
+                "and an out-of-band service default is refused before the model is built");
+
+    // A context's override is format 9's too, one level deeper.
+    const std::string contextHead =
+        R"({"format":)" + std::string("{F}") +
+        R"(,"nextOrdinal":99,"currentThemeId":"","shows":[],"themes":[{"id":"theme1",)"
+        R"("name":"House","textColor":"#ffffff","backgroundColor":"#000000",)"
+        R"("backgroundGradient":"","fontFamily":"","fontSize":64,"align":"center",)"
+        R"("lineSpacing":1.5,"contexts":[{"name":"scripture"{C}}]}],"assets":[],)"
+        R"("playlists":[]})";
+    const auto withContext = [&](unsigned long long format, const std::string& rootRecord,
+                                 const std::string& extraContextKey) {
+        std::string head = contextHead;
+        head.replace(head.find("{F}"), 3, std::to_string(format));
+        // The root record member has to land before "shows", so splice it in
+        // where the fixture left the marker for it.
+        const std::size_t at = head.find("\"shows\"");
+        head.insert(at, rootRecord);
+        head.replace(head.find("{C}"), 3, extraContextKey);
+        return head;
+    };
+    const std::string contextRecord =
+        R"(,"transition":{"kind":"fade","textDurationMs":1,"mediaDurationMs":2})";
+    refusesJson(withContext(8, "", contextRecord),
+                "carries \"transition\" in a format 8 file, where a context",
+                "a context transition in a format-8 file is refused naming the era and "
+                "what a context held then");
+    check(!withContext(9, rootFade, contextRecord).empty(),
+          "the same record in a format-9 file is the shape the writer uses");
+    {
+        const fs::path dir = tempRoot / "transition-context-era";
+        std::filesystem::create_directories(dir);
+        writeFile(dir / "service.json", withContext(9, rootFade, contextRecord));
+        Documents back;
+        error.clear();
+        check(openshow::domain::loadService(&back, dir, &error) &&
+                  !back.findTheme("theme1")->contexts.empty() &&
+                  back.findTheme("theme1")->contexts[0].transition ==
+                      options(TransitionKind::kFade, 1, 2),
+              "and a format-9 file's context override reads back as the record it says");
+    }
+}
+
 void exerciseDefaultThemeFloor(const fs::path& tempRoot) {
     Documents docs;
     std::string error;
@@ -4082,6 +4488,7 @@ int main() {
     exerciseThemePlacement();
     exerciseTextContextChain();
     exerciseTextStyle();
+    exerciseTransition();
     exercisePlaylists();
     exerciseFailureLeavesNoTrace();
 
@@ -4092,6 +4499,7 @@ int main() {
     exercisePersistence(tempRoot);
     exerciseBoxStorage(tempRoot);
     exerciseTextStyleStorage(tempRoot);
+    exerciseTransitionStorage(tempRoot);
     exerciseDefaultThemeFloor(tempRoot);
     exerciseScriptureShows(tempRoot);
     std::filesystem::remove_all(tempRoot);

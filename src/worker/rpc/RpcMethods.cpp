@@ -312,6 +312,80 @@ bool parseMeasureStyle(const boost::json::object& block, OutputSession::MeasureB
     return true;
 }
 
+// scene.present's transition (task TR.1). The whole record is parsed here,
+// once, before the store is touched:
+//
+//   - "transition"  absent = "fade"; present must be "fade" or "cut", read
+//     through the domain's ONE spelling of the two names rather than a local
+//     copy that could drift from what the service file writes;
+//   - "textDurationMs" / "mediaDurationMs" absent = the domain's default for
+//     that track (500 / 800), which is what every pre-TR.1 present performed;
+//     present must be a WHOLE number of milliseconds inside the band, so
+//     "500.5" and "500s" and -1 and 10001 are refusals naming the key, never
+//     a rounding or a clamp. A truncated duration is a fade the operator did
+//     not ask for, and the audience cannot tell.
+//
+// The band itself is not re-derived here: Documents::validTransitionOptions is
+// the sentence the verbs, the loader and this handler all quote, so a payload
+// this worker accepts is a payload this build could have stored. And it runs
+// whatever the kind says — a Cut still CARRIES durations (the record is
+// atomic), and vetting only fades would let a malformed number ride through
+// on a present that happens to cut.
+bool parsePresentTransition(const boost::json::object& args,
+                            openshow::domain::TransitionOptions* out, std::string* why) {
+    *out = openshow::domain::TransitionOptions::defaults();
+    if (const auto entry = args.find("transition"); entry != args.end()) {
+        if (!entry->value().is_string()) {
+            *why = "\"transition\" must be a string";
+            return false;
+        }
+        if (!openshow::domain::transitionKindFromName(std::string(entry->value().as_string()),
+                                                      &out->kind)) {
+            *why = "\"transition\" must be \"fade\" or \"cut\"";
+            return false;
+        }
+    }
+    // The refusal every duration-shaped argument earns, naming the key.
+    const auto refusal = [](const char* key) {
+        return std::string("\"") + key + "\" must be a whole number of milliseconds";
+    };
+    for (const std::pair<const char*, int*> track : {
+             std::pair{"textDurationMs", &out->textDurationMs},
+             std::pair{"mediaDurationMs", &out->mediaDurationMs}}) {
+        const auto entry = args.find(track.first);
+        if (entry == args.end()) {
+            continue;  // absent: this present names no length for that track
+        }
+        double value = 0.0;
+        if (entry->value().is_int64()) {
+            value = static_cast<double>(entry->value().as_int64());
+        } else if (entry->value().is_uint64()) {
+            value = static_cast<double>(entry->value().as_uint64());
+        } else if (entry->value().is_double()) {
+            value = entry->value().as_double();
+        } else {
+            *why = refusal(track.first);
+            return false;
+        }
+        // Fractional, NaN, infinite and un-representable numbers all refuse: a
+        // truncated duration is a fade the operator did not ask for, and a
+        // number this record cannot hold is not a duration at all. The band
+        // proper is the shared sentence's business below.
+        if (!std::isfinite(value) || value != std::floor(value) ||
+            value < -2147483648.0 || value > 2147483647.0) {
+            *why = refusal(track.first);
+            return false;
+        }
+        *track.second = static_cast<int>(value);
+    }
+    std::string detail;
+    if (!openshow::domain::Documents::validTransitionOptions(*out, &detail)) {
+        *why = detail;
+        return false;
+    }
+    return true;
+}
+
 boost::json::value layersObject(uint32_t mask) {
     boost::json::object layers;
     for (uint32_t i = 0; i < static_cast<uint32_t>(LayerId::kCount); ++i) {
@@ -710,32 +784,27 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
                                outbound);
             return;
         }
-        // Optional transition (task 3.2): "fade" (the default) or "cut".
-        SceneTransitionKind kind = SceneTransitionKind::kFade;
-        const boost::json::object& args = given.as_object();
-        if (const auto it = args.find("transition"); it != args.end()) {
-            if (!it->value().is_string()) {
-                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
-                                                    "scene.present \"transition\" must be "
-                                                    "a string"),
-                                   outbound);
-                return;
-            }
-            const std::string_view transition = it->value().as_string();
-            if (transition == "fade") {
-                kind = SceneTransitionKind::kFade;
-            } else if (transition == "cut") {
-                kind = SceneTransitionKind::kCut;
-            } else {
-                proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
-                                                    "scene.present \"transition\" must be "
-                                                    "\"fade\" or \"cut\""),
-                                   outbound);
-                return;
-            }
+        // The transition this present names (task TR.1): the existing
+        // "transition" kind plus the two OPTIONAL whole-millisecond durations.
+        // Absent fields are the record every present before TR.1 asked for —
+        // the domain's 500/800 fade — so a pre-TR.1 frontend's payload means
+        // exactly what it meant yesterday. A present is a command, and a
+        // command carries its whole answer: this parses into one record, and
+        // the shared domain sentence vets it, so "10001" refuses here with the
+        // same words the service file and the verbs use. The vetting runs on
+        // the record whether the kind is fade OR cut: a cut carries durations
+        // too (the record is atomic), and refusing only for fades would let a
+        // malformed number land on a scene that happens to be a cut.
+        openshow::domain::TransitionOptions transition;
+        std::string why;
+        if (!parsePresentTransition(given.as_object(), &transition, &why)) {
+            proto::appendFrame(proto::makeError(id, proto::kInvalidParams,
+                                                "scene.present " + why),
+                               outbound);
+            return;
         }
         std::uint64_t revision = 0;
-        if (!fSession.presentScene(prepared, &revision, kind)) {
+        if (!fSession.presentScene(prepared, &revision, transition)) {
             proto::appendFrame(
                 proto::makeError(id, proto::kInvalidParams,
                                  "no prepared scene with revision " +

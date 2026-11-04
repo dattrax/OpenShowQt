@@ -1810,9 +1810,9 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
         std::ifstream manifest(root / "service" / "service.json");
         const std::string text{std::istreambuf_iterator<char>(manifest),
                                std::istreambuf_iterator<char>()};
-        check(text.find("\"format\":8") != std::string::npos &&
+        check(text.find("\"format\":9") != std::string::npos &&
                   text.find("\"fit\":\"contain\"") != std::string::npos,
-              "the manifest is this build's format (8 since TS.1) and spells the slide's fit");
+              "the manifest is this build's format (9 since TR.1) and spells the slide's fit");
     }
     {
         DocumentController reopened(nullptr, root);
@@ -3071,6 +3071,200 @@ void exerciseTextStyleSurfaces(const std::filesystem::path& root) {
 // fragment); null clears a scalar to inherit but is refused on an effect
 // member; refusals cost no undo; and the sample's appearance now carries
 // the resolved typography and effects for the inherit badges.
+// Task TR.1's doors on the transition contract: the three verbs (the service's
+// own default, a theme's override, a text context's), the reads the cue lane and
+// a settings page share so an operator's number and a cue's number cannot
+// disagree, and the three things a controller adds to the domain's model —
+// refusals that reach the status line naming the field, undo over every write,
+// and duplication carrying the record.
+void exerciseTransitionSurfaces(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong("Moving");
+    docs.addSlide();
+    docs.selectSlide(0);
+    const QString showId = docs.currentSongId();
+    const QString slideId = docs.slides().at(0).toMap().value(QStringLiteral("id")).toString();
+    check(docs.createBlankTheme("House"), "a blank theme exists to give a movement");
+    QString house;
+    for (const QVariant& theme : docs.themes()) {
+        if (theme.toMap().value(QStringLiteral("name")).toString() == QStringLiteral("House")) {
+            house = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    check(!house.isEmpty() && docs.applyThemeToCurrentSlide(house), "the slide wears House");
+
+    const auto record = [](const char* kind, int textMs, int mediaMs) {
+        QVariantMap out;
+        out.insert(QStringLiteral("kind"), QString::fromLatin1(kind));
+        out.insert(QStringLiteral("textDurationMs"), textMs);
+        out.insert(QStringLiteral("mediaDurationMs"), mediaMs);
+        return out;
+    };
+
+    // --- unconfigured: both reads answer the contract -----------------------
+    const QVariantMap contract = record("fade", 500, 800);
+    check(docs.serviceDefaultTransition() == contract &&
+              docs.transitionForSlide(showId, slideId) == contract,
+          "a document nobody configured resolves the service default and the slide to the "
+          "same concrete 500 ms / 800 ms crossfade");
+
+    // --- the service default verb -------------------------------------------
+    check(docs.setServiceDefaultTransition("cut", 0, 0), "the service's answer is set to a cut");
+    check(docs.serviceDefaultTransition() == record("cut", 0, 0) &&
+              docs.transitionForSlide(showId, slideId) == record("cut", 0, 0),
+          "and every slide no layer speaks for now cuts");
+    check(!docs.setServiceDefaultTransition("wipe", 500, 800) &&
+              docs.status().contains(QStringLiteral("kind")),
+          "an unknown kind is refused, naming what it was given");
+    check(!docs.setServiceDefaultTransition("fade", 10001, 800) &&
+              docs.status().contains(QStringLiteral("textDurationMs")),
+          "a words duration above the band is refused naming the wire key the field has");
+    check(!docs.setServiceDefaultTransition("fade", 500, -1) &&
+              docs.status().contains(QStringLiteral("mediaDurationMs")),
+          "and a negative background duration with it");
+    check(docs.serviceDefaultTransition() == record("cut", 0, 0),
+          "three refusals and the standing default has not moved by one millisecond");
+    check(docs.canUndo(), "the service default's write is on the undo stack");
+    docs.undo();
+    check(docs.serviceDefaultTransition() == contract,
+          "one undo takes the service's answer back to the contract's");
+    docs.redo();
+    check(docs.serviceDefaultTransition() == record("cut", 0, 0), "and redo brings the cut back");
+
+    // --- the theme's override, and inherit ----------------------------------
+    const QVariantMap brisk = record("fade", 100, 200);
+    check(docs.setThemeTransition(house, brisk), "the theme is given a record of its own");
+    check(docs.transitionForSlide(showId, slideId) == brisk,
+          "the slide wearing it resolves to the theme's record, over the service's cut");
+    QVariantMap alien = brisk;
+    alien.insert(QStringLiteral("curve"), QStringLiteral("ease"));
+    check(!docs.setThemeTransition(house, alien) && docs.status().contains(QStringLiteral("curve")),
+          "a member the transition record never had is refused naming itself");
+    QVariantMap half;
+    half.insert(QStringLiteral("kind"), QStringLiteral("cut"));
+    check(!docs.setThemeTransition(house, half) &&
+              docs.status().contains(QStringLiteral("whole or absent")),
+          "half a record is refused: kind and both lengths travel together or not at all");
+    check(!docs.setThemeTransition(QStringLiteral("no-such-theme"), brisk) &&
+              docs.status().contains(QStringLiteral("no-such-theme")),
+          "and overriding a theme that does not exist is refused naming it");
+    check(docs.transitionForSlide(showId, slideId) == brisk,
+          "the refused writes left the theme's own answer exactly where it was");
+    check(docs.setThemeTransition(house, QVariantMap{}), "an EMPTY record is the inherit button");
+    check(docs.transitionForSlide(showId, slideId) == record("cut", 0, 0),
+          "and inheriting is real: the slide falls back to the service's cut, not to the "
+          "contract's fade — the two are different answers");
+
+    // --- duplication carries the movement ------------------------------------
+    check(docs.setThemeTransition(house, brisk), "House is given its record back to duplicate");
+    check(docs.duplicateTheme(house), "House is duplicated");
+    QString copy;
+    for (const QVariant& theme : docs.themes()) {
+        const QVariantMap map = theme.toMap();
+        if (map.value(QStringLiteral("name")).toString() == QStringLiteral("House copy")) {
+            copy = map.value(QStringLiteral("id")).toString();
+        }
+    }
+    if (check(!copy.isEmpty(), "the duplicate exists")) {
+        // The copy wears no slide yet, so the resolver cannot see it — which is
+        // why the duplicate is put on a second slide: what the copy CARRIES is
+        // only worth proving through the walk that decides a cue's move.
+        docs.addSlide();
+        docs.selectSlide(docs.slides().size() - 1);
+        const QString secondSlide =
+            docs.slides().at(docs.slides().size() - 1).toMap().value(QStringLiteral("id")).toString();
+        check(docs.applyThemeToCurrentSlide(copy) &&
+                  docs.transitionForSlide(showId, secondSlide) == brisk,
+              "a slide wearing the DUPLICATE resolves to the copied record — a theme that "
+              "lost its transition on the way through duplication would start "
+              "crossfading cues the operator had told it to cut");
+    }
+
+    // --- the Go-time read: a compiled scene names its own slide --------------
+    const QString authored = docs.sceneJsonForSlide(slideId);
+    if (check(!authored.isEmpty(), "the wearing slide compiles to a scene payload")) {
+        boost::system::error_code parseError;
+        const boost::json::value parsed = boost::json::parse(authored.toStdString(), parseError);
+        if (check(!parseError && parsed.is_object(), "and that payload parses")) {
+            const openshow::domain::TransitionOptions forScene =
+                docs.transitionForSceneJson(parsed.as_object());
+            check(forScene.textDurationMs == 100 && forScene.mediaDurationMs == 200,
+                  "the record a Go resolves for THAT payload is the record its own "
+                  "showId/slideId walk to");
+            const openshow::domain::TransitionOptions unplaced =
+                docs.transitionForSceneJson(boost::json::object{});
+            check(unplaced.kind == openshow::domain::TransitionKind::kCut &&
+                      unplaced.textDurationMs == 0 && unplaced.mediaDurationMs == 0,
+                  "a payload that names no slide answers with the service's own record "
+                  "(the cut 0/0 this session set) rather than nothing — the audience is "
+                  "owed a reveal either way");
+        }
+    }
+
+    // --- the text context's override, through a slide that names it ----------
+    // A scripture passage is the controller's own way to get a slide SET in a
+    // context (the importer names `scripture` on every slide it lays out), so
+    // this proves the context seat resolves through the same read the cue lane
+    // uses rather than only through the domain in isolation.
+    check(docs.addScripturePassage(docs.currentPlaylistId(), QStringLiteral("Psalm 1:1-2"),
+                                   QStringLiteral("ESV"), QStringLiteral("test licence"),
+                                   QVariantList{QVariantList{QStringLiteral("Blessed is the man")}}),
+          "a scripture passage is added, its slides set in the scripture context");
+    const QVariantMap scheduleRow = docs.playlistEntries().at(0).toMap();
+    const QString passageShow = scheduleRow.value(QStringLiteral("showId")).toString();
+    check(!passageShow.isEmpty(), "the schedule row names the passage's show");
+    const QVariantList passageSlides = docs.slidesOf(passageShow);
+    if (check(!passageSlides.isEmpty(), "the passage has slides")) {
+        const QString passageSlide =
+            passageSlides.at(0).toMap().value(QStringLiteral("id")).toString();
+        // The passage's show is worn by no theme of its own, so before the
+        // override it takes the service's cut like any unclaimed slide.
+        check(docs.transitionForSlide(passageShow, passageSlide) == record("cut", 0, 0),
+              "an unoverridden passage slide follows the service");
+        QVariantMap contextCreate;
+        contextCreate.insert(QStringLiteral("fontSize"), 32.0);
+        check(docs.applyThemeContext(house, QStringLiteral("scripture"), contextCreate),
+              "House grows the scripture context");
+        const QVariantMap slow = record("fade", 1500, 1800);
+        check(!docs.setTextContextTransition(house, QStringLiteral("not-a-context"), slow) &&
+                  docs.status().contains(QStringLiteral("not-a-context")),
+              "overriding a context the theme does not carry is refused naming it — a "
+              "silent success would teach the operator the view has no override");
+        // A context only answers for a slide through a theme the slide's chain
+        // actually carries, so the service starts wearing House: the same walk
+        // the typography resolves through, and the reason the passage slide can
+        // have a scripture context to inherit at all.
+        check(docs.useThemeAsCurrent(house) &&
+                  docs.transitionForSlide(passageShow, passageSlide) == brisk,
+              "with House worn service-wide, the passage slide answers to House's own record");
+        check(docs.setTextContextTransition(house, QStringLiteral("scripture"), slow),
+              "the context's own record is set");
+        check(docs.transitionForSlide(passageShow, passageSlide) == slow,
+              "and the slide set in that context moves on the VIEW's timings, ahead of the "
+              "theme wearing it and of the service's cut");
+        check(docs.setTextContextTransition(house, QStringLiteral("scripture"), QVariantMap{}),
+              "the context can be told to say nothing again");
+        check(docs.transitionForSlide(passageShow, passageSlide) == brisk,
+              "and its slides fall to the NEXT layer — House's own record, not the "
+              "service's: inherit walks, it does not reset");
+    }
+
+    // --- and the whole thing survives the disk -------------------------------
+    check(docs.setServiceDefaultTransition("fade", 250, 350), "the service default moves again");
+    check(docs.save(), "the service saves with its transition records");
+    openshow::domain::Documents reopened;
+    std::string loadError;
+    if (check(openshow::domain::loadService(&reopened, root / "service", &loadError),
+              "the service reads back through the next session's load")) {
+        check(reopened.serviceDefaultTransition().textDurationMs == 250 &&
+                  reopened.serviceDefaultTransition().mediaDurationMs == 350,
+              "the next session's service default is the one this one set");
+        check(reopened.findTheme(house.toStdString())->transition.has_value() &&
+                  reopened.findTheme(house.toStdString())->transition->textDurationMs == 100,
+              "and so is the theme's override");
+    }
+}
+
 void exerciseTextStyleFieldMerge(const std::filesystem::path& root) {
     DocumentController docs(nullptr, root);
     docs.createSong("Merged");
@@ -3517,6 +3711,7 @@ int main(int argc, char* argv[]) {
     exercisePlacementSurfaces(tempRoot / "placementsurfaces");
     exerciseReadingContexts(tempRoot / "readingcontexts");
     exerciseTextStyleSurfaces(tempRoot / "textstyle");
+    exerciseTransitionSurfaces(tempRoot / "transitionsurfaces");
     exerciseTextStyleFieldMerge(tempRoot / "stylefields");
     exerciseThemeSampleViews(tempRoot / "sampleviews");
     exerciseScripturePassage(tempRoot / "scripturepassage");

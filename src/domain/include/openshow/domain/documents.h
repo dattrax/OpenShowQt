@@ -302,6 +302,81 @@ struct ThemeTextStyle {
     bool operator==(const ThemeTextStyle&) const = default;
 };
 
+// How the audience gets from the scene on air to the next one (task TR.1,
+// transition contract). It is a PRESENTATION OPTION, deliberately not a
+// member of a Slide or of a scene's static appearance: the same slide goes up
+// with a cut in one service and a crossfade in another, and a theme change
+// must never be able to restyle how the output moves.
+enum class TransitionKind { kFade, kCut };
+
+// The ONE spelling of the kinds, shared by the service file and the
+// scene.present wire — backgroundFitName's rule: two libraries each parsing
+// their own copy of a name list is how a model and a compiler drift.
+inline const char* transitionKindName(TransitionKind kind) {
+    return kind == TransitionKind::kCut ? "cut" : "fade";
+}
+inline bool transitionKindFromName(const std::string& name, TransitionKind* kind) {
+    if (name == "fade") {
+        *kind = TransitionKind::kFade;
+        return true;
+    }
+    if (name == "cut") {
+        *kind = TransitionKind::kCut;
+        return true;
+    }
+    return false;
+}
+
+// The band the review proposed and the UI exposes: milliseconds, 0..10000.
+// 0 on a track means that track lands immediately — it is an answer, not a
+// way of saying "unset" (unset is the ABSENT override, one level up). The two
+// defaults are the durations the renderer has always used, so the default
+// record IS today's output: a service that never opens the transition
+// settings crossfades words in half a second and its background in 0.8.
+// The foreground duration covers text AND foreground image items, because
+// that is what one draw stack paints; the media duration covers the
+// background composition.
+inline constexpr int kDefaultTransitionTextMs = 500;
+inline constexpr int kDefaultTransitionMediaMs = 800;
+inline constexpr int kMaxTransitionDurationMs = 10000;
+
+inline bool isTransitionDurationInBand(int milliseconds) {
+    return milliseconds >= 0 && milliseconds <= kMaxTransitionDurationMs;
+}
+
+// One complete transition answer. There is no partial record: a view either
+// says how it moves or says nothing and inherits (TextContext::transition /
+// Theme::transition are absent in that case), exactly like an effect record.
+struct TransitionOptions {
+    TransitionKind kind = TransitionKind::kFade;
+    int textDurationMs = kDefaultTransitionTextMs;
+    int mediaDurationMs = kDefaultTransitionMediaMs;
+
+    bool operator==(const TransitionOptions&) const = default;
+
+    // What every present before TR.1 asked for, and what a worker that has
+    // never heard of the duration fields does anyway: the values to hand a
+    // legacy present entry point rather than have it guess.
+    static const TransitionOptions& defaults() {
+        static const TransitionOptions kDefaults;
+        return kDefaults;
+    }
+    // True when the record says nothing a pre-TR.1 worker would do
+    // differently — the difference between an override that must be
+    // negotiated to the worker and one that cannot hurt it.
+    bool isDefault() const { return *this == defaults(); }
+    // True when both LENGTHS are the ones a worker that has never heard of
+    // the duration fields performs anyway. This, not isDefault(), is what the
+    // `scene.transition-options.v1` gate asks: "cut" is a spelling
+    // scene.present has carried since task 3.2, so a Cut cue travels to any
+    // worker at full fidelity, while a NUMBER the peer has never met is the
+    // only half of the record it could silently ignore.
+    bool durationsAreDefault() const {
+        return textDurationMs == kDefaultTransitionTextMs &&
+               mediaDurationMs == kDefaultTransitionMediaMs;
+    }
+};
+
 // What one slide's operator changed for itself (task TH.2, themes plan).
 // Sparse by construction: a field is present exactly when the slide
 // customized it, and resolution falls through per property — a slide that
@@ -555,6 +630,12 @@ struct TextContext {
     // canvas pixels on every side — the "slightly smaller bible box"
     // without naming four numbers. Mutually exclusive with `box`.
     std::optional<double> inset;
+    // How scripture cues move on screen when this context set the slide
+    // (task TR.1). Absent inherits the theme, then the service. It rides with
+    // the context rather than with the passage because it is how the view
+    // presents, not what the text says — and it is a whole record or nothing,
+    // like an effect.
+    std::optional<TransitionOptions> transition;
 
     bool operator==(const TextContext&) const = default;
 };
@@ -597,6 +678,11 @@ struct Theme {
     // travels the same chain as every other property — a slide that wants
     // its own spot customizes its placement and reverts it to follow again.
     std::optional<BoxRect> placement;
+    // How cues wearing this theme move on screen (task TR.1) — the Songs
+    // view's answer, since the theme IS that view. Absent is no opinion:
+    // the slide's context answers if it has one, then the service default.
+    // An explicit Cut is an answer, not a silence.
+    std::optional<TransitionOptions> transition;
     // Named text contexts (milestone TF): typography-and-box overrides
     // slides opt into by name. Empty is exactly the pre-TF theme; names
     // are unique and the resolver takes the FIRST entry a name matches.
@@ -878,6 +964,40 @@ public:
     bool setCurrentTheme(const Id& themeId, std::string* error = nullptr);
     const Id& currentThemeId() const { return fCurrentThemeId; }
 
+    // --- transitions (task TR.1, transition contract) ---
+
+    // The ONE sentence about what a transition answer may say: the kind is
+    // one of the two names and each duration is an integer 0..10000. Every
+    // door quotes it — the verb below, the loader's era-gated read, the
+    // scene.present RPC's parse of the optional wire fields — because a
+    // band written twice is two bands, and the one that drifted is the one
+    // that lets a file load which no renderer will honour.
+    static bool validTransitionOptions(const TransitionOptions& options,
+                                       std::string* error = nullptr);
+    // The service's standing answer for how the audience moves to the next
+    // scene. Unlike a view's override this is CONCRETE: a service that never
+    // opened the settings holds the 500/800 fade it always performed, so
+    // there is no "unset service default" for a resolver to explain.
+    bool setServiceDefaultTransition(const TransitionOptions& options,
+                                     std::string* error = nullptr);
+    const TransitionOptions& serviceDefaultTransition() const { return fTransition; }
+    // A theme's own answer (the Songs view). nullopt takes it off again —
+    // the theme says nothing about movement and whatever is under it answers.
+    bool setThemeTransition(const Id& themeId, const std::optional<TransitionOptions>& options,
+                            std::string* error = nullptr);
+    // The same for one named text context of a theme (the Bible view). The
+    // context must exist: a name nothing carries is a typo, not a view.
+    bool setTextContextTransition(const Id& themeId, const std::string& contextName,
+                                  const std::optional<TransitionOptions>& options,
+                                  std::string* error = nullptr);
+    // What one slide's cue resolves to, at the moment a Go is issued (TR.1's
+    // priority): the named context's override on the first theme in chain
+    // order that carries it, else the first theme override in chain order,
+    // else the service default. No per-slide override exists — the review
+    // kept movement a property of how a view presents, not of a slide — and
+    // an explicit Cut is an answer, so it stops the walk.
+    TransitionOptions resolveTransitionForSlide(const Id& showId, const Id& slideId) const;
+
     // Customization: what a slide's operator changed for itself.
     // setSlideCustomizations REPLACES the whole set — a field the caller
     // leaves unset is not customized — so the UI edits one field by
@@ -1000,10 +1120,26 @@ private:
     static bool validShadow(const TextShadow& shadow, std::string* error);
     Id nextId(const char* kind);
 
+    // The theme layers for one slide in the fixed priority order (task
+    // TH.2's walk, extracted for TR.1 so two resolvers cannot quietly
+    // disagree about precedence): current theme, then the slide's own, then
+    // the show's default, then the Default theme when nothing else named it.
+    // A reference to a vanished theme is no layer at all, exactly as
+    // themeForSlide has always degraded.
+    std::vector<const Theme*> themeChainForSlide(const Id& showId, const Id& slideId) const;
+    // The named context on the FIRST theme in that chain carrying it; null
+    // when the slide names no context or no layer carries the name.
+    static const TextContext* contextInChain(const std::vector<const Theme*>& chain,
+                                             const std::string& name);
+
     std::vector<Show> fShows;
     std::vector<Theme> fThemes;
     // The service's one current theme (task TH.2); "" is none.
     Id fCurrentThemeId;
+    // The service's one transition answer (task TR.1). Concrete by design:
+    // the 500/800 fade every present performed before the setting existed is
+    // this member's default value, so no resolver has to invent it.
+    TransitionOptions fTransition;
     std::vector<Asset> fAssets;
     std::vector<Playlist> fPlaylists;
     unsigned long long fNextOrdinal = 1;  // store-wide, ids never recycle

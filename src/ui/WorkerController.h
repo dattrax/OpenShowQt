@@ -376,6 +376,26 @@ public:
     // it cannot match, so a picker listing anything else offers families
     // the audience will never see.
     bool fontListSupported() const { return fFontListCapable; }
+
+    // --- how the audience moves (task TR.1) --------------------------------
+    // The worker's hello names scene.transition-options.v1: that worker takes
+    // its fade lengths from the durations this frontend sends. The name is
+    // withheld until the renderer draws them, so toward today's worker the
+    // answer is false and PresentationModel leaves the durations off the
+    // present (and says so on the status line) instead of quietly shipping
+    // numbers the audience's pixels would ignore.
+    bool transitionOptionsSupported() const { return fTransitionOptionsCapable; }
+    // Who answers "how does this slide's cue move?" (task TR.1). The documents
+    // own that question; this class only carries the answer to the cue lane,
+    // which is why it takes a callback rather than learning what a Theme is.
+    // Unset — a session with no documents at all — means the contract's own
+    // defaults, which is also exactly what a document that never opened the
+    // transition settings resolves to.
+    void setTransitionResolver(
+        std::function<openshow::domain::TransitionOptions(const boost::json::object& scene)>
+            resolver) {
+        fTransitionResolver = std::move(resolver);
+    }
     // The walk's state for the picker: "idle" (nothing asked on this
     // connection yet), "loading" (paging), "ready", "unsupported" (this
     // worker names no font.list), "unavailable" (the ask failed — the
@@ -482,6 +502,14 @@ private:
     // beside it belongs to the CONNECTION: a page that never gets sent,
     // or an answer that arrives after the session died, is nobody's list.
     bool fFontListCapable = false;
+
+    // scene.transition-options.v1 (task TR.1): see
+    // transitionOptionsSupported().
+    bool fTransitionOptionsCapable = false;
+    // The documents' transition answer, injected by whoever owns them
+    // (task TR.1); empty means no documents, so the contract's defaults.
+    std::function<openshow::domain::TransitionOptions(const boost::json::object& scene)>
+        fTransitionResolver;
     QString fFontListState;  // "" until a connection says anything
     QStringList fFontFamilies;
     QVariantMap fFontFaces;

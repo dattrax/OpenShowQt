@@ -57,9 +57,10 @@
 #include <map>
 #include <mutex>
 
+#include "openshow/domain/documents.h"  // TransitionOptions (task TR.1)
 #include "openshow/scene/scene.h"
 
-#include "render/Layer.h"  // ActiveScene, SceneTransitionKind
+#include "render/Layer.h"  // ActiveScene
 
 namespace openshow::worker {
 
@@ -79,7 +80,12 @@ public:
         uint64_t revision = 0;
         uint32_t mask = 0;
         uint64_t scene = 0;  // store id, 0 = nothing presented
-        SceneTransitionKind kind = SceneTransitionKind::kFade;
+        // The whole transition this command named (task TR.1): which reveal
+        // and how long each track takes. It travels with the change rather
+        // than being read when the frame is built, because the operator may
+        // have moved the setting on by then and the fade the audience is owed
+        // is the one the Go asked for.
+        openshow::domain::TransitionOptions transition;
         int monitor = -1;
         // The scene's immutable content, shared with the store and previews.
         // Without the pin a prepare after this capture could
@@ -151,13 +157,15 @@ public:
     // scene, which is an ordinary presentation. Queued state (pending) names
     // the accepted command until a presented frame carries its scene, so
     // re-presenting exactly what is confirmed on air starts no frame and queues
-    // nothing. The transition kind travels with the change to the frame that
-    // reveals it. *revisionOut always reports the current output revision, and
+    // nothing. The WHOLE transition travels with the change to the frame that
+    // reveals it (task TR.1): kind and both durations came off the intent that
+    // issued this Go, and nothing here re-reads a setting that may have moved
+    // since. *revisionOut always reports the current output revision, and
     // *changedOut says whether this ask moved the desired scene: a session that
     // keeps the store's contents pinned elsewhere (task 6.10) re-derives on a
     // change, not on every repeat of one that was already wanted.
-    bool present(uint64_t preparedRevision, SceneTransitionKind kind, uint64_t* revisionOut,
-                 bool* changedOut = nullptr);
+    bool present(uint64_t preparedRevision, const openshow::domain::TransitionOptions& transition,
+                 uint64_t* revisionOut, bool* changedOut = nullptr);
 
     // Turns one layer on or off and bumps the output revision the
     // acknowledgement reports; the change lands on the next frame's mask,
@@ -220,7 +228,10 @@ private:
 
     // Desired: what the newest accepted command asked for.
     uint64_t fDesiredScene = 0;
-    SceneTransitionKind fDesiredKind = SceneTransitionKind::kFade;
+    // The whole transition the newest accepted command named (task TR.1) —
+    // kind and both durations, held together so no half of one reveal can be
+    // newer than the other.
+    openshow::domain::TransitionOptions fDesiredTransition;
     uint32_t fDesiredMask = 0;
     int fDesiredMonitor = -1;
     uint64_t fRevision = 0;

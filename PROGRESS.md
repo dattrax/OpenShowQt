@@ -4,99 +4,118 @@ Updated: 2026-11-04 (Europe/London).
 
 ## Current checkpoint
 
-**TS.5 complete (2026-11-04): the typography fixtures now render faces somebody
-pinned, and a machine without them says so out loud.**
-`font_fixture_tests` draws Inter / Lora / Oswald at the exact google/fonts
-revision and SHA-256 the theme-editor review recorded — and because the manifest
-is a *copy* of that decision, the suite takes the review itself as argv[2] and
-asserts the two agree, before any skip decision, so a quietly drifted pin fails
-even on a machine that has no corpus at all — plus `Noto Sans` as the fixed
-fallback face the review told TS.5 to add, and each family's own `OFL.txt` (the
-four copyright lines differ, so one licence does not cover the set).
+**TR.1 complete (2026-11-04): a cue's transition is decided when Go is pressed,
+and it is the same answer all the way to the socket.**
 
-The fonts are **not vendored** — 3.3 MB of third-party binaries for a handful of
-fixtures is a packaging-policy question, not a test decision. `tools/
-setup-font-fixtures.sh` prepares a developer cache BY HAND (`prepare --download`
-or `--from DIR`, which finds either the flat or the upstream layout, plus
-`verify`/`status`), hash-checks every file it places and deletes one that
-disagrees, and installs nothing into the system. `$OPENSHOW_FONT_FIXTURE_DIR`
-else `${XDG_CACHE_HOME:-$HOME/.cache}/openshow/font-fixtures` is the one
-directory script and test share. **ctest never downloads.**
+Before this leaf the reveal was a kind (`fade`/`cut`) chosen near the draw, and
+the numbers behind it were two constants in the renderer. Now the command owns
+one atomic record — `domain::TransitionOptions{kind, textDurationMs,
+mediaDurationMs}` — and the interesting part of this leaf is everything that had
+to change for a *record* to survive a round trip through an asynchronous cue
+lane.
 
-Three corpus states, three honest outcomes: the suite re-hashes all eight files
-itself (the sha256 is written in the test, which is Qt-free, and self-tested
-against published vectors including the 56-byte length where padding spills a
-block) — **absent** is exit 77, which ctest prints as `Skipped` with the setup
-command in its output, while **corrupt** is a FAILURE naming the file and both
-hashes. "You have not prepared the corpus" and "your corpus is not the corpus we
-pinned" are the difference between an honest skip and measuring a different font.
+**One sentence about values.** `Documents::validTransitionOptions` is the only
+place the band exists (whole milliseconds 0..10000, defaults 500 ms words /
+800 ms media), and the three verbs, the loader's era-gated read and the worker's
+`scene.present` parse all quote it — so `10001` costs the same words at every
+door and no door can accept what another would refuse. Each refusal names both
+the operator's word and the wire key (`words duration ("textDurationMs") …`),
+because a settings page quotes this sentence to a person and a socket quotes it
+to whoever wrote the payload.
 
-Isolation is real: a private `fonts.conf` naming ONLY the corpus directory, with
-its own `cachedir` and **no `/etc/fonts` include**, is set before the engine
-exists, `XDG_CACHE_HOME` moves too — and `fixtureCorpusIsolation` then asserts
-the engine's OWN `listFonts()` scan names exactly the four pinned families while
-`OpenShow No Such Family 47` resolves to nothing. Resolution before pixels,
-because every claim downstream is about a named face.
+**Three seats, one walk.** One CONCRETE service default — there is no "unset
+service default" for a resolver to invent, since the 500/800 every present
+performed before this setting existed *is* its value — plus optional whole-record
+overrides on `Theme` (the Songs view) and `TextContext` (the Bible view). The
+walk follows the chain the typography already uses: the named context first (the
+view that set the slide is the nearer answer about how that view moves), then
+the FIRST theme in chain order (an explicit Cut stops the walk exactly like a
+fade does — a decision, not an absence), then the service. Silence is not a
+default: a theme that inherits reaches past the service to whatever is under it,
+and a context that says nothing is not a zero-length fade. A slide the model
+cannot name is not a refusal either — it answers with the service's record,
+because the audience is owed a reveal either way.
 
-What is now proven on those faces: body/caption line heights hold the 64/28
-ratio within 5%; four files really are four faces; weight 100→900 resolves a
-face (>20% more ink) **without moving or re-wrapping a line**; the widest legal
-stroke grows each edge by half its pen and a sigma-64 shadow at −40/−30 reaches
-20 px left and 15 px above the fill's box, with every pixel of both effects
-together inside TS.3's `ink` at the 0.5 snapshot scale and `fillInk` **exactly
-unmoved** — an outline must never be able to shift a `fits` verdict; shrink fits
-its box while `fixed` keeps the size and visibly overflows it; the deliberate
-missing family falls back to a face that is IN the corpus, byte-identical to
-rendering that family by name; and the per-family glyph matrix is printed and
-claimed only where the face has the glyph — no pinned face covers Hebrew, CJK
-or emoji, so those arrive as the placeholder box, which is the corpus's
-boundary stated rather than a product promise.
+**Service format 9.** The root record is written ALWAYS and REQUIRED (a 9-file
+with no `"transition"` is not a package this build produced; guessing which fade
+an unnamed key meant is how a document starts lying about its own output), the
+theme's and the context's are optional like placement, and the key is
+era-refused at all three sites in a pre-9 file — root, theme and context — where
+it is another build's meaning of a key this writer never emitted. A silent
+document writes exactly ONE `"transition"` (the root's), so existing documents
+keep their shape, and re-saving is byte-identical.
 
-Two measurement lessons are in the code, both found by the suite disagreeing
-with reality: an absolute background threshold reads a half-bright antialiased
-edge as a word that shrank by 2 px, so the fade's placement is compared at each
-frame's OWN peak (the boxes are then identical); and the three passes are
-separated by HUE rather than distance-to-authored-colour, because a blurred
-shadow blended with the backdrop has no pixel near `#00FFFF` at all. With those
-rulers, fill/stroke/shadow attenuate to median ratios 0.581 / 0.492 / 0.502.
+**The record belongs to the Go, not to the ack.** `ScenePrepareAsk.transition`
+is a value copy stamped by `armPrepare` through `Outbound::resolveTransition`,
+and `handlePrepareAck` puts *that* record on `scene.present` and consults nothing
+mutable — by the time an ack lands, "the settings" are whatever the operator has
+moved on to, and the cue they already pressed is owed the fade it was promised.
+Down the socket the whole record rides the change (`SceneStore::Snapshot.
+transition`; a repeat ask for the scene already desired changes nothing and
+cannot retime the reveal already owed — the R13 rule extended, not a new one),
+and `OutputSession::presentScene(prepared, revisionOut, const
+TransitionOptions&)` has NO default argument: a legacy entry point says so by
+handing over `defaults()` in the open, because a present that quietly invented
+one is how a queued reveal ends up timed by whatever the settings screen held
+when the frame was built.
 
-Costs are the record, and printed cold by ordering (this fixture runs before
-anything touches the engine): whole-corpus scan 0.4 ms then 0.00 ms cached,
-first shape ≤0.9 ms per family and ≤0.01 ms steady, 12 scene builds in 1.7 ms
-with the layout cache at exactly four resident / fifth evicted / fifty draws
-hitting ONE retained layout — finite occupancy after churn and no re-shaping on
-a steady draw, observed by pointer identity rather than inferred from a
-stopwatch. **No product change was needed**: TS.1–TS.4 already ship every
-surface these fixtures exercise, and TS.5 claimed no format bump — nothing here
-is stored or put on the wire.
+**The honest half: the capability is NOT advertised.** Protocol minor is **18**
+and `scene.transition-options.v1` is defined, but deliberately absent from the
+worker's hello, because this build's crossfade still runs on the library's own
+0.5 / 0.8 s constants — the claim has to be earned by the renderer, not by the
+parser, exactly as `scene.text-style.v1` waited for the stroke that actually
+drew. So the landed handoff narrows the record to the renderer's vocabulary at
+ONE named seam, `sceneTransitionKind()` in `render/Layer.h`, whose comment says
+why, and `protocol_tests` asserts the ABSENCE so TR.2 flipping it is a
+conscious edit.
 
-Evidence: `font_fixture_tests` (new target, `SKIP_RETURN_CODE 77`, the manifest
-as argv[1] and the review document as argv[2]); `docs/fixtures/fonts.md` carries
-the record, the skip report and the rulers; `tests/fixtures/fonts/README.md`
-carries the licence and the not-vendored policy note. Gates: desktop
-`ctest -j1` **65/65** (~383 s), headless build + `ctest -j1` **36/36**,
-`git diff --check` clean.
+**The gate downgrades; it does not refuse.** That is a deliberate departure from
+the TS.1 style gate: an operator who pressed Go is owed the next cue, and a fade
+that took the worker's own 500 ms instead of the asked-for 100 ms is a lesser
+loss than a slide that did not come up. Toward a peer that has not claimed the
+capability, the two keys are left OFF the payload (an old worker gets exactly
+the legacy-shaped command it has always understood) and the status line says the
+cue moves on the worker's own 500 ms / 800 ms fade instead of the pair asked
+for. Silence is honoured in both directions — an unconfigured document sends
+byte-for-byte the pre-TR.1 command and says nothing at all.
 
-Earlier this plan: TS.4 (`32bcdb7`) worker-owned `font.list` and one-field
-style controls; TS.3 (`c2e6645`) styled measurement (`ink`/`fillInk`,
-`text.measure.v2`); TS.2 (`e4258e9`) the styled renderer; TS.1 (`c5acad7`) the
-style contract (service 8, scene 4, minor 15); TV.2 (`7331a10`) the Themes
-layout; TV.1 (`0f1cf84`) sample-based previews.
+`scene.present`'s durations are vetted before the store is touched and whatever
+the kind says (a cut-shaped exemption would let a malformed number land on a
+scene that happens to cut): fractional, string, boolean, negative, >10000 and
+no-millisecond-count numbers each refuse as invalid params naming their key,
+and none of them moves the audience or queues anything.
+
+Evidence: `domain_tests`, `scene_store_tests`, `protocol_tests`,
+`rpc_ipc_tests` (ctest name `worker_rpc_lifecycle`),
+`worker_controller_tests::scenarioTransitionIntent` (a scripted peer that holds
+A's prepare ack 400 ms while the resolver moves 100/200 → 900/1000, with every
+present's params logged VERBATIM: the wire says 100/200),
+`document_controller_tests` (verbs, undo, refusals, the context override
+outranking the theme wearing it through a real imported passage, duplication
+carry, disk round-trip). Gates: desktop `ctest -j1` **65/65** (~384 s), headless
+build + `ctest -j1` **36/36**, `git diff --check` clean.
+
+Earlier this plan: TS.5 (`c3f5e84`) the pinned offline font corpus; TS.4
+(`32bcdb7`) worker-owned `font.list` and one-field style controls; TS.3
+(`c2e6645`) styled measurement (`ink`/`fillInk`, `text.measure.v2`); TS.2
+(`e4258e9`) the styled renderer; TS.1 (`c5acad7`) the style contract (service 8,
+scene 4, minor 15); TV.2 (`7331a10`) the Themes layout; TV.1 (`0f1cf84`)
+sample-based previews.
 
 ## Where the work stands
 
 Phases 0–5 complete. Phase 6 complete through 6.26i. The Bible plan (BA.1–BA.8)
-is DONE. The themes plan: TV.1, TV.2, TS.1, TS.2, TS.3, TS.4, TS.5 DONE — the
-TS group is closed. Next is **TR.1–TR.3** (configurable slide transitions;
-**TR.1 claims service format 9** and captures transition options at Go rather
-than at prepare ack). The TV.3/TV.4/TV.5/TA.1 leaves are out of this run by
-request.
+is DONE. The themes plan: TV.1, TV.2, TS.1, TS.2, TS.3, TS.4, TS.5 and **TR.1**
+DONE. Next is **TR.2** (the renderer draws the landed per-command durations,
+documents the video limits, and finally earns
+`scene.transition-options.v1`) and then **TR.3** (Settings and Theme Editor
+transition UI). The TV.3/TV.4/TV.5/TA.1 leaves are out of this run by request.
 
 ## How to pick up
 
 1. `PLAN.md` is the contract: ledger rows carry acceptance evidence, the themes
    runbook paragraphs give each leaf's boundary, and "Format allocation" records
-   the current **8 / 4 / 0.17** — TR.1 takes the service bump to 9.
+   the current **9 / 4 / 0.18**.
    `docs/reviews/theme-editor-2026-11-03.md` is the design authority (its
    Transition contract section is TR's).
 2. Build `cmake --build --preset desktop --parallel 2` (build dir `build/`);
@@ -105,55 +124,72 @@ request.
    `text_measure_tests`, `worker_controller_tests` and `live_fade_tests` take
    the worker binary as argv[1]. ctest names are target-ish, not file-ish:
    `rpc_ipc_tests` runs as `worker_rpc_lifecycle`. Rebuild the worker binary
-   after renderer/protocol changes — a stale one once faked a green suite.
-3. **To run the font fixtures**: `tools/setup-font-fixtures.sh prepare
-   --download` once (or `--from DIR` offline), then
-   `ctest --preset desktop -R font_fixture_tests`. Without it the test reports
-   `Skipped`, which is the designed outcome, not a failure — and if you change
-   the corpus, `verify` before wondering why pixels moved.
-4. TR.1 starts in the Qt-free domain: a shared `TransitionOptions` with ONE
-   validator, undoable service-default and optional Theme/TextContext setters,
-   storage migration (format 9, plus the pre-9-era refusal the allocation rule
-   requires), duplication, and `resolveTransitionForSlide(showId, slideId)`
-   following the view-inheritance rule the review's transition contract states.
-   The options belong to the ORIGINAL Go — delayed prepare and settings changes
-   must not re-read them — so the resolver is captured at Go, and TR.2/TR.3 put
-   it on the wire and in the UI.
-5. Fixture lore, learned the hard way this leaf: `curl` needs `--globoff` for
-   these filenames (the `[opsz,wght]` brackets are otherwise a range glob);
-   Boost 1.90 spells doubles in exponent form and JSON fixtures use decimal
-   integers; `-fno-rtti` is required on any TU that includes Skia headers (the
-   CMake block sets it per source); scene JSON colours are packed integers, not
-   `#rrggbb` strings; the snapshot CLI is
-   `build/src/worker/openshow-worker-dev --snapshot out.png --scene-file s.json`
-   at 1920×1080 for the 960×540 authored scene (0.5 device scale).
+   after renderer/protocol changes — a stale one once faked a green suite (TR.1
+   hit exactly that: the refusal-wording change looked unapplied until
+   `openshow-worker` was rebuilt).
+3. **TR.2 is the renderer leaf.** Read `src/worker/render/Layer.h` first: the
+   enum, the narrowing seam and the comment saying what TR.2 replaces. The work
+   is `SceneRenderer.cpp`'s `kTextFadeSeconds` / `kMediaFadeSeconds` becoming the
+   landed record (it is already carried to `SceneTransition`-adjacent state via
+   `Snapshot.transition`), plus cut / zero / unequal durations, first scene,
+   rapid Go, clear/restore, failed presentation, the mirror using the same
+   blends, and the same-background video-continues rule. Then ADD
+   `kCapabilityTransitionOptions` to the worker's hello in
+   `protocol.cpp`, flip `protocol_tests`' absence tripwire to a presence check,
+   and cover the video-switch fade limitation the review names.
+   `preview_budget_tests` keeps its own `kMediaFadeSeconds = 0.8` ruler, which
+   stays valid only while the renderer's constants are the contract's defaults.
+4. **TR.3 is the UI leaf.** The verbs already exist and are tested:
+   `DocumentController::setServiceDefaultTransition`, `setThemeTransition`
+   (empty map = inherit), `setTextContextTransition`, plus the reads
+   `serviceDefaultTransition()`, `transitionForSlide(showId, slideId)` and
+   `transitionForSceneJson(scene)` — the last is what a Go asks, so the number
+   an operator reads and the number a cue moves with come from one walk.
+   Edits must affect the NEXT Go, never an active fade; `main.cpp`'s
+   `setTransitionResolver` wiring is where the documents meet the cue lane.
+5. C fixture lore, still true: the font corpus is a prepared cache, not vendored
+   (`tools/setup-font-fixtures.sh prepare --download`, then
+   `ctest --preset desktop -R font_fixture_tests`; without it the test reports
+   `Skipped`, which is the designed outcome). `curl` needs `--globoff` for those
+   filenames; Boost 1.90 spells doubles in exponent form and JSON fixtures use
+   decimal integers; `-fno-rtti` is required on any TU that includes Skia
+   headers; scene JSON colours are packed integers, not `#rrggbb` strings; the
+   snapshot CLI is `build/src/worker/openshow-worker-dev --snapshot out.png
+   --scene-file s.json` at 1920×1080 for the 960×540 authored scene.
 6. UI test lore, still true: `QMetaObject::invokeMethod(item, "toggle")` flips
    `checked` but does NOT fire `onToggled` — drive checkboxes with a real
-   `clickAt`. A closed `Popup` is not a `QQuickItem` and not in the item tree:
-   find it with `window->findChild<QObject*>("name")`. `console.warn`/`log` from
-   QML is invisible here (warnings are captured and filtered) — diagnose by
-   setting a QML property and reading it from C++. QML changes only reach the
-   binary through a FULL `cmake --build --preset desktop`. Flickable `contentY`
-   assignments are not clamped. In `workspace_ui_tests`, `docs.status()` is
-   overwritten by "autosave refused after edit: asset 'ghost.mp3'…" planted
-   earlier — never assert a refusal through `status()` there.
-7. Measurement lore: the blur sigma is device-space (the painter rescales),
-   stroke width is CTM-scaled by Skia, the fork's shadow pass fires
-   `drawTextShadow` once per run BEFORE the blobs; Skia's blur support is
-   ~3.09σ (the code claims 3.1, fixture-bounded both sides); SkParagraph
-   CHAR-breaks words wider than the box, so the width leg of `fits` is
-   unreachable and the height leg is where verdicts arise; fixture renders are
-   960×540 = the authored canvas at 0.5, so containment checks map ink through
-   that scale with 2 px slack.
-8. Never hold a `const Theme*` across a call that can grow the theme vector.
-   Qt6 has no `QMetaType::QMap`. A ctest "Passed" after a failed build means a
-   stale binary — rebuild first, and grep piped builds for `error:|Error [0-9]`;
+   `clickAt`. A closed `Popup` is not a `QQuickItem`: find it with
+   `window->findChild<QObject*>("name")`. `console.warn`/`log` from QML is
+   invisible here. QML changes only reach the binary through a FULL
+   `cmake --build --preset desktop`. Flickable `contentY` assignments are not
+   clamped. In `workspace_ui_tests`, `docs.status()` is overwritten by an
+   autosave refusal planted earlier — never assert a refusal through `status()`
+   there.
+7. Wire-test lore this leaf: the scripted peer in `worker_controller_tests`
+   writes a report per scenario and now logs every `scene.present` verbatim as
+   `presentOps` (a count cannot tell 100/200 from 900/1000); scenario
+   `transition-late` is the only way the "settings moved mid-flight" branch is
+   reachable at all. A `boost::json` ledger member must be `boost::json::array`,
+   not `std::vector<boost::json::object>` — the latter does not convert.
+8. Never hold a `const Theme*` across a call that can grow the theme vector
+   (`duplicateTheme` copies up front for exactly that reason). Qt6 has no
+   `QMetaType::QMap`. A ctest "Passed" after a failed build means a stale
+   binary — rebuild first, and grep piped builds for `error:|Error [0-9]`;
    multi-main UI tests print nothing on pass.
 
 ## Recent commits
 
-- TS.5 — pinned offline font corpus (manifest + setup script + hash checks),
-  `font_fixture_tests` over an isolated fontconfig configuration (family
+- TR.1 — the transition contract landed to the socket: `domain::TransitionOptions`
+  with one shared validator, service default + Theme/TextContext overrides,
+  `resolveTransitionForSlide` (context → first theme in chain order → service),
+  service format **9** with the root record required and pre-9-era refusals at
+  all three sites, options captured at Go and carried as a value through the
+  prepare intent to `scene.present`, `SceneStore`/`OutputSession` taking the
+  whole record with one named narrowing seam at the landed handoff, protocol
+  minor 18 with `scene.transition-options.v1` defined-but-withheld, and the
+  duration gate that downgrades and speaks rather than stranding the audience.
+- TS.5 (`c3f5e84`) — pinned offline font corpus (manifest + setup script + hash
+  checks), `font_fixture_tests` over an isolated fontconfig configuration (family
   resolution before pixels, four-face distinctness, weight ramp, body/caption
   metrics, extreme legal effects against the ink bounds, fixed vs shrink,
   missing-family fallback inside the corpus, coverage matrix, midpoint fade per

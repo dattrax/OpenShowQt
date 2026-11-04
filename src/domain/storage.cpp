@@ -65,23 +65,24 @@ namespace {
 // only ever emits kServiceFormat, and a
 // 6-file read by an older build refuses the whole package rather than
 // quietly drawing what it cannot name.
-// Format 8 (task TS.1, theme-editor review) gives themes and slide
-// customizations the shared TEXT-STYLE fields — "fontWeight", "fontStyle",
-// "fitMode", "minFontSize" and the atomic effect records "stroke" and
-// "shadow". Every one is optional in the file: a 7-file loads with themes
-// silent and slides unstyled, and those resolve to the concrete defaults
-// the renderer always applied, so old documents keep their exact pixels.
-// The keys are era-guarded like every earlier meaning: a "stroke" inside
-// a 7-file is somebody else's build meaning something by it.
-constexpr unsigned long long kServiceFormat = 8;
+// Format 9 (task TR.1, transition contract) adds the TRANSITION record: the
+// service's own answer under "transition", and an optional whole-record
+// override of the same shape on a theme (the Songs view) and on a named text
+// context (the Bible view). Nothing moves and nothing is inferred: a 8-file
+// loads with the service holding the 500 ms words / 800 ms media crossfade it
+// always performed and every theme and context silent, so an untouched show
+// resolves — and lands — exactly as it did before the setting existed. The
+// keys are era-guarded like every earlier meaning: a "transition" inside a
+// 8-file is somebody else's build meaning something by it.
+constexpr unsigned long long kServiceFormat = 9;
 // The older versions this build reads: single-box slides (1), a stack whose
 // every item was necessarily text (2), a kinded stack whose slides had no
 // fit choice yet — cover was the only thing the worker knew (3) — a fitted
 // stack whose themes had no gradient yet — flat was the only thing it knew
 // (4) — a gradient stack that still spelled the appearance entity
 // "style" in its key names (5) — a themed stack whose themes carried no
-// text contexts yet (6) — and a contexted stack that knew nothing of text
-// style (7).
+// text contexts yet (6) — a contexted stack that knew nothing of text
+// style (7) — and a styled stack that knew nothing of transitions (8).
 constexpr unsigned long long kServiceFormatLegacyBoxes = 1;
 constexpr unsigned long long kServiceFormatLegacyTextOnly = 2;
 constexpr unsigned long long kServiceFormatLegacyUnfit = 3;
@@ -96,6 +97,10 @@ constexpr unsigned long long kServiceFormatContexts = 7;
 // day TS.3 or TR.1 claims 9, every style guard must still read "8", the
 // format where these keys got their meaning.
 constexpr unsigned long long kServiceFormatTextStyle = 8;
+// And 9 introduces the transition record (task TR.1). Named so a later leaf
+// claiming 10 cannot weaken the guard that says where "transition" means
+// what this build reads.
+constexpr unsigned long long kServiceFormatTransition = 9;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -649,6 +654,92 @@ bool wantShadow(const boost::json::object& obj, const char* key, const std::stri
     return true;
 }
 
+// The transition record on the wire (task TR.1): {kind, textDurationMs,
+// mediaDurationMs}. It is ATOMIC like the effect records — half a transition
+// has nothing to resolve — so the closed member set refuses a stray key
+// naming itself, the kind must be one of the two names, and the durations
+// must be whole milliseconds ("500.5" is a hand-edit, not a duration to
+// round, wantOptionalInteger's rule). The bands are not re-derived here: the
+// shared domain sentence, Documents::validTransitionOptions, runs on the
+// record this reader produced, so a file that loads is a file a verb would
+// have accepted and a renderer will honour.
+boost::json::object transitionJson(const TransitionOptions& options) {
+    boost::json::object out;
+    out.emplace("kind", transitionKindName(options.kind));
+    out.emplace("textDurationMs", options.textDurationMs);
+    out.emplace("mediaDurationMs", options.mediaDurationMs);
+    return out;
+}
+
+bool transitionRecord(const boost::json::object& record, const std::string& owner,
+                      TransitionOptions* out, std::string* error) {
+    for (const auto& entry : record) {
+        const std::string name(entry.key());
+        if (name != "kind" && name != "textDurationMs" && name != "mediaDurationMs") {
+            fail(error, "service.json: " + owner + " transition has no field '" + name + "'");
+            return false;
+        }
+    }
+    const boost::json::value* kind = field(record, "kind");
+    const boost::json::value* text = field(record, "textDurationMs");
+    const boost::json::value* media = field(record, "mediaDurationMs");
+    if (kind == nullptr || !kind->is_string() || text == nullptr || !text->is_number() ||
+        media == nullptr || !media->is_number()) {
+        fail(error, "service.json: " + owner +
+                        " transition is a whole record or nothing: it needs a string \"kind\""
+                        " and whole numbers \"textDurationMs\" and \"mediaDurationMs\"");
+        return false;
+    }
+    if (!transitionKindFromName(std::string(kind->as_string()), &out->kind)) {
+        fail(error, "service.json: " + owner + " transition kind is '" +
+                        std::string(kind->as_string()) + "', not \"fade\" or \"cut\"");
+        return false;
+    }
+    auto wholeMs = [&](const boost::json::value* value, const char* key, int* destination) -> bool {
+        const double number = value->to_number<double>();
+        if (number != std::floor(number)) {
+            fail(error, "service.json: " + owner + " transition '" + key +
+                            "' is not a whole number of milliseconds");
+            return false;
+        }
+        *destination = static_cast<int>(number);
+        return true;
+    };
+    if (!wholeMs(text, "textDurationMs", &out->textDurationMs) ||
+        !wholeMs(media, "mediaDurationMs", &out->mediaDurationMs)) {
+        return false;
+    }
+    std::string detail;
+    if (!Documents::validTransitionOptions(*out, &detail)) {
+        fail(error, "service.json: " + owner + " carries a transition the renderer cannot"
+                        " honour: " + detail);
+        return false;
+    }
+    return true;
+}
+
+// The OPTIONAL site: a theme or a context that says nothing about movement.
+// Absent leaves the caller's silence, which is what makes the layers under it
+// answer; present must be a complete record.
+bool wantTransition(const boost::json::object& obj, const char* key, const std::string& owner,
+                    std::optional<TransitionOptions>* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;  // no opinion; the layers under it answer
+    }
+    if (!value->is_object()) {
+        fail(error, "service.json: " + owner + " carries \"transition\" that is not a"
+                        " transition record");
+        return false;
+    }
+    TransitionOptions options;
+    if (!transitionRecord(value->as_object(), owner, &options, error)) {
+        return false;
+    }
+    *out = options;
+    return true;
+}
+
 // The lyric-box placement on the wire (themes plan amendment 2026-11-01).
 // A theme's placement and a slide's placement CUSTOMIZATION are the same
 // shape — {x,y,width,height} in the 1920x1080 authored canvas — and both
@@ -669,7 +760,9 @@ boost::json::object boxRectJson(const BoxRect& rect) {
 // travels (it IS the entry), and every override only when the context
 // carries it — a context silent on a field falls through exactly like a
 // theme silent on it, and spelling silences as nulls would make the
-// reader guess between two kinds of nothing (placement's rule).
+// reader guess between two kinds of nothing (placement's rule). The
+// transition override (task TR.1) follows the same discipline: present
+// exactly when this context speaks for itself.
 boost::json::object textContextJson(const TextContext& context) {
     boost::json::object out;
     out.emplace("name", context.name);
@@ -690,6 +783,9 @@ boost::json::object textContextJson(const TextContext& context) {
     }
     if (context.inset.has_value()) {
         out.emplace("inset", *context.inset);
+    }
+    if (context.transition.has_value()) {
+        out.emplace("transition", transitionJson(*context.transition));
     }
     return out;
 }
@@ -799,6 +895,12 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
     // "" — "no current theme" is today's answer to tomorrow's question,
     // not a key to be missed.
     root.emplace("currentThemeId", documents.fCurrentThemeId);
+    // The service's transition answer (task TR.1) travels like currentThemeId:
+    // written even when it is the default, because "500 ms words, 800 ms
+    // media, crossfade" is today's answer to tomorrow's question rather than a
+    // key to be missed. It is the ONE place a service says how its audience
+    // moves, and a resolver never has to guess what an absent one meant.
+    root.emplace("transition", transitionJson(documents.fTransition));
 
     boost::json::array shows;
     for (const Show& show : documents.fShows) {
@@ -969,6 +1071,13 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             }
             entry.emplace("contexts", std::move(contexts));
         }
+        // The theme's own transition (task TR.1) shares placement's
+        // discipline of silence: the key is present exactly when this view
+        // says how it moves. A theme that never mentions movement saves with
+        // no new key and inherits whatever the resolver walks to next.
+        if (theme.transition.has_value()) {
+            entry.emplace("transition", transitionJson(*theme.transition));
+        }
         // The TS.1 style fields (task TS.1) share the same discipline:
         // present exactly when the theme speaks. A theme that carries no
         // style opinion saves without a single new key, so a show nobody
@@ -1055,11 +1164,12 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     if (format != kServiceFormat && format != kServiceFormatLegacyBoxes &&
         format != kServiceFormatLegacyTextOnly && format != kServiceFormatLegacyUnfit &&
         format != kServiceFormatLegacyFlat && format != kServiceFormatLegacyStyleNamed &&
-        format != kServiceFormatLegacyContextless && format != kServiceFormatContexts) {
+        format != kServiceFormatLegacyContextless && format != kServiceFormatContexts &&
+        format != kServiceFormatTextStyle) {
         fail(error, "service.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " + std::to_string(kServiceFormat) +
                         " and formats " + std::to_string(kServiceFormatLegacyBoxes) +
-                        " through " + std::to_string(kServiceFormatContexts) +
+                        " through " + std::to_string(kServiceFormatTextStyle) +
                         " with their text boxes migrated to a kinded list, their"
                         " backgrounds to cover and their themes to flat)");
         return false;
@@ -1103,6 +1213,34 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         }
     } else if (root.contains("currentThemeId")) {
         fail(error, "service.json: \"currentThemeId\" is present in a format " +
+                        std::to_string(format) + " file, where that key does not exist");
+        return false;
+    }
+    // The service's transition answer (task TR.1) is format 9's to carry, and
+    // format 9 always writes it: a 9-file with no "transition" is not a
+    // package this build produced, and guessing which fade an unnamed key
+    // meant is how a document starts lying about its own output. Absent in an
+    // 8-file is no hand-edit either — the 500/800 crossfade those builds
+    // performed is exactly what the model loads — while a "transition" in an
+    // 8-file is another build's meaning of a key this writer never emitted.
+    TransitionOptions transition;
+    if (format >= kServiceFormatTransition) {
+        const boost::json::value* value = field(root, "transition");
+        if (value == nullptr) {
+            fail(error, "service.json: a format " + std::to_string(format) +
+                            " package has no \"transition\" record of its own");
+            return false;
+        }
+        if (!value->is_object()) {
+            fail(error, "service.json: the package carries \"transition\" that is not a"
+                        " transition record");
+            return false;
+        }
+        if (!transitionRecord(value->as_object(), "the package", &transition, error)) {
+            return false;
+        }
+    } else if (root.contains("transition")) {
+        fail(error, "service.json: \"transition\" is present in a format " +
                         std::to_string(format) + " file, where that key does not exist");
         return false;
     }
@@ -1638,11 +1776,22 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                                         "' names context '" + context.name + "' twice");
                         return false;
                     }
+                    // The transition override (task TR.1) is format 9's to
+                    // carry. Before that era a context held typography and a
+                    // box and nothing else, so the key is refused with the
+                    // era named rather than read as some other build's field.
+                    if (format < kServiceFormatTransition && jsonContext.contains("transition")) {
+                        fail(error, "service.json: context '" + context.name +
+                                        "' carries \"transition\" in a format " +
+                                        std::to_string(format) + " file, where a context"
+                                        " holds only typography and a box");
+                        return false;
+                    }
                     for (const auto& member : jsonContext) {
                         const std::string_view key = member.key();
                         if (key == "name" || key == "fontFamily" || key == "fontSize" ||
                             key == "lineSpacing" || key == "align" || key == "box" ||
-                            key == "inset") {
+                            key == "inset" || key == "transition") {
                             continue;
                         }
                         fail(error, "service.json: context '" + context.name +
@@ -1738,6 +1887,14 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                                         "' carries an inset that shrinks nothing sane");
                         return false;
                     }
+                    // The context's own movement (task TR.1): the era was
+                    // settled with the member set above, so the shape and the
+                    // band belong to the shared record reader.
+                    if (!wantTransition(jsonContext, "transition",
+                                        "context '" + context.name + "'", &context.transition,
+                                        error)) {
+                        return false;
+                    }
                     theme.contexts.push_back(std::move(context));
                 }
             }
@@ -1793,6 +1950,24 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                     return false;
                 }
             }
+        }
+        // The theme's transition (task TR.1) is a format-9 member with the
+        // same silence: absent means this view says nothing about how it
+        // moves, which is exactly what every theme before it meant. The
+        // record's own validity was checked by the shared sentence inside
+        // wantTransition, so a theme that loads is a theme a verb would have
+        // set.
+        if (format >= kServiceFormatTransition) {
+            if (!wantTransition(jsonTheme, "transition", "theme '" + theme.id + "'",
+                                &theme.transition, error)) {
+                return false;
+            }
+        } else if (jsonTheme.contains("transition")) {
+            fail(error, "service.json: theme '" + theme.id +
+                            "' carries \"transition\" in a format " +
+                            std::to_string(format) + " file, where that key"
+                            " does not exist");
+            return false;
         }
         themeIds.insert(theme.id);
         themes.push_back(std::move(theme));
@@ -1930,6 +2105,7 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     out->fShows = std::move(shows);
     out->fThemes = std::move(themes);
     out->fCurrentThemeId = std::move(currentThemeId);
+    out->fTransition = transition;
     out->fAssets = std::move(assets);
     out->fPlaylists = std::move(playlists);
     out->fNextOrdinal = nextOrdinal;

@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+#include "openshow/domain/documents.h"  // TransitionOptions (task TR.1)
+
 namespace openshow::ui {
 
 /*
@@ -28,6 +30,15 @@ namespace openshow::ui {
 struct ScenePrepareAsk {
     QString prepareJson;       // the payload sent; the ack carries no scene
     bool autoPresent = false;  // the operator pulled the lever: present when ready
+
+    // How the audience is to be moved to this scene, resolved ONCE when the
+    // Go was issued and carried as a value (task TR.1). The ack that finally
+    // names the revision must put THIS record on scene.present, never a fresh
+    // read of the settings: an operator who moved the transition slider while
+    // the prepare was in flight changed the NEXT cue's move, not the one they
+    // already asked for. A prepare with no go (the editor's off-air picture, a
+    // thumbnail batch) carries the defaults, which its ack never presents.
+    openshow::domain::TransitionOptions transition;
 
     // Non-zero when the editor's off-air target / the slide list's pictures
     // were folded into this prepare, carrying the request id the ask named

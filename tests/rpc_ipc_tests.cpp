@@ -170,6 +170,20 @@ bool isErrorCode(const boost::json::value& reply, proto::ErrorCode code) {
                static_cast<int>(code);
 }
 
+// The refusal's own words, for the checks that insist a refusal NAMES the key
+// it refused rather than just declining.
+std::string errorMessage(const boost::json::value& reply) {
+    if (!reply.is_object() || !reply.as_object().contains("error")) {
+        return {};
+    }
+    const boost::json::value& error = reply.as_object().at("error");
+    if (!error.is_object() || !error.as_object().contains("message")) {
+        return {};
+    }
+    const boost::json::value& message = error.as_object().at("message");
+    return message.is_string() ? std::string(message.as_string()) : std::string{};
+}
+
 bool fieldEquals(const boost::json::value& object, const char* field, const char* expected) {
     if (!object.is_object()) {
         return false;
@@ -1074,6 +1088,106 @@ void testSceneStore() {
                boost::json::object{{"revision", second}, {"transition", true}}, &reply) &&
               isErrorCode(reply, proto::kInvalidParams),
           "a non-string transition is refused");
+
+    // Task TR.1: the same command carries two OPTIONAL whole-millisecond
+    // durations beside the kind. Absent means 500 / 800 (which is what every
+    // present above performed), present means the peer's OUTPUT moves on those
+    // numbers — so a value that is not a whole number inside the band is
+    // refused naming its key, BEFORE the store is touched, and whatever the
+    // kind says: the record is atomic, a Cut carries durations too, and a
+    // cut-shaped refusal would let a malformed number land on a scene that
+    // happens to cut.
+    if (check(call(fd, 20, "scene.present",
+                   boost::json::object{{"revision", second}, {"transition", "fade"},
+                                       {"textDurationMs", 0}, {"mediaDurationMs", 10000}},
+                   &reply) &&
+                  reply.as_object().contains("result"),
+              "the band's two ends are accepted: 0 ms words and 10 s background")) {
+        check(waitForSceneActive(fd, second,
+                                 numberValue(reply.at("result").as_object().at("revision")), 6),
+              "and that present moves the audience like any other");
+    }
+    if (check(call(fd, 21, "scene.present",
+                   boost::json::object{{"revision", first}, {"transition", "cut"},
+                                       {"textDurationMs", 0}, {"mediaDurationMs", 0}},
+                   &reply) &&
+                  reply.as_object().contains("result"),
+              "a Cut carries a whole transition record too, and it is accepted")) {
+        check(waitForSceneActive(fd, first,
+                                 numberValue(reply.at("result").as_object().at("revision")), 6),
+              "status reports the cut scene applied");
+    }
+    // The malformed shapes, each refused, each with the key named in the
+    // message, and none of them reaching the store.
+    struct BadCase {
+        boost::json::object params;
+        const char* expectIn;
+        const char* what;
+    };
+    const std::vector<BadCase> bad{{
+        {boost::json::object{{"revision", second}, {"textDurationMs", 500.5}},
+         "textDurationMs", "a fractional words duration is refused, not rounded"},
+        {boost::json::object{{"revision", second}, {"mediaDurationMs", 800.25}},
+         "mediaDurationMs", "and a fractional background duration with it"},
+        {boost::json::object{{"revision", second}, {"textDurationMs", "500"}},
+         "textDurationMs", "a duration spelled as a string is refused"},
+        {boost::json::object{{"revision", second}, {"mediaDurationMs", true}},
+         "mediaDurationMs", "and a boolean with it"},
+        {boost::json::object{{"revision", second}, {"textDurationMs", -1}},
+         "textDurationMs", "one millisecond below the band is refused, not clamped to 0"},
+        {boost::json::object{{"revision", second}, {"mediaDurationMs", 10001}},
+         "mediaDurationMs", "and one millisecond above it is refused, not clamped to 10 s"},
+        {boost::json::object{{"revision", second},
+                             {"textDurationMs", 10001},
+                             {"transition", "cut"}},
+         "textDurationMs", "an out-of-band duration is refused on a CUT too — the record "
+                           "is atomic, so vetting only fades would let it ride"},
+        {boost::json::object{{"revision", second},
+                             {"mediaDurationMs", -1},
+                             {"transition", "cut"}},
+         "mediaDurationMs", "and a negative background duration on a cut with it"},
+        {boost::json::object{{"revision", second}, {"mediaDurationMs", 1e100}},
+         "mediaDurationMs", "a number no millisecond count describes is refused rather "
+                            "than narrowed into one"},
+    }};
+    std::int64_t badId = 30;
+    bool everyBadNamedItsKey = true;
+    for (const BadCase& badCase : bad) {
+        if (!call(fd, badId++, "scene.present", badCase.params, &reply) ||
+            !isErrorCode(reply, proto::kInvalidParams)) {
+            everyBadNamedItsKey = false;
+            continue;
+        }
+        const std::string message = errorMessage(reply);
+        if (message.find(badCase.expectIn) == std::string::npos) {
+            everyBadNamedItsKey = false;
+            std::fprintf(stderr, "   wanted \"%s\", refusal said: %s\n", badCase.expectIn,
+                         message.c_str());
+        }
+    }
+    check(everyBadNamedItsKey,
+          "every malformed scene.present duration is refused as invalid params naming its "
+          "own key");
+    {
+        // And none of them moved anything: the scene on air is still the one
+        // call 21 confirmed, with nothing queued behind it. A refusal that
+        // reached the store would restage a reveal no operator asked for.
+        if (check(call(fd, 45, "output.status", {}, &reply) && reply.at("result").is_object(),
+                  "output.status answers after the refused durations")) {
+            std::uint64_t active = 0;
+            std::uint64_t pending = 1;
+            check(sceneField(reply.at("result"), "active", &active) && active == first &&
+                      sceneField(reply.at("result"), "pending", &pending) && pending == 0,
+                  "the refused presents left the audience exactly where it was, with "
+                  "nothing pending");
+        }
+    }
+    // A revision that does not exist is still refused, durations or not, and
+    // the two checks do not shadow each other.
+    check(call(fd, 46, "scene.present",
+               boost::json::object{{"revision", 99999}, {"textDurationMs", 500}}, &reply) &&
+              isErrorCode(reply, proto::kInvalidParams),
+          "an unknown revision with a well-formed duration is still refused");
 
     call(fd, 15, "shutdown", {}, &reply);
     close(fd);

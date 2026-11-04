@@ -38,7 +38,22 @@ namespace {
 
 using openshow::worker::ActiveScene;
 using openshow::worker::SceneStore;
-using openshow::worker::SceneTransitionKind;
+namespace domain = openshow::domain;
+
+// The two reveals, spelled as the whole records they are (task TR.1): the
+// store carries kind AND both durations as one answer, so a fixture that asks
+// for a cut is asking for a record whose kind is cut. The durations here are
+// the contract's defaults on purpose — these fixtures pin the store's rules,
+// and exerciseRecordRidesTheChange adds the ones that deviate.
+const domain::TransitionOptions kFade = domain::TransitionOptions::defaults();
+domain::TransitionOptions cut(int textMs = domain::kDefaultTransitionTextMs,
+                              int mediaMs = domain::kDefaultTransitionMediaMs) {
+    domain::TransitionOptions options;
+    options.kind = domain::TransitionKind::kCut;
+    options.textDurationMs = textMs;
+    options.mediaDurationMs = mediaMs;
+    return options;
+}
 
 int gFailures = 0;
 
@@ -110,9 +125,9 @@ void onlyAHeldRevisionCanBePresented() {
     constexpr std::uint64_t kUntouched = 0xAAu;
     std::uint64_t revision = kUntouched;
     bool changed = true;
-    check(!store.present(0, SceneTransitionKind::kFade, &revision, &changed),
+    check(!store.present(0, kFade, &revision, &changed),
           "present: revision 0 is refused (black is a prepared cleared scene)");
-    check(!store.present(id + 1000, SceneTransitionKind::kFade, &revision, &changed),
+    check(!store.present(id + 1000, kFade, &revision, &changed),
           "present: an id the store does not hold is refused");
     check(revision == kUntouched, "present: a refusal writes no acknowledgement");
     check(!store.holds(id + 1000), "holds: an unknown id is not held");
@@ -127,7 +142,7 @@ void onlyAHeldRevisionCanBePresented() {
     check(store.published().revision == 0, "present: a refusal spent no revision");
 
     // A held id is presentable, and the pin hands back that entry's content.
-    check(store.present(id, SceneTransitionKind::kFade, &revision, &changed),
+    check(store.present(id, kFade, &revision, &changed),
           "present: a held id is accepted");
     check(changed, "present: accepting it moved the desired scene");
     check(revision == 1, "present: the change is acknowledged with revision 1");
@@ -237,7 +252,7 @@ void publishedStateOnlyMovesWithAPresentedFrame() {
 
     const std::uint64_t a = store.prepare(makeScene("a"));
     bool changed = false;
-    check(store.present(a, SceneTransitionKind::kCut, nullptr, &changed) && changed,
+    check(store.present(a, cut(), nullptr, &changed) && changed,
           "present: naming a held scene changes the desired scene");
     const std::uint64_t owed = store.published().revision + 1;
     check(owed == 1, "present: the change is the first output revision");
@@ -245,7 +260,7 @@ void publishedStateOnlyMovesWithAPresentedFrame() {
     store.decide(&decision);
     check(decision.commandsDue, "present: the owed command provokes a frame");
     check(decision.snapshot.scene == a, "capture: the snapshot names the desired scene");
-    check(decision.snapshot.kind == SceneTransitionKind::kCut,
+    check(decision.snapshot.transition.kind == domain::TransitionKind::kCut,
           "capture: the transition travels with the change (R13)");
     check(decision.snapshot.content != nullptr, "capture: the scene content is pinned");
     check(*decision.snapshot.content == makeScene("a"), "capture: the pinned content IS the entry");
@@ -280,7 +295,7 @@ void publishedStateOnlyMovesWithAPresentedFrame() {
     // Re-presenting exactly what is confirmed on air starts no frame, so it
     // queues nothing and spends no revision.
     const std::uint64_t beforeRevision = store.published().revision;
-    check(store.present(a, SceneTransitionKind::kFade, nullptr, &changed) && !changed,
+    check(store.present(a, kFade, nullptr, &changed) && !changed,
           "re-present: the confirmed scene was not 'changed'");
     check(store.published().pendingScene == 0, "re-present: nothing was queued");
     check(store.published().revision == beforeRevision,
@@ -290,7 +305,7 @@ void publishedStateOnlyMovesWithAPresentedFrame() {
     // so presenting the scene the audience is watching DOES queue it again: the
     // switch the operator asked for is not yet the picture they have.
     store.commit(store.published().revision, /*transitioning=*/true);
-    check(store.present(a, SceneTransitionKind::kFade, nullptr, &changed) && !changed,
+    check(store.present(a, kFade, nullptr, &changed) && !changed,
           "mid-blend: the desired scene is unchanged");
     check(store.published().pendingScene == a,
           "mid-blend: re-presenting the on-air scene re-queues it until the blend settles");
@@ -327,14 +342,14 @@ void aFrameOfTheOldSceneDoesNotCreditTheNewOne() {
     SceneStore store;
     const std::uint64_t b = store.prepare(makeScene("b"));
     const std::uint64_t c = store.prepare(makeScene("c"));
-    store.present(b, SceneTransitionKind::kCut, nullptr, nullptr);
+    store.present(b, cut(), nullptr, nullptr);
     store.landScene(b);
     const SceneStore::Published firstFrame = store.commit(/*drawnRevision=*/1, false);
     check(firstFrame.activeScene == b, "diverging: B's frame proves B");
     check(firstFrame.pendingScene == 0, "diverging: nothing is owed once B is on air");
 
     // C is asked for while the loop is still working on B's reveal.
-    store.present(c, SceneTransitionKind::kFade, nullptr, nullptr);
+    store.present(c, kFade, nullptr, nullptr);
     check(store.published().pendingScene == c, "diverging: C is queued while B is on air");
 
     // A further frame of B's snapshot — the crossfade's next blend. It proves B
@@ -370,31 +385,68 @@ void transitionKindTravelsWithTheChange() {
     const std::uint64_t a = store.prepare(makeScene("a"));
     const std::uint64_t b = store.prepare(makeScene("b"));
     bool changed = false;
-    store.present(a, SceneTransitionKind::kFade, nullptr, &changed);
-    store.present(b, SceneTransitionKind::kCut, nullptr, &changed);
+    store.present(a, kFade, nullptr, &changed);
+    store.present(b, cut(), nullptr, &changed);
     SceneStore::Decision decision;
     store.decide(&decision);
     check(decision.snapshot.scene == b, "kind: the newest present names the scene");
-    check(decision.snapshot.kind == SceneTransitionKind::kCut, "kind: and its reveal");
+    check(decision.snapshot.transition.kind == domain::TransitionKind::kCut, "kind: and its reveal");
 
     // A repeat ask for the same scene under a different kind changes nothing:
     // the kind belongs to the change that moved the desired scene. Silently
     // re-writing it would restage a reveal the frame may already be drawing.
-    store.present(b, SceneTransitionKind::kFade, nullptr, &changed);
+    store.present(b, kFade, nullptr, &changed);
     check(!changed, "kind: a repeat ask changes nothing");
     store.decide(&decision);
-    check(decision.snapshot.kind == SceneTransitionKind::kCut,
+    check(decision.snapshot.transition.kind == domain::TransitionKind::kCut,
           "kind: the reveal of a settled change is not rewritten by a repeat");
+
+    // Task TR.1: the SAME rule now covers the durations, because they are part
+    // of the same record. A command that named 100/200 is drawn at 100/200;
+    // a later ask for the scene it already has — carrying some other pair,
+    // as an intent resolved against settings the operator has since moved
+    // would — restages nothing.
+    const std::uint64_t c = store.prepare(makeScene("c"));
+    domain::TransitionOptions asked;
+    asked.textDurationMs = 100;
+    asked.mediaDurationMs = 200;
+    check(store.present(c, asked, nullptr, &changed) && changed,
+          "durations: the newest present moves the desired scene");
+    store.decide(&decision);
+    check(decision.snapshot.transition.textDurationMs == 100 &&
+              decision.snapshot.transition.mediaDurationMs == 200,
+          "durations: the command's own lengths reach the snapshot");
+
+    domain::TransitionOptions moved;
+    moved.textDurationMs = 900;
+    moved.mediaDurationMs = 1000;
+    check(store.present(c, moved, nullptr, &changed) && !changed,
+          "durations: a repeat ask is still no change");
+    store.decide(&decision);
+    check(decision.snapshot.transition.textDurationMs == 100 &&
+              decision.snapshot.transition.mediaDurationMs == 200,
+          "durations: a repeat cannot retime the reveal that is already owed");
+
+    // And the record is not a kind with two decorations stapled on: two
+    // different scenes asked for under the same kind keep their own lengths,
+    // so the second command's fade is the second command's to draw.
+    const std::uint64_t d = store.prepare(makeScene("d"));
+    check(store.present(d, moved, nullptr, &changed) && changed,
+          "durations: a new scene moves the desired scene");
+    store.decide(&decision);
+    check(decision.snapshot.scene == d && decision.snapshot.transition.textDurationMs == 900 &&
+              decision.snapshot.transition.mediaDurationMs == 1000,
+          "durations: the newer command's lengths are the ones that ride");
 }
 
 // --- the bounded store, and what eviction may not touch ---------------------
 void evictionExemptsWhatCanBePutOnAir() {
     SceneStore store;
     const std::uint64_t landed = store.prepare(makeScene("on-air"));
-    store.present(landed, SceneTransitionKind::kCut, nullptr, nullptr);
+    store.present(landed, cut(), nullptr, nullptr);
     store.landScene(landed);
     const std::uint64_t queued = store.prepare(makeScene("queued"));
-    store.present(queued, SceneTransitionKind::kFade, nullptr, nullptr);
+    store.present(queued, kFade, nullptr, nullptr);
 
     // Churn far past the cap. The exemptions are the DESIRED scene (its command
     // is accepted and its frame has not run) and the LANDED scene (the renderer
@@ -421,9 +473,9 @@ void evictionExemptsWhatCanBePutOnAir() {
 
     // The exempt scenes are still presentable; the evicted one is refused the
     // ordinary way: re-prepare rather than wait for imagery never coming.
-    check(store.present(landed, SceneTransitionKind::kFade, nullptr, nullptr),
+    check(store.present(landed, kFade, nullptr, nullptr),
           "evict: the landed scene can still be presented");
-    check(!store.present(firstChurn, SceneTransitionKind::kFade, nullptr, nullptr),
+    check(!store.present(firstChurn, kFade, nullptr, nullptr),
           "evict: an evicted id is refused, not silently ignored");
 }
 
@@ -463,7 +515,7 @@ void pinnedContentOutlivesEviction() {
           "prepare: later source edits cannot change stored content");
     check(preview && preview == repeatedPreview,
           "pin: repeated preview selections share one immutable instance");
-    store.present(a, SceneTransitionKind::kFade, nullptr, nullptr);
+    store.present(a, kFade, nullptr, nullptr);
 
     SceneStore::Decision first;
     store.decide(&first);
@@ -483,7 +535,7 @@ void pinnedContentOutlivesEviction() {
     // captured with — that is the whole reason the capture pins.
     const ActiveScene held = first.snapshot.content;
     const std::uint64_t b = store.prepare(makeScene("b"));
-    store.present(b, SceneTransitionKind::kCut, nullptr, nullptr);
+    store.present(b, cut(), nullptr, nullptr);
     for (int i = 0; i < 40; ++i) {
         store.prepare(makeScene("churn" + std::to_string(i)));
     }
@@ -524,7 +576,7 @@ void commandAndRenderThreadsConcurrently() {
             if (id == 0) {
                 sawZeroId = true;
             }
-            store.present(id, (i & 1) ? SceneTransitionKind::kCut : SceneTransitionKind::kFade,
+            store.present(id, (i & 1) ? cut() : kFade,
                           nullptr, nullptr);
             if (i % 97 == 0) {
                 store.setLayerBit(1u << (i % 4), (i & 8) != 0, nullptr);

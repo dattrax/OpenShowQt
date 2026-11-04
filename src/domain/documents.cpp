@@ -847,6 +847,17 @@ bool Documents::setThemeContexts(const Id& themeId, std::vector<TextContext> con
                             "' carries an inset that shrinks nothing sane");
             return false;
         }
+        // The transition override (task TR.1) is vetted by the shared
+        // sentence, not a context-specific guess at the band, so a whole-set
+        // write cannot accept what the single-field verb would refuse.
+        if (context.transition.has_value()) {
+            std::string detail;
+            if (!validTransitionOptions(*context.transition, &detail)) {
+                fail(error, "context '" + context.name +
+                                "' carries a transition the renderer cannot honour: " + detail);
+                return false;
+            }
+        }
     }
     theme->contexts = std::move(contexts);
     return true;
@@ -1180,6 +1191,183 @@ bool Documents::applyThemeToSlides(const Id& showId, const std::vector<Id>& slid
     return true;
 }
 
+// The theme layers for one slide, in the order the resolvers walk them.
+// Extracted from appearanceForSlide (task TR.1) so the appearance chain and
+// the transition chain cannot quietly grow different precedents: two walks
+// that each spelled out "current, slide, show, Default" is how one resolver
+// ends up honouring a layer the other ignores.
+std::vector<const Theme*> Documents::themeChainForSlide(const Id& showId,
+                                                        const Id& slideId) const {
+    std::vector<const Theme*> layers;
+    const Show* show = findShow(showId);
+    if (show == nullptr) {
+        return layers;
+    }
+    const int index = findSlideIndex(*show, slideId);
+    if (index < 0) {
+        return layers;
+    }
+    const Slide& slide = show->slides[static_cast<size_t>(index)];
+    if (!fCurrentThemeId.empty()) {
+        if (const Theme* t = findTheme(fCurrentThemeId)) {
+            layers.push_back(t);
+        }
+    }
+    if (!slide.themeId.empty()) {
+        if (const Theme* t = findTheme(slide.themeId)) {
+            layers.push_back(t);
+        }
+    }
+    if (!show->defaultThemeId.empty()) {
+        if (const Theme* t = findTheme(show->defaultThemeId)) {
+            layers.push_back(t);
+        }
+    }
+    // The Default theme closes the chain (operator amendment 2026-11-02):
+    // whatever it carries answers for slides no other layer spoke to, and a
+    // reference to a vanished theme lands on it rather than on scattered
+    // built-ins. As SEEDED it says nothing the compile does not already
+    // apply, so documents drawn before it existed draw the same pixels; the
+    // operator tuning it is the point — house defaults become a thing the
+    // document can carry.
+    if (const Theme* d = findTheme(kDefaultThemeId)) {
+        bool already = false;
+        for (const Theme* layer : layers) {
+            already = already || layer == d;
+        }
+        if (!already) {
+            layers.push_back(d);
+        }
+    }
+    return layers;
+}
+
+const TextContext* Documents::contextInChain(const std::vector<const Theme*>& chain,
+                                             const std::string& name) {
+    if (name.empty()) {
+        return nullptr;  // an unnamed slide is set by its themes alone
+    }
+    for (const Theme* theme : chain) {
+        for (const TextContext& candidate : theme->contexts) {
+            if (candidate.name == name) {
+                return &candidate;
+            }
+        }
+    }
+    // A name no layer carries is no layer at all: not a refusal, not a ghost.
+    return nullptr;
+}
+
+// The one sentence about transition values (task TR.1). Quoted by the verbs,
+// by the loader's era-gated read, and by the worker's parse of the optional
+// scene.present duration fields — so "10001" costs the same words at every
+// door and no door can accept what another would refuse.
+bool Documents::validTransitionOptions(const TransitionOptions& options, std::string* error) {
+    // Each refusal names BOTH the operator's word and the wire key: a settings
+    // page quotes this to a person, and a socket quotes it to whoever wrote the
+    // payload, and neither of them should have to guess which of two numbers
+    // moved.
+    if (options.kind != TransitionKind::kFade && options.kind != TransitionKind::kCut) {
+        fail(error, "kind must be \"fade\" or \"cut\"");
+        return false;
+    }
+    if (!isTransitionDurationInBand(options.textDurationMs)) {
+        fail(error, "words duration (\"textDurationMs\") must be a whole number of "
+                    "milliseconds 0.." +
+                        std::to_string(kMaxTransitionDurationMs) + " (got " +
+                        std::to_string(options.textDurationMs) + ")");
+        return false;
+    }
+    if (!isTransitionDurationInBand(options.mediaDurationMs)) {
+        fail(error, "background duration (\"mediaDurationMs\") must be a whole number of "
+                    "milliseconds 0.." +
+                        std::to_string(kMaxTransitionDurationMs) + " (got " +
+                        std::to_string(options.mediaDurationMs) + ")");
+        return false;
+    }
+    return true;
+}
+
+bool Documents::setServiceDefaultTransition(const TransitionOptions& options,
+                                            std::string* error) {
+    if (!validTransitionOptions(options, error)) {
+        return false;
+    }
+    fTransition = options;
+    return true;
+}
+
+bool Documents::setThemeTransition(const Id& themeId,
+                                   const std::optional<TransitionOptions>& options,
+                                   std::string* error) {
+    Theme* theme = findTheme_mut(themeId);
+    if (theme == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    // Taking the override off needs no vetting: silence has no bad values.
+    if (options.has_value() && !validTransitionOptions(*options, error)) {
+        return false;
+    }
+    theme->transition = options;
+    return true;
+}
+
+bool Documents::setTextContextTransition(const Id& themeId, const std::string& contextName,
+                                         const std::optional<TransitionOptions>& options,
+                                         std::string* error) {
+    Theme* theme = findTheme_mut(themeId);
+    if (theme == nullptr) {
+        fail(error, idError("theme", themeId));
+        return false;
+    }
+    if (options.has_value() && !validTransitionOptions(*options, error)) {
+        return false;
+    }
+    for (TextContext& context : theme->contexts) {
+        if (context.name == contextName) {
+            context.transition = options;
+            return true;
+        }
+    }
+    // Unlike a slide's context NAME (which is trusted, because the theme may
+    // grow it tomorrow), this verb edits an existing context: naming one that
+    // is not there is a wrong click, and a silent success would teach the
+    // operator that the view has no transition of its own.
+    fail(error, "theme '" + themeId + "' has no context '" + contextName + "'");
+    return false;
+}
+
+TransitionOptions Documents::resolveTransitionForSlide(const Id& showId,
+                                                       const Id& slideId) const {
+    const Show* show = findShow(showId);
+    if (show != nullptr) {
+        const int index = findSlideIndex(*show, slideId);
+        if (index >= 0) {
+            const std::vector<const Theme*> chain = themeChainForSlide(showId, slideId);
+            // A context speaks before the theme it set: the view the passage
+            // is drawn in is the nearer answer about how that view moves.
+            if (const TextContext* ctx =
+                    contextInChain(chain, show->slides[static_cast<size_t>(index)].textContext);
+                ctx != nullptr && ctx->transition.has_value()) {
+                return *ctx->transition;
+            }
+            // Then the first theme in chain order with an answer. An explicit
+            // Cut stops the walk exactly like a fade does: it is a decision,
+            // not an absence.
+            for (const Theme* theme : chain) {
+                if (theme->transition.has_value()) {
+                    return *theme->transition;
+                }
+            }
+        }
+    }
+    // Nothing above spoke — or nothing was nameable to speak about. The
+    // service's own answer is the one value that always exists, so a cue the
+    // model cannot place still moves the way the operator told the service.
+    return fTransition;
+}
+
 ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& slideId) const {
     ResolvedAppearance out;
     const Show* show = findShow(showId);
@@ -1192,43 +1380,10 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
     }
     const Slide& slide = show->slides[static_cast<size_t>(index)];
     const SlideCustomization& c = slide.customizations;
-    // The theme layers under the customization, in the fixed priority:
-    // current theme first, then the slide's own, then the show's. A
-    // reference to a vanished theme is no layer at all, the same
-    // degradation themeForSlide has always applied.
-    const Theme* layers[4] = {nullptr, nullptr, nullptr, nullptr};
-    size_t count = 0;
-    if (!fCurrentThemeId.empty()) {
-        if (const Theme* t = findTheme(fCurrentThemeId)) {
-            layers[count++] = t;
-        }
-    }
-    if (!slide.themeId.empty()) {
-        if (const Theme* t = findTheme(slide.themeId)) {
-            layers[count++] = t;
-        }
-    }
-    if (!show->defaultThemeId.empty()) {
-        if (const Theme* t = findTheme(show->defaultThemeId)) {
-            layers[count++] = t;
-        }
-    }
-    // The Default theme closes the chain (operator amendment 2026-11-02):
-    // whatever it carries answers for slides no other layer spoke to, and a
-    // reference to a vanished theme lands on it rather than on scattered
-    // built-ins. As SEEDED it says colour-wise nothing the compile does not
-    // already apply (white on black, centred, renderer size), so documents
-    // drawn before it existed draw the same pixels; the operator tuning it
-    // is the point — house defaults become a thing the document can carry.
-    if (const Theme* d = findTheme(kDefaultThemeId)) {
-        bool already = false;
-        for (size_t i = 0; i < count; ++i) {
-            already = already || layers[i] == d;
-        }
-        if (!already) {
-            layers[count++] = d;
-        }
-    }
+    // The theme layers under the customization, in the fixed priority the
+    // walk below owns (and TR.1's transition resolver walks identically).
+    const std::vector<const Theme*> layers = themeChainForSlide(showId, slideId);
+    const size_t count = layers.size();
     // The slide's named text context (milestone TF) layers between the
     // customization and the themes: the first theme in chain order that
     // carries the name supplies it, and a name no theme carries is no
@@ -1236,17 +1391,7 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
     // existed, which is what lets an import name `scripture` today and the
     // theme grow it tomorrow. Colours never come from a context: it says
     // how text is set, and the theme's own look is untouched.
-    const TextContext* ctx = nullptr;
-    if (!slide.textContext.empty()) {
-        for (size_t i = 0; i < count && ctx == nullptr; ++i) {
-            for (const TextContext& candidate : layers[i]->contexts) {
-                if (candidate.name == slide.textContext) {
-                    ctx = &candidate;
-                    break;
-                }
-            }
-        }
-    }
+    const TextContext* ctx = contextInChain(layers, slide.textContext);
     // Which context answered is itself an answer (task TF.4): the pages
     // that say "set in the scripture context" read it here rather than
     // re-walking the chain and guessing what layered.

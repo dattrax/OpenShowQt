@@ -32,6 +32,7 @@
 #include <string_view>
 #include <vector>
 
+#include "openshow/domain/documents.h"  // TransitionOptions (task TR.1)
 #include "openshow/scene/scene.h"
 
 class SkCanvas;
@@ -53,7 +54,26 @@ using ActiveScene = std::shared_ptr<const openshow::scene::Scene>;
 // truth has no business depending on Skia to name which reveal the operator
 // asked for. SceneRenderer includes this header, so every existing user of
 // the enum still sees it in the same place.
+//
+// Task TR.1 gave the command a fuller answer — `domain::TransitionOptions`,
+// the kind plus both durations — and the store now carries that whole record
+// from the RPC thread to the landed scene. This enum is what the renderer can
+// HONOUR today: the two durations are not drawn until TR.2 replaces this
+// library's fade constants with the record, which is exactly why the worker
+// does not advertise `scene.transition-options.v1` yet. The landed handoff in
+// OutputSession narrows the record to its kind at this one named place rather
+// than pretending the blend already listens.
 enum class SceneTransitionKind { kFade, kCut };
+
+// The one seam where the whole record meets the vocabulary the renderer has
+// (task TR.1). A record that says "cut" cuts; everything else fades, which is
+// what a fade-shaped kind has always meant here. TR.2 retires this by handing
+// the record across and drawing with its durations.
+inline SceneTransitionKind sceneTransitionKind(
+    const openshow::domain::TransitionOptions& options) {
+    return options.kind == openshow::domain::TransitionKind::kCut ? SceneTransitionKind::kCut
+                                                                  : SceneTransitionKind::kFade;
+}
 
 // One composed frame, captured once and drawn read-only to every target
 // (task 6.11a, review R13).

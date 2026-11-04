@@ -302,6 +302,27 @@ void testHello() {
             check(hasTextStyle,
                   "scene.text-style.v1 is advertised now that the renderer draws the fields");
         }
+        {  // Task TR.1 defines the name for a worker that takes its fade
+           // LENGTHS from scene.present's durations and deliberately does NOT
+           // list it: this build's renderer still crossfades on its own 0.5 /
+           // 0.8 s constants, so the hello would claim something the pixels do
+           // not do. TS.1 ran the same debt against TS.2, whose arrival turned
+           // this very assertion into a presence check; TR.2 earns the name the
+           // same way. Reading this line fail on a TR.2 branch means the
+           // renderer grew — flip it to presence there, and the frontend's
+           // downgrade path stops being reachable for a current worker.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasTransitionOptions = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() &&
+                           v.as_string() == proto::kCapabilityTransitionOptions;
+                });
+            check(!hasTransitionOptions,
+                  "scene.transition-options.v1 is defined but withheld until the "
+                  "renderer draws the durations");
+            check(proto::kCapabilityTransitionOptions == std::string("scene.transition-options.v1"),
+                  "and the name it will carry is the one the contract spells");
+        }
         {  // Task 5.5d's media visibility is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasMedia = std::any_of(

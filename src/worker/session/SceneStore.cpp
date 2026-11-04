@@ -76,7 +76,8 @@ std::size_t SceneStore::prepared() const {
     return fScenes.size();
 }
 
-bool SceneStore::present(uint64_t preparedRevision, SceneTransitionKind kind,
+bool SceneStore::present(uint64_t preparedRevision,
+                         const openshow::domain::TransitionOptions& transition,
                          uint64_t* revisionOut, bool* changedOut) {
     std::lock_guard<std::mutex> lock(fMutex);
     if (preparedRevision == 0 || fScenes.find(preparedRevision) == fScenes.end()) {
@@ -91,7 +92,12 @@ bool SceneStore::present(uint64_t preparedRevision, SceneTransitionKind kind,
     const bool changed = preparedRevision != fDesiredScene;
     if (changed) {
         fDesiredScene = preparedRevision;
-        fDesiredKind = kind;  // travels with the change to the frame that reveals it
+        // The whole record travels with the change to the frame that reveals
+        // it (task TR.1): the durations belong to this command, not to the
+        // settings screen, so a later edit cannot retime a queued reveal. A
+        // repeat of the scene already wanted stays a no-op — including its
+        // transition — exactly as the acknowledgement rules require.
+        fDesiredTransition = transition;
         ++fRevision;
     }
     if (changedOut != nullptr) {
@@ -147,7 +153,7 @@ void SceneStore::decide(Decision* out) {
     out->snapshot.revision = fRevision;
     out->snapshot.mask = fDesiredMask;
     out->snapshot.scene = fDesiredScene;
-    out->snapshot.kind = fDesiredKind;
+    out->snapshot.transition = fDesiredTransition;
     out->snapshot.monitor = fDesiredMonitor;
     const auto entry = fScenes.find(out->snapshot.scene);
     out->snapshot.content = entry != fScenes.end() ? entry->second : nullptr;

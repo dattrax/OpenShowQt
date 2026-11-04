@@ -42,6 +42,8 @@
 #include <functional>
 #include <memory>
 
+#include <boost/json.hpp>
+
 #include "openshow/domain/documents.h"
 #include "openshow/domain/history.h"
 #include "openshow/domain/storage.h"
@@ -274,6 +276,48 @@ public:
     // bands are the domain's, so what this accepts the save can store and
     // the resolver can honour.
     Q_INVOKABLE bool setThemeTextStyle(const QString& themeId, const QVariantMap& style);
+
+    // --- transitions (task TR.1, transition contract) -----------------------
+    // The service's standing answer to "how does the audience get to the next
+    // scene", and the two optional per-view overrides on top of it. All three
+    // verbs are undoable and all three vet through the domain's ONE sentence
+    // (Documents::validTransitionOptions), so a value this controller accepts
+    // is a value the save stores and the renderer resolves without a second
+    // opinion.
+    //
+    // The service default is CONCRETE: the 500 ms words / 800 ms media
+    // crossfade every present performed before this setting existed is its
+    // value, so there is no "unset service default" for a resolver to invent.
+    // `kind` is "fade" or "cut"; both durations are whole milliseconds
+    // 0..10000, and 0 on a track means that track lands immediately.
+    Q_INVOKABLE bool setServiceDefaultTransition(const QString& kind, int textDurationMs,
+                                                  int mediaDurationMs);
+    // A view's own answer — the Songs view writes the Theme record, the Bible
+    // view its TextContext's. An INHERIT is a removal, so it is a different
+    // call from setting a record: `record` carries kind/textDurationMs/
+    // mediaDurationMs, and an empty map takes the override off (the view says
+    // nothing about movement and whatever is under it answers). A theme that
+    // does not exist, or a context no theme of that name carries, is refused
+    // naming what was not found: an override silently dropped on the floor is
+    // how an operator ends up believing a view has a transition it never got.
+    Q_INVOKABLE bool setThemeTransition(const QString& themeId, const QVariantMap& record);
+    Q_INVOKABLE bool setTextContextTransition(const QString& themeId, const QString& contextName,
+                                              const QVariantMap& record);
+    // The resolved answer for one slide, in the shape a settings page shows
+    // next to the control ("inherited from the service: 500 / 800"). This is
+    // ALSO what the cue lane asks at Go — see WorkerController::
+    // setTransitionResolver — so the number an operator reads and the number
+    // a cue moves with come from the same walk.
+    Q_INVOKABLE QVariantMap transitionForSlide(const QString& showId, const QString& slideId) const;
+    // The same answer read from a compiled scene payload (its showId/slideId
+    // are its provenance), which is what a Go has in hand. A payload that
+    // names no slide resolves to the service default, which is the honest
+    // answer for a scene the documents cannot place.
+    openshow::domain::TransitionOptions transitionForSceneJson(
+        const boost::json::object& scene) const;
+    // The service default on its own, for a settings page that has no slide
+    // under the cursor.
+    Q_INVOKABLE QVariantMap serviceDefaultTransition() const;
     // The one-FIELD merge beside the whole-set verb (task TS.4): a control
     // that edits one property of a shared block must not have to know the
     // other five, and a drag gesture that lands many values must cost ONE
