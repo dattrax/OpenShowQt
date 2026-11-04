@@ -204,90 +204,102 @@ on its verb, and every refusal naming itself.
 | Inputs | `document` (DocumentController*), `target` (`{kind, id, view}` above) |
 | Outputs | `fieldState(field)` — the shape above; `fields()` — this target's committable spellings |
 | Events | `changed()` (documents or cursor moved), `refused(field, reason)`, and the `document`/`target` property signals |
-| Centralised | the context's WHOLE-entry merge (read back the entry's own set, replace one member, write once). ThemeEditorPage keeps its private copy of this arithmetic until CS.5 migrates it onto the adapter; the semantics are deliberately identical so the migration is a move, not a change |
+| Centralised | the context's WHOLE-entry merge (read back the entry's own set, replace one member, write once). Since CS.5 this is the ONLY spelling: the Theme Editor's rails ride the adapter, and the page's private merge arithmetic is gone — `copyThemeBox` and the Bible drag both commit `"box"` through it |
 | Automation | none — not a visible part; hosts bind it inside their rails |
 
 ### AppearanceInspector
 
-`src/ui/AppearanceInspector.qml` (CS.5). Scrollable composition of the
-supported style sections for one adapter target; the host decides which
-sections are visible.
+`src/ui/AppearanceInspector.qml` (CS.5). Composition of the five style
+sections for ONE adapter target — the part takes `adapter` only; the target
+lives on the adapter, so browsing a selection moves `target` and every
+section re-reads itself. Section order: Background → TextStyle → BoxGeometry
+→ TextEffects → Transition (the context rail's box now sits after the type
+rows, which is where the reading look is reasoned about).
 
 | | |
 |---|---|
-| Inputs | `adapter` (InspectorAdapter), `target` (identity map above), `sections` (flags: typography, effects, background, geometry, transition, font) |
-| Outputs | pass-through of each section's state |
-| Events | `commit(field, value)` / `reset(field)` pass-through (host translates) |
-| Consumers | ThemeEditorPage (Songs + Bible rails), EditPage (slide rail, CS.6) |
+| Inputs | `adapter` (InspectorAdapter, required); `worker` (required, threaded to the family picker); `overlayParent` (Item holding the picker's popup); section flags `showBackground`/`showStyle`/`showGeometry`/`showEffects`/`showTransition` (default true — the Bible rail passes `showBackground: false, showEffects: false` because a text context cannot store colours until TV.3: the section is ABSENT, not a rail of disabled rows) |
+| Outputs | readonly aliases `backgroundControls`, `styleControls`, `geometryControls`, `effectsControls`, `transitionControls` for the host to pin labels and automation names; `syncAll()` re-reads every section (call it after pinning, since the pins change what a sync draws) |
+| Events | none of its own — commits and refusals run through the adapter, and each section re-syncs itself on the adapter's `changed()`/`targetChanged()` |
+| Consumers | ThemeEditorPage Songs rail (all five sections over `{kind:"theme"}`) and Bible rail (sparse type + one box + movement over `{kind:"context", view:"scripture"}`); EditPage slide rail joins in CS.6 |
+| Automation | every inner control's `objectName` is a string property of the owning section (defaults generic); pages pin the names their tests read (ThemeEditor re-pins its full `themeEditor*` set in `pinRailNames()`) |
 
 ### TextStyleControls
 
-`src/ui/TextStyleControls.qml` (CS.5). Family, size, alignment, line
-spacing, weight, slant, fit and minimum size.
+`src/ui/TextStyleControls.qml` (CS.5). Family row (embedded
+`WorkerFontPicker`), size, alignment, line spacing and — unless
+`showStyleBlock: false` — the weight/slant/fit/minimum-size block with the
+own/inherited badges and Inherit buttons.
 
 | | |
 |---|---|
-| Inputs | `adapter`, `target`; capability flags come from `fieldState(...).editable` — where today's Bible context cannot store a field (TV.3), the control states its inherited source and disables rather than writing the Songs base |
-| Events | `commit(field, value)` (family/size/align/spacing use the base-field spelling, weight/slant/fit/minFontSize the style-block spelling), `reset(field)` |
-| Consumers | AppearanceInspector; embeds `WorkerFontPicker` for the family row |
+| Inputs | `adapter` (required), `worker` (required, for the family row), `overlayParent`; `sparse` (the context spelling: a field shows its OWN value only, silence is `""`, the align picker gains a leading `"(theme)"` entry whose choice RESETS, the family row loses Browse and status — silence means the theme answers, so it is a `reset`, never a `commit(field, null)`); `showStyleBlock`; `sectionTitle` (the Songs rail titles this section "Typography & effects"); label strings `fontLabel`/`sizeLabel`/`alignLabel`/`spacingLabel`; `fontShowStatus`; one `*ObjectName` string per control (family, browse, status, popup, search, list status, list, row, cancel, size, align, spacing, weight, weightInherit, slant, slantInherit, fit, fitInherit, minSize, minSizeInherit); alias `fontPicker` |
+| Outputs | `sync()` — assignment, never binding (the adapter answers are function calls; a mid-edit control must not be yanked by an unrelated change) |
+| Events | none of its own — every row commits ONE field through the adapter (`commitOrSync`: a refusal re-syncs from the record); base fields route via `editTheme`, the style block via `setThemeTextStyleField`; the Inherit buttons `reset` |
+| Rules | min-size validates shape here (finite, 1..4096) and the domain keeps the last word; an unchanged focus-out writes nothing and costs no undo |
+| Consumers | AppearanceInspector (Songs: full block; Bible: `sparse`, no style block) |
 
 ### TextEffectsControls
 
-`src/ui/TextEffectsControls.qml` (CS.5). Outline/shadow whole-record
-editing with enable/off/inherit state and resolved values.
+`src/ui/TextEffectsControls.qml` (CS.5). Outline and shadow whole-record
+editing with enable/off state, own/inherited badges and the resolved values.
 
 | | |
 |---|---|
-| Inputs | `adapter`, `target`; shows the record this target owns when `isSet`, the resolved record otherwise (with the inherited badge) |
-| Events | `commit(field, value)` with the TS.4 member spellings (`strokeEnabled`, `strokeColor`, `strokeWidth`, `shadowEnabled`, `shadowColor`, `shadowOpacity`, `shadowOffsetX/Y`, `shadowBlurSigma`), `reset("stroke")` / `reset("shadow")` for the whole-record clear |
-| Rules | effects commit complete records; a member edit merges once through the controller verb; reset removes the whole override; sliders commit on release |
+| Inputs | `adapter` (required); `*ObjectName` strings for the two checks, the two Off buttons, both colour fields and all five sliders |
+| Events | commits through the adapter with the TS.4 member spellings (`strokeEnabled`, `strokeColor`, `strokeWidth`, `shadowEnabled`, `shadowColor`, `shadowOpacity`, `shadowOffsetX/Y`, `shadowBlurSigma`); `reset("stroke")` / `reset("shadow")` for the whole-record clear |
+| Rules | enable is the record's own materialise (a silent target gains the contract's defaults around the one member — the audience already draws that look); sliders commit on RELEASE only, and not at all when the handle ended where it began; a typed-unchanged colour writes nothing; a target that cannot store effects shows the section disabled, never the Songs record half-written from a Bible rail |
 
 ### BackgroundControls
 
-`src/ui/BackgroundControls.qml` (CS.5). Colours/gradient plus supported
-image/fit controls; exposes only operations the current target can store
-and render.
+`src/ui/BackgroundControls.qml` (CS.5). The colour rows a base record
+stores: text colour, background colour, and the gradient colour whose empty
+string is the EXPLICIT flat.
 
 | | |
 |---|---|
-| Inputs | `adapter`, `target`; `canPickImage` (slide only today) |
-| Events | `commit("textColor"/"backgroundColor"/"backgroundGradient", …)`; `backgroundChosen(assetId)`, `backgroundFitChosen(name)` (slide verbs) |
-| Note | keeps `""` gradient = explicit flat distinct from inherit |
+| Inputs | `adapter` (required); `canPickImage` (false today — image/fit rows join with the slide target in CS.6 through the same part); `textColorObjectName`/`backColorObjectName`/`gradientObjectName` |
+| Events | `commit("textColor"/"backgroundColor"/"backgroundGradient", …)` through the adapter (each commit restates the WHOLE base record — one omitted field cannot silently flatten a gradient); `backgroundChosen(assetId)` / `backgroundFitChosen(name)` signals for the CS.6 host |
+| Note | `""` gradient stays explicit flat, distinct from inherit — these base fields never inherit (the adapter refuses the reset and says so) |
 
 ### BoxGeometryControls
 
-`src/ui/BoxGeometryControls.qml` (CS.5). Shared X/Y/W/H inputs plus a
-follow/inherit action; the host binds it to theme placement, context box or
-slide-customization geometry.
+`src/ui/BoxGeometryControls.qml` (CS.5). The shared X/Y/W/H rows: four
+fields that commit as ONE unit, a removal button, and an optional extra
+action (the Bible rail's "Theme's lyric box" borrow).
 
 | | |
 |---|---|
-| Inputs | `adapter`, `target`, `rect` (live gesture value), `canReset` |
-| Events | `applyBox({x, y, width, height})` (four fields commit as ONE unit), `resetBox()` |
-| Rules | non-finite or <1 w/h snaps back; a drag and the typed path commit the same single undo |
+| Inputs | `adapter` (required); `label` (the rail names its rectangle); `clearLabel` ("No placement" / "No box"); `extraActionLabel` ("" hides the button); `showStatus` (Songs states whether the target places at all); `statusOwnedText`/`statusSilentText`; `xObjectName`/`yObjectName`/`wObjectName`/`hObjectName`/`clearObjectName`/`extraObjectName`/`statusObjectName` |
+| Events | the fields commit `"box"` through the adapter (routes to `setThemePlacement`/`clearThemePlacement`, the merged context box retiring a stored `inset` in the same edit, or the slide's `setTextBoxGeometry` in CS.6); `extraClicked()` forwards the borrow to the host; `sync()` |
+| Rules | validation is SHAPE only — four finite numbers with w/h ≥ 1 (this replaces the context rail's earlier `w > 0` spelling: a box thinner than a pixel cannot be placed either way, and the domain still has the last word); any refusal or invalid typing puts every field back where the record says; the page's drag gesture commits the same `"box"` verb, so drag and typed path are one and the same undo |
 
 ### TransitionControls
 
-`src/ui/TransitionControls.qml` (CS.5). Cut/Crossfade, both durations, and
-optionally the Inherit entry and source sentence.
+`src/ui/TransitionControls.qml` (CS.5). The movement rows: the kind picker,
+both durations, and — for targets that can be silent — the Inherit entry,
+the own/inherited badge and the source sentence naming the seat whose
+numbers are on show. One part serves the Songs rail, the Bible rail and the
+Settings service section.
 
 | | |
 |---|---|
-| Inputs | `shown` record (`{own, kind, textDurationMs, mediaDurationMs, seat}`), `allowInherit` (false on the service target) |
-| Events | `kindChosen("inherit"\|"cut"\|"fade")`, `durationsCommitted(textMs, mediaMs)` |
-| Rules | QML validates SHAPE only (digits); the 0..10000 band stays `Documents::validTransitionOptions`; a Cut disables the fields without erasing them; Inherit writes nothing and is enabled only against an existing record |
+| Inputs | `adapter` (required); `allowInherit` (model `[Inherit, Cut, Crossfade]` vs the service's `[Crossfade, Cut]`); `showKindHint` (Settings explains the choice inline beside the picker); `showOwnBadge`/`showSource`; `silentSuffix` (appended to the source sentence when the target is silent — "a theme lower in a wearing slide's chain answers first" / "the theme carrying this view answers before the service"); `wordsLabel`/`backLabel`; `labelPixelSize` (12 on the Settings page); `sectionTitle` ("" hides it — Settings keeps its own page heading); `note` + `noteObjectName` (the host's standing note, verbatim); `kindObjectName`/`inheritObjectName`/`wordsObjectName`/`backObjectName`/`sourceObjectName` |
+| Events | commits `"transition"` as ONE whole record through the adapter (`setThemeTransition` / `setTextContextTransition` / `setServiceDefaultTransition`); the Inherit entry and button both WRITE NOTHING — the record is removed, and only against a record that exists |
+| Rules | QML validates SHAPE only (digits, no sign, no decimal); the 0..10000 band stays `Documents::validTransitionOptions` and a refusal re-reads the record; a Cut DISABLES the durations without erasing them; Cut and Crossfade each write a whole record seeded from the numbers on show; an unchanged commit writes nothing and costs no undo |
 
 ### WorkerFontPicker
 
-`src/ui/WorkerFontPicker.qml` (CS.5). Search/browse of the worker-owned
-family/face metadata, missing-font state and typed-name path.
+`src/ui/WorkerFontPicker.qml` (CS.5). The family row: a typed name that
+always works, the audience worker's own family list behind Browse, and the
+missing-font note.
 
 | | |
 |---|---|
-| Inputs | `worker` (font-list properties), `currentFamily` |
-| Events | `familyChosen(name)` |
-| Rules | typed names remain usable with no worker; a missing-family warning requires a COMPLETED worker list; never Qt's installed fonts; the requested name is never rewritten by a fallback verdict |
-| Consumers | `TextStyleControls` (popup + status line, extracted from `ThemeEditorPage.qml`'s font row) |
+| Inputs | `worker` (required — the family source), `adapter` (required), `field` (today always `"fontFamily"`); `sparse` (typed name only — no Browse, no status, no popup ever); `showStatus`; `showBrowse`; `label`; `overlayParent` (the popup is opened against the PAGE, so the rail's scroll cannot clip it); `editable` (a rail without a selected target types nothing); `*ObjectName` strings for field/browse/status/popup/search/list status/list/row/cancel |
+| Outputs | `sync()`; `familyChosen(name)` when the list answers |
+| Rules | typed names remain usable with no worker at all; Browse is ENABLED only when the worker named `font.list` (a disconnected rail gets a disabled button and a status line saying why, never a list of the operator's desktop fonts the show would silently fall back from); the popup lists ONLY the worker's families and closes when the host page hides; a missing-family warning requires a COMPLETED worker list; the requested name is never rewritten by a fallback verdict |
+| Consumers | `TextStyleControls` (the Songs rail's row; the Bible rail's sparse row) |
 
 ### BibleImportWorkspace (`BibleImportPage.qml`)
 

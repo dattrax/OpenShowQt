@@ -195,6 +195,10 @@ void InspectorAdapter::setTarget(const QVariantMap& target) {
     fTarget = target;
     connectEdges();
     emit targetChanged();
+    // The parts re-sync their displayed rows off changed(); a rail that
+    // switched WHICH record it edits has moved every answer they show,
+    // even though no document did.
+    emit changed();
 }
 
 QVariantMap InspectorAdapter::fieldState(const QString& field) const {

@@ -115,61 +115,17 @@ Item {
     function syncInspector() {
         const row = themeEditor.rowFor(themeEditor.selectedId)
         nameField.text = row !== null ? row.name : ""
-        colourField.text = row !== null ? row.textColor : ""
-        backField.text = row !== null ? row.backgroundColor : ""
-        gradientField.text = row !== null ? row.backgroundGradient : ""
-        fontField.text = row !== null ? row.fontFamily : ""
-        sizeField.text = row !== null ? String(row.fontSize) : ""
-        alignCombo.currentIndex = row !== null
-                ? ["left", "center", "right"].indexOf(row.align) : 1
-        spacingField.text = row !== null ? String(row.lineSpacing) : ""
-        // The placement fields follow the box the overlay shows (the theme's
-        // own, or the built-in lyric box it is being offered).
-        const box = themeEditor.boxFor(row)
-        placeXField.text = String(Math.round(box.x))
-        placeYField.text = String(Math.round(box.y))
-        placeWField.text = String(Math.round(box.width))
-        placeHField.text = String(Math.round(box.height))
         themeEditor.refreshViewLook()
-        // The style controls read the RESOLVED look, so they sync after it
-        // is refreshed — one source of truth, the compiled sample.
-        themeEditor.syncStyleControls(row)
-        themeEditor.syncTransition(row)
         themeEditor.syncContext()
     }
-    // Put the typography/effect controls where the record (or the resolved
-    // look, where the theme is silent) says they belong. Assignment, not
-    // binding, for the same reason as every other field here: a control the
-    // operator is mid-drag on must not be yanked, and a successful commit
-    // re-reads through documentsChanged anyway. The row comes in from
-    // syncInspector's own rowFor, for the reason that function states: read
-    // from inside the documentsChanged emit, the `row` property can still
-    // hold the numbers the write just replaced, and a control repainted
-    // from them would be a control showing a value the model does not have.
-    function syncStyleControls(rowIn) {
-        const row = rowIn !== undefined ? rowIn : themeEditor.row
-        if (row === null)
-            return
-        const weights = [100, 200, 300, 400, 500, 600, 700, 800, 900]
-        const w = weights.indexOf(Number(themeEditor.styleValue("fontWeight", "fontWeightSet", row)))
-        weightCombo.currentIndex = w >= 0 ? w : 3
-        slantCombo.currentIndex =
-                themeEditor.styleValue("fontStyle", "fontStyleSet", row) === "italic" ? 1 : 0
-        fitCombo.currentIndex =
-                themeEditor.styleValue("fitMode", "fitModeSet", row) === "fixed" ? 1 : 0
-        minSizeField.text = String(themeEditor.styleValue("minFontSize", "minFontSizeSet", row))
-        const s = themeEditor.strokeShown(row)
-        strokeEnable.checked = s.enabled === true
-        strokeColorField.text = s.color !== undefined ? s.color : ""
-        strokeWidthSlider.value = s.width !== undefined ? s.width : 0
-        const sh = themeEditor.shadowShown(row)
-        shadowEnable.checked = sh.enabled === true
-        shadowColorField.text = sh.color !== undefined ? sh.color : ""
-        shadowOpacitySlider.value = sh.opacity !== undefined ? sh.opacity : 0
-        shadowOffsetXSlider.value = sh.offsetX !== undefined ? sh.offsetX : 0
-        shadowOffsetYSlider.value = sh.offsetY !== undefined ? sh.offsetY : 0
-        shadowBlurSlider.value = sh.blurSigma !== undefined ? sh.blurSigma : 0
-    }
+    /* The style rows, the colours, the box fields, the effects and the
+     * transition section now live in the shared inspector parts (task
+     * CS.5) and re-sync themselves off the adapter's changed()/
+     * targetChanged() — one vocabulary for every rail. This function
+     * keeps what only the page owns: the Name row, the compiled fixture
+     * the overlay draws, and the context toggle the record drives.
+     */
+
     // Every inspector edit writes the record back WHOLE — editTheme's
     // contract that one omitted field cannot silently flatten a gradient.
     // A value the model refuses lands on the status line, not in the data.
@@ -188,100 +144,20 @@ Item {
                        name === "lineSpacing" ? value : row.lineSpacing)
     }
 
-    /* --- typography, effects and the family picker (task TS.4) ------------
-     * The style block is SHARED, so these controls use the ONE-FIELD merge
-     * rather than re-spelling the whole record every keystroke: dragging
-     * the blur slider lands ONE undo (commit on release, not per pixel),
-     * and a field the operator tabs through without changing writes
-     * NOTHING. A refused write snaps the control back to the record — a
-     * field showing a number the model turned down is a field about to be
-     * trusted. (The plan routes these to the theme while TV.3 has not
-     * promoted the reading context to a view of its own; the scripture
-     * context carries no style fields until then.)
-     *
-     * The controls show the theme's OWN value when it carries one, and the
-     * value the audience actually draws today otherwise — read through the
-     * sample's resolved appearance — with a badge naming which. The family
-     * field stays a free-typed field always: it worked before the worker
-     * could answer and still works disconnected. The Browse popup is the
-     * one thing that needs the worker, and only a worker that named
-     * font.list can fill it; a requested family the worker cannot resolve
-     * is flagged MISSING but the stored name is never rewritten, because
-     * the scene must keep what the author asked for, not the accident of
-     * which worker was connected when it was typed.
+    /* --- typography, effects and the family picker (task TS.4, shared in CS.5)
+     * The style block is SHARED, so its controls live in the shared parts
+     * and use the ONE-FIELD merge through the adapter rather than
+     * re-spelling the whole record every keystroke: dragging the blur
+     * slider lands ONE undo (commit on release, not per pixel), and a
+     * field the operator tabs through without changing writes NOTHING. A
+     * refused write snaps the control back to the record — a field showing
+     * a number the model turned down is a field about to be trusted. The
+     * family field stays a free-typed field always (it worked before the
+     * worker could answer and still works disconnected), and the Browse
+     * popup is WorkerFontPicker's: only a worker that named font.list can
+     * fill it, and a requested family the worker cannot resolve is flagged
+     * MISSING but the stored name is never rewritten.
      */
-    function applyStyleField(field, value) {
-        // A failure has no documentsChanged to repaint from, so re-read the
-        // record here; a success repaints through the model's own emit.
-        if (!docs.setThemeTextStyleField(themeEditor.selectedId, field, value))
-            themeEditor.syncInspector()
-    }
-    // A slider drag is ONE gesture, so it commits once — on release — and
-    // not at all when the handle ended where it began (the current value is
-    // read before the write, so a no-move click writes nothing and costs no
-    // undo, exactly like tabbing through a text field unchanged).
-    function commitSlider(field, value, current) {
-        if (Math.abs(Number(value) - Number(current)) < 1e-6)
-            return
-        themeEditor.applyStyleField(field, value)
-    }
-    // The number a control shows and the number it must compare a commit
-    // against: the theme's own when set, the resolved answer otherwise. The
-    // optional row is the caller's fresh read (syncInspector's); a binding
-    // leaves it out and takes the property, which is current by then.
-    function styleValue(ownKey, setKey, rowIn) {
-        const row = rowIn !== undefined ? rowIn : themeEditor.row
-        if (row === null)
-            return null
-        if (row[setKey] === true)
-            return row[ownKey]
-        const look = themeEditor.viewLook
-        return look !== null && look.ok === true ? look[ownKey] : row[ownKey]
-    }
-    function styleInherited(setKey) {
-        const row = themeEditor.row
-        return row === null || row[setKey] !== true
-    }
-    // The effect a row of members edits: the theme's own record when it
-    // carries one, the resolved one otherwise (silence has no record — the
-    // badge says so and the members preview what will draw).
-    function strokeShown(rowIn) {
-        const row = rowIn !== undefined ? rowIn : themeEditor.row
-        if (row === null)
-            return {}
-        if (row.strokeSet === true)
-            return row.stroke
-        const look = themeEditor.viewLook
-        return look !== null && look.ok === true ? look.stroke : {}
-    }
-    function shadowShown(rowIn) {
-        const row = rowIn !== undefined ? rowIn : themeEditor.row
-        if (row === null)
-            return {}
-        if (row.shadowSet === true)
-            return row.shadow
-        const look = themeEditor.viewLook
-        return look !== null && look.ok === true ? look.shadow : {}
-    }
-    // The family list narrowed by the search box. Re-derived from BOTH the
-    // query text and the worker's arriving pages, so a search typed while
-    // the walk is mid-page completes against the full list as it lands.
-    function fontMatches(query) {
-        const needle = query.trim().toLowerCase()
-        return worker.fontFamilies.filter(f => needle === ""
-                                               || f.toLowerCase().indexOf(needle) >= 0)
-    }
-    // "Can THIS worker draw the family the theme asks for?" Only a COMPLETED
-    // list can answer, and only the WORKER'S list counts: absent means
-    // missing; no list, an in-flight walk, or a worker that cannot list all
-    // say nothing (they are not a verdict on the name).
-    function fontMissing(row) {
-        if (row === null || row.fontFamily === "" || !worker.fontListSupported
-                || worker.fontListState !== "ready")
-            return false
-        const want = row.fontFamily.toLowerCase()
-        return !worker.fontFamilies.some(f => f.toLowerCase() === want)
-    }
 
     /* --- the scripture reading context (task TF.4, text-flow plan) -------
      * The entry this theme carries under the name "scripture" decides how
@@ -322,38 +198,16 @@ Item {
                                      : themeEditor.boxFor(row)
         }
     }
-    // Re-read the whole section from the record — the commit, the More
-    // menu's undo, a refused write: whatever moved, the fields follow.
+    // Re-read the TOGGLE from the record — the commit, the More menu's
+    // undo, a refused write: whatever moved, the toggle follows the record,
+    // never its own last click. The context's typography/box/movement rows
+    // re-sync through the shared parts' adapter connections (CS.5); the
+    // lines probe re-asks because the entry's box may have moved.
     function syncContext() {
-        const row = themeEditor.themeRow()
         const ctx = themeEditor.contextRecord()
         themeEditor.contextOn = ctx.set === true
         ctxToggle.checked = ctx.set === true
-        ctxFontField.text = ctx.fontFamilySet === true ? ctx.fontFamily : ""
-        ctxSizeField.text = ctx.fontSizeSet === true ? String(ctx.fontSize) : ""
-        ctxSpacingField.text = ctx.lineSpacingSet === true ? String(ctx.lineSpacing) : ""
-        ctxAlignCombo.currentIndex = ctx.alignSet === true
-                ? ["left", "center", "right"].indexOf(ctx.align) + 1 : 0
         themeEditor.contextPlaces = ctx.boxSet === true || ctx.insetSet === true
-        // Silence SHOWS the box the passage would land on anyway — the
-        // theme's lyric rectangle, or the built-in one — because that is
-        // the honest answer to "where do the words go right now"; typing
-        // over it states the context's own opinion.
-        const box = ctx.boxSet === true
-                ? Qt.rect(ctx.x, ctx.y, ctx.width, ctx.height) : themeEditor.boxFor(row)
-        ctxXField.text = String(Math.round(box.x))
-        ctxYField.text = String(Math.round(box.y))
-        ctxWField.text = String(Math.round(box.width))
-        ctxHField.text = String(Math.round(box.height))
-        // The view's own move (task TR.3), synced with the rest of the entry:
-        // the picker on the seat that answers, the numbers on what that seat
-        // says, and the label naming it.
-        const move = themeEditor.contextTransitionShown(row, ctx)
-        contextTransitionCombo.currentIndex = ctx.transitionSet === true
-                ? (ctx.transition.kind === "cut" ? 1 : 2) : 0
-        contextTransitionWordsField.text = String(move.textDurationMs)
-        contextTransitionBackField.text = String(move.mediaDurationMs)
-        themeEditor.contextTransition = move
         linesAsk.restart()
     }
     // Toggle on CREATES the context from this theme's current look and box:
@@ -383,236 +237,29 @@ Item {
             ctxToggle.checked = true
         }
     }
-    // A field's commit is a WHOLE-entry write: the current set merged with
-    // the one field, because the domain, like the file, replaces the entry
-    // it is given. null is the field's way of saying "be silent again".
-    // The one place-task rule (task TV.1): the view answers with ONE box —
-    // writing its own rectangle retires a stored inset in the SAME edit,
-    // and "No box" clears the box and inset keys together while the entry's
-    // typography stays. Removing the whole VIEW is the toggle's job, not a
-    // field's.
-    function commitContext(overrides) {
-        const id = themeEditor.selectedId
-        const current = themeEditor.contextRecord()
-        if (id === "" || current.set !== true)
-            return
-        const fields = {}
-        if (current.fontFamilySet === true)
-            fields.fontFamily = current.fontFamily
-        if (current.fontSizeSet === true)
-            fields.fontSize = current.fontSize
-        if (current.lineSpacingSet === true)
-            fields.lineSpacing = current.lineSpacing
-        if (current.alignSet === true)
-            fields.align = current.align
-        if (current.insetSet === true && overrides.box === undefined)
-            fields.inset = current.inset
-        if (current.boxSet === true && overrides.inset === undefined)
-            fields.box = {x: current.x, y: current.y, width: current.width,
-                          height: current.height}
-        for (const key in overrides) {
-            if (overrides[key] === null)
-                delete fields[key]
-            else
-                fields[key] = overrides[key]
-        }
-        if (!docs.applyThemeContext(id, "scripture", fields))
-            themeEditor.syncContext()  // the refusal wins: the fields go back
-    }
-    // Four fields commit together, exactly like the theme's own placement:
-    // a box is one unit, and a half-typed one is a wrong one.
-    function applyContextBox() {
-        const x = parseFloat(ctxXField.text)
-        const y = parseFloat(ctxYField.text)
-        const w = parseFloat(ctxWField.text)
-        const h = parseFloat(ctxHField.text)
-        if (!isFinite(x) || !isFinite(y) || !isFinite(w) || !isFinite(h) || w <= 0 || h <= 0) {
-            themeEditor.syncContext()
-            return
-        }
-        themeEditor.commitContext({box: {x: x, y: y, width: w, height: h}})
+    // The Bible rail's "Theme's lyric box" (task TV.1): borrow the RECTANGLE
+    // the theme itself places (or the offered default) into the view's
+    // record — the adapter merges the whole entry and retires a stored
+    // inset in the same edit, so this is one write like any other field.
+    function copyThemeBox() {
+        const box = themeEditor.boxFor(themeEditor.themeRow())
+        if (!contextAdapter.commit("box", {x: box.x, y: box.y,
+                                           width: box.width, height: box.height}))
+            contextInspector.syncAll()  // the refusal wins: the fields go back
     }
 
-    /* --- how a view moves (task TR.3) --------------------------------------
-     * A transition is a property of how a VIEW presents, so the Songs section
-     * edits the theme's own record and the Bible section the `scripture`
-     * context's — the two seats TR.1's resolver walks, in the order it walks
-     * them: the context first, then the theme that carries it, then whatever
-     * else the chain speaks with, then the service. This page READS those
-     * records rather than re-walking a chain of its own — a second walk is a
-     * second opinion about priority, and the one door is
-     * DocumentController::transitionForSlide, which the cue lane asks the same
-     * question at Go. So the numbers a silent view shows are the numbers the
-     * seat below it answers with today.
-     *
-     * Three choices, no more. Inherit writes NOTHING at all — the record is
-     * removed, which is a different act from writing a record that happens to
-     * match what the view would inherit (and the reason the Inherit button is
-     * enabled only when there is a record to take off). Cut and Crossfade each
-     * write a WHOLE record, kind plus both durations, because a transition is
-     * atomic at the file, on the wire and in the domain, and this is not the
-     * place that gets loosened.
-     *
-     * A Cut disables the two durations without erasing them: the record still
-     * holds them, so coming back to Crossfade comes back to the times that
-     * were there. An edit here changes the NEXT cue wearing this theme — the
-     * record a cue moves with is captured when Go is pressed, so a fade
-     * already crossing finishes at the lengths it was given. And none of this
-     * can present anything: the theme under edit may not be on air at all, and
-     * the picture in the canvas is a fixture the audience never sees.
+    /* --- how a view moves (task TR.3, shared in CS.5) -----------------------
+     * The Songs section edits the theme's own record and the Bible section
+     * the `scripture` context's — the two seats TR.1's resolver walks, in
+     * the order it walks them — and both now do it through the shared
+     * TransitionControls part over the adapter: the picker's three choices,
+     * ONE atomic record per commit, the numbers seeded from what the seat
+     * below answers with, the source sentence naming that seat, Inherit as
+     * the removal. The rules (disabled-not-erased numbers, shape-only QML
+     * validation, no undo for a no-change commit) are the part's, and this
+     * page still cannot present anything: the theme under edit may not be
+     * on air at all.
      */
-    // The answer the view under edit shows: which seat speaks, and with what.
-    property var themeTransition: ({own: false, kind: "fade", textDurationMs: 500,
-                                    mediaDurationMs: 800, seat: "the service"})
-    property var contextTransition: ({own: false, kind: "fade", textDurationMs: 500,
-                                      mediaDurationMs: 800, seat: "the service"})
-    // The Inherit button's honest enable: there is a record to take off only
-    // when this view is the seat that speaks. (A button that wrote "nothing"
-    // over nothing would cost an undo for no change.)
-    readonly property bool contextTransitionOwn: contextTransition.own === true
-    // The service's standing record, for the note under a view that says
-    // nothing: the seat at the bottom of every chain.
-    function serviceTransition() {
-        return docs.serviceDefaultTransition()
-    }
-    // The SONGS view: the theme's own record when it carries one, the
-    // service's otherwise. A theme that says nothing defers to the chain a
-    // slide wearing it builds — lower themes answer before the service does —
-    // and the note under the control says so rather than pretending the
-    // service is the only answer beneath it.
-    function themeTransitionShown(row) {
-        if (row !== null && row.transitionSet === true) {
-            return {own: true, kind: row.transition.kind,
-                    textDurationMs: row.transition.textDurationMs,
-                    mediaDurationMs: row.transition.mediaDurationMs, seat: "this theme"}
-        }
-        const service = themeEditor.serviceTransition()
-        return {own: false, kind: service.kind, textDurationMs: service.textDurationMs,
-                mediaDurationMs: service.mediaDurationMs, seat: "the service"}
-    }
-    // The BIBLE view: its own context, then the theme carrying it, then the
-    // service — the same priority, read from the two records in front of the
-    // page instead of from a walk this page could get wrong.
-    function contextTransitionShown(row, ctx) {
-        if (ctx.transitionSet === true) {
-            return {own: true, kind: ctx.transition.kind,
-                    textDurationMs: ctx.transition.textDurationMs,
-                    mediaDurationMs: ctx.transition.mediaDurationMs, seat: "this view"}
-        }
-        if (row !== null && row.transitionSet === true) {
-            return {own: false, kind: row.transition.kind,
-                    textDurationMs: row.transition.textDurationMs,
-                    mediaDurationMs: row.transition.mediaDurationMs, seat: "this theme"}
-        }
-        const service = themeEditor.serviceTransition()
-        return {own: false, kind: service.kind, textDurationMs: service.textDurationMs,
-                mediaDurationMs: service.mediaDurationMs, seat: "the service"}
-    }
-    // The sentence the source label shows: who answers, and with what numbers.
-    // A Cut is said on its own terms — quoting times it ignores as if they
-    // applied would be the page lying about the move the audience gets.
-    function describeTransition(shown) {
-        const who = shown.own === true ? shown.seat + " answers for itself"
-                                       : "inherits " + shown.seat
-        if (shown.kind === "cut")
-            return who + " — Cut: the cue is simply on"
-        return who + " — Crossfade " + shown.textDurationMs + " ms words / "
-               + shown.mediaDurationMs + " ms background"
-    }
-    // A typed millisecond count, or -1 for "that is not a duration" — shape
-    // only. The BAND is the domain's one sentence: a 99999 that gets here is
-    // the verb's to refuse, and the refusal re-reads the record, so the
-    // control snaps back to the model instead of to a ceiling copied twice.
-    function msOr(textIn) {
-        const t = String(textIn).trim()
-        if (t === "" || !/^[0-9]+$/.test(t))
-            return -1
-        return Math.round(Number(t))
-    }
-    // The two writes, each ONE record and therefore one undo. A refusal has no
-    // documentsChanged to repaint from, so the section re-reads itself; a
-    // success repaints through the model's own emit.
-    function writeThemeTransition(record) {
-        if (!docs.setThemeTransition(themeEditor.selectedId, record))
-            themeEditor.syncInspector()
-    }
-    function writeContextTransition(record) {
-        if (!docs.setTextContextTransition(themeEditor.selectedId, "scripture", record))
-            themeEditor.syncContext()
-    }
-    // Inherit is the removal, and only ever offered against a record that
-    // exists: pressing it when the view already says nothing writes nothing and
-    // would cost an undo for no change.
-    function inheritThemeTransition() {
-        const row = themeEditor.themeRow()
-        if (row !== null && row.transitionSet === true)
-            themeEditor.writeThemeTransition({})
-    }
-    function inheritContextTransition() {
-        if (themeEditor.contextRecord().transitionSet === true)
-            themeEditor.writeContextTransition({})
-    }
-    // The SONGS commit: the kind the picker shows plus the two numbers the
-    // fields show. Inherit is the picker's first entry, and a number that is
-    // not a count of milliseconds is refused by the page rather than turned
-    // into one — 0 would be a duration the operator did not type.
-    function commitThemeTransitionView() {
-        if (themeEditor.selectedId === "")
-            return
-        if (transitionCombo.currentIndex === 0) {
-            themeEditor.inheritThemeTransition()
-            return
-        }
-        const kind = transitionCombo.currentIndex === 1 ? "cut" : "fade"
-        const words = themeEditor.msOr(transitionWordsField.text)
-        const back = themeEditor.msOr(transitionBackField.text)
-        if (words < 0 || back < 0) {
-            themeEditor.syncInspector()
-            return
-        }
-        const shown = themeEditor.themeTransitionShown(themeEditor.themeRow())
-        if (shown.own === true && shown.kind === kind
-                && shown.textDurationMs === words && shown.mediaDurationMs === back)
-            return  // focus moved with nothing changed: no write, no undo
-        themeEditor.writeThemeTransition({kind: kind, textDurationMs: words,
-                                          mediaDurationMs: back})
-    }
-    // The BIBLE commit, same shape, and the same refusal to write anything a
-    // context that does not exist could not hold.
-    function commitContextTransitionView() {
-        const ctx = themeEditor.contextRecord()
-        if (themeEditor.selectedId === "" || ctx.set !== true)
-            return
-        if (contextTransitionCombo.currentIndex === 0) {
-            themeEditor.inheritContextTransition()
-            return
-        }
-        const kind = contextTransitionCombo.currentIndex === 1 ? "cut" : "fade"
-        const words = themeEditor.msOr(contextTransitionWordsField.text)
-        const back = themeEditor.msOr(contextTransitionBackField.text)
-        if (words < 0 || back < 0) {
-            themeEditor.syncContext()
-            return
-        }
-        const shown = themeEditor.contextTransitionShown(themeEditor.themeRow(), ctx)
-        if (shown.own === true && shown.kind === kind
-                && shown.textDurationMs === words && shown.mediaDurationMs === back)
-            return
-        themeEditor.writeContextTransition({kind: kind, textDurationMs: words,
-                                            mediaDurationMs: back})
-    }
-    // Put the Songs section's three controls where the record says they
-    // belong. Assignment, not binding, like every other field here: a control
-    // the operator is mid-edit on must not be yanked from under them.
-    function syncTransition(rowIn) {
-        const row = rowIn !== undefined ? rowIn : themeEditor.row
-        const shown = themeEditor.themeTransitionShown(row)
-        transitionCombo.currentIndex = row !== null && row.transitionSet === true
-                ? (row.transition.kind === "cut" ? 1 : 2) : 0
-        transitionWordsField.text = String(shown.textDurationMs)
-        transitionBackField.text = String(shown.mediaDurationMs)
-        themeEditor.themeTransition = shown
-    }
 
     /* --- the placement (themes plan amendment 2026-11-01) ---------------
      *
@@ -730,7 +377,8 @@ Item {
     // so dragging a theme's box is one undo and not one per pixel. The
     // gesture commits to the VIEW it happened in (task TV.1): Songs drags
     // write the theme's placement, Bible drags write the context's own box
-    // (retiring any inset in the same edit, per commitContext), and the
+    // (retiring any inset in the same edit, per the adapter's context
+    // merge), and the
     // other view's record is left exactly as it was.
     function endGesture() {
         if (themeEditor.dragMode === "") {
@@ -743,29 +391,16 @@ Item {
         if (id === "")
             return
         if (themeEditor.selectedView !== "") {
-            themeEditor.commitContext({box: {
+            contextAdapter.commit("box", {
                 x: Math.round(themeEditor.penX), y: Math.round(themeEditor.penY),
-                width: Math.round(themeEditor.penW), height: Math.round(themeEditor.penH)}})
+                width: Math.round(themeEditor.penW), height: Math.round(themeEditor.penH)})
         } else {
             docs.setThemePlacement(id, Math.round(themeEditor.penX), Math.round(themeEditor.penY),
                                    Math.round(themeEditor.penW), Math.round(themeEditor.penH))
         }
         themeEditor.syncInspector()
     }
-    // The exact-number path. Four fields commit together because a placement
-    // is one unit; anything the model refuses (or that is not a number) puts
-    // the fields back where the model says they belong.
-    function applyPlacementFields() {
-        const row = themeEditor.row
-        const x = parseFloat(placeXField.text)
-        const y = parseFloat(placeYField.text)
-        const w = parseFloat(placeWField.text)
-        const h = parseFloat(placeHField.text)
-        if (row === null || !Number.isFinite(x) || !Number.isFinite(y)
-                || !(w >= 1) || !(h >= 1)
-                || !docs.setThemePlacement(row.id, x, y, w, h))
-            themeEditor.syncInspector()
-    }
+
 
     // The centre picture: the worker's own composition of the built-in
     // sample wearing the selected theme. Debounced like the Edit page's
@@ -1050,6 +685,115 @@ Item {
     Component.onCompleted: {
         themeEditor.reconcileSelection()
         themeEditor.syncInspector()
+        themeEditor.pinRailNames()
+    }
+    // The automation names this suite (and assistive technology) read are
+    // the page's promise, not the parts' defaults: each shared row keeps
+    // the exact identifier it carried before the CS.5 extraction, assigned
+    // here once so a rename is one line that says which part moved.
+    function pinRailNames() {
+        const b = songsInspector.backgroundControls
+        b.textColorObjectName = "themeEditorColourField"
+        b.backColorObjectName = "themeEditorBackField"
+        b.gradientObjectName = "themeEditorGradientField"
+        const st = songsInspector.styleControls
+        st.sectionTitle = "Typography & effects"
+        st.fontObjectName = "themeEditorFontField"
+        st.fontBrowseObjectName = "themeEditorBrowseFonts"
+        st.fontStatusObjectName = "themeEditorFontStatus"
+        st.fontPopupObjectName = "themeEditorFontPopup"
+        st.fontSearchObjectName = "themeEditorFontSearch"
+        st.fontListStatusObjectName = "themeEditorFontListStatus"
+        st.fontListObjectName = "themeEditorFontList"
+        st.fontRowObjectName = "themeEditorFontRow"
+        st.fontCancelObjectName = "themeEditorFontCancel"
+        st.sizeObjectName = "themeEditorSizeField"
+        st.alignObjectName = "themeEditorAlign"
+        st.spacingObjectName = "themeEditorSpacingField"
+        st.weightObjectName = "themeEditorWeight"
+        st.weightInheritObjectName = "themeEditorWeightInherit"
+        st.slantObjectName = "themeEditorSlant"
+        st.slantInheritObjectName = "themeEditorSlantInherit"
+        st.fitObjectName = "themeEditorFit"
+        st.fitInheritObjectName = "themeEditorFitInherit"
+        st.minSizeObjectName = "themeEditorMinSize"
+        st.minSizeInheritObjectName = "themeEditorMinSizeInherit"
+        const g = songsInspector.geometryControls
+        g.xObjectName = "themeEditorPlaceX"
+        g.yObjectName = "themeEditorPlaceY"
+        g.wObjectName = "themeEditorPlaceW"
+        g.hObjectName = "themeEditorPlaceH"
+        g.clearObjectName = "themeEditorNoPlacement"
+        const fx = songsInspector.effectsControls
+        fx.strokeCheckObjectName = "themeEditorStrokeEnable"
+        fx.strokeOffObjectName = "themeEditorStrokeInherit"
+        fx.strokeColourObjectName = "themeEditorStrokeColour"
+        fx.strokeWidthObjectName = "themeEditorStrokeWidth"
+        fx.shadowCheckObjectName = "themeEditorShadowEnable"
+        fx.shadowOffObjectName = "themeEditorShadowInherit"
+        fx.shadowColourObjectName = "themeEditorShadowColour"
+        fx.shadowOpacityObjectName = "themeEditorShadowOpacity"
+        fx.shadowOffsetXObjectName = "themeEditorShadowOffsetX"
+        fx.shadowOffsetYObjectName = "themeEditorShadowOffsetY"
+        fx.shadowBlurObjectName = "themeEditorShadowBlur"
+        const mv = songsInspector.transitionControls
+        mv.kindObjectName = "themeEditorTransitionKind"
+        mv.inheritObjectName = "themeEditorTransitionInherit"
+        mv.wordsObjectName = "themeEditorTransitionWords"
+        mv.backObjectName = "themeEditorTransitionMedia"
+        mv.sourceObjectName = "themeEditorTransitionSource"
+        mv.noteObjectName = "themeEditorTransitionNote"
+        mv.silentSuffix = " — a theme lower in a wearing slide's chain answers first"
+        mv.note = "Words covers the text and any foreground picture; the background is "
+                + "a colour, a gradient or a still image. A background that is a VIDEO "
+                + "still cuts either way, so no background number dissolves one clip "
+                + "into the next. What is set here is the NEXT cue wearing this theme: "
+                + "a fade already crossing keeps the lengths it was given at Go."
+
+        const cst = contextInspector.styleControls
+        cst.sparse = true
+        cst.showStyleBlock = false  // the reading record sets type basics
+                                  // only; weight/slant/fit stay the theme's
+        cst.fontShowStatus = false
+        cst.fontLabel = "Reading font (\"\" = theme's)"
+        cst.sizeLabel = "Reading size (0 = renderer, \"\" = theme's)"
+        cst.alignLabel = "Reading alignment"
+        cst.spacingLabel = "Reading line spacing (0.25 to 8, \"\" = theme's)"
+        cst.fontObjectName = "themeEditorContextFont"
+        cst.fontBrowseObjectName = "themeEditorContextFontBrowse"
+        cst.fontStatusObjectName = "themeEditorContextFontStatus"
+        cst.fontPopupObjectName = "themeEditorContextFontPopup"
+        cst.sizeObjectName = "themeEditorContextSize"
+        cst.alignObjectName = "themeEditorContextAlign"
+        cst.spacingObjectName = "themeEditorContextSpacing"
+        const cg = contextInspector.geometryControls
+        cg.label = "Bible box (x, y, w, h in 1920×1080)"
+        cg.xObjectName = "themeEditorContextX"
+        cg.yObjectName = "themeEditorContextY"
+        cg.wObjectName = "themeEditorContextW"
+        cg.hObjectName = "themeEditorContextH"
+        cg.clearLabel = "No box"
+        cg.extraActionLabel = "Theme's lyric box"
+        cg.extraObjectName = "themeEditorContextBoxTheme"
+        cg.clearObjectName = "themeEditorContextBoxClear"
+        cg.showStatus = false
+        cg.extraClicked.connect(themeEditor.copyThemeBox)
+        const cmv = contextInspector.transitionControls
+        cmv.kindObjectName = "themeEditorContextTransitionKind"
+        cmv.inheritObjectName = "themeEditorContextTransitionInherit"
+        cmv.wordsObjectName = "themeEditorContextTransitionWords"
+        cmv.backObjectName = "themeEditorContextTransitionMedia"
+        cmv.sourceObjectName = "themeEditorContextTransitionSource"
+        cmv.noteObjectName = "themeEditorContextTransitionNote"
+        cmv.silentSuffix = " — the theme carrying this view answers before the service"
+        cmv.note = "a passage's view can move differently from the song's words; a "
+                 + "Cut here is a decision, not an absence, and it stops the walk. "
+                 + "A background that is a VIDEO still cuts whatever these say."
+
+        // The sparse/section flags changed what the syncs above drew; one
+        // pass each now that the rails are configured.
+        songsInspector.syncAll()
+        contextInspector.syncAll()
     }
     onSelectedIdChanged: themeEditor.syncInspector()
 
@@ -1493,6 +1237,29 @@ Item {
      * handover (Main.qml) owns the focus at every mode switch.
      */
 
+    /* --- the inspector read model (task CS.4, wired by CS.5) ----------------
+     * Two explicit targets, two rails: the Songs column edits the THEME,
+     * the Bible column the `scripture` context CARRIED BY the selected
+     * theme. Browsing (a new theme, a view switch) only moves `target`;
+     * every row re-reads itself off the adapter, so the rails cannot
+     * disagree with the records a Go would resolve against.
+     */
+    InspectorAdapter {
+        id: themeAdapter
+        document: docs
+        target: ({kind: "theme", id: themeEditor.selectedId})
+    }
+    InspectorAdapter {
+        id: contextAdapter
+        document: docs
+        target: ({kind: "context", id: themeEditor.selectedId, view: "scripture"})
+    }
+    // The context-property worker, named once at the page root: inside an
+    // instance body `worker: worker` would resolve to the instance's OWN
+    // property (a self-binding that reads undefined), so the rails take
+    // this alias instead.
+    readonly property var workerApi: worker
+
     ScrollView {
         id: inspectorScroll
         objectName: "themeEditorInspectorScroll"
@@ -1529,481 +1296,19 @@ Item {
                     width: parent.width
                     onEditingFinished: themeEditor.applyField("name", text.trim())
                 }
-                Text { text: "Text colour (#rgb or #rrggbb)"; color: "#b0b0b0"; font.pixelSize: 11 }
-                PanelField {
-                    id: colourField
-                    objectName: "themeEditorColourField"
+                // The shared inspector rail for this theme (task CS.5):
+                // colours, type, box, effects and movement, every row
+                // reading and writing through the theme adapter. The
+                // automation names this suite (and the operator's muscle
+                // memory) rely on are assigned in Component.onCompleted —
+                // the SAME identifiers as before the extraction, held by
+                // the part that now owns each row.
+                AppearanceInspector {
+                    id: songsInspector
                     width: parent.width
-                    onEditingFinished: themeEditor.applyField("textColor", text)
-                }
-                Text { text: "Background colour"; color: "#b0b0b0"; font.pixelSize: 11 }
-                PanelField {
-                    id: backField
-                    objectName: "themeEditorBackField"
-                    width: parent.width
-                    onEditingFinished: themeEditor.applyField("backgroundColor", text)
-                }
-                Text { text: "Gradient colour (\"\" = flat)"; color: "#b0b0b0"; font.pixelSize: 11 }
-                PanelField {
-                    id: gradientField
-                    objectName: "themeEditorGradientField"
-                    width: parent.width
-                    onEditingFinished: themeEditor.applyField("backgroundGradient", text)
-                }
-                Text { text: "Font family (\"\" = platform)"; color: "#b0b0b0"; font.pixelSize: 11 }
-                // The typed name is the real control: it always worked and
-                // works with the worker gone. "Browse" only opens a list the
-                // audience's OWN worker can honour; a worker that named no
-                // font.list gets a disabled button and a word why, never a
-                // list of the operator's desktop fonts the show would fall
-                // back from (task TS.4).
-                Row {
-                    spacing: 4
-                    PanelField {
-                        id: fontField
-                        objectName: "themeEditorFontField"
-                        width: parent.width - browseFontsButton.width - parent.spacing
-                        onEditingFinished: themeEditor.applyField("fontFamily", text)
-                    }
-                    PanelButton {
-                        id: browseFontsButton
-                        objectName: "themeEditorBrowseFonts"
-                        text: "Browse"
-                        enabled: worker.fontListSupported && themeEditor.selectedId !== ""
-                        onClicked: {
-                            fontSearchField.text = ""
-                            if (worker.fontListState === "idle")
-                                worker.refreshFontFamilies()
-                            fontPopup.open()
-                        }
-                    }
-                }
-                Text {
-                    objectName: "themeEditorFontStatus"
-                    width: parent.width
-                    wrapMode: Text.WordWrap
-                    font.pixelSize: 10
-                    color: themeEditor.fontMissing(themeEditor.row) ? "#e0a94a" : "#888888"
-                    text: {
-                        const row = themeEditor.row
-                        if (row === null || row.fontFamily === "")
-                            return ""
-                        if (!worker.fontListSupported)
-                            return "typed name — this worker cannot list its fonts"
-                        if (worker.fontListState !== "ready")
-                            return "checking the audience's fonts…"
-                        return themeEditor.fontMissing(row)
-                                ? "\"" + row.fontFamily + "\" is not installed on the "
-                                  + "audience's machine — it will fall back"
-                                : "installed on the audience's machine"
-                    }
-                }
-                Text { text: "Font size (0 = renderer default)"; color: "#b0b0b0"; font.pixelSize: 11 }
-                PanelField {
-                    id: sizeField
-                    objectName: "themeEditorSizeField"
-                    width: parent.width
-                    onEditingFinished: themeEditor.applyField("fontSize", Number(text))
-                }
-                Text { text: "Alignment"; color: "#b0b0b0"; font.pixelSize: 11 }
-                ComboBox {
-                    id: alignCombo
-                    objectName: "themeEditorAlign"
-                    width: parent.width
-                    model: ["left", "center", "right"]
-                    onActivated: themeEditor.applyField("align", currentValue)
-                }
-                Text { text: "Line spacing (0.25 to 8)"; color: "#b0b0b0"; font.pixelSize: 11 }
-                PanelField {
-                    id: spacingField
-                    objectName: "themeEditorSpacingField"
-                    width: parent.width
-                    onEditingFinished: themeEditor.applyField("lineSpacing", Number(text))
-                }
-
-                // The lyric box this theme places (themes plan amendment
-                // 2026-11-01): the same rectangle the overlay above is showing,
-                // in the 1920x1080 authored canvas, for the operator who would
-                // rather type it. Four fields commit together — a placement is
-                // ONE unit — and "No placement" takes the theme's opinion away
-                // so wearing slides draw the boxes they were authored with.
-                Text {
-                    text: "Lyric box (x, y, w, h in 1920×1080)"
-                    color: "#b0b0b0"
-                    font.pixelSize: 11
-                }
-                Row {
-                    spacing: 4
-                    PanelField {
-                        id: placeXField
-                        objectName: "themeEditorPlaceX"
-                        width: 52
-                        onEditingFinished: themeEditor.applyPlacementFields()
-                    }
-                    PanelField {
-                        id: placeYField
-                        objectName: "themeEditorPlaceY"
-                        width: 52
-                        onEditingFinished: themeEditor.applyPlacementFields()
-                    }
-                    PanelField {
-                        id: placeWField
-                        objectName: "themeEditorPlaceW"
-                        width: 52
-                        onEditingFinished: themeEditor.applyPlacementFields()
-                    }
-                    PanelField {
-                        id: placeHField
-                        objectName: "themeEditorPlaceH"
-                        width: 52
-                        onEditingFinished: themeEditor.applyPlacementFields()
-                    }
-                }
-                Row {
-                    spacing: 6
-                    PanelButton {
-                        objectName: "themeEditorNoPlacement"
-                        text: "No placement"
-                        enabled: themeEditor.hasPlacement
-                        onClicked: docs.clearThemePlacement(themeEditor.selectedId)
-                    }
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: themeEditor.hasPlacement ? "#8ec9f5" : "#888888"
-                        font.pixelSize: 11
-                        text: themeEditor.hasPlacement ? "this theme places its slides"
-                                                       : "no opinion — slides keep their own boxes"
-                    }
-                }
-
-                // --- typography & effects (task TS.4) ---------------------
-                // Each control commits ONE field through the merge verb, so
-                // a change here never disturbs the others and never costs
-                // more than one undo. The badge beside each name says
-                // whether this theme speaks or inherits the value the
-                // audience draws today; "Inherit"/"Off" buttons write that
-                // back (a scalar to null, an effect cleared whole). Sliders
-                // commit on release only — a drag is one gesture is one
-                // undo. A refused write re-reads the record (applyStyleField).
-                Text {
-                    text: "Typography & effects"
-                    color: "#bbbbbb"
-                    font.pixelSize: 11
-                    font.bold: true
-                }
-                Row {
-                    spacing: 6
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "Weight"; color: "#b0b0b0"; font.pixelSize: 11
-                    }
-                    ComboBox {
-                        id: weightCombo
-                        objectName: "themeEditorWeight"
-                        model: [100, 200, 300, 400, 500, 600, 700, 800, 900]
-                        onActivated: themeEditor.applyStyleField("fontWeight",
-                                                                 Number(currentValue))
-                    }
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        font.pixelSize: 10
-                        color: themeEditor.styleInherited("fontWeightSet") ? "#888888" : "#8ec9f5"
-                        text: themeEditor.styleInherited("fontWeightSet") ? "inherited" : "own"
-                    }
-                    PanelButton {
-                        objectName: "themeEditorWeightInherit"
-                        text: "Inherit"
-                        enabled: !themeEditor.styleInherited("fontWeightSet")
-                        onClicked: themeEditor.applyStyleField("fontWeight", null)
-                    }
-                }
-                Row {
-                    spacing: 6
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "Slant"; color: "#b0b0b0"; font.pixelSize: 11
-                    }
-                    ComboBox {
-                        id: slantCombo
-                        objectName: "themeEditorSlant"
-                        model: ["normal", "italic"]
-                        onActivated: themeEditor.applyStyleField("fontStyle", currentValue)
-                    }
-                    PanelButton {
-                        objectName: "themeEditorSlantInherit"
-                        text: "Inherit"
-                        enabled: !themeEditor.styleInherited("fontStyleSet")
-                        onClicked: themeEditor.applyStyleField("fontStyle", null)
-                    }
-                }
-                Row {
-                    spacing: 6
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "Fit"; color: "#b0b0b0"; font.pixelSize: 11
-                    }
-                    ComboBox {
-                        id: fitCombo
-                        objectName: "themeEditorFit"
-                        model: ["shrink", "fixed"]
-                        onActivated: themeEditor.applyStyleField("fitMode", currentValue)
-                    }
-                    PanelButton {
-                        objectName: "themeEditorFitInherit"
-                        text: "Inherit"
-                        enabled: !themeEditor.styleInherited("fitModeSet")
-                        onClicked: themeEditor.applyStyleField("fitMode", null)
-                    }
-                }
-                Text { text: "Minimum size (1..4096)"; color: "#b0b0b0"; font.pixelSize: 11 }
-                Row {
-                    spacing: 4
-                    PanelField {
-                        id: minSizeField
-                        objectName: "themeEditorMinSize"
-                        width: parent.width - parent.spacing - 60
-                        onEditingFinished: {
-                            if (text.trim() === String(themeEditor.styleValue("minFontSize",
-                                                                              "minFontSizeSet")))
-                                return  // focus-out with no change writes nothing
-                            const v = Number(text)
-                            if (isFinite(v) && v >= 1 && v <= 4096)
-                                themeEditor.applyStyleField("minFontSize", v)
-                            else
-                                themeEditor.syncStyleControls()
-                        }
-                    }
-                    PanelButton {
-                        objectName: "themeEditorMinSizeInherit"
-                        text: "Inherit"
-                        width: 60
-                        enabled: !themeEditor.styleInherited("minFontSizeSet")
-                        onClicked: themeEditor.applyStyleField("minFontSize", null)
-                    }
-                }
-
-                // Stroke: enable is the record's own materialise — a theme
-                // that carried nothing gains {true, black, 2} (the audience
-                // already draws that as the default); members then merge.
-                Row {
-                    spacing: 6
-                    CheckBox {
-                        id: strokeEnable
-                        objectName: "themeEditorStrokeEnable"
-                        text: "outline"; font.pixelSize: 11
-                        onToggled: themeEditor.applyStyleField("strokeEnabled", checked)
-                    }
-                    PanelButton {
-                        objectName: "themeEditorStrokeInherit"
-                        text: "Off"
-                        enabled: themeEditor.row !== null && themeEditor.row.strokeSet === true
-                        onClicked: themeEditor.applyStyleField("stroke", null)
-                    }
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        font.pixelSize: 10
-                        color: themeEditor.styleInherited("strokeSet") ? "#888888" : "#8ec9f5"
-                        text: themeEditor.styleInherited("strokeSet") ? "inherited" : "own"
-                    }
-                }
-                Row {
-                    spacing: 4
-                    Text { text: "colour"; color: "#b0b0b0"; font.pixelSize: 11 }
-                    PanelField {
-                        id: strokeColorField
-                        objectName: "themeEditorStrokeColour"
-                        width: 110
-                        onEditingFinished: {
-                            if (text.trim() === String(themeEditor.strokeShown().color))
-                                return
-                            themeEditor.applyStyleField("strokeColor", text.trim())
-                        }
-                    }
-                }
-                Row {
-                    spacing: 4
-                    Text { text: "width"; color: "#b0b0b0"; font.pixelSize: 11 }
-                    Slider {
-                        id: strokeWidthSlider
-                        objectName: "themeEditorStrokeWidth"
-                        from: 0; to: 32; stepSize: 0.5
-                        onPressedChanged: if (!pressed)
-                            themeEditor.commitSlider("strokeWidth", value,
-                                                     themeEditor.strokeShown().width)
-                    }
-                }
-
-                // Shadow: same shape — enable materialises the default
-                // record, the four sliders merge one member on release.
-                Row {
-                    spacing: 6
-                    CheckBox {
-                        id: shadowEnable
-                        objectName: "themeEditorShadowEnable"
-                        text: "shadow"; font.pixelSize: 11
-                        onToggled: themeEditor.applyStyleField("shadowEnabled", checked)
-                    }
-                    PanelButton {
-                        objectName: "themeEditorShadowInherit"
-                        text: "Off"
-                        enabled: themeEditor.row !== null && themeEditor.row.shadowSet === true
-                        onClicked: themeEditor.applyStyleField("shadow", null)
-                    }
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        font.pixelSize: 10
-                        color: themeEditor.styleInherited("shadowSet") ? "#888888" : "#8ec9f5"
-                        text: themeEditor.styleInherited("shadowSet") ? "inherited" : "own"
-                    }
-                }
-                Row {
-                    spacing: 4
-                    Text { text: "colour"; color: "#b0b0b0"; font.pixelSize: 11 }
-                    PanelField {
-                        id: shadowColorField
-                        objectName: "themeEditorShadowColour"
-                        width: 110
-                        onEditingFinished: {
-                            if (text.trim() === String(themeEditor.shadowShown().color))
-                                return
-                            themeEditor.applyStyleField("shadowColor", text.trim())
-                        }
-                    }
-                }
-                Row {
-                    spacing: 4
-                    Text { text: "opacity"; color: "#b0b0b0"; font.pixelSize: 11 }
-                    Slider {
-                        id: shadowOpacitySlider
-                        objectName: "themeEditorShadowOpacity"
-                        from: 0; to: 1; stepSize: 0.05
-                        onPressedChanged: if (!pressed)
-                            themeEditor.commitSlider("shadowOpacity", value,
-                                                     themeEditor.shadowShown().opacity)
-                    }
-                }
-                Row {
-                    spacing: 4
-                    Text { text: "offset X"; color: "#b0b0b0"; font.pixelSize: 11 }
-                    Slider {
-                        id: shadowOffsetXSlider
-                        objectName: "themeEditorShadowOffsetX"
-                        from: -256; to: 256; stepSize: 1
-                        onPressedChanged: if (!pressed)
-                            themeEditor.commitSlider("shadowOffsetX", value,
-                                                     themeEditor.shadowShown().offsetX)
-                    }
-                }
-                Row {
-                    spacing: 4
-                    Text { text: "offset Y"; color: "#b0b0b0"; font.pixelSize: 11 }
-                    Slider {
-                        id: shadowOffsetYSlider
-                        objectName: "themeEditorShadowOffsetY"
-                        from: -256; to: 256; stepSize: 1
-                        onPressedChanged: if (!pressed)
-                            themeEditor.commitSlider("shadowOffsetY", value,
-                                                     themeEditor.shadowShown().offsetY)
-                    }
-                }
-                Row {
-                    spacing: 4
-                    Text { text: "blur σ"; color: "#b0b0b0"; font.pixelSize: 11 }
-                    Slider {
-                        id: shadowBlurSlider
-                        objectName: "themeEditorShadowBlur"
-                        from: 0; to: 64; stepSize: 0.5
-                        onPressedChanged: if (!pressed)
-                            themeEditor.commitSlider("shadowBlurSigma", value,
-                                                     themeEditor.shadowShown().blurSigma)
-                    }
-                }
-
-                // --- transition (task TR.3) -------------------------------
-                // The view's own answer about how a wearing cue ARRIVES. The
-                // picker's three entries are the whole contract: Inherit
-                // removes the record, Cut and Crossfade each write one whole
-                // record. A silent view shows the numbers the seat under it
-                // answers with today, and the label under the fields says
-                // which seat that is — the page reads the records rather than
-                // re-walking the chain, so it cannot disagree with the
-                // resolver a Go asks.
-                Text {
-                    text: "Transition"
-                    color: "#bbbbbb"
-                    font.pixelSize: 11
-                    font.bold: true
-                }
-                ComboBox {
-                    id: transitionCombo
-                    objectName: "themeEditorTransitionKind"
-                    width: parent.width
-                    enabled: themeEditor.selectedId !== ""
-                    model: ["Inherit", "Cut", "Crossfade"]
-                    onActivated: themeEditor.commitThemeTransitionView()
-                }
-                Row {
-                    spacing: 6
-                    PanelButton {
-                        objectName: "themeEditorTransitionInherit"
-                        text: "Inherit"
-                        enabled: themeEditor.row !== null
-                                 && themeEditor.row.transitionSet === true
-                        onClicked: themeEditor.inheritThemeTransition()
-                    }
-                    Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        font.pixelSize: 10
-                        color: themeEditor.themeTransition.own === true ? "#8ec9f5" : "#888888"
-                        text: themeEditor.themeTransition.own === true ? "own" : "inherited"
-                    }
-                }
-                Text { text: "Words duration (ms, 0 to 10000)"
-                       color: "#b0b0b0"; font.pixelSize: 11 }
-                PanelField {
-                    id: transitionWordsField
-                    objectName: "themeEditorTransitionWords"
-                    width: parent.width
-                    // A Cut ignores the numbers, and Inherit has none of its
-                    // own to edit — both disable the fields WITHOUT clearing
-                    // them, because the record still holds what is shown and
-                    // coming back to Crossfade comes back to the times.
-                    enabled: themeEditor.themeTransition.own === true
-                             && themeEditor.themeTransition.kind === "fade"
-                    onEditingFinished: themeEditor.commitThemeTransitionView()
-                }
-                Text { text: "Background duration (ms, 0 to 10000)"
-                       color: "#b0b0b0"; font.pixelSize: 11 }
-                PanelField {
-                    id: transitionBackField
-                    objectName: "themeEditorTransitionMedia"
-                    width: parent.width
-                    enabled: themeEditor.themeTransition.own === true
-                             && themeEditor.themeTransition.kind === "fade"
-                    onEditingFinished: themeEditor.commitThemeTransitionView()
-                }
-                Text {
-                    objectName: "themeEditorTransitionSource"
-                    width: parent.width
-                    wrapMode: Text.WordWrap
-                    font.pixelSize: 10
-                    color: themeEditor.themeTransition.own === true ? "#8ec9f5" : "#888888"
-                    text: themeEditor.describeTransition(themeEditor.themeTransition)
-                          + (themeEditor.themeTransition.own === true
-                             ? ""
-                             : " — a theme lower in a wearing slide's chain answers first")
-                }
-                Text {
-                    objectName: "themeEditorTransitionNote"
-                    width: parent.width
-                    wrapMode: Text.WordWrap
-                    font.pixelSize: 10
-                    color: "#888888"
-                    text: "Words covers the text and any foreground picture; the background is "
-                        + "a colour, a gradient or a still image. A background that is a VIDEO "
-                        + "still cuts either way, so no background number dissolves one clip "
-                        + "into the next. What is set here is the NEXT cue wearing this theme: "
-                        + "a fade already crossing keeps the lengths it was given at Go."
+                    adapter: themeAdapter
+                    worker: themeEditor.workerApi
+                    overlayParent: themeEditor
                 }
             }
 
@@ -2043,109 +1348,25 @@ Item {
                     width: parent.width
                     spacing: 8
                     visible: themeEditor.contextOn
-                    Text { text: "Reading font (\"\" = theme's)"; color: "#b0b0b0"; font.pixelSize: 11 }
-                    PanelField {
-                        id: ctxFontField
-                        objectName: "themeEditorContextFont"
+                    // The shared inspector rail for the VIEW (task CS.5):
+                    // sparse type rows, ONE box (with the theme's own
+                    // rectangle borrowable), and the view's own movement.
+                    // No colours and no effects — a text context cannot
+                    // store them until TV.3, and the section is simply
+                    // absent rather than a rail of disabled rows lying
+                    // about what a Bible edit can do.
+                    AppearanceInspector {
+                        id: contextInspector
                         width: parent.width
-                        onEditingFinished: themeEditor.commitContext(
-                                    {fontFamily: text.trim() === "" ? null : text.trim()})
+                        adapter: contextAdapter
+                        worker: themeEditor.workerApi
+                        overlayParent: themeEditor
+                        showBackground: false
+                        showEffects: false
                     }
-                    Text { text: "Reading size (0 = renderer, \"\" = theme's)"
-                               color: "#b0b0b0"; font.pixelSize: 11 }
-                    PanelField {
-                        id: ctxSizeField
-                        objectName: "themeEditorContextSize"
-                        width: parent.width
-                        onEditingFinished: {
-                            const t = text.trim()
-                            if (t === "") {
-                                themeEditor.commitContext({fontSize: null})
-                                return
-                            }
-                            const v = Number(t)
-                            if (!isFinite(v) || v < 0) {
-                                themeEditor.syncContext()
-                                return
-                            }
-                            themeEditor.commitContext({fontSize: v})
-                        }
-                    }
-                    Text { text: "Reading alignment"; color: "#b0b0b0"; font.pixelSize: 11 }
-                    ComboBox {
-                        id: ctxAlignCombo
-                        objectName: "themeEditorContextAlign"
-                        width: parent.width
-                        model: ["(theme)", "left", "center", "right"]
-                        onActivated: themeEditor.commitContext(
-                                    {align: currentIndex === 0 ? null : currentValue})
-                    }
-                    Text { text: "Reading line spacing (0.25 to 8, \"\" = theme's)"
-                               color: "#b0b0b0"; font.pixelSize: 11 }
-                    PanelField {
-                        id: ctxSpacingField
-                        objectName: "themeEditorContextSpacing"
-                        width: parent.width
-                        onEditingFinished: {
-                            const t = text.trim()
-                            if (t === "") {
-                                themeEditor.commitContext({lineSpacing: null})
-                                return
-                            }
-                            const v = Number(t)
-                            if (!isFinite(v) || v < 0.25 || v > 8) {
-                                themeEditor.syncContext()
-                                return
-                            }
-                            themeEditor.commitContext({lineSpacing: v})
-                        }
-                    }
-                    Text { text: "Bible box (x, y, w, h in 1920×1080)"
-                               color: "#b0b0b0"; font.pixelSize: 11 }
-                    Row {
-                        spacing: 4
-                        PanelField {
-                            id: ctxXField
-                            objectName: "themeEditorContextX"
-                            width: 52
-                            onEditingFinished: themeEditor.applyContextBox()
-                        }
-                        PanelField {
-                            id: ctxYField
-                            objectName: "themeEditorContextY"
-                            width: 52
-                            onEditingFinished: themeEditor.applyContextBox()
-                        }
-                        PanelField {
-                            id: ctxWField
-                            objectName: "themeEditorContextW"
-                            width: 52
-                            onEditingFinished: themeEditor.applyContextBox()
-                        }
-                        PanelField {
-                            id: ctxHField
-                            objectName: "themeEditorContextH"
-                            width: 52
-                            onEditingFinished: themeEditor.applyContextBox()
-                        }
-                    }
-                    Row {
-                        spacing: 6
-                        PanelButton {
-                            objectName: "themeEditorContextBoxTheme"
-                            text: "Theme's lyric box"
-                            onClicked: {
-                                const box = themeEditor.boxFor(themeEditor.themeRow())
-                                themeEditor.commitContext({box: {x: box.x, y: box.y,
-                                                                 width: box.width, height: box.height}})
-                            }
-                        }
-                        PanelButton {
-                            objectName: "themeEditorContextBoxClear"
-                            text: "No box"
-                            onClicked: themeEditor.commitContext({box: null})
-                        }
-                    }
+                    // The measured lines the passage's box holds
+                    // (information, never a setting) — page-owned because
+                    // the probe is the worker's, not any field's.
                     Text {
                         id: ctxLinesLabel
                         objectName: "themeEditorContextLines"
@@ -2164,188 +1385,9 @@ Item {
                               + "and never a line count: how many lines ride a slide is "
                               + "what the renderer measures"
                     }
-
-                    // The view's own move (task TR.3): the context's record,
-                    // which a Go on a passage in this view reads BEFORE the
-                    // theme that carries it — the nearer answer about how the
-                    // view it is drawn in arrives. Same three choices, same
-                    // atomic record, same disabled-not-erased numbers.
-                    Text {
-                        text: "Transition"
-                        color: "#bbbbbb"
-                        font.pixelSize: 11
-                        font.bold: true
-                    }
-                    ComboBox {
-                        id: contextTransitionCombo
-                        objectName: "themeEditorContextTransitionKind"
-                        width: parent.width
-                        model: ["Inherit", "Cut", "Crossfade"]
-                        onActivated: themeEditor.commitContextTransitionView()
-                    }
-                    Row {
-                        spacing: 6
-                        PanelButton {
-                            objectName: "themeEditorContextTransitionInherit"
-                            text: "Inherit"
-                            enabled: themeEditor.contextTransitionOwn === true
-                            onClicked: themeEditor.inheritContextTransition()
-                        }
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            font.pixelSize: 10
-                            color: themeEditor.contextTransition.own === true
-                                     ? "#8ec9f5" : "#888888"
-                            text: themeEditor.contextTransition.own === true ? "own"
-                                                                              : "inherited"
-                        }
-                    }
-                    Text { text: "Words duration (ms, 0 to 10000)"
-                           color: "#b0b0b0"; font.pixelSize: 11 }
-                    PanelField {
-                        id: contextTransitionWordsField
-                        objectName: "themeEditorContextTransitionWords"
-                        width: parent.width
-                        enabled: themeEditor.contextTransition.own === true
-                                 && themeEditor.contextTransition.kind === "fade"
-                        onEditingFinished: themeEditor.commitContextTransitionView()
-                    }
-                    Text { text: "Background duration (ms, 0 to 10000)"
-                           color: "#b0b0b0"; font.pixelSize: 11 }
-                    PanelField {
-                        id: contextTransitionBackField
-                        objectName: "themeEditorContextTransitionMedia"
-                        width: parent.width
-                        enabled: themeEditor.contextTransition.own === true
-                                 && themeEditor.contextTransition.kind === "fade"
-                        onEditingFinished: themeEditor.commitContextTransitionView()
-                    }
-                    Text {
-                        objectName: "themeEditorContextTransitionSource"
-                        width: parent.width
-                        wrapMode: Text.WordWrap
-                        font.pixelSize: 10
-                        color: themeEditor.contextTransition.own === true ? "#8ec9f5" : "#888888"
-                        text: themeEditor.describeTransition(themeEditor.contextTransition)
-                              + (themeEditor.contextTransition.own === true
-                                 ? ""
-                                 : " — the theme carrying this view answers before the service")
-                    }
-                    Text {
-                        objectName: "themeEditorContextTransitionNote"
-                        width: parent.width
-                        wrapMode: Text.WordWrap
-                        font.pixelSize: 10
-                        color: "#888888"
-                        text: "a passage's view can move differently from the song's words; a "
-                            + "Cut here is a decision, not an absence, and it stops the walk. "
-                            + "A background that is a VIDEO still cuts whatever these say."
-                    }
                 }
             }
         }
     }
 
-    // The family picker (task TS.4). It lists ONLY the audience worker's own
-    // families — the ones its shaper can actually resolve — because a picker
-    // of the operator's desktop fonts would offer names the show silently
-    // falls back from. Search narrows the (still-arriving) list live; the
-    // sample renders the hovered family in its own face; choosing writes the
-    // family name through the ordinary typed-field verb, so it is exactly as
-    // if the operator had typed it. It opens only for a worker that named
-    // font.list; a disconnected worker leaves the typed field, which needs
-    // nothing of the sort.
-    Popup {
-        id: fontPopup
-        objectName: "themeEditorFontPopup"
-        x: Math.max(0, (themeEditor.width - width) / 2)
-        y: 60
-        width: 360
-        height: 440
-        modal: true
-        focus: true
-        padding: 12
-        background: Rectangle { color: "#2b2b2b"; border.color: "#555555"; radius: 4 }
-        // The page standing down (mode exit, another page) takes its popup
-        // with it — an orphaned modal overlay would keep the keyboard the
-        // shell is trying to hand back.
-        Connections {
-            target: themeEditor
-            function onVisibleChanged() {
-                if (!themeEditor.visible)
-                    fontPopup.close()
-            }
-        }
-        Column {
-            width: parent.width
-            spacing: 8
-            Text { text: "Fonts the audience's worker can draw"; color: "#dddddd"
-                   font.pixelSize: 12; font.bold: true }
-            PanelField {
-                id: fontSearchField
-                objectName: "themeEditorFontSearch"
-                width: parent.width
-                placeholderText: "search families…"
-            }
-            Row {
-                spacing: 8
-                Rectangle {
-                    width: 90; height: 40; color: "#ffffff"; radius: 3
-                    Text {
-                        anchors.centerIn: parent
-                        font.family: fontPreviewList.currentFamily
-                        font.pixelSize: 20
-                        color: "#000000"
-                        text: "Ag"
-                    }
-                }
-                Text {
-                    objectName: "themeEditorFontListStatus"
-                    width: parent.width - 98
-                    anchors.verticalCenter: parent.verticalCenter
-                    wrapMode: Text.WordWrap
-                    color: "#888888"
-                    font.pixelSize: 10
-                    text: worker.fontListState === "loading" ? "asking the audience's worker…"
-                                                              : ""
-                }
-            }
-            ListView {
-                id: fontPreviewList
-                objectName: "themeEditorFontList"
-                width: parent.width
-                height: 300
-                clip: true
-                property string currentFamily: ""
-                // Re-derived whenever the query changes OR another page of
-                // the walk lands — the two triggers the list can move on.
-                model: themeEditor.fontMatches(fontSearchField.text)
-                Connections {
-                    target: worker
-                    function onFontListChanged() {
-                        fontPreviewList.model = themeEditor.fontMatches(fontSearchField.text)
-                    }
-                }
-                delegate: ItemDelegate {
-                    width: fontPreviewList.width
-                    objectName: "themeEditorFontRow"
-                    required property string modelData
-                    text: modelData
-                    font.family: modelData
-                    onClicked: {
-                        themeEditor.applyField("fontFamily", modelData)
-                        fontPopup.close()
-                    }
-                    hoverEnabled: true
-                    onHoveredChanged: if (hovered)
-                                          fontPreviewList.currentFamily = modelData
-                }
-            }
-            PanelButton {
-                objectName: "themeEditorFontCancel"
-                text: "Close"
-                onClicked: fontPopup.close()
-            }
-        }
-    }
 }

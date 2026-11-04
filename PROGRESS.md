@@ -4,8 +4,60 @@ Updated: 2026-11-04 (Europe/London).
 
 ## Current checkpoint
 
-**CS.4 complete (2026-11-04): one read model, one verb pair, one place —
-and the domain verbs never noticed.**
+**CS.5 complete (2026-11-04): one set of inspector parts, three rails, zero
+duplicated arithmetic — and every automation name the suite ever read still
+resolves.**
+
+Seven shared parts now live flat in `src/ui/` (registered via
+`OPENSHOW_WORKSPACE_QML_NAMES`, contracts rewritten in
+`docs/ui/control-sets.md` to the as-built shape): `AppearanceInspector`
+composes Background → TextStyle → BoxGeometry → TextEffects → Transition
+for ONE `InspectorAdapter` (the target lives on the adapter, so browsing
+moves `target` and every section re-reads itself through the part's
+`Connections { target: adapter }` + explicit `sync()` — the adapter's
+answers are function calls a binding cannot track); `TextStyleControls`
+carries the `sparse` context spelling (own-values-only fields, `"(theme)"`
+align entry and `""` fields that RESET rather than `commit(field, null)`,
+no Browse/status/style-block rows a context cannot store);
+`WorkerFontPicker` keeps the typed-name-always / worker-list-only rules
+with the popup opened against the HOST page; `TextEffectsControls` keeps
+the TS.4 materialise/merge/Off and release-only slider semantics;
+`BoxGeometryControls` commits four fields as one `"box"` unit with shape
+validation converged to finite numbers and w/h ≥ 1 (replacing the context
+rail's older `w > 0` — documented in the catalogue); `TransitionControls`
+serves the Songs rail, the Bible rail and the Settings service section
+with one set of rules (`allowInherit`, `showKindHint`, `silentSuffix`,
+host-pinned `note` text).
+
+`ThemeEditorPage`'s two rails are now `AppearanceInspector` over
+`themeAdapter`/`contextAdapter` (targets bound to `selectedId`); every
+former `themeEditor*` rail objectName is re-pinned in
+`Component.onCompleted`→`pinRailNames()` from the part that now owns the
+row, so the suite (and muscle memory) reads the same identifiers. The
+page's private arithmetic is gone: `syncStyleControls`, `applyStyleField`,
+`commitSlider`, `styleValue`, `styleInherited`, `strokeShown`,
+`shadowShown`, `applyPlacementFields`, `commitContext`, `applyContextBox`,
+the whole TR.3 helper set, the page-level font popup, and the Settings
+page's `transitionRecord`/`syncTransition`/`msOr`/`commitTransitionFields`
+all deleted — ~500 lines of per-rail code replaced by three instances of
+the shared parts. The Bible drags and "Theme's lyric box" commit `"box"`
+through the adapter (its context merge retires a stored inset in the same
+edit), making CS.4's centralized merge the ONLY spelling.
+
+QML lore learned the hard way: inside an instance body, `worker: worker`
+against a `worker` context property is a SELF-binding that reads
+undefined — the page exposes `readonly property var workerApi: worker` at
+its root and the rails bind to that.
+
+Gates: desktop **66/66** (workspace_ui_tests unchanged — same pinned names,
+same pinned behaviours, now served by the parts), headless **36/36**,
+`git diff --check` clean.
+
+**Next action:** CS.6 — migrate the Edit page's slide rail onto
+`AppearanceInspector` over a `{kind:"slide"}` adapter; customization verbs
+and the revert paths already exist in the adapter.
+
+### Earlier checkpoint: CS.4
 
 `InspectorAdapter` (`src/ui/InspectorAdapter.h/.cpp`, a `QML_ELEMENT` in the
 `OpenShow` module) maps the controller's existing reads (`themes()` rows,

@@ -88,6 +88,9 @@ set(OPENSHOW_WORKSPACE_QML_NAMES
   EditPage.qml SettingsPage.qml PanelField.qml PanelButton.qml
   ThemeEditorPage.qml BibleImportPage.qml
   SlidePreviewSurface.qml SlidePreviewCard.qml SlidePreviewCollection.qml
+  WorkerFontPicker.qml TextStyleControls.qml TextEffectsControls.qml
+  BackgroundControls.qml BoxGeometryControls.qml TransitionControls.qml
+  AppearanceInspector.qml
 )
 set(OPENSHOW_WORKSPACE_QML_FILES)
 foreach(qml IN LISTS OPENSHOW_WORKSPACE_QML_NAMES)

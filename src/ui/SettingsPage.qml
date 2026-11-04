@@ -9,81 +9,28 @@ ScrollView {
     clip: true
     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
-    /* --- the service's transition (task TR.3) ------------------------------
+    /* --- the service's transition (task TR.3, shared in CS.5) --------------
      * The standing answer to "how does the audience get to the next cue", and
      * therefore what a cue resolves to when no theme and no Bible view speaks
-     * for itself. Three controls, ONE record: kind and both durations travel
-     * together through the controller's verb, because a transition is atomic —
-     * the file, the wire and the domain all refuse a fragment — so a half
-     * commit is not something this page can do by accident, and one gesture
-     * costs one undo.
+     * for itself. The controls are the SHARED TransitionControls part over an
+     * InspectorAdapter aimed at the service floor: kind and both durations
+     * travel together as ONE record, because a transition is atomic — the
+     * file, the wire and the domain all refuse a fragment — so a half commit
+     * is not something this page can do by accident, and one gesture costs
+     * one undo.
      *
-     * Assignment rather than binding, exactly as the Theme Editor's fields do
-     * it: a number the operator is typing must not be overwritten by an
-     * unrelated change to the documents, and every successful commit re-reads
-     * the whole record from the model anyway. A refused write — a value that
-     * is not a whole count of milliseconds, or one outside the domain's band —
-     * puts every control back where the model says it belongs, because a field
-     * showing a number the service turned down is a field about to be trusted.
-     *
-     * A Cut DISABLES the two numbers rather than clearing them. Choosing Cut
-     * for an emergency and Crossfade again returns to the lengths that were
-     * there, which is honest: the record underneath still says those numbers,
-     * and a Cut is a decision about the kind, not a promise to forget the
-     * times.
+     * Assignment rather than binding, syncing off the adapter's changed(), a
+     * refused write snapping the controls back to the model, and a Cut
+     * DISABLING the two numbers rather than clearing them — all the part's
+     * rules, identical to the Theme Editor's rails. The floor is concrete:
+     * no Inherit entry, no own/inherited badge and no source sentence here,
+     * and the picker explains itself inline.
      */
-    // What the model holds, kept beside the controls so a commit can tell
-    // "focus moved through a field" from "the operator changed an answer" —
-    // the first writes nothing and costs no undo.
-    property var transitionRecord: ({kind: "fade", textDurationMs: 500, mediaDurationMs: 800})
-    function syncTransition() {
-        const record = docs.serviceDefaultTransition()
-        settingsPage.transitionRecord = record
-        transitionKind.currentIndex = record.kind === "cut" ? 1 : 0
-        transitionWords.text = String(record.textDurationMs)
-        transitionBack.text = String(record.mediaDurationMs)
+    InspectorAdapter {
+        id: serviceAdapter
+        document: docs
+        target: ({kind: "service"})
     }
-    // A typed millisecond count, or -1 for "that is not a duration". Only the
-    // SHAPE is checked here: digits, no sign, no decimal point. The BAND is
-    // the domain's one sentence, so a 99999 this page lets through is the
-    // verb's to refuse — and the refusal re-reads the record below, so the
-    // field snaps back to what the service holds rather than to a ceiling this
-    // page might have forgotten to update.
-    function msOr(textIn) {
-        const t = String(textIn).trim()
-        if (t === "" || !/^[0-9]+$/.test(t))
-            return -1
-        return Math.round(Number(t))
-    }
-    // Whichever control moved, the whole record commits: the kind the picker
-    // shows and both numbers as the page shows them.
-    function commitTransitionFields() {
-        const kind = transitionKind.currentIndex === 1 ? "cut" : "fade"
-        const words = settingsPage.msOr(transitionWords.text)
-        const back = settingsPage.msOr(transitionBack.text)
-        if (words < 0 || back < 0) {
-            settingsPage.syncTransition()  // not a number: the model's numbers win
-            return
-        }
-        const held = settingsPage.transitionRecord
-        if (held.kind === kind && held.textDurationMs === words
-                && held.mediaDurationMs === back)
-            return  // focus moved with nothing changed: no write, no undo
-        // A refusal has no documentsChanged to repaint from, so re-read here;
-        // a success repaints through the model's own emit.
-        if (!docs.setServiceDefaultTransition(kind, words, back))
-            settingsPage.syncTransition()
-    }
-    // The record belongs to the service, so whatever moved it — this page, an
-    // undo, a reload — the controls follow the model, not their own last
-    // keystroke.
-    Connections {
-        target: docs
-        function onDocumentsChanged() {
-            settingsPage.syncTransition()
-        }
-    }
-    Component.onCompleted: settingsPage.syncTransition()
 
     Column {
         width: settingsPage.availableWidth
@@ -133,44 +80,25 @@ ScrollView {
             text: "How the audience moves to the next cue. A theme or the Bible view can answer "
                 + "for itself in the Theme Editor; this is what a cue with nothing above it does."
         }
-        Row {
-            spacing: 8
-            ComboBox {
-                id: transitionKind
-                objectName: "serviceTransitionKind"
-                model: ["Crossfade", "Cut"]
-                onActivated: settingsPage.commitTransitionFields()
-            }
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                color: "#888888"; font.pixelSize: 11
-                text: transitionKind.currentIndex === 1
-                        ? "no dissolve — the new cue is simply on"
-                        : "both cues drawn, blended over the times below"
-            }
-        }
-        Text { text: "Words duration (ms, 0 to 10000)"; color: "#b0b0b0"; font.pixelSize: 12 }
-        PanelField {
-            id: transitionWords
-            objectName: "serviceTransitionWords"
-            width: parent.width
-            enabled: transitionKind.currentIndex === 0
-            onEditingFinished: settingsPage.commitTransitionFields()
-        }
-        Text { text: "Background duration (ms)"; color: "#b0b0b0"; font.pixelSize: 12 }
-        PanelField {
-            id: transitionBack
-            objectName: "serviceTransitionBack"
-            width: parent.width
-            enabled: transitionKind.currentIndex === 0
-            onEditingFinished: settingsPage.commitTransitionFields()
-        }
-        Text {
-            objectName: "serviceTransitionNote"
-            width: parent.width
-            wrapMode: Text.WordWrap
-            color: "#888888"; font.pixelSize: 10
-            text: "Words covers the text and any foreground picture; the background is a "
+        // The shared movement part (task CS.5): same rules and same adapter
+        // vocabulary as the Theme Editor's rails, aimed at the service floor
+        // — no Inherit, no badge, no source sentence, and the page's own
+        // heading and note stay here because they describe more than the
+        // part draws.
+        TransitionControls {
+            adapter: serviceAdapter
+            allowInherit: false
+            showKindHint: true
+            showOwnBadge: false
+            showSource: false
+            sectionTitle: ""
+            labelPixelSize: 12
+            backLabel: "Background duration (ms)"
+            kindObjectName: "serviceTransitionKind"
+            wordsObjectName: "serviceTransitionWords"
+            backObjectName: "serviceTransitionBack"
+            noteObjectName: "serviceTransitionNote"
+            note: "Words covers the text and any foreground picture; the background is a "
                 + "colour, a gradient or a still image. A background that is a VIDEO still cuts "
                 + "either way — a crossfade there would composite two stills over decoders that "
                 + "have not produced frames — so no background number dissolves one clip into "
