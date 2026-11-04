@@ -4,6 +4,35 @@ Updated: 2026-11-04 (Europe/London).
 
 ## Current checkpoint
 
+**CS.1 complete (2026-11-04): the shared-control catalogue exists — twelve named
+parts, one contract each, before any extraction.**
+
+`docs/ui/control-sets.md` is the contract document PLAN.md CS.1 promised: for
+every named part (surface, card, collection, five control sections, picker, and
+the three host-owned areas) it records the exact pixel target(s) it may display,
+where its values come from, which controller verbs its signals must reach, which
+hosts consume it, its accessibility name and stable test names, and what remains
+owned by the page. It also freezes the rules the extraction leaves depend on:
+`PreviewView` stays the only pixel painter; new QML files are flat in `src/ui/`
+registered through `OPENSHOW_WORKSPACE_QML_NAMES` (the test modules flatten
+filenames, so subdirectories would break both); every instance carries a stable
+unique `objectName` and `Accessible.name`; no persisted component identifiers;
+parts never schedule requests, never present, and never invent inherited values.
+The per-field inspector read model `{value, ownValue, isSet, source, editable,
+canReset}` and the `commit(field, value)`/`reset(field)` event pair are specified
+for CS.4, mapped to the existing verbs per host so theme/context/slide writes
+stay distinct, atomic and undoable.
+
+Catalogue only — no behaviour change, so no build gate beyond the existing green
+tree was needed.
+
+**Next action:** CS.2 — extract `SlidePreviewSurface.qml` + `SlidePreviewCard.qml`
+and migrate OutputPanel's Audience monitor, EditCanvas's stage, ThemeEditorPage's
+`previewFrame`/`ViewTile` and ShowPage's tile delegate, keeping targets bound
+explicitly and overlay coordinates inside the fitted rectangle. Then CS.3.
+
+### Earlier checkpoint: TR.3
+
 **TR.3 complete (2026-11-04): the operator types a number and the audience feels
 it — measured in frames, not in a widget's `text`.**
 
@@ -128,10 +157,11 @@ closing leaf TA.1 (architecture and captures sweep).
 
 2026-11-04 planning update: PLAN.md now records the **CS shared Qt control-set
 work before FO**, including themed Bible previews, common appearance controls
-and a new preview row for each running-order entry. CS.0 is a source review
-only; CS.1–CS.9 are TODO. **Next action: CS.1**, defining part contracts and the
-component catalogue. Complete the remaining TV/TA and M7 gates before FO. No
-application behavior changed in this planning update.
+and a new preview row for each running-order entry. CS.0 (source review) and
+**CS.1 (the component catalogue, `docs/ui/control-sets.md`)** are DONE; CS.2–CS.9
+remain. **Next action: CS.2**, extracting the shared preview surface/card and
+migrating Audience, Edit, Themes and Show onto it. Complete the remaining TV/TA
+and M7 gates before FO. No application behavior changed in CS.1.
 
 ## How to pick up
 
