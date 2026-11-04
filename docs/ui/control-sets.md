@@ -125,9 +125,19 @@ them to the domain verbs, which remain separate, atomic and undoable:
 | `service` | — | — | — | `setServiceDefaultTransition` |
 
 A controls file must not walk theme chains or synthesize inherited
-overrides to populate a field. Unchanged commits and refused edits cost no
-undo; sliders/geometry gestures commit once on release and undo once; a
-refusal re-reads the authoritative record.
+overrides to populate a field. Refused edits cost no undo; sliders/geometry
+gestures commit once on release and undo once; a refusal re-reads the
+authoritative record. **Unchanged focus-outs** are not edits: the TEXT rows
+guard equality themselves (`commitIfChanged` / `commitNumberIfChanged` /
+the picker's equal-family rule) and re-read the record instead of writing
+(CS.6). The adapter deliberately carries NO equality guard — a commit whose
+value equals the RESOLVED one can be a materialise (a view seeding its own
+Crossfade off what the show already draws is TR's pinned case), and an
+explicit combo/checkbox/picker choice that happens to match the resolved
+value is honest intent, so it commits and writes. QML cannot put an int in
+a QVariant, so both single-field weight doors (`setThemeTextStyleField` and
+`customizeCurrentSlide`) accept an integral double as the same answer a C++
+int would be; `"700"` and 400.5 stay refused on both sides.
 
 ## Parts
 
@@ -218,10 +228,10 @@ rows, which is where the reading look is reasoned about).
 
 | | |
 |---|---|
-| Inputs | `adapter` (InspectorAdapter, required); `worker` (required, threaded to the family picker); `overlayParent` (Item holding the picker's popup); section flags `showBackground`/`showStyle`/`showGeometry`/`showEffects`/`showTransition` (default true — the Bible rail passes `showBackground: false, showEffects: false` because a text context cannot store colours until TV.3: the section is ABSENT, not a rail of disabled rows) |
+| Inputs | `adapter` (InspectorAdapter, required); `worker` (required, threaded to the family picker); `overlayParent` (Item holding the picker's popup); section flags `showBackground`/`showStyle`/`showGeometry`/`showEffects`/`showTransition` (default true — the Bible rail passes `showBackground: false, showEffects: false` because a text context cannot store colours until TV.3: the section is ABSENT, not a rail of disabled rows); `showRevertChips` (default false) + `revertBadgePrefix` (default `"customizeBadge"`) forwarded to the colour rows, the family row and the size/align/spacing rows — the Edit rail's chip tradition (CS.6); effects inherit whole through their Off button and the style-block rows through their Inherit buttons, so no chip joins those |
 | Outputs | readonly aliases `backgroundControls`, `styleControls`, `geometryControls`, `effectsControls`, `transitionControls` for the host to pin labels and automation names; `syncAll()` re-reads every section (call it after pinning, since the pins change what a sync draws) |
 | Events | none of its own — commits and refusals run through the adapter, and each section re-syncs itself on the adapter's `changed()`/`targetChanged()` |
-| Consumers | ThemeEditorPage Songs rail (all five sections over `{kind:"theme"}`) and Bible rail (sparse type + one box + movement over `{kind:"context", view:"scripture"}`); EditPage slide rail joins in CS.6 |
+| Consumers | ThemeEditorPage Songs rail (all five sections over `{kind:"theme"}`) and Bible rail (sparse type + one box + movement over `{kind:"context", view:"scripture"}`); EditPage slide rail (CS.6 — `{kind:"slide"}` with `showGeometry: false` (the page keeps its own `geometryField`/drag story) and `showTransition: false` (a slide has no per-slide movement), `showRevertChips: true`) |
 | Automation | every inner control's `objectName` is a string property of the owning section (defaults generic); pages pin the names their tests read (ThemeEditor re-pins its full `themeEditor*` set in `pinRailNames()`) |
 
 ### TextStyleControls
@@ -233,10 +243,10 @@ own/inherited badges and Inherit buttons.
 
 | | |
 |---|---|
-| Inputs | `adapter` (required), `worker` (required, for the family row), `overlayParent`; `sparse` (the context spelling: a field shows its OWN value only, silence is `""`, the align picker gains a leading `"(theme)"` entry whose choice RESETS, the family row loses Browse and status — silence means the theme answers, so it is a `reset`, never a `commit(field, null)`); `showStyleBlock`; `sectionTitle` (the Songs rail titles this section "Typography & effects"); label strings `fontLabel`/`sizeLabel`/`alignLabel`/`spacingLabel`; `fontShowStatus`; one `*ObjectName` string per control (family, browse, status, popup, search, list status, list, row, cancel, size, align, spacing, weight, weightInherit, slant, slantInherit, fit, fitInherit, minSize, minSizeInherit); alias `fontPicker` |
+| Inputs | `adapter` (required), `worker` (required, for the family row), `overlayParent`; `sparse` (the context spelling: a field shows its OWN value only, silence is `""`, the align picker gains a leading `"(theme)"` entry whose choice RESETS, the family row loses Browse and status — silence means the theme answers, so it is a `reset`, never a `commit(field, null)`); `showStyleBlock`; `sectionTitle` (the Songs rail titles this section "Typography & effects"); label strings `fontLabel`/`sizeLabel`/`alignLabel`/`spacingLabel`; `fontShowStatus`; `showRevertChips`/`revertBadgePrefix` (a ↺ beside size/align/spacing named `<prefix><Field>`, shown from `canReset`, one click resets; the family row forwards them to its picker; the style-block rows keep their own Inherit buttons instead); one `*ObjectName` string per control (family, browse, status, popup, search, list status, list, row, cancel, size, align, spacing, weight, weightInherit, slant, slantInherit, fit, fitInherit, minSize, minSizeInherit); alias `fontPicker` |
 | Outputs | `sync()` — assignment, never binding (the adapter answers are function calls; a mid-edit control must not be yanked by an unrelated change) |
-| Events | none of its own — every row commits ONE field through the adapter (`commitOrSync`: a refusal re-syncs from the record); base fields route via `editTheme`, the style block via `setThemeTextStyleField`; the Inherit buttons `reset` |
-| Rules | min-size validates shape here (finite, 1..4096) and the domain keeps the last word; an unchanged focus-out writes nothing and costs no undo |
+| Events | none of its own — every row commits ONE field through the adapter (`commitOrSync`: a refusal re-syncs from the record); base fields route via the target's own verb, the style block via `setThemeTextStyleField`/`customizeCurrentSlide`; the Inherit buttons and chips `reset` |
+| Rules | min-size validates shape here (finite, 1..4096) and the domain keeps the last word; a focus-out whose text equals the record re-reads and writes nothing (`commitNumberIfChanged`, and the sparse variant compares against the OWN value); a combo choice always commits, even equal to the resolved value — a deliberate pick that materialises is an edit |
 | Consumers | AppearanceInspector (Songs: full block; Bible: `sparse`, no style block) |
 
 ### TextEffectsControls
@@ -258,9 +268,9 @@ string is the EXPLICIT flat.
 
 | | |
 |---|---|
-| Inputs | `adapter` (required); `canPickImage` (false today — image/fit rows join with the slide target in CS.6 through the same part); `textColorObjectName`/`backColorObjectName`/`gradientObjectName` |
-| Events | `commit("textColor"/"backgroundColor"/"backgroundGradient", …)` through the adapter (each commit restates the WHOLE base record — one omitted field cannot silently flatten a gradient); `backgroundChosen(assetId)` / `backgroundFitChosen(name)` signals for the CS.6 host |
-| Note | `""` gradient stays explicit flat, distinct from inherit — these base fields never inherit (the adapter refuses the reset and says so) |
+| Inputs | `adapter` (required); `textColorObjectName`/`backColorObjectName`/`gradientObjectName`; `showRevertChips`/`revertBadgePrefix` (CS.6: a ↺ chip named `<prefix><Field>` beside each colour this target owns, one click hands it back) |
+| Events | `commit("textColor"/"backgroundColor"/"backgroundGradient", …)` through the adapter (each commit restates the WHOLE base record — one omitted field cannot silently flatten a gradient); a focus-out typed equal to the record re-reads and writes nothing (`commitIfChanged`) |
+| Note | `""` gradient stays explicit flat, distinct from inherit — these base fields never inherit (the adapter refuses the reset and says so). Background IMAGE and FIT are not appearance fields: they are slide/service props the host owns (Edit keeps its `backgroundCombo`/`backgroundFitCombo` rows writing `setSlideBackground`/`setSlideBackgroundFit` beside the shared part) |
 
 ### BoxGeometryControls
 
@@ -296,9 +306,9 @@ missing-font note.
 
 | | |
 |---|---|
-| Inputs | `worker` (required — the family source), `adapter` (required), `field` (today always `"fontFamily"`); `sparse` (typed name only — no Browse, no status, no popup ever); `showStatus`; `showBrowse`; `label`; `overlayParent` (the popup is opened against the PAGE, so the rail's scroll cannot clip it); `editable` (a rail without a selected target types nothing); `*ObjectName` strings for field/browse/status/popup/search/list status/list/row/cancel |
+| Inputs | `worker` (required — the family source), `adapter` (required), `field` (today always `"fontFamily"`); `sparse` (typed name only — no Browse, no status, no popup ever); `showStatus`; `showBrowse`; `label`; `overlayParent` (the popup is opened against the PAGE, so the rail's scroll cannot clip it); `editable` (a rail without a selected target types nothing); `showRevertChip`/`revertBadgePrefix` (the Edit rail's ↺ beside the family field, named `<prefix>FontFamily`, shown from `canReset`); `*ObjectName` strings for field/browse/status/popup/search/list status/list/row/cancel |
 | Outputs | `sync()`; `familyChosen(name)` when the list answers |
-| Rules | typed names remain usable with no worker at all; Browse is ENABLED only when the worker named `font.list` (a disconnected rail gets a disabled button and a status line saying why, never a list of the operator's desktop fonts the show would silently fall back from); the popup lists ONLY the worker's families and closes when the host page hides; a missing-family warning requires a COMPLETED worker list; the requested name is never rewritten by a fallback verdict |
+| Rules | typed names remain usable with no worker at all; a typed focus-out trimmed and equal to the record re-reads and writes nothing; Browse is ENABLED only when the worker named `font.list` (a disconnected rail gets a disabled button and a status line saying why, never a list of the operator's desktop fonts the show would silently fall back from); the popup lists ONLY the worker's families and closes when the host page hides; a missing-family warning requires a COMPLETED worker list; the requested name is never rewritten by a fallback verdict |
 | Consumers | `TextStyleControls` (the Songs rail's row; the Bible rail's sparse row) |
 
 ### BibleImportWorkspace (`BibleImportPage.qml`)
@@ -334,7 +344,7 @@ Existing automation names (`audiencePreview`, `previewOfflineNote`,
 | CS.3 | `SlidePreviewCollection` ungrouped mode; Bible cards + selected in-page canvas; keyed plan-generation thumbnails; wording corrections |
 | CS.4 | `InspectorAdapter` read model + commit/reset routing documentation; centralize the context merge in the adapter/controller |
 | CS.5 | Extract `AppearanceInspector`, `TextStyleControls`, `TextEffectsControls`, `BackgroundControls`, `BoxGeometryControls`, `TransitionControls`, `WorkerFontPicker`; migrate ThemeEditor Songs/Bible rails and Settings' transition section |
-| CS.6 | EditPage migrates to the shared inspector; advanced style fields via customization verbs; badges/Remove-customizations cover advanced-only changes |
+| CS.6 | EditPage's appearance rail replaced by an `AppearanceInspector` over `{kind:"slide"}` (`showGeometry`/`showTransition` off, `showRevertChips` on). Renames the tests see: the old left/centre/right trio is one combo now, pinned `themeAlignCombo` (the trio names retired); the weight/slant/fit/min-size/stroke/shadow rows stay named `editWeight(+Inherit)`, `editSlant(+Inherit)`, `editFit(+Inherit)`, `editMinSize(+Inherit)`, `editStroke*`, `editShadow*` — pinned onto the shared parts by `pinEditNames()`, same names, new parts. The old hand-rolled `commit()`/`valueOf()`/badge rows retired into the parts' `*ObjectName` pins and `<prefix><Field>` chips; `revertableNames` grew to the advanced fields and placement, so Revert-customizations covers advanced-only changes |
 | CS.7 | `SlidePreviewCollection` grouped mode in ShowPage (fresh row per running-order occurrence) |
 | CS.8 | Thumbnail band + scroll-to-cue from actual grouped geometry |
 | CS.9 | Integrated reuse, accessibility, capture and regression acceptance |

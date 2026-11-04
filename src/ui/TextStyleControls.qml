@@ -40,6 +40,12 @@ Column {
     property string fontLabel: "Font family (\"\" = platform)"
     property bool fontShowStatus: true
     property Item overlayParent: null
+    // The Edit page's badge tradition (see BackgroundControls): a ↺ stands
+    // beside each row this target can hand back up the chain, named
+    // <prefix><Field>. The weight/slant/fit/min-size rows already carry
+    // their Inherit buttons, so no chip joins them.
+    property bool showRevertChips: false
+    property string revertBadgePrefix: "customizeBadge"
 
     property string fontObjectName: "fontFamilyField"
     property string fontBrowseObjectName: "fontBrowse"
@@ -73,6 +79,9 @@ Column {
     // must not be yanked by an unrelated change, and a successful commit
     // re-reads through the model's own emit anyway.
     function state(field) { return style.adapter.fieldState(field) }
+    function capitalise(field) {
+        return field.charAt(0).toUpperCase() + field.substring(1)
+    }
     function sync() {
         fontPicker.sync()
         if (style.sparse) {
@@ -87,6 +96,9 @@ Column {
             spacingField.text = spacing.value === undefined ? "" : String(spacing.value)
             alignCombo.currentIndex = ["left", "center", "right"].indexOf(state("align").value)
         }
+        sizeChip.visible = style.showRevertChips && state("fontSize").canReset === true
+        alignChip.visible = style.showRevertChips && state("align").canReset === true
+        spacingChip.visible = style.showRevertChips && state("lineSpacing").canReset === true
         if (!style.showStyleBlock)
             return
         const weights = [100, 200, 300, 400, 500, 600, 700, 800, 900]
@@ -115,6 +127,17 @@ Column {
         if (!style.adapter.commit(field, value))
             style.sync()
     }
+    // A focus-out with nothing changed is not an edit (see
+    // BackgroundControls.commitIfChanged): typed text equal to the record
+    // re-reads and writes nothing. Explicit choices still commit whole —
+    // a materialise by a deliberate pick is kept.
+    function commitNumberIfChanged(field, textIn) {
+        if (textIn.trim() === String(style.state(field).value)) {
+            style.sync()
+            return
+        }
+        style.commitOrSync(field, Number(textIn))
+    }
     function resetOrSync(field) {
         if (!style.adapter.reset(field))
             style.sync()
@@ -132,6 +155,11 @@ Column {
             style.sync()
             return
         }
+        const s = style.state(field)
+        if (s.isSet === true && v === Number(s.ownValue)) {
+            style.sync()  // a focus-out restating the own value is no edit
+            return
+        }
         commitOrSync(field, v)
     }
 
@@ -141,6 +169,33 @@ Column {
         function onTargetChanged() { style.sync() }
     }
     Component.onCompleted: style.sync()
+
+    // The Edit page's RevertBadge, extracted (see BackgroundControls).
+    component RevertChip: Rectangle {
+        id: chip
+        required property string chipField
+        objectName: style.revertBadgePrefix + style.capitalise(chip.chipField)
+        Accessible.name: "Revert " + chip.chipField + " customization"
+        width: 24
+        height: 30
+        radius: 4
+        visible: false // sync() decides, from the model's canReset
+        color: chipArea.containsMouse ? "#565659" : "#3a3a3c"
+        border.color: "#6a6a6d"
+        Text {
+            anchors.centerIn: parent
+            color: "#ffd666"
+            font.pixelSize: 13
+            text: "\u21ba"
+        }
+        MouseArea {
+            id: chipArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: style.resetOrSync(chip.chipField)
+        }
+    }
 
     WorkerFontPicker {
         id: fontPicker
@@ -152,6 +207,8 @@ Column {
         label: style.fontLabel
         showStatus: style.fontShowStatus
         showBrowse: !style.sparse
+        showRevertChip: style.showRevertChips
+        revertBadgePrefix: style.revertBadgePrefix
         overlayParent: style.overlayParent
         familyObjectName: style.fontObjectName
         browseObjectName: style.fontBrowseObjectName
@@ -164,47 +221,59 @@ Column {
         cancelObjectName: style.fontCancelObjectName
     }
     Text { text: style.sizeLabel; color: "#b0b0b0"; font.pixelSize: 11 }
-    PanelField {
-        id: sizeField
-        objectName: style.sizeObjectName
-        width: parent.width
-        onEditingFinished: {
-            if (style.sparse)
-                style.commitSparseNumber("fontSize", text, 0, undefined)
-            else
-                style.commitOrSync("fontSize", Number(text))
-        }
-    }
-    Text { text: style.alignLabel; color: "#b0b0b0"; font.pixelSize: 11 }
-    ComboBox {
-        id: alignCombo
-        objectName: style.alignObjectName
-        width: parent.width
-        model: style.sparse ? ["(theme)", "left", "center", "right"]
-                            : ["left", "center", "right"]
-        onActivated: {
-            if (style.sparse) {
-                // "(theme)" is the sparse target's silence.
-                if (currentIndex === 0)
-                    style.resetOrSync("align")
+    Row {
+        spacing: 2
+        PanelField {
+            id: sizeField
+            objectName: style.sizeObjectName
+            width: style.width - (sizeChip.visible ? 26 : 0)
+            onEditingFinished: {
+                if (style.sparse)
+                    style.commitSparseNumber("fontSize", text, 0, undefined)
                 else
-                    style.commitOrSync("align", currentValue)
-            } else {
-                style.commitOrSync("align", currentValue)
+                    style.commitNumberIfChanged("fontSize", text)
             }
         }
+        RevertChip { id: sizeChip; chipField: "fontSize" }
+    }
+    Text { text: style.alignLabel; color: "#b0b0b0"; font.pixelSize: 11 }
+    Row {
+        spacing: 2
+        ComboBox {
+            id: alignCombo
+            objectName: style.alignObjectName
+            width: style.width - (alignChip.visible ? 26 : 0)
+            model: style.sparse ? ["(theme)", "left", "center", "right"]
+                                : ["left", "center", "right"]
+            onActivated: {
+                if (style.sparse) {
+                    // "(theme)" is the sparse target's silence.
+                    if (currentIndex === 0)
+                        style.resetOrSync("align")
+                    else
+                        style.commitOrSync("align", currentValue)
+                } else {
+                    style.commitOrSync("align", currentValue)
+                }
+            }
+        }
+        RevertChip { id: alignChip; chipField: "align" }
     }
     Text { text: style.spacingLabel; color: "#b0b0b0"; font.pixelSize: 11 }
-    PanelField {
-        id: spacingField
-        objectName: style.spacingObjectName
-        width: parent.width
-        onEditingFinished: {
-            if (style.sparse)
-                style.commitSparseNumber("lineSpacing", text, 0.25, 8)
-            else
-                style.commitOrSync("lineSpacing", Number(text))
+    Row {
+        spacing: 2
+        PanelField {
+            id: spacingField
+            objectName: style.spacingObjectName
+            width: style.width - (spacingChip.visible ? 26 : 0)
+            onEditingFinished: {
+                if (style.sparse)
+                    style.commitSparseNumber("lineSpacing", text, 0.25, 8)
+                else
+                    style.commitNumberIfChanged("lineSpacing", text)
+            }
         }
+        RevertChip { id: spacingChip; chipField: "lineSpacing" }
     }
 
     Column {

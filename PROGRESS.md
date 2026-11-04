@@ -4,6 +4,68 @@ Updated: 2026-11-04 (Europe/London).
 
 ## Current checkpoint
 
+**CS.6 complete (2026-11-04): the Edit page's appearance rail is the shared
+inspector — the slide now reaches the same typography and effects as the
+Songs rail, every write customizes only this slide, and every revert path
+lands back on inheritance.**
+
+`EditPage` stands one `InspectorAdapter` (`target {kind:"slide"}`) at the
+page root and one `AppearanceInspector` (`showGeometry:false` — the page
+keeps its own `geometryField`/drag story and its `revertPlacementButton`
+undo trail; `showTransition:false` — a slide has no per-slide movement;
+`showRevertChips:true` — the Edit rail's badge tradition) between
+`themeWornName` and `removeCustomizationsButton`. `pinEditNames()` assigns
+the automation names the suite reads onto the parts that now own the rows:
+`themeColourField`/`themeBackField`/`themeBackGradientField`,
+`themeFontField` + the `editFont*` picker set, `themeSizeField`,
+`themeSpacingField`, `editWeight(+Inherit)`, `editSlant(+Inherit)`,
+`editFit(+Inherit)`, `editMinSize(+Inherit)`, `editStroke*`,
+`editShadow*` — same names, new parts. One rename the tests record: the old
+left/centre/right button trio is the shared alignment combo pinned
+`themeAlignCombo`. Background image/fit stay page-owned slide props
+(`backgroundCombo`/`backgroundFitCombo` → `setSlideBackground(Fit)`), not
+inspector fields. The page's hand-rolled `commit()`/`valueOf()`/`fieldNames`
+and ~200 lines of badge rows retired; `revertableNames` grew to the six
+advanced fields plus placement, so Remove-customizations and its undo cover
+advanced-only changes.
+
+The chip contract (documented in the catalogue): `showRevertChips` +
+`revertBadgePrefix` forward through `AppearanceInspector` to the colour
+rows, the family row and the size/align/spacing rows; a chip's visibility
+is ASSIGNED in each `sync()` from `state(field).canReset` and one click
+resets that one field. Effects still revert whole through their Off
+buttons, weight/slant/fit/min-size through their Inherit buttons.
+
+The unchanged-focus-out rule lives in the TEXT rows (`commitIfChanged`,
+`commitNumberIfChanged`, the picker's trimmed-equal rule, the sparse
+own-equal skip), NOT in the adapter: a first attempt at an adapter-level
+guard was reverted because a view seeding its own Crossfade off the
+resolved value is a legitimate materialise (TR's pinned rule) and an
+explicit combo pick that equals the resolved value is honest intent.
+`InspectorAdapter::commit` carries a NOTE so the guard is not re-added.
+
+Two write-path truths the tests pinned: the slide's TS.1 branch of
+`customizeCurrentSlide` went through the strict map verb and refused what
+QML actually sends — it now accepts an integral double as the same answer
+an int would be, exactly the loosening `setThemeTextStyleField` documents
+("700" and 400.5 stay refused); and Edit's weight combo needs the worker's
+font list to have landed, same as the Themes rail. Layout lore: the
+overlay ScrollBar covers the last ~16px of full-width rows, so the
+inspector is `themePanel.width - 18` — chips at a row's trailing edge must
+stay clear of it or clicks land on the bar.
+
+Gates: desktop **66/66** (workspace_ui_tests grew CS.6 scenarios: chip
+revert per field, weight typed → Inherit wakes → Inherit quiets, slant,
+fit/min-size, stroke enable/Off, fork (`themeNewButton`) carrying the
+slide's customizations into a new theme, capture-mode badge expectations
+unchanged), headless **36/36**, `git diff --check` clean, zero QML
+warnings (the suite fails on any).
+
+**Next action:** CS.7 — group the Show previews by running-order entry.
+
+
+### Earlier checkpoint: CS.5
+
 **CS.5 complete (2026-11-04): one set of inspector parts, three rails, zero
 duplicated arithmetic — and every automation name the suite ever read still
 resolves.**

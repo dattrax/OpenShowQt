@@ -444,6 +444,12 @@ bool InspectorAdapter::commit(const QString& field, const QVariant& value) {
     const QString view = fTarget.value(QStringLiteral("view")).toString();
     const QString name = canonicalField(field);
 
+    // NOTE: there is deliberately NO "value unchanged" guard here. A commit
+    // that equals the RESOLVED value can still be a materialise — the view
+    // seeding its own Crossfade off what the show was already drawing is
+    // exactly that write (TR's pinned rule). Where an unchanged focus-out
+    // must not write (editingFinished fires on a bare focus loss), the
+    // TEXT rows say so themselves before they ever reach this door.
     if (kind == QLatin1String("theme")) {
         QVariantMap row;
         for (const QVariant& entry : fDocument->themes()) {

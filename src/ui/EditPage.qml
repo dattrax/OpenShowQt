@@ -32,6 +32,11 @@ Flickable {
     // The canvas's handles being on (or Escape having stepped out).
     property alias boxSelected: editCanvas.selected
 
+    // The context-property worker, named once at the page root: inside an
+    // instance body `worker: worker` resolves to the instance's OWN
+    // property and reads undefined (the CS.5 lesson).
+    readonly property var workerApi: worker
+
     // Task 4.3: the reference's nudge rule (EditTools.svelte:314-326).
     // Since 6.17a2 "the selected box" is the session's selection: the
     // canvas mirrors its rectangle, and arrows, drag, fields and inspector
@@ -384,18 +389,34 @@ Flickable {
 
     }
 
+    // The Edit rail's adapter (CS.4): one read model over the slide the
+    // cursor is on — the slide target follows the selection, so the target
+    // is a constant and every navigation re-opens the answers through
+    // changed(). Refusals, the unchanged-commit rule and the per-field
+    // reset all live there; this page adds only the names and the layout.
+    InspectorAdapter {
+        id: slideAdapter
+        document: docs
+        target: ({kind: "slide"})
+    }
+
     /*
-     * The theme panel (tasks 4.4, TH.5): the fields show the RESOLVED
-     * appearance of the current slide — customization over the current
-     * theme over the slide's own theme over the show default over the
-     * built-in look. An edit here customizes THIS SLIDE only: the shared
-     * theme entity is edited in the Theme Editor alone, so restyling one
-     * lyric can never repaint every other slide wearing the same theme
-     * — the footgun the themes plan names and removes. A customized
-     * field carries a revert badge, and "Remove customizations" sends
-     * the whole slide back to its themes in one undo step. Refusals land
-     * on the status line and the field snaps back, like the box fields
-     * beside them.
+     * The theme panel (tasks 4.4, TH.5; the appearance rows are the CS.6
+     * AppearanceInspector): the fields show the RESOLVED appearance of the
+     * current slide — customization over the current theme over the
+     * slide's own theme over the show default over the built-in look. An
+     * edit here customizes THIS SLIDE only: the shared theme entity is
+     * edited in the Theme Editor alone, so restyling one lyric can never
+     * repaint every other slide wearing the same theme — the footgun the
+     * themes plan names and removes. A customized field grows a revert
+     * chip (the parts' badge tradition, same customizeBadge* names as
+     * ever), effects inherit whole through their Off button, and "Remove
+     * customizations" sends the whole slide back to its themes in one undo
+     * step. Refusals land on the status line and the field snaps back,
+     * like the box fields beside them. The theme admin row, the background
+     * image asset combo and the fit combo stay this page's own — they are
+     * slide properties, not appearance fields — and the authored box band
+     * at the bottom of the page is where the slide's rectangle lives.
      */
     ScrollView {
         id: themeScroll
@@ -411,27 +432,19 @@ Flickable {
         width: themeScroll.availableWidth
         spacing: 10
 
-        // The appearance fields in model spelling: the badge rules, the
-        // restore button's enabled state and the sync below all read it.
-        readonly property var fieldNames: ["textColor", "backgroundColor",
-                                           "backgroundGradient", "fontFamily",
-                                           "fontSize", "align", "lineSpacing"]
-        // The whole revert set adds the placement (amendment 2026-11-01):
-        // "Remove customizations" clears it with the rest, so the button
-        // must be live when the box's spot is the ONLY thing the slide
-        // changed — even though that field's own badge lives by the
-        // geometry fields, not in this panel.
-        readonly property var revertableNames: fieldNames.concat(["placement"])
-
-        // One resolved value with the built-in look behind it, so the
-        // panel is never blank between slides or before any theme exists.
-        function valueOf(field, fallback) {
-            const entry = docs.slideAppearance[field]
-            if (entry === undefined || entry.value === undefined) {
-                return fallback
-            }
-            return entry.value
-        }
+        // Everything "Remove customizations" hands back — the base seven,
+        // the six fields TS.1 added to a slide's vocabulary (a stroke the
+        // slide owns is as much a customization as a colour), and the
+        // placement (amendment 2026-11-01). The button must be live when
+        // any one of them is set — even when the box's spot is the ONLY
+        // thing the slide changed, since that field's revert lives by the
+        // geometry fields rather than in this panel.
+        readonly property var revertableNames: ["textColor", "backgroundColor",
+                                                "backgroundGradient", "fontFamily",
+                                                "fontSize", "align", "lineSpacing",
+                                                "fontWeight", "fontStyle", "fitMode",
+                                                "minFontSize", "stroke", "shadow",
+                                                "placement"]
         function isCustomized(field) {
             const entry = docs.slideAppearance[field]
             return entry !== undefined && entry.customized === true
@@ -443,24 +456,6 @@ Flickable {
                 }
             }
             return false
-        }
-        // Focus-out commit: ONE customization for ONE field, never a
-        // write to the shared entity. The domain vets the value by the
-        // theme's own contract — "" is a real answer for the gradient
-        // (explicitly flat, 6.17c3) and the family (whatever the
-        // platform picks) — and a bad value snaps the field back.
-        // editingFinished also fires on a bare focus-out, and leaving a
-        // field untouched is NOT an edit: a value the chain already
-        // resolves to customizes nothing and just puts the binding back.
-        function commit(field, value) {
-            const entry = docs.slideAppearance[field]
-            if (entry !== undefined && entry.value === value) {
-                themePanel.sync()
-                return
-            }
-            if (!docs.customizeCurrentSlide(field, value)) {
-                themePanel.sync()
-            }
         }
         // Combo row 0 is "follow show" (the empty id); the rest name
         // the themes view's rows in order.
@@ -475,32 +470,14 @@ Flickable {
         function targetId() {
             return docs.currentTheme.id || ""
         }
-        // Re-derive every field from the model. Editing a field broke
-        // its binding; this is what puts the binding back, so the next
-        // navigation or document change repaints the panel again.
+        // The page's own follow-rows re-read from the model: the theme
+        // combo names the followed default, the asset combo the slide's
+        // picture, and the fit is spelled by the model — an unresolvable
+        // value leaves the combo where it is rather than pretending to
+        // select a name that does not exist. (The appearance rows used to
+        // live here too; since CS.6 the parts re-sync themselves through
+        // the adapter, and an unchanged focus-out writes nothing at all.)
         function sync() {
-            fieldTextColor.text = Qt.binding(function () {
-                return themePanel.valueOf("textColor", "#ffffff")
-            })
-            fieldBackColour.text = Qt.binding(function () {
-                return themePanel.valueOf("backgroundColor", "#000000")
-            })
-            // Flat shows empty, not a colour: the field IS the "" a
-            // customization stores (6.17c3).
-            fieldBackGradient.text = Qt.binding(function () {
-                return themePanel.valueOf("backgroundGradient", "")
-            })
-            fieldFontFamily.text = Qt.binding(function () {
-                return themePanel.valueOf("fontFamily", "")
-            })
-            fieldThemeSize.text = Qt.binding(function () {
-                return String(themePanel.valueOf("fontSize", 0))
-            })
-            fieldLineSpacing.text = Qt.binding(function () {
-                return String(themePanel.valueOf("lineSpacing", 1.25))
-            })
-            // The combo names the followed default as its first row;
-            // an override selects its own theme instead.
             var index = 0
             if (docs.currentThemeIsOverride) {
                 for (var i = 0; i < docs.themes.length; ++i) {
@@ -522,13 +499,13 @@ Flickable {
                     break
                 }
             }
-            // The fit is the slide's, spelled by the model; an
-            // unresolvable value leaves the combo where it is rather
-            // than pretending to select a name that does not exist.
             var fit = docs.currentBackgroundFit
             fitCombo.currentIndex = fit === "blur" ? 2 : (fit === "contain" ? 1 : 0)
         }
-        Component.onCompleted: sync()
+        Component.onCompleted: {
+            themePanel.pinEditNames()
+            themePanel.sync()
+        }
         Connections {
             target: docs
             function onDocumentsChanged() { themePanel.sync() }
@@ -539,38 +516,52 @@ Flickable {
             function onVisibleChanged() { if (editPage.visible) themePanel.sync() }
         }
 
-        // A customized field's badge: only up while that property is
-        // customized, and one click puts it back to the themes. A revert
-        // with nothing under it is a wrong click, refused on the status
-        // line — the badge's own visibility normally prevents that.
-        component RevertBadge: Rectangle {
-            id: badge
-            required property string field
-            objectName: "customizeBadge" + field.charAt(0).toUpperCase()
-                        + field.substring(1)
-            Accessible.name: "Revert " + field + " customization"
-            width: 24
-            height: 30 // the PanelField's height, so a Row lines them up
-            radius: 4
-            visible: themePanel.isCustomized(field)
-            color: badgeArea.containsMouse ? "#565659" : "#3a3a3c"
-            border.color: "#6a6a6d"
-            Text {
-                anchors.centerIn: parent
-                color: "#ffd666"
-                font.pixelSize: 13
-                text: "\u21ba"
-            }
-            MouseArea {
-                id: badgeArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                    if (!docs.revertCurrentSlideField(badge.field))
-                        themePanel.sync()
-                }
-            }
+        // The automation names this rail reads. The fields the panel used
+        // to own keep their objectNames — the suite (and the operator's
+        // muscle memory) finds the same identifiers, served now by the
+        // shared parts — and what the parts ADD to this row (the worker
+        // font browse and popup, weight, slant, fit, minimum size, stroke
+        // and shadow) follow the edit* spelling. Revert chips keep the
+        // badge tradition's own names: customizeBadge<Field>, unchanged
+        // since before the parts.
+        function pinEditNames() {
+            const b = editInspector.backgroundControls
+            b.textColorObjectName = "themeColourField"
+            b.backColorObjectName = "themeBackField"
+            b.gradientObjectName = "themeBackGradientField"
+            const st = editInspector.styleControls
+            st.fontObjectName = "themeFontField"
+            st.fontBrowseObjectName = "editBrowseFonts"
+            st.fontStatusObjectName = "editFontStatus"
+            st.fontPopupObjectName = "editFontPopup"
+            st.fontSearchObjectName = "editFontSearch"
+            st.fontListStatusObjectName = "editFontListStatus"
+            st.fontListObjectName = "editFontList"
+            st.fontRowObjectName = "editFontRow"
+            st.fontCancelObjectName = "editFontCancel"
+            st.sizeObjectName = "themeSizeField"
+            st.alignObjectName = "themeAlignCombo"
+            st.spacingObjectName = "themeSpacingField"
+            st.weightObjectName = "editWeight"
+            st.weightInheritObjectName = "editWeightInherit"
+            st.slantObjectName = "editSlant"
+            st.slantInheritObjectName = "editSlantInherit"
+            st.fitObjectName = "editFit"
+            st.fitInheritObjectName = "editFitInherit"
+            st.minSizeObjectName = "editMinSize"
+            st.minSizeInheritObjectName = "editMinSizeInherit"
+            const fx = editInspector.effectsControls
+            fx.strokeCheckObjectName = "editStrokeEnable"
+            fx.strokeOffObjectName = "editStrokeOff"
+            fx.strokeColourObjectName = "editStrokeColour"
+            fx.strokeWidthObjectName = "editStrokeWidth"
+            fx.shadowCheckObjectName = "editShadowEnable"
+            fx.shadowOffObjectName = "editShadowOff"
+            fx.shadowColourObjectName = "editShadowColour"
+            fx.shadowOpacityObjectName = "editShadowOpacity"
+            fx.shadowOffsetXObjectName = "editShadowOffsetX"
+            fx.shadowOffsetYObjectName = "editShadowOffsetY"
+            fx.shadowBlurObjectName = "editShadowBlur"
         }
 
         Text {
@@ -632,173 +623,28 @@ Flickable {
             text: docs.currentTheme.name || "Built-in look"
         }
 
-        Row {
-            spacing: 8
-            Column {
-                spacing: 2
-                Text {
-                    color: "#b0b0b0"
-                    font.pixelSize: 10
-                    text: "TEXT COLOUR"
-                }
-                Row {
-                    spacing: 2
-                    PanelField {
-                        id: fieldTextColor
-                        objectName: "themeColourField"
-                        width: 94
-                        onEditingFinished: themePanel.commit("textColor",
-                                                             text.trim())
-                    }
-                    RevertBadge { field: "textColor" }
-                }
-            }
-            Column {
-                spacing: 2
-                Text {
-                    color: "#b0b0b0"
-                    font.pixelSize: 10
-                    text: "BACKGROUND"
-                }
-                Row {
-                    spacing: 2
-                    PanelField {
-                        id: fieldBackColour
-                        objectName: "themeBackField"
-                        width: 94
-                        onEditingFinished: themePanel.commit("backgroundColor",
-                                                             text.trim())
-                    }
-                    RevertBadge { field: "backgroundColor" }
-                }
-            }
-        }
-
-        // The background's second colour (task 6.17c3): empty keeps
-        // the flat fill above; a #rgb paints the gradient's bottom.
-        // Customizing it to "" is the slide saying "flat, whatever the
-        // theme grades" — the answer-empty the model stores.
-        Column {
-            spacing: 2
-            width: themePanel.width
-            Text {
-                color: "#b0b0b0"
-                font.pixelSize: 10
-                text: "BACKGROUND GRADIENT (EMPTY = FLAT)"
-            }
-            Row {
-                spacing: 2
-                PanelField {
-                    id: fieldBackGradient
-                    objectName: "themeBackGradientField"
-                    width: themePanel.width - 26
-                    onEditingFinished: themePanel.commit("backgroundGradient",
-                                                         text.trim())
-                }
-                RevertBadge { field: "backgroundGradient" }
-            }
-        }
-
-        Row {
-            spacing: 8
-            Column {
-                spacing: 2
-                Text {
-                    color: "#b0b0b0"
-                    font.pixelSize: 10
-                    text: "FONT"
-                }
-                Row {
-                    spacing: 2
-                    PanelField {
-                        id: fieldFontFamily
-                        objectName: "themeFontField"
-                        width: 122
-                        // "" is an answer: no family, whatever the
-                        // renderer picks.
-                        onEditingFinished: themePanel.commit("fontFamily",
-                                                             text.trim())
-                    }
-                    RevertBadge { field: "fontFamily" }
-                }
-            }
-            Column {
-                spacing: 2
-                Text {
-                    color: "#b0b0b0"
-                    font.pixelSize: 10
-                    text: "SIZE"
-                }
-                Row {
-                    spacing: 2
-                    PanelField {
-                        id: fieldThemeSize
-                        objectName: "themeSizeField"
-                        width: 60
-                        // 0 is an answer (the renderer's own size);
-                        // garbage is not — the field snaps back.
-                        onEditingFinished: {
-                            const value = parseFloat(text)
-                            if (text.trim() === "")
-                                themePanel.commit("fontSize", 0)
-                            else if (Number.isFinite(value))
-                                themePanel.commit("fontSize", value)
-                            else
-                                themePanel.sync()
-                        }
-                    }
-                    RevertBadge { field: "fontSize" }
-                }
-            }
-        }
-
-        Row {
-            spacing: 8
-            Row {
-                spacing: 4
-                Repeater {
-                    model: [
-                        { key: "left", label: "L" },
-                        { key: "center", label: "C" },
-                        { key: "right", label: "R" },
-                    ]
-                    delegate: PanelButton {
-                        required property var modelData
-                        objectName: "themeAlign" + modelData.key
-                        text: modelData.label
-                        highlighted: String(themePanel.valueOf("align", "center"))
-                                     === modelData.key
-                        onClicked: themePanel.commit("align", modelData.key)
-                    }
-                }
-            }
-            // The align trio needs its own revert too; it wears the same
-            // badge as any field, visible only while align is customized.
-            RevertBadge { field: "align" }
-            Column {
-                spacing: 2
-                Text {
-                    color: "#b0b0b0"
-                    font.pixelSize: 10
-                    text: "LINE SPACING"
-                }
-                Row {
-                    spacing: 2
-                    PanelField {
-                        id: fieldLineSpacing
-                        objectName: "themeSpacingField"
-                        width: 52
-                        onEditingFinished: {
-                            const value = parseFloat(text)
-                            if (Number.isFinite(value))
-                                themePanel.commit("lineSpacing", value)
-                            else
-                                themePanel.sync()
-                        }
-                    }
-                    RevertBadge { field: "lineSpacing" }
-                }
-            }
+        // The shared inspector (CS.6): the same parts the Songs rail
+        // wears, over {kind: "slide"}. A slide answers every appearance
+        // field — colours, the whole style block, stroke and shadow — so
+        // this rail hides only the two sections its target does not own:
+        // the box rectangle lives in the geometry band at the bottom of
+        // the page (an authored-item tool with its own placement rules),
+        // and a slide never carries its own movement. The revert chips
+        // stand where the page's own badges always stood.
+        AppearanceInspector {
+            id: editInspector
+            objectName: "editInspector"
+            // The pane's overlay scrollbar floats over the right edge of
+            // the content (the dump that found a chip under the bar was
+            // the proof); the rows stand clear of the gutter so every
+            // chip and control is clickable.
+            width: themePanel.width - 18
+            adapter: slideAdapter
+            worker: editPage.workerApi
+            overlayParent: editPage
+            showGeometry: false
+            showTransition: false
+            showRevertChips: true
         }
 
         // The whole slide back at its themes in one undo step — the

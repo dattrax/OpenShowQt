@@ -1992,8 +1992,21 @@ bool DocumentController::customizeCurrentSlide(const QString& field, const QVari
         // the bands land in setSlideCustomizations' domain vetting, the
         // same sentence one call away. A customization is as strict as a
         // theme because it has to be able to become one.
+        // (styleFromMap wants JSON-shaped answers, and QML cannot put an
+        // int into a QVariant parameter: an integral double is the same
+        // answer as an int, exactly the one loosening setThemeTextStyle-
+        // Field makes, so "700" and 400.5 stay refused here too.)
+        QVariant normalised = value;
+        if (field == QLatin1String("fontWeight")) {
+            const int type = value.userType();
+            if (type == QMetaType::Double || type == QMetaType::Float) {
+                const double asDouble = value.toDouble();
+                if (std::isfinite(asDouble) && std::floor(asDouble) == asDouble)
+                    normalised = static_cast<int>(asDouble);
+            }
+        }
         QVariantMap single;
-        single.insert(field, value);
+        single.insert(field, normalised);
         openshow::domain::ThemeTextStyle styled;
         std::string shapeError;
         if (!styleFromMap(single, &styled, &shapeError)) {

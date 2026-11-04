@@ -34,6 +34,12 @@ Column {
     property bool showGeometry: true
     property bool showEffects: true
     property bool showTransition: true
+    // The revert-chip badge tradition (CS.6, the Edit rail): forwarded to
+    // the colour rows, the family row and the size/align/spacing rows.
+    // Effects inherit whole through their Off button and the style-block
+    // rows through their Inherit buttons, so no chip joins those.
+    property bool showRevertChips: false
+    property string revertBadgePrefix: "customizeBadge"
 
     readonly property alias backgroundControls: backgroundControls
     readonly property alias styleControls: styleControls
@@ -58,6 +64,8 @@ Column {
         visible: inspector.showBackground
         width: parent.width
         adapter: inspector.adapter
+        showRevertChips: inspector.showRevertChips
+        revertBadgePrefix: inspector.revertBadgePrefix
     }
     TextStyleControls {
         id: styleControls
@@ -67,6 +75,8 @@ Column {
         adapter: inspector.adapter
         worker: inspector.worker
         overlayParent: inspector.overlayParent
+        showRevertChips: inspector.showRevertChips
+        revertBadgePrefix: inspector.revertBadgePrefix
     }
     BoxGeometryControls {
         id: geometryControls

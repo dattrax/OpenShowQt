@@ -3037,6 +3037,22 @@ int main(int argc, char** argv) {
                       .value(QStringLiteral("customized")).toBool(),
               "the other customization survived the badge — per-field really means per-field");
 
+        // A row below the panel's fold needs what an operator would do:
+        // scroll it into the viewport before the click. (The geometry band
+        // below already does the same for the page's own Flickable.)
+        auto scrollIntoView = [](QQuickItem* item) {
+            for (QQuickItem* p = item->parentItem(); p; p = p->parentItem()) {
+                if (QString::fromLatin1(p->metaObject()->className())
+                        .startsWith(QLatin1String("QQuickFlickable"))) {
+                    const qreal top = item->mapToItem(p, QPointF(0, 0)).y();
+                    if (top < 0 || top + item->height() > p->height())
+                        p->setProperty("contentY",
+                                       p->property("contentY").toReal() + top + 1.0);
+                    return;
+                }
+            }
+        };
+
         // A bad value is refused with the status line's reason, and the
         // field snaps back to what the model says.
         colourField->setProperty("text", "green");
@@ -3050,6 +3066,8 @@ int main(int argc, char** argv) {
         // The whole-slide restore, one step, undone one step.
         check(removeButton->property("enabled").toBool(),
               "the restore button wakes while the slide is customized");
+        scrollIntoView(removeButton);
+        QTest::qWait(60);
         clickAt(removeButton, removeButton->width() / 2, removeButton->height() / 2);
         check(waitFor([&] {
                   return !docs.slideAppearance().value(QStringLiteral("backgroundGradient"))
@@ -3070,6 +3088,8 @@ int main(int argc, char** argv) {
               "the panel names the theme the slide wears");
         const int themesBefore = docs.themes().size();
         auto* newButton = findNamed(window->contentItem(), "themeNewButton");
+        scrollIntoView(newButton);
+        QTest::qWait(60);
         clickAt(newButton, newButton->width() / 2, newButton->height() / 2);
         check(waitFor([&] { return docs.themes().size() == themesBefore + 1; }),
               "New forks the worn look into a fresh theme");
@@ -3080,6 +3100,107 @@ int main(int argc, char** argv) {
         docs.undo();
         check(waitFor([&] { return docs.themes().size() == themesBefore; }),
               "one undo removes the fork too");
+
+        // CS.6: the shared parts now serve these rows. The panel's names
+        // survive — themeFontField, themeSizeField, themeSpacingField —
+        // while the align trio became one combo (themeAlignCombo) and the
+        // revert chips kept the customizeBadge names. The parts also bring
+        // the rest of the Songs vocabulary to this rail: the worker's font
+        // picker, weight/slant/fit/min-size, stroke and shadow — the same
+        // rules, speaking about the current slide.
+        {
+            auto* sizeField = findNamed(window->contentItem(), "themeSizeField");
+            auto* sizeBadge = findNamed(window->contentItem(), "customizeBadgeFontSize");
+            auto* alignCombo = findNamed(window->contentItem(), "themeAlignCombo");
+            auto* alignBadge = findNamed(window->contentItem(), "customizeBadgeAlign");
+            auto* weightCombo = findNamed(window->contentItem(), "editWeight");
+            auto* weightInherit = findNamed(window->contentItem(), "editWeightInherit");
+            auto* strokeCheck = findNamed(window->contentItem(), "editStrokeEnable");
+            auto* strokeOff = findNamed(window->contentItem(), "editStrokeOff");
+            check(sizeField && sizeBadge && alignCombo && alignBadge && weightCombo
+                      && weightInherit && strokeCheck && strokeOff,
+                  "the migrated rail carries the family, size, alignment and effect "
+                  "rows with their revert affordances");
+            // An unchanged commit is not an edit: a value the chain already
+            // resolves to customizes nothing (editingFinished also fires on
+            // a bare focus-out — this is the guard every field relies on).
+            sizeField->setProperty("text", sizeField->property("text").toString());
+            QMetaObject::invokeMethod(sizeField, "editingFinished");
+            QTest::qWait(80);
+            check(!docs.slideAppearance().value(QStringLiteral("fontSize")).toMap()
+                         .value(QStringLiteral("customized")).toBool()
+                      && !sizeBadge->property("visible").toBool(),
+                  "a size committed unchanged writes no customization and grows no chip");
+            sizeField->setProperty("text", "72");
+            QMetaObject::invokeMethod(sizeField, "editingFinished");
+            QTest::qWait(80);
+            check(waitFor([&] { return docs.slideAppearance().value(QStringLiteral("fontSize"))
+                                        .toMap().value(QStringLiteral("customized")).toBool(); })
+                      && waitFor([&] { return sizeBadge->property("visible").toBool(); }),
+                  "typing a size customizes the slide and grows its chip");
+            scrollIntoView(sizeBadge);
+            QTest::qWait(60);
+            clickAt(sizeBadge, sizeBadge->width() / 2, sizeBadge->height() / 2);
+            QTest::qWait(120);
+            check(!docs.slideAppearance().value(QStringLiteral("fontSize")).toMap()
+                          .value(QStringLiteral("customized")).toBool()
+                      && !sizeBadge->property("visible").toBool(),
+                  "the chip hands the size back to the themes");
+            // One combo choice is one field, reverted by its own chip.
+            alignCombo->setProperty("currentIndex", 2);
+            QMetaObject::invokeMethod(alignCombo, "activated", Q_ARG(int, 2));
+            QTest::qWait(80);
+            check(docs.slideAppearance().value(QStringLiteral("align")).toMap()
+                          .value(QStringLiteral("customized")).toBool()
+                      && alignBadge->property("visible").toBool(),
+                  "the alignment combo customizes its own field and nothing else");
+            scrollIntoView(alignBadge);
+            QTest::qWait(60);
+            clickAt(alignBadge, alignBadge->width() / 2, alignBadge->height() / 2);
+            QTest::qWait(120);
+            check(!docs.slideAppearance().value(QStringLiteral("align")).toMap()
+                          .value(QStringLiteral("customized")).toBool(),
+                  "the chip hands the alignment back");
+            // The advanced styling the slide supports now reaches through:
+            // weight speaks, Inherit quiets it, exactly as on the Songs rail.
+            // The weight choices ride the same font-list reply as the family
+            // list — a worker round-trip — so wait for it like the Themes
+            // test does before driving the combo.
+            for (int i = 0; i < 100 && weightCombo->property("count").toInt() < 9; ++i)
+                QTest::qWait(50);
+            check(weightCombo->property("count").toInt() == 9,
+                  "the weight choices arrive in Edit");
+            weightCombo->setProperty("currentIndex", 6);  // the model's 700
+            QMetaObject::invokeMethod(weightCombo, "activated", Q_ARG(int, 6));
+            QTest::qWait(80);
+                        check(docs.slideAppearance().value(QStringLiteral("fontWeight")).toMap()
+                          .value(QStringLiteral("customized")).toBool()
+                      && weightInherit->property("enabled").toBool(),
+                  "a weight typed in Edit customizes the slide and wakes its Inherit");
+            scrollIntoView(weightInherit);
+            QTest::qWait(60);
+            clickAt(weightInherit, weightInherit->width() / 2, weightInherit->height() / 2);
+            QTest::qWait(120);
+            check(!docs.slideAppearance().value(QStringLiteral("fontWeight")).toMap()
+                          .value(QStringLiteral("customized")).toBool(),
+                  "Inherit hands the weight back to the theme");
+            // An outline materialises, owns, and inherits back WHOLE.
+            scrollIntoView(strokeCheck);
+            QTest::qWait(60);
+            clickAt(strokeCheck, strokeCheck->width() / 2, strokeCheck->height() / 2);
+            QTest::qWait(120);
+            check(waitFor([&] { return docs.slideAppearance().value(QStringLiteral("stroke"))
+                                        .toMap().value(QStringLiteral("customized")).toBool(); })
+                      && strokeOff->property("enabled").toBool(),
+                  "the outline checkbox materialises the slide's own stroke record");
+            scrollIntoView(strokeOff);
+            QTest::qWait(60);
+            clickAt(strokeOff, strokeOff->width() / 2, strokeOff->height() / 2);
+            QTest::qWait(120);
+            check(waitFor([&] { return !docs.slideAppearance().value(QStringLiteral("stroke"))
+                                         .toMap().value(QStringLiteral("customized")).toBool(); }),
+                  "Off hands the whole outline back to inheritance");
+        }
 
         // --- the lyric box rides the chain (themes plan amendment) --------
         // The four geometry fields edit the box WHERE IT DRAWS: on a slide

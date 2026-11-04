@@ -35,6 +35,11 @@ Column {
     property bool showStatus: true
     property bool showBrowse: true         // the reading row types; no Browse
     property bool allowOpen: true          // ANDed with worker capability
+    // The Edit page's badge tradition (see BackgroundControls): a ↺ named
+    // <prefix>FontFamily stands beside the row while the target owns a
+    // family to hand back.
+    property bool showRevertChip: false
+    property string revertBadgePrefix: "customizeBadge"
     // The page the centred popup belongs to (a row inside a scroll rail is
     // the wrong coordinate system for a modal).
     property Item overlayParent: null
@@ -59,6 +64,10 @@ Column {
     width: parent ? parent.width : 0
 
     function state() { return adapter.fieldState(picker.field) }
+    function resetOrSync() {
+        if (!adapter.reset(picker.field))
+            picker.sync()
+    }
     // What the field shows and what the status line says: assignment, not
     // binding — the adapter's answers are function calls the binding
     // engine cannot track, and a control the operator is mid-typing on
@@ -75,6 +84,7 @@ Column {
             familyField.text = s.value === undefined ? "" : String(s.value)
         statusLine.text = picker.statusText(s)
         statusLine.color = picker.familyMissing(s) ? "#e0a94a" : "#888888"
+        familyChip.visible = picker.showRevertChip && s.canReset === true
     }
     function commitTyped() {
         const t = familyField.text.trim()
@@ -87,7 +97,9 @@ Column {
             } else if (!adapter.commit(picker.field, t)) {
                 picker.sync()
             }
-        } else if (!adapter.commit(picker.field, familyField.text)) {
+        } else if (t === String(state().value)) {
+            picker.sync()  // a focus-out restating the family is no edit
+        } else if (!adapter.commit(picker.field, t)) {
             picker.sync()
         }
         picker.familyChosen(t)
@@ -150,10 +162,37 @@ Column {
         PanelField {
             id: familyField
             objectName: picker.familyObjectName
-            width: picker.showBrowse
-                    ? picker.width - browseFonts.width - 4
-                    : picker.width
+            width: picker.width
+                     - (browseFonts.visible ? browseFonts.width + 4 : 0)
+                     - (familyChip.visible ? familyChip.width + 4 : 0)
             onEditingFinished: picker.commitTyped()
+        }
+        // The Edit page's RevertBadge, extracted (see BackgroundControls).
+        Rectangle {
+            id: familyChip
+            objectName: picker.revertBadgePrefix
+                        + picker.field.charAt(0).toUpperCase()
+                        + picker.field.substring(1)
+            Accessible.name: "Revert " + picker.field + " customization"
+            width: 24
+            height: 30
+            radius: 4
+            visible: false // sync() decides, from the model's canReset
+            color: familyChipArea.containsMouse ? "#565659" : "#3a3a3c"
+            border.color: "#6a6a6d"
+            Text {
+                anchors.centerIn: parent
+                color: "#ffd666"
+                font.pixelSize: 13
+                text: "\u21ba"
+            }
+            MouseArea {
+                id: familyChipArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: picker.resetOrSync()
+            }
         }
         PanelButton {
             id: browseFonts
