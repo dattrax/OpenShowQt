@@ -308,6 +308,23 @@ int main(int argc, char* argv[]) {
               "looking up nothing sends nothing");
     }
 
+    // Changing a reference cannot relabel a fetched passage before Lookup.
+    {
+        BibleImport importer;
+        ScriptedManager manager;
+        importer.setNetworkAccessManager(&manager);
+        manager.steps.push_back({passageBody("EXAMPLE"), {}, {}, 200, 0});
+        importer.setTranslation(QStringLiteral("EXAMPLE"));
+        importer.setReference(QStringLiteral("First Test 1"));
+        importer.lookup();
+        waitForIdle(importer);
+        check(importer.verses().size() == 2, "the old reference has an answer");
+        importer.setReference(QStringLiteral("Second Test 2"));
+        check(importer.verses().isEmpty() && importer.attribution().isEmpty()
+                  && manager.requests == 1,
+              "editing the reference clears old verses and attribution without sending a request");
+    }
+
     // --- moving the translation retires the answered verses --------------------
     {
         BibleImport importer;

@@ -27,9 +27,9 @@ class BibleImport final : public QObject {
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(QString status READ status NOTIFY stateChanged)
     // What the operator asked for: a reference ("1 Corinthians 1:1-6")
-    // and a version parameter ("NIV"). Setting either clears a stale
-    // answer's hold on the UI but not the answer itself until a new
-    // lookup completes.
+    // and a version parameter ("NIV"). Changing the reference retires any
+    // in-flight request and clears the old answer before it can be relabelled.
+    // Changing the translation also clears the old answer.
     Q_PROPERTY(QString reference READ reference WRITE setReference NOTIFY stateChanged)
     Q_PROPERTY(QString translation READ translation WRITE setTranslation NOTIFY stateChanged)
     // The answered passage. `attribution` is the translation's licence

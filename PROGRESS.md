@@ -4,6 +4,25 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
+**Bible import simplification BIU.1 complete.** Removed the verse checkbox
+list/All/None, duplicate selected canvas, separate Retry button and standing
+help paragraph. Lookup reads the current field and replaces the whole passage;
+editing the reference retires the old request/content, and Add stays disabled
+for a field/reference mismatch. The page requests thumbnails only. Success
+messages now report loaded verses and ready slides concisely.
+
+Affected suites pass **6/6** (54.85 s): workspace, shared controls, UI load,
+lookup, measured import page and import e2e. The real-worker tour replaces a
+six-slide passage with a different one-slide plan before restoring the fixture;
+**63 captures** pass at three sizes/scales, with zero Selection frames while
+Show/Bible are being captured. Representative Bible views were visually checked.
+Current supplemental captures are named `bible-actions`, showing Add/Cancel,
+and live under `/tmp/openshow-bible-simplified/{s1,s15,s2}`. The capture check
+now intersects Show delegates with the actual viewport rather than treating
+retained offscreen delegates as visible demand. Local frontend rebuilt; restart
+to load the simpler UI. The four existing TV.3 diffs remain exactly preserved
+and unstaged; clean-source tests do not certify them.
+
 **Theme editor follow-ups TE.1–TE.5 delivered in separate commits.** Handles
 track rectangle corners, Songs/Bible tiles stack below theme names, standing
 help paragraphs are removed, supported font controls share a resolved display

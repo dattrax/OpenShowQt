@@ -1311,6 +1311,16 @@ refresh the in-tree executable as well as checking the source.
 | TE.4 | DONE | Use matching font controls and selection outline for Songs/Bible | Same family Browse/status, resolved size/alignment/spacing and reset controls; solid outline in both views; no-op and context-edit/undo checks pass (2/2 focused suites). Advanced context style remains TV.3 |
 | TE.5 | DONE | Replace theme-name/pangram sample with Lorem ipsum | Four identical Lorem ipsum lines in both views; compiled-sample tests, final 5/5 affected suites and 63 refreshed worker captures pass; [evidence](docs/reviews/TE-acceptance-2026-11-05.md) |
 
+### Bible import operator simplification (BIU)
+
+This operator request supersedes the verse-selection and selected-canvas parts
+of CS.3. The generated cards are the only preview; changing a passage uses the
+reference field and Lookup.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| BIU.1 | DONE | Remove verse checkboxes/All/None and duplicate canvas; keep Lookup, generated cards and Add/Cancel | 6/6 affected tests pass; actual Lookup clicks replace the complete passage, reference changes retire old content, and renderer captures replace six slides with one fresh plan. 63 captures pass across three sizes/scales, with zero Bible Selection frames; local executable rebuilt |
+
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
 **Entry gate: CS.1–CS.9, the remaining TV leaves and TA.1 must be DONE, with

@@ -1,18 +1,8 @@
 import QtQuick
 import QtQuick.Controls
 
-// The Bible import page (task BI.5, restructured by task CS.3). One passage
-// at a time, by request: the notice and any failure read FIRST, before the
-// operator can type anything; the fetched verses are chosen in a compact
-// scrolling list; the slides they generate are shown as WORKER PICTURES —
-// each card paints the worker's own keyed off-air render of that generated
-// slide, and the labelled OFF-AIR CANVAS below paints the selected one
-// whole. Nothing on this page can put anything in front of the
-// congregation: the Audience monitor on the right keeps showing the live
-// output, and the old sentence promising pictures "in the preview panel"
-// was never true of it. There is no Save to Library and no Present from
-// here: Add joins the passage to today's schedule as one undoable item,
-// and that is the only door out.
+// One lookup replaces the passage. The generated worker thumbnails are the
+// only preview; Add places the complete passage in the schedule, never on air.
 ScrollView {
     id: biblePage
     objectName: "bibleImportPage"
@@ -78,23 +68,16 @@ ScrollView {
         function onSlidesChanged() { bibleAsk.restart() }
     }
 
-    // The visible page owns both off-air lanes (CS.3): entering re-asks
-    // the canvas's scene and the cards' batch, leaving stands them both
-    // down — Show, Themes and Bible never leave a hidden page's batch
-    // racing the one on screen.
+    // This page owns thumbnails only. It has no Selection canvas to render.
     onVisibleChanged: {
-        scripture.previewActive = visible
         if (visible) {
-            if (scripture.slides.length > 0)
-                scripture.previewSlide(scripture.selectedIndex >= 0
-                                       ? scripture.selectedIndex : 0)
             bibleAsk.restart()
         } else {
             bibleAsk.stop()
             worker.clearThumbnails()
         }
     }
-    Component.onCompleted: scripture.previewActive = biblePage.visible
+    Component.onCompleted: scripture.previewActive = false
 
     Column {
         width: biblePage.availableWidth
@@ -250,94 +233,14 @@ ScrollView {
             Button {
                 objectName: "bibleLookupButton"
                 text: bible.busy ? "Looking up…" : "Lookup"
-                enabled: !bible.busy && bible.reference.trim().length > 0
-                onClicked: bible.lookup()
-            }
-            Button {
-                objectName: "bibleRetryButton"
-                text: "Retry"
-                visible: !bible.busy && bible.verses.length === 0
-                         && bible.reference.trim().length > 0
-                onClicked: bible.retry()
-            }
-        }
-
-        // --- the verse source (compact and scrollable since CS.3, so a
-        // long passage cannot push Add and the previews off the page) ---
-        Row {
-            spacing: 8
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "VERSES"; color: "#bbbbbb"; font.pixelSize: 11; font.bold: true
-            }
-            Button {
-                objectName: "bibleSelectAllButton"
-                flat: true
-                text: "All"
-                enabled: bible.verses.length > 0
-                onClicked: bible.selectAllVerses(true)
-            }
-            Button {
-                objectName: "bibleSelectNoneButton"
-                flat: true
-                text: "None"
-                enabled: bible.verses.length > 0
-                onClicked: bible.selectAllVerses(false)
-            }
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                visible: bible.verses.length > 0
-                text: "tick the verses to keep"
-                color: "#808080"; font.pixelSize: 11
-            }
-        }
-        ListView {
-            id: bibleVerseList
-            objectName: "bibleVerseList"
-            width: biblePage.availableWidth
-            height: Math.min(220, Math.max(0, bible.verses.length) * 46)
-            visible: bible.verses.length > 0
-            clip: true
-            ScrollBar.vertical: ScrollBar {}
-            model: bible.verses
-            // Checkboxes are SOURCE selection controls: they choose which
-            // verses enter the plan. Their readable verse text stays here;
-            // what the slide will LOOK like is the worker's cards below,
-            // never this row.
-            delegate: CheckBox {
-                id: verseCheck
-                required property var modelData
-                required property int index
-                objectName: "bibleVerseCheck"
-                // Qt positions its indicator from the control's text, even
-                // with a custom wrapping label. An empty text centres it.
-                text: modelData.reference + "  " + modelData.text
-                width: bibleVerseList.width
-                height: Math.max(verseRow.implicitHeight + 8, 30)
-                font.pixelSize: 12
-                checked: modelData.selected === true
-                contentItem: Label {
-                    id: verseRow
-                    leftPadding: !verseCheck.mirrored ? verseCheck.indicator.width + verseCheck.spacing : 0
-                    rightPadding: verseCheck.mirrored ? verseCheck.indicator.width + verseCheck.spacing : 0
-                    text: parent.text
-                    font: parent.font
-                    color: parent.checked ? "#8ec9f5" : "#cccccc"
-                    wrapMode: Text.WordWrap
-                    verticalAlignment: Text.AlignVCenter
+                enabled: referenceField.text.trim().length > 0
+                         && (!bible.busy || referenceField.text.trim() !== bible.reference.trim())
+                onClicked: {
+                    bible.reference = referenceField.text
+                    bookSuggest.visible = false
+                    bible.lookup()
                 }
-                onToggled: bible.setVerseSelected(index, checked)
             }
-        }
-        Text {
-            objectName: "bibleNothingSelectedHint"
-            // A failed pagination leaves its own sentence showing; the
-            // hint must not overwrite it with a wrong explanation (BIF.1).
-            visible: bible.verses.length > 0 && scripture.slides.length === 0
-                     && !scripture.measuring && scripture.status.length === 0
-            width: parent.width; wrapMode: Text.WordWrap
-            color: "#909090"; font.pixelSize: 11
-            text: "No verses are selected — keep at least one and the slides will generate."
         }
 
         // --- the generated plan: worker pictures, not text frames (CS.3) ---
@@ -372,16 +275,9 @@ ScrollView {
                 objectName: "bibleSlideCard"
                 width: bibleCells.cellWidth - 12
                 height: bibleCells.cellHeight - 12
-                // Selection is a browse state, and this card is the ONLY
-                // kind of marker it deserves: blue chrome on the operator's
-                // own pick, no live chip, no present. The card never calls
-                // a presentation verb; previewSlide draws off air.
-                selected: index === scripture.selectedIndex
                 caption: (index + 1) + "  " + modelData.row.label
-                Accessible.role: Accessible.Button
+                Accessible.role: Accessible.StaticText
                 Accessible.name: "Generated slide " + (index + 1) + ": " + modelData.row.label
-                                 + (index === scripture.selectedIndex ? ", selected" : "")
-                                 + " — off air"
                 surface.controller: worker
                 surface.target: "thumbnail"
                 surface.key: scripture.previewKey(index)
@@ -391,36 +287,7 @@ ScrollView {
                 surface.placeholder: modelData.row.lines.join("\n")
                 surface.placeholderColor: "#c8c8c8"
                 surface.placeholderPixelSize: 11
-                onActivated: scripture.previewSlide(index)
             }
-        }
-
-        // --- the selected off-air canvas (CS.3): the picture this page
-        // always claimed to show and never did ---
-        Text {
-            text: "OFF-AIR CANVAS — the selected generated slide, off air"
-            color: "#bbbbbb"; font.pixelSize: 11; font.bold: true
-            visible: scripture.slides.length > 0
-        }
-        SlidePreviewSurface {
-            id: bibleCanvas
-            objectName: "biblePreviewCanvas"
-            width: Math.min(biblePage.availableWidth, 720)
-            height: width * 9 / 16
-            visible: scripture.slides.length > 0
-            controller: worker
-            target: "selection"
-            // CS.3 masking: the canvas paints only the frame that ANSWERS
-            // the newest ask. Between plans — a re-pagination, a new lookup,
-            // a cancelled plan — the old picture goes dark with an honest
-            // sentence instead of going on captioning a plan that died.
-            pixelsVisible: worker.selectionSupported && worker.selectionCurrent
-            placeholder: !worker.selectionSupported
-                         ? "this worker cannot draw off-air pictures of slides"
-                         : (scripture.selectedIndex < 0
-                            ? "pick one of the generated slides above and the "
-                              + "worker's off-air render appears here"
-                            : "waiting for the worker's render of the selected slide…")
         }
 
         // The one door out — and it says where it goes. No Library, no
@@ -430,7 +297,7 @@ ScrollView {
             Button {
                 objectName: "bibleAddButton"
                 text: "Add to today's schedule"
-                enabled: scripture.canAdd
+                enabled: scripture.canAdd && referenceField.text.trim() === bible.reference.trim()
                 onClicked: scripture.addToSchedule()
             }
             Button {
@@ -439,15 +306,6 @@ ScrollView {
                 onClicked: scripture.cancel()
             }
         }
-        Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            color: "#909090"; font.pixelSize: 11
-            text: "Slides are measured with the same text engine the audience sees. "
-                  + "The cards and the off-air canvas above show the worker's own render "
-                  + "of the generated slides — nothing here goes to the audience, and the "
-                  + "monitor on the right keeps showing the live output. The verse label "
-                  + "is stored in each slide's notes; the slide's words are only the passage."
-        }
+
     }
 }

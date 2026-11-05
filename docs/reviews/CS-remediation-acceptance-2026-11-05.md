@@ -105,3 +105,25 @@ the capture tour to switch views through the production action and require a
 fresh frame; the earlier direct selectedView assignment was insufficient to
 prove the Bible sample changed. Use that refreshed matrix for theme-view
 comparison evidence.
+
+
+## Bible import simplification (BIU.1)
+
+The subsequent operator request removes verse selection and the duplicate
+selected canvas. Current Bible capture modes are `bible` and `bible-actions`
+(the latter scrolls to Add/Cancel), replacing historical `bible-selected`.
+Bible now requests thumbnails only; its capture frames need no Selection
+counter. The tour also replaces a six-slide passage with a different one-slide
+passage and verifies fresh plan identity, retirement of the old Add plan and
+no Selection rendering before restoring the multi-slide fixture. Show checks
+use actual viewport intersection because GridView retains offscreen delegates
+whose `isVisible()` is still true. Historical matrices above describe the
+former UI; current behaviour and verification are recorded in PLAN/PROGRESS.
+
+
+BIU.1 verification: six affected suites pass (54.85 s), and the refreshed
+63-frame matrix passes at scales 1/1.5/2 with expected pixel dimensions and
+positive thumbnail counters. All Show/Bible/Bible-actions records have zero
+Selection frames before the Edit/Themes portion begins. Representative Bible
+views were visually reviewed; images are local under
+`/tmp/openshow-bible-simplified/{s1,s15,s2}`. The in-tree frontend is rebuilt.

@@ -14,6 +14,7 @@
 #include <QTest>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QUrlQuery>
 #include <QElapsedTimer>
 #include <QDir>
 #include <QFile>
@@ -39,10 +40,10 @@
 
 namespace {
 // Deterministic provider markup through the real Bible model; tests never use
-// the network. The second verse wraps, exercising populated delegate geometry.
+// the network. Long verses also exercise measured pagination in capture mode.
 class VerseReply final : public QNetworkReply {
 public:
-    explicit VerseReply(const QNetworkRequest& request, bool longPassage) {
+    explicit VerseReply(const QNetworkRequest& request, bool longPassage, bool replacement) {
         setRequest(request);
         fBody = R"(<div class="passage-text"><div class="passage-content">
 <div class="version-NIV result-text-style-normal text-html">
@@ -64,6 +65,12 @@ the selection control must use the viewport width rather than its natural text w
             }
             fBody += "</div></div></div><div class=\"publisher-info-bottom\">"
                      "<p>OpenShowQt synthetic acceptance passage. No provider content used.</p></div>";
+        }
+        if (replacement) {
+            fBody = R"(<div class="passage-text"><div class="passage-content">
+<div class="version-NIV result-text-style-normal text-html">
+<p><span class="text John-1-3">A replacement passage.</span></p>
+</div></div></div><div class="publisher-info-bottom"><p>Synthetic test passage.</p></div>)";
         }
         open(QIODevice::ReadOnly);
         QTimer::singleShot(0, this, [this] {
@@ -88,10 +95,13 @@ class VerseNetwork final : public QNetworkAccessManager {
 public:
     int requests = 0;
     bool longPassage = false;
+    bool replacement = false;
+    QUrl lastRequest;
 protected:
     QNetworkReply* createRequest(Operation, const QNetworkRequest& request, QIODevice*) override {
         ++requests;
-        return new VerseReply(request, longPassage);
+        lastRequest = request.url();
+        return new VerseReply(request, longPassage, replacement);
     }
 };
 QList<QQuickItem*> namedItems(QQuickItem* root, const QString& name) {
@@ -192,9 +202,22 @@ bool captureControlSets(const QString& prefix) {
         bible.setReference("John 1:1-6");
         bible.lookup();
         return waitFor([&] { return !bible.busy() && !scripture.measuring() &&
-                                   scripture.slides().size() > 1 && worker.selectionCurrent(); });
+                                   scripture.slides().size() > 1; });
     };
     if (!check(lookup(), "populate and paginate a multi-slide Bible fixture")) return false;
+    const auto oldPlanKey = scripture.previewKey(0);
+    network.replacement = true;
+    bible.setReference("John 1:3");
+    check(!scripture.canAdd() && scripture.slides().isEmpty(),
+          "changing the reference retires the old plan before another Add");
+    bible.lookup();
+    check(waitFor([&] { return !bible.busy() && !scripture.measuring()
+        && scripture.slides().size() == 1; }), "the replacement passage is measured without a selection step");
+    check(scripture.previewKey(0) != oldPlanKey
+          && scripture.previewSceneJson(0).contains("A replacement passage.")
+          && !scripture.previewActive(), "replacement publishes a fresh thumbnail plan without a Selection render");
+    network.replacement = false;
+    if (!check(lookup(), "restore the complete multi-slide fixture")) return false;
     const int bibleSlides = scripture.slides().size();
     check(scripture.addToSchedule(), "add one Bible show for grouped Show captures");
     QDir().mkpath(QFileInfo(prefix).absolutePath());
@@ -218,13 +241,20 @@ bool captureControlSets(const QString& prefix) {
         QTest::qWait(100);
         check(waitFor([&] {
             const auto cards = namedItems(window->contentItem(), "operatorCueTile");
-            if (cards.isEmpty()) return false;
+            auto* grid = window->findChild<QQuickItem*>("operatorSlideGrid");
+            if (cards.isEmpty() || !grid) return false;
+            const QRectF viewport(grid->mapToScene(QPointF()), grid->size());
+            int visibleCards = 0;
             for (auto* card : cards) {
-                if (!card->isVisible()) continue;
+                // GridView retains delegates outside its clipped viewport;
+                // those items are isVisible(), but intentionally ask no pixels.
+                if (!card->isVisible()
+                        || !viewport.intersects(QRectF(card->mapToScene(QPointF()), card->size()))) continue;
+                ++visibleCards;
                 auto* surface = card->property("surface").value<QQuickItem*>();
                 if (!surface || !variedPixels(worker.thumbnail(surface->property("key").toString()))) return false;
             }
-            return true;
+            return visibleCards > 0;
         }), "every visible Show card has real rendered words");
         save("show", size);
     }
@@ -232,17 +262,16 @@ bool captureControlSets(const QString& prefix) {
     for (const auto size : sizes) {
         window->resize(size);
         QTest::qWait(100);
-        check(waitFor([&] { return worker.selectionCurrent() && variedPixels(worker.selectionImage()) &&
-            !worker.thumbnail(scripture.previewKey(0)).isNull() &&
+        check(waitFor([&] { return !worker.thumbnail(scripture.previewKey(0)).isNull() &&
             !worker.thumbnail(scripture.previewKey(scripture.slides().size() - 1)).isNull(); }),
-            "Bible cards and selected canvas carry real current-plan pixels");
+            "Bible cards carry real current-plan pixels");
         auto* page = window->findChild<QQuickItem*>("bibleImportPage");
         auto* scroll = page ? page->property("contentItem").value<QQuickItem*>() : nullptr;
         if (scroll) scroll->setProperty("contentY", 0);
         save("bible", size);
         if (scroll) scroll->setProperty("contentY", qMax(0.0,
             scroll->property("contentHeight").toDouble() - scroll->height()));
-        save("bible-selected", size);
+        save("bible-actions", size);
     }
     window->setProperty("page", "edit");
     docs.selectSong(song);
@@ -380,44 +409,32 @@ int main(int argc, char** argv) {
         page->setHeight(700);
         page->setParentItem(window.contentItem());
         QTest::qWait(80);
-        auto* list = page->findChild<QQuickItem*>("bibleVerseList");
-        const auto verses = namedItems(page, "bibleVerseCheck");
-        check(list && verses.size() == 2, "both verse controls are instantiated in the list");
-        for (auto* verse : verses) {
-            check(list && std::abs(verse->width() - list->width()) < 1,
-                  "populated verse controls use the list viewport width");
-            auto* indicator = verse->property("indicator").value<QQuickItem*>();
-            auto* label = verse->property("contentItem").value<QQuickItem*>();
-            check(indicator && label && label->x() + label->property("leftPadding").toDouble()
-                      >= indicator->x() + indicator->width(),
-                  "the checkbox indicator stays left of wrapped verse text instead of covering it");
-        }
-        if (verses.size() == 2) {
-            check(verses[1]->height() > verses[0]->height(),
-                  "the long verse wraps to more lines than the short verse");
-            const bool wasSelected = bible.verses()[0].toMap().value("selected").toBool();
-            QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
-                              verses[0]->mapToScene(QPointF(12, verses[0]->height() / 2)).toPoint());
-            check(bible.verses()[0].toMap().value("selected").toBool() != wasSelected,
-                  "the visible verse checkbox changes the real source selection");
-        }
+        check(!page->findChild<QQuickItem*>("bibleVerseList")
+                  && namedItems(page, "bibleVerseCheck").isEmpty()
+                  && !page->findChild<QQuickItem*>("biblePreviewCanvas"),
+              "the import page shows one preview collection without verse checkboxes or a second canvas");
+        check(!scripture.previewActive(), "the thumbnail-only page does not own Selection");
         // 416 is the available centre at the required 1000px shell width.
-        // Exercise both the populated form and its empty/retry state.
+        // Lookup also replaces a populated answer using the current field text.
         for (const int width : {416, 796, 1096}) {
             bible.reset();
+            network.replacement = false;
+            bible.setReference("John 1:1-2");
+            auto* reference = page->findChild<QQuickItem*>("bibleReferenceField");
+            if (reference) reference->setProperty("text", "John 1:1-2");
             page->setWidth(width);
             window.resize(width, 1000);
             QTest::qWait(30);
             auto* form = page->findChild<QQuickItem*>("bibleLookupForm");
             check(form && form->height() > 0, "the wrapping form reserves all of its rows");
             for (const QString name : {"bibleReferenceField", "bibleTranslationPicker",
-                                        "bibleLookupButton", "bibleRetryButton"}) {
+                                        "bibleLookupButton"}) {
                 auto* control = page->findChild<QQuickItem*>(name);
                 check(control && control->isVisible(), "the empty-state form controls are visible");
                 if (!control || !form) continue;
                 const QRectF rect(control->mapToItem(form, QPointF()), control->size());
                 check(QRectF(0, 0, form->width(), form->height()).contains(rect),
-                      "reference, translation, Lookup and Retry stay inside the responsive form");
+                      "reference, translation and Lookup stay inside the responsive form");
             }
             auto* lookup = page->findChild<QQuickItem*>("bibleLookupButton");
             const int before = network.requests;
@@ -426,19 +443,23 @@ int main(int argc, char** argv) {
             for (int i = 0; bible.busy() && i < 100; ++i) QTest::qWait(10);
             check(network.requests == before + 1 && bible.verses().size() == 2,
                   "Lookup is clickable at every supported centre width");
-            bible.reset();
+            network.replacement = true;
+            if (reference) reference->setProperty("text", "John 1:3");
             QTest::qWait(20);
-            auto* retry = page->findChild<QQuickItem*>("bibleRetryButton");
-            if (retry) QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
-                retry->mapToScene(QPointF(retry->width() / 2, retry->height() / 2)).toPoint());
+            if (lookup) QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                lookup->mapToScene(QPointF(lookup->width() / 2, lookup->height() / 2)).toPoint());
             for (int i = 0; bible.busy() && i < 100; ++i) QTest::qWait(10);
-            check(network.requests == before + 2 && bible.verses().size() == 2,
-                  "Retry is clickable at every supported centre width");
+            check(network.requests == before + 2 && bible.reference() == "John 1:3"
+                      && QUrlQuery(network.lastRequest).queryItemValue("search") == "John 1:3"
+                      && bible.verses().size() == 1
+                      && bible.verses()[0].toMap().value("text") == "A replacement passage."
+                      && bible.selectedVerses().size() == 1,
+                  "typing a new reference and clicking Lookup replaces the whole passage without selection");
         }
         page->setVisible(false);
         check(!scripture.previewActive(), "hiding the actual Bible page releases preview ownership");
         page->setVisible(true);
-        check(scripture.previewActive(), "showing the Bible page reacquires preview ownership");
+        check(!scripture.previewActive(), "showing the Bible page still leaves Selection unused");
         page->setVisible(false);
     }
 

@@ -54,8 +54,15 @@ void BibleImport::setReference(const QString& reference) {
     if (fReference == reference) {
         return;
     }
+    cancel();
     fReference = reference;
+    // Retire the old passage before another lookup or Add can use the new
+    // label. A delayed response belongs to the cancelled generation.
+    fVerses.clear();
+    fAttribution.clear();
+    fStatus = QString::fromUtf8(kNoticeSentence);
     emit stateChanged();
+    emit passageChanged();
 }
 
 void BibleImport::setTranslation(const QString& version) {
@@ -306,8 +313,9 @@ void BibleImport::finishWith(openshow::importer::PassageParse parse) {
     for (openshow::importer::PassageVerse& verse : parse.passage.verses) {
         fVerses.push_back({std::move(verse), true});
     }
-    fStatus = QStringLiteral("%1 verses \u2014 choose and preview before adding")
-                  .arg(fVerses.size());
+    fStatus = QStringLiteral("%1 verse%2 loaded")
+                  .arg(fVerses.size())
+                  .arg(fVerses.size() == 1 ? QString() : QStringLiteral("s"));
     emit stateChanged();
     emit passageChanged();
 }

@@ -64,12 +64,11 @@ Replacing the window, calling the legacy single-batch API or standing down
 cancels its queue. Show stands down when hidden. Settled windows send no loop
 of repeat requests; a reconnect retires old pixels and replays current demand.
 
-CR.8: `BibleImportPage` sets `ScriptureImport.previewActive` on visibility and
-initialization. Releasing ownership clears its Selection request; hidden
-publication and cleanup cannot request or clear another owner's picture.
-Returning reacquires the retained selected/first generated slide. Nonvisual
-session callers retain the historical active default. Pagination may continue
-off page; full plan freshness and Add validity remain TV.5 responsibilities.
+CR.8 originally tied Bible Selection ownership to page visibility. The later
+BIU.1 simplification removes its duplicate canvas: BibleImportPage now keeps
+`ScriptureImport.previewActive` false throughout its lifetime and owns only
+thumbnail demand. Standalone session callers can still explicitly use Selection;
+Edit and Themes continue to own that lane when visible.
 
 ## Registration and naming convention (CS.1)
 
@@ -180,7 +179,7 @@ reports another target's frame as its `ready`.
 | Outputs | `contentRect` — the fitted, letterboxed rect **in this item's coordinates** (overlays anchor to it); `ready` — pixels for THIS item are in hand (`PreviewView::hasFrame`, refreshed on the paint path, so a keyed tile reports its OWN key's arrival, never another target's); `zoom` — `contentRect.width/1920`; `preview` — the wrapped `PreviewView` for hosts that map coordinates |
 | Events | none of its own beyond the controller's (`ready` is a tracked property) |
 | Adapter | none — display only. The owning page schedules `requestSelectionPreview` / `requestThumbnails` and stands the target down on exit |
-| Consumers | AudienceMonitor (`OutputPanel`, Audience), `EditCanvas` (Selection + box chrome in `overlay`), ThemeEditor centre canvas (Selection + placement overlay), Show cue cards and Bible cards via `SlidePreviewCard` (Thumbnail), Bible selected canvas (Selection) |
+| Consumers | AudienceMonitor (`OutputPanel`, Audience), `EditCanvas` (Selection + box chrome in `overlay`), ThemeEditor centre canvas (Selection + placement overlay), Show cue cards and Bible cards via `SlidePreviewCard` (Thumbnail) |
 | Automation | host-assigned `objectName` (existing ones preserved: `audiencePreview` stays the OutputPanel frame); the placeholder text node is named `<host>PreviewNote` when a page needs to assert on it |
 
 ### SlidePreviewCard
@@ -352,19 +351,18 @@ missing-font note.
 
 ### BibleImportWorkspace (`BibleImportPage.qml`)
 
-The existing page, restructured in CS.3: lookup/status first, a compact
-scrollable verse-selection area (checkboxes stay the source selection with
-readable verse text), a generated `SlidePreviewCollection` (ungrouped, worker
-thumbnails keyed by plan generation + slide index), a substantial selected
-`SlidePreviewSurface` (Selection target, in-page — the right Audience
-monitor keeps showing the live output), then reachable Add/Cancel.
+Current workflow (BIU.1, superseding CS.3's two-preview layout): reference and
+translation lookup, one generated `SlidePreviewCollection`, then Add/Cancel.
+Every fetched verse is included; the verse-checkbox list, All/None, duplicate
+Selection canvas, separate Retry button and standing help paragraph are removed.
 
 | | |
 |---|---|
-| Inputs (model) | `bible` (BibleImport session), `scripture` (ScriptureImport session) context properties, unchanged verbs |
-| Owner state | `ScriptureImport` owns the selected generated-slide index and a stable transient preview identity: thumbnail keys are `scripture:<planGeneration>:<index>` (generation bumps on every publish) so a new plan can never paint over an old card; `previewSlide(index)` selects off air |
-| Rules | browsing never presents; no network refetch or document/history edit for previews; hidden page asks nothing (Show/Themes/Bible cannot overwrite each other's thumbnail batches); obsolete selected pixels are cleared on selection/plan/page/connection change until the matching ask lands; Add keeps its one-undo/double-Add/notes/word-conservation contract (BI/TF evidence) |
-| Wording | preview help says the picture is shown **on this page** (the earlier “preview panel” sentence was wrong — the right dock is the live Audience) |
+| Inputs | `bible` and `scripture` session context properties |
+| Lookup | Reads the current reference field before sending; a new lookup replaces the whole passage. Editing the reference retires the old request/verses/attribution so old content cannot be added with the new label. Lookup also retries failures. |
+| Preview ownership | Thumbnail keys remain `scripture:<planGeneration>:<index>`. The page disables the session's Selection rendering and never calls `previewSlide`; cards display the generated plan without a selected-slide state. Leaving stops the thumbnail ask. |
+| Add | Adds the complete fetched passage as one undoable schedule item. Pending measurement or a field/reference mismatch disables Add. Existing notes, attribution, word conservation and double-Add protection remain. |
+| Status | Retains online/error messages and a concise slide-ready count; no standing rendering explanation. |
 
 ### AudienceMonitor (inside existing `OutputPanel.qml`)
 

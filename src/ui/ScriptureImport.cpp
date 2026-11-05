@@ -355,18 +355,12 @@ void ScriptureImport::publish(const std::vector<importer::GeneratedSlide>& gener
         return;
     }
     emit slidesChanged();
-    // The honest arithmetic of the reservation, in the operator's terms,
-    // naming the context the plan was measured in when one answered
-    // (task TF.4) — "the theme decides" made audible.
-    setStatus(QStringLiteral("%1 slide%2 measured to fit%3 (the reference and attribution "
-                             "reserve %4 px of the box) — the picture is off air; Add places "
-                             "them on today's schedule as one undoable item")
+    setStatus(QStringLiteral("%1 slide%2 ready%3")
                   .arg(static_cast<qint64>(fSlides.size()))
                   .arg(fSlides.size() == 1 ? QString() : QStringLiteral("s"))
                   .arg(fContext.isEmpty()
                            ? QString()
-                           : QStringLiteral(" in the theme's %1 context").arg(fContext))
-                  .arg(QString::number(outcome.reservedHeight, 'f', 0)));
+                           : QStringLiteral(" in the theme's %1 context").arg(fContext)));
     emit stateChanged();
     previewSlide(0);
 }
@@ -413,8 +407,7 @@ bool ScriptureImport::addToSchedule() {
         return false;
     }
     if (fSlides.isEmpty()) {
-        setStatus(QStringLiteral("add: there is nothing to add yet — look up a passage and "
-                                 "keep at least one verse"));
+        setStatus(QStringLiteral("add: there is nothing to add yet — look up a passage first"));
         return false;
     }
     QVariantList payload;
