@@ -1308,7 +1308,7 @@ refresh the in-tree executable as well as checking the source.
 | TE.1 | DONE | Keep placement handles on the box corners | Workspace regression checks local corner centres before/after drag and typed resize; clean-source workspace suite passes, in-tree executable rebuilt |
 | TE.2 | DONE | Place Songs/Bible view tiles vertically below the theme list | Vertical geometry assertion and real tile clicks pass at 1000/1380/1680 widths; local executable rebuilt |
 | TE.3 | DONE | Remove long instructional paragraphs from the theme workspace | Removed navigation/sample/context/transition paragraphs; clean workspace suite passes, local executable rebuilt |
-| TE.4 | TODO | Use matching font controls and selection outline for Songs/Bible | Same picker and field presentation; edits target the selected view without changing the other |
+| TE.4 | DONE | Use matching font controls and selection outline for Songs/Bible | Same family Browse/status, resolved size/alignment/spacing and reset controls; solid outline in both views; no-op and context-edit/undo checks pass (2/2 focused suites). Advanced context style remains TV.3 |
 | TE.5 | TODO | Replace theme-name/pangram sample with Lorem ipsum | Neutral multiline sample stays constant across themes and uses each view's resolved appearance |
 
 ### Future output profiles — lower thirds to OBS and stage (FO)

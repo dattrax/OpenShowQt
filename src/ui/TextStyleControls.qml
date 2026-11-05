@@ -28,6 +28,9 @@ Column {
     // may be 0 (the renderer's own default), and the family row is typed
     // with no Browse.
     property bool sparse: false
+    // Sparse storage can still present the resolved values, with reset chips
+    // returning overrides to inheritance instead of blanking the controls.
+    property bool showInheritedValues: false
     // The style block belongs to themes and slides; a text context carries
     // none (TV.3), so its rail hides these rows.
     property bool showStyleBlock: true
@@ -84,7 +87,7 @@ Column {
     }
     function sync() {
         fontPicker.sync()
-        if (style.sparse) {
+        if (style.sparse && !style.showInheritedValues) {
             sizeField.text = ownOrEmpty(state("fontSize"))
             spacingField.text = ownOrEmpty(state("lineSpacing"))
             alignCombo.currentIndex = state("align").isSet === true
@@ -156,7 +159,8 @@ Column {
             return
         }
         const s = style.state(field)
-        if (s.isSet === true && v === Number(s.ownValue)) {
+        if ((style.showInheritedValues && v === Number(s.value))
+                || (s.isSet === true && v === Number(s.ownValue))) {
             style.sync()  // a focus-out restating the own value is no edit
             return
         }
@@ -204,9 +208,10 @@ Column {
         adapter: style.adapter
         field: "fontFamily"
         sparse: style.sparse
+        showInheritedValues: style.showInheritedValues
         label: style.fontLabel
         showStatus: style.fontShowStatus
-        showBrowse: !style.sparse
+        showBrowse: true
         showRevertChip: style.showRevertChips
         revertBadgePrefix: style.revertBadgePrefix
         overlayParent: style.overlayParent
@@ -243,10 +248,10 @@ Column {
             id: alignCombo
             objectName: style.alignObjectName
             width: style.width - (alignChip.visible ? 26 : 0)
-            model: style.sparse ? ["(theme)", "left", "center", "right"]
+            model: style.sparse && !style.showInheritedValues ? ["(theme)", "left", "center", "right"]
                                 : ["left", "center", "right"]
             onActivated: {
-                if (style.sparse) {
+                if (style.sparse && !style.showInheritedValues) {
                     // "(theme)" is the sparse target's silence.
                     if (currentIndex === 0)
                         style.resetOrSync("align")

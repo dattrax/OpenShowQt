@@ -750,15 +750,23 @@ Item {
         cst.sparse = true
         cst.showStyleBlock = false  // the reading record sets type basics
                                   // only; weight/slant/fit stay the theme's
-        cst.fontShowStatus = false
-        cst.fontLabel = "Reading font (\"\" = theme's)"
-        cst.sizeLabel = "Reading size (0 = renderer, \"\" = theme's)"
-        cst.alignLabel = "Reading alignment"
-        cst.spacingLabel = "Reading line spacing (0.25 to 8, \"\" = theme's)"
+        cst.showInheritedValues = true
+        cst.showRevertChips = true
+        cst.revertBadgePrefix = "themeContextRevert"
+        cst.fontShowStatus = true
+        cst.fontLabel = st.fontLabel
+        cst.sizeLabel = st.sizeLabel
+        cst.alignLabel = st.alignLabel
+        cst.spacingLabel = st.spacingLabel
         cst.fontObjectName = "themeEditorContextFont"
         cst.fontBrowseObjectName = "themeEditorContextFontBrowse"
         cst.fontStatusObjectName = "themeEditorContextFontStatus"
         cst.fontPopupObjectName = "themeEditorContextFontPopup"
+        cst.fontSearchObjectName = "themeEditorContextFontSearch"
+        cst.fontListStatusObjectName = "themeEditorContextFontListStatus"
+        cst.fontListObjectName = "themeEditorContextFontList"
+        cst.fontRowObjectName = "themeEditorContextFontRow"
+        cst.fontCancelObjectName = "themeEditorContextFontCancel"
         cst.sizeObjectName = "themeEditorContextSize"
         cst.alignObjectName = "themeEditorContextAlign"
         cst.spacingObjectName = "themeEditorContextSpacing"
@@ -1085,9 +1093,8 @@ Item {
             // The lyric box this theme places (themes plan amendment
             // 2026-11-01), drawn over the sample at the same 1920-unit scale
             // the Edit canvas uses. It is chrome over the worker's own
-            // picture, never a second layout of the words — and with no
-            // placement on the theme it is a dashed OFFER, the box the
-            // audience would draw today, waiting to be moved into being.
+            // picture, never a second layout of the words. An inherited box
+            // uses the same selection chrome as an explicitly placed one.
             Item {
                 id: placementLayer
                 anchors.fill: parent
@@ -1103,32 +1110,16 @@ Item {
                     width: placementLayer.box.width * placementLayer.zoom
                     height: placementLayer.box.height * placementLayer.zoom
                     color: "transparent"
-                    // A Rectangle border is only ever solid, and the solid/dashed
-                    // difference here is the whole message — "this is the record"
-                    // versus "this is only the box you are being offered". Canvas
-                    // is the one QtQuick type that dashes a stroke without a new
-                    // module import, so the outline is its own honest paint.
-                    Canvas {
-                        anchors.fill: parent
-                        readonly property bool placed: themeEditor.viewPlaces
-                        onPlacedChanged: requestPaint()
-                        onWidthChanged: requestPaint()
-                        onHeightChanged: requestPaint()
-                        onPaint: {
-                            const ctx = getContext("2d")
-                            ctx.clearRect(0, 0, width, height)
-                            ctx.strokeStyle = placed ? "#1685f8" : "#8ec9f5"
-                            ctx.lineWidth = 2
-                            ctx.setLineDash(placed ? [] : [6, 4])
-                            ctx.strokeRect(1, 1, width - 2, height - 2)
-                        }
-                    }
+                    // Selection chrome is identical in both views; inheritance
+                    // is shown by inspector reset controls, not a second outline.
+                    border.width: 2
+                    border.color: "#1685f8"
                     Text {
                         objectName: "themeEditorBoxLabel"
                         anchors.left: parent.left
                         anchors.bottom: parent.top
                         anchors.bottomMargin: 3
-                        color: themeEditor.viewPlaces ? "#1685f8" : "#8ec9f5"
+                        color: "#1685f8"
                         font.pixelSize: 11
                         text: themeEditor.selectedView === ""
                               ? (themeEditor.viewPlaces ? "lyric box"
@@ -1143,7 +1134,7 @@ Item {
                             objectName: "themeEditorPlacementHandle"
                             width: 8
                             height: 8
-                            color: themeEditor.viewPlaces ? "#1685f8" : "#8ec9f5"
+                            color: "#1685f8"
                             border.color: "#202020"
                             // The handles are children of the placed rectangle;
                             // its origin has already been applied by the parent.

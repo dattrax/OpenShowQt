@@ -4,7 +4,16 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Theme editor follow-ups: TE.1–TE.3 complete.** Removed standing help
+**Theme editor follow-ups: TE.1–TE.4 complete.** Bible family/size/alignment/
+spacing controls now use the same resolved presentation, font browser and
+worker status as Songs. Reset chips preserve sparse context inheritance;
+unchanged inherited family/size focus-out writes nothing. Both views use the
+same solid blue selection outline. Clean workspace/shared-control suites pass
+(2/2, 37.26 s), including view-edit/undo and inherited no-op checks. Local
+executable rebuilt. Advanced per-context typography/effects remain TV.3; this
+repair does not stage that unfinished model work.
+
+TE.3: Removed standing help
 paragraphs from the navigator, canvas and context/transition sections. Kept
 control labels, provenance and actionable status. Clean workspace suite passes
 (35.78 s); local executable rebuilt.

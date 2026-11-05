@@ -2672,6 +2672,19 @@ int main(int argc, char** argv) {
                   && !created.contains(QStringLiteral("textColor")),
               "toggling creates the scripture context from the theme's current look: "
               "the offered box is stated, a size of 0 stays silent");
+        const auto inheritedReading = docs.themeSampleAppearance(placedId, "scripture");
+        auto* contextBrowse = findNamed(window->contentItem(), "themeEditorContextFontBrowse");
+        auto* contextFamily = findNamed(window->contentItem(), "themeEditorContextFont");
+        auto* contextAlign = findNamed(window->contentItem(), "themeEditorContextAlign");
+        check(contextBrowse && contextBrowse->isVisible() && !contextBrowse->isEnabled()
+                  && contextFamily && contextFamily->property("text") == inheritedReading.value("fontFamily")
+                  && ctxSizeField->property("text").toString().toDouble() == inheritedReading.value("fontSize").toDouble()
+                  && contextAlign && contextAlign->property("count").toInt() == 3,
+              "Bible uses the same resolved font fields and Browse control as Songs");
+        QMetaObject::invokeMethod(ctxSizeField, "editingFinished");
+        check(contextRow(placedId) == created,
+              "focus-out on an inherited font size does not create an override");
+        checkPlacementHandles();
         ctxSizeField->setProperty("text", "32");
         QMetaObject::invokeMethod(ctxSizeField, "editingFinished");
         QTest::qWait(80);
@@ -2687,8 +2700,9 @@ int main(int argc, char** argv) {
         QMetaObject::invokeMethod(ctxSizeField, "editingFinished");
         QTest::qWait(80);
         check(!contextRow(placedId).value(QStringLiteral("fontSizeSet")).toBool()
-                  && ctxSizeField->property("text").toString().isEmpty(),
-              "a negative size never reaches the context and the field snaps back to silence");
+                  && ctxSizeField->property("text").toString().toDouble()
+                        == inheritedReading.value("fontSize").toDouble(),
+              "a negative size never reaches the context and the field restores its resolved size");
         // The height field is the box as one unit: one typed number commits
         // all four.
         ctxHField->setProperty("text", "600");

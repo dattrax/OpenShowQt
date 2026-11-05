@@ -29,6 +29,7 @@ Column {
     // field INHERITS, and the display shows the own value or empty, never
     // the resolved one the fallback would paint.
     property bool sparse: false
+    property bool showInheritedValues: false
     // Both are the host's prose: the Songs row says ("\"\" = platform"),
     // the Bible row ("\"\" = theme's").
     property string label: "Font family (\"\" = platform)"
@@ -78,7 +79,7 @@ Column {
         picker.editable = s.editable === true
         // A missing target answers value-less: the fields go blank exactly
         // as the page blanked them when no row was selected.
-        if (picker.sparse)
+        if (picker.sparse && !picker.showInheritedValues)
             familyField.text = s.isSet === true ? String(s.ownValue) : ""
         else
             familyField.text = s.value === undefined ? "" : String(s.value)
@@ -89,6 +90,10 @@ Column {
     function commitTyped() {
         const t = familyField.text.trim()
         if (picker.sparse) {
+            if (picker.showInheritedValues && t === String(state().value)) {
+                picker.sync()
+                return  // viewing an inherited family never materializes it
+            }
             // "" is the sparse target's silence — the field goes back to
             // inheriting rather than storing an empty name.
             if (t === "") {
@@ -115,7 +120,7 @@ Column {
     // target, the resolved one otherwise (never rewritten by a verdict).
     function wanted(s) {
         const st = s !== undefined ? s : state()
-        return picker.sparse
+        return picker.sparse && !picker.showInheritedValues
                 ? (st.isSet === true ? String(st.ownValue) : "")
                 : String(st.value === undefined ? "" : st.value)
     }
