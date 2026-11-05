@@ -26,6 +26,11 @@ and caption containment at six thumbnail sizes. Clean-snapshot application
 build, workspace and UI-load tests pass. Findings below retain the original
 review evidence; remaining items are open.
 
+**CR.2 is fixed:** the verse list declares its missing QML id. The focused UI
+fixture now loads real BibleImport data through a scripted provider, verifies
+viewport widths and long-verse wrapping, and clicks a checkbox. Application
+build and the warning-free focused check pass.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated

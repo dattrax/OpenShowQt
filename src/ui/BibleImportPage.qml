@@ -290,6 +290,7 @@ ScrollView {
             }
         }
         ListView {
+            id: bibleVerseList
             objectName: "bibleVerseList"
             width: biblePage.availableWidth
             height: Math.min(220, Math.max(0, bible.verses.length) * 46)
