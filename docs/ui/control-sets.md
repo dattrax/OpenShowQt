@@ -224,8 +224,9 @@ debounced `visibleBandChanged` restarting the host's single coalescing timer
 so a scroll burst costs one ask at the destination. A zoom step re-derives
 everything from the newly mapped cells — regenerating the cell model restarts
 the GridView layout at the top, so the ask follows wherever the view sits and
-a scroll back to the bottom re-anchors the 32-cap there (the cap's cutting
-edge itself is pinned in UI.3c over grouped rows).
+a scroll back to the bottom prioritizes the last cue. CR.7 retains the full
+bounded viewport window and sends successive packets of at most 32 scenes;
+wire batching no longer truncates the visible demand.
 
 | | |
 |---|---|
@@ -383,6 +384,18 @@ Existing automation names (`audiencePreview`, `previewOfflineNote`,
 | CS.4 | `InspectorAdapter` read model + commit/reset routing documentation; centralize the context merge in the adapter/controller |
 | CS.5 | Extract `AppearanceInspector`, `TextStyleControls`, `TextEffectsControls`, `BackgroundControls`, `BoxGeometryControls`, `TransitionControls`, `WorkerFontPicker`; migrate ThemeEditor Songs/Bible rails and Settings' transition section |
 | CS.6 | EditPage's appearance rail replaced by an `AppearanceInspector` over `{kind:"slide"}` (`showGeometry`/`showTransition` off, `showRevertChips` on). Renames the tests see: the old left/centre/right trio is one combo now, pinned `themeAlignCombo` (the trio names retired); the weight/slant/fit/min-size/stroke/shadow rows stay named `editWeight(+Inherit)`, `editSlant(+Inherit)`, `editFit(+Inherit)`, `editMinSize(+Inherit)`, `editStroke*`, `editShadow*` — pinned onto the shared parts by `pinEditNames()`, same names, new parts. The old hand-rolled `commit()`/`valueOf()`/badge rows retired into the parts' `*ObjectName` pins and `<prefix><Field>` chips; `revertableNames` grew to the advanced fields and placement, so Revert-customizations covers advanced-only changes |
-| CS.7 | DONE (as-built in the parts above): ShowPage on `SlidePreviewCollection` `grouped: true` — groups cut on `entryId`, every group opens at column zero, leftover row columns are inert fill. Scroll-to-cue follows `scrollCueIntoView`/`cueRect`; the ask window follows `visibleCueIndexes()` (32 cap, bottom-anchored at the end of the order). Delegate context is now `{cueIndex, row}`; `operatorCueTile` keeps a cue-equal `index` property; Bible's host input `model` became `source`. Keyboard, live/pending identity and the flat cue order unchanged |
+| CS.7 | DONE (as-built in the parts above): ShowPage on `SlidePreviewCollection` `grouped: true` — groups cut on `entryId`, every group opens at column zero, leftover row columns are inert fill. Scroll-to-cue follows `scrollCueIntoView`/`cueRect`; the ask window follows `visibleCueIndexes()` (full bounded window, bottom-prioritized at the end of the order; CR.7 sends successive packets of at most 32). Delegate context is now `{cueIndex, row}`; `operatorCueTile` keeps a cue-equal `index` property; Bible's host input `model` became `source`. Keyboard, live/pending identity and the flat cue order unchanged |
 | CS.8 | DONE: the ask and the scroll run entirely on grouped mapped geometry. `visibleCueIndexes()` is the window — viewport rows plus ONE bounded look-ahead row, filler gaps never — and the host's debounced `visibleBandChanged` keeps one coalescing timer: five grouped scroll jumps inside the window ask for nothing and the burst lands one ask describing the destination. Bottom case: the clamped window ends on the order's last cue and the capped band anchors there (cap cutting edge pinned in UI.3c over grouped rows); zoom case: every thumb step re-derives the band from the NEW mapped cells, the requested pixel size follows the zoom, and a group head plus a deep cue scroll contained at all five thumb sizes. Pinned by the CS.8 suite block over a 38-cue five-entry order |
 | CS.9 | DONE: the seams are walked, not asserted per-part. One UI tour writes a theme size on the Themes host and reads it back in the Edit host's resolved field; customizes the slide (chip wakes and announces "Revert fontSize customization", the theme row stays 48); Remove-customizations lands back on the theme value; Tab walks on, Escape releases without committing, leaving the page takes the field and commits as one ordinary edit; the rail's first and last controls reach the viewport at 1000×680; the hidden Show page's `bandSent` counter moves for none of the tour's churn while a shown page catches up; browsing (theme rows, view tiles, pages, a cue click) moves no document, history or output byte; the walk-back returns the record to its starting shapes. Persistence of the records these controls write stays pinned by `document_controller_tests` save/load round-trips, and the remaining TV/TA leaves (TV.3/TV.4a/TV.4b/TV.5/TA.1) are recorded open as the FO gate |
+
+
+## Remediation acceptance (CR.9)
+
+`control_set_ui_tests` covers shared-card containment, populated verse geometry
+and clicks, responsive lookup, inherited inspector editing, collection mapping
+and narrow header geometry. Its optional `OPENSHOW_CONTROL_CAPTURE` mode loads
+production Main QML with a scripted Bible provider and the real rendering worker;
+it captures populated Show, Bible, Edit and both Themes views at three sizes.
+Run separately at scales 1, 1.5 and 2. See the [acceptance record](../reviews/CS-remediation-acceptance-2026-11-05.md)
+for commands, limits and results. The old `OPENSHOW_WORKSPACE_CAPTURE` mode is
+shell/empty-state evidence, not a substitute for this populated tour.

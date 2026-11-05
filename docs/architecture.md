@@ -7,6 +7,16 @@ completed tasks, with current test results in
 the [M6 review](M6-code-review.md) records the original findings, whose source
 line numbers and descriptions are historical.
 
+Shared-control remediation (2026-11-05): shared preview cards/collections and
+inspector sections now have populated geometry and interaction regressions.
+The [acceptance record](reviews/CS-remediation-acceptance-2026-11-05.md) documents
+the actual-worker capture tour. Thumbnail consumers retain a deduplicated window
+of at most 128 scenes, sending successive packets of at most 32, with a
+128-entry/8-MiB cache. Hidden Bible pages explicitly release Selection ownership;
+returning reacquires it. RpcClient disconnects socket callbacks before its members
+are destroyed. These changes require no document schema or wire protocol bump;
+remaining TV/TA and physical M7 gates remain open.
+
 Current assessment (2026-10-31): **6.23a–e are DONE**. The five async
 integration findings from the [post-6.22 review](reviews/M6-post-6.22-review-2026-10-31.md)
 now have focused regressions and full-suite verification, recorded in the

@@ -195,6 +195,7 @@ Window {
 
     EditPage {
         id: editPage
+        objectName: "editPage"
         visible: root.page === "edit"
         anchors.left: leftDock.right
         anchors.right: rightDock.left

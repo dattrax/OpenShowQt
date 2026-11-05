@@ -4,25 +4,33 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Latest remediation: CR.13 complete; CR.1–CR.8 and CR.10–CR.12 also delivered.**
-The parser now slices a string_view of the owned HTML attribute instead of viewing
-a temporary string::substr result. New long-version success/mismatch cases failed
-before the repair and pass afterward. Parser memcheck reports zero errors/retained
-blocks, and parser/page/e2e/shared UI checks pass (4/4). The RPC lifetime repair
-also lets the populated capture process exit cleanly. **Next: finish CR.9**,
-regenerate all three capture scales and rerun fresh full gates after the two
-additional lifetime repairs.
-Fix and push each item separately. Verification uses
-`/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes. Only the
-new sample-colour metadata hunk in DocumentController is part of CR.4; its
-pre-existing TV.3 context changes remain unstaged.
+**CR.1–CR.13 complete (2026-11-05), each production fix pushed separately.**
+The [acceptance record](docs/reviews/CS-remediation-acceptance-2026-11-05.md)
+maps the repair commits and replaces the disputed empty-state evidence with
+63 populated actual-worker captures: five primary views plus two scrolled
+views, three window sizes and display scales 1/1.5/2. Unexpected QML warnings
+fail the tour, with only the existing StandardKey alias exclusion. Representative
+images were visually reviewed; manifests verify dimensions and renderer frames.
+
+Fresh final gates after all repairs: **desktop 67/67 pass** (422.66 s),
+**headless 36/36 enabled pass** (67.74 s; 11 display tests excluded), parser
+Memcheck zero errors/retained blocks. Both build configurations succeeded.
+Verification uses the clean `/tmp/openshow-cs-remediation` snapshot, excluding
+pre-existing partial TV.3 changes except CR.4's separately committed sample
+colour metadata. The remaining diffs in all four TV.3 files match the saved
+baseline exactly and remain unstaged.
+
+Next: the operator's visual bug list and the remaining TV/TA work. TV.3,
+TV.4a/TV.4b, TV.5, TA.1 and physical M7 acceptance remain open; FO is still gated.
 
 **Review update, 2026-11-05:** the [CS conformance assessment](docs/reviews/CS-conformance-2026-11-05.md)
 found preview-card, Bible-list/form, inspector and thumbnail scheduling defects
 despite the focused tests passing. The earlier CS.9 visual sign-off below is
 disputed by those findings; retain its historical evidence, but resolve the
 review and the operator's forthcoming visual bug list before relying on that
-sign-off. Assessment only: application code and existing TV.3 edits untouched.
+sign-off. That initial assessment did not change application code; the CR
+repairs and fresh acceptance above now address its recorded findings. Existing
+TV.3 edits remain untouched.
 
 **CS.9 complete (2026-11-05): one integrated tour walks the shared control set
 across hosts — cross-host writes, per-slide customization, keyboard discipline,

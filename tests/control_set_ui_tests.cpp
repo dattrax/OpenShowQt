@@ -3,6 +3,7 @@
 #include <QJSValue>
 #include <QQmlComponent>
 #include <QQmlEngine>
+#include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlExpression>
 #include <QNetworkAccessManager>
@@ -13,17 +14,27 @@
 #include <QTest>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QElapsedTimer>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include "BibleImport.h"
 #include "DocumentController.h"
 #include "InspectorAdapter.h"
 #include "ScriptureImport.h"
 #include "WorkerController.h"
+#include "AppSettings.h"
+#include "WorkspacePanels.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <filesystem>
 #include <memory>
 
 namespace {
@@ -31,7 +42,7 @@ namespace {
 // the network. The second verse wraps, exercising populated delegate geometry.
 class VerseReply final : public QNetworkReply {
 public:
-    explicit VerseReply(const QNetworkRequest& request) {
+    explicit VerseReply(const QNetworkRequest& request, bool longPassage) {
         setRequest(request);
         fBody = R"(<div class="passage-text"><div class="passage-content">
 <div class="version-NIV result-text-style-normal text-html">
@@ -40,6 +51,20 @@ public:
 several lines inside the compact verse list. Every word must remain visible and
 the selection control must use the viewport width rather than its natural text width.</span></p>
 </div></div></div><div class="publisher-info-bottom"><p>Synthetic test passage.</p></div>)";
+        if (longPassage) {
+            fBody = "<div class=\"passage-text\"><div class=\"passage-content\">"
+                    "<div class=\"version-NIV result-text-style-normal text-html\">";
+            for (int i = 1; i <= 6; ++i) {
+                fBody += "<p><span class=\"text John-1-" + QByteArray::number(i) + "\">";
+                fBody += "Synthetic reading " + QByteArray::number(i) + ": ";
+                fBody += "These words demonstrate a longer passage in the selected Bible theme. "
+                         "They wrap across the authored reading box, with enough content to "
+                         "generate several slides and make the preview collection meaningful.";
+                fBody += "</span></p>";
+            }
+            fBody += "</div></div></div><div class=\"publisher-info-bottom\">"
+                     "<p>OpenShowQt synthetic acceptance passage. No provider content used.</p></div>";
+        }
         open(QIODevice::ReadOnly);
         QTimer::singleShot(0, this, [this] {
             setAttribute(QNetworkRequest::HttpStatusCodeAttribute, 200);
@@ -62,10 +87,11 @@ private:
 class VerseNetwork final : public QNetworkAccessManager {
 public:
     int requests = 0;
+    bool longPassage = false;
 protected:
     QNetworkReply* createRequest(Operation, const QNetworkRequest& request, QIODevice*) override {
         ++requests;
-        return new VerseReply(request);
+        return new VerseReply(request, longPassage);
     }
 };
 QList<QQuickItem*> namedItems(QQuickItem* root, const QString& name) {
@@ -74,11 +100,193 @@ QList<QQuickItem*> namedItems(QQuickItem* root, const QString& name) {
     for (auto* child : root->childItems()) result.append(namedItems(child, name));
     return result;
 }
+
+bool waitFor(const std::function<bool()>& predicate, int budget = 15000) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!predicate() && timer.elapsed() < budget) QTest::qWait(20);
+    return predicate();
+}
+
+bool variedPixels(const QImage& image) {
+    if (image.isNull()) return false;
+    const auto corner = image.pixel(0, 0);
+    int ink = 0;
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x)
+            if (image.pixel(x, y) != corner && ++ink > 100) return true;
+    return false;
+}
+
+// Optional reproducible acceptance tour. The ordinary test remains display-free;
+// this explicitly requested mode requires the real worker/display/local IPC.
+bool captureControlSets(const QString& prefix) {
+    bool ok = true;
+    auto check = [&](bool condition, const char* message) {
+        if (!condition) { std::fprintf(stderr, "CAPTURE: %s\n", message); ok = false; }
+        return condition;
+    };
+    QTemporaryDir scratch;
+    const auto base = std::filesystem::path(scratch.path().toStdString());
+    openshow::ui::DocumentController docs(nullptr, base / "service");
+    openshow::ui::WorkspacePanels panels(nullptr, base / "workspace.ini");
+    openshow::ui::AppSettings settings(nullptr, base / "app.ini");
+    openshow::ui::WorkerController worker;
+    VerseNetwork network;
+    network.longPassage = true;
+    BibleImport bible;
+    bible.setNetworkAccessManager(&network);
+    openshow::ui::ScriptureImport scripture(&bible, &docs, &worker);
+    docs.createSong("Opening song");
+    const auto song = docs.currentSongId();
+    for (int i = 1; i <= 3; ++i) {
+        docs.addSlide();
+        docs.setSlideText(QStringLiteral("Welcome to our service\nOpening song — verse %1").arg(i));
+        docs.flushText();
+    }
+    docs.addShowToPlaylist(song);
+    docs.createBlankTheme("Warm");
+    QString theme;
+    for (const auto& row : docs.themes())
+        if (row.toMap().value("name").toString() == "Warm") theme = row.toMap().value("id").toString();
+    check(docs.editTheme(theme, "Warm", "#ffd23f", "#101828", "", "DejaVu Serif",
+                         64, "left", 1.25) && docs.useThemeAsCurrent(theme), "configure the capture theme");
+    check(docs.setThemePlacement(theme, 160, 100, 1600, 880), "configure the song placement");
+    check(docs.applyThemeContext(theme, "scripture", {{"fontSize", 48.0}, {"box", QVariantMap{
+        {"x", 180.0}, {"y", 100.0}, {"width", 1200.0}, {"height", 650.0}}}}),
+        "configure a distinct Bible view");
+    if (panels.drawerHeight() > 40) panels.toggleDrawer();
+    QQmlApplicationEngine engine;
+    QObject::connect(&engine, &QQmlEngine::warnings, [&](const QList<QQmlError>& errors) {
+        for (const auto& error : errors) {
+            // Same narrow StandardKey-alias exclusion as workspace_ui_tests;
+            // every other warning, including delegate/binding errors, fails.
+            if (error.toString().contains("Shortcut: Only binding to one of multiple key bindings"))
+                continue;
+            std::fprintf(stderr, "CAPTURE QML: %s\n", qPrintable(error.toString()));
+            ok = false;
+        }
+    });
+    auto* context = engine.rootContext();
+    context->setContextProperty("applicationVersion", "acceptance");
+    context->setContextProperty("workerOffer", "acceptance");
+    context->setContextProperty("worker", &worker);
+    context->setContextProperty("docs", &docs);
+    context->setContextProperty("panels", &panels);
+    context->setContextProperty("appSettings", &settings);
+    context->setContextProperty("bible", &bible);
+    context->setContextProperty("scripture", &scripture);
+    context->setContextProperty("uiSize", QSize(1680, 1020));
+    engine.loadFromModule("OpenShow", "Main");
+    auto* window = engine.rootObjects().isEmpty() ? nullptr
+        : qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+    if (!check(window != nullptr, "load the production workspace")) return false;
+    worker.start();
+    if (!check(waitFor([&] { return worker.outputLive() && worker.selectionSupported() &&
+                                   worker.thumbnailSupported(); }), "the real worker is ready")) return false;
+    worker.refreshFontFamilies();
+    check(waitFor([&] { return worker.fontListState() == "ready"; }),
+          "the renderer's installed font list is ready for the inspector captures");
+    const auto lookup = [&] {
+        window->setProperty("page", "bible");
+        bible.setReference("John 1:1-6");
+        bible.lookup();
+        return waitFor([&] { return !bible.busy() && !scripture.measuring() &&
+                                   scripture.slides().size() > 1 && worker.selectionCurrent(); });
+    };
+    if (!check(lookup(), "populate and paginate a multi-slide Bible fixture")) return false;
+    const int bibleSlides = scripture.slides().size();
+    check(scripture.addToSchedule(), "add one Bible show for grouped Show captures");
+    QDir().mkpath(QFileInfo(prefix).absolutePath());
+    QJsonArray manifest;
+    auto save = [&](const QString& mode, const QSize& size) {
+        QTest::qWait(80);
+        const auto image = window->grabWindow();
+        const auto path = prefix + "." + mode + "-" + QString::number(size.width()) + ".png";
+        check(!image.isNull() && image.save(path), "save a real workspace frame");
+        manifest.append(QJsonObject{{"page", mode}, {"logicalWidth", size.width()},
+            {"logicalHeight", size.height()}, {"pixelWidth", image.width()}, {"pixelHeight", image.height()},
+            {"bibleSlides", bibleSlides}, {"selectionFrames", worker.selectionFrames()},
+            {"thumbnailFrames", worker.thumbnailFrames()}, {"path", path}});
+        check(!worker.wordsOnAir() && worker.sceneActive() == 0,
+              "all capture browsing remains off air with the audience unchanged");
+    };
+    const QList<QSize> sizes{{1680, 1020}, {1380, 800}, {1000, 680}};
+    window->setProperty("page", "show");
+    for (const auto size : sizes) {
+        window->resize(size);
+        QTest::qWait(100);
+        check(waitFor([&] {
+            const auto cards = namedItems(window->contentItem(), "operatorCueTile");
+            if (cards.isEmpty()) return false;
+            for (auto* card : cards) {
+                if (!card->isVisible()) continue;
+                auto* surface = card->property("surface").value<QQuickItem*>();
+                if (!surface || !variedPixels(worker.thumbnail(surface->property("key").toString()))) return false;
+            }
+            return true;
+        }), "every visible Show card has real rendered words");
+        save("show", size);
+    }
+    if (!check(lookup(), "repopulate the import for Bible captures")) return false;
+    for (const auto size : sizes) {
+        window->resize(size);
+        QTest::qWait(100);
+        check(waitFor([&] { return worker.selectionCurrent() && variedPixels(worker.selectionImage()) &&
+            !worker.thumbnail(scripture.previewKey(0)).isNull() &&
+            !worker.thumbnail(scripture.previewKey(scripture.slides().size() - 1)).isNull(); }),
+            "Bible cards and selected canvas carry real current-plan pixels");
+        auto* page = window->findChild<QQuickItem*>("bibleImportPage");
+        auto* scroll = page ? page->property("contentItem").value<QQuickItem*>() : nullptr;
+        if (scroll) scroll->setProperty("contentY", 0);
+        save("bible", size);
+        if (scroll) scroll->setProperty("contentY", qMax(0.0,
+            scroll->property("contentHeight").toDouble() - scroll->height()));
+        save("bible-selected", size);
+    }
+    window->setProperty("page", "edit");
+    docs.selectSong(song);
+    docs.selectSlide(0);
+    for (const auto size : sizes) {
+        window->resize(size);
+        check(waitFor([&] { return worker.selectionCurrent() && variedPixels(worker.selectionImage()); }),
+              "Edit has its own worker-rendered slide");
+        auto* page = window->findChild<QQuickItem*>("editPage");
+        if (page) { page->setProperty("contentX", 0); page->setProperty("contentY", 0); }
+        save("edit", size);
+        if (page) page->setProperty("contentX", qMax(0.0,
+            page->property("contentWidth").toDouble() - page->width()));
+        save("edit-inspector", size);
+    }
+    window->setProperty("page", "themes");
+    auto* themes = window->findChild<QQuickItem*>("themeEditorPage");
+    check(themes != nullptr, "locate the Themes host");
+    if (themes) themes->setProperty("selectedId", theme);
+    for (const auto size : sizes) {
+        window->resize(size);
+        for (const QString view : {QString(), QStringLiteral("scripture")}) {
+            if (themes) themes->setProperty("selectedView", view);
+            QTest::qWait(100);
+            check(waitFor([&] { return worker.selectionCurrent() && variedPixels(worker.selectionImage()); }),
+                  "the selected theme view has actual worker pixels");
+            save(view.isEmpty() ? "themes" : "themes-bible", size);
+        }
+    }
+    QFile output(prefix + ".manifest.json");
+    check(output.open(QIODevice::WriteOnly), "open the capture manifest");
+    output.write(QJsonDocument(manifest).toJson());
+    worker.shutdownNow();
+    return ok;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     QQuickStyle::setStyle("Material");
+    // Capture mode owns one production engine/window, separate from the unit
+    // component lifetimes and scratch models below.
+    const auto capturePrefix = qEnvironmentVariable("OPENSHOW_CONTROL_CAPTURE");
+    if (!capturePrefix.isEmpty()) return captureControlSets(capturePrefix) ? 0 : 1;
     QQmlEngine engine;
     QStringList warnings;
     QObject::connect(&engine, &QQmlEngine::warnings,

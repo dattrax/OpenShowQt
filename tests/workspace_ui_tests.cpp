@@ -4167,6 +4167,9 @@ int main(int argc, char** argv) {
     }
     const auto capture = qEnvironmentVariable("OPENSHOW_WORKSPACE_CAPTURE");
     if (!capture.isEmpty()) {
+        // Legacy shell/empty-state images. Populated worker-backed five-page
+        // acceptance uses control_set_ui_tests + OPENSHOW_CONTROL_CAPTURE;
+        // these snapshots alone do not establish Bible preview fidelity.
         // UI.6's deterministic populated state, TH.6's themed state. The
         // long-named cue is imported HERE so no earlier assertion sees it:
         // it is the bin row's and rail combo's long-name story. This run is

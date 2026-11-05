@@ -24,7 +24,7 @@ Remediation is tracked in PLAN.md's CR ledger. **CR.1 is fixed**: card picture
 height now divides by its aspect ratio; `control_set_ui_tests` checks picture
 and caption containment at six thumbnail sizes. Clean-snapshot application
 build, workspace and UI-load tests pass. Findings below retain the original
-review evidence; remaining items are open.
+review evidence; the final populated acceptance is recorded separately below.
 
 **CR.2 is fixed:** the verse list declares its missing QML id. The focused UI
 fixture now loads real BibleImport data through a scripted provider, verifies
@@ -86,6 +86,13 @@ the independent class-token dangling view tracked as CR.13.
 the owned attribute string. New long translation identifier success/mismatch
 cases fail on the old code and pass on the fix. Parser memcheck reports zero
 errors and no retained blocks; parser, Bible page/e2e and populated UI tests pass.
+
+**CR.9 acceptance:** the reproducible production-QML tour now captures populated
+Show, Bible, Edit and both Themes views using actual worker pixels. The new
+[acceptance record](CS-remediation-acceptance-2026-11-05.md) supersedes the old
+empty-state visual evidence for these repairs and records the final gates.
+Remaining TV/TA, physical release gates and operator-reported issues remain
+separate; this is not authorization to start FO.
 
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
