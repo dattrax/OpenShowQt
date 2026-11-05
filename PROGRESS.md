@@ -4,6 +4,13 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
+**Theme editor follow-ups: TE.1 complete.** Placement handles now use their
+rectangle's local coordinates, removing the duplicated origin. New corner
+checks pass after moving/resizing; the clean-source workspace suite passes
+(35.60 s). The in-tree executable is rebuilt. Its workspace suite has one
+pre-existing failure because partial TV.3 adds context colour metadata where
+the old assertion expects no colour field; the handle checks pass there too.
+
 **Operator visual report 1 — preview tiles displaced (2026-11-05): resolved
 by refreshing the in-tree build.** The local `build/src/ui/openshow-ui` and
 copied QML still contained the pre-CR.1 `width * aspectRatio` picture height,

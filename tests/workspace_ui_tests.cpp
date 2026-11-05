@@ -2214,6 +2214,22 @@ int main(int argc, char** argv) {
                   && newButton->isVisible() && previewFrame->isVisible(),
               "the editor lists themes beside a preview and offers New, Duplicate, Delete and Use");
 
+        const auto checkPlacementHandles = [&] {
+            auto* box = findNamed(window->contentItem(), "themeEditorPlacementBox");
+            QList<QQuickItem*> handles;
+            collectNamed(window->contentItem(), "themeEditorPlacementHandle", handles);
+            check(box && handles.size() == 4, "the placement box has four corner handles");
+            if (!box) return;
+            for (auto* handle : handles) {
+                const auto center = handle->mapToItem(box, QPointF(handle->width() / 2,
+                                                                   handle->height() / 2));
+                const bool onX = qAbs(center.x()) < 0.01 || qAbs(center.x() - box->width()) < 0.01;
+                const bool onY = qAbs(center.y()) < 0.01 || qAbs(center.y() - box->height()) < 0.01;
+                check(onX && onY, "placement handles remain centred on the rectangle corners");
+            }
+        };
+        checkPlacementHandles();
+
         const int themesBefore = docs.themes().size();
         clickAt(newButton, newButton->width() / 2, newButton->height() / 2);
         QTest::qWait(80);
@@ -2379,6 +2395,7 @@ int main(int argc, char** argv) {
         QTest::mouseMove(window, dragged.toPoint(), 20);
         QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, dragged.toPoint());
         QTest::qWait(80);
+        checkPlacementHandles();
         const QVariantMap moved = placementRow(placedId).value(QStringLiteral("placement")).toMap();
         check(placementRow(placedId).value(QStringLiteral("placementSet")).toBool()
                   && qAbs(moved.value(QStringLiteral("x")).toDouble()
@@ -2399,6 +2416,7 @@ int main(int argc, char** argv) {
         placeHField->setProperty("text", "500");
         QMetaObject::invokeMethod(placeHField, "editingFinished");
         QTest::qWait(80);
+        checkPlacementHandles();
         const QVariantMap typed = placementRow(placedId).value(QStringLiteral("placement")).toMap();
         check(typed.value(QStringLiteral("x")).toDouble() == 200.0
                   && typed.value(QStringLiteral("y")).toDouble() == 150.0

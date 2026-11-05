@@ -1298,6 +1298,19 @@ separate commit/push per fix. Existing uncommitted TV.3 work is separate.
 CR.1–CR.13 must close before relying on the CS.9 visual sign-off or starting FO.
 Remaining TV/TA and M7 gates still apply.
 
+### Theme editor operator follow-ups (TE)
+
+Reported after the CR acceptance run. Complete and push each fix separately;
+refresh the in-tree executable as well as checking the source.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| TE.1 | DONE | Keep placement handles on the box corners | Workspace regression checks local corner centres before/after drag and typed resize; clean-source workspace suite passes, in-tree executable rebuilt |
+| TE.2 | TODO | Place Songs/Bible view tiles vertically below the theme list | Both views reachable at all supported window sizes |
+| TE.3 | TODO | Remove long instructional paragraphs from the theme workspace | Keep concise labels and actionable status; retain detailed documentation outside the UI |
+| TE.4 | TODO | Use matching font controls and selection outline for Songs/Bible | Same picker and field presentation; edits target the selected view without changing the other |
+| TE.5 | TODO | Replace theme-name/pangram sample with Lorem ipsum | Neutral multiline sample stays constant across themes and uses each view's resolved appearance |
+
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
 **Entry gate: CS.1–CS.9, the remaining TV leaves and TA.1 must be DONE, with

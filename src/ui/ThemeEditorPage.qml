@@ -1116,6 +1116,7 @@ Item {
                 readonly property rect box: themeEditor.shownBox
 
                 Rectangle {
+                    objectName: "themeEditorPlacementBox"
                     x: placementLayer.box.x * placementLayer.zoom
                     y: placementLayer.box.y * placementLayer.zoom
                     width: placementLayer.box.width * placementLayer.zoom
@@ -1158,18 +1159,15 @@ Item {
                         model: [Qt.point(0, 0), Qt.point(1, 0), Qt.point(0, 1), Qt.point(1, 1)]
                         delegate: Rectangle {
                             required property var modelData
+                            objectName: "themeEditorPlacementHandle"
                             width: 8
                             height: 8
                             color: themeEditor.viewPlaces ? "#1685f8" : "#8ec9f5"
                             border.color: "#202020"
-                            x: placementLayer.box.x * placementLayer.zoom
-                                + (modelData.x === 0 ? -width / 2
-                                                     : placementLayer.box.width
-                                                       * placementLayer.zoom - width / 2)
-                            y: placementLayer.box.y * placementLayer.zoom
-                                + (modelData.y === 0 ? -height / 2
-                                                     : placementLayer.box.height
-                                                       * placementLayer.zoom - height / 2)
+                            // The handles are children of the placed rectangle;
+                            // its origin has already been applied by the parent.
+                            x: modelData.x * parent.width - width / 2
+                            y: modelData.y * parent.height - height / 2
                         }
                     }
                 }
