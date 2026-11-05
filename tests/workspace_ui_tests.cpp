@@ -1032,20 +1032,46 @@ int main(int argc, char** argv) {
         const qreal cellH = cueGrid->property("cellHeight").toReal();
         const int viewportRows = (qCeil(cueGrid->property("height").toReal() / cellH) + 1) * cols;
         check(viewportRows > 32, "the tall viewport would overrun the cap without the clamp");
-        int festivalStart = 0;
-        while (festivalStart < rows.size()
-               && rows[festivalStart].toMap().value("showId").toString() != festivalId)
-            ++festivalStart;
-        const int bandStart = qCeil((festivalStart + 1.0) / cols) * cols;
-        cueGrid->setProperty("contentY", (bandStart / cols) * cellH);
+        // CS.7: the window is placed by the collection's MAPPED geometry,
+        // not by row arithmetic over a flat cell model. The second Festival
+        // occurrence is a run of 40 distinct slides starting at column zero;
+        // from its first cue the capped window is exactly the first 32 of
+        // that run. (When the grid cannot scroll the group's top row all the
+        // way up, the bottom-edge anchor is the clause under test instead,
+        // and the last cue must be inside — the burst check below pins it.)
+        int festivalTwice = -1;
+        int festivalRuns = 0;
+        QString lastEntryId;
+        for (int i = 0; i < rows.size(); ++i) {
+            const QVariantMap row = rows[i].toMap();
+            const QString entryId = row.value(QStringLiteral("entryId")).toString();
+            if (entryId == lastEntryId) continue;
+            lastEntryId = entryId;
+            if (row.value(QStringLiteral("showId")).toString() != festivalId) continue;
+            ++festivalRuns;
+            if (festivalRuns == 2) { festivalTwice = i; break; }
+        }
+        check(festivalTwice > 0, "the fixture lists Festival twice in the order");
+        QVariant rectV;
+        QMetaObject::invokeMethod(cueGrid, "cueRect", Q_RETURN_ARG(QVariant, rectV),
+                                  Q_ARG(QVariant, festivalTwice));
+        const qreal groupTop = rectV.toMap().value(QStringLiteral("y")).toReal();
+        const qreal scrollMax = cueGrid->property("contentHeight").toReal()
+                              - cueGrid->property("height").toReal();
+        cueGrid->setProperty("contentY", qMin(groupTop, scrollMax));
         QTest::qWait(30);
         QStringList bandKeys;
         for (const auto& entry : pageCall("slideBand").toList())
             bandKeys << entry.toMap().value(QStringLiteral("key")).toString();
         check(bandKeys.size() == 32 && bandKeys.size() == QSet(bandKeys.cbegin(),
                                                                bandKeys.cend()).size()
-                  && bandKeys.first() == rows[bandStart].toMap().value("slideId").toString()
-                  && bandKeys.last() == rows[bandStart + 31].toMap().value("slideId").toString(),
+                  && (groupTop > scrollMax
+                      ? bandKeys.contains(rows.last().toMap().value("slideId").toString())
+                      : (bandKeys.first()
+                             == rows[festivalTwice].toMap().value("slideId").toString()
+                         && bandKeys.last()
+                             == rows[festivalTwice + 31].toMap()
+                                    .value("slideId").toString())),
               "inside unique slides the band hits the 32-scene cap and stops there");
         // Back at the top the window spans the show's cycle twice, so the
         // band dedupes to the distinct pictures: eighteen Good Grace slides
@@ -1131,6 +1157,197 @@ int main(int argc, char** argv) {
         const qreal cellAfter = cueGrid->property("cellHeight").toReal();
         check(shed && rowsAfter == rowsBefore && qFuzzyCompare(cellAfter, cellBefore),
               "the fixture shrinks back to what the later sections expect");
+    }
+    // --- task CS.7: previews grouped by running-order ENTRY ---------------
+    // Row boundaries are OCCURRENCE boundaries: two copies of one show are
+    // two groups, every group starts at column zero, group padding is inert,
+    // and the flat cue order (keyboard, live identity, clicking) is exactly
+    // what it was. A fresh playlist keeps the fixture deterministic; the
+    // block hands the service back at the end.
+    {
+        const QString homePlaylist = docs.currentPlaylistId();
+        const int homeRows = showPageItem->property("cueRows").toList().size();
+        const QSize cs7Size = window->size();
+        window->resize(1380, 800);
+        settings.setShowThumbLevel(4);   // the 300-pixel card: four columns here
+        QTest::qWait(140);
+        auto makeCs7Song = [&docs](const QString& name, int slides) {
+            docs.createSong(name);
+            for (int i = 0; i < slides; ++i) docs.addSlide();
+            docs.flushText();
+            return docs.currentSongId();
+        };
+        const QString alphaId = makeCs7Song(QStringLiteral("CS7 Alpha"), 3);
+        const QString betaId = makeCs7Song(QStringLiteral("CS7 Beta"), 3);
+        const QString emptyId = makeCs7Song(QStringLiteral("CS7 Empty"), 0);
+        const QString deltaId = makeCs7Song(QStringLiteral("CS7 Delta"), 9);
+        check(docs.createPlaylist(QStringLiteral("CS.7 Order")), "the CS.7 order playlist exists");
+        QString orderPlaylist;
+        for (const auto& playlist : docs.playlists()) {
+            const QVariantMap row = playlist.toMap();
+            if (row.value(QStringLiteral("name")).toString() == QLatin1String("CS.7 Order"))
+                orderPlaylist = row.value(QStringLiteral("id")).toString();
+        }
+        check(!orderPlaylist.isEmpty(), "the CS.7 order is findable to select");
+        docs.selectPlaylist(orderPlaylist);
+        check(docs.addShowToPlaylist(alphaId) && docs.addShowToPlaylist(betaId)
+                  && docs.addShowToPlaylist(alphaId) && docs.addShowToPlaylist(deltaId)
+                  && docs.addShowToPlaylist(emptyId),
+              "the order takes Alpha, Beta, Alpha again, Delta and an empty show");
+        QTest::qWait(160);
+        const QVariantList order = showPageItem->property("cueRows").toList();
+        check(order.size() == 18, "the empty show adds no phantom cue to the grid");
+        const int cs7cols = cueGrid->property("columns").toInt();
+        check(cs7cols >= 2, "the order lays out over multiple columns at this size");
+        const auto rowsFor = [cs7cols](int cues) { return (cues + cs7cols - 1) / cs7cols; };
+        const QVariantMap layout = cueGrid->property("layout").toMap();
+        const QVariantList cells = layout.value(QStringLiteral("cells")).toList();
+        const QList<int> groupCues{3, 3, 3, 9};
+        // Cells = every cue, plus each NON-FINAL group's tail fill up to its
+        // row end. The last group's trailing columns stay simply unused.
+        int expectedCells = 18;
+        for (int g = 0; g < groupCues.size() - 1; ++g)
+            expectedCells += (cs7cols - groupCues[g] % cs7cols) % cs7cols;
+        int realCues = 0;
+        int firstFiller = -1;
+        for (int i = 0; i < cells.size(); ++i) {
+            if (cells[i].toMap().contains(QStringLiteral("cueIndex"))) ++realCues;
+            else if (firstFiller < 0) firstFiller = i;
+        }
+        check(cells.size() == expectedCells
+                  && realCues == 18 && expectedCells > 18,
+              "every group pads its row out and the fill is real, not cues");
+        const QVariantList cellOfCue = layout.value(QStringLiteral("cellOfCue")).toList();
+        const int alphaEnd = cellOfCue.at(2).toInt();
+        check(alphaEnd % cs7cols != cs7cols - 1
+                  ? cells.at(alphaEnd + 1).toMap().value(QStringLiteral("filler")).toBool()
+                  : true,
+              "Alpha ends mid-row and the rest of that row is inert fill");
+        auto cueRect = [cueGrid](int cue) {
+            QVariant answer;
+            QMetaObject::invokeMethod(cueGrid, "cueRect", Q_RETURN_ARG(QVariant, answer),
+                                      Q_ARG(QVariant, cue));
+            return answer.toMap();
+        };
+        auto cueRow = [cueGrid](int cue) {
+            QVariant answer;
+            QMetaObject::invokeMethod(cueGrid, "cueRow", Q_RETURN_ARG(QVariant, answer),
+                                      Q_ARG(QVariant, cue));
+            return answer.toInt();
+        };
+        const qreal cs7cellH = cueGrid->property("cellHeight").toReal();
+        const qreal cs7cellW = cueGrid->property("cellWidth").toReal();
+        cueGrid->setProperty("contentY", 0);
+        QTest::qWait(60);
+        const int betaRow = rowsFor(3);
+        const int alphaAgainRow = betaRow + rowsFor(3);
+        const int deltaRow = alphaAgainRow + rowsFor(3);
+        check(cueRect(0).value(QStringLiteral("x")).toReal() == 0.0
+                  && cueRow(3) == betaRow && cueRow(6) == alphaAgainRow
+                  && cueRow(9) == deltaRow,
+              "Beta, the repeated Alpha and Delta each open a fresh row at column zero");
+        check(qAbs(cueRect(6).value(QStringLiteral("x")).toReal()) < 1.0,
+              "the second Alpha really starts at column zero, not after a gap");
+        check(cueRow(17) == deltaRow + rowsFor(9) - 1
+                  && qAbs(cueRect(17).value(QStringLiteral("y")).toReal()
+                          - (deltaRow + rowsFor(9) - 1) * cs7cellH) < 1.0,
+              "the order's last cue sits on the last row where the plan put it");
+        // Group heads sit where their mapped rect says they sit — the tile
+        // and the geometry report ONE position.
+        QList<QQuickItem*> cs7Tiles;
+        collectNamed(cueGrid, "operatorCueTile", cs7Tiles);
+        QQuickItem* betaTile = nullptr;
+        for (auto* tile : cs7Tiles)
+            if (tile->isVisible() && tile->property("index").toInt() == 3) betaTile = tile;
+        check(betaTile != nullptr, "the Beta head tile is on screen");
+        if (betaTile != nullptr) {
+            const QPointF inGrid = betaTile->mapToItem(cueGrid, QPointF(0, 0));
+            check(qAbs(inGrid.x() - cueRect(3).value(QStringLiteral("x")).toReal()) < 1.0
+                      && qAbs(inGrid.y() + cueGrid->property("contentY").toReal()
+                              - cueRect(3).value(QStringLiteral("y")).toReal()) < 1.0,
+                  "the head tile and cueRect agree on where Beta starts");
+        }
+        // The padding is inert: clicking the fill beside Alpha costs nothing.
+        showPageItem->setProperty("cueIndex", -1);
+        check(firstFiller >= 0, "the fixture leaves some padding to test");
+        const QPointF fillPoint = cueGrid->mapToScene(
+            QPointF((firstFiller % cs7cols) * cs7cellW + cs7cellW / 2.0,
+                    (firstFiller / cs7cols) * cs7cellH + cs7cellH / 2.0));
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, fillPoint.toPoint());
+        QTest::qWait(40);
+        check(showPageItem->property("cueIndex").toInt() == -1,
+              "a click on group padding selects and presents nothing");
+        // Repeated occurrences stay separate: same slide, different cue.
+        const QString firstAlphaKey = order[0].toMap().value(QStringLiteral("cueKey")).toString();
+        const QString againAlphaKey = order[6].toMap().value(QStringLiteral("cueKey")).toString();
+        check(order[0].toMap().value(QStringLiteral("slideId")).toString()
+                      == order[6].toMap().value(QStringLiteral("slideId")).toString()
+                  && firstAlphaKey != againAlphaKey
+                  && order[0].toMap().value(QStringLiteral("entryId")).toString()
+                         != order[6].toMap().value(QStringLiteral("entryId")).toString(),
+              "the two Alphas share pixels but are two cues on two entries");
+        // Flat cue order survives the grouping: the keyboard crosses the
+        // Alpha/Beta boundary in one step, and a wrapped Delta cue clicks
+        // through to its own cue index.
+        showPageItem->setProperty("cueIndex", 2);
+        QTest::qWait(30);
+        QTest::keyClick(window, Qt::Key_PageDown);
+        QTest::qWait(40);
+        check(showPageItem->property("cueIndex").toInt() == 3
+                  && order[3].toMap().value(QStringLiteral("showName")).toString()
+                         == QLatin1String("CS7 Beta"),
+              "Next walks straight from Alpha into Beta across the row break");
+        QQuickItem* deltaTile = nullptr;
+        for (auto* tile : cs7Tiles)
+            if (tile->isVisible() && tile->property("index").toInt() == 13) deltaTile = tile;
+        if (deltaTile == nullptr) {
+            cueGrid->setProperty("contentY",
+                                 cueRect(13).value(QStringLiteral("y")).toReal());
+            QTest::qWait(80);
+            cs7Tiles.clear();
+            collectNamed(cueGrid, "operatorCueTile", cs7Tiles);
+            for (auto* tile : cs7Tiles)
+                if (tile->isVisible() && tile->property("index").toInt() == 13) deltaTile = tile;
+        }
+        check(deltaTile != nullptr, "a wrapped Delta cue is reachable by scrolling");
+        if (deltaTile != nullptr) {
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                              deltaTile->mapToScene(QPointF(25, 25)).toPoint());
+            QTest::qWait(40);
+            check(showPageItem->property("cueIndex").toInt() == 13,
+                  "clicking a wrapped cue picks that cue");
+        }
+        // Browsing one presentation from the library is ONE group: a
+        // uniform flow with no forced row breaks anywhere.
+        showPageItem->setProperty("sourceShowId", deltaId);
+        QTest::qWait(140);
+        const QVariantList browsedOrder = showPageItem->property("cueRows").toList();
+        const QVariantMap browsedLayout = cueGrid->property("layout").toMap();
+        const QVariantList browsedCells = browsedLayout.value(QStringLiteral("cells")).toList();
+        check(browsedOrder.size() == 9 && browsedCells.size() == 9,
+              "the browsed show lays out as one uninterrupted group");
+        bool browsedFlows = true;
+        for (int i = 0; i < 9; ++i) {
+            const QVariantMap rect = cueRect(i);
+            if (qAbs(rect.value(QStringLiteral("x")).toReal() - (i % cs7cols) * cs7cellW) > 1.0
+                    || qAbs(rect.value(QStringLiteral("y")).toReal()
+                            - (i / cs7cols) * cs7cellH) > 1.0)
+                browsedFlows = false;
+        }
+        check(browsedFlows, "cues inside a group flow left to right and wrap normally");
+        // Hand the rest of the suite its service back.
+        showPageItem->setProperty("sourceShowId", QString());
+        for (const auto& entry : docs.playlistEntries()) {
+            docs.removePlaylistEntry(entry.toMap().value(QStringLiteral("entryId")).toString());
+        }
+        docs.selectPlaylist(homePlaylist);
+        docs.selectSong(songId);
+        docs.selectSlide(0);
+        settings.setShowThumbLevel(2);
+        window->resize(cs7Size);
+        QTest::qWait(160);
+        check(showPageItem->property("cueRows").toList().size() == homeRows,
+              "the running order is back home after the grouped fixture");
     }
     // --- task UI.5: monitor, clear strip, transport and audio area --------
     // The rail now arranges itself as the plan draws it, and every control

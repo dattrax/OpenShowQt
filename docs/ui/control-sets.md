@@ -177,26 +177,28 @@ focusable button (cue stepping must keep the keyboard).
 
 ### SlidePreviewCollection
 
-`src/ui/SlidePreviewCollection.qml` (introduced ungrouped in CS.3, grouped
-in CS.7). Virtualized responsive preview collection with group boundaries,
-index mapping and visible-band reporting. Implemented as a GridView over
-computed visual rows so only visible rows have live delegates. CS.3 ships
-the ungrouped flow (`grouped: false`, `cardWidth`, `visibleIndexes()`,
-debounced `visibleBandChanged()`); the grouped row-break arithmetic and its
-mapped geometry land with the Show migration, and hosts go through
-`visibleIndexes()` in either era. First consumer: `BibleImportPage`
-(`bibleSlideCollection`, cards `bibleSlideCard`, keys
-`scripture:<planGeneration>:<index>` — plan identity is transient session
-vocabulary, bumped by every publish/Add/cancel, never persisted).
+`src/ui/SlidePreviewCollection.qml` (ungrouped CS.3, grouped CS.7).
+Virtualized responsive preview collection with group boundaries, index
+mapping and visible-band reporting — a GridView over a computed visual-CELL
+model, so only visible cells have live delegates. The host feeds `source`
+(flat, presentation order) and gets back a delegate context of
+`{cueIndex, row}` per cell; in grouped mode a group's leftover row columns
+become FILLER cells the delegate must render invisible and inert (Show does:
+no name, no picture, no clicks). Groups cut on the row's `entryId` —
+occurrence identity, never show name, theme or context — and every group
+starts at column zero: a group ending mid-row pads the rest of that row,
+the next occurrence opens the next row, and a group ending exactly at a row
+end forces no blank row. Cues within a group flow and wrap normally; the
+collection displays and maps and never reorders cues.
 
 | | |
 |---|---|
-| Inputs | `model` (flat array of row maps with `cueKey`/`slideId`/… or generation slides); `grouped` (false = uniform flow — Bible; true = every item occurrence starts a new row — Show); `cellWidth` (operator zoom level); group boundaries come from the row's occurrence identity (`entryId`), never from show name or theme |
-| Outputs | `cueRow(cueIndex)` / `cueRect(cueIndex)` — mapped geometry for scroll-to-cue; `visibleCueIndexes()` — actual visible cue indices (never headings/gaps/padding); column count; content height |
-| Events | `cueActivated(cueIndex)`, `cueContextRequested(cueIndex, point)`, `visibleBandChanged()` (throttled — the host debounces its thumbnail ask off this) |
-| Adapter | hosts keep their own flat presentation-order model (`cueRows` for Show; `scripture.slides` for Bible) and the collection maps visual cells onto it; the collection never reorders cues |
-| Consumers | ShowPage (grouped), BibleImportPage (ungrouped) |
-| Automation | `objectName` per host (`operatorSlideGrid` keeps its role for the cue suite); delegate instances keep `operatorCueTile` + `index` |
+| Inputs | `source` (flat array of row maps with `cueKey`/`slideId`/`entryId`… — the host's presentation order); `grouped` (false = uniform flow — Bible; true = every entry occurrence starts a new row — Show); `cardWidth` (operator zoom step); `stretchCells` (divide the view's width among the columns, so the grid fills the page at the zoom step's target width — Show); `cellWidth`/`cellHeight` may be overridden by the host as today |
+| Outputs | `layout` — the current generation `{cells, cellOfCue}`; `cueRow(cueIndex)` / `cueRect(cueIndex)` — mapped row number and content-space rect for scroll-to-cue; `scrollCueIntoView(cueIndex)`; `visibleIndexes()` / `visibleCueIndexes()` — the SOURCE indices actually on screen (bottom partial row plus one row of look-ahead, fillers never); `columns`; `delegate` is the GridView's own: it receives the cell wrapper `{cueIndex, row}` — or `{filler: true}`, which the host renders as an invisible, input-less Item |
+| Events | `visibleBandChanged()` (debounced — the host asks for thumbnails off this); cue activation/context stay between the host's delegate and its own model (the collection adds no signals of its own) |
+| Adapter | hosts keep their own flat presentation-order model (`cueRows` for Show; `scripture.slides` for Bible) and read mapped geometry from the view; the collection never reorders cues and never schedules requests |
+| Consumers | ShowPage (grouped, `stretchCells`, entry-grouped), BibleImportPage (ungrouped) |
+| Automation | `objectName` per host (`operatorSlideGrid` keeps its role for the cue suite); delegate instances keep `operatorCueTile`, whose `index` property is the CUE index (the view's attached cell index differs from it whenever any group has padded — read the cue index, not the cell) |
 
 ### InspectorAdapter
 
@@ -345,6 +347,6 @@ Existing automation names (`audiencePreview`, `previewOfflineNote`,
 | CS.4 | `InspectorAdapter` read model + commit/reset routing documentation; centralize the context merge in the adapter/controller |
 | CS.5 | Extract `AppearanceInspector`, `TextStyleControls`, `TextEffectsControls`, `BackgroundControls`, `BoxGeometryControls`, `TransitionControls`, `WorkerFontPicker`; migrate ThemeEditor Songs/Bible rails and Settings' transition section |
 | CS.6 | EditPage's appearance rail replaced by an `AppearanceInspector` over `{kind:"slide"}` (`showGeometry`/`showTransition` off, `showRevertChips` on). Renames the tests see: the old left/centre/right trio is one combo now, pinned `themeAlignCombo` (the trio names retired); the weight/slant/fit/min-size/stroke/shadow rows stay named `editWeight(+Inherit)`, `editSlant(+Inherit)`, `editFit(+Inherit)`, `editMinSize(+Inherit)`, `editStroke*`, `editShadow*` — pinned onto the shared parts by `pinEditNames()`, same names, new parts. The old hand-rolled `commit()`/`valueOf()`/badge rows retired into the parts' `*ObjectName` pins and `<prefix><Field>` chips; `revertableNames` grew to the advanced fields and placement, so Revert-customizations covers advanced-only changes |
-| CS.7 | `SlidePreviewCollection` grouped mode in ShowPage (fresh row per running-order occurrence) |
-| CS.8 | Thumbnail band + scroll-to-cue from actual grouped geometry |
+| CS.7 | DONE (as-built in the parts above): ShowPage on `SlidePreviewCollection` `grouped: true` — groups cut on `entryId`, every group opens at column zero, leftover row columns are inert fill. Scroll-to-cue follows `scrollCueIntoView`/`cueRect`; the ask window follows `visibleCueIndexes()` (32 cap, bottom-anchored at the end of the order). Delegate context is now `{cueIndex, row}`; `operatorCueTile` keeps a cue-equal `index` property; Bible's host input `model` became `source`. Keyboard, live/pending identity and the flat cue order unchanged |
+| CS.8 | Thumbnail band + scroll-to-cue from actual grouped geometry — bounded look-ahead, bottom and zoom cases |
 | CS.9 | Integrated reuse, accessibility, capture and regression acceptance |

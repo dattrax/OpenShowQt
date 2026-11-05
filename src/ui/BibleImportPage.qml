@@ -355,7 +355,7 @@ ScrollView {
             visible: scripture.slides.length > 0
             cellWidth: 210
             grouped: false
-            model: scripture.slides
+            source: scripture.slides
             onVisibleBandChanged: biblePage.askPlanThumbnails()
             delegate: SlidePreviewCard {
                 required property var modelData
@@ -368,9 +368,9 @@ ScrollView {
                 // own pick, no live chip, no present. The card never calls
                 // a presentation verb; previewSlide draws off air.
                 selected: index === scripture.selectedIndex
-                caption: (index + 1) + "  " + modelData.label
+                caption: (index + 1) + "  " + modelData.row.label
                 Accessible.role: Accessible.Button
-                Accessible.name: "Generated slide " + (index + 1) + ": " + modelData.label
+                Accessible.name: "Generated slide " + (index + 1) + ": " + modelData.row.label
                                  + (index === scripture.selectedIndex ? ", selected" : "")
                                  + " — off air"
                 surface.controller: worker
@@ -379,7 +379,7 @@ ScrollView {
                 // Until the worker's own picture of THIS slide arrives, the
                 // card says so with the slide's words — plainly styled, a
                 // text line, never advertised as the final render.
-                surface.placeholder: modelData.lines.join("\n")
+                surface.placeholder: modelData.row.lines.join("\n")
                 surface.placeholderColor: "#c8c8c8"
                 surface.placeholderPixelSize: 11
                 onActivated: scripture.previewSlide(index)

@@ -146,29 +146,26 @@ Rectangle {
     }
     function jumpToCue(at) { showPage.presentCue(at) }
 
-    // Rows within the ask envelope (UI.3c): from the first visible row to one
-    // row past the viewport, deduplicated by slide id — a show listed twice
-    // shares one picture — and capped at the worker's 32-scene batch. When
-    // the cap bites, the window anchors off the BOTTOM edge instead, so a
-    // scrolled-to-end grid never finds its visible rows outside the band.
-    // Pure function of the current geometry, so the offscreen suite can pin
-    // the extent, the cap and the dedupe without a worker on the wire.
+    // Rows within the ask envelope (UI.3c, mapped by CS.7): the collection
+    // answers which SOURCE cues are actually on screen — bottom partial row
+    // and one row of look-ahead included, group padding never — deduplicated
+    // by slide id (a show listed twice shares one picture) and capped at the
+    // worker's 32-scene batch. When the cap bites AT the end of the order the
+    // window anchors off the BOTTOM edge, so a scrolled-to-end grid never
+    // finds its visible rows outside the band. Pure function of the current
+    // geometry, so the offscreen suite can pin the extent, the cap and the
+    // dedupe without a worker on the wire.
     function slideBand() {
         const rows = showPage.cueRows
         if (rows.length === 0) return []
-        const first = Math.max(0, Math.floor(slideGrid.contentY / slideGrid.cellHeight))
-                      * slideGrid.columns
-        const count = Math.min(32, (Math.ceil(slideGrid.height / slideGrid.cellHeight) + 1)
-                                  * slideGrid.columns)
-        const lastVisible = Math.min(rows.length,
-                                     (first / slideGrid.columns
-                                      + Math.ceil(slideGrid.height / slideGrid.cellHeight))
-                                     * slideGrid.columns)
-        const start = lastVisible >= rows.length
-                      ? Math.max(0, rows.length - count) : first
+        let wanted = slideGrid.visibleCueIndexes()
+        if (wanted.length === 0) return []
+        if (wanted.length > 32)
+            wanted = wanted[wanted.length - 1] >= rows.length - 1
+                     ? wanted.slice(wanted.length - 32) : wanted.slice(0, 32)
         const band = []
         const seen = ({})
-        for (let i = start; i < Math.min(rows.length, start + count); ++i) {
+        for (const i of wanted) {
             const id = rows[i].slideId
             if (seen[id]) continue
             seen[id] = true
@@ -208,7 +205,9 @@ Rectangle {
         if (showPage.cueIndex >= showPage.cueRows.length) showPage.cueIndex = -1
         thumbnailAsk.restart()
     }
-    onCueIndexChanged: slideGrid.positionViewAtIndex(cueIndex, GridView.Contain)
+    // Scroll-to-cue follows the cue's MAPPED cell, not a raw model index
+    // (CS.7): with group padding the two are different numbers.
+    onCueIndexChanged: if (cueIndex >= 0) slideGrid.scrollCueIntoView(cueIndex)
     property bool bandAskedFor: false
     Connections {
         target: worker
@@ -328,26 +327,21 @@ Rectangle {
         }
     }
 
-    GridView {
+    SlidePreviewCollection {
         id: slideGrid
         objectName: "operatorSlideGrid"
         anchors.top: heading.bottom
         anchors.bottom: transport.top
         anchors.left: parent.left; anchors.right: parent.right
         anchors.margins: 12
-        clip: true
-        // The cue area never holds focus: a focused view eats PageUp/PageDown
-        // as navigation, and Space/arrows must keep walking cues after any
-        // click inside the grid.
-        keyNavigationEnabled: false
-        readonly property int columns: Math.max(1, Math.floor(width / showPage.thumbCellWidth))
-        cellWidth: width / columns
-        cellHeight: (cellWidth - 12) * 9 / 16 + 48
-        model: showPage.cueRows
-        onContentYChanged: thumbnailAsk.restart()
-        onWidthChanged: thumbnailAsk.restart()
-        onHeightChanged: thumbnailAsk.restart()
-        ScrollBar.vertical: ScrollBar {}
+        // CS.7: the grid groups by running-order ENTRY occurrence. Two
+        // copies of one show are two groups, each starting at column zero,
+        // so the grid shows the order the service will actually walk.
+        grouped: true
+        stretchCells: true
+        cardWidth: showPage.thumbCellWidth
+        source: showPage.cueRows
+        onVisibleBandChanged: thumbnailAsk.restart()
         // A cue tile is a click target, not a focusable button: an
         // AbstractButton would squat the presenter's Space after every
         // click, and clicking a cue must leave the keyboard still walking.
@@ -355,66 +349,86 @@ Rectangle {
         // caption strip are the card's chrome, the picture is the shared
         // surface on the keyed Thumbnail target, and what a click MEANS
         // (present this cue) stays here, on the Show screen.
-        delegate: SlidePreviewCard {
-            id: tile
-            objectName: "operatorCueTile"
+        delegate: Item {
+            id: cell
             required property var modelData
-            required property int index
-            width: slideGrid.cellWidth - 12
-            height: slideGrid.cellHeight - 12
-            readonly property string rowCueKey: modelData.cueKey
-            readonly property bool rowSelected: index === showPage.cueIndex
-            readonly property bool rowLive: modelData.cueKey !== ""
-                                            && modelData.cueKey === worker.liveCueKey
-            readonly property bool rowPending: modelData.cueKey !== ""
-                                               && modelData.cueKey === worker.pendingCueKey
-            selected: rowSelected
-            live: rowLive
-            caption: (modelData.groupStart && showPage.sourceShowId === ""
-                      ? modelData.showName + " \u00b7 " : "")
-                     + (modelData.slideIndex + 1) + "  " + modelData.preview
-            Accessible.role: Accessible.Button
-            Accessible.name: "Cue " + (index + 1) + ": " + modelData.showName
-                             + (modelData.section !== "" ? ", " + modelData.section : "")
-                             + (tile.rowLive ? ", live"
-                                : (tile.rowPending ? ", presenting" : ""))
-            surface.controller: worker
-            surface.target: "thumbnail"
-            surface.key: modelData.slideId
-            surface.pixelsVisible: worker.thumbnailSupported
-            // With no thumbnail lane the operator still sees the words the
-            // cue carries — a text row, plainly styled, never advertised as
-            // the rendered slide.
-            surface.placeholder: modelData.preview
-            surface.placeholderVisible: !worker.thumbnailSupported
-            surface.placeholderColor: "#eeeeee"
-            surface.placeholderPixelSize: 13
+            // Attached delegate properties resolve inside THIS body only,
+            // so the row and the cue index are re-exported for the card.
+            // A filler cell hands the card an empty record: bindings stay
+            // quiet and the whole cell stays invisible and inert.
+            readonly property var emptyRow: ({cueKey: "", showName: "", section: "",
+                                              slideId: "", slideIndex: -1, preview: "",
+                                              groupStart: false})
+            readonly property var row: modelData.filler === true
+                                       ? cell.emptyRow : modelData.row
+            readonly property int cue: modelData.filler === true
+                                       ? -1 : modelData.cueIndex
+            width: slideGrid.cellWidth
+            height: slideGrid.cellHeight
+            // Group padding is INERT: no name, no picture, no clicks, no
+            // context menu, and nothing for a test to find.
+            visible: modelData.filler !== true
+            SlidePreviewCard {
+                id: tile
+                objectName: "operatorCueTile"
+                readonly property var modelData: cell.row
+                readonly property int index: cell.cue
+                width: slideGrid.cellWidth - 12
+                height: slideGrid.cellHeight - 12
+                readonly property string rowCueKey: modelData.cueKey
+                readonly property bool rowSelected: index === showPage.cueIndex
+                readonly property bool rowLive: modelData.cueKey !== ""
+                                                && modelData.cueKey === worker.liveCueKey
+                readonly property bool rowPending: modelData.cueKey !== ""
+                                                   && modelData.cueKey === worker.pendingCueKey
+                selected: rowSelected
+                live: rowLive
+                caption: (modelData.groupStart && showPage.sourceShowId === ""
+                          ? modelData.showName + " \u00b7 " : "")
+                         + (modelData.slideIndex + 1) + "  " + modelData.preview
+                Accessible.role: Accessible.Button
+                Accessible.name: "Cue " + (index + 1) + ": " + modelData.showName
+                                 + (modelData.section !== "" ? ", " + modelData.section : "")
+                                 + (tile.rowLive ? ", live"
+                                    : (tile.rowPending ? ", presenting" : ""))
+                surface.controller: worker
+                surface.target: "thumbnail"
+                surface.key: modelData.slideId
+                surface.pixelsVisible: worker.thumbnailSupported
+                // With no thumbnail lane the operator still sees the words the
+                // cue carries — a text row, plainly styled, never advertised as
+                // the rendered slide.
+                surface.placeholder: modelData.preview
+                surface.placeholderVisible: !worker.thumbnailSupported
+                surface.placeholderColor: "#eeeeee"
+                surface.placeholderPixelSize: 13
 
-            // The acknowledgement chip: only ever shown from the worker's
-            // own state, never from the click that asked.
-            Rectangle {
-                visible: tile.rowLive || tile.rowPending
-                anchors.top: parent.top; anchors.left: parent.left
-                anchors.margins: 5
-                width: chipLabel.implicitWidth + 10; height: 18
-                radius: 3
-                color: tile.rowLive ? "#d24b4b" : "#8a6d1f"
-                Text {
-                    id: chipLabel
-                    anchors.centerIn: parent
-                    font.pixelSize: 10; font.bold: true
-                    color: "#ffffff"
-                    text: tile.rowLive ? "LIVE" : "GO\u2026"
+                // The acknowledgement chip: only ever shown from the worker's
+                // own state, never from the click that asked.
+                Rectangle {
+                    visible: tile.rowLive || tile.rowPending
+                    anchors.top: parent.top; anchors.left: parent.left
+                    anchors.margins: 5
+                    width: chipLabel.implicitWidth + 10; height: 18
+                    radius: 3
+                    color: tile.rowLive ? "#d24b4b" : "#8a6d1f"
+                    Text {
+                        id: chipLabel
+                        anchors.centerIn: parent
+                        font.pixelSize: 10; font.bold: true
+                        color: "#ffffff"
+                        text: tile.rowLive ? "LIVE" : "GO\u2026"
+                    }
                 }
-            }
 
-            onActivated: showPage.presentCue(index)
-            onContextRequested: function (mouseX, mouseY) {
-                // The menu acts on the tile that was clicked, at the moment
-                // it was clicked — capture then.
-                showPage.contextSlideId = tile.modelData.slideId
-                const at = tile.mapToItem(showPage, mouseX, mouseY)
-                cueThemeMenu.popup(at.x, at.y)
+                onActivated: showPage.presentCue(index)
+                onContextRequested: function (mouseX, mouseY) {
+                    // The menu acts on the tile that was clicked, at the moment
+                    // it was clicked — capture then.
+                    showPage.contextSlideId = tile.modelData.slideId
+                    const at = tile.mapToItem(showPage, mouseX, mouseY)
+                    cueThemeMenu.popup(at.x, at.y)
+                }
             }
         }
     }
