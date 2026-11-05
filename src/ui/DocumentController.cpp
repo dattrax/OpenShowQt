@@ -1638,27 +1638,13 @@ bool compileThemeSample(const openshow::domain::Documents& documents,
         (!view.empty() && !fixture.setSlideTextContext(show, slide, view, &error))) {
         return false;
     }
-    // Songs sample: one word to read the colour and face in, one scale line
-    // to read the tracking and the wrap, one blank to read the line box.
-    // Bible sample (task TV.1): the reading shape the context is FOR — a
-    // reference line, running text long enough to wrap at a lectern size,
-    // numerals and Unicode, and a licence-style tail — so the operator sees
-    // the passage's measure, not the song's pangram, under the Bible box.
-    std::vector<std::string> lines;
-    if (view.empty()) {
-        lines = {source->name,
-                 "The quick brown fox jumps over the lazy dog 0123456789",
-                 ""};
-    } else {
-        lines = {source->name + " — 1 Corinthians 1:1-3",
-                 "Paul, a prisoner of Christ Jesus, called to be an apostle — sent not from "
-                 "any human authority, but through Jesus Christ and God the Father who raised "
-                 "him from the dead. 0123456789",
-                 "Grace to you and peace from God our Father and the Lord Jesus Christ. "
-                 "χάρις ὑμῖν καὶ εἰρήνη",
-                 "© OpenShow sample text — placeholder attribution",
-                 ""};
-    }
+    // Stable neutral content makes appearance differences comparable across
+    // themes and views. The normal renderer wraps/fits it to the resolved box.
+    const std::vector<std::string> lines = {
+        "Lorem ipsum dolor sit amet,",
+        "consectetur adipiscing elit.",
+        "Sed do eiusmod tempor incididunt",
+        "ut labore et dolore magna aliqua."};
     if (!fixture.setSlideLines(show, slide, lines)) {
         return false;
     }

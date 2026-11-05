@@ -265,10 +265,29 @@ bool captureControlSets(const QString& prefix) {
     for (const auto size : sizes) {
         window->resize(size);
         for (const QString view : {QString(), QStringLiteral("scripture")}) {
-            if (themes) themes->setProperty("selectedView", view);
-            QTest::qWait(100);
-            check(waitFor([&] { return worker.selectionCurrent() && variedPixels(worker.selectionImage()); }),
+            const bool changedView = themes && themes->property("selectedView").toString() != view;
+            const auto beforeFrames = worker.selectionFrames();
+            if (themes) QMetaObject::invokeMethod(themes, "selectView", Q_ARG(QVariant, view));
+            QTest::qWait(150);  // allow the production 120-ms selection debounce
+            check(waitFor([&] { return worker.selectionCurrent() && variedPixels(worker.selectionImage())
+                && (!changedView || worker.selectionFrames() > beforeFrames); }),
                   "the selected theme view has actual worker pixels");
+            auto* box = window->findChild<QQuickItem*>("themeEditorPlacementBox");
+            const auto handles = namedItems(window->contentItem(), "themeEditorPlacementHandle");
+            check(box && handles.size() == 4, "theme capture has four placement handles");
+            if (box) for (auto* handle : handles) {
+                const auto center = handle->mapToItem(box, QPointF(handle->width() / 2, handle->height() / 2));
+                check((qAbs(center.x()) < 0.01 || qAbs(center.x() - box->width()) < 0.01)
+                      && (qAbs(center.y()) < 0.01 || qAbs(center.y() - box->height()) < 0.01),
+                      "handles track the rectangle through both views, window sizes and display scales");
+            }
+            if (!view.isEmpty()) {
+                auto* browse = window->findChild<QQuickItem*>("themeEditorContextFontBrowse");
+                auto* sizeField = window->findChild<QQuickItem*>("themeEditorContextSize");
+                check(browse && browse->isVisible() && browse->isEnabled()
+                      && sizeField && sizeField->property("text").toString() == "48",
+                      "Bible has the worker font browser and its own size in the actual inspector");
+            }
             save(view.isEmpty() ? "themes" : "themes-bible", size);
         }
     }

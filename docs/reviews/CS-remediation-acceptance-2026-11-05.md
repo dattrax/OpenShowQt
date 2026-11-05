@@ -95,3 +95,13 @@ are excluded, not counted as passed.
 The remaining TV.3, TV.4a/TV.4b, TV.5, TA.1 and physical M7 acceptance gates
 remain open. These repairs do not authorize FO work or replace the operator's
 forthcoming visual bug report.
+
+
+## Operator follow-up evidence
+
+The [TE acceptance record](TE-acceptance-2026-11-05.md) records the subsequent
+handle, navigation, copy, font-presentation and sample repairs. It also corrects
+the capture tour to switch views through the production action and require a
+fresh frame; the earlier direct selectedView assignment was insufficient to
+prove the Bible sample changed. Use that refreshed matrix for theme-view
+comparison evidence.

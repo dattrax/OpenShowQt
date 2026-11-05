@@ -4,31 +4,25 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Theme editor follow-ups: TE.1–TE.4 complete.** Bible family/size/alignment/
-spacing controls now use the same resolved presentation, font browser and
-worker status as Songs. Reset chips preserve sparse context inheritance;
-unchanged inherited family/size focus-out writes nothing. Both views use the
-same solid blue selection outline. Clean workspace/shared-control suites pass
-(2/2, 37.26 s), including view-edit/undo and inherited no-op checks. Local
-executable rebuilt. Advanced per-context typography/effects remain TV.3; this
-repair does not stage that unfinished model work.
+**Theme editor follow-ups TE.1–TE.5 delivered in separate commits.** Handles
+track rectangle corners, Songs/Bible tiles stack below theme names, standing
+help paragraphs are removed, supported font controls share a resolved display
+and browser, and both view samples use the same four Lorem ipsum lines. Both
+views use the same solid selection outline. See the [acceptance record](docs/reviews/TE-acceptance-2026-11-05.md).
 
-TE.3: Removed standing help
-paragraphs from the navigator, canvas and context/transition sections. Kept
-control labels, provenance and actionable status. Clean workspace suite passes
-(35.78 s); local executable rebuilt.
+Final affected suites pass **5/5** (48.54 s): workspace, shared controls,
+UI load, document controller and inspector adapter. The refreshed actual-worker
+tour passes **63 captures** at three sizes/scales, now switching views through
+the real action and waiting for a fresh Selection frame. Corner checks run
+through the matrix; representative images were visually reviewed. The in-tree
+frontend is rebuilt; restart it to load the changes.
 
-TE.2: Songs/Bible view tiles now
-stack vertically directly below the bounded theme list; actions remain at
-the bottom. Vertical geometry and real-click checks pass at all three sizes
-in the clean workspace suite (35.59 s); local executable rebuilt.
-
-TE.1: Placement handles now use their
-rectangle's local coordinates, removing the duplicated origin. New corner
-checks pass after moving/resizing; the clean-source workspace suite passes
-(35.60 s). The in-tree executable is rebuilt. Its workspace suite has one
-pre-existing failure because partial TV.3 adds context colour metadata where
-the old assertion expects no colour field; the handle checks pass there too.
+Advanced per-context typography/effects remain TV.3. Its four partial-file
+diffs are preserved and unstaged; only DocumentController's neutral-sample
+hunk joins these repairs. Clean-source tests exclude that partial work. The
+actual workspace's earlier workspace suite had one existing assertion failure
+because TV.3 adds context colour metadata where the old test expects no colour
+member; its handle checks passed. These fixes do not certify TV.3.
 
 **Operator visual report 1 — preview tiles displaced (2026-11-05): resolved
 by refreshing the in-tree build.** The local `build/src/ui/openshow-ui` and

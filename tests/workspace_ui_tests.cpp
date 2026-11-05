@@ -2970,8 +2970,10 @@ int main(int argc, char** argv) {
                          == QStringLiteral("theme-view-bible-") + typedId
                   && !first.value(QStringLiteral("scene")).toString().isEmpty()
                   && first.value(QStringLiteral("scene")).toString()
-                         != second.value(QStringLiteral("scene")).toString(),
-              "the tiles ask one batch: two keys naming the selection, two distinct fixture scenes");
+                         == docs.themeSampleSceneJson(typedId)
+                  && second.value(QStringLiteral("scene")).toString()
+                         == docs.themeSampleSceneJson(typedId, QStringLiteral("scripture")),
+              "the tiles ask one batch: two keys naming the selection and each view's resolved sample");
         QVariant askPixels;
         QMetaObject::invokeMethod(editorPage, "viewThumbPixels",
                                   Q_RETURN_ARG(QVariant, askPixels));

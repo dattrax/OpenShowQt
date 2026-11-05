@@ -3595,37 +3595,19 @@ void exerciseThemeSampleViews(const std::filesystem::path& root) {
                      == QStringLiteral("scripture"),
           "the Bible view resolves the context's lectern and names the context that answered");
 
-    // The two views' sample PICTURES differ in words as well as boxes: the
-    // song cue carries the pangram, the passage carries a reference,
-    // running text and Unicode — the shapes each view is for.
+    // Stable neutral content in both views; the renderer chooses wrap/fit.
     openshow::scene::Scene cue;
     openshow::scene::Scene passage;
     const QString songJson = docs.themeSampleSceneJson(house);
     const QString bibleJson = docs.themeSampleSceneJson(house, QStringLiteral("scripture"));
-    bool cueIsSong = false;
-    bool passageHasGreek = false;
-    bool passageHasReference = false;
-    if (!songJson.isEmpty() && !bibleJson.isEmpty()
+    const bool parsed = !songJson.isEmpty() && !bibleJson.isEmpty()
             && openshow::scene::fromJson(boost::json::parse(songJson.toStdString()), &cue)
             && openshow::scene::fromJson(boost::json::parse(bibleJson.toStdString()), &passage)
-            && !cue.items.empty() && !passage.items.empty()) {
-        cueIsSong = std::any_of(cue.items[0].lines.begin(), cue.items[0].lines.end(),
-                                [](const std::string& line) {
-                                    return line.find("quick brown fox") != std::string::npos;
-                                });
-        for (const std::string& line : passage.items[0].lines) {
-            if (line.find("χάρις") != std::string::npos) {
-                passageHasGreek = true;
-            }
-            if (line.find("1 Corinthians") != std::string::npos) {
-                passageHasReference = true;
-            }
-        }
-    }
-    check(cueIsSong, "the Songs sample compiles the song cue");
-    check(passageHasGreek && passageHasReference,
-          "the Bible sample compiles the READING — reference, running text and Unicode — "
-          "not the song's pangram");
+            && !cue.items.empty() && !passage.items.empty();
+    check(parsed && cue.items[0].lines.size() == 4
+                  && cue.items[0].lines[0] == "Lorem ipsum dolor sit amet,"
+                  && cue.items[0].lines == passage.items[0].lines,
+          "both views compile the same neutral multiline sample without a theme name or invented reading");
 
     // Chain honesty (review R4): the fixture is a copy of the LIVE records
     // — a floor context reaches a theme that carries none, and a theme
