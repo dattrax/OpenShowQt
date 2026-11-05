@@ -172,6 +172,10 @@ The resulting executables are:
 ./build/src/ui/openshow-ui
 ```
 
+After pulling UI changes, rebuild and restart the frontend. QML is compiled
+into the executable; an already running application keeps its previous UI,
+and a separate test build does not refresh `build/src/ui/openshow-ui`.
+
 The frontend starts the matching worker automatically. The desktop test
 suite includes output-window checks and needs a graphical session. The
 development harness `openshow-worker-dev` carries the standalone drivers

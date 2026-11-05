@@ -4,6 +4,19 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
+**Operator visual report 1 — preview tiles displaced (2026-11-05): resolved
+by refreshing the in-tree build.** The local `build/src/ui/openshow-ui` and
+copied QML still contained the pre-CR.1 `width * aspectRatio` picture height,
+which letterboxed the image far below its card. Source already contained
+CR.1 (`a7bea16`), `width / aspectRatio`. Rebuilt the actual workspace
+`openshow-ui` and `control_set_ui_tests` targets; the focused test passes and
+21 populated real-worker captures pass, including a visually checked Show
+frame at 1680×1020 (`/tmp/openshow-preview-bug1/control.show-1680.png`). Restart
+the application to use the rebuilt executable. This targeted check includes
+the current working tree, but does not certify the unfinished TV.3 work. All
+four existing TV.3 diffs still match their saved baseline and remain unstaged.
+No additional application source repair was needed for this report.
+
 **CR.1–CR.13 complete (2026-11-05), each production fix pushed separately.**
 The [acceptance record](docs/reviews/CS-remediation-acceptance-2026-11-05.md)
 maps the repair commits and replaces the disputed empty-state evidence with
