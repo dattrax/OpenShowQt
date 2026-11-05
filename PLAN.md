@@ -1290,8 +1290,9 @@ separate commit/push per fix. Existing uncommitted TV.3 work is separate.
 | CR.7 | DONE | R7: serve all visible thumbnail demand within batch limits | Full viewport queue sends <=32-scene packets; 80 cold keys finish in three batches without scrolling/repeat loops. Cancellation and 128-entry/8-MiB LRU bounds tested; grouped workspace/shared UI checks pass |
 | CR.8 | DONE | R8: retire hidden Bible preview ownership | Page visibility releases/reacquires session ownership; real-worker delayed lookup and remeasurement leave Edit's exact pixels unchanged, return reacquires Bible, hidden cleanup cannot clear another owner; UI/workspace checks pass |
 | CR.9 | TODO | R9: repeat populated visual and interaction acceptance | Populated five-page captures, actual worker pixels, geometry assertions and focused/full gates recorded |
+| CR.10 | DONE | Repair the assessment's known narrow-header crowding | Status width reserves navigation and fixed actions; shared UI test proves nonoverlap at all three widths in Show/Themes with unsaved state; application build passes |
 
-CR.1–CR.9 must close before relying on the CS.9 visual sign-off or starting FO.
+CR.1–CR.10 must close before relying on the CS.9 visual sign-off or starting FO.
 Remaining TV/TA and M7 gates still apply.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)

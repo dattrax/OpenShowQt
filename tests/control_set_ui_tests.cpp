@@ -313,6 +313,28 @@ SlidePreviewCollection {
                 }
             }
         }
+        collection->setVisible(false);
+    }
+    QQmlComponent barComponent(&engine);
+    barComponent.loadFromModule("OpenShow", "TopBar");
+    std::unique_ptr<QObject> barObject(barComponent.create(&pageContext));
+    auto* bar = qobject_cast<QQuickItem*>(barObject.get());
+    check(bar != nullptr, "the actual header loads with dirty document/output status");
+    if (bar) {
+        bar->setParentItem(window.contentItem());
+        for (const QString mode : {QStringLiteral("show"), QStringLiteral("themes")}) {
+            bar->setProperty("page", mode);
+            for (const int width : {1000, 1380, 1680}) {
+                bar->setWidth(width);
+                QTest::qWait(20);
+                auto* nav = bar->findChild<QQuickItem*>("toolbarNavigation");
+                auto* state = bar->findChild<QQuickItem*>("toolbarOutputState");
+                check(nav && state && nav->x() + nav->width() + 8 <= state->x(),
+                      "output/unsaved status cannot overlap navigation, including Themes at 1000px");
+                check(state && state->x() + state->width() <= bar->width(),
+                      "status, emergency Clear and Settings remain inside the header");
+            }
+        }
     }
     for (const auto& warning : warnings) {
         std::fprintf(stderr, "QML: %s\n", qPrintable(warning));

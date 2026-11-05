@@ -70,6 +70,8 @@ Rectangle {
     }
 
     Row {
+        id: navigation
+        objectName: "toolbarNavigation"
         anchors.left: parent.left
         anchors.leftMargin: 12
         anchors.verticalCenter: parent.verticalCenter
@@ -176,26 +178,38 @@ Rectangle {
     }
 
     Row {
+        id: outputStateRow
+        objectName: "toolbarOutputState"
         anchors.right: parent.right
         anchors.rightMargin: 16
         anchors.verticalCenter: parent.verticalCenter
         spacing: 10
         Text {
+            id: dirtyLabel
             anchors.verticalCenter: parent.verticalCenter
             color: "#d8c07a"; font.pixelSize: 11
             visible: docs.dirty
             text: "Unsaved changes"
         }
         Rectangle {
+            id: outputDot
             anchors.verticalCenter: parent.verticalCenter
             width: 10; height: 10; radius: 5
             color: worker.outputLive ? "#63bd4c" : "#d46767"
         }
         Column {
+            // Reserve navigation and fixed actions first; only the status
+            // sentence elides when Themes also needs its emergency Clear.
+            width: Math.max(0, Math.min(260,
+                bar.width - navigation.x - navigation.width - 12 - 16
+                - (dirtyLabel.visible ? dirtyLabel.width + outputStateRow.spacing : 0)
+                - outputDot.width - outputStateRow.spacing
+                - (audienceClear.visible ? audienceClear.width + outputStateRow.spacing : 0)
+                - settingsTab.width - outputStateRow.spacing))
             spacing: 3
-            Text { color: "#eeeeee"; font.pixelSize: 12; text: "AUDIENCE" }
+            Text { width: parent.width; elide: Text.ElideRight; color: "#eeeeee"; font.pixelSize: 12; text: "AUDIENCE" }
             Text {
-                width: Math.min(260, bar.width * 0.25)
+                width: parent.width
                 elide: Text.ElideRight
                 color: worker.statusNeedsAttention || worker.mediaError !== "" || worker.mediaAudio === "degraded"
                        || worker.mediaAudio === "no-output" ? "#e0a030" : "#cccccc"
@@ -218,6 +232,7 @@ Rectangle {
         // for one mode, because the only page that needs it is the one
         // with nowhere else to reach it.
         ToolTab {
+            id: audienceClear
             objectName: "toolbarAudienceClear"
             Accessible.name: worker.canRestore ? "Restore the audience output"
                                                : "Clear the audience output"
@@ -230,6 +245,7 @@ Rectangle {
         // right beside the audience state rather than among the operator
         // pages: Show and Edit run the service, this configures it.
         ToolTab {
+            id: settingsTab
             objectName: "toolbarTabSettings"
             Accessible.name: "Settings"
             glyph: "\u2699"

@@ -63,6 +63,11 @@ Edit's exact Selection pixels, returning reacquires Bible, and hidden cleanup
 cannot clear another owner. Actual page visibility wiring and workspace checks
 also pass. Full TV.5 import-plan validity remains separately open.
 
+**CR.10 fixes the known header crowding noted below:** audience status takes
+only the gap remaining after navigation and fixed actions. The actual header
+has nonoverlapping navigation/status rectangles at all three required widths,
+including unsaved Themes state. Application build and the focused UI check pass.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated

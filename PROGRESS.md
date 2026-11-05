@@ -4,14 +4,13 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Latest remediation: CR.8 complete; CR.1–CR.7 also delivered.** ScriptureImport
-has explicit previewActive ownership, bound by Bible page visibility. Hidden
-publication cannot request Selection, and hidden Add/Cancel cleanup cannot clear
-another page's preview. Returning re-asks the retained plan. A real-worker test
-holds a lookup past page exit, compares Edit's exact pixels after publication,
-reacquires Bible, repeats with an in-flight remeasurement and checks hidden
-cleanup. Application build and page/UI/workspace checks pass (3/3), with no QML
-warnings; `git diff --check` clean. **Next: CR.9**, populated capture/acceptance.
+**Latest remediation: CR.10 complete; CR.1–CR.8 also delivered.** The known
+1000px header crowding is fixed before final visual acceptance: the audience
+status column now reserves navigation, unsaved state and Clear/Settings first,
+eliding its sentence within the available gap. UI checks prove header groups
+do not overlap at 1000/1380/1680 in both Show and Themes. Application build and
+the warning-free shared UI check pass; `git diff --check` clean.
+**Next: CR.9**, populated worker-backed capture/acceptance and full gates.
 Fix and push each item separately. Verification uses
 `/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes. Only the
 new sample-colour metadata hunk in DocumentController is part of CR.4; its
