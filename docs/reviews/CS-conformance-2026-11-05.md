@@ -31,6 +31,11 @@ fixture now loads real BibleImport data through a scripted provider, verifies
 viewport widths and long-verse wrapping, and clicks a checkbox. Application
 build and the warning-free focused check pass.
 
+**CR.3 is fixed:** the minimum-size Row uses the rail width. The shared UI check
+asserts usable input/reset bounds at both rail widths and performs actual
+type/commit/reset gestures through theme and slide targets. Application build
+and the warning-free focused check pass.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated

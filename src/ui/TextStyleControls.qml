@@ -353,6 +353,7 @@ Column {
         }
         Text { text: "Minimum size (1..4096)"; color: "#b0b0b0"; font.pixelSize: 11 }
         Row {
+            width: parent.width
             spacing: 4
             PanelField {
                 id: minSizeField

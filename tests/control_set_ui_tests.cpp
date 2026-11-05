@@ -14,6 +14,7 @@
 
 #include "BibleImport.h"
 #include "DocumentController.h"
+#include "InspectorAdapter.h"
 #include "ScriptureImport.h"
 #include "WorkerController.h"
 
@@ -161,6 +162,57 @@ int main(int argc, char** argv) {
                               verses[0]->mapToScene(QPointF(12, verses[0]->height() / 2)).toPoint());
             check(bible.verses()[0].toMap().value("selected").toBool() != wasSelected,
                   "the visible verse checkbox changes the real source selection");
+        }
+        page->setVisible(false);
+    }
+
+    docs.createSong("Inspector controls");
+    docs.addSlide();
+    docs.createBlankTheme("Inspector fixture");
+    QString themeId;
+    for (const auto& row : docs.themes()) {
+        if (row.toMap().value("name").toString() == "Inspector fixture")
+            themeId = row.toMap().value("id").toString();
+    }
+    openshow::ui::InspectorAdapter adapter;
+    adapter.setDocument(&docs);
+    for (const QString kind : {QStringLiteral("theme"), QStringLiteral("slide")}) {
+        adapter.setTarget({{"kind", kind}, {"id", themeId}});
+        QQmlComponent styleComponent(&engine);
+        styleComponent.loadFromModule("OpenShow", "TextStyleControls");
+        std::unique_ptr<QObject> styleObject(styleComponent.createWithInitialProperties(
+            {{"adapter", QVariant::fromValue(&adapter)},
+             {"worker", QVariant::fromValue(&worker)}}));
+        auto* style = qobject_cast<QQuickItem*>(styleObject.get());
+        check(style != nullptr, "the shared typography section loads for both write targets");
+        if (!style) continue;
+        style->setParentItem(window.contentItem());
+        window.resize(400, 1000);
+        for (const int width : {232, 282}) {
+            style->setWidth(width);
+            QTest::qWait(30);
+            auto* field = style->findChild<QQuickItem*>("minSizeField");
+            auto* reset = style->findChild<QQuickItem*>("minSizeInherit");
+            check(field && reset, "minimum-size input and reset exist");
+            if (!field || !reset) continue;
+            const QRectF rail(0, 0, width, style->height());
+            const QRectF fieldRect(field->mapToItem(style, QPointF()), field->size());
+            const QRectF resetRect(reset->mapToItem(style, QPointF()), reset->size());
+            check(field->width() >= 100 && rail.contains(fieldRect) && rail.contains(resetRect),
+                  "minimum-size input and reset fit the actual Themes/Edit rail width");
+            QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                              field->mapToScene(QPointF(20, field->height() / 2)).toPoint());
+            QTest::keyClick(&window, Qt::Key_A, Qt::ControlModifier);
+            QTest::keyClick(&window, Qt::Key_2);
+            QTest::keyClick(&window, Qt::Key_4);
+            QTest::keyClick(&window, Qt::Key_Tab);
+            check(adapter.fieldState("minFontSize").value("value").toDouble() == 24,
+                  "typing in the visible minimum-size field commits to its host target");
+            QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                              reset->mapToScene(QPointF(reset->width() / 2,
+                                                        reset->height() / 2)).toPoint());
+            check(!adapter.fieldState("minFontSize").value("isSet").toBool(),
+                  "the visible minimum-size Inherit button removes the own value");
         }
     }
     for (const auto& warning : warnings) {

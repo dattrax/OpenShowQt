@@ -1283,7 +1283,7 @@ separate commit/push per fix. Existing uncommitted TV.3 work is separate.
 |---|---|---|---|
 | CR.1 | DONE | R1: correct shared card aspect and caption containment | `control_set_ui_tests` checks picture/caption bounds and aspect at six cell sizes; clean-snapshot application build, workspace and UI-load checks pass |
 | CR.2 | DONE | R2: repair populated Bible verse delegate sizing | `control_set_ui_tests` loads real scripted verses, checks viewport widths/long-verse wrapping and clicks a selection; application build and warning-free check pass |
-| CR.3 | TODO | R3: give the minimum-size row a usable layout | Positive input width, reachable reset and real gestures in both inspector hosts |
+| CR.3 | DONE | R3: give the minimum-size row a usable layout | Shared UI check asserts positive/contained controls at both rail widths and types/resets through theme and slide adapters; application build passes |
 | CR.4 | TODO | R4: display the resolved inherited appearance | Inspector values agree with compiled samples under nontrivial Default overrides |
 | CR.5 | TODO | R5: make Bible lookup responsive | Reference, translation, Lookup and Retry remain reachable at 1000×680 |
 | CR.6 | TODO | R6: map collections using actual cell geometry | Mapped rectangles and visible bands match physical GridView columns |

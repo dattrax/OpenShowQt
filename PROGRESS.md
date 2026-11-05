@@ -4,12 +4,12 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Latest remediation: CR.2 complete; CR.1 also delivered.** The verse ListView
-now declares the QML id its delegates use. `control_set_ui_tests` drives a real
-BibleImport with synthetic provider markup, checks populated delegate widths
-and long-verse wrapping, and clicks a checkbox to verify source selection.
+**Latest remediation: CR.3 complete; CR.1–CR.2 also delivered.** The minimum-size
+row now takes its inspector's width. `control_set_ui_tests` verifies positive,
+contained input/reset rectangles at Themes/Edit rail widths, then types and
+resets values through both theme and slide adapters using pointer/keyboard input.
 Clean-snapshot application/test build and the focused check pass without QML
-warnings; `git diff --check` clean. **Next: CR.3**, the minimum-size row.
+warnings; `git diff --check` clean. **Next: CR.4**, resolved inspector inheritance.
 Fix and push each item separately. Verification uses
 `/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes.
 
