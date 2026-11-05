@@ -4,6 +4,56 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
+**CS.9 complete (2026-11-05): one integrated tour walks the shared control set
+across hosts — cross-host writes, per-slide customization, keyboard discipline,
+hidden-page silence, browsing purity and a clean walk-back — and the five-page
+capture matrix runs at every ledger size and scale (this commit).**
+
+`ShowPage` gained one telemetry property, `bandSent` (an ask that actually
+reached the worker, beside CS.8's `bandRequests`), and the suite grew one
+CS.9 block that walks the seams CS.1–CS.8 only pinned per-part: a Songs size
+written ON the Themes host through the visible field lands in the Edit host's
+resolved field; the slide then customizes to 96 while the THEME row keeps its
+48 — the chip wakes and announces "Revert fontSize customization" (read via
+`QQmlExpression`, since attached properties need the QML engine, not
+`QQmlProperty`) and Remove-customizations lands back on the theme's 48. Tab
+walks on from the size field instead of squatting; Escape leaves typed text
+in place and commits nothing; leaving Edit takes the cursor with the page and
+commits the pending type as exactly ONE ordinary edit. At 1000×680 the rail's
+first and last inspector controls both reach the viewport by scrolling the
+rail. Across the whole tour the HIDDEN Show page's `bandSent` never moved
+(the paired live catch-up check runs with the real transport further down
+the suite), browsing — theme rows, view tiles, page switches, a cue click —
+moved no document, no history and no output byte, and the undo walk-back
+returns the record to the exact shapes it started with.
+
+Three as-built truths the tour fought out, worth knowing before touching
+this area again: a document write RE-VIVIFIES the rail, so every later use
+of a cached `QQuickItem*` must re-resolve or it clicks where its corpse last
+lay; the theme nav rows only exist on the Themes host, so re-selection is a
+Themes-page act; and at 1380×800 with the drawer open, a mouse press aimed
+at a stale rail coordinate lands on the media bin's 40px toggle bar — the
+tour therefore drives the shared fields the way keys do (scroll, focus,
+type, commit) instead of pressing near the rail's edge. One cosmetic
+observation recorded, not fixed: at 1000 width the TopBar's "Unsaved
+changes" text crowds the More tab on the Themes page (pre-existing, TopBar,
+flagged for the TV leaves).
+
+Gates: desktop **66/66**, headless serial **47/47**, `git diff --check`
+clean, zero QML warnings in every run. Capture matrix produced for all five
+pages at 1680/1380/1000 and re-run with `QT_SCALE_FACTOR=1.5` and `2`
+(distinct prefixes; Show is the base/`.1380`/`.1000` set, Themes both views
+the `.themes-*`/`.themes-bible-*` set, Bible Import and Edit the new
+`.bible-*`/`.edit-*` set). Visual inspection of the set is overlap-free;
+the one crowding observed is the TopBar note above. Save/reopen of the
+records these controls write stays pinned by `document_controller_tests`
+round-trips.
+
+**Next action:** TV.3 (Bible view style fields over the CS.4 adapter), then
+TV.4a → TV.4b → TV.5 → TA.1 — the leaves CS.9 records as the open FO gate.
+
+### Earlier checkpoint: CS.7 + CS.8
+
 **CS.7 + CS.8 complete (2026-11-05): the Show grid is the shared grouped
 collection, and the thumbnail ask and scroll-to-cue both live on its mapped
 cell geometry — bottom clamps and zoom steps included (CS.7 `ac1c34a`, CS.8

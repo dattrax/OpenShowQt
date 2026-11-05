@@ -37,6 +37,11 @@ Rectangle {
     // Scroll, zoom and document churn all push through that one timer, so a
     // burst costs one run rather than one per tick — the UI.3c suite pins it.
     property int bandRequests: 0
+    // …and how many asks actually reached the worker: every run that was
+    // standing down (page hidden, no thumbnail support) is counted by the
+    // line above but never lands here. CS.9 pins the seam — a hidden Show
+    // page must never ask, and the page catches up the moment it is shown.
+    property int bandSent: 0
 
     readonly property var cueRows: {
         showPage.cueRowsTick
@@ -192,6 +197,7 @@ Rectangle {
         const rows = showPage.cueRows
         if (rows.length === 0) { worker.clearThumbnails(); return }
         const px = showPage.bandPixels()
+        ++showPage.bandSent
         worker.requestThumbnails(showPage.slideBand(), px.w, px.h)
     }
     Timer { id: thumbnailAsk; interval: 80; onTriggered: showPage.requestSlideBand() }

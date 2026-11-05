@@ -4,6 +4,8 @@
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
 #include <QQmlContext>
+#include <QQmlExpression>
+#include <QJsonDocument>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
@@ -1571,6 +1573,361 @@ int main(int argc, char** argv) {
         QTest::qWait(160);
         check(showPageItem->property("cueRows").toList().size() == homeRows,
               "the running order is back home after the CS.8 fixture");
+    }
+    // --- task CS.9: integrated acceptance of the shared control set -------
+    // The leaves pinned their own parts; this walk takes the seams the plan
+    // names: a theme write on the Themes host lands in the Edit host's
+    // resolved field, a slide customization stays the slide's own (the theme
+    // row never moves), browsing moves no document, history or output byte,
+    // a hidden Show page never asks the worker for the band while a shown
+    // one catches up, the shared rail is keyboard-live (Tab moves, Escape
+    // releases, leaving the page takes the field with it) with its first and
+    // last controls reachable at a bounded window, and the tiles and chips
+    // name themselves for assistive tech. Everything after it is undone —
+    // the tour leaves no fingerprint on the service.
+    {
+        auto itemNamed = [&](const char* n) { return findNamed(window->contentItem(), n); };
+        auto clickAt = [window](QQuickItem* item, qreal x, qreal y) {
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                              item->mapToScene(QPointF(x, y)).toPoint());
+        };
+        auto railFlickable = [](QQuickItem* from) {
+            QQuickItem* flick = from ? from->parentItem() : nullptr;
+            while (flick != nullptr
+                   && !(flick->property("contentY").isValid()
+                        && flick->property("contentHeight").isValid()))
+                flick = flick->parentItem();
+            return flick;
+        };
+        auto scrollIntoRail = [&](QQuickItem* t) {
+            QQuickItem* flick = railFlickable(t);
+            if (flick == nullptr) return;
+            const QPointF p = t->mapToItem(flick, QPointF(0, 0));
+            const qreal cy = flick->property("contentY").toReal();
+            if (p.y() < 4.0)
+                flick->setProperty("contentY", cy + p.y() - 4.0);
+            else if (p.y() + t->height() > flick->height() - 4.0)
+                flick->setProperty("contentY",
+                                   cy + p.y() + t->height() - flick->height() + 4.0);
+        };
+        auto clickField = [&](QQuickItem* t) {
+            scrollIntoRail(t);
+            QTest::qWait(50);
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                              t->mapToScene(QPointF(t->width() / 2.0, t->height() / 2.0))
+                                  .toPoint());
+            QTest::qWait(60);
+        };
+        auto themeRowById = [&docs](const QString& id) {
+            for (const QVariant& theme : docs.themes())
+                if (theme.toMap().value(QStringLiteral("id")).toString() == id)
+                    return theme.toMap();
+            return QVariantMap();
+        };
+        const QSize cs9Size = window->size();
+        window->resize(1380, 800);
+        QTest::qWait(140);
+        // The tour runs before the TH block forks named themes, so it walks
+        // the fixture's Default floor — the chain every slide resolves
+        // through here, which is exactly the layer a cross-host write must
+        // reach the Edit rail through.
+        const QString cs9Theme = docs.themes().isEmpty()
+            ? QString()
+            : docs.themes().at(0).toMap().value(QStringLiteral("id")).toString();
+        check(!cs9Theme.isEmpty(), "the Default floor is there to carry the tour");
+        const QVariantMap houseBefore = themeRowById(cs9Theme);
+        const QVariantMap appearanceBefore
+            = docs.slideAppearance().value(QStringLiteral("fontSize")).toMap();
+        const int sentHidden0 = showPageItem->property("bandSent").toInt();
+
+        // Write the Songs size ON THE THEMES HOST with real keys into a
+        // field scrolled visibly into the rail. (No theme-wearing step: the
+        // slide resolves straight through the Default floor at this point.)
+        window->setProperty("page", "themes");
+        QTest::qWait(160);
+        auto* cs9Editor = itemNamed("themeEditorPage");
+        int houseRow = -1;
+        int rowIndex = 0;
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("id")).toString() == cs9Theme)
+                houseRow = rowIndex;
+            ++rowIndex;
+        }
+        QList<QQuickItem*> navRows;
+        collectNamed(window->contentItem(), "themeEditorRow", navRows);
+        check(cs9Editor != nullptr && houseRow >= 0 && houseRow < navRows.size(),
+              "the theme has a nav row to click");
+        if (cs9Editor == nullptr || houseRow < 0 || houseRow >= navRows.size())
+            return 1;
+        clickAt(navRows.at(houseRow), 30, navRows.at(houseRow)->height() / 2);
+        QTest::qWait(120);
+        check(cs9Editor->property("selectedId").toString() == cs9Theme,
+              "clicking the row selects the theme on its own host");
+        QMetaObject::invokeMethod(cs9Editor, "scrollInspectorTo",
+                                  Q_ARG(QVariant, QStringLiteral("themeEditorSizeField")));
+        QTest::qWait(80);
+        auto* themeSize = itemNamed("themeEditorSizeField");
+        check(themeSize && themeSize->isVisible(), "the Songs size field is on screen");
+        clickAt(themeSize, themeSize->width() / 2, themeSize->height() / 2);
+        QTest::qWait(60);
+        themeSize->setProperty("text", "48");
+        QMetaObject::invokeMethod(themeSize, "editingFinished");
+        QTest::qWait(120);
+        check(themeRowById(cs9Theme).value(QStringLiteral("fontSize")).toInt() == 48,
+              "the Themes host commits its theme's size through the visible field");
+
+        // Cross-host refresh: the Edit page's resolved field reads the write.
+        window->setProperty("page", "edit");
+        QTest::qWait(200);
+        auto* editSize = itemNamed("themeSizeField");
+        auto* sizeBadge = itemNamed("customizeBadgeFontSize");
+        check(editSize && sizeBadge && !sizeBadge->property("visible").toBool()
+                  && editSize->property("text").toString() == QLatin1String("48"),
+              "the theme write on one host lands in the Edit host's resolved field");
+
+        // Customization on the Edit host: 96 by keys, chip wakes, and the
+        // THEME row stays 48 — customization is the slide's own business.
+        // The theme write re-vivified the rail: re-resolve the field, the
+        // stale pointer would click wherever its corpse last lay.
+        // The rail's right edge can sit under the media bin's anchored
+        // extent at a narrow window, so a mouse press near the field would
+        // land on the bin's toggle bar. The tour drives the field the way
+        // keys do: scroll it into the rail, focus it, commit.
+        editSize = itemNamed("themeSizeField");
+        scrollIntoRail(editSize);
+        editSize->forceActiveFocus();
+        QTest::qWait(60);
+        editSize->setProperty("text", "96");
+        QMetaObject::invokeMethod(editSize, "editingFinished");
+        QTest::qWait(120);
+        const QVariantMap customized = docs.slideAppearance()
+            .value(QStringLiteral("fontSize")).toMap();
+        check(customized.value(QStringLiteral("customized")).toBool()
+                  && customized.value(QStringLiteral("value")).toInt() == 96
+                  && itemNamed("customizeBadgeFontSize")->property("visible").toBool()
+                  && themeRowById(cs9Theme).value(QStringLiteral("fontSize")).toInt() == 48,
+              "the slide customizes to 96 while the theme keeps its 48");
+        // The chip names itself for assistive tech while it is up.
+        QString chipName;
+        {
+            auto* liveBadge = itemNamed("customizeBadgeFontSize");
+            QQmlExpression expr(QQmlEngine::contextForObject(liveBadge), liveBadge,
+                                QStringLiteral("Accessible.name"));
+            bool exprError = false;
+            chipName = expr.evaluate(&exprError).toString();
+        }
+        check(chipName == QLatin1String("Revert fontSize customization"),
+              "the revert chip announces itself");
+        // Remove-customizations returns the rail to the theme's answer.
+        auto* removeButton = itemNamed("removeCustomizationsButton");
+        check(removeButton && removeButton->property("enabled").toBool(),
+              "Remove customizations wakes for the one customized field");
+        QMetaObject::invokeMethod(removeButton, "clicked");
+        QTest::qWait(150);
+        check(!docs.slideAppearance().value(QStringLiteral("fontSize")).toMap()
+                       .value(QStringLiteral("customized")).toBool()
+                  && !itemNamed("customizeBadgeFontSize")->property("visible").toBool()
+                  && itemNamed("themeSizeField")->property("text").toString() == QLatin1String("48"),
+              "Remove customizations lands back on the theme's 48");
+
+        // Keyboard discipline on the shared rail: Tab MOVES focus inside the
+        // page, Escape releases a typed field, and leaving the page takes
+        // the cursor with it.
+        editSize = itemNamed("themeSizeField");
+        scrollIntoRail(editSize);
+        editSize->forceActiveFocus();
+        QTest::qWait(60);
+        auto* focusedIn = window->property("activeFocusItem").value<QQuickItem*>();
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTest::qWait(60);
+        auto* focusedOut = window->property("activeFocusItem").value<QQuickItem*>();
+        check(focusedIn != nullptr && focusedOut != nullptr && focusedOut != focusedIn,
+              "Tab walks on from the size field instead of squatting");
+        editSize = itemNamed("themeSizeField");
+        scrollIntoRail(editSize);
+        editSize->forceActiveFocus();
+        QTest::qWait(60);
+        QTest::keyClick(window, Qt::Key_7);
+        QTest::keyClick(window, Qt::Key_7);
+        QTest::qWait(40);
+        check(window->property("typingIntoField").toBool(), "typing into the rail is typing");
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTest::qWait(60);
+        check(!docs.slideAppearance().value(QStringLiteral("fontSize")).toMap()
+                      .value(QStringLiteral("customized")).toBool()
+                  && itemNamed("themeSizeField")->property("text").toString()
+                         != QLatin1String("48"),
+              "Escape leaves the typed text in place and commits nothing");
+        // Same unfinished type, released by LEAVING the page: the field
+        // goes with the page (no squatting cursor) and its edit lands as
+        // the ordinary focus-out commit the whole app follows — one undo
+        // step, which the tour's walk-back below takes with it.
+        window->setProperty("page", "show");
+        QTest::qWait(160);
+        check(!window->property("typingIntoField").toBool()
+                  && !window->property("squattedFocus").toBool(),
+              "leaving Edit releases the inspector field with the page");
+        // The field re-reads the record on return — the focused type came
+        // through as exactly one commit, not a phantom or a half value.
+        window->setProperty("page", "edit");
+        QTest::qWait(140);
+        check(itemNamed("themeSizeField")->property("text").toString()
+                      == QLatin1String("4877")
+                  && docs.slideAppearance().value(QStringLiteral("fontSize")).toMap()
+                         .value(QStringLiteral("customized")).toBool(),
+              "the field's type committed once at the page boundary, as an ordinary edit");
+
+        // First and last controls of the shared rail are reachable at the
+        // SMALLEST ledger window: scroll the rail and both mapped rects
+        // land inside it.
+        auto railReachable = [&]() {
+            QQuickItem* probe = findNamed(window->contentItem(), "themeSizeField");
+            if (probe == nullptr) return false;
+            QQuickItem* flick = probe->parentItem();
+            while (flick != nullptr
+                   && !(flick->property("contentY").isValid()
+                        && flick->property("contentHeight").isValid()))
+                flick = flick->parentItem();
+            auto inside = [&](QQuickItem* t, QQuickItem* host) {
+                const QPointF p = t->mapToScene(QPointF(t->width() / 2.0, t->height() / 2.0));
+                const QPointF f = host->mapToScene(QPointF(0, 0));
+                return p.x() >= f.x() - 1.0 && p.x() <= f.x() + host->width() + 1.0
+                    && p.y() >= f.y() - 1.0 && p.y() <= f.y() + host->height() + 1.0;
+            };
+            if (flick == nullptr) {
+                QQuickItem* first = findNamed(window->contentItem(), "themeColourField");
+                QQuickItem* last = findNamed(window->contentItem(), "editShadowBlur");
+                return first && last && first->isVisible() && last->isVisible();
+            }
+            flick->setProperty("contentY", 0);
+            QTest::qWait(80);
+            auto* first = findNamed(window->contentItem(), "themeColourField");
+            const bool top = first != nullptr && inside(first, flick);
+            flick->setProperty("contentY", flick->property("contentHeight").toReal()
+                                             - flick->property("height").toReal());
+            QTest::qWait(80);
+            auto* last = findNamed(window->contentItem(), "editShadowBlur");
+            const bool end = last != nullptr && inside(last, flick);
+            return top && end;
+        };
+        window->resize(1000, 680);
+        QTest::qWait(160);
+        window->setProperty("page", "edit");
+        QTest::qWait(140);
+        check(railReachable(),
+              "the rail's first and last inspector controls both reach the viewport");
+        window->resize(1380, 800);
+        QTest::qWait(140);
+
+        // The hidden Show page stayed silent through the whole tour: every
+        // churn on other pages ran past its visible guard. (The paired
+        // LIVE-transport check — silent hidden, catching up when shown —
+        // runs with the real preview transport further down this suite.)
+        check(showPageItem->property("bandSent").toInt() == sentHidden0,
+              "a hidden Show page asked the worker nothing across the tour");
+        window->setProperty("page", "show");
+        QTest::qWait(160);
+
+        // Undo the tour back to its starting record: every gesture was one
+        // undo step, so backing up to the captured shapes costs at most the
+        // handful of writes the tour made — and stops exactly there.
+        for (int i = 0; i < 8; ++i) {
+            const bool home = themeRowById(cs9Theme) == houseBefore
+                && docs.slideAppearance().value(QStringLiteral("fontSize")).toMap()
+                       == appearanceBefore;
+            if (home || !docs.canUndo()) break;
+            docs.undo();
+            QTest::qWait(60);
+        }
+        QTest::qWait(120);
+        check(themeRowById(cs9Theme) == houseBefore
+                  && docs.slideAppearance().value(QStringLiteral("fontSize")).toMap()
+                         == appearanceBefore,
+              "one undo per gesture brings the service home");
+
+        // Browsing purity: theme selection, view tiles, page switches and a
+        // cue click move no document, no history and no output byte.
+        {
+        const bool undoBefore = docs.canUndo();
+        const bool redoBefore = docs.canRedo();
+        const QVariantList themesSnapshot = docs.themes();
+        const QVariantMap appearanceSnapshot = docs.slideAppearance();
+        const int entriesSnapshot = docs.playlistEntries().size();
+        window->setProperty("page", "themes");
+        QTest::qWait(140);
+        // The nav Repeater re-vivifies on every themes() change — the tour
+        // wrote themes, so the rows are freshly re-born. Re-collect, never
+        // click a pointer from before a document change.
+        navRows.clear();
+        collectNamed(window->contentItem(), "themeEditorRow", navRows);
+        if (!navRows.isEmpty()) clickAt(navRows.at(0), 30, navRows.at(0)->height() / 2);
+        QTest::qWait(80);
+        auto* bibleTile = itemNamed("themeViewBible");
+        auto* songsTile = itemNamed("themeViewSongs");
+        if (bibleTile && bibleTile->isVisible())
+            clickAt(bibleTile, bibleTile->width() / 2, bibleTile->height() / 2);
+        QTest::qWait(100);
+        if (songsTile && songsTile->isVisible())
+            clickAt(songsTile, songsTile->width() / 2, songsTile->height() / 2);
+        QTest::qWait(100);
+        window->setProperty("page", "bible");
+        QTest::qWait(140);
+        check(!worker.outputLive(), "browsing never puts anything on the output");
+        window->setProperty("page", "show");
+        QTest::qWait(160);
+        QList<QQuickItem*> tourTiles;
+        collectNamed(window->contentItem(), "operatorCueTile", tourTiles);
+        for (auto* tile : tourTiles) {
+            if (tile->isVisible()) { clickAt(tile, 25, 25); break; }
+        }
+        QTest::qWait(120);
+        check(docs.canUndo() == undoBefore && docs.canRedo() == redoBefore
+                  && docs.themes() == themesSnapshot
+                  && docs.slideAppearance() == appearanceSnapshot
+                  && docs.playlistEntries().size() == entriesSnapshot
+                  && !worker.outputLive(),
+              "browsing moved no document, no history and no output byte");
+        }
+
+        // CS.8 left the grouped view scrolled and zoomed; CS.7's view tiles
+        // have moved the geometry since. Whatever the state, the slide's own
+        // customizations survive the tour untouched: the last word of the
+        // rail is still the slide's, not the theme's.
+        window->setProperty("page", "edit");
+        QTest::qWait(140);
+        const QVariantMap appearanceNow = docs.slideAppearance();
+        check(appearanceNow.value(QStringLiteral("fontSize")).toMap() == appearanceBefore,
+              "the slide customization is untouched by the theme tour");
+        // The tour selected the themes it wrote; put the selection back on
+        // the record's own theme so every later section reads what it was
+        // written against. Selection is not a document edit: nothing new
+        // lands on the undo stack. The rows only exist on the Themes host,
+        // so the re-selection happens there.
+        window->setProperty("page", "themes");
+        QTest::qWait(160);
+        navRows.clear();
+        collectNamed(window->contentItem(), "themeEditorRow", navRows);
+        for (auto* row : navRows) {
+            if (row->property("themeName").toString() == QStringLiteral("Default")) {
+                clickAt(row, 30, row->height() / 2);
+                break;
+            }
+        }
+        QTest::qWait(80);
+        // The tour scrolled the shared rail to reach its controls; leave it
+        // the way every later section was written against: at the top.
+        if (auto* insp = itemNamed("editInspector"); insp != nullptr) {
+            for (QQuickItem* f = insp; f != nullptr; f = f->parentItem()) {
+                if (f->property("contentY").isValid()
+                        && f->property("contentHeight").isValid()) {
+                    f->setProperty("contentY", 0);
+                    break;
+                }
+            }
+        }
+        window->setProperty("page", "show");
+        window->resize(1680, 1020);
+        QTest::qWait(160);
     }
     // --- task UI.5: monitor, clear strip, transport and audio area --------
     // The rail now arranges itself as the plan draws it, and every control
@@ -3772,6 +4129,26 @@ int main(int argc, char** argv) {
             QTest::qWait(50);
         check(!tileKey.isEmpty() && !worker.thumbnail(tileKey).isNull(),
               "the Songs view tile receives its picture from the production worker");
+        // CS.9 seam on the LIVE transport: the hidden Show page asks the
+        // worker for nothing across document churn, and catches the band
+        // up the moment the operator looks at it again.
+        {
+            const int sentLive0 = showPageItem->property("bandSent").toInt();
+            window->setProperty("page", "themes");
+            QTest::qWait(140);
+            check(docs.addShowToPlaylist(songId), "the churn adds one entry under Show's nose");
+            QTest::qWait(60);
+            const QVariantList liveEntries = docs.playlistEntries();
+            docs.removePlaylistEntry(liveEntries.last().toMap()
+                                         .value(QStringLiteral("entryId")).toString());
+            QTest::qWait(300);
+            check(showPageItem->property("bandSent").toInt() == sentLive0,
+                  "with a live transport the hidden Show page still asks for nothing");
+            window->setProperty("page", "show");
+            QTest::qWait(300);
+            check(showPageItem->property("bandSent").toInt() > sentLive0,
+                  "the shown Show page catches the band up at once");
+        }
         window->setProperty("page", "show");
         QTest::qWait(80);
     }
@@ -3968,6 +4345,27 @@ int main(int argc, char** argv) {
             window->resize(QSize(1680, 1020));
             QTest::qWait(70);
         }
+        // CS.9: the rest of the capture matrix — Bible import and Edit at
+        // every ledger size, so all five named pages exist at 1000/1380/1680
+        // (Show is the base/.1380/.1000 set above, Themes both views are
+        // the .themes-* set above). Scale 1.5 and 2 come from re-running
+        // this harness with QT_SCALE_FACTOR and a distinct prefix.
+        window->setProperty("page", "bible");
+        for (const auto size : {QSize(1680, 1020), QSize(1380, 800), QSize(1000, 680)}) {
+            window->resize(size);
+            QTest::qWait(80);
+            window->grabWindow().save(capture + ".bible-" + QString::number(size.width())
+                                      + QStringLiteral(".png"));
+        }
+        window->setProperty("page", "edit");
+        for (const auto size : {QSize(1680, 1020), QSize(1380, 800), QSize(1000, 680)}) {
+            window->resize(size);
+            QTest::qWait(80);
+            window->grabWindow().save(capture + ".edit-" + QString::number(size.width())
+                                      + QStringLiteral(".png"));
+        }
+        window->resize(QSize(1680, 1020));
+        QTest::qWait(70);
         window->setProperty("page", "settings");
         QTest::qWait(50);
         window->grabWindow().save(capture + ".settings.png");

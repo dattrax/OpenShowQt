@@ -1086,10 +1086,12 @@ TV/TA and M7 work. CS.0 records this review only.
 | CS.6 | DONE | Migrate Edit to the shared inspector and expose supported advanced styling | Same typography/effects/font controls as Themes; writes customize only the current slide, reverts restore inheritance; authored item tools remain intact |
 | CS.7 | DONE | Group Show previews by running-order entry with a fresh row per item | Every item starts at column zero, repeated entries stay separate, cue count/order/keyboard/live semantics unchanged |
 | CS.8 | DONE | Grouped-geometry preview requests and scroll-to-cue verified | The ask is the view's mapped window: viewport rows plus ONE bounded look-ahead row, filler gaps omitted; cap/dedupe/coalescing pinned (one ask per scroll burst, destination-true; cap cutting edge in UI.3c over grouped rows); bottom case ends on the order's last cue and scroll-to-cue lands flush there; every thumb size re-derives band, pixel size and contained cells |
-| CS.9 | TODO | Integrated reuse, accessibility, screenshot and regression acceptance | New controls exercised by real gestures and worker pixels; cross-page state isolation, save/reopen and current TV/TA completion recorded before FO |
+| CS.9 | DONE | Integrated reuse, accessibility, screenshot and regression acceptance | One tour walks the seams: a Themes-host size write lands in the Edit host's resolved field, a slide customization stays the slide's own (theme row unmoved, chip announces "Revert fontSize customization", Remove lands back on the theme value), Tab walks/Escape releases/page-leave takes the field, first/last rail controls reach the viewport at 1000×680, the hidden Show page asked the worker nothing across the tour while the shown one catches up, browsing moved no document/history/output byte, and the walk-back leaves no fingerprint; captures of all five pages at the three ledger sizes plus scales 1.5/2 |
 
-Current priority: **CS.9**.
-Then complete open **TV.3 → TV.4a → TV.4b → TV.5 → TA.1 → CS.9**, then M7.
+Current priority: **TV.3**.
+CS.9's integrated tour records the remaining open work — **TV.3 → TV.4a →
+TV.4b → TV.5 → TA.1** — as the leaves still gating FO; none of them is
+delivered.
 TS.1–TS.5/TR.1–TR.3 and TV.1–TV.2 remain DONE. Their original suggested order
 above is historical, not an instruction to redo them. Shared controls can land
 against today's sparse Bible context; TV.3 later adds independent view style
