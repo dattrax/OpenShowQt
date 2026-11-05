@@ -68,6 +68,12 @@ only the gap remaining after navigation and fixed actions. The actual header
 has nonoverlapping navigation/status rectangles at all three required widths,
 including unsaved Themes state. Application build and the focused UI check pass.
 
+**CR.11 fixes an additional defect exposed by populated acceptance captures:**
+the verse CheckBox had an empty text property and a custom label with no indicator
+padding, so Qt centred the indicator over the words. Real control text plus
+left/right indicator padding restores separation. The actual populated UI test
+checks this geometry, wrapping and selection; application build/check pass.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated

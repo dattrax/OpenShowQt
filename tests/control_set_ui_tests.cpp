@@ -159,6 +159,11 @@ int main(int argc, char** argv) {
         for (auto* verse : verses) {
             check(list && std::abs(verse->width() - list->width()) < 1,
                   "populated verse controls use the list viewport width");
+            auto* indicator = verse->property("indicator").value<QQuickItem*>();
+            auto* label = verse->property("contentItem").value<QQuickItem*>();
+            check(indicator && label && label->x() + label->property("leftPadding").toDouble()
+                      >= indicator->x() + indicator->width(),
+                  "the checkbox indicator stays left of wrapped verse text instead of covering it");
         }
         if (verses.size() == 2) {
             check(verses[1]->height() > verses[0]->height(),

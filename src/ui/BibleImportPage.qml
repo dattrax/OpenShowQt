@@ -305,16 +305,22 @@ ScrollView {
             // what the slide will LOOK like is the worker's cards below,
             // never this row.
             delegate: CheckBox {
+                id: verseCheck
                 required property var modelData
                 required property int index
                 objectName: "bibleVerseCheck"
+                // Qt positions its indicator from the control's text, even
+                // with a custom wrapping label. An empty text centres it.
+                text: modelData.reference + "  " + modelData.text
                 width: bibleVerseList.width
                 height: Math.max(verseRow.implicitHeight + 8, 30)
                 font.pixelSize: 12
                 checked: modelData.selected === true
                 contentItem: Label {
                     id: verseRow
-                    text: modelData.reference + "  " + modelData.text
+                    leftPadding: !verseCheck.mirrored ? verseCheck.indicator.width + verseCheck.spacing : 0
+                    rightPadding: verseCheck.mirrored ? verseCheck.indicator.width + verseCheck.spacing : 0
+                    text: parent.text
                     font: parent.font
                     color: parent.checked ? "#8ec9f5" : "#cccccc"
                     wrapMode: Text.WordWrap

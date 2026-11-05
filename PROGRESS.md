@@ -4,13 +4,13 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Latest remediation: CR.10 complete; CR.1–CR.8 also delivered.** The known
-1000px header crowding is fixed before final visual acceptance: the audience
-status column now reserves navigation, unsaved state and Clear/Settings first,
-eliding its sentence within the available gap. UI checks prove header groups
-do not overlap at 1000/1380/1680 in both Show and Themes. Application build and
-the warning-free shared UI check pass; `git diff --check` clean.
-**Next: CR.9**, populated worker-backed capture/acceptance and full gates.
+**Latest remediation: CR.11 complete; CR.1–CR.8 and CR.10 also delivered.** The
+new populated worker captures exposed centred verse indicators covering words.
+Checkboxes now supply their real text and reserve indicator padding in the custom
+wrapping label (mirrored layouts handled too). The populated UI regression checks
+indicator/text separation as well as wrapping and click behavior. Application
+build and focused UI check pass; `git diff --check` clean. **Next: finish CR.9**,
+the populated worker-backed capture/acceptance harness and full gates.
 Fix and push each item separately. Verification uses
 `/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes. Only the
 new sample-colour metadata hunk in DocumentController is part of CR.4; its
