@@ -247,6 +247,24 @@ if(OPENSHOW_BUILD_UI)
     # 30-second wall; the run measures ~31s here and CI boxes are slower.
     TIMEOUT 60)
 
+  qt_add_executable(control_set_ui_tests control_set_ui_tests.cpp)
+  qt_add_qml_module(control_set_ui_tests
+    URI OpenShow
+    VERSION 1.0
+    OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/control-set/OpenShow
+    QML_FILES ${OPENSHOW_WORKSPACE_QML_FILES}
+    SOURCES ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.h
+            ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/InspectorAdapter.h
+            ${PROJECT_SOURCE_DIR}/src/ui/InspectorAdapter.cpp
+  )
+  target_link_libraries(control_set_ui_tests PRIVATE openshow::ui-core
+    Qt6::Quick Qt6::QuickControls2 Qt6::Test)
+  add_test(NAME control_set_ui_tests COMMAND control_set_ui_tests)
+  set_tests_properties(control_set_ui_tests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    TIMEOUT 30)
+
   add_test(NAME ui_loads
     COMMAND ${CMAKE_COMMAND}
             -DTARGET=$<TARGET_FILE:openshow-ui>

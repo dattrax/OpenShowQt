@@ -20,6 +20,12 @@ not rebuild or certify those uncommitted model changes.
 
 ## Findings, in priority order
 
+Remediation is tracked in PLAN.md's CR ledger. **CR.1 is fixed**: card picture
+height now divides by its aspect ratio; `control_set_ui_tests` checks picture
+and caption containment at six thumbnail sizes. Clean-snapshot application
+build, workspace and UI-load tests pass. Findings below retain the original
+review evidence; remaining items are open.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated

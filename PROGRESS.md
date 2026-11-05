@@ -4,6 +4,16 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
+**Latest remediation: CR.1 complete.** Shared preview cards now divide by the
+aspect ratio, keeping their pictures landscape and their caption strips inside
+the card. New `control_set_ui_tests` asserts picture/caption containment and
+readable caption height at all five Show steps plus Bible's 210-pixel cells.
+Clean-snapshot application/test build and `control_set_ui_tests`,
+`workspace_ui_tests`, `ui_loads` pass (3/3); `git diff --check` clean.
+**Next: CR.2**, the populated Bible verse list. Fix and push each review item
+separately. Verification uses `/tmp/openshow-cs-remediation`, excluding the
+existing uncommitted TV.3 changes; those four files remain untouched.
+
 **Review update, 2026-11-05:** the [CS conformance assessment](docs/reviews/CS-conformance-2026-11-05.md)
 found preview-card, Bible-list/form, inspector and thumbnail scheduling defects
 despite the focused tests passing. The earlier CS.9 visual sign-off below is

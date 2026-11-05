@@ -1272,6 +1272,28 @@ Finish remaining TV/TA acceptance and update `docs/architecture.md`, captures,
 the catalogue and PROGRESS.md with actual results. Physical M7 output checks
 remain separate. FO is not the next task merely because these new controls exist.
 
+### CS review remediation (CR)
+
+The [2026-11-05 assessment](docs/reviews/CS-conformance-2026-11-05.md) found
+gaps in the completed CS checkpoints. Preserve their historical evidence and
+close these focused follow-ups individually, with a regression check and a
+separate commit/push per fix. Existing uncommitted TV.3 work is separate.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| CR.1 | DONE | R1: correct shared card aspect and caption containment | `control_set_ui_tests` checks picture/caption bounds and aspect at six cell sizes; clean-snapshot application build, workspace and UI-load checks pass |
+| CR.2 | TODO | R2: repair populated Bible verse delegate sizing | Nonempty, long verse rows wrap to their viewport without QML errors |
+| CR.3 | TODO | R3: give the minimum-size row a usable layout | Positive input width, reachable reset and real gestures in both inspector hosts |
+| CR.4 | TODO | R4: display the resolved inherited appearance | Inspector values agree with compiled samples under nontrivial Default overrides |
+| CR.5 | TODO | R5: make Bible lookup responsive | Reference, translation, Lookup and Retry remain reachable at 1000×680 |
+| CR.6 | TODO | R6: map collections using actual cell geometry | Mapped rectangles and visible bands match physical GridView columns |
+| CR.7 | TODO | R7: serve all visible thumbnail demand within batch limits | Cold-cache visible cues beyond the first 32 eventually render without scrolling |
+| CR.8 | TODO | R8: retire hidden Bible preview ownership | Delayed lookup/pagination completion cannot replace Edit/Themes preview pixels |
+| CR.9 | TODO | R9: repeat populated visual and interaction acceptance | Populated five-page captures, actual worker pixels, geometry assertions and focused/full gates recorded |
+
+CR.1–CR.9 must close before relying on the CS.9 visual sign-off or starting FO.
+Remaining TV/TA and M7 gates still apply.
+
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
 **Entry gate: CS.1–CS.9, the remaining TV leaves and TA.1 must be DONE, with

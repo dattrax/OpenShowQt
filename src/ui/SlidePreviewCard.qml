@@ -53,7 +53,7 @@ Item {
         x: 3
         y: 3
         width: card.width - 6
-        height: width * aspectRatio
+        height: width / aspectRatio
         borderColor: "transparent"
         borderWidth: 0
     }
@@ -61,6 +61,7 @@ Item {
     // The caption strip fills what the picture leaves — the same room the
     // cue tiles have always reserved under the thumbnail.
     Rectangle {
+        objectName: "slidePreviewCaption"
         visible: card.caption !== ""
         x: 2
         y: previewSurface.y + previewSurface.height + 2
