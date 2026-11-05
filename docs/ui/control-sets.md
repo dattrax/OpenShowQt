@@ -191,6 +191,15 @@ the next occurrence opens the next row, and a group ending exactly at a row
 end forces no blank row. Cues within a group flow and wrap normally; the
 collection displays and maps and never reorders cues.
 
+The host asks for thumbnails off the view's ACTUAL window (CS.8): the rows on
+screen plus one bounded look-ahead row, filler gaps costing nothing, the
+debounced `visibleBandChanged` restarting the host's single coalescing timer
+so a scroll burst costs one ask at the destination. A zoom step re-derives
+everything from the newly mapped cells — regenerating the cell model restarts
+the GridView layout at the top, so the ask follows wherever the view sits and
+a scroll back to the bottom re-anchors the 32-cap there (the cap's cutting
+edge itself is pinned in UI.3c over grouped rows).
+
 | | |
 |---|---|
 | Inputs | `source` (flat array of row maps with `cueKey`/`slideId`/`entryId`… — the host's presentation order); `grouped` (false = uniform flow — Bible; true = every entry occurrence starts a new row — Show); `cardWidth` (operator zoom step); `stretchCells` (divide the view's width among the columns, so the grid fills the page at the zoom step's target width — Show); `cellWidth`/`cellHeight` may be overridden by the host as today |
@@ -348,5 +357,5 @@ Existing automation names (`audiencePreview`, `previewOfflineNote`,
 | CS.5 | Extract `AppearanceInspector`, `TextStyleControls`, `TextEffectsControls`, `BackgroundControls`, `BoxGeometryControls`, `TransitionControls`, `WorkerFontPicker`; migrate ThemeEditor Songs/Bible rails and Settings' transition section |
 | CS.6 | EditPage's appearance rail replaced by an `AppearanceInspector` over `{kind:"slide"}` (`showGeometry`/`showTransition` off, `showRevertChips` on). Renames the tests see: the old left/centre/right trio is one combo now, pinned `themeAlignCombo` (the trio names retired); the weight/slant/fit/min-size/stroke/shadow rows stay named `editWeight(+Inherit)`, `editSlant(+Inherit)`, `editFit(+Inherit)`, `editMinSize(+Inherit)`, `editStroke*`, `editShadow*` — pinned onto the shared parts by `pinEditNames()`, same names, new parts. The old hand-rolled `commit()`/`valueOf()`/badge rows retired into the parts' `*ObjectName` pins and `<prefix><Field>` chips; `revertableNames` grew to the advanced fields and placement, so Revert-customizations covers advanced-only changes |
 | CS.7 | DONE (as-built in the parts above): ShowPage on `SlidePreviewCollection` `grouped: true` — groups cut on `entryId`, every group opens at column zero, leftover row columns are inert fill. Scroll-to-cue follows `scrollCueIntoView`/`cueRect`; the ask window follows `visibleCueIndexes()` (32 cap, bottom-anchored at the end of the order). Delegate context is now `{cueIndex, row}`; `operatorCueTile` keeps a cue-equal `index` property; Bible's host input `model` became `source`. Keyboard, live/pending identity and the flat cue order unchanged |
-| CS.8 | Thumbnail band + scroll-to-cue from actual grouped geometry — bounded look-ahead, bottom and zoom cases |
+| CS.8 | DONE: the ask and the scroll run entirely on grouped mapped geometry. `visibleCueIndexes()` is the window — viewport rows plus ONE bounded look-ahead row, filler gaps never — and the host's debounced `visibleBandChanged` keeps one coalescing timer: five grouped scroll jumps inside the window ask for nothing and the burst lands one ask describing the destination. Bottom case: the clamped window ends on the order's last cue and the capped band anchors there (cap cutting edge pinned in UI.3c over grouped rows); zoom case: every thumb step re-derives the band from the NEW mapped cells, the requested pixel size follows the zoom, and a group head plus a deep cue scroll contained at all five thumb sizes. Pinned by the CS.8 suite block over a 38-cue five-entry order |
 | CS.9 | Integrated reuse, accessibility, capture and regression acceptance |

@@ -1349,6 +1349,229 @@ int main(int argc, char** argv) {
         check(showPageItem->property("cueRows").toList().size() == homeRows,
               "the running order is back home after the grouped fixture");
     }
+    // --- task CS.8: the ask and the scroll follow GROUPED geometry --------
+    // The requested band is what the grouped view ACTUALLY shows — visible
+    // rows plus one bounded look-ahead row, filler gaps costing nothing —
+    // with the 32-scene cap, per-slide dedupe and burst coalescing alive on
+    // top of that geometry. The two hard cases get named coverage: the very
+    // bottom of the order (where contentY clamps and the cap anchors off
+    // the bottom edge) and every zoom step (where the window is re-derived
+    // from the new mapped cells, not remembered from the old ones).
+    {
+        const QString homePlaylist = docs.currentPlaylistId();
+        const int homeRows = showPageItem->property("cueRows").toList().size();
+        const QSize cs8Size = window->size();
+        window->resize(1380, 800);
+        settings.setShowThumbLevel(4);
+        QTest::qWait(160);
+        auto makeCs8Song = [&docs](const QString& name, int slides) {
+            docs.createSong(name);
+            for (int i = 0; i < slides; ++i) docs.addSlide();
+            docs.flushText();
+            return docs.currentSongId();
+        };
+        const QString cs8AlphaId = makeCs8Song(QStringLiteral("CS8 Alpha"), 3);
+        const QString cs8BetaId = makeCs8Song(QStringLiteral("CS8 Beta"), 3);
+        const QString cs8DeltaId = makeCs8Song(QStringLiteral("CS8 Delta"), 9);
+        const QString cs8EpsId = makeCs8Song(QStringLiteral("CS8 Epsilon"), 20);
+        check(docs.createPlaylist(QStringLiteral("CS.8 Order")), "the CS.8 order exists");
+        QString cs8Playlist;
+        for (const auto& playlist : docs.playlists()) {
+            const QVariantMap row = playlist.toMap();
+            if (row.value(QStringLiteral("name")).toString() == QLatin1String("CS.8 Order"))
+                cs8Playlist = row.value(QStringLiteral("id")).toString();
+        }
+        check(!cs8Playlist.isEmpty(), "the CS.8 order is findable to select");
+        docs.selectPlaylist(cs8Playlist);
+        check(docs.addShowToPlaylist(cs8AlphaId) && docs.addShowToPlaylist(cs8BetaId)
+                  && docs.addShowToPlaylist(cs8AlphaId) && docs.addShowToPlaylist(cs8DeltaId)
+                  && docs.addShowToPlaylist(cs8EpsId),
+              "the order takes Alpha, Beta, Alpha again, Delta and Epsilon");
+        QTest::qWait(170);
+        const QVariantList rows8 = showPageItem->property("cueRows").toList();
+        check(rows8.size() == 38, "the CS.8 order walks 38 cues");
+        const QString cs8LastSlide = rows8.last().toMap().value(QStringLiteral("slideId")).toString();
+        auto pageCall8 = [showPageItem](const char* name) {
+            QVariant answer;
+            QMetaObject::invokeMethod(showPageItem, name, Q_RETURN_ARG(QVariant, answer));
+            return answer;
+        };
+        auto cue8Rect = [cueGrid](int cue) {
+            QVariant answer;
+            QMetaObject::invokeMethod(cueGrid, "cueRect", Q_RETURN_ARG(QVariant, answer),
+                                      Q_ARG(QVariant, cue));
+            return answer.toMap();
+        };
+        const auto realY = [cueGrid]() { return cueGrid->property("contentY").toReal(); };
+        const auto viewH = [cueGrid]() { return cueGrid->property("height").toReal(); };
+        const auto scrollMax = [cueGrid]() {
+            return cueGrid->property("contentHeight").toReal()
+                 - cueGrid->property("height").toReal();
+        };
+        auto band8 = [&]() {
+            QStringList keys;
+            for (const auto& entry : pageCall8("slideBand").toList())
+                keys << entry.toMap().value(QStringLiteral("key")).toString();
+            return keys;
+        };
+        // The contract, mirrored from the PUBLIC grouped properties only:
+        // the window is floor(contentY/cellHeight) through the viewport rows
+        // plus ONE look-ahead row; filler cells cost nothing; the window is
+        // capped at 32 cues (bottom-anchored when it reaches the order's
+        // end) and then deduped to distinct pictures.
+        auto wantedRaw = [&]() {
+            const QVariantMap layout = cueGrid->property("layout").toMap();
+            const QVariantList cells = layout.value(QStringLiteral("cells")).toList();
+            const int cols = cueGrid->property("columns").toInt();
+            const qreal cellH = cueGrid->property("cellHeight").toReal();
+            const int first = qMax(0, (int)qFloor(realY() / cellH)) * cols;
+            const int span = ((int)qCeil(viewH() / cellH) + 1) * cols;
+            QList<int> wanted;
+            for (int i = first; i < qMin((int)cells.size(), first + span); ++i) {
+                const QVariantMap cell = cells[i].toMap();
+                if (cell.contains(QStringLiteral("cueIndex")))
+                    wanted << cell.value(QStringLiteral("cueIndex")).toInt();
+            }
+            if (wanted.size() > 32)
+                wanted = wanted.last() == rows8.size() - 1 ? wanted.mid(wanted.size() - 32)
+                                                           : wanted.mid(0, 32);
+            return wanted;
+        };
+        auto expectedBand = [&]() {
+            QStringList keys;
+            QSet<QString> seen;
+            for (int cue : wantedRaw()) {
+                const QString id = rows8[cue].toMap().value(QStringLiteral("slideId")).toString();
+                if (!seen.contains(id)) { seen.insert(id); keys << id; }
+            }
+            return keys;
+        };
+        const auto uniqueCount = [](const QStringList& keys) {
+            return QSet<QString>(keys.cbegin(), keys.cend()).size();
+        };
+        const auto contained = [&](int cue) {
+            const QVariantMap rect = cue8Rect(cue);
+            return rect.value(QStringLiteral("y")).toReal() >= realY() - 1.0
+                && rect.value(QStringLiteral("y")).toReal()
+                       + rect.value(QStringLiteral("height")).toReal()
+                       <= realY() + viewH() + 1.0;
+        };
+
+        // The top of the order: the ask IS the mapped window, once each.
+        cueGrid->setProperty("contentY", 0);
+        QTest::qWait(200);
+        QStringList bandKeys = band8();
+        check(bandKeys == expectedBand() && !bandKeys.isEmpty()
+                  && uniqueCount(bandKeys) == bandKeys.size()
+                  && bandKeys.first() == rows8[0].toMap().value(QStringLiteral("slideId")).toString(),
+              "at the top the ask equals the grouped window, deduped and in order");
+
+        // Scrolling itself drives the ask on grouped geometry: a burst to
+        // the bottom stays silent inside the timer window, lands ONE ask at
+        // the destination, and that ask is the clamped bottom window — the
+        // bottom case, with the last cue inside it.
+        const int asks8 = showPageItem->property("bandRequests").toInt();
+        for (int i = 1; i <= 5; ++i) {
+            cueGrid->setProperty("contentY", scrollMax() * i / 5.0);
+            QTest::qWait(6);
+        }
+        check(showPageItem->property("bandRequests").toInt() == asks8,
+              "five grouped jumps inside the timer window still ask for nothing");
+        QTest::qWait(200);
+        check(showPageItem->property("bandRequests").toInt() - asks8 == 1,
+              "the grouped burst coalesces into exactly one ask");
+        bandKeys = band8();
+        check(bandKeys == expectedBand() && bandKeys.size() <= 32
+                  && uniqueCount(bandKeys) == bandKeys.size()
+                  && bandKeys.contains(cs8LastSlide)
+                  && bandKeys.last() == cs8LastSlide,
+              "the bottom ask describes the clamped window and ends on the order's last cue");
+
+        // A window across group boundaries pays nothing for the padding:
+        // the band stays exactly the mapped window's distinct pictures.
+        cueGrid->setProperty("contentY", qMin(cue8Rect(3).value(QStringLiteral("y")).toReal(),
+                                              scrollMax()));
+        QTest::qWait(200);
+        check(band8() == expectedBand(),
+              "group padding costs the band nothing at a boundary window");
+
+        // Zoom re-derives the window from the NEW mapped cells: the view
+        // restarts its layout at the top, the band equals the window where
+        // the view actually is, and scrolling back to the bottom re-anchors
+        // the cap there with the order end inside. Small cards at a wide
+        // grid put far more cues in the window than the cap allows — the
+        // raw window says so while the band stops at 32.
+        settings.setShowThumbLevel(2);
+        QTest::qWait(200);
+        const int asksAtZoom2 = showPageItem->property("bandRequests").toInt();
+        bandKeys = band8();
+        check(asksAtZoom2 > asks8 && !bandKeys.isEmpty()
+                  && bandKeys == expectedBand() && uniqueCount(bandKeys) == bandKeys.size(),
+              "zooming re-derives the ask from the new mapped cells");
+        const qreal pxAtZoom2 = pageCall8("bandPixels").toMap().value(QStringLiteral("w")).toReal();
+        settings.setShowThumbLevel(0);
+        QTest::qWait(200);
+        check(band8() == expectedBand(),
+              "the window follows a zoom-out to the view's position, not the old cells");
+        cueGrid->setProperty("contentY", scrollMax());
+        QTest::qWait(200);
+        bandKeys = band8();
+        const qreal pxAtZoom0 = pageCall8("bandPixels").toMap().value(QStringLiteral("w")).toReal();
+        check(bandKeys.size() <= 32
+                  && uniqueCount(bandKeys) == bandKeys.size()
+                  && bandKeys.contains(cs8LastSlide) && bandKeys.last() == cs8LastSlide
+                  && bandKeys == expectedBand(),
+              "the zoomed-out bottom ask stays capped and deduped and ends on the last cue");
+        check(pxAtZoom0 < pxAtZoom2,
+              "the requested preview size follows the zoom step, not the old cells");
+
+        // Scroll-to-cue, bottom case: the last cue is contained by its
+        // MAPPED cell and the view ends flush at the bottom.
+        settings.setShowThumbLevel(3);
+        QTest::qWait(160);
+        cueGrid->setProperty("contentY", 0);
+        QTest::qWait(80);
+        showPageItem->setProperty("cueIndex", 37);
+        QTest::qWait(100);
+        check(contained(37)
+                  && qAbs(realY() - qMax(0.0, scrollMax())) < 1.0,
+              "the last cue's cell scrolls flush into the bottom of the view");
+        QTest::qWait(170);
+        check(band8().contains(cs8LastSlide),
+              "the ask re-anchors to where the cue step left the view");
+
+        // Scroll-to-cue at every thumb size: a group head and a cue deep
+        // inside the last group both land contained in their mapped cells,
+        // whatever column count the zoom step produced.
+        bool everyZoomScrolls = true;
+        for (int level = 0; level <= 4; ++level) {
+            settings.setShowThumbLevel(level);
+            QTest::qWait(170);
+            cueGrid->setProperty("contentY", 0);
+            QTest::qWait(60);
+            showPageItem->setProperty("cueIndex", 9);   // Delta opens its own row
+            QTest::qWait(60);
+            if (!contained(9)) everyZoomScrolls = false;
+            showPageItem->setProperty("cueIndex", 24);  // deep inside the last group
+            QTest::qWait(60);
+            if (!contained(24)) everyZoomScrolls = false;
+        }
+        check(everyZoomScrolls,
+              "every thumb size scrolls a group head and a deep cue into their mapped cells");
+
+        // Hand the suite its service back.
+        showPageItem->setProperty("cueIndex", -1);
+        for (const auto& entry : docs.playlistEntries())
+            docs.removePlaylistEntry(entry.toMap().value(QStringLiteral("entryId")).toString());
+        docs.selectPlaylist(homePlaylist);
+        docs.selectSong(songId);
+        docs.selectSlide(0);
+        settings.setShowThumbLevel(2);
+        window->resize(cs8Size);
+        QTest::qWait(160);
+        check(showPageItem->property("cueRows").toList().size() == homeRows,
+              "the running order is back home after the CS.8 fixture");
+    }
     // --- task UI.5: monitor, clear strip, transport and audio area --------
     // The rail now arranges itself as the plan draws it, and every control
     // on it reports acknowledged state only: with no worker there is no

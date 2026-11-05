@@ -1085,10 +1085,10 @@ TV/TA and M7 work. CS.0 records this review only.
 | CS.5 | DONE | Extract style/geometry/font/transition sections and migrate Themes/Settings | Common controls replace duplicated sections; Songs/Bible differences and existing sparse-context limits explicit; all supported fields reachable |
 | CS.6 | DONE | Migrate Edit to the shared inspector and expose supported advanced styling | Same typography/effects/font controls as Themes; writes customize only the current slide, reverts restore inheritance; authored item tools remain intact |
 | CS.7 | DONE | Group Show previews by running-order entry with a fresh row per item | Every item starts at column zero, repeated entries stay separate, cue count/order/keyboard/live semantics unchanged |
-| CS.8 | TODO | Make preview requests and scroll-to-cue use grouped layout geometry | Actual visible cues plus bounded look-ahead requested, gaps omitted, 32-scene cap/dedupe/coalescing preserved; bottom and zoom cases verified |
+| CS.8 | DONE | Grouped-geometry preview requests and scroll-to-cue verified | The ask is the view's mapped window: viewport rows plus ONE bounded look-ahead row, filler gaps omitted; cap/dedupe/coalescing pinned (one ask per scroll burst, destination-true; cap cutting edge in UI.3c over grouped rows); bottom case ends on the order's last cue and scroll-to-cue lands flush there; every thumb size re-derives band, pixel size and contained cells |
 | CS.9 | TODO | Integrated reuse, accessibility, screenshot and regression acceptance | New controls exercised by real gestures and worker pixels; cross-page state isolation, save/reopen and current TV/TA completion recorded before FO |
 
-Current priority: **CS.8 → CS.9**.
+Current priority: **CS.9**.
 Then complete open **TV.3 → TV.4a → TV.4b → TV.5 → TA.1 → CS.9**, then M7.
 TS.1–TS.5/TR.1–TR.3 and TV.1–TV.2 remain DONE. Their original suggested order
 above is historical, not an instruction to redo them. Shared controls can land

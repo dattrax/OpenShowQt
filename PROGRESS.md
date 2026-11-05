@@ -1,8 +1,60 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-11-04 (Europe/London).
+Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
+
+**CS.7 + CS.8 complete (2026-11-05): the Show grid is the shared grouped
+collection, and the thumbnail ask and scroll-to-cue both live on its mapped
+cell geometry — bottom clamps and zoom steps included (CS.7 `ac1c34a`, CS.8
+this commit).**
+
+`ShowPage` stands one `SlidePreviewCollection` (`grouped: true`,
+`stretchCells: true`, `cardWidth: thumbCellWidth`) where the hand-rolled
+row-span Repeater was: groups cut on `entryId` (two copies of one show are
+TWO groups), every occurrence opens at column zero, leftover row columns
+become inert filler cells — no name, no picture, no clicks (pinned: a click
+on padding selects and presents nothing). The collection is a GridView over
+a computed visual-CELL model (`layout = {cells, cellOfCue}`, one generation
+per layout change) with `cueRow`/`cueRect`/`scrollCueIntoView` and
+`visibleIndexes` on top of it; the delegate context is the wrapper
+`{cueIndex, row}` (`operatorCueTile` re-exports a cue-equal `index`), and
+the host input renamed `model`→`source` (Bible import updated in the same
+change; the rename is documented in the catalogue's migration map). Keyboard,
+live/pending identity and the flat cue order are unchanged across the row
+breaks — Next walks Alpha into Beta in one step, clicking a wrapped cue
+picks that cue, an empty show adds no phantom cell, and browsing one show
+from the library stays ONE uninterrupted group.
+
+CS.8 closed the ask and the scroll on that geometry. The requested band is
+the view's mapped window — viewport rows plus ONE bounded look-ahead row,
+filler gaps never — with the 32-scene cap (bottom-anchored at the order's
+end), per-slide dedupe and burst coalescing on top: five grouped scroll
+jumps inside the timer window ask for nothing, the burst lands exactly one
+ask, and it describes the destination. The bottom case ends the band on the
+order's last cue and the cue step's scroll ends flush at the bottom; the
+cap's cutting edge itself stays pinned in UI.3c over grouped rows (the
+festival-twice 32-hit assertion now reads the cell window). Every thumb
+size re-derives band, requested pixel size (`bandPixels` follows the live
+`cellWidth`) and contained cells: a group head and a deep-in-last-group cue
+scroll contained at all five zoom steps. One as-built truth worth knowing:
+regenerating the cell model restarts the GridView layout at the top, so
+after a zoom the ask follows wherever the view sits — the suite pins the
+re-derivation, then scrolls back down to pin the anchored cap.
+
+Gates: desktop **66/66** (the CS.7 block covers group identity, padding
+inertness, wrapped clicks, browsed-ungrouped; the CS.8 block covers the
+window contract mirrored from public properties, burst coalescing, the
+bottom and zoom cases; `workspace_ui_tests` TIMEOUT 30→60 — the run
+measures ~31s now), headless **36/36**, `git diff --check` clean, zero QML
+warnings (the suite fails on any).
+
+**Next action:** CS.9 — integrated reuse/accessibility/capture/regression
+acceptance, capture matrix at 1000×680 / 1380×800 / 1680×1020 incl. scale
+1.5/2; the still-TODO TV.3/TV.4a/TV.4b/TV.5/TA.1 scope question gets
+flagged to the user at CS.9, not answered silently.
+
+### Earlier checkpoint: CS.6
 
 **CS.6 complete (2026-11-04): the Edit page's appearance rail is the shared
 inspector — the slide now reaches the same typography and effects as the

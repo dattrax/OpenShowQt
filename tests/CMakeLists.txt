@@ -243,7 +243,9 @@ if(OPENSHOW_BUILD_UI)
   add_test(NAME workspace_ui_tests COMMAND workspace_ui_tests)
   set_tests_properties(workspace_ui_tests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
-    TIMEOUT 30)
+    # The CS.8 grouped band-and-scroll matrix grew the suite past the old
+    # 30-second wall; the run measures ~31s here and CI boxes are slower.
+    TIMEOUT 60)
 
   add_test(NAME ui_loads
     COMMAND ${CMAKE_COMMAND}
