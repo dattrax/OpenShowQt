@@ -65,6 +65,10 @@ class ScriptureImport final : public QObject {
     // an old card claiming a slot the new plan filled. It is session
     // vocabulary only: nothing here is persisted or sent on the wire.
     Q_PROPERTY(qint64 planGeneration READ planGeneration NOTIFY stateChanged)
+    // The visible Bible page owns the shared Selection lane. Headless session
+    // callers keep the historical active default; the page explicitly releases
+    // ownership while hidden, without discarding fetched words or pagination.
+    Q_PROPERTY(bool previewActive READ previewActive WRITE setPreviewActive NOTIFY stateChanged)
 
 public:
     ScriptureImport(BibleImport* bible, DocumentController* documents,
@@ -77,6 +81,8 @@ public:
     QVariantList slides() const { return fSlides; }
     int selectedIndex() const { return fSelectedIndex; }
     qint64 planGeneration() const { return fPlanGeneration; }
+    bool previewActive() const { return fPreviewActive; }
+    void setPreviewActive(bool active);
 
     // Rebuild the generated slides from the current selection and the
     // CURRENT theme: a pure function of those inputs, so selection changes,
@@ -154,6 +160,7 @@ private:
     QStringList fScenes;
     int fSelectedIndex = -1;
     qint64 fPlanGeneration = 0;
+    bool fPreviewActive = true;
 };
 
 }  // namespace openshow::ui

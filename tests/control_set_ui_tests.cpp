@@ -204,6 +204,10 @@ int main(int argc, char** argv) {
                   "Retry is clickable at every supported centre width");
         }
         page->setVisible(false);
+        check(!scripture.previewActive(), "hiding the actual Bible page releases preview ownership");
+        page->setVisible(true);
+        check(scripture.previewActive(), "showing the Bible page reacquires preview ownership");
+        page->setVisible(false);
     }
 
     docs.createSong("Inspector controls");

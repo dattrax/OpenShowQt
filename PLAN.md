@@ -1288,7 +1288,7 @@ separate commit/push per fix. Existing uncommitted TV.3 work is separate.
 | CR.5 | DONE | R5: make Bible lookup responsive | Lookup form wraps; populated UI test checks control bounds and clicks Lookup/Retry at 416/796/1096-pixel centre widths; application build passes |
 | CR.6 | DONE | R6: map collections using actual cell geometry | Fixed-cell columns use cellWidth; fractional scrolling includes a full look-ahead row. UI regression compares actual delegates/mapped rectangles/visible membership across eight widths and three offsets; workspace check passes |
 | CR.7 | DONE | R7: serve all visible thumbnail demand within batch limits | Full viewport queue sends <=32-scene packets; 80 cold keys finish in three batches without scrolling/repeat loops. Cancellation and 128-entry/8-MiB LRU bounds tested; grouped workspace/shared UI checks pass |
-| CR.8 | TODO | R8: retire hidden Bible preview ownership | Delayed lookup/pagination completion cannot replace Edit/Themes preview pixels |
+| CR.8 | DONE | R8: retire hidden Bible preview ownership | Page visibility releases/reacquires session ownership; real-worker delayed lookup and remeasurement leave Edit's exact pixels unchanged, return reacquires Bible, hidden cleanup cannot clear another owner; UI/workspace checks pass |
 | CR.9 | TODO | R9: repeat populated visual and interaction acceptance | Populated five-page captures, actual worker pixels, geometry assertions and focused/full gates recorded |
 
 CR.1–CR.9 must close before relying on the CS.9 visual sign-off or starting FO.

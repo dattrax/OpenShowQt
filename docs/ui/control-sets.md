@@ -64,6 +64,13 @@ Replacing the window, calling the legacy single-batch API or standing down
 cancels its queue. Show stands down when hidden. Settled windows send no loop
 of repeat requests; a reconnect retires old pixels and replays current demand.
 
+CR.8: `BibleImportPage` sets `ScriptureImport.previewActive` on visibility and
+initialization. Releasing ownership clears its Selection request; hidden
+publication and cleanup cannot request or clear another owner's picture.
+Returning reacquires the retained selected/first generated slide. Nonvisual
+session callers retain the historical active default. Pagination may continue
+off page; full plan freshness and Add validity remain TV.5 responsibilities.
+
 ## Registration and naming convention (CS.1)
 
 - Every new QML file is **flat in `src/ui/`** and registered by adding its

@@ -4,16 +4,14 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Latest remediation: CR.7 complete; CR.1–CR.6 also delivered.** Show/Bible pass
-their complete viewport to the consumer's bounded queue. Missing scenes render
-in <=32-scene packets, with cache-current rows skipped and stale pictures retired
-across the window immediately. The cache is now bounded at 128 entries / 8 MiB
-to retain the supported small-thumbnail viewport. Bottom priority follows actual
-bottom geometry and last occurrences; hidden Show and repeated stand-down cancel
-work. The controller test renders 80 cold keys in exactly three packets, proves
-idle dedupe/cancellation and the byte LRU; workspace/shared UI checks pass.
-Clean application/test build and `git diff --check` pass. **Next: CR.8**, delayed
-Bible completion after a page change.
+**Latest remediation: CR.8 complete; CR.1–CR.7 also delivered.** ScriptureImport
+has explicit previewActive ownership, bound by Bible page visibility. Hidden
+publication cannot request Selection, and hidden Add/Cancel cleanup cannot clear
+another page's preview. Returning re-asks the retained plan. A real-worker test
+holds a lookup past page exit, compares Edit's exact pixels after publication,
+reacquires Bible, repeats with an in-flight remeasurement and checks hidden
+cleanup. Application build and page/UI/workspace checks pass (3/3), with no QML
+warnings; `git diff --check` clean. **Next: CR.9**, populated capture/acceptance.
 Fix and push each item separately. Verification uses
 `/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes. Only the
 new sample-colour metadata hunk in DocumentController is part of CR.4; its

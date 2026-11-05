@@ -83,6 +83,7 @@ ScrollView {
     // down — Show, Themes and Bible never leave a hidden page's batch
     // racing the one on screen.
     onVisibleChanged: {
+        scripture.previewActive = visible
         if (visible) {
             if (scripture.slides.length > 0)
                 scripture.previewSlide(scripture.selectedIndex >= 0
@@ -90,10 +91,10 @@ ScrollView {
             bibleAsk.restart()
         } else {
             bibleAsk.stop()
-            worker.clearSelectionPreview()
             worker.clearThumbnails()
         }
     }
+    Component.onCompleted: scripture.previewActive = biblePage.visible
 
     Column {
         width: biblePage.availableWidth

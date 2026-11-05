@@ -57,6 +57,12 @@ cold keys receive pictures in three packets without scrolling; settled windows
 send no repeat requests, cancellation stops queued work, and the byte LRU still
 evicts oldest entries. Controller, populated UI and grouped workspace checks pass.
 
+**CR.8 is fixed:** Bible visibility explicitly controls ScriptureImport preview
+ownership. A real worker proves delayed lookup and measurement completion keep
+Edit's exact Selection pixels, returning reacquires Bible, and hidden cleanup
+cannot clear another owner. Actual page visibility wiring and workspace checks
+also pass. Full TV.5 import-plan validity remains separately open.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated

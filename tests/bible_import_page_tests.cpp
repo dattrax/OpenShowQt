@@ -512,6 +512,64 @@ int main(int argc, char* argv[]) {
         worker.shutdownNow();
     }
 
+    // CR.8: delayed import work may finish while Edit owns Selection. Its
+    // pixels must stay on Edit, and returning to Bible explicitly reacquires.
+    {
+        DocumentController docs(nullptr, root / "preview-owner");
+        docs.createSong("Other preview owner");
+        docs.addSlide();
+        docs.setSlideText("This is the Edit page's own picture");
+        docs.flushText();
+        const QString editScene = docs.currentSceneJson();
+        WorkerController worker;
+        worker.start();
+        if (!check(waitForMeasureReady(worker), "ownership: worker can measure")) return 1;
+        BibleImport bible;
+        ScriptedManager manager;
+        bible.setNetworkAccessManager(&manager);
+        ScriptureImport scripture(&bible, &docs, &worker);
+        bible.setReference("First Test 1:1-6");
+        bible.setTranslation("EXAMPLE");
+        manager.steps.push_back({passageBody(), {}, {}, 200, 250});
+        bible.lookup();
+        scripture.setPreviewActive(false);
+        worker.requestSelectionPreview(editScene);
+        const auto waitForPicture = [&] {
+            QElapsedTimer timer;
+            timer.start();
+            while (!worker.selectionCurrent() && timer.elapsed() < 5000) QTest::qWait(10);
+            return worker.selectionCurrent();
+        };
+        check(waitForPicture(), "ownership: Edit's own off-air picture arrives");
+        const QImage editPicture = worker.selectionImage().copy();
+        waitForLookup(bible);
+        check(waitForMeasured(scripture) && !scripture.slides().isEmpty(),
+              "ownership: the late lookup still paginates its retained words");
+        QTest::qWait(150);
+        check(worker.selectionCurrent() && worker.selectionImage() == editPicture &&
+                  scripture.selectedIndex() == -1,
+              "ownership: late Bible publication cannot replace Edit's selected pixels");
+        scripture.setPreviewActive(true);
+        check(waitForPicture() && scripture.selectedIndex() == 0 &&
+                  worker.selectionImage() != editPicture,
+              "ownership: returning to Bible reacquires its first generated slide");
+        const int requests = manager.requests;
+        scripture.regenerate();
+        check(scripture.measuring(), "ownership: a remeasurement is in flight before page exit");
+        scripture.setPreviewActive(false);
+        worker.requestSelectionPreview(editScene);
+        check(waitForMeasured(scripture) && waitForPicture(),
+              "ownership: the hidden measurement and visible owner both settle");
+        QTest::qWait(100);
+        check(worker.selectionImage() == editPicture && manager.requests == requests &&
+                  !worker.wordsOnAir(),
+              "ownership: hidden remeasurement neither steals Selection, refetches nor presents");
+        scripture.cancel();
+        check(worker.selectionCurrent() && worker.selectionImage() == editPicture,
+              "ownership: cleaning up a hidden Bible plan does not clear Edit's preview");
+        worker.shutdownNow();
+    }
+
     // --- BIF.1: the production shape ----------------------------------------
     // A whole chapter, a live-length attribution, the plain look the
     // operator wore (no theme edits), the worker's preview stream up from

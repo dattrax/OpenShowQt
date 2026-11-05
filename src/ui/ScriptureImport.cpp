@@ -371,7 +371,16 @@ void ScriptureImport::publish(const std::vector<importer::GeneratedSlide>& gener
     previewSlide(0);
 }
 
+void ScriptureImport::setPreviewActive(bool active) {
+    if (fPreviewActive == active) return;
+    fPreviewActive = active;
+    if (!active) fWorker->clearSelectionPreview();
+    emit stateChanged();
+    if (active && !fSlides.isEmpty()) previewSlide(fSelectedIndex >= 0 ? fSelectedIndex : 0);
+}
+
 void ScriptureImport::previewSlide(int index) {
+    if (!fPreviewActive) return;
     if (index < 0 || index >= fSlides.size()) {
         return;
     }
@@ -440,7 +449,7 @@ bool ScriptureImport::addToSchedule() {
     fScenes.clear();
     fSelectedIndex = -1;
     ++fPlanGeneration;
-    fWorker->clearSelectionPreview();
+    if (fPreviewActive) fWorker->clearSelectionPreview();
     fMeasured.clear();
     emit slidesChanged();
     emit stateChanged();
@@ -469,7 +478,7 @@ void ScriptureImport::cancel() {
     fScenes.clear();
     fSelectedIndex = -1;
     ++fPlanGeneration;
-    fWorker->clearSelectionPreview();
+    if (fPreviewActive) fWorker->clearSelectionPreview();
     emit stateChanged();
     setStatus(QStringLiteral("cancelled — the fetched words and the generated slides are gone. "
                              "Nothing was written%1")
