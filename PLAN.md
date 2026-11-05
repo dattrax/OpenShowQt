@@ -1293,7 +1293,7 @@ separate commit/push per fix. Existing uncommitted TV.3 work is separate.
 | CR.10 | DONE | Repair the assessment's known narrow-header crowding | Status width reserves navigation and fixed actions; shared UI test proves nonoverlap at all three widths in Show/Themes with unsaved state; application build passes |
 | CR.11 | DONE | Repair verse indicators overlapping text, exposed by populated captures | Checkbox text and wrapping-label padding keep indicators beside words; actual populated UI regression checks separation, wrapping and clicking; application build passes |
 | CR.12 | DONE | Repair connected RPC destruction callbacks exposed by capture shutdown | RpcClient stops timers and disconnects socket callbacks before member destruction; connected-client regression passes and populated capture tour exits cleanly |
-| CR.13 | TODO | Repair parser token lifetime exposed by the memory trace | Class tokens view the owned attribute string; long translation identifiers parse correctly without freed-string reads |
+| CR.13 | DONE | Repair parser token lifetime exposed by the memory trace | Attribute-backed string_view replaces a temporary substring; long-version success/mismatch regressions fail before/pass after; parser memcheck has zero errors, and Bible/UI journeys pass |
 
 CR.1–CR.13 must close before relying on the CS.9 visual sign-off or starting FO.
 Remaining TV/TA and M7 gates still apply.

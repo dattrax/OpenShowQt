@@ -4,15 +4,14 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Latest remediation: CR.12 complete; CR.1–CR.8 and CR.10–CR.11 also delivered.**
-The populated capture tour exposed a real shutdown use-after-free: RpcClient's
-socket destructor emitted disconnected after its timers and supervisor font data
-were gone. The explicit destructor stops timers/disconnects its socket callbacks
-while members are alive. A connected-client destruction regression and controller
-suite pass; the populated worker capture now exits cleanly. The earlier fresh
-full gates passed 67/67 desktop and 36/36 enabled headless tests, before this
-additional fix. **Next: CR.13**, a parser token lifetime issue found by the same
-memory trace, then finish CR.9 capture/full-gate verification.
+**Latest remediation: CR.13 complete; CR.1–CR.8 and CR.10–CR.12 also delivered.**
+The parser now slices a string_view of the owned HTML attribute instead of viewing
+a temporary string::substr result. New long-version success/mismatch cases failed
+before the repair and pass afterward. Parser memcheck reports zero errors/retained
+blocks, and parser/page/e2e/shared UI checks pass (4/4). The RPC lifetime repair
+also lets the populated capture process exit cleanly. **Next: finish CR.9**,
+regenerate all three capture scales and rerun fresh full gates after the two
+additional lifetime repairs.
 Fix and push each item separately. Verification uses
 `/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes. Only the
 new sample-colour metadata hunk in DocumentController is part of CR.4; its

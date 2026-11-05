@@ -82,6 +82,11 @@ A connected-client destruction regression passes, as does the controller suite;
 the populated capture process now exits cleanly. The memory trace also exposed
 the independent class-token dangling view tracked as CR.13.
 
+**CR.13 fixes that parser lifetime error:** class tokens now slice a view of
+the owned attribute string. New long translation identifier success/mismatch
+cases fail on the old code and pass on the fix. Parser memcheck reports zero
+errors and no retained blocks; parser, Bible page/e2e and populated UI tests pass.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated

@@ -130,6 +130,16 @@ int main() {
     }
 
     // A page that answered a different translation is refused outright.
+    // A version token longer than string's inline buffer must keep its
+    // attribute storage alive; a view of a temporary substring is dangling.
+    const std::string longVersion = "EXAMPLE_LONG_TRANSLATION_IDENTIFIER";
+    const auto longPage = passagePage(longVersion);
+    const auto longAnswer = parsePassagePage(longPage, longVersion);
+    check(longAnswer.ok && longAnswer.passage.translation == longVersion,
+          "long translation class tokens parse from live attribute storage");
+    const auto longMismatch = parsePassagePage(longPage, "EXAMPLE");
+    check(!longMismatch.ok && longMismatch.error.find(longVersion) != std::string::npos,
+          "a long mismatched translation is still named and refused correctly");
     const PassageParse mismatch = parsePassagePage(passagePage("OTHER"), "EXAMPLE");
     check(!mismatch.ok && mismatch.error.find("OTHER") != std::string::npos &&
               mismatch.error.find("substitutes") != std::string::npos,

@@ -531,7 +531,9 @@ void Scanner::open(const Tag& tag) {
                 for (std::size_t start = 0; start <= value.size();) {
                     const std::size_t end = value.find(' ', start);
                     const std::size_t stop = end == std::string_view::npos ? value.size() : end;
-                    const std::string_view token = value.substr(start, stop - start);
+                    // value is owned by tag.attrs. Slice a view of that
+                    // storage, not string::substr's temporary owning string.
+                    const std::string_view token = std::string_view(value).substr(start, stop - start);
                     if (token.substr(0, 8) == "version-" && token.size() > 8 &&
                         fAnswered.empty()) {
                         fAnswered = upper(token.substr(8));
