@@ -62,6 +62,7 @@ class RpcClient : public QObject {
     Q_OBJECT
 public:
     explicit RpcClient(QObject* parent = nullptr);
+    ~RpcClient() override;
 
     // The socket this client connects to. The path is the UI's own, built with
     // its pid so two UIs never collide and bind always has a fresh name; the

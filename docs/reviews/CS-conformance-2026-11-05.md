@@ -74,6 +74,14 @@ padding, so Qt centred the indicator over the words. Real control text plus
 left/right indicator padding restores separation. The actual populated UI test
 checks this geometry, wrapping and selection; application build/check pass.
 
+**CR.12 fixes a shutdown defect exposed by the real capture tour:** member
+destruction let QLocalSocket emit disconnected after RpcClient's timers and
+WorkerController's font metadata had been destroyed. The explicit transport
+destructor stops timers and removes socket callbacks before aborting the socket.
+A connected-client destruction regression passes, as does the controller suite;
+the populated capture process now exits cleanly. The memory trace also exposed
+the independent class-token dangling view tracked as CR.13.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated

@@ -61,6 +61,17 @@ constexpr int kWriteStallTickMs = 250;  // only ticks while a refusal has armed 
 
 }  // namespace
 
+RpcClient::~RpcClient() {
+    // QLocalSocket is declared before the timers/ledger, so its destructor
+    // otherwise runs last and can emit disconnected into dead members (and
+    // the supervisor's already-destroyed state). Destruction is terminal and
+    // silent; close while all members are still alive and suppress that path.
+    fConnectRetry.stop();
+    fWriteStallDeadline.stop();
+    QObject::disconnect(&fSocket, nullptr, this, nullptr);
+    fSocket.abort();
+}
+
 RpcClient::RpcClient(QObject* parent) : QObject(parent) {
     // The socket lives under XDG_RUNTIME_DIR with the UI's pid in its name, so
     // two UIs never collide and the worker's bind always has a fresh path (the

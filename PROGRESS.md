@@ -4,13 +4,15 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Latest remediation: CR.11 complete; CR.1–CR.8 and CR.10 also delivered.** The
-new populated worker captures exposed centred verse indicators covering words.
-Checkboxes now supply their real text and reserve indicator padding in the custom
-wrapping label (mirrored layouts handled too). The populated UI regression checks
-indicator/text separation as well as wrapping and click behavior. Application
-build and focused UI check pass; `git diff --check` clean. **Next: finish CR.9**,
-the populated worker-backed capture/acceptance harness and full gates.
+**Latest remediation: CR.12 complete; CR.1–CR.8 and CR.10–CR.11 also delivered.**
+The populated capture tour exposed a real shutdown use-after-free: RpcClient's
+socket destructor emitted disconnected after its timers and supervisor font data
+were gone. The explicit destructor stops timers/disconnects its socket callbacks
+while members are alive. A connected-client destruction regression and controller
+suite pass; the populated worker capture now exits cleanly. The earlier fresh
+full gates passed 67/67 desktop and 36/36 enabled headless tests, before this
+additional fix. **Next: CR.13**, a parser token lifetime issue found by the same
+memory trace, then finish CR.9 capture/full-gate verification.
 Fix and push each item separately. Verification uses
 `/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes. Only the
 new sample-colour metadata hunk in DocumentController is part of CR.4; its

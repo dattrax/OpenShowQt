@@ -138,6 +138,7 @@
 #include <unistd.h>
 
 #include <QCoreApplication>
+#include <QLocalServer>
 #include <QString>
 #include <QVariant>
 
@@ -4991,6 +4992,27 @@ void scenarioForegroundFaults() {
           "fgfault: three prepares - the broken go, the second path, the repair");
 }
 
+void scenarioRpcDestruction() {
+    auto client = std::make_unique<openshow::ui::RpcClient>();
+    const auto path = client->socketPath();
+    QLocalServer server;
+    QLocalServer::removeServer(path);
+    if (!check(server.listen(path), "RPC destruction: local peer listens")) return;
+    int lateDisconnects = 0;
+    QObject::connect(client.get(), &openshow::ui::RpcClient::socketDisconnected,
+                     [&] { ++lateDisconnects; });
+    client->startConnecting();
+    if (!check(waitUntil([&] { return client->connected() && server.hasPendingConnections(); }),
+               "RPC destruction: an open connection exists")) return;
+    std::unique_ptr<QLocalSocket> peer(server.nextPendingConnection());
+    client.reset(); // no event-loop drain/disconnect before destruction
+    check(lateDisconnects == 0,
+          "RPC destruction: closing members cannot call a destroyed owner's disconnect handler");
+    peer.reset();
+    server.close();
+    QLocalServer::removeServer(path);
+}
+
 int main(int argc, char* argv[]) {
     const char* scenario = std::getenv("OPENSHOW_FAKE_SCENARIO");
     if (scenario != nullptr) {
@@ -5014,6 +5036,7 @@ int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     ::setenv("OPENSHOW_WORKER_PROGRAM", argv[0], 1);
 
+    scenarioRpcDestruction();
     scenarioBurst();
     scenarioSlowReply();
     scenarioErrorReply();
