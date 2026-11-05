@@ -24,6 +24,8 @@
 
 #include <QHash>
 #include <QImage>
+#include <QSet>
+#include <QTimer>
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
@@ -77,6 +79,9 @@ public:
     void requestSelectionPreview(const QString& sceneJson);
     void clearSelectionPreview();
     void requestThumbnails(const QVariantList& slides, qint64 width, qint64 height);
+    // A bounded viewport may need more than one wire batch. Cache-valid rows
+    // are retained; each missing row is attempted once until the window moves.
+    void requestThumbnailWindow(const QVariantList& slides, qint64 width, qint64 height);
     void clearThumbnails();
 
     // The transport's preview-typed events, handed over by the session that
@@ -140,6 +145,10 @@ signals:
     void statusMessage(const QString& text);
 
 private:
+    void requestThumbnailBatch(const QVariantList& slides, qint64 width, qint64 height);
+    void pumpThumbnailWindow();
+    bool thumbnailCurrent(const QString& key, const QString& scene, qint64 w, qint64 h) const;
+    void stopThumbnailWindow();
     // The batch's own send: serialize what the UI wants, advance this client's
     // generation, and record what the socket carried. Split from
     // requestThumbnails() because three places need it — a row entering the
@@ -251,8 +260,17 @@ private:
     qint64 fThumbnailBytes = 0;
     qint64 fThumbnailFrames = 0;
     qint64 fThumbnailStale = 0;  // the worker's counter, mirrored from status
-    static constexpr std::size_t kThumbnailCacheEntries = 64;
-    static constexpr qint64 kThumbnailCacheBytes = 4 * 1024 * 1024;
+    // Accommodates all cells at the supported large/small-thumbnail layout,
+    // while retaining hard count and byte ceilings during scrolling.
+    static constexpr std::size_t kThumbnailCacheEntries = 128;
+    static constexpr qint64 kThumbnailCacheBytes = 8 * 1024 * 1024;
+    QVariantList fThumbnailWindow;
+    QSet<QString> fThumbnailWindowAttempted;
+    qint64 fThumbnailWindowWidth = 0;
+    qint64 fThumbnailWindowHeight = 0;
+    bool fThumbnailWindowActive = false;
+    bool fThumbnailWindowWaiting = false;
+    QTimer fThumbnailWindowTimer;
 };
 
 }  // namespace openshow::ui

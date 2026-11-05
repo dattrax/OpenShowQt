@@ -4,14 +4,16 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Latest remediation: CR.6 complete; CR.1–CR.5 also delivered.** Fixed-cell
-collection columns now use actual cellWidth; stretched Show layout keeps its
-requested-width rule without a binding cycle. Fractional scrolling includes
-one full look-ahead row. The focused UI regression compares mapped rectangles
-with physical delegates and checks every visible cell belongs to the band,
-over eight widths and three offsets. Clean application/test build, shared UI
-and workspace checks pass; `git diff --check` clean. **Next: CR.7**, thumbnail
-demand beyond a single batch.
+**Latest remediation: CR.7 complete; CR.1–CR.6 also delivered.** Show/Bible pass
+their complete viewport to the consumer's bounded queue. Missing scenes render
+in <=32-scene packets, with cache-current rows skipped and stale pictures retired
+across the window immediately. The cache is now bounded at 128 entries / 8 MiB
+to retain the supported small-thumbnail viewport. Bottom priority follows actual
+bottom geometry and last occurrences; hidden Show and repeated stand-down cancel
+work. The controller test renders 80 cold keys in exactly three packets, proves
+idle dedupe/cancellation and the byte LRU; workspace/shared UI checks pass.
+Clean application/test build and `git diff --check` pass. **Next: CR.8**, delayed
+Bible completion after a page change.
 Fix and push each item separately. Verification uses
 `/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes. Only the
 new sample-colour metadata hunk in DocumentController is part of CR.4; its

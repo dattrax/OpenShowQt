@@ -53,8 +53,6 @@ ScrollView {
         const seen = ({})
         const wanted = bibleCells.visibleIndexes()
         for (const i of wanted) {
-            if (asks.length >= 32)
-                break
             const key = scripture.previewKey(i)
             if (seen[key])
                 continue
@@ -68,7 +66,7 @@ ScrollView {
             worker.clearThumbnails()
             return
         }
-        worker.requestThumbnails(asks, w, Math.round(w * 9 / 16))
+        worker.requestThumbnailWindow(asks, w, Math.round(w * 9 / 16))
     }
     Timer {
         id: bibleAsk

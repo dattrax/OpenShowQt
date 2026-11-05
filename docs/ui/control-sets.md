@@ -54,6 +54,16 @@ from the tile's own picture width so a size a control picks can never be
 refused on the wire (`ShowPage::bandPixels`, `ThemeEditorPage::viewThumbPixels`
 are today's spellings of that rule).
 
+CR.7: Show and Bible submit the complete visible/look-ahead set through
+`WorkerController::requestThumbnailWindow`. PreviewConsumer deduplicates it
+before batching, skips cache-current scenes, and continues in packets of at
+most 32 after each packet's accepted pictures arrive. Refused entries do not
+block later packets. Viewport metadata is capped at 128 distinct scenes and
+the frontend picture LRU at 128 entries / 8 MiB; wire limits are unchanged.
+Replacing the window, calling the legacy single-batch API or standing down
+cancels its queue. Show stands down when hidden. Settled windows send no loop
+of repeat requests; a reconnect retires old pixels and replays current demand.
+
 ## Registration and naming convention (CS.1)
 
 - Every new QML file is **flat in `src/ui/`** and registered by adding its

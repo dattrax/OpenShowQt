@@ -154,20 +154,18 @@ Rectangle {
     // Rows within the ask envelope (UI.3c, mapped by CS.7): the collection
     // answers which SOURCE cues are actually on screen — bottom partial row
     // and one row of look-ahead included, group padding never — deduplicated
-    // by slide id (a show listed twice shares one picture) and capped at the
-    // worker's 32-scene batch. When the cap bites AT the end of the order the
-    // window anchors off the BOTTOM edge, so a scrolled-to-end grid never
-    // finds its visible rows outside the band. Pure function of the current
-    // geometry, so the offscreen suite can pin the extent, the cap and the
-    // dedupe without a worker on the wire.
-    function slideBand() {
+    // by slide id (a show listed twice shares one picture). The complete
+    // window is retained for bounded multi-batch delivery; slideBand reports
+    // its first 32-scene packet for the workspace checks. At the actual bottom
+    // the last 32 unique pictures go first, with all earlier visible demand
+    // still queued. Pure geometry: no worker or cache state enters this list.
+    function slideWindow() {
         const rows = showPage.cueRows
         if (rows.length === 0) return []
         let wanted = slideGrid.visibleCueIndexes()
         if (wanted.length === 0) return []
-        if (wanted.length > 32)
-            wanted = wanted[wanted.length - 1] >= rows.length - 1
-                     ? wanted.slice(wanted.length - 32) : wanted.slice(0, 32)
+        const atBottom = slideGrid.contentY + slideGrid.height >= slideGrid.contentHeight - 1
+        if (atBottom) wanted = wanted.slice().reverse()
         const band = []
         const seen = ({})
         for (const i of wanted) {
@@ -176,8 +174,13 @@ Rectangle {
             seen[id] = true
             band.push({key: id, scene: docs.sceneJsonForSlide(id)})
         }
-        return band
+        // Keep bottom priority without throwing away the earlier visible
+        // cues. The consumer continues those after the first wire batch.
+        if (atBottom) band.reverse()
+        return band.length > 32 && atBottom
+             ? band.slice(-32).concat(band.slice(0, -32)) : band
     }
+    function slideBand() { return showPage.slideWindow().slice(0, 32) }
     // The ask tracks the cell (UI.3c): 16:9 at the tile's picture width, held
     // inside the envelope every 640x360 preview slot accepts — the protocol
     // caps each dimension at 32..512, and 512x288 is the largest 16:9 frame
@@ -198,7 +201,7 @@ Rectangle {
         if (rows.length === 0) { worker.clearThumbnails(); return }
         const px = showPage.bandPixels()
         ++showPage.bandSent
-        worker.requestThumbnails(showPage.slideBand(), px.w, px.h)
+        worker.requestThumbnailWindow(showPage.slideWindow(), px.w, px.h)
     }
     Timer { id: thumbnailAsk; interval: 80; onTriggered: showPage.requestSlideBand() }
     onThumbCellWidthChanged: thumbnailAsk.restart()
@@ -224,7 +227,13 @@ Rectangle {
             }
         }
     }
-    onVisibleChanged: if (visible) thumbnailAsk.restart()
+    onVisibleChanged: {
+        if (visible) thumbnailAsk.restart()
+        else {
+            thumbnailAsk.stop()
+            worker.clearThumbnails()
+        }
+    }
     Component.onCompleted: thumbnailAsk.restart()
 
     Rectangle {

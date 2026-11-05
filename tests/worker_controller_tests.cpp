@@ -4663,16 +4663,55 @@ void scenarioThumbnailPreview() {
             controller.shutdownNow();
             return;
         }
-        check(controller.thumbnailFrames() == copiesBefore + 32,
-              "every one of the thirty-two was received - the cache is not a filter");
-        check(controller.thumbnailCachedBytes() <= 4 * 1024 * 1024,
-              "and the cache stayed under its 4 MiB ceiling while they arrived");
-        check(controller.thumbnailCachedBytes() > 4 * 1024 * 1024 - kRowBytes,
+        std::vector<std::string> long2;
+        for (int i = 32; i < 64; ++i) long2.push_back("fill-" + std::to_string(i));
+        controller.requestThumbnails(bandOf(long2), 256, 144);
+        check(waitUntil([&controller] {
+                  return !controller.thumbnail(QStringLiteral("fill-63")).isNull();
+              }, 12000), "rows: the second bounded batch fills the expanded viewport cache");
+        check(controller.thumbnailFrames() == copiesBefore + 64,
+              "every picture in both wire batches was received - the cache is not a filter");
+        check(controller.thumbnailCachedBytes() <= 8 * 1024 * 1024,
+              "and the cache stayed under its 8 MiB ceiling while they arrived");
+        check(controller.thumbnailCachedBytes() > 8 * 1024 * 1024 - kRowBytes,
               "with the ceiling, and not a halfway-full cache, doing the stopping");
         check(controller.thumbnail(QStringLiteral("fill-0")).isNull(),
               "the oldest rows are the ones that went...");
-        check(!controller.thumbnail(QStringLiteral("fill-31")).isNull(),
+        check(!controller.thumbnail(QStringLiteral("fill-63")).isNull(),
               "...and the newest stayed: the bound is an LRU, not a trim");
+    }
+
+    // A cold visible window larger than one wire batch must finish without
+    // scrolling or repeatedly re-requesting its first 32 scenes.
+    {
+        controller.clearThumbnails();
+        pumpEventsFor(100);
+        std::vector<std::string> keys;
+        for (int i = 0; i < 80; ++i) keys.push_back("window-" + std::to_string(i));
+        auto wanted = bandOf(keys);
+        wanted.append(wanted[0]); // duplicates cannot spend a wire slot
+        const auto before = jsonSize(readReportNow(report), "thumbnailOps");
+        controller.requestThumbnailWindow(wanted, 64, 36);
+        check(waitUntil([&] {
+            for (const auto& key : keys)
+                if (controller.thumbnail(QString::fromStdString(key)).isNull()) return false;
+            return true;
+        }, 12000), "window: all eighty cold visible keys receive pixels without scrolling");
+        const auto after = jsonSize(readReportNow(report), "thumbnailOps");
+        check(after == before + 3, "window: eighty distinct rows take exactly three bounded batches");
+        controller.requestThumbnailWindow(wanted, 64, 36);
+        pumpEventsFor(150);
+        check(jsonSize(readReportNow(report), "thumbnailOps") == after,
+              "window: a settled viewport is idempotent, not a render/request loop");
+        controller.clearThumbnails();
+        pumpEventsFor(50);
+        check(controller.thumbnailCachedBytes() == 0, "window: standing down clears its cache and queue");
+        const auto stopped = jsonSize(readReportNow(report), "thumbnailOps");
+        controller.requestThumbnailWindow(wanted, 64, 36);
+        controller.clearThumbnails();
+        pumpEventsFor(100);
+        check(jsonSize(readReportNow(report), "thumbnailOps") == stopped,
+              "window: a hidden owner cancels a queued continuation before any batch is sent");
     }
 
     // --- a worker that lost the band gets asked again -------------------

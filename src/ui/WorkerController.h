@@ -238,6 +238,11 @@ public:
     // slide and its picture stops being owed. An empty band stands the target
     // down, exactly as clearSelectionPreview does for one edit.
     Q_INVOKABLE void requestThumbnails(const QVariantList& slides, qint64 width, qint64 height);
+    // A complete viewport, deduplicated and capped at 128 retained scene rows.
+    // The consumer serves missing pictures in <=32-scene packets and retains
+    // them in its bounded 128-picture/8-MiB cache. A changed window replaces
+    // the old queue; clearThumbnails and a legacy batch stand it down.
+    Q_INVOKABLE void requestThumbnailWindow(const QVariantList& slides, qint64 width, qint64 height);
     Q_INVOKABLE void clearThumbnails();
 
     // Text measurement (task BI.4): ask the worker's OWN layout engine how

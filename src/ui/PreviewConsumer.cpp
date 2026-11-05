@@ -21,7 +21,13 @@ namespace openshow::ui {
 namespace proto = openshow::protocol;
 
 PreviewConsumer::PreviewConsumer(Outbound outbound, QObject* parent)
-    : QObject(parent), fOut(std::move(outbound)) {}
+    : QObject(parent), fOut(std::move(outbound)) {
+    fThumbnailWindowTimer.setSingleShot(true);
+    connect(&fThumbnailWindowTimer, &QTimer::timeout, this, &PreviewConsumer::pumpThumbnailWindow);
+    connect(this, &PreviewConsumer::changed, this, [this] {
+        if (fThumbnailWindowActive) fThumbnailWindowTimer.start(0);
+    });
+}
 
 PreviewConsumer::~PreviewConsumer() {
     closeStream();
@@ -42,6 +48,9 @@ void PreviewConsumer::setCapabilities(bool selectionCapable, bool thumbnailCapab
 // --- the audience mirror's segment ---------------------------------------
 
 void PreviewConsumer::closeStream() {
+    fThumbnailWindowTimer.stop();
+    fThumbnailWindowWaiting = false;
+    fThumbnailWindowAttempted.clear();
     if (fMap) {
         ::munmap(fMap, fMapBytes);
         fMap = nullptr;
@@ -162,7 +171,11 @@ void PreviewConsumer::handleStartReply(const boost::json::object& payload) {
     fThumbnailKeys.clear();
     fThumbnailFrames = 0;
     clearThumbnailPictures();
-    if (!fThumbnailWantedPayload.isEmpty()) {
+    if (fThumbnailWindowActive) {
+        fThumbnailWindowWaiting = false;
+        fThumbnailWindowAttempted.clear();
+        fThumbnailWindowTimer.start(0);
+    } else if (!fThumbnailWantedPayload.isEmpty()) {
         sendThumbnailBatch(fThumbnailWantedPayload, fThumbnailWantedWidth,
                            fThumbnailWantedHeight);
     }
@@ -263,7 +276,7 @@ void PreviewConsumer::handlePrepareAck(const ScenePrepareAsk& intent, qint64 rev
 }
 
 void PreviewConsumer::handleRefusal(const ScenePrepareAsk& intent) {
-    if (intent.thumbnailRequest != 0) {
+    if (intent.thumbnailRequest != 0 && intent.thumbnailRequest == fThumbnailRequest) {
         // A refused batch — no stream yet, an extent that could not fit a
         // slot, a generation the worker will not take — means the ask was
         // never MADE, so "asked" goes back to empty. The status poll's
@@ -272,6 +285,10 @@ void PreviewConsumer::handleRefusal(const ScenePrepareAsk& intent) {
         // pictures forever.
         fThumbnailAwaitAck = false;
         fThumbnailAskedPayload.clear();
+        if (fThumbnailWindowActive) {
+            fThumbnailWindowWaiting = false;
+            fThumbnailWindowTimer.start(0);
+        }
     }
     if (intent.selectionRequest != 0) {
         // Task 6.9a's refusal is the same shape: an off-air prepare the
@@ -351,6 +368,100 @@ void PreviewConsumer::clearThumbnailPictures() {
 
 void PreviewConsumer::requestThumbnails(const QVariantList& slides, qint64 width,
                                         qint64 height) {
+    stopThumbnailWindow();
+    requestThumbnailBatch(slides, width, height);
+}
+
+bool PreviewConsumer::thumbnailCurrent(const QString& key, const QString& scene,
+                                       qint64 w, qint64 h) const {
+    const auto entry = fThumbnailCache.constFind(key);
+    return entry != fThumbnailCache.constEnd() && entry->sourceJson == scene &&
+           entry->image.width() == w && entry->image.height() == h;
+}
+
+void PreviewConsumer::stopThumbnailWindow() {
+    fThumbnailWindowTimer.stop();
+    fThumbnailWindowActive = false;
+    fThumbnailWindowWaiting = false;
+    fThumbnailWindow.clear();
+    fThumbnailWindowAttempted.clear();
+}
+
+void PreviewConsumer::requestThumbnailWindow(const QVariantList& slides, qint64 width,
+                                             qint64 height) {
+    QVariantList wanted;
+    QSet<QString> seen;
+    for (const auto& value : slides) {
+        const auto row = value.toMap();
+        const auto key = row.value(QStringLiteral("key")).toString();
+        if (key.isEmpty() || row.value(QStringLiteral("scene")).toString().isEmpty() ||
+            seen.contains(key)) continue;
+        seen.insert(key);
+        wanted.append(row);
+    }
+    if (wanted.size() > static_cast<int>(kThumbnailCacheEntries)) {
+        emit statusMessage(QStringLiteral("thumbnail viewport exceeds the 128-picture window budget"));
+        return;
+    }
+    if (wanted.isEmpty()) { clearThumbnails(); return; }
+    if (!fThumbnailWindowActive || wanted != fThumbnailWindow ||
+        width != fThumbnailWindowWidth || height != fThumbnailWindowHeight) {
+        stopThumbnailWindow();
+        fThumbnailWindow = wanted;
+        fThumbnailWindowWidth = width;
+        fThumbnailWindowHeight = height;
+        fThumbnailWindowActive = true;
+        // Retire stale pictures across the WHOLE window immediately, including
+        // rows that will only be sent in a later batch.
+        for (const auto& value : wanted) {
+            const auto row = value.toMap();
+            const auto key = row.value(QStringLiteral("key")).toString();
+            if (fThumbnailCache.contains(key) &&
+                !thumbnailCurrent(key, row.value(QStringLiteral("scene")).toString(), width, height)) {
+                dropThumbnailPicture(key);
+                emit thumbnailReady(key);
+            }
+        }
+    }
+    fThumbnailWindowTimer.start(0);
+}
+
+void PreviewConsumer::pumpThumbnailWindow() {
+    if (!fThumbnailWindowActive || !fHostOnline || !fThumbnailCapable ||
+        fPendingPreviewName.empty()) return;
+    if (fThumbnailWindowWaiting) {
+        if (fThumbnailAwaitAck) return;
+        // The ack maps accepted rows only: refused entries cannot block the
+        // remaining window. Wait for every accepted picture before replacing
+        // the wire batch, otherwise a new batch would cancel its tail.
+        for (const auto& key : fThumbnailKeys) {
+            if (!thumbnailCurrent(key, fThumbnailAskedScenes.value(key),
+                                  fThumbnailAskedWidth, fThumbnailAskedHeight)) return;
+        }
+        fThumbnailWindowWaiting = false;
+    }
+    QVariantList batch;
+    for (const auto& value : fThumbnailWindow) {
+        const auto row = value.toMap();
+        const auto key = row.value(QStringLiteral("key")).toString();
+        if (fThumbnailWindowAttempted.contains(key) ||
+            thumbnailCurrent(key, row.value(QStringLiteral("scene")).toString(),
+                             fThumbnailWindowWidth, fThumbnailWindowHeight)) continue;
+        fThumbnailWindowAttempted.insert(key);
+        batch.append(row);
+        if (batch.size() == proto::kMaxThumbnailBatch) break;
+    }
+    if (batch.isEmpty()) return;  // also bounds retries/eviction churn on oversized extents
+    fThumbnailWindowWaiting = true;
+    requestThumbnailBatch(batch, fThumbnailWindowWidth, fThumbnailWindowHeight);
+    if (!fThumbnailAwaitAck) {
+        fThumbnailWindowWaiting = false;
+        fThumbnailWindowTimer.start(0); // locally refused rows do not block later ones
+    }
+}
+
+void PreviewConsumer::requestThumbnailBatch(const QVariantList& slides, qint64 width,
+                                            qint64 height) {
     // Build the batch the worker will see, and record what the UI wants FIRST
     // and even when this call cannot send it: a worker still starting, a stream
     // mid-restart and a capability that only appears at the handshake all
@@ -541,7 +652,9 @@ void PreviewConsumer::handleThumbnailsAck(const ScenePrepareAsk& intent,
 }
 
 void PreviewConsumer::clearThumbnails() {
-    const bool hadAsk = !fThumbnailAskedPayload.isEmpty() || !fThumbnailWantedPayload.isEmpty();
+    stopThumbnailWindow();
+    const bool hadAsk = (!fThumbnailAskedPayload.isEmpty() && fThumbnailAskedPayload != "[]") ||
+                        !fThumbnailWantedPayload.isEmpty();
     const qint64 width = fThumbnailWantedWidth;
     const qint64 height = fThumbnailWantedHeight;
     // Nothing is wanted, nothing is owed, and nothing is kept: a stand-down

@@ -23,6 +23,7 @@
 #include "openshow/protocol/preview_wire.h"
 
 #include <cstdio>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -1086,7 +1087,15 @@ int main(int argc, char** argv) {
         int welcomeAsks = 0;
         for (const auto& key : bandKeys)
             if (key == rows[18].toMap().value("slideId").toString()) ++welcomeAsks;
-        check(bandKeys.size() == 19 && welcomeAsks == 1
+        QVariant visibleV;
+        QMetaObject::invokeMethod(cueGrid, "visibleCueIndexes", Q_RETURN_ARG(QVariant, visibleV));
+        QStringList expectedTop;
+        for (const auto& value : visibleV.toList()) {
+            const auto key = rows[value.toInt()].toMap().value("slideId").toString();
+            if (!expectedTop.contains(key)) expectedTop.append(key);
+        }
+        if (expectedTop.size() > 32) expectedTop = expectedTop.mid(0, 32);
+        check(bandKeys == expectedTop && welcomeAsks == 1
                   && bandKeys.size() == QSet(bandKeys.cbegin(), bandKeys.cend()).size()
                   && bandKeys.first() == rows[0].toMap().value("slideId").toString(),
               "a band across repeated entries asks once per distinct picture");
@@ -1435,18 +1444,21 @@ int main(int argc, char** argv) {
                 if (cell.contains(QStringLiteral("cueIndex")))
                     wanted << cell.value(QStringLiteral("cueIndex")).toInt();
             }
-            if (wanted.size() > 32)
-                wanted = wanted.last() == rows8.size() - 1 ? wanted.mid(wanted.size() - 32)
-                                                           : wanted.mid(0, 32);
             return wanted;
         };
         auto expectedBand = [&]() {
             QStringList keys;
             QSet<QString> seen;
-            for (int cue : wantedRaw()) {
+            QList<int> wanted = wantedRaw();
+            const bool bottom = realY() + viewH() >= cueGrid->property("contentHeight").toReal() - 1;
+            if (bottom) std::reverse(wanted.begin(), wanted.end());
+            for (int cue : wanted) {
                 const QString id = rows8[cue].toMap().value(QStringLiteral("slideId")).toString();
                 if (!seen.contains(id)) { seen.insert(id); keys << id; }
             }
+            if (bottom) std::reverse(keys.begin(), keys.end());
+            if (keys.size() > 32)
+                return bottom ? keys.mid(keys.size() - 32) : keys.mid(0, 32);
             return keys;
         };
         const auto uniqueCount = [](const QStringList& keys) {

@@ -50,6 +50,13 @@ scroll offsets retain a full look-ahead row. The UI test compares actual
 delegates with cueRect and visible-band membership across eight widths/three
 offsets. Application build, focused UI and grouped workspace checks pass.
 
+**CR.7 is fixed:** complete visible windows are deduplicated before delivery
+through the consumer's bounded multi-batch queue. The wire remains capped at
+32; retained window/cache ceilings are 128 scenes/pictures and 8 MiB. Eighty
+cold keys receive pictures in three packets without scrolling; settled windows
+send no repeat requests, cancellation stops queued work, and the byte LRU still
+evicts oldest entries. Controller, populated UI and grouped workspace checks pass.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated

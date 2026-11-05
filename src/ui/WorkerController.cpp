@@ -1153,6 +1153,10 @@ void WorkerController::clearThumbnails() {
     fPreview->clearThumbnails();
 }
 
+void WorkerController::requestThumbnailWindow(const QVariantList& slides, qint64 width, qint64 height) {
+    fPreview->requestThumbnailWindow(slides, width, height);
+}
+
 qint64 WorkerController::measureText(const QVariantList& blocks) {
     // Task BI.4. The guards answer to the importer's rule: it paginates by
     // the worker's own layout or not at all, so a send that cannot happen
