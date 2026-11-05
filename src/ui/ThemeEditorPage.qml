@@ -815,7 +815,7 @@ Item {
         required property string view    // "" for Songs, "scripture" for Bible
         required property string label
         // The picture width the thumbnail ask follows (viewThumbPixels).
-        readonly property real picWidth: 99
+        readonly property real picWidth: Math.min(160, width - 8)
         flat: true
         padding: 4
         Accessible.name: tileButton.label
@@ -827,6 +827,7 @@ Item {
             // guess at the theme's look.
             SlidePreviewSurface {
                 width: tileButton.picWidth
+                x: (parent.width - width) / 2
                 height: tileButton.picWidth * 9 / 16
                 controller: worker
                 target: "thumbnail"
@@ -842,7 +843,7 @@ Item {
                 placeholderPixelSize: 18
             }
             Text {
-                width: tileButton.picWidth
+                width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 text: tileButton.label
                 color: themeEditor.selectedView === tileButton.view
@@ -907,28 +908,6 @@ Item {
                     onClicked: docs.deleteTheme(themeEditor.selectedId)
                 }
             }
-            // The view navigator (task TV.1, theme-editor review): which half
-            // of the theme the canvas and inspector edit — Songs is the theme's
-            // own look, Bible is its `scripture` context. Picking a view is
-            // pure browsing: it never creates a record, never edits the theme,
-            // and never marks the document dirty. Since TV.2 the two entries
-            // are live thumbnails of exactly what each view will draw.
-            Row {
-                id: viewTiles
-                objectName: "themeEditorViewTiles"
-                spacing: 6
-                ViewTile {
-                    id: songsTile
-                    objectName: "themeViewSongs"
-                    view: ""
-                    label: "Songs"
-                }
-                ViewTile {
-                    objectName: "themeViewBible"
-                    view: "scripture"
-                    label: "Bible"
-                }
-            }
             Text {
                 objectName: "themeEditorViewNote"
                 width: parent.width
@@ -950,6 +929,33 @@ Item {
                       + "reference to the theme; Ctrl+Z brings it back."
             }
         }
+            // The view navigator (task TV.1, theme-editor review): which half
+            // of the theme the canvas and inspector edit — Songs is the theme's
+            // own look, Bible is its `scripture` context. Picking a view is
+            // pure browsing: it never creates a record, never edits the theme,
+            // and never marks the document dirty. Since TV.2 the two entries
+            // are live thumbnails of exactly what each view will draw.
+            Column {
+                id: viewTiles
+                objectName: "themeEditorViewTiles"
+                width: parent.width
+                anchors.top: themeList.bottom
+                anchors.topMargin: 8
+                spacing: 8
+                ViewTile {
+                    id: songsTile
+                    objectName: "themeViewSongs"
+                    width: parent.width
+                    view: ""
+                    label: "Songs"
+                }
+                ViewTile {
+                    objectName: "themeViewBible"
+                    width: parent.width
+                    view: "scripture"
+                    label: "Bible"
+                }
+            }
         ListView {
             id: themeList
             objectName: "themeEditorList"
@@ -957,8 +963,9 @@ Item {
             anchors.right: parent.right
             anchors.top: navTitle.bottom
             anchors.topMargin: 4
-            anchors.bottom: navFooter.top
-            anchors.bottomMargin: 8
+            height: Math.max(0, Math.min(contentHeight,
+                        listColumn.height - navTitle.height - navFooter.height
+                        - viewTiles.height - 24))
             clip: true
             model: docs.themes
             delegate: Rectangle {

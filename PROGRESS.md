@@ -4,7 +4,12 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Theme editor follow-ups: TE.1 complete.** Placement handles now use their
+**Theme editor follow-ups: TE.1–TE.2 complete.** Songs/Bible view tiles now
+stack vertically directly below the bounded theme list; actions remain at
+the bottom. Vertical geometry and real-click checks pass at all three sizes
+in the clean workspace suite (35.59 s); local executable rebuilt.
+
+TE.1: Placement handles now use their
 rectangle's local coordinates, removing the duplicated origin. New corner
 checks pass after moving/resizing; the clean-source workspace suite passes
 (35.60 s). The in-tree executable is rebuilt. Its workspace suite has one

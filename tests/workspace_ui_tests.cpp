@@ -2627,6 +2627,12 @@ int main(int argc, char** argv) {
         // absent context still says nothing.
         auto* viewSongs = findNamed(window->contentItem(), "themeViewSongs");
         auto* viewBible = findNamed(window->contentItem(), "themeViewBible");
+        auto* themeNames = findNamed(window->contentItem(), "themeEditorList");
+        check(viewSongs && viewBible && themeNames
+                  && qAbs(viewSongs->mapToScene(QPointF()).x() - viewBible->mapToScene(QPointF()).x()) < 0.01
+                  && viewBible->mapToScene(QPointF()).y() >= viewSongs->mapToScene(QPointF(0, viewSongs->height())).y()
+                  && viewSongs->mapToScene(QPointF()).y() >= themeNames->mapToScene(QPointF(0, themeNames->height())).y(),
+              "Songs and Bible previews stack vertically directly below the theme list");
         const QString viewedId = editorPage->property("selectedId").toString();
         check(viewSongs && viewBible
                   && editorPage->property("selectedView").toString().isEmpty()
