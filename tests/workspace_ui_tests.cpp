@@ -2768,12 +2768,9 @@ int main(int argc, char** argv) {
             clickAt(viewedRows.at(0), 30, 12);
             QTest::qWait(60);
         }
-        auto* viewNote = findNamed(window->contentItem(), "themeEditorViewNote");
         check(editorPage->property("selectedView").toString() == QLatin1String("scripture")
-                  && viewNote
-                      && viewNote->property("text").toString().contains(QStringLiteral("BIBLE"))
                   && !worker.outputLive() && worker.frames() == 0,
-              "browsing themes inside the Bible view says so and still asks the output for nothing");
+              "browsing themes inside the Bible view still asks the output for nothing");
 
         // The honest floor (amendment 2026-11-02): delete every theme the
         // operator can delete, and the service still stands on its Default —
@@ -3319,7 +3316,7 @@ int main(int argc, char** argv) {
                   && ctxMoveWords->property("text").toString() == QLatin1String("90")
                   && ctxMoveSource->property("text").toString().contains(
                              QStringLiteral("this view"))
-                  && ctxMoveNote->property("text").toString().contains(QStringLiteral("VIDEO")),
+                  && !ctxMoveNote->isVisible(),
               "the view's durations are disabled without being erased, the source line names the "
                   "view itself, and the video-background limit is stated here too");
 

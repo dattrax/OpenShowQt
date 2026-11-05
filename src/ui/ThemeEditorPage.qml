@@ -743,12 +743,8 @@ Item {
         mv.backObjectName = "themeEditorTransitionMedia"
         mv.sourceObjectName = "themeEditorTransitionSource"
         mv.noteObjectName = "themeEditorTransitionNote"
-        mv.silentSuffix = " — a theme lower in a wearing slide's chain answers first"
-        mv.note = "Words covers the text and any foreground picture; the background is "
-                + "a colour, a gradient or a still image. A background that is a VIDEO "
-                + "still cuts either way, so no background number dissolves one clip "
-                + "into the next. What is set here is the NEXT cue wearing this theme: "
-                + "a fade already crossing keeps the lengths it was given at Go."
+        mv.silentSuffix = ""
+        mv.note = ""
 
         const cst = contextInspector.styleControls
         cst.sparse = true
@@ -785,10 +781,8 @@ Item {
         cmv.backObjectName = "themeEditorContextTransitionMedia"
         cmv.sourceObjectName = "themeEditorContextTransitionSource"
         cmv.noteObjectName = "themeEditorContextTransitionNote"
-        cmv.silentSuffix = " — the theme carrying this view answers before the service"
-        cmv.note = "a passage's view can move differently from the song's words; a "
-                 + "Cut here is a decision, not an absence, and it stops the walk. "
-                 + "A background that is a VIDEO still cuts whatever these say."
+        cmv.silentSuffix = ""
+        cmv.note = ""
 
         // The sparse/section flags changed what the syncs above drew; one
         // pass each now that the rails are configured.
@@ -908,54 +902,34 @@ Item {
                     onClicked: docs.deleteTheme(themeEditor.selectedId)
                 }
             }
-            Text {
-                objectName: "themeEditorViewNote"
+        }
+        // The view navigator (task TV.1, theme-editor review): which half
+        // of the theme the canvas and inspector edit — Songs is the theme's
+        // own look, Bible is its `scripture` context. Picking a view is
+        // pure browsing: it never creates a record, never edits the theme,
+        // and never marks the document dirty. Since TV.2 the two entries
+        // are live thumbnails of exactly what each view will draw.
+        Column {
+            id: viewTiles
+            objectName: "themeEditorViewTiles"
+            width: parent.width
+            anchors.top: themeList.bottom
+            anchors.topMargin: 8
+            spacing: 8
+            ViewTile {
+                id: songsTile
+                objectName: "themeViewSongs"
                 width: parent.width
-                wrapMode: Text.WordWrap
-                color: "#8ec9f5"
-                font.pixelSize: 11
-                text: themeEditor.selectedView === ""
-                      ? "Viewing SONGS — the theme's own look, which the Bible "
-                        + "view inherits from"
-                      : "Viewing BIBLE — the scripture reading context; what it "
-                        + "does not say, the Songs look answers"
+                view: ""
+                label: "Songs"
             }
-            Text {
+            ViewTile {
+                objectName: "themeViewBible"
                 width: parent.width
-                wrapMode: Text.WordWrap
-                color: "#b0b0b0"
-                font.pixelSize: 11
-                text: "Double-click a name to rename it. Deleting clears every "
-                      + "reference to the theme; Ctrl+Z brings it back."
+                view: "scripture"
+                label: "Bible"
             }
         }
-            // The view navigator (task TV.1, theme-editor review): which half
-            // of the theme the canvas and inspector edit — Songs is the theme's
-            // own look, Bible is its `scripture` context. Picking a view is
-            // pure browsing: it never creates a record, never edits the theme,
-            // and never marks the document dirty. Since TV.2 the two entries
-            // are live thumbnails of exactly what each view will draw.
-            Column {
-                id: viewTiles
-                objectName: "themeEditorViewTiles"
-                width: parent.width
-                anchors.top: themeList.bottom
-                anchors.topMargin: 8
-                spacing: 8
-                ViewTile {
-                    id: songsTile
-                    objectName: "themeViewSongs"
-                    width: parent.width
-                    view: ""
-                    label: "Songs"
-                }
-                ViewTile {
-                    objectName: "themeViewBible"
-                    width: parent.width
-                    view: "scripture"
-                    label: "Bible"
-                }
-            }
         ListView {
             id: themeList
             objectName: "themeEditorList"
@@ -1089,9 +1063,9 @@ Item {
             // TV.2: fit the 16:9 picture to the room the columns leave —
             // both bounds at once, centred — and never more than the
             // height less the header row, the note and the honesty line.
-            readonly property real chrome: editorHeader.height + sampleNote.height
+            readonly property real chrome: editorHeader.height
                                            + (statusLine.visible ? statusLine.height : 0)
-                                           + centerColumn.spacing * 3
+                                           + centerColumn.spacing * 2
             width: Math.min(centerColumn.width,
                             Math.max(160, (centerColumn.height - chrome) * 16 / 9))
             height: width * 9 / 16
@@ -1201,16 +1175,6 @@ Item {
                     onCanceled: themeEditor.endGesture()
                 }
             }
-        }
-        Text {
-            id: sampleNote
-            width: parent.width
-            wrapMode: Text.WordWrap
-            color: "#b0b0b0"
-            font.pixelSize: 11
-            text: "A built-in sample cue wearing this theme — the same "
-                  + "picture on every row. Browsing themes never touches "
-                  + "the audience output."
         }
         Text {
             id: statusLine
@@ -1381,15 +1345,7 @@ Item {
                         font.pixelSize: 11
                         text: ""
                     }
-                    Text {
-                        width: parent.width
-                        wrapMode: Text.WordWrap
-                        color: "#888888"
-                        font.pixelSize: 10
-                        text: "the Bible view sets type and a box — never a colour, "
-                              + "and never a line count: how many lines ride a slide is "
-                              + "what the renderer measures"
-                    }
+
                 }
             }
         }

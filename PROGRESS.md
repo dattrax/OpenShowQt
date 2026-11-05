@@ -4,7 +4,12 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Theme editor follow-ups: TE.1–TE.2 complete.** Songs/Bible view tiles now
+**Theme editor follow-ups: TE.1–TE.3 complete.** Removed standing help
+paragraphs from the navigator, canvas and context/transition sections. Kept
+control labels, provenance and actionable status. Clean workspace suite passes
+(35.78 s); local executable rebuilt.
+
+TE.2: Songs/Bible view tiles now
 stack vertically directly below the bounded theme list; actions remain at
 the bottom. Vertical geometry and real-click checks pass at all three sizes
 in the clean workspace suite (35.59 s); local executable rebuilt.
