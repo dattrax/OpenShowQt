@@ -1,8 +1,10 @@
 // Focused regressions for the shared controls' actual QML geometry and input.
 #include <QGuiApplication>
+#include <QJSValue>
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQmlContext>
+#include <QQmlExpression>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QQuickItem>
@@ -251,6 +253,61 @@ int main(int argc, char** argv) {
                                                         reset->height() / 2)).toPoint());
             check(!adapter.fieldState("minFontSize").value("isSet").toBool(),
                   "the visible minimum-size Inherit button removes the own value");
+        }
+    }
+
+    QQmlComponent collectionComponent(&engine);
+    collectionComponent.setData(R"(
+import QtQuick
+import OpenShow 1.0
+SlidePreviewCollection {
+    cellWidth: 210
+    height: 460
+    delegate: Item {
+        required property int index
+        required property var modelData
+        objectName: "geometryCell"
+        width: GridView.view.cellWidth
+        height: GridView.view.cellHeight
+    }
+})", QUrl("qrc:/qt/qml/OpenShow/CollectionGeometryTest.qml"));
+    std::unique_ptr<QObject> collectionObject(collectionComponent.create());
+    auto* collection = qobject_cast<QQuickItem*>(collectionObject.get());
+    check(collection != nullptr, "the actual collection loads with fixed-width cells");
+    if (collection) {
+        QVariantList source;
+        for (int i = 0; i < 100; ++i) source.append(QVariantMap{{"entryId", "one"}, {"id", i}});
+        collection->setProperty("source", source);
+        collection->setParentItem(window.contentItem());
+        for (const int width : {419, 420, 439, 440, 629, 630, 650, 880}) {
+            collection->setWidth(width);
+            collection->setProperty("contentY", 0);
+            QTest::qWait(30);
+            check(collection->property("columns").toInt() == width / 210,
+                  "mapped columns follow physical cell width at both 210/220 boundaries");
+            for (const int offset : {0, 80, 250}) {
+                collection->setProperty("contentY", offset);
+                QTest::qWait(20);
+                for (auto* cell : namedItems(collection, "geometryCell")) {
+                    const int index = cell->property("index").toInt();
+                    QQmlExpression mapped(engine.rootContext(), collection,
+                        QStringLiteral("cueRect(%1)").arg(index));
+                    // A QML object-valued result is a QJSValue; read its four
+                    // members explicitly rather than duplicating the mapping.
+                    const auto value = mapped.evaluate().value<QJSValue>();
+                    check(std::abs(value.property("x").toNumber() - cell->x()) < 1 &&
+                              std::abs(value.property("y").toNumber() - cell->y()) < 1,
+                          "mapped cue coordinates agree with actual delegate placement");
+                    const double scrollY = collection->property("contentY").toDouble();
+                    if (cell->y() + cell->height() > scrollY &&
+                        cell->y() < scrollY + collection->height()) {
+                        QQmlExpression band(engine.rootContext(), collection,
+                            QStringLiteral("visibleIndexes().indexOf(%1) >= 0").arg(index));
+                        check(band.evaluate().toBool(),
+                              "every physically visible card belongs to the requested band");
+                    }
+                }
+            }
         }
     }
     for (const auto& warning : warnings) {

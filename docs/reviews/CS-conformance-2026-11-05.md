@@ -45,6 +45,11 @@ carries the record. Adapter regression plus shared UI/workspace checks pass.
 The populated UI fixture verifies containment and clicks Lookup/Retry at all
 three centre widths, including 416 pixels. Application build/check pass.
 
+**CR.6 is fixed:** fixed-cell mapping follows actual cellWidth, and fractional
+scroll offsets retain a full look-ahead row. The UI test compares actual
+delegates with cueRect and visible-band membership across eight widths/three
+offsets. Application build, focused UI and grouped workspace checks pass.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated

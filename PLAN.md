@@ -1286,7 +1286,7 @@ separate commit/push per fix. Existing uncommitted TV.3 work is separate.
 | CR.3 | DONE | R3: give the minimum-size row a usable layout | Shared UI check asserts positive/contained controls at both rail widths and types/resets through theme and slide adapters; application build passes |
 | CR.4 | DONE | R4: display the resolved inherited appearance | Adapter values follow compiled samples; Default typography/effect inheritance, explicit-off/reset and unchanged floor covered by `inspector_adapter_tests`; UI/workspace checks pass |
 | CR.5 | DONE | R5: make Bible lookup responsive | Lookup form wraps; populated UI test checks control bounds and clicks Lookup/Retry at 416/796/1096-pixel centre widths; application build passes |
-| CR.6 | TODO | R6: map collections using actual cell geometry | Mapped rectangles and visible bands match physical GridView columns |
+| CR.6 | DONE | R6: map collections using actual cell geometry | Fixed-cell columns use cellWidth; fractional scrolling includes a full look-ahead row. UI regression compares actual delegates/mapped rectangles/visible membership across eight widths and three offsets; workspace check passes |
 | CR.7 | TODO | R7: serve all visible thumbnail demand within batch limits | Cold-cache visible cues beyond the first 32 eventually render without scrolling |
 | CR.8 | TODO | R8: retire hidden Bible preview ownership | Delayed lookup/pagination completion cannot replace Edit/Themes preview pixels |
 | CR.9 | TODO | R9: repeat populated visual and interaction acceptance | Populated five-page captures, actual worker pixels, geometry assertions and focused/full gates recorded |

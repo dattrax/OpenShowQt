@@ -196,6 +196,11 @@ the next occurrence opens the next row, and a group ending exactly at a row
 end forces no blank row. Cues within a group flow and wrap normally; the
 collection displays and maps and never reorders cues.
 
+CR.6: fixed-cell column counts follow `cellWidth`, including a host override;
+stretched collections use `cardWidth` to choose a column count before dividing
+their width. Visible-band geometry includes the actual partial last row and
+one full look-ahead row at fractional scroll offsets.
+
 The host asks for thumbnails off the view's ACTUAL window (CS.8): the rows on
 screen plus one bounded look-ahead row, filler gaps costing nothing, the
 debounced `visibleBandChanged` restarting the host's single coalescing timer

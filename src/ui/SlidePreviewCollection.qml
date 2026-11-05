@@ -44,7 +44,11 @@ GridView {
     property real cardWidth: 220
     property bool stretchCells: false
 
-    readonly property int columns: Math.max(1, Math.floor(width / cardWidth))
+    // Fixed-cell hosts may override cellWidth (Bible uses 210). Mapping must
+    // use that physical width; stretched cells derive their count from the
+    // requested card width first, avoiding a columns/cellWidth binding cycle.
+    readonly property int columns: Math.max(1, Math.floor(width /
+        Math.max(1, stretchCells ? cardWidth : cellWidth)))
     cellWidth: stretchCells && width > 0 ? width / columns : cardWidth
     cellHeight: (cellWidth - 12) * 9 / 16 + 48
 
@@ -123,9 +127,9 @@ GridView {
         if (cellHeight <= 0 || cells.length === 0) return []
         const cols = Math.max(1, collection.columns)
         const first = Math.max(0, Math.floor(contentY / cellHeight) * cols)
-        const rows = Math.ceil(height / cellHeight) + 1
+        const pastLast = (Math.ceil(Math.max(0, contentY + height) / cellHeight) + 1) * cols
         const out = []
-        for (let i = first; i < Math.min(cells.length, first + rows * cols); ++i) {
+        for (let i = first; i < Math.min(cells.length, pastLast); ++i) {
             const cell = cells[i]
             if (cell.cueIndex !== undefined) out.push(cell.cueIndex)
         }

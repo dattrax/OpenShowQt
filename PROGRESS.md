@@ -4,12 +4,14 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Latest remediation: CR.5 complete; CR.1–CR.4 also delivered.** Bible lookup
-now wraps within the centre pane instead of clipping its buttons. The populated
-UI check verifies all form controls fit and clicks both Lookup and Retry at
-416/796/1096-pixel centre widths. Clean-snapshot application/test build and
-`control_set_ui_tests` pass without QML warnings; `git diff --check` clean.
-**Next: CR.6**, actual collection geometry.
+**Latest remediation: CR.6 complete; CR.1–CR.5 also delivered.** Fixed-cell
+collection columns now use actual cellWidth; stretched Show layout keeps its
+requested-width rule without a binding cycle. Fractional scrolling includes
+one full look-ahead row. The focused UI regression compares mapped rectangles
+with physical delegates and checks every visible cell belongs to the band,
+over eight widths and three offsets. Clean application/test build, shared UI
+and workspace checks pass; `git diff --check` clean. **Next: CR.7**, thumbnail
+demand beyond a single batch.
 Fix and push each item separately. Verification uses
 `/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes. Only the
 new sample-colour metadata hunk in DocumentController is part of CR.4; its

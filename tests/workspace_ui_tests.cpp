@@ -1426,10 +1426,11 @@ int main(int argc, char** argv) {
             const QVariantList cells = layout.value(QStringLiteral("cells")).toList();
             const int cols = cueGrid->property("columns").toInt();
             const qreal cellH = cueGrid->property("cellHeight").toReal();
-            const int first = qMax(0, (int)qFloor(realY() / cellH)) * cols;
-            const int span = ((int)qCeil(viewH() / cellH) + 1) * cols;
+            const qreal lookAheadBottom = qCeil((realY() + viewH()) / cellH) * cellH + cellH;
             QList<int> wanted;
-            for (int i = first; i < qMin((int)cells.size(), first + span); ++i) {
+            for (int i = 0; i < cells.size(); ++i) {
+                const qreal top = (i / cols) * cellH;
+                if (top + cellH <= realY() || top >= lookAheadBottom) continue;
                 const QVariantMap cell = cells[i].toMap();
                 if (cell.contains(QStringLiteral("cueIndex")))
                     wanted << cell.value(QStringLiteral("cueIndex")).toInt();
