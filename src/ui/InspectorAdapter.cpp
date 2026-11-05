@@ -212,47 +212,66 @@ QVariantMap InspectorAdapter::fieldState(const QString& field) const {
 
     if (kind == QLatin1String("theme")) {
         QVariantMap row;
+        QVariantMap floor;
         for (const QVariant& entry : fDocument->themes()) {
+            if (entry.toMap().value(QStringLiteral("builtin")).toBool()) floor = entry.toMap();
             if (entry.toMap().value(QStringLiteral("id")).toString() == id) {
                 row = entry.toMap();
-                break;
             }
         }
         if (row.isEmpty()) {
             return nothing(QStringLiteral("no theme '%1'").arg(id));
         }
+        // The compiled fixture is the value authority. In particular a silent
+        // style field inherits the editable Default theme before the contract
+        // floor; substituting 400/disabled here can contradict the picture.
+        const QVariantMap sample = fDocument->themeSampleAppearance(id);
+        auto styleSource = [&](const QString& record, bool own) {
+            return own ? QStringLiteral("this theme")
+                       : (floor.value(record + QLatin1String("Set")).toBool()
+                              ? QStringLiteral("the Default theme")
+                              : QStringLiteral("the renderer default"));
+        };
         if (isBaseField(name)) {
             const QVariant own = row.value(name);
-            return shape(own, own, true, QStringLiteral("this theme"), true, false);
+            const bool ownAnswers = name == QLatin1String("lineSpacing") ||
+                (name == QLatin1String("fontSize") ? own.toDouble() != 0
+                                                  : !own.toString().isEmpty());
+            const QVariant lower = floor.value(name);
+            const bool floorAnswers = name == QLatin1String("fontSize")
+                                          ? lower.toDouble() != 0 : !lower.toString().isEmpty();
+            return shape(sample.value(name, own), own, true,
+                         ownAnswers ? QStringLiteral("this theme")
+                                    : (floorAnswers ? QStringLiteral("the Default theme")
+                                                    : QStringLiteral("the renderer default")),
+                         true, false);
         }
         if (name == QLatin1String("placement")) {
             const bool isSet = row.value(QStringLiteral("placementSet")).toBool();
             const QVariant own = isSet ? row.value(QStringLiteral("placement")) : QVariant();
             QVariant resolved = own;
             if (!isSet) {
-                resolved = boxFromSample(fDocument->themeSampleAppearance(id));
+                resolved = boxFromSample(sample);
             }
             return shape(resolved, own, isSet,
                          isSet ? QStringLiteral("this theme")
-                               : QStringLiteral("the renderer default"),
+                               : (floor.value(QStringLiteral("placementSet")).toBool()
+                                      ? QStringLiteral("the Default theme")
+                                      : QStringLiteral("the renderer default")),
                          true, isSet);
         }
         if (isStyleLeaf(name)) {
             const bool isSet = row.value(name + QLatin1String("Set")).toBool();
-            return shape(isSet ? row.value(name) : styleDefault(name),
+            return shape(sample.value(name, styleDefault(name)),
                          isSet ? row.value(name) : QVariant(), isSet,
-                         isSet ? QStringLiteral("this theme")
-                               : QStringLiteral("the renderer default"),
+                         styleSource(name, isSet),
                          true, isSet);
         }
         if (name == QLatin1String("stroke") || name == QLatin1String("shadow")) {
             const bool isSet = row.value(name + QLatin1String("Set")).toBool();
-            return shape(isSet ? row.value(name)
-                               : (name == QLatin1String("stroke") ? defaultStrokeMap()
-                                                                  : defaultShadowMap()),
+            return shape(sample.value(name),
                          isSet ? row.value(name) : QVariant(), isSet,
-                         isSet ? QStringLiteral("this theme")
-                               : QStringLiteral("the renderer default"),
+                         styleSource(name, isSet),
                          true, isSet);
         }
         if (isStrokeMember(name) || isShadowMember(name)) {
@@ -267,11 +286,10 @@ QVariantMap InspectorAdapter::fieldState(const QString& field) const {
                 own = row.value(record).toMap().value(
                     name.at(record.size()).toLower() + name.mid(record.size() + 1));
             }
-            const QVariant value =
-                isSet ? own : effectDefault(name);
+            const QString member = name.at(record.size()).toLower() + name.mid(record.size() + 1);
+            const QVariant value = sample.value(record).toMap().value(member, effectDefault(name));
             return shape(value, own, isSet,
-                         isSet ? QStringLiteral("this theme")
-                               : QStringLiteral("the renderer default"),
+                         styleSource(record, isSet),
                          true, false);
         }
         if (name == QLatin1String("transition")) {

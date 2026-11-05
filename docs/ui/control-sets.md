@@ -95,7 +95,12 @@ fieldState(target, field) -> {
 }
 ```
 
-Implemented in CS.4 exactly in this shape, with `ok` false plus a `reason`
+Since CR.4, theme display values come from the compiled sample rather than
+substituted contract defaults; `ownValue` remains the raw stored value. A silent
+optional style/effect names `the Default theme` when that floor carries the
+record, otherwise `the renderer default`. No appearance resolution lives in QML.
+
+Implemented in CS.4 in this shape, with `ok` false plus a `reason`
 when the TARGET itself is missing (unknown theme id, no such context, no
 current slide) and a `reason` on non-storable fields (TV.3 colours, the
 slide's absent transition, the concrete service floor). The adapter also

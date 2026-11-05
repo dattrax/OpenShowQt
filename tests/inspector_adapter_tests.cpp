@@ -142,11 +142,11 @@ void exerciseThemeTarget(const std::filesystem::path& root) {
     const QVariantMap family = adapter.fieldState(QStringLiteral("fontFamily"));
     check(family.value(QStringLiteral("isSet")).toBool() &&
               !family.value(QStringLiteral("canReset")).toBool() &&
-              family.value(QStringLiteral("source")).toString() == QStringLiteral("this theme") &&
-              family.value(QStringLiteral("value")) ==
+              family.value(QStringLiteral("source")).toString() == QStringLiteral("the renderer default") &&
+              family.value(QStringLiteral("ownValue")) ==
                   themeRowNamed(docs, QStringLiteral("House"))
                       .value(QStringLiteral("fontFamily")),
-          "a base field is the theme's own answer, with nothing under it");
+          "a stored empty family keeps its ownValue while naming the actual renderer fallback");
 
     check(adapter.commit(QStringLiteral("fontSize"), 64.0) &&
               themeRowNamed(docs, QStringLiteral("House")).value(QStringLiteral("fontSize"))
@@ -469,6 +469,50 @@ void exerciseSlideTarget(const std::filesystem::path& root) {
           "with no current slide the target says so");
 }
 
+void exerciseInheritedTheme(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong("Inherited fixture");
+    docs.addSlide();
+    const QString floor = QString::fromLatin1(openshow::domain::Documents::kDefaultThemeId);
+    check(docs.editTheme(floor, "Default", "#ffffff", "#000000", "", "Lora", 48,
+                         "center", 1.25), "the editable Default supplies family and size");
+    const QVariantMap stroke{{"enabled", true}, {"color", "#123456"}, {"width", 6.0}};
+    const QVariantMap shadow{{"enabled", true}, {"color", "#654321"}, {"opacity", 0.5},
+                             {"offsetX", 8.0}, {"offsetY", 9.0}, {"blurSigma", 3.0}};
+    check(docs.setThemeTextStyle(floor, {{"fontWeight", 800}, {"fontStyle", "italic"},
+                                        {"fitMode", "fixed"}, {"minFontSize", 20.0},
+                                        {"stroke", stroke}, {"shadow", shadow}}),
+          "Default carries nontrivial typography and effects");
+    docs.createBlankTheme("Inheriting");
+    const QString id = themeRowNamed(docs, "Inheriting").value("id").toString();
+    InspectorAdapter adapter;
+    adapter.setDocument(&docs);
+    adapter.setTarget(fieldTarget("theme", id));
+    const auto sample = docs.themeSampleAppearance(id);
+    for (const QString field : {"fontWeight", "fontStyle", "fitMode", "minFontSize",
+                                "stroke", "shadow"}) {
+        const auto state = adapter.fieldState(field);
+        check(state.value("value") == sample.value(field) && !state.value("isSet").toBool() &&
+                  state.value("source").toString() == "the Default theme",
+              "an inherited style matches the compiled sample and names Default, not the contract");
+    }
+    check(adapter.fieldState("fontFamily").value("value") == sample.value("fontFamily") &&
+              adapter.fieldState("fontSize").value("value") == sample.value("fontSize"),
+          "base fields also display the compiled family and size rather than silent raw fields");
+    check(adapter.fieldState("strokeColor").value("value").toString() == "#123456" &&
+              adapter.fieldState("shadowOffsetX").value("value").toDouble() == 8,
+          "effect member controls show the inherited whole record");
+    check(adapter.commit("fontWeight", 500) && adapter.reset("fontWeight") &&
+              adapter.fieldState("fontWeight").value("value").toInt() == 800,
+          "Inherit restores Default's weight on the inspector as well as the canvas");
+    check(adapter.commit("strokeEnabled", false) &&
+              !adapter.fieldState("strokeEnabled").value("value").toBool() &&
+              adapter.reset("stroke") && adapter.fieldState("strokeEnabled").value("value").toBool(),
+          "explicit effect-off and whole-record Inherit remain distinct");
+    check(themeRowNamed(docs, "Default").value("fontWeight").toInt() == 800,
+          "reading and overriding an inheriting theme leaves Default unchanged");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -482,6 +526,7 @@ int main(int argc, char* argv[]) {
     exerciseThemeTarget(tempRoot / "theme");
     exerciseContextTarget(tempRoot / "context");
     exerciseSlideTarget(tempRoot / "slide");
+    exerciseInheritedTheme(tempRoot / "inheritance");
     std::filesystem::remove_all(tempRoot);
 
     if (gFailed) {

@@ -4,14 +4,17 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Latest remediation: CR.3 complete; CR.1–CR.2 also delivered.** The minimum-size
-row now takes its inspector's width. `control_set_ui_tests` verifies positive,
-contained input/reset rectangles at Themes/Edit rail widths, then types and
-resets values through both theme and slide adapters using pointer/keyboard input.
-Clean-snapshot application/test build and the focused check pass without QML
-warnings; `git diff --check` clean. **Next: CR.4**, resolved inspector inheritance.
+**Latest remediation: CR.4 complete; CR.1–CR.3 also delivered.** Theme inspector
+values now come from the compiled sample, keeping raw ownValue separate and
+naming inherited Default typography/effects correctly. Sample metadata now also
+carries resolved colours. Adapter regression covers Default weight 800, family,
+size, fit/minimum/effects, override→Inherit and explicit-off→Inherit. Clean-snapshot
+application build, workspace, shared UI and adapter checks pass (3/3);
+`git diff --check` clean. **Next: CR.5**, responsive Bible lookup.
 Fix and push each item separately. Verification uses
-`/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes.
+`/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes. Only the
+new sample-colour metadata hunk in DocumentController is part of CR.4; its
+pre-existing TV.3 context changes remain unstaged.
 
 **Review update, 2026-11-05:** the [CS conformance assessment](docs/reviews/CS-conformance-2026-11-05.md)
 found preview-card, Bible-list/form, inspector and thumbnail scheduling defects

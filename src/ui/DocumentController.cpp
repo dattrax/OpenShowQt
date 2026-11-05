@@ -1707,6 +1707,10 @@ QVariantMap DocumentController::themeSampleAppearance(const QString& themeId,
         out.insert(QStringLiteral("align"), QString::fromStdString(item.align));
         out.insert(QStringLiteral("fontFamily"), QString::fromStdString(item.fontFamily));
         out.insert(QStringLiteral("context"), QString::fromStdString(look.contextName));
+        out.insert(QStringLiteral("textColor"), QString::fromStdString(look.textColor));
+        out.insert(QStringLiteral("backgroundColor"), QString::fromStdString(look.backgroundColor));
+        out.insert(QStringLiteral("backgroundGradient"),
+                   QString::fromStdString(look.backgroundGradient));
         // The RESOLVED typography and effects the audience would draw with
         // this theme, for the inspector's "inherited from …" badges and
         // for the sample's own picture (task TS.4). These are the concrete

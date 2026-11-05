@@ -36,6 +36,11 @@ asserts usable input/reset bounds at both rail widths and performs actual
 type/commit/reset gestures through theme and slide targets. Application build
 and the warning-free focused check pass.
 
+**CR.4 is fixed:** inspector values use the compiled theme sample, including
+inherited Default styles/effects and resolved colour metadata. The adapter's
+ownValue stays separate, and inherited style sources name Default when it
+carries the record. Adapter regression plus shared UI/workspace checks pass.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated
