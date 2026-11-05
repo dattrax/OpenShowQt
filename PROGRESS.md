@@ -4,6 +4,13 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
+**Review update, 2026-11-05:** the [CS conformance assessment](docs/reviews/CS-conformance-2026-11-05.md)
+found preview-card, Bible-list/form, inspector and thumbnail scheduling defects
+despite the focused tests passing. The earlier CS.9 visual sign-off below is
+disputed by those findings; retain its historical evidence, but resolve the
+review and the operator's forthcoming visual bug list before relying on that
+sign-off. Assessment only: application code and existing TV.3 edits untouched.
+
 **CS.9 complete (2026-11-05): one integrated tour walks the shared control set
 across hosts — cross-host writes, per-slide customization, keyboard discipline,
 hidden-page silence, browsing purity and a clean walk-back — and the five-page
