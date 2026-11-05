@@ -4,13 +4,12 @@ Updated: 2026-11-05 (Europe/London).
 
 ## Current checkpoint
 
-**Latest remediation: CR.4 complete; CR.1–CR.3 also delivered.** Theme inspector
-values now come from the compiled sample, keeping raw ownValue separate and
-naming inherited Default typography/effects correctly. Sample metadata now also
-carries resolved colours. Adapter regression covers Default weight 800, family,
-size, fit/minimum/effects, override→Inherit and explicit-off→Inherit. Clean-snapshot
-application build, workspace, shared UI and adapter checks pass (3/3);
-`git diff --check` clean. **Next: CR.5**, responsive Bible lookup.
+**Latest remediation: CR.5 complete; CR.1–CR.4 also delivered.** Bible lookup
+now wraps within the centre pane instead of clipping its buttons. The populated
+UI check verifies all form controls fit and clicks both Lookup and Retry at
+416/796/1096-pixel centre widths. Clean-snapshot application/test build and
+`control_set_ui_tests` pass without QML warnings; `git diff --check` clean.
+**Next: CR.6**, actual collection geometry.
 Fix and push each item separately. Verification uses
 `/tmp/openshow-cs-remediation`, excluding the existing TV.3 changes. Only the
 new sample-colour metadata hunk in DocumentController is part of CR.4; its

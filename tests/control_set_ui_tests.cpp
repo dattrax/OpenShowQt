@@ -58,7 +58,11 @@ private:
     qint64 fOffset = 0;
 };
 class VerseNetwork final : public QNetworkAccessManager {
+public:
+    int requests = 0;
+protected:
     QNetworkReply* createRequest(Operation, const QNetworkRequest& request, QIODevice*) override {
+        ++requests;
         return new VerseReply(request);
     }
 };
@@ -162,6 +166,40 @@ int main(int argc, char** argv) {
                               verses[0]->mapToScene(QPointF(12, verses[0]->height() / 2)).toPoint());
             check(bible.verses()[0].toMap().value("selected").toBool() != wasSelected,
                   "the visible verse checkbox changes the real source selection");
+        }
+        // 416 is the available centre at the required 1000px shell width.
+        // Exercise both the populated form and its empty/retry state.
+        for (const int width : {416, 796, 1096}) {
+            bible.reset();
+            page->setWidth(width);
+            window.resize(width, 1000);
+            QTest::qWait(30);
+            auto* form = page->findChild<QQuickItem*>("bibleLookupForm");
+            check(form && form->height() > 0, "the wrapping form reserves all of its rows");
+            for (const QString name : {"bibleReferenceField", "bibleTranslationPicker",
+                                        "bibleLookupButton", "bibleRetryButton"}) {
+                auto* control = page->findChild<QQuickItem*>(name);
+                check(control && control->isVisible(), "the empty-state form controls are visible");
+                if (!control || !form) continue;
+                const QRectF rect(control->mapToItem(form, QPointF()), control->size());
+                check(QRectF(0, 0, form->width(), form->height()).contains(rect),
+                      "reference, translation, Lookup and Retry stay inside the responsive form");
+            }
+            auto* lookup = page->findChild<QQuickItem*>("bibleLookupButton");
+            const int before = network.requests;
+            if (lookup) QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                lookup->mapToScene(QPointF(lookup->width() / 2, lookup->height() / 2)).toPoint());
+            for (int i = 0; bible.busy() && i < 100; ++i) QTest::qWait(10);
+            check(network.requests == before + 1 && bible.verses().size() == 2,
+                  "Lookup is clickable at every supported centre width");
+            bible.reset();
+            QTest::qWait(20);
+            auto* retry = page->findChild<QQuickItem*>("bibleRetryButton");
+            if (retry) QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                retry->mapToScene(QPointF(retry->width() / 2, retry->height() / 2)).toPoint());
+            for (int i = 0; bible.busy() && i < 100; ++i) QTest::qWait(10);
+            check(network.requests == before + 2 && bible.verses().size() == 2,
+                  "Retry is clickable at every supported centre width");
         }
         page->setVisible(false);
     }

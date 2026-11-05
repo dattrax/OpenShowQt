@@ -41,6 +41,10 @@ inherited Default styles/effects and resolved colour metadata. The adapter's
 ownValue stays separate, and inherited style sources name Default when it
 carries the record. Adapter regression plus shared UI/workspace checks pass.
 
+**CR.5 is fixed:** the lookup form wraps and bounds its fields to the pane.
+The populated UI fixture verifies containment and clicks Lookup/Retry at all
+three centre widths, including 416 pixels. Application build/check pass.
+
 ### R1 — P1: shared preview cards have the aspect ratio inverted
 
 Source: `src/ui/SlidePreviewCard.qml:51–68`. Applies to Show and Bible generated

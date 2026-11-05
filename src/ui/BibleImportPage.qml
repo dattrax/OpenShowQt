@@ -125,12 +125,15 @@ ScrollView {
             text: scripture.status
         }
 
-        Row {
+        Flow {
+            objectName: "bibleLookupForm"
+            width: parent.width
             spacing: 8
             TextField {
                 id: referenceField
                 objectName: "bibleReferenceField"
-                width: Math.max(220, biblePage.availableWidth - 470)
+                width: Math.min(biblePage.availableWidth,
+                                Math.max(220, biblePage.availableWidth - 470))
                 placeholderText: "Reference, e.g. 1 Corinthians 1:1-6"
                 text: bible.reference
                 onEditingFinished: bible.reference = text
@@ -215,7 +218,7 @@ ScrollView {
             ComboBox {
                 objectName: "bibleTranslationPicker"
                 id: translationPicker
-                width: 200
+                width: Math.min(200, biblePage.availableWidth)
                 model: bible.translations
                 textRole: "version"; valueRole: "version"
                 // BIF.2: `currentIndex: indexOfValue(...)` is a plain
