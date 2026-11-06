@@ -3892,6 +3892,40 @@ void exercisePowerPointImport(const std::filesystem::path& root) {
               mapIds(docs.songs()).back(),
           "the imported Library presentation becomes current");
 
+    // Save/reopen with the renderer gone: the package owns the PNG bytes, so
+    // the presentation survives without any sidecar at all.
+    const QString libraryShowId = docs.currentSongId();
+    check(docs.save(), "the service with both decks saves");
+    qputenv("OPENSHOW_PPTX_RENDER", "/no/such/pptx-render");
+    DocumentController reopened(nullptr, root);
+    check(reopened.load(), "the saved decks reopen without a renderer");
+    check(reopened.songs().size() == libraryBefore + 1,
+          "the Library deck survives save/reopen");
+    check(reopened.slidesOf(libraryShowId).size() == 2,
+          "the reopened Library deck still has its slides");
+    check(reopened.playlistEntries().size() == entries,
+          "the reopened running order is unchanged");
+
+    // Deleting the Library show leaves its media until the explicit sweep;
+    // the sweep is one undo, and it never touches the service copy.
+    check(reopened.removeLibraryShows(QStringList{libraryShowId}),
+          "the Library deck can be deleted");
+    check(reopened.songs().size() == libraryBefore,
+          "the deleted deck is gone from the Library");
+    check(reopened.assets().size() == 4,
+          "its rendered media remains until the operator sweeps");
+    check(reopened.removeUnusedAssets() == 2,
+          "the sweep removes only the deleted deck's two renders");
+    check(reopened.assets().size() == 2,
+          "the service deck's referenced renders stay");
+    check(reopened.playlistEntries().size() == entries,
+          "the sweep leaves the service deck runnable");
+    reopened.undo();
+    check(reopened.assets().size() == 4, "one undo restores the swept media");
+    reopened.undo();
+    check(reopened.songs().size() == libraryBefore + 1,
+          "a second undo restores the deleted Library deck");
+
     // Same bytes, same cache: the scripted renderer ran once for both.
     const std::string runs = readManifest(fake.string() + ".count");
     check(std::count(runs.begin(), runs.end(), '\n') == 1,
@@ -3940,6 +3974,20 @@ void exercisePowerPointImport(const std::filesystem::path& root) {
     check(failedDocs.status().contains(QStringLiteral("fake renderer refuses")),
           "the renderer's own sentence is surfaced");
     check(failedDocs.songs().isEmpty(), "a failed render changes no document");
+
+    // A refused render leaves no manifest-less cache directory behind.
+    int partialCaches = 0;
+    const auto cacheRoot = std::filesystem::path(qgetenv("XDG_CACHE_HOME").constData()) /
+                           "openshow-document-tests" / "pptx";
+    std::error_code cacheError;
+    for (const auto& entry : std::filesystem::directory_iterator(cacheRoot, cacheError)) {
+        if (entry.is_directory() &&
+            !std::filesystem::exists(entry.path() / "manifest.json")) {
+            ++partialCaches;
+        }
+    }
+    check(partialCaches == 0,
+          "a failed render leaves no partial cache directory");
 
 #ifdef OPENSHOW_PPTX_RENDER_BIN
     // PX.6 preview: the real engine on the committed operator deck. The

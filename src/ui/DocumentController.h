@@ -594,6 +594,10 @@ public:
     Q_INVOKABLE bool importPowerPointUrlToService(const QUrl& file, int index = -1);
     Q_INVOKABLE bool importPowerPointUrlToLibrary(const QUrl& file);
     bool powerPointImportBusy() const;
+    // PX.5: one explicit sweep of assets no slide references. Nothing is
+    // deleted automatically — a paste or duplicate may still share a render —
+    // so the operator asks, and one undo brings the bytes back.
+    Q_INVOKABLE int removeUnusedAssets();
 
     // --- presentation hand-off ---
 

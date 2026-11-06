@@ -189,6 +189,11 @@ Rectangle {
                         powerPointDialog.open()
                     }
                 }
+                MenuItem {
+                    objectName: "removeUnusedMediaMenuItem"
+                    text: "Remove unused media"
+                    onTriggered: docs.removeUnusedAssets()
+                }
             }
             onClicked: themeMenu.popup()
         }

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 
 #include "openshow/scene/scene.h"
 
@@ -3077,6 +3078,54 @@ bool DocumentController::importPowerPointUrlToLibrary(const QUrl& file) {
 
 bool DocumentController::powerPointImportBusy() const {
     return fPptx != nullptr && fPptx->busy();
+}
+
+int DocumentController::removeUnusedAssets() {
+    flushText();
+    std::set<openshow::domain::Id> referenced;
+    for (const openshow::domain::Id& showId : fDocuments.showIds()) {
+        const openshow::domain::Show* show = fDocuments.findShow(showId);
+        if (show == nullptr) {
+            continue;
+        }
+        for (const openshow::domain::Slide& slide : show->slides) {
+            if (!slide.backgroundAssetId.empty()) {
+                referenced.insert(slide.backgroundAssetId);
+            }
+            for (const openshow::domain::SlideItem& item : slide.items) {
+                if (item.kind == openshow::domain::ItemKind::Image &&
+                    !item.assetId.empty()) {
+                    referenced.insert(item.assetId);
+                }
+            }
+        }
+    }
+    std::vector<openshow::domain::Id> unused;
+    for (const openshow::domain::Id& assetId : fDocuments.assetIds()) {
+        if (referenced.count(assetId) == 0) {
+            unused.push_back(assetId);
+        }
+    }
+    if (unused.empty()) {
+        setStatus(QStringLiteral("no unused media to remove"));
+        return 0;
+    }
+    int removed = 0;
+    if (!edit([&]() {
+            for (const openshow::domain::Id& assetId : unused) {
+                if (fDocuments.removeAsset(assetId, nullptr)) {
+                    ++removed;
+                }
+            }
+            return removed > 0;
+        })) {
+        setStatus(QStringLiteral("remove unused media: nothing was removed"));
+        return 0;
+    }
+    setStatus(QStringLiteral("removed %1 unused media item%2")
+                  .arg(removed)
+                  .arg(removed == 1 ? QString() : QStringLiteral("s")));
+    return removed;
 }
 
 bool DocumentController::beginPowerPointImport(const QString& file, bool toLibrary,

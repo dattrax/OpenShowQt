@@ -124,6 +124,9 @@ int main(int argc, char** argv) {
           "the Library PowerPoint menu entry is present and enabled");
     check(serviceItem != nullptr && serviceItem->property("enabled").toBool(),
           "the Service PowerPoint menu entry is present and enabled");
+    check(window->findChild<QObject*>(QStringLiteral("removeUnusedMediaMenuItem"))
+              != nullptr,
+          "the explicit unused-media sweep is reachable from More");
     check(serviceDrop != nullptr
               && serviceDrop->property("keys").toStringList().contains(
                      QStringLiteral("text/uri-list")),

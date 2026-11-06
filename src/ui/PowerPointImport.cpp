@@ -210,6 +210,10 @@ void PowerPointImport::failWith(const QString& message) {
         fProcess->deleteLater();
         fProcess = nullptr;
     }
+    // A refused render leaves no half cache for the next attempt to trust.
+    if (!fCacheDir.isEmpty()) {
+        QDir(fCacheDir).removeRecursively();
+    }
     setBusy(false);
     emit failed(message);
 }
