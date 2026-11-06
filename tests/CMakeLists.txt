@@ -17,6 +17,15 @@ add_executable(bible_import_tests bible_import_tests.cpp)
 target_link_libraries(bible_import_tests PRIVATE openshow::importer)
 add_test(NAME bible_import_tests COMMAND bible_import_tests)
 
+# Task SI.1: the clipboard plain-lyrics parser — line endings, Unicode,
+# labels versus prose, stanza boundaries, title and the CCLI/author/
+# copyright footer, plus the named bounds. Qt-free.
+add_executable(lyrics_tests lyrics_tests.cpp)
+target_link_libraries(lyrics_tests PRIVATE openshow::importer)
+target_compile_definitions(lyrics_tests PRIVATE
+  OPENSHOW_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME lyrics_tests COMMAND lyrics_tests)
+
 # Milestone BI (task BI.4): the pagination's properties on a scripted
 # measuring engine — order, identity, splits, reservation, honest refusals.
 # Qt-free and engine-free, like the parser's regressions; the claim that

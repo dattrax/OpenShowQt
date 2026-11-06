@@ -4,6 +4,28 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**SI.1 complete: the clipboard plain-lyrics parser, with the song's CCLI and
+attribution footer.** New Qt-free `openshow::importer::parseLyrics` returns a
+draft of the operator's title suggestion and canonical stanzas. It normalises
+CRLF/CR, preserves Unicode/emoji/curly quotes, splits stanzas on blank lines
+(never creating empty ones), recognises bracketed and bare `Verse 1`/`Chorus`/
+`Bridge`/`Post-Chorus`/`Vamp`/`Ending` labels while leaving prose that merely
+contains those words as lyrics, keeps the title line in the words, and turns a
+trailing CCLI/©/SongSelect block into `ccli`, `authors` and `copyright` instead
+of slides. Author lines may sit in their own block above the markers. Nothing
+is invented when no footer exists. The 256 KB, 8000-line and catalog stanza
+caps each refuse with a named sentence. Four synthetic/public-domain stimulus
+files live in [docs/fixtures/songs](docs/fixtures/songs/README.md): one full
+bracketed song with footer, one bare-label song with a split footer, one
+label-less song, and a ten-line verse that must split without a chorus
+following it onto the last slide. Evidence: `lyrics_tests` (all pass,
+including a parse of every fixture).
+
+Next: SI.2 — the stanza-aware measured planner (`SongSlidePlanner`), using the
+current Songs theme's resolved box/typography and the existing
+`importer::textflow` engine, with a hard stanza boundary so a later section
+never fills an earlier section's last slide.
+
 **SL.1 + SL.2 complete: the shared song Library exists as its own durable
 store.** New Qt-free `openshow::catalog` (model, revisions, closed
 validation, `History` with a monotonic id watermark) and its independent

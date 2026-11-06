@@ -7,6 +7,7 @@
 add_library(openshow_importer STATIC
   biblepassage.cpp
   bookindex.cpp
+  lyrics.cpp
   scripturepagination.cpp
   textflow.cpp
 )
@@ -17,6 +18,6 @@ target_include_directories(openshow_importer PUBLIC
 # MeasureRequest carry domain::TextStroke/TextShadow and vet the scene
 # bands through domain's own predicates. "Identical font/style inputs"
 # is a type-level claim, not a comment; domain is Qt-free like this lib.
-target_link_libraries(openshow_importer PUBLIC openshow_domain)
+target_link_libraries(openshow_importer PUBLIC openshow_domain openshow_catalog)
 target_compile_features(openshow_importer PUBLIC cxx_std_20)
 add_library(openshow::importer ALIAS openshow_importer)
