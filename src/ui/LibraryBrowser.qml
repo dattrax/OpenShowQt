@@ -184,7 +184,7 @@ Item {
             id: searchField
             objectName: "librarySearchField"
             width: parent.width
-            placeholderText: "Search library titles\u2026"
+            fixedPlaceholderText: "Search library titles\u2026"
             placeholderTextColor: "#929292"
             text: browser.query
             onTextChanged: browser.query = text

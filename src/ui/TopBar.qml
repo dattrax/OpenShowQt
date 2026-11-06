@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-// The toolbar (UI.6) is the plan's header row: Search, then the two
+// The toolbar (UI.6) is the plan's header row: the two
 // operator pages, then media-bin visibility on the left; the audience
 // state and Settings on the right. Every control here works on every
 // page — none of them hide when a different page is selected, none of
@@ -19,7 +19,6 @@ Rectangle {
     // reflects it and asks for the change — never remembers its own.
     property bool drawerOpen: true
     signal pageSelected(string name)
-    signal searchRequested()
     signal drawerToggleRequested()
 
     // One shape for everything in the strip: glyph over label, selected
@@ -86,16 +85,6 @@ Rectangle {
         Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             width: 1; height: 32; color: "#666668"
-        }
-        ToolTab {
-            objectName: "toolbarSearchButton"
-            Accessible.name: "Search presentations (Ctrl+F)"
-            glyph: "\u2315"
-            label: "Search"
-            // Exactly Ctrl+F: the sidebar owns the field and takes the
-            // detail view to the Library first; the click itself selects
-            // and presents nothing.
-            onClicked: bar.searchRequested()
         }
         Repeater {
             model: [{name: "show", label: "Show", glyph: "\u25b6"},

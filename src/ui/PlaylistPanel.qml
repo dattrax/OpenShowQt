@@ -31,7 +31,6 @@ SidePanel {
 
     function focusSearch() {
         libraryBrowser.focusSearch()
-        libraryBrowser.forceActiveFocus()
     }
 
     // Kept for callers that used UI.2's outline (Ctrl+F and the shell):

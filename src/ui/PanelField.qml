@@ -12,6 +12,20 @@ import QtQuick.Controls
  * declarations.
  */
 TextField {
+    id: field
+    // A compact list filter can opt out of Material's floating placeholder.
+    property string fixedPlaceholderText: ""
+    Text {
+        objectName: "fixedFieldPlaceholder"
+        anchors.fill: parent
+        anchors.leftMargin: field.leftPadding
+        anchors.rightMargin: field.rightPadding
+        verticalAlignment: Text.AlignVCenter
+        text: field.fixedPlaceholderText
+        font: field.font
+        color: field.placeholderTextColor
+        visible: field.fixedPlaceholderText !== "" && field.text.length === 0
+    }
     color: "#eeeeee"
     font.pixelSize: 13
     height: 30

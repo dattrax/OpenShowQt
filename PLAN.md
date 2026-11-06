@@ -1646,7 +1646,7 @@ amendments and the existing durable catalog. Complete and push each fix.
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
 | LRF.1 | DONE | Expose clipboard song import outside Edit | Real-worker library/service journey passes through Show → visible Import → Paste → Add, plus More alternative and return to originating page; local executable rebuilt |
-| LRF.2 | TODO | Remove search-field motion during drag and redundant toolbar Search | Static placeholder through focus/drop; keep Ctrl+F; remove toolbar control and dead signal; actual drag leaves query unchanged |
+| LRF.2 | DONE | Remove search-field motion during drag and redundant toolbar Search | Fixed hint holds position on focus/blur, actual drag retains query, Ctrl+F remains; toolbar control/dead signal removed. Workspace and real-worker journey pass (2/2) |
 | LRF.3 | TODO | Multi-select and Delete current-service entries | Ctrl toggles, Shift ranges, Ctrl+A selects list; Delete only in focused list, stable entry IDs, one service undo, source Library unchanged |
 | LRF.4 | TODO | Multi-select and Delete Library records | Same selection semantics across both branches, typed stable IDs, atomic catalog batches and scoped presentation removal; retain prepared service content; input fields keep native Delete |
 

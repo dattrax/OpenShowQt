@@ -2130,10 +2130,10 @@ int main(int argc, char** argv) {
         auto* tabShow = findNamed(window->contentItem(), "toolbarTabShow");
         auto* tabEdit = findNamed(window->contentItem(), "toolbarTabEdit");
         auto* tabSettings = findNamed(window->contentItem(), "toolbarTabSettings");
-        check(search && binToggle && tabShow && tabEdit && tabSettings
-                  && search->isVisible() && binToggle->isVisible()
+        check(!search && binToggle && tabShow && tabEdit && tabSettings
+                  && binToggle->isVisible()
                   && tabEdit->isVisible() && tabSettings->isVisible(),
-              "the header offers Search, both operator pages, media visibility and Settings");
+              "the header offers the operator pages, media visibility and Settings without redundant Search");
         check(binToggle->property("checked").toBool() && mediaBin->property("open").toBool(),
               "the visibility control reads the bin's own state");
         clickAt(binToggle, 30, 20);
@@ -2145,12 +2145,12 @@ int main(int argc, char** argv) {
         check(mediaBin->property("open").toBool() && binToggle->property("checked").toBool(),
               "and the bin's own bar reopens it with the toolbar agreeing");
 
-        clickAt(search, 30, 20);
+        QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
         QTest::qWait(80);
         auto* field = findNamed(window->contentItem(), "librarySearchField");
         check(field && field->property("activeFocus").toBool()
                   && window->property("typingIntoField").toBool(),
-              "the toolbar Search takes the keyboard to the sidebar field");
+              "Ctrl+F takes the keyboard to the Library field");
         QTest::keyClick(window, Qt::Key_Escape);
         QTest::qWait(40);
         check(!window->property("typingIntoField").toBool(),
@@ -2168,7 +2168,7 @@ int main(int argc, char** argv) {
         QTest::qWait(60);
         check(window->property("page").toString() == QLatin1String("settings"),
               "the right-hand Settings tab switches modes");
-        check(search->isVisible() && binToggle->isVisible() && tabShow->isVisible(),
+        check(binToggle->isVisible() && tabShow->isVisible(),
               "no header control hides or collapses because a different page is up");
         clickAt(tabShow, 33, 26);
         QTest::qWait(60);

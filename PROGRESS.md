@@ -4,7 +4,13 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
-**LRF.1 complete:** Import song is visible on Show and has a More-menu entry;
+**LRF.1–LRF.2 complete:** the Library search now uses a static hint and the
+redundant toolbar Search button/signal is removed. Ctrl+F still focuses the
+field; hint geometry stays fixed through focus/blur and actual drag keeps the
+query. Workspace plus real-worker journey pass (2/2, 38.49 s). Next: service
+and Library multi-selection/Delete.
+
+LRF.1: Import song is visible on Show and has a More-menu entry;
 opening/finishing import returns to its originating page. The production-shell
 journey now uses the actual visible Paste/Add buttons instead of prepopulating
 the catalog through C++; the real-worker test passes (1.84 s). Local frontend

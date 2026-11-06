@@ -220,6 +220,20 @@ int main(int argc, char** argv) {
         worker.shutdownNow();
         return 1;
     }
+    check(!findNamed(window->contentItem(), "toolbarSearchButton"),
+          "the redundant toolbar Search control is absent");
+    auto* hint = findNamed(search, "fixedFieldPlaceholder");
+    check(hint && search->property("placeholderText").toString().isEmpty(),
+          "the Library filter uses a fixed hint rather than an animated Material placeholder");
+    const auto hintOrigin = hint ? hint->mapToScene(QPointF()) : QPointF();
+    QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
+    QTest::qWait(80);
+    check(search->hasActiveFocus() && hint && hint->mapToScene(QPointF()) == hintOrigin,
+          "Ctrl+F focuses search without moving its empty hint");
+    QTest::keyClick(window, Qt::Key_Escape);
+    QTest::qWait(80);
+    check(hint && hint->mapToScene(QPointF()) == hintOrigin,
+          "leaving search keeps the hint in the same position");
     playlistList->setProperty("contentY", 100);
     QTest::qWait(40);
 
@@ -263,6 +277,8 @@ int main(int argc, char** argv) {
             named = named || entry.toMap().value("showId").toString() == showId;
         }
         check(named, "the scrolled order holds a cue naming the referenced show");
+        check(search->property("text") == "morning",
+              "dragging the filtered result keeps the search query unchanged");
         check(!docs.slidesOf(showId).isEmpty(), "the linked show carries slides");
     }
     check(!worker.wordsOnAir() && worker.sceneActive() == 0,

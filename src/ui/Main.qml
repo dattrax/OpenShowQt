@@ -156,7 +156,6 @@ Window {
         // keyboard stay live, and all three can never disagree.
         drawerOpen: mediaBin.open
         onPageSelected: name => root.page = name
-        onSearchRequested: leftDock.focusSearch()
         onDrawerToggleRequested: panels.toggleDrawer()
         anchors.left: parent.left
         anchors.right: parent.right
