@@ -152,6 +152,8 @@ public:
     // renders a browsed presentation's group while the editing cursor stays
     // on its own work. Read-only, through DocumentViews like every row.
     Q_INVOKABLE QVariantList slidesOf(const QString& showId) const;
+    // Any service show, including prepared songs and schedule-only imports.
+    Q_INVOKABLE QVariantMap showInfo(const QString& showId) const;
     QVariantList playlistEntries() const;
     QVariantList assets() const;
     QVariantList themes() const;

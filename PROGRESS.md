@@ -4,6 +4,12 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**Operator bug fixes (2026-11-06):** Service-row browsing now resolves the
+actual show rather than the filtered Library projection. The real-worker
+`library_service_ui_tests` journey passes with populated authored, catalog-song,
+scripture and Library-detached service shows; each displays compilable slides
+without presenting. Next: Shift+arrow selection and confirmed Library deletion.
+
 **LRF.1–LRF.4 complete:** Import song is visible on Show and in More, returning
 to its originating page after import. Search has a stationary hint, its toolbar
 button is removed, and Ctrl+F remains. Library and current-service lists share

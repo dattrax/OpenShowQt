@@ -2529,6 +2529,14 @@ QVariantList DocumentController::runningOrderCues() const {
     return fViews.runningOrderCues(fCurrentPlaylistId);
 }
 
+QVariantMap DocumentController::showInfo(const QString& showId) const {
+    const auto* show = fDocuments.findShow(showId.toStdString());
+    if (!show) return {};
+    return {{"id", QString::fromStdString(show->id)},
+            {"name", QString::fromStdString(show->name)},
+            {"defaultThemeId", QString::fromStdString(show->defaultThemeId)}};
+}
+
 QVariantList DocumentController::slidesOf(const QString& showId) const {
     return fViews.slides(showId.toStdString());
 }

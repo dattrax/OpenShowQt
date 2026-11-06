@@ -225,6 +225,9 @@ int main(int argc, char** argv) {
     // A scrolled running order: a filler presentation listed many times.
     check(docs.createSong("Filler"), "a filler presentation exists");
     const QString fillerId = docs.currentSongId();
+    docs.addSlide();
+    docs.setSlideText("Synthetic presentation words");
+    docs.flushText();
     for (int i = 0; i < 30; ++i) {
         docs.addShowToPlaylist(fillerId);
     }
@@ -328,6 +331,50 @@ int main(int argc, char** argv) {
         check(static_cast<int>(docs.playlistEntries().size()) == before,
               "one undo removes the whole button add");
     }
+
+    // Service browsing must resolve actual shows, even when they are absent
+    // from the Library's authored-presentation projection.
+    auto* showPage = findNamed(window->contentItem(), "showPage");
+    auto browseServiceEntry = [&](int index) {
+        const auto entry = docs.playlistEntries()[index].toMap();
+        const auto showId = entry.value("showId").toString();
+        QMetaObject::invokeMethod(playlistList, "positionViewAtIndex", Q_ARG(int, index), Q_ARG(int, 1));
+        QTest::qWait(50);
+        QList<QQuickItem*> rows;
+        collectNamed(playlistList, "collectionPlaylistRow", &rows);
+        bool clicked = false;
+        for (auto* row : rows) {
+            if (row->property("modelData").toMap().value("entryId") != entry.value("entryId")) continue;
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                              row->mapToScene(QPointF(25, 14)).toPoint());
+            clicked = true;
+            break;
+        }
+        QTest::qWait(30);
+        const auto value = showPage->property("cueRows");
+        const auto cues = value.canConvert<QJSValue>()
+            ? value.value<QJSValue>().toVariant().toList() : value.toList();
+        check(clicked && !cues.isEmpty() && cues.size() == docs.slidesOf(showId).size(),
+              "clicking a service entry displays its actual slides");
+        check(showPage->property("sourceName") == entry.value("showName"),
+              "service browsing displays the show's title");
+        for (const auto& cue : cues) {
+            check(cue.toMap().value("showId") == showId
+                      && !docs.sceneJsonForSlide(cue.toMap().value("slideId").toString()).isEmpty(),
+                  "every browsed slide belongs to the selected show and compiles");
+        }
+        check(!worker.wordsOnAir() && worker.sceneActive() == 0,
+              "service browsing never presents to the audience");
+    };
+    browseServiceEntry(0);  // authored presentation
+    browseServiceEntry(docs.playlistEntries().size() - 1);  // catalog song
+    check(docs.addScripturePassage(docs.currentPlaylistId(), "Mark 1:1-4", "TEST", "Fixture",
+                                  {QStringList{"Synthetic passage words"}}), "prepare a schedule-only passage");
+    browseServiceEntry(docs.playlistEntries().size() - 1);
+    docs.undo();
+    check(docs.removeLibraryShows({fillerId}), "detach the authored presentation from the Library");
+    browseServiceEntry(0);  // retained service copy after Library deletion
+    docs.undo();
 
     // Windows-style selection/deletion is available on Show, scoped to the
     // active list and keyed by entry identity (including repeated shows).

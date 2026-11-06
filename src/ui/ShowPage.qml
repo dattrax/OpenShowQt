@@ -47,8 +47,8 @@ Rectangle {
         showPage.cueRowsTick
         const groups = []
         if (showPage.sourceShowId !== "") {
-            const browsed = docs.songs.filter(s => s.id === showPage.sourceShowId)[0]
-            if (browsed) {
+            const browsed = docs.showInfo(showPage.sourceShowId)
+            if (browsed.id) {
                 groups.push({entryId: "", showId: browsed.id, showName: browsed.name,
                              section: "", slides: docs.slidesOf(browsed.id)})
             }
@@ -57,8 +57,8 @@ Rectangle {
             if (groups.length === 0 && docs.currentSongId !== "") {
                 // A fresh service whose order has nothing in it yet still
                 // shows the selected presentation rather than an empty wall.
-                const current = docs.songs.filter(s => s.id === docs.currentSongId)[0]
-                if (current) {
+                const current = docs.showInfo(docs.currentSongId)
+                if (current.id) {
                     groups.push({entryId: "", showId: current.id, showName: current.name,
                                  section: "", slides: docs.slidesOf(current.id)})
                 }
@@ -75,9 +75,10 @@ Rectangle {
         return rows
     }
     readonly property string sourceName: {
+        showPage.cueRowsTick
         if (showPage.sourceShowId !== "") {
-            const browsed = docs.songs.filter(s => s.id === showPage.sourceShowId)[0]
-            return browsed ? browsed.name : ""
+            const browsed = docs.showInfo(showPage.sourceShowId)
+            return browsed.name || ""
         }
         const list = docs.playlists.filter(p => p.id === docs.currentPlaylistId)[0]
         return list ? list.name : ""
@@ -91,8 +92,8 @@ Rectangle {
         showPage.sourceShowId !== "" ? showPage.sourceShowId : docs.currentSongId
     // The default as the model spells it, and as the header button names it.
     function showDefaultId() {
-        const row = docs.songs.filter(s => s.id === showPage.viewedShowId)[0]
-        return row ? (row.defaultThemeId || "") : ""
+        showPage.cueRowsTick
+        return docs.showInfo(showPage.viewedShowId).defaultThemeId || ""
     }
     function showDefaultName() {
         const theme = docs.themes.filter(t => t.id === showPage.showDefaultId())[0]
