@@ -404,6 +404,11 @@ if(OPENSHOW_BUILD_UI)
   # Needs a display, like the rpc lifecycle scenario.
   add_executable(document_present_tests document_present_tests.cpp)
   target_link_libraries(document_present_tests PRIVATE openshow::ui-core openshow::protocol)
+  if(TARGET pptx_render)
+    target_compile_definitions(document_present_tests PRIVATE
+      OPENSHOW_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+      OPENSHOW_PPTX_RENDER_BIN="${OPENSHOW_PPTX_RENDER_BIN}")
+  endif()
   add_test(NAME document_present_tests
     COMMAND document_present_tests $<TARGET_FILE:openshow-worker>)
   set_tests_properties(document_present_tests PROPERTIES LABELS display TIMEOUT 90)

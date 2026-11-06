@@ -23,14 +23,12 @@ approved leaving its concurrently included PowerPoint submodule changes in
 place. Details: [acceptance](docs/reviews/edit-slide-navigation-2026-11-06.md).
 The concurrent PowerPoint checkpoint and its next steps remain below.
 
-**PX.5 complete (2026-11-06):** rendered decks live as ordinary picture assets
-inside `service.json` + `assets/`, so a saved service reopens with the renderer
-absent and no network. A failed render removes its partial SHA cache; an
-unchanged deck reuses the cached render. Deleting a Library deck leaves its
-media until the explicit More → "Remove unused media" sweep, which deletes only
-assets no slide references, in one undo, and leaves a service copy runnable.
-`document_controller_tests` covers save/reopen offline, deletion, the sweep,
-undo/redo and cache litter. Next: **PX.6** — real-renderer end-to-end acceptance.
+**PX.6 complete (2026-11-06):** the operator deck `aug-8.pptx` (six visible
+slides) is the committed real-world fixture. `pptx_render_tests` renders it at
+1920×1080; `document_controller_tests` imports it and removes it with one undo;
+`pptx_ui_tests` drops it on both operator doors; and `document_present_tests`
+presents every slide on a live worker, then reopens the saved package with the
+renderer absent and presents again. Next: **PX.7** — Windows readiness.
 
 **LRF.8–LRF.11 complete (second operator report, 2026-11-06):** Library
 songs show titles without CCLI row labels, and redundant Add/Import buttons are

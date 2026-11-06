@@ -32,6 +32,8 @@
 #include <unistd.h>
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 
 #include "openshow/protocol/protocol.h"
 #include "openshow/domain/documents.h"
@@ -44,6 +46,17 @@ namespace {
 
 namespace proto = openshow::protocol;
 using openshow::ui::DocumentController;
+
+bool waitForDeckImport(DocumentController& docs, int timeoutMs = 30000) {
+    QElapsedTimer timer;
+    timer.start();
+    while (docs.powerPointImportBusy() && timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return !docs.powerPointImportBusy();
+}
 
 int gFailures = 0;
 
@@ -666,6 +679,42 @@ int main(int argc, char* argv[]) {
               "which the worker accepts on the same keys, so the door the UI opens and the door "
                   "the wire has are one door");
     }
+
+#ifdef OPENSHOW_PPTX_RENDER_BIN
+    // --- PX.6: the operator deck's renders actually present ---
+    {
+        qputenv("OPENSHOW_PPTX_RENDER", QByteArray(OPENSHOW_PPTX_RENDER_BIN));
+        const QString deck = QStringLiteral(
+            OPENSHOW_SOURCE_DIR "/tools/pptx-render/tests/fixtures/aug-8.pptx");
+        DocumentController decks(nullptr, scratch / "decks");
+        check(decks.importPowerPointToLibrary(deck),
+              "the operator deck starts importing for presentation");
+        check(waitForDeckImport(decks), "the operator deck finishes rendering");
+        const QString showId = decks.currentSongId();
+        const QVariantList pages = decks.slidesOf(showId);
+        check(pages.size() == 6, "August's deck has six visible slides to present");
+        for (const QVariant& page : pages) {
+            const QString slideId =
+                page.toMap().value(QStringLiteral("id")).toString();
+            const QString json = decks.sceneJsonForSlide(slideId);
+            check(!json.isEmpty(), "an imported slide compiles to a scene");
+            check(presentJson(fd, nextId, json) != 0,
+                  "every imported slide presents on the live worker");
+        }
+        // The saved package reopens with no renderer, and still presents.
+        check(decks.save(), "the imported deck saves with its renders");
+        qputenv("OPENSHOW_PPTX_RENDER", "/no/such/pptx-render");
+        DocumentController reopened(nullptr, scratch / "decks");
+        check(reopened.load(), "the imported deck reopens offline");
+        check(reopened.slidesOf(showId).size() == 6,
+              "the reopened deck keeps all six slides");
+        const QString reopenedJson = reopened.sceneJsonForSlide(
+            reopened.slidesOf(showId).at(0).toMap()
+                .value(QStringLiteral("id")).toString());
+        check(!reopenedJson.isEmpty() && presentJson(fd, nextId, reopenedJson) != 0,
+              "the reopened deck presents without the renderer");
+    }
+#endif
 
     call(fd, nextId++, "shutdown", {}, &reply);
     int status = 0;
