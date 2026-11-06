@@ -4,13 +4,24 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
-**LRF.15 complete (song-section follow-up, 2026-11-06):** Clipboard import
+**LRF.15–LRF.16 complete (song-section follow-up, 2026-11-06):** Clipboard import
 keeps a lone title before the first explicit section as metadata only. Ordinary
 unlabelled lyrics and multi-line preambles retain all words. The shared song
 planner adds one blank opening cue, without a fake empty catalog stanza; the
-service validates its explicit blank flag and persists it. Four focused suites
-pass (1.96 s): lyrics, removal/blank validation, real-worker import page and song
-service. Next: section captions, muted palette and repeated-label suppression.
+service validates its explicit blank flag and persists it. Show, Edit and import
+previews use section headings with muted colours. Consecutive repeated headings
+are hidden while every lyric thumbnail remains. Returning sections regain their
+heading; service opening names, live red and selection outlines remain visible.
+
+The desktop build succeeds. All **19 affected suites pass** (66.61 s), including
+parser safety, explicit blank validation/reopening, real-worker song import and
+service, caption boundaries across all three hosts, offscreen predecessors,
+live priority and PowerPoint regression checks. The service UI journey also
+passes at 150% scale (13.36 s); populated Show/Edit captures at both scales were
+reviewed. `git diff --check` is clean. Title/blank changes are pushed as
+`a8101d0`; captions form a separate checkpoint. Existing saved songs require
+reimport to regenerate their opening cue; existing section labels gain styling
+directly. Details: [acceptance](docs/reviews/song-section-captions-2026-11-06.md).
 
 **LRF.14 complete (menu cleanup, 2026-11-06):** Removed New presentation
 and both PowerPoint import menu entries. Their creation/file dialogs, forwarding

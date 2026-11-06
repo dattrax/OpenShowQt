@@ -20,8 +20,9 @@ What each file exercises:
 
 Expected import behaviour:
 
-- The title is suggested from the first line and remains in the lyrics as
-  its own stanza; the operator can accept or replace it.
+- A lone title before the first explicit section becomes editable metadata.
+  Unlabelled songs and multi-line preambles retain all lyric lines. Prepared
+  songs begin with one intentional blank cue, outside the catalog stanzas.
 - Every section starts on a new slide. A section that does not fit is
   split at line boundaries (then at words for a single over-long line)
   and its continuation stays in that section — a later section never fills

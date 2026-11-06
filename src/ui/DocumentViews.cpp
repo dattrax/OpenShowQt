@@ -149,6 +149,7 @@ QVariantList DocumentViews::slides(const openshow::domain::Id& showId) const {
         QVariantMap entry;
         entry.insert(QStringLiteral("id"), QString::fromStdString(slide.id));
         entry.insert(QStringLiteral("index"), static_cast<int>(i));
+        entry.insert(QStringLiteral("sectionLabel"), QString::fromStdString(slide.group));
         entry.insert(QStringLiteral("preview"),
                      QString::fromStdString(box.lines.empty() ? std::string("(empty)")
                                                               : box.lines.front()));

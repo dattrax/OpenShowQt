@@ -1574,10 +1574,12 @@ Keep remaining TV/TA and physical M7 gates separate; this work also precedes FO.
 1. Read `QClipboard::Clipboard` plain text only on Paste from clipboard; do not
    read X11 primary selection, preserve HTML formatting, fetch a provider or
    overwrite the existing structured slide clipboard. Title is separate metadata;
-   a first-line title suggestion must not remove that line from the lyrics.
+   LRF.15 treats a lone leading title before the first section as metadata only,
+   while preserving unlabelled lyrics and multi-line preambles.
    Normalize CRLF/CR to LF, retain Unicode/punctuation/repeated chorus text and
    authored line order, and use blank lines as stanza boundaries. Empty stanzas
-   do not become empty slides. Do not guess away Verse/Chorus labels or infer
+   do not become empty slides; the planner adds one intentional blank opening.
+   Do not guess away Verse/Chorus labels or infer
    verse numbers from ordinary text. Bound input/generated slide counts with
    named limits and clear failure, never silent truncation.
 2. Start each stanza on a new slide. Keep it whole when measured to fit; split
@@ -1660,6 +1662,7 @@ amendments and the existing durable catalog. Complete and push each fix.
 | LRF.13 | DONE | Navigate the selected presentation through Edit thumbnails | User clarified selected song/presentation only. Replace Library/service pane and picker with a worker-rendered preview rail; click/arrow selection, bounded thumbnail window, hidden-page silence and Add slide footer; [acceptance](docs/reviews/edit-slide-navigation-2026-11-06.md) |
 | LRF.14 | DONE | Remove redundant presentation menu routes | Remove New presentation and both PowerPoint import menu entries, their file/creation dialogs and menu-only signals; shared import/rendering stays behind both drag/drop destinations. UI regressions assert absence and import the real deck through both targets |
 | LRF.15 | DONE | Treat clipboard title as metadata and prepare a blank opening cue | Remove a lone title before the first section while preserving unlabelled/multi-line lyrics. Shared planner adds one explicit blank opening; validation, real-worker import/service and restart regressions pass |
+| LRF.16 | DONE | Display song sections with muted colours and concise captions | Share section captions across Show/Edit/import; consecutive labels render once while lyric thumbnails remain; preserve service name and live/selection markers. 19 affected suites plus 150% real-worker journey pass; [acceptance](docs/reviews/song-section-captions-2026-11-06.md) |
 
 ### PowerPoint deck import (PX)
 

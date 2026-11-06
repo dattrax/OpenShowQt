@@ -24,6 +24,30 @@ Item {
     property bool selected: false
     property bool live: false
     property string caption: ""
+    property string sectionLabel: ""
+    property bool showSectionLabel: true
+    property string sectionPrefix: ""
+    readonly property string sectionTitle: {
+        const raw = sectionLabel.trim().replace(/\s*\(cont\.\)$/i, "")
+        const folded = raw.toLowerCase().replace(/-/g, " ").replace(/([a-z])(\d)/g, "$1 $2")
+                          .replace(/\s+/g, " ")
+        const names = ({"verse": "Verse", "chorus": "Chorus", "bridge": "Bridge",
+            "pre chorus": "Pre-Chorus", "post chorus": "Post-Chorus", "refrain": "Refrain",
+            "intro": "Intro", "blank": "Blank", "outro": "Outro", "ending": "Ending",
+            "instrumental": "Instrumental", "interlude": "Interlude", "tag": "Tag", "vamp": "Vamp"})
+        const parts = folded.match(/^(pre chorus|post chorus|verse|chorus|bridge|refrain|intro|blank|outro|ending|instrumental|interlude|tag|vamp)(?: (.+))?$/)
+        return parts ? names[parts[1]] + (parts[2] ? " " + parts[2] : "") : raw
+    }
+    readonly property color sectionColor: {
+        const kind = sectionTitle.toLowerCase().replace(/\s+.*$/, "")
+        const colors = ({"verse": "#28495f", "chorus": "#25534e", "bridge": "#514363",
+            "pre-chorus": "#3b4d71", "post-chorus": "#375542", "refrain": "#25534e",
+            "intro": "#454954", "blank": "#454954", "outro": "#62543a", "ending": "#62543a",
+            "instrumental": "#5a503e", "interlude": "#5a503e", "tag": "#604351", "vamp": "#604351"})
+        return colors[kind] || "#414141"
+    }
+    readonly property string displayCaption: sectionLabel !== ""
+        ? (showSectionLabel ? sectionPrefix + sectionTitle : "") : caption
 
     property color idleColor: "#2d2d2d"
     property color hoverColor: "#393939"
@@ -62,18 +86,22 @@ Item {
     // cue tiles have always reserved under the thumbnail.
     Rectangle {
         objectName: "slidePreviewCaption"
-        visible: card.caption !== ""
+        visible: card.caption !== "" || card.sectionLabel !== ""
         x: 2
         y: previewSurface.y + previewSurface.height + 2
         width: card.width - 4
         height: Math.max(0, card.height - y - 2)
-        color: card.live ? "#7c2c28" : (card.selected ? "#1678cf" : "#414141")
+        color: card.live ? "#7c2c28"
+             : (card.sectionLabel !== "" ? (card.selected ? Qt.lighter(card.sectionColor, 1.18) : card.sectionColor)
+                : (card.selected ? "#1678cf" : "#414141"))
         Text {
+            objectName: "slidePreviewCaptionText"
             anchors.fill: parent
             anchors.leftMargin: 6
             anchors.rightMargin: 6
             verticalAlignment: Text.AlignVCenter
-            text: card.caption
+            visible: card.displayCaption !== ""
+            text: card.displayCaption
             color: "#eeeeee"
             font.pixelSize: 12
             elide: Text.ElideRight

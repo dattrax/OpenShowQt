@@ -391,6 +391,99 @@ int main(int argc, char** argv) {
               "editing-slide navigation never presents to the audience");
     }
 
+    // Section captions work across the service grid and Edit rail, including
+    // a continuation whose preceding slide has scrolled out of view.
+    {
+        const auto oldShow = docs.currentSongId();
+        const int oldSlide = docs.currentSlide();
+        const auto oldEntries = docs.playlistEntries();
+        const QStringList labels{"Blank", "Verse 1", "Verse 1", "Chorus", "CHORUS", "Bridge", "Chorus"};
+        const QList<bool> starts{true, true, false, true, false, true, true};
+        QVariantList plan;
+        for (int i = 0; i < labels.size(); ++i) {
+            QVariantMap row{{"group", labels[i]}, {"label", labels[i]}, {"blank", i == 0}};
+            row.insert("lines", i == 0 ? QStringList{} : QStringList{QString("Synthetic lyric words %1").arg(i)});
+            plan.append(row);
+        }
+        const auto fixture = docs.upsertCatalogSong("caption-fixture", "Section captions", "", "", "", plan, true);
+        check(!fixture.isEmpty(), "prepare a song whose sections span consecutive slides");
+        auto* show = findNamed(window->contentItem(), "showPage");
+        auto* grid = findNamed(window->contentItem(), "operatorSlideGrid");
+        window->setProperty("browsedShowId", "");
+        QTest::qWait(60);
+        const auto value = show->property("cueRows");
+        const auto rows = value.canConvert<QJSValue>() ? value.value<QJSValue>().toVariant().toList() : value.toList();
+        int matched = 0;
+        for (const auto& value : rows) {
+            const auto row = value.toMap();
+            if (row.value("showId").toString() != fixture) continue;
+            const int i = row.value("slideIndex").toInt();
+            ++matched;
+            check(row.value("sectionLabel").toString() == labels[i]
+                      && row.value("sectionStart").toBool() == starts[i],
+                  "section headings appear at changes, including a returning Chorus, but not on continuations");
+        }
+        check(matched == labels.size(), "caption styling leaves all service slides in place");
+        const bool drawerWasOpen = panels.drawerHeight() > 40;
+        if (drawerWasOpen) panels.toggleDrawer();
+        QMetaObject::invokeMethod(grid, "positionViewAtEnd");
+        QTest::qWait(120);
+        QList<QQuickItem*> tiles;
+        collectNamed(grid, "operatorCueTile", &tiles);
+        int continuations = 0;
+        for (auto* tile : tiles) {
+            const auto row = tile->property("modelData").toMap();
+            if (row.value("showId").toString() != fixture) continue;
+            const int i = row.value("slideIndex").toInt();
+            check(tile->property("showSectionLabel").toBool() == starts[i], "Show passes section boundaries to its actual cards");
+            if (i == 0) check(tile->property("displayCaption").toString() == "Section captions \u00b7 Blank",
+                              "the opening caption retains the service item's name");
+            if (!starts[i]) {
+                ++continuations;
+                check(tile->property("displayCaption").toString().isEmpty(), "a Show continuation has no duplicate caption text");
+            }
+        }
+        check(continuations == 2, "both continued sections remain visible as thumbnail cards");
+        const auto fixtureSlides = docs.slidesOf(fixture);
+        check(waitFor([&] {
+            for (const auto& slide : fixtureSlides)
+                if (worker.thumbnail(slide.toMap().value("id").toString()).isNull()) return false;
+            return true;
+        }), "all section and continuation cards receive real lyric thumbnails");
+        if (!debugCapture.isEmpty()) window->grabWindow().save(debugCapture + "-sections-show.png");
+        const auto selectedFrames = worker.selectionFrames();
+        window->setProperty("page", "edit");
+        docs.selectSong(fixture);
+        docs.selectSlide(2);
+        QTest::qWait(100);
+        auto* list = findNamed(window->contentItem(), "editorSlideList");
+        QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, 2), Q_ARG(int, 0));
+        QTest::qWait(100);
+        tiles.clear();
+        collectNamed(list, "editorSlideTile", &tiles);
+        bool continued = false;
+        for (auto* tile : tiles) if (tile->property("index").toInt() == 2) {
+            continued = tile->property("displayCaption").toString().isEmpty()
+                && tile->property("sectionTitle").toString() == "Verse 1";
+        }
+        check(continued && docs.currentSlideText() == "Synthetic lyric words 2",
+              "Edit suppresses a repeated heading even when its predecessor is offscreen, without hiding lyric words");
+        check(waitFor([&] { return worker.selectionReady() && worker.selectionFrames() > selectedFrames; }),
+              "the continuation's lyric words also render on the Edit canvas");
+        check(waitFor([&] {
+            for (int i = 2; i < fixtureSlides.size(); ++i)
+                if (worker.thumbnail(fixtureSlides[i].toMap().value("id").toString()).isNull()) return false;
+            return true;
+        }), "Edit continuation cards receive their lyric thumbnails after changing lanes");
+        if (!debugCapture.isEmpty()) window->grabWindow().save(debugCapture + "-sections-edit.png");
+        window->setProperty("page", "show");
+        if (drawerWasOpen) panels.toggleDrawer();
+        docs.undo();
+        docs.selectSong(oldShow);
+        docs.selectSlide(oldSlide);
+        check(docs.playlistEntries() == oldEntries, "section-caption browsing adds no document edits");
+    }
+
     // Service browsing must resolve actual shows, even when they are absent
     // from the Library's authored-presentation projection.
     auto* showPage = findNamed(window->contentItem(), "showPage");

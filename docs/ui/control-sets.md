@@ -188,9 +188,16 @@ reports another target's frame as its `ready`.
 live chrome and activation/context signals. A card is a click target, not a
 focusable button (cue stepping must keep the keyboard).
 
+Song sections use muted caption-strip colours: verse blue, chorus/refrain teal,
+bridge purple, pre-chorus indigo, post-chorus green, opening slate and ending
+amber. Consecutive section cards retain their coloured strip and lyric picture
+while suppressing duplicate caption text. Live red and selection borders retain
+their existing priority. Canonical labels and palette live in the shared card;
+Show, Edit and clipboard import supply section boundaries from model order.
+
 | | |
 |---|---|
-| Inputs | the embedded `SlidePreviewSurface` via the `surface` alias (bound through by the host: target, key, controller, text fallback as `surface.placeholder` with `placeholderVisible`); `caption` (string; the strip fills the room under the picture); `selected`, `live` (booleans — chrome only, the host computes them from acknowledged worker state; a pending go wears a host chip, not the card border); `idleColor`/`hoverColor` |
+| Inputs | the embedded `SlidePreviewSurface` via the `surface` alias (bound through by the host: target, key, controller, text fallback as `surface.placeholder` with `placeholderVisible`); `caption` (string; the strip fills the room under the picture); `sectionLabel`/`showSectionLabel`/`sectionPrefix` (optional section caption, consecutive-heading gate and service-name prefix; neutral default preserves ordinary captions), `selected`, `live` (booleans — chrome only, the host computes them from acknowledged worker state; a pending go wears a host chip, not the card border); `idleColor`/`hoverColor` |
 | Events | `activated()` (primary click), `contextRequested(mouseX, mouseY)` (right click, in CARD coordinates — the host maps it to wherever its menu lives) |
 | Adapter | the host decides what `activated()` means: Show presents the cue; Bible selects the generated slide off air; Edit selects the authored slide; Themes selects the view. The card itself never calls a presentation verb |
 | Consumers | ShowPage cue tiles, EditorSlideRail authored-slide tiles, Bible generated-slide cards, ThemeEditor Songs/Bible view tiles |

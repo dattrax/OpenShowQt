@@ -182,7 +182,8 @@ int main(int argc, char** argv) {
 
     const qint64 framesBefore = worker.thumbnailFrames();
     QMetaObject::invokeMethod(pageObject.get(), "askPlanThumbnails");
-    check(waitFor([&] { return worker.thumbnailFrames() > framesBefore; }, 15000),
+    check(waitFor([&] { return worker.thumbnailFrames() > framesBefore
+              && !worker.thumbnail(songImport.previewKey(1)).isNull(); }, 15000),
           "the page's cards asked the worker for real pictures");
     check(!worker.wordsOnAir() && worker.sceneActive() == 0,
           "the import page previews only, never presents");
@@ -199,6 +200,31 @@ int main(int argc, char** argv) {
           "the record carries the CCLI number");
     check(!worker.wordsOnAir() && worker.sceneActive() == 0,
           "Add to Library presented nothing");
+    // A continued section keeps its colour, but only its first card has
+    // caption text. A returning chorus after a bridge gets its label again.
+    QGuiApplication::clipboard()->setText(
+        "Caption Test\n\n[Verse 1]\nFirst verse words\n\n[Verse 1]\nMore verse words\n\n"
+        "[Chorus]\nChorus words\n\n[Bridge]\nBridge words\n\n[Chorus]\nReturning chorus words\n");
+    songImport.pasteFromClipboard();
+    check(waitFor([&] { return !songImport.measuring() && songImport.slides().size() == 6; }),
+          "the continuation fixture plans one blank cue and five lyric slides");
+    QTest::qWait(120);
+    int checkedCaptions = 0;
+    const QStringList captions{"Blank", "Verse 1", "", "Chorus", "Bridge", "Chorus"};
+    auto verifyCaptions = [&](auto&& self, QQuickItem* item) -> void {
+        if (item->objectName() == "songSlideCard") {
+            const int index = item->property("index").toInt();
+            if (index >= 0 && index < captions.size()) {
+                ++checkedCaptions;
+                check(item->property("displayCaption").toString() == captions[index],
+                      "import cards show section headings once per consecutive run");
+            }
+        }
+        for (auto* child : item->childItems()) self(self, child);
+    };
+    verifyCaptions(verifyCaptions, page);
+    check(checkedCaptions == captions.size(), "all import preview cards retain their place");
+
     check(warnings.isEmpty(), "the page emitted no QML warnings");
     for (const QString& warning : warnings) {
         std::fprintf(stderr, "  QML: %s\n", qPrintable(warning));

@@ -486,6 +486,35 @@ int main(int argc, char** argv) {
               "the caption retains a readable strip below the picture");
     }
 
+    // Section colours and captions belong to operator chrome; repeated
+    // labels disappear while the thumbnail and coloured strip remain.
+    auto* strip = card->findChild<QQuickItem*>("slidePreviewCaption");
+    auto* captionText = card->findChild<QQuickItem*>("slidePreviewCaptionText");
+    auto* cardSurface = card->property("surface").value<QQuickItem*>();
+    cardSurface->setProperty("placeholder", "All lyric words remain visible");
+    QStringList palette;
+    for (const auto& label : {"Verse 1", "Chorus", "Bridge", "Pre-Chorus", "Post-Chorus", "Blank", "Ending"}) {
+        card->setProperty("sectionLabel", label);
+        const auto color = card->property("sectionColor").toString();
+        check(!palette.contains(color), "major song section kinds have distinct muted colours");
+        palette.append(color);
+        check(card->property("displayCaption").toString() == label,
+              "a song card labels its section instead of repeating the first lyric");
+    }
+    card->setProperty("sectionLabel", "CHORUS");
+    check(card->property("sectionTitle").toString() == "Chorus", "section labels have consistent display casing");
+    card->setProperty("showSectionLabel", false);
+    check(captionText && !captionText->isVisible() && card->property("displayCaption").toString().isEmpty()
+              && strip->isVisible() && cardSurface->property("placeholder").toString() == "All lyric words remain visible",
+          "a continuation hides only its caption text, retaining its section colour and lyric picture");
+    card->setProperty("live", true);
+    check(strip->property("color").toString() == "#7c2c28", "the live marker still outranks section colours");
+    card->setProperty("live", false);
+    card->setProperty("showSectionLabel", true);
+    card->setProperty("sectionLabel", "");
+    check(card->property("displayCaption") == card->property("caption"),
+          "Bible and ordinary presentation captions retain their existing text");
+
     // The actual Bible page with populated provider data, not just its empty
     // shells. No worker is needed to select verses; pagination tests cover it.
     card->setVisible(false);

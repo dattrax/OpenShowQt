@@ -785,11 +785,21 @@ compound service edit restores its pre-edit snapshot (domain `History`), so no
 partial show survives. Library edits use catalog history; service edits use
 document history; both stay separate.
 
+Prepared songs begin with one intentional wordless cue supplied by `SongPlanner`,
+not an empty catalog stanza. The import preview and service bridge share that
+plan; the service adapter admits an explicitly marked blank only at the start
+of a plan containing lyric slides. Existing slide group strings are exposed as
+`sectionLabel` preview metadata. `SlidePreviewCard` gives sections muted caption
+colours and a canonical label; each host suppresses consecutive duplicate
+headings, retaining full lyric thumbnails and the service's opening name marker.
+Audience live state keeps its existing red priority. No stored format changes.
+
 **Clipboard import** (`openshow::importer::parseLyrics`) reads only
 `QClipboard::Clipboard` on an explicit Paste, normalises CRLF/CR, preserves
 Unicode and authored line order, treats blank lines as stanza boundaries, keeps
-bracketed/bare section labels (prose stays lyrics), suggests the first line as
-the title without removing it, and moves a trailing CCLI/©/permission block
+bracketed/bare section labels (prose stays lyrics), keeps a lone title before
+the first section as metadata while preserving unlabelled/multi-line lyrics,
+and moves a trailing CCLI/©/permission block
 into the record's reporting fields instead of slide words. `paginateSong` then
 measures each stanza whole, packs authored lines on overflow, delegates only one
 over-long line to the shared `textflow` sentence/word split, never shrinks the

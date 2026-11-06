@@ -65,13 +65,20 @@ Rectangle {
             }
         }
         const rows = []
-        for (const group of groups)
-            for (const slide of group.slides)
+        for (const group of groups) {
+            let previousSection = null
+            for (const slide of group.slides) {
+                const sectionLabel = slide.sectionLabel || ""
                 rows.push({cueKey: group.entryId + ":" + slide.id, entryId: group.entryId,
                            showId: group.showId, showName: group.showName,
                            section: group.section, slideId: slide.id,
                            slideIndex: slide.index, preview: slide.preview,
+                           sectionLabel: sectionLabel,
+                           sectionStart: previousSection !== sectionLabel.trim().toLowerCase(),
                            groupStart: slide.index === 0})
+                previousSection = sectionLabel.trim().toLowerCase()
+            }
+        }
         return rows
     }
     readonly property string sourceName: {
@@ -385,6 +392,7 @@ Rectangle {
             // quiet and the whole cell stays invisible and inert.
             readonly property var emptyRow: ({cueKey: "", showName: "", section: "",
                                               slideId: "", slideIndex: -1, preview: "",
+                                              sectionLabel: "", sectionStart: false,
                                               groupStart: false})
             readonly property var row: modelData.filler === true
                                        ? cell.emptyRow : modelData.row
@@ -420,6 +428,10 @@ Rectangle {
                                                    && modelData.cueKey === worker.pendingCueKey
                 selected: rowSelected
                 live: rowLive
+                sectionLabel: modelData.sectionLabel
+                showSectionLabel: modelData.sectionStart
+                sectionPrefix: modelData.groupStart && showPage.sourceShowId === ""
+                    ? modelData.showName + " \u00b7 " : ""
                 caption: (modelData.groupStart && showPage.sourceShowId === ""
                           ? modelData.showName + " \u00b7 " : "")
                          + (modelData.slideIndex + 1) + "  " + modelData.preview

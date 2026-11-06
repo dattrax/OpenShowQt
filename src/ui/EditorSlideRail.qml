@@ -126,6 +126,9 @@ Rectangle {
             height: slides.rowHeight - 8
             selected: index === docs.currentSlide
             caption: (index + 1) + "  " + modelData.preview
+            sectionLabel: modelData.sectionLabel || ""
+            showSectionLabel: index === 0 || modelData.sectionLabel.trim().toLowerCase()
+                !== rail.rows[index - 1].sectionLabel.trim().toLowerCase()
             surface.controller: worker
             surface.target: "thumbnail"
             surface.key: modelData.id
