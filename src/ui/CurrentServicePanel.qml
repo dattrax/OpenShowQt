@@ -243,17 +243,33 @@ Item {
                 id: entryDrop
                 objectName: "serviceDropArea"
                 anchors.fill: parent
-                keys: ["text/plain"]
+                keys: ["text/plain", "text/uri-list"]
                 property string payloadKind: ""
                 readonly property int dropAction: payloadKind === "entry" ? Qt.MoveAction : Qt.CopyAction
                 readonly property string dropHint: payloadKind === "entry" ? "Move to the marked position"
-                                                                         : "Add at the marked position"
+                    : (payloadKind === "pptx" ? "Import this deck at the marked position"
+                                              : "Add at the marked position")
                 readonly property int insertionIndex: servicePanel.gapIndex(dragY)
                 // Bounded edge autoscroll (SL.7): a drag held near the top or
                 // bottom of a long order scrolls toward the destination it is
                 // hovering, one small step per tick, and stops on exit/drop.
                 property real dragY: 0
                 onEntered: drag => {
+                    // PX.3: a file from the desktop is a deck import, not one
+                    // of the internal row payloads. One .pptx at a time.
+                    if (drag.hasUrls) {
+                        const urls = drag.urls
+                        const valid = !docs.powerPointImportBusy && urls
+                            && urls.length === 1
+                            && String(urls[0]).toLowerCase().endsWith(".pptx")
+                        drag.accepted = valid
+                        if (!valid) return
+                        entryDrop.payloadKind = "pptx"
+                        drag.accept(Qt.CopyAction)
+                        entryDrop.dragY = drag.y
+                        autoScroll.start()
+                        return
+                    }
                     const payload = drag.source ? String(drag.source.payload || "") : ""
                     const colon = payload.indexOf(":")
                     const kind = payload.substring(0, colon)
@@ -285,6 +301,17 @@ Item {
                 }
                 onDropped: function (drop) {
                     autoScroll.stop()
+                    if (drop.hasUrls) {
+                        const urls = drop.urls
+                        if (docs.powerPointImportBusy || !urls || urls.length !== 1)
+                            return
+                        if (docs.importPowerPointUrlToService(
+                                    urls[0], servicePanel.gapIndex(drop.y))) {
+                            drop.accept(Qt.CopyAction)
+                            servicePanel.forceActiveFocus()
+                        }
+                        return
+                    }
                     const payload = drop.source && drop.source.payload
                         ? drop.source.payload : drop.getDataAsString("text/plain")
                     const colon = payload.indexOf(":")

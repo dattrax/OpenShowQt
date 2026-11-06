@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 
 // The toolbar (UI.6) is the plan's header row: the two
 // operator pages, then media-bin visibility on the left; the audience
@@ -166,6 +167,28 @@ Rectangle {
                     text: "Import Bible Passage\u2026"
                     onTriggered: bar.pageSelected("bible")
                 }
+                MenuSeparator {}
+                // PX.4: the menu's two explicit destinations. Service appends
+                // to the running order (schedule-owned); Library only adds a
+                // reusable presentation. Drag/drop offers the same two doors.
+                MenuItem {
+                    objectName: "powerPointLibraryMenuItem"
+                    text: "Import PowerPoint into Library\u2026"
+                    enabled: !docs.powerPointImportBusy
+                    onTriggered: {
+                        powerPointDialog.destination = "library"
+                        powerPointDialog.open()
+                    }
+                }
+                MenuItem {
+                    objectName: "powerPointServiceMenuItem"
+                    text: "Import PowerPoint into Service\u2026"
+                    enabled: !docs.powerPointImportBusy
+                    onTriggered: {
+                        powerPointDialog.destination = "service"
+                        powerPointDialog.open()
+                    }
+                }
             }
             onClicked: themeMenu.popup()
         }
@@ -248,4 +271,18 @@ Rectangle {
             onClicked: bar.pageSelected("settings")
         }
     }
+    FileDialog {
+        id: powerPointDialog
+        objectName: "powerPointImportDialog"
+        property string destination: "library"
+        title: "Import PowerPoint"
+        nameFilters: ["PowerPoint presentations (*.pptx)"]
+        onAccepted: {
+            if (powerPointDialog.destination === "service")
+                docs.importPowerPointUrlToService(selectedFile, -1)
+            else
+                docs.importPowerPointUrlToLibrary(selectedFile)
+        }
+    }
+
 }

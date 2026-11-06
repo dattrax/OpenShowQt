@@ -530,16 +530,43 @@ Item {
             }
             DropArea {
                 id: presentationsDrop
-                readonly property int dropAction: Qt.MoveAction
-                readonly property string dropHint: "Move to Presentations"
+                objectName: "presentationsDrop"
+                readonly property bool deckDrag: dragKind === "pptx"
+                property string dragKind: ""
+                readonly property int dropAction: deckDrag ? Qt.CopyAction : Qt.MoveAction
+                readonly property string dropHint: deckDrag ? "Import this deck into the Library"
+                                                           : "Move to Presentations"
                 anchors.fill: parent
-                keys: ["text/plain"]
+                keys: ["text/plain", "text/uri-list"]
                 onEntered: drag => {
+                    // PX.4: a desktop .pptx becomes a Library presentation;
+                    // it never enters the running order.
+                    if (drag.hasUrls) {
+                        const urls = drag.urls
+                        const valid = !docs.powerPointImportBusy && urls
+                            && urls.length === 1
+                            && String(urls[0]).toLowerCase().endsWith(".pptx")
+                        drag.accepted = valid
+                        presentationsDrop.dragKind = valid ? "pptx" : ""
+                        if (valid) drag.accept(Qt.CopyAction)
+                        return
+                    }
+                    presentationsDrop.dragKind = ""
                     const payload = drag.source ? String(drag.source.payload || "") : ""
                     drag.accepted = payload.startsWith("catalog:")
                     if (drag.accepted) drag.accept(Qt.MoveAction)
                 }
+                onExited: presentationsDrop.dragKind = ""
                 onDropped: function (drop) {
+                    presentationsDrop.dragKind = ""
+                    if (drop.hasUrls) {
+                        const urls = drop.urls
+                        if (docs.powerPointImportBusy || !urls || urls.length !== 1)
+                            return
+                        if (docs.importPowerPointUrlToLibrary(urls[0]))
+                            drop.accept(Qt.CopyAction)
+                        return
+                    }
                     const payload = drop.source && drop.source.payload
                         ? drop.source.payload : drop.getDataAsString("text/plain")
                     if (!payload.startsWith("catalog:"))

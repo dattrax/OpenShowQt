@@ -828,3 +828,27 @@ if(TARGET pptx_render)
   set_tests_properties(pptx_render_tests PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/tools/pptx-render")
 endif()
+
+# PX.3/PX.4: the two operator doors for a .pptx drop, over the real shell.
+if(TARGET pptx_render)
+  qt_add_executable(pptx_ui_tests pptx_ui_tests.cpp)
+  qt_add_qml_module(pptx_ui_tests
+    URI OpenShow
+    VERSION 1.0
+    OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/pptx-ui/OpenShow
+    QML_FILES ${OPENSHOW_WORKSPACE_QML_FILES}
+    SOURCES ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.h
+            ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/InspectorAdapter.h
+            ${PROJECT_SOURCE_DIR}/src/ui/InspectorAdapter.cpp
+  )
+  target_link_libraries(pptx_ui_tests PRIVATE openshow::ui-core
+    Qt6::Quick Qt6::QuickControls2 Qt6::Test)
+  target_compile_definitions(pptx_ui_tests PRIVATE
+    OPENSHOW_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    OPENSHOW_PPTX_RENDER_BIN="${OPENSHOW_PPTX_RENDER_BIN}")
+  add_test(NAME pptx_ui_tests COMMAND pptx_ui_tests)
+  set_tests_properties(pptx_ui_tests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    TIMEOUT 120)
+endif()

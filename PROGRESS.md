@@ -11,15 +11,15 @@ native text Delete, Show-mode silence, deleting the final slide and empty-state
 undo. Next: replace the Edit library/service pane and picker with previews of
 only the selected song/presentation, as clarified by the operator.
 
-**PX.2 complete (2026-11-06):** `DocumentController` now imports a `.pptx`
-through `PowerPointImport`: tool discovery, bounded `QProcess`, SHA-256 cache,
-manifest validation and one transactional edit for both destinations. Service
-import creates a `scheduleOwned` show at the drop index; Library import creates
-an ordinary show and leaves the running order alone. The committed operator
-deck `tools/pptx-render/tests/fixtures/aug-8.pptx` (6 visible slides) renders at
-1920×1080 through the real sidecar. `document_controller_tests` covers one-undo,
-cache reuse, missing tool, bad manifest, renderer failure and the real deck.
-Next: **PX.3** — the service drop target and menu action.
+**PX.3/PX.4 complete (2026-11-06):** both operator doors are live. A desktop
+`.pptx` dropped on the running order inserts a `scheduleOwned` show at the
+hovered gap; dropped on the Library's Presentations header it creates an
+ordinary Library show and leaves the running order alone. Both are one undo.
+The More menu offers the same two destinations through a `.pptx` file dialog
+and both entries disable while a render is in flight. `pptx_ui_tests`
+synthesizes real URL QDropEvents over both targets using
+`tools/pptx-render/tests/fixtures/aug-8.pptx` (six 1080p slides) and passes.
+Next: **PX.5** — persistence, deletion policy and cache hygiene.
 
 **LRF.8–LRF.11 complete (second operator report, 2026-11-06):** Library
 songs show titles without CCLI row labels, and redundant Add/Import buttons are
