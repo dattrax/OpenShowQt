@@ -138,6 +138,7 @@ ScrollView {
                 {key: "Ctrl+1 / Ctrl+2 / Ctrl+5", what: "Show, Edit and Settings"},
                 {key: "Ctrl+F", what: "Search presentations (opens the sidebar's field)"},
                 {key: "Ctrl+D", what: "Duplicate in Edit; toggle the media bin elsewhere"},
+                {key: "Delete", what: "Remove the selected slide in Edit or selected items in a focused list"},
                 {key: "Ctrl+C / Ctrl+X / Ctrl+V", what: "Copy slide; cut / paste in Edit only"},
                 {key: "Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z", what: "Undo / redo in Edit or the focused Library/service list"},
                 {key: "Ctrl+S", what: "Save the service"},

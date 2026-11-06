@@ -74,11 +74,6 @@ Flickable {
             onActivated: docs.selectSlide(currentIndex)
         }
         PanelButton { text: "Add slide"; enabled: docs.currentSongId !== ""; onClicked: docs.addSlide() }
-        PanelButton { text: "Remove slide"; enabled: docs.slides.length > 0; onClicked: docs.removeCurrentSlide() }
-        PanelButton { text: "Undo"; enabled: docs.canUndo; onClicked: docs.undo() }
-        PanelButton { text: "Redo"; enabled: docs.canRedo; onClicked: docs.redo() }
-        PanelButton { text: "Save"; enabled: docs.dirty; onClicked: docs.save() }
-        PanelButton { text: "Load"; onClicked: docs.load() }
     }
 
     ScrollView {

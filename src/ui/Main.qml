@@ -125,6 +125,7 @@ Window {
         onClearBackgroundRequested: worker.clearBackground()
         onClearWordsRequested: worker.clearSlide()
         onDuplicateSlideRequested: docs.duplicateCurrentSlide()
+        onRemoveSlideRequested: docs.removeCurrentSlide()
         onToggleDrawerRequested: panels.toggleDrawer()
         // Ctrl+F searches PRESENTATIONS, which is what the sidebar lists
         // since UI.4a turned the bottom of the window into the media bin.

@@ -664,6 +664,54 @@ int main(int argc, char** argv) {
     QTest::keyClick(window, Qt::Key_2, Qt::ControlModifier);
     check(window->property("page").toString() == "edit",
           "Ctrl+2 is the page's key from anywhere now that no tab strip claims it");
+    // Edit uses native text Delete while typing and one undoable slide
+    // removal elsewhere. The same key remains inactive on Show.
+    {
+        const auto beforeSlides = docs.slides();
+        const auto beforeService = docs.playlistEntries();
+        const auto oldShow = docs.currentSongId();
+        const int oldSlide = docs.currentSlide();
+        QTest::qWait(30);
+        window->contentItem()->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Delete);
+        check(docs.slides().size() == beforeSlides.size() - 1
+                  && docs.playlistEntries().size() == beforeService.size(),
+              "Delete removes the selected slide without removing its service entry");
+        QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
+        check(docs.slides() == beforeSlides, "one keyboard undo restores the exact deleted slide");
+        editor->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        for (const char c : std::string("Editable words")) QTest::keyClick(window, c);
+        QTest::keyClick(window, Qt::Key_Home);
+        QTest::keyClick(window, Qt::Key_Delete);
+        check(editor->property("text").toString() == "ditable words"
+                  && docs.slides().size() == beforeSlides.size(),
+              "Delete while typing edits text and never deletes a slide");
+        docs.flushText();
+        window->contentItem()->forceActiveFocus();
+        docs.undo();
+        window->setProperty("page", "show");
+        QTest::qWait(30);
+        QTest::keyClick(window, Qt::Key_Delete);
+        check(docs.slides() == beforeSlides, "Delete outside an editing/list context does not remove a slide");
+        window->setProperty("page", "edit");
+        QTest::qWait(30);
+        docs.createSong("Temporary keyboard deletion fixture");
+        docs.addSlide();
+        const auto onlySlide = docs.slides();
+        window->contentItem()->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Delete);
+        check(docs.slides().isEmpty() && docs.currentSlide() == -1, "Delete can remove the final slide");
+        QTest::keyClick(window, Qt::Key_Delete);
+        QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
+        check(docs.slides() == onlySlide, "Delete with no slides is harmless and preserves the last undo");
+        docs.undo();  // temporary slide creation
+        docs.undo();  // temporary show creation
+        docs.selectSong(oldShow);
+        docs.selectSlide(oldSlide);
+        check(docs.slides() == beforeSlides && docs.playlistEntries() == beforeService,
+              "the deletion journey leaves the original presentation and service intact");
+    }
     // Verify moved editor accepts words and synchronizes after navigation.
     window->setProperty("page", "edit");
     QTest::qWait(20);

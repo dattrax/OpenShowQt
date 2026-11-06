@@ -59,6 +59,7 @@ Item {
     signal clearBackgroundRequested()
     signal clearWordsRequested()
     signal duplicateSlideRequested()
+    signal removeSlideRequested()
     signal toggleDrawerRequested()
     // Ctrl+F: the search for presentations, which the sidebar owns (UI.4a).
     signal focusLibrarySearchRequested()
@@ -291,6 +292,12 @@ Item {
     // controller call). The clipboard is the controller's slide clipboard
     // — the system one stays with the text fields, exactly as in the
     // reference.
+    Shortcut {
+        sequence: "Delete"
+        enabled: page === "edit" && slideCount > 0 && !typingIntoField
+                 && !preparationListFocused && !squattedFocus
+        onActivated: removeSlideRequested()
+    }
     Shortcut {
         sequence: StandardKey.Undo
         enabled: (page === "edit" || preparationListFocused) && !typingIntoField

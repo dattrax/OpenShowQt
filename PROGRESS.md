@@ -4,6 +4,13 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**Edit operator follow-up (2026-11-06):** Removed Edit toolbar Remove slide,
+Undo/Redo and Save/Load buttons. Delete removes the selected slide outside text
+fields; Ctrl+Z restores it. The workspace regression passes (40.23 s), including
+native text Delete, Show-mode silence, deleting the final slide and empty-state
+undo. Next: replace the Edit library/service pane and picker with previews of
+only the selected song/presentation, as clarified by the operator.
+
 **PX planned (2026-11-06):** PowerPoint deck import is scheduled as PX.1–PX.8
 in PLAN.md. BetterOffice (Apache-2.0, native Rust) is pinned as a submodule and
 driven by a separate `tools/pptx-render` process; rendered slides are ordinary
