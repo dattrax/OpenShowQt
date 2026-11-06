@@ -158,9 +158,6 @@ Item {
     }
 
 
-    // The upper pane asks the shell for the import page; the page is the only
-    // route that writes the catalog from pasted text.
-    signal importRequested()
     // Browsing: a presentation can be shown off air; a song has no slide
     // document in the Library (its service projection, if any, is browsed
     // through the presentation id the shell resolves).
@@ -341,23 +338,10 @@ Item {
 
         Flow {
             id: libraryActions
+            visible: browser.editingEnabled
+            height: visible ? implicitHeight : 0
             width: parent.width
             spacing: 4
-            PanelButton {
-                objectName: "libraryAddSongButton"
-                width: 104
-                height: 24
-                text: "Add to service"
-                enabled: browser.selectedKind === "song" && browser.selectedId !== ""
-                onClicked: browser.addSongToService(browser.selectedId)
-            }
-            PanelButton {
-                objectName: "libraryImportSongButton"
-                width: 92
-                height: 24
-                text: "Import song"
-                onClicked: browser.importRequested()
-            }
             PanelButton {
                 objectName: "libraryNewPresentationButton"
                 width: 46
@@ -445,19 +429,11 @@ Item {
                     anchors.left: parent.left
                     anchors.leftMargin: 16
                     anchors.verticalCenter: parent.verticalCenter
-                    width: songRow.width - 70
+                    width: songRow.width - 24
                     elide: Text.ElideRight
                     font.pixelSize: 13
                     color: songRow.rowSelected ? "#ffffff" : "#eeeeee"
                     text: modelData.title
-                }
-                Text {
-                    anchors.right: parent.right
-                    anchors.rightMargin: 8
-                    anchors.verticalCenter: parent.verticalCenter
-                    font.pixelSize: 11
-                    color: songRow.rowSelected ? "#d9ebff" : "#b0b0b0"
-                    text: modelData.ccli !== "" ? "CCLI " + modelData.ccli : ""
                 }
                 MouseArea {
                     id: songMouse

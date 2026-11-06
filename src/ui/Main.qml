@@ -175,7 +175,6 @@ Window {
         anchors.bottom: mediaBin.top
         onSourceChosen: (kind, id) => root.browsedShowId = kind === "show" ? id : ""
         onSongChosen: id => root.browsedShowId = docs.showForCatalogItem(id)
-        onImportRequested: root.openSongImport()
     }
 
     OutputPanel {

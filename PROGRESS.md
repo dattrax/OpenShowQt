@@ -4,6 +4,13 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**Operator follow-up (2026-11-06, second report):** Library rows now show song
+titles without CCLI numbers, while stored attribution remains intact. The
+redundant Add to service and Import song buttons are removed; import remains
+in the toolbar More menu. The real-worker Library journey passes (7.07 s),
+including import, drag/drop, persistence and deletion. Next: keep the complete
+service grid on selection, add group separators, and improve service dragging.
+
 **LRF.5–LRF.7 complete (operator bug fixes, 2026-11-06):** Service-row
 browsing resolves actual shows, including prepared songs, scripture and retained
 service copies. Shift+Up/Down extends/contracts and scrolls service selection;

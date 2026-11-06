@@ -19,8 +19,6 @@ SidePanel {
     // air in the middle of the screen. Nothing here presents.
     signal sourceChosen(string kind, string id)
     signal songChosen(string id)
-    // The import page is the only route that writes the catalog from text.
-    signal importRequested()
 
     // The presentation row the theme context menu is acting on (task TH.5).
     property string contextShowId: ""
@@ -82,7 +80,6 @@ SidePanel {
             height: Math.max(100, Math.min(parent.height - 130,
                 Math.max(minimumUsefulHeight, Math.round(parent.height * 0.47))))
             editingEnabled: playlistPanel.editingEnabled
-            onImportRequested: playlistPanel.importRequested()
             onServiceFocusRequested: servicePanel.forceActiveFocus()
             onSongChosen: songId => playlistPanel.songChosen(songId)
             onThemeMenuRequested: (showId, x, y) => {

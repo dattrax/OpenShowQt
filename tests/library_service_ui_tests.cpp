@@ -1,7 +1,7 @@
 /*
  * Task SL.9 (integrated): the whole Library journey on the production shell
  * with a REAL worker — clipboard import, a filtered Library row dragged into
- * a SCROLLED running order, the keyboard/button alternative, one undo, and
+ * a SCROLLED running order, keyboard selection/removal, one undo, and
  * service/catalog persistence across a restart. Nothing is presented.
  *
  * Needs a display for the worker's output window: desktop preset, label
@@ -181,15 +181,16 @@ int main(int argc, char** argv) {
         if (item) QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
             item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint());
     };
-    auto* importButton = findNamed(window->contentItem(), "libraryImportSongButton");
-    auto* importLabel = importButton ? importButton->property("contentItem").value<QQuickItem*>() : nullptr;
-    check(importLabel && importLabel->height() >= importLabel->implicitHeight(),
-          "the compact Import song button has room to render its label");
-    check(window->property("page") == "show" && importButton && importButton->isVisible(),
-          "Import song is visible on Show without entering Edit");
-    click(importButton);
+    check(!findNamed(window->contentItem(), "libraryImportSongButton")
+              && !findNamed(window->contentItem(), "libraryAddSongButton"),
+          "Library has no redundant Import song or Add to service buttons");
+    click(findNamed(window->contentItem(), "toolbarMore"));
+    QTest::qWait(40);
+    auto* importMenu = findNamed(window->contentItem(), "songImportMenuItem");
+    check(importMenu && importMenu->isVisible(), "the toolbar exposes clipboard song import on Show");
+    click(importMenu);
     QTest::qWait(50);
-    check(window->property("page") == "songimport", "the Library button opens clipboard import");
+    check(window->property("page") == "songimport", "the toolbar menu opens clipboard import");
     click(findNamed(window->contentItem(), "songPasteButton"));
     check(waitFor([&] { return !songImport.measuring() && songImport.canAdd(); }),
           "pasting through the visible page measures the clipboard fixture");
@@ -216,8 +217,8 @@ int main(int argc, char** argv) {
     }
     click(findNamed(window->contentItem(), "toolbarMore"));
     QTest::qWait(40);
-    auto* importMenu = findNamed(window->contentItem(), "songImportMenuItem");
-    check(importMenu && importMenu->isVisible(), "More also exposes clipboard import");
+    importMenu = findNamed(window->contentItem(), "songImportMenuItem");
+    check(importMenu && importMenu->isVisible(), "More keeps clipboard import accessible after importing");
     click(importMenu);
     QTest::qWait(40);
     check(window->property("page") == "songimport", "the menu opens the same import page");
@@ -273,6 +274,9 @@ int main(int argc, char** argv) {
         }
     }
     check(songRow != nullptr, "the filtered Library shows the imported song");
+    if (songRow) for (auto* child : songRow->childItems())
+        check(!child->property("text").toString().startsWith("CCLI "),
+              "song rows show their title without a CCLI number");
     if (songRow) {
         const int before = static_cast<int>(docs.playlistEntries().size());
         const QPointF start = songRow->mapToScene(QPointF(25, 14));
@@ -305,34 +309,6 @@ int main(int argc, char** argv) {
     }
     check(!worker.wordsOnAir() && worker.sceneActive() == 0,
           "dragging and preparing never presented");
-
-    // The keyboard/button alternative: select the row and use Add to service.
-    {
-        QList<QQuickItem*> rows;
-        collectNamed(songList, "librarySongRow", &rows);
-        if (!rows.isEmpty()) {
-            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-                              rows.first()->mapToScene(QPointF(20, 14)).toPoint());
-            QTest::qWait(20);
-        }
-        auto* addButton = findNamed(window->contentItem(), "libraryAddSongButton");
-        check(addButton && addButton->property("enabled").toBool(),
-              "Add to service wakes for the selected song");
-        const int before = static_cast<int>(docs.playlistEntries().size());
-        if (addButton) {
-            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-                              addButton->mapToScene(
-                                  QPointF(addButton->width() / 2,
-                                          addButton->height() / 2)).toPoint());
-        }
-        check(waitFor([&] { return !songService.busy(); }),
-              "the button preparation finished");
-        check(static_cast<int>(docs.playlistEntries().size()) == before + 1,
-              "the button added another cue");
-        docs.undo();
-        check(static_cast<int>(docs.playlistEntries().size()) == before,
-              "one undo removes the whole button add");
-    }
 
     // Service browsing must resolve actual shows, even when they are absent
     // from the Library's authored-presentation projection.
