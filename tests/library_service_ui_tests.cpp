@@ -12,6 +12,7 @@
 #include <QElapsedTimer>
 #include <QGuiApplication>
 #include <QJSValue>
+#include <QLineF>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlError>
@@ -215,6 +216,8 @@ int main(int argc, char** argv) {
         worker.shutdownNow();
         return 1;
     }
+    window->setProperty("page", "edit");
+    QTest::qWait(40);
     click(findNamed(window->contentItem(), "toolbarMore"));
     QTest::qWait(40);
     importMenu = findNamed(window->contentItem(), "songImportMenuItem");
@@ -224,6 +227,7 @@ int main(int argc, char** argv) {
     check(window->property("page") == "songimport", "the menu opens the same import page");
     click(findNamed(window->contentItem(), "songImportBackButton"));
     QTest::qWait(40);
+    check(window->property("page") == "edit", "toolbar song import returns to its originating page");
 
     // A scrolled running order: a filler presentation listed many times.
     check(docs.createSong("Filler"), "a filler presentation exists");
@@ -291,6 +295,19 @@ int main(int argc, char** argv) {
         QTest::qWait(260);  // hold at the bottom edge: autoscroll ticks
         check(playlistList->property("contentY").toReal() > scrollBefore,
               "holding a drag at the edge autoscrolls the long order");
+        auto* addMarker = findNamed(window->contentItem(), "serviceDropIndicator");
+        check(addMarker && addMarker->isVisible() && addMarker->height() >= 4,
+              "a Library drag shows a prominent service insertion marker");
+        QList<QQuickItem*> addBadges;
+        collectNamed(window->contentItem(), "listDragFeedback", &addBadges);
+        int shownAddBadges = 0;
+        for (auto* badge : addBadges) if (badge->isVisible()) {
+            ++shownAddBadges;
+            check(QLineF(badge->mapToScene(QPointF()), target).length() < 2,
+                  "the drag hotspot follows the pointer without losing its initial movement");
+        }
+        check(shownAddBadges == 1, "Library dragging shows one clear title badge");
+        if (!debugCapture.isEmpty()) window->grabWindow().save(debugCapture + "-drag-add.png");
         QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, target.toPoint());
         check(waitFor([&] { return !songService.busy(); }), "the drop prepared the song");
         check(static_cast<int>(docs.playlistEntries().size()) == before + 1,
@@ -377,6 +394,80 @@ int main(int argc, char** argv) {
     check(docs.removeLibraryShows({fillerId}), "detach the authored presentation from the Library");
     browseServiceEntry(0);  // retained service copy after Library deletion
     docs.undo();
+
+    // Reordering is a Show-mode operator action. Exercise the real mouse
+    // gesture, preserving occurrence identities even for repeated shows.
+    auto entryKeys = [](const QVariantList& entries) {
+        QStringList keys;
+        for (const auto& entry : entries) keys.append(entry.toMap().value("entryId").toString());
+        return keys;
+    };
+    auto* dropArea = findNamed(window->contentItem(), "serviceDropArea");
+    auto dragService = [&](int from, int gap, bool scroll, bool outside) {
+        playlistList->setProperty("contentY", 0);
+        QTest::qWait(50);
+        const auto before = docs.playlistEntries();
+        const auto ids = entryKeys(before);
+        QList<QQuickItem*> rows;
+        collectNamed(playlistList, "collectionPlaylistRow", &rows);
+        QQuickItem* source = nullptr;
+        for (auto* row : rows)
+            if (row->property("rowEntryId").toString() == ids[from]) source = row;
+        if (!check(source != nullptr, "the reorder source is visible")) return;
+        const auto start = source->mapToScene(QPointF(25, 15)).toPoint();
+        const auto target = outside ? QPoint(window->width() / 2, 15)
+            : playlistList->mapToScene(QPointF(60, scroll ? playlistList->height() - 6 : gap * 30 + 2)).toPoint();
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+        QTest::mouseMove(window, start + QPoint(45, 0), 20);
+        QTest::mouseMove(window, target, 20);
+        QTest::qWait(scroll ? 300 : 40);
+        auto* marker = findNamed(window->contentItem(), "serviceDropIndicator");
+        QList<QQuickItem*> badges;
+        collectNamed(window->contentItem(), "listDragFeedback", &badges);
+        int visibleBadges = 0;
+        for (auto* badge : badges) if (badge->isVisible()) {
+            ++visibleBadges;
+            check(QLineF(badge->mapToScene(QPointF()), target).length() < 2,
+                  "service drag feedback stays at the pointer while the list scrolls");            check(badge->property("payload").toString() == "entry:" + ids[from]
+                      && badge->property("moving").toBool(), "drag feedback identifies the exact service occurrence");
+        }
+        check(visibleBadges == 1 && marker && marker->isVisible() == !outside,
+              "a service drag shows one overlay badge and a marker only over a valid destination");
+        const int landedGap = dropArea->property("insertionIndex").toInt();
+        if (scroll) check(playlistList->property("contentY").toReal() > 0,
+                          "a service reorder autoscrolls with its source held outside the viewport");
+        else if (!outside) check(landedGap == gap, "the insertion marker follows the exact pointer gap");
+        if (scroll && !debugCapture.isEmpty()) window->grabWindow().save(debugCapture + "-drag-move.png");
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, target);
+        QTest::qWait(50);
+        auto expected = ids;
+        if (!outside) {
+            const auto moved = expected.takeAt(from);
+            expected.insert(from < landedGap ? landedGap - 1 : landedGap, moved);
+        }
+        check(entryKeys(docs.playlistEntries()) == expected,
+              "dropping reorders exact entry identities without adding or losing a service item");
+        if (!outside) check(findNamed(window->contentItem(), "currentServicePanel")
+                                ->property("selectedEntryId").toString() == ids[from],
+                            "the dropped occurrence remains selected for subsequent keyboard actions");
+        check(marker && !marker->isVisible(), "the insertion marker disappears after release");
+        check(!worker.wordsOnAir() && worker.sceneActive() == 0, "service reordering never presents");
+        if (expected != ids) {
+            if (scroll) {
+                check(docs.save(), "the reordered service saves");
+                openshow::ui::DocumentController reopened(nullptr, root / "service");
+                check(entryKeys(reopened.playlistEntries()) == expected, "the reordered service survives restart");
+            }
+            docs.undo();
+            check(docs.playlistEntries() == before, "one undo restores the exact order before a drag");
+        }
+    };
+    check(window->property("page") == "show", "reorder tests run in Show mode");
+    dragService(0, 2, false, false);  // down across another occurrence
+    dragService(2, 0, false, false);  // up to the beginning
+    dragService(1, 1, false, false);  // same gap changes nothing
+    dragService(0, 0, false, true);   // release outside any target
+    dragService(0, 0, true, false);   // scroll while dragging
 
     // Windows-style selection/deletion is available on Show, scoped to the
     // active list and keyed by entry identity (including repeated shows).

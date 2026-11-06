@@ -794,9 +794,18 @@ UI parts: `LibraryBrowser` (Songs/Presentations, title filter, drag sources) and
 `CurrentServicePanel` (one running order, no service picker under the
 operator's one-service amendment) sit permanently in `PlaylistPanel`. Drag
 payloads are `catalog:<id>` (category Move, service Copy), `show:<id>` (service
-add) and `entry:<id>` (reorder). Remaining acceptance is recorded in PLAN.md's
-SL.7/SI.3/SI.4/SL.9 rows: pointer-level song drops, real-worker import captures
-and the integrated SL.9 journey.
+add) and `entry:<id>` (reorder). `DragFeedback` provides an overlay title/action
+badge with a pointer-aligned hotspot; service drops show an insertion marker
+and category drops highlight their destination. Service reordering works in
+Show and Edit and retains the dragged occurrence while edge scrolling.
+
+Song rows display titles without CCLI labels; attribution stays in the catalog
+and service copies. Clipboard import lives in the toolbar More menu, preserving
+the originating page; Library has no duplicate Add/Import buttons. Service
+selection carries an entry ID to Show, keeping all service slides visible while
+selecting/scrolling to that occurrence. Library browsing remains separate.
+Full-width rules separate service groups in existing grid gaps without changing
+cue order or cell mapping.
 
 The LRF operator fixes add shared `ListSelection` semantics and focused Delete
 to both panes. `removePlaylistEntries` validates occurrence IDs and removes one
@@ -806,4 +815,8 @@ authored shows using the existing `scheduleOwned` flag and deletes unreferenced
 ones in one document edit. Service content survives both forms of Library
 removal; detached song copies are excluded from the Library projection. No
 service or catalog format changes are needed. Keyboard Undo/Redo routes to the
-focused pane, with mixed Library removal visiting each owning history.
+focused pane. Operator Library Delete requires an explicit permanent-deletion
+confirmation, with Cancel focused by default. Confirmed source identities and
+catalog links are removed from older history snapshots so undo cannot resurrect
+them, while unrelated history and playable service copies remain. In-flight
+song preparation is cancelled if its Library source is deleted.

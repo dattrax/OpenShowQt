@@ -156,7 +156,10 @@ Window {
         // asks the panel store to flip it — the bin's strip and the
         // keyboard stay live, and all three can never disagree.
         drawerOpen: mediaBin.open
-        onPageSelected: name => root.page = name
+        onPageSelected: name => {
+            if (name === "songimport") root.openSongImport()
+            else root.page = name
+        }
         onDrawerToggleRequested: panels.toggleDrawer()
         anchors.left: parent.left
         anchors.right: parent.right

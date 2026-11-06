@@ -4,16 +4,28 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
-**Operator follow-up (2026-11-06, second report):** Library rows now show song
-titles without CCLI numbers, while stored attribution remains intact. The
-redundant Add to service and Import song buttons are removed; import remains
-in the toolbar More menu. The real-worker Library journey passes (7.07 s),
-including import, drag/drop, persistence and deletion. Service clicks now keep
-the complete running order visible and scroll/select the chosen occurrence;
-Library-only browsing is separate. Its expanded real-worker regression passes
-(7.37 s). Full-width separator rules now distinguish service occurrences in
-the existing group gaps, including repeated shows; the regression journey
-passes (7.35 s). Next: clearer service dragging/reordering.
+**LRF.8–LRF.11 complete (second operator report, 2026-11-06):** Library
+songs show titles without CCLI row labels, and redundant Add/Import buttons are
+removed. Import stays in the toolbar More menu and returns to its originating
+page. Service selection keeps every service slide in order and scrolls to the
+chosen occurrence; full-width rules separate groups without changing mapping.
+Show and Edit both support service reordering, with a title/action drag badge,
+accepted-target highlighting, pointer-aligned hotspot and insertion marker.
+Moves select the dropped occurrence, remain one undo step and survive reopening;
+no-op and outside drops leave the order alone. Edge autoscroll retains the source.
+
+The full desktop build, including the local executable, succeeds. All **15
+affected suites pass** (60.36 s), including actual pointer reorder, category move,
+full-grid, metadata persistence and cancellation regressions with no unexpected
+QML warnings or accidental presents. The pointer journey also passes at 150%
+scale (9.52 s).
+Populated views at three window sizes and drag feedback were visually checked.
+Earlier checkpoints were pushed independently: `944ec18` (Library cleanup),
+`2a99fba` (complete service on selection), `d37d102` (group rules). Final drag
+behavior and commands are in the
+[acceptance record](docs/reviews/service-workflow-followups-2026-11-06.md).
+This supersedes the older sidebar Add/Import and single-group service-selection
+behavior below. Resume remaining TV/TA work; physical M7 and FO remain separate.
 
 **LRF.5–LRF.7 complete (operator bug fixes, 2026-11-06):** Service-row
 browsing resolves actual shows, including prepared songs, scripture and retained

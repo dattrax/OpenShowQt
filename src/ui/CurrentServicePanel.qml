@@ -98,6 +98,7 @@ Item {
             height: Math.max(80, parent.height - 30)
             color: "#242424"
             border.color: entryDrop.containsDrag ? "#1685f8" : "#4a4a4a"
+            border.width: entryDrop.containsDrag ? 3 : 1
 
             ListView {
                 id: entryList
@@ -115,6 +116,7 @@ Item {
                     objectName: "collectionPlaylistRow"
                     width: entryList.width
                     height: 30
+                    opacity: entryMouse.drag.active ? 0.45 : 1
                     readonly property string rowEntryId: modelData.entryId
                     readonly property bool rowSelected:
                         selection.contains(modelData.entryId)
@@ -195,8 +197,15 @@ Item {
                         id: entryMouse
                         anchors.fill: parent
                         hoverEnabled: true
-                        drag.target: servicePanel.editingEnabled ? entryDragProxy : null
-                        onPressed: servicePanel.forceActiveFocus()
+                        preventStealing: true
+                        cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                        drag.smoothed: false
+                        drag.target: entryDragProxy
+                        onPressed: function(mouse) {
+                            servicePanel.forceActiveFocus()
+                            entryList.currentIndex = entryRow.index
+                            entryDragProxy.begin(entryRow, mouse.x, mouse.y)
+                        }
                         onClicked: function(mouse) {
                             selection.select(entryRow.modelData.entryId, servicePanel.entryIds, mouse.modifiers)
                             docs.selectSong(entryRow.modelData.showId)
@@ -210,15 +219,13 @@ Item {
                         onCanceled: { entryDragProxy.x = 0; entryDragProxy.y = 0 }
                     }
 
-                    Item {
+                    DragFeedback {
                         id: entryDragProxy
-                        readonly property string payload: "entry:" + entryRow.modelData.entryId
-                        Drag.source: entryDragProxy
-                        width: entryRow.width; height: entryRow.height
-                        Drag.active: entryMouse.drag.active
-                        Drag.keys: ["text/plain"]
-                        Drag.mimeData: ({"text/plain": entryDragProxy.payload})
-                        Drag.hotSpot: Qt.point(width / 2, height / 2)
+                        payload: "entry:" + entryRow.modelData.entryId
+                        title: entryRow.modelData.showName
+                        hint: "Move within the service"
+                        moving: true
+                        dragging: entryMouse.drag.active
                     }
                 }
 
@@ -234,13 +241,33 @@ Item {
 
             DropArea {
                 id: entryDrop
+                objectName: "serviceDropArea"
                 anchors.fill: parent
                 keys: ["text/plain"]
+                property string payloadKind: ""
+                readonly property int dropAction: payloadKind === "entry" ? Qt.MoveAction : Qt.CopyAction
+                readonly property string dropHint: payloadKind === "entry" ? "Move to the marked position"
+                                                                         : "Add at the marked position"
+                readonly property int insertionIndex: servicePanel.gapIndex(dragY)
                 // Bounded edge autoscroll (SL.7): a drag held near the top or
                 // bottom of a long order scrolls toward the destination it is
                 // hovering, one small step per tick, and stops on exit/drop.
                 property real dragY: 0
-                onEntered: drag => { entryDrop.dragY = drag.y; autoScroll.start() }
+                onEntered: drag => {
+                    const payload = drag.source ? String(drag.source.payload || "") : ""
+                    const colon = payload.indexOf(":")
+                    const kind = payload.substring(0, colon)
+                    const id = payload.substring(colon + 1)
+                    const valid = id && (kind === "entry" ? servicePanel.entryIds.indexOf(id) >= 0
+                        : (kind === "show" ? !!docs.showInfo(id).id
+                           : (kind === "catalog" && !!library.itemOf(id).id)))
+                    drag.accepted = !!valid
+                    if (!valid) return
+                    entryDrop.payloadKind = kind
+                    drag.accept(kind === "entry" ? Qt.MoveAction : Qt.CopyAction)
+                    entryDrop.dragY = drag.y
+                    autoScroll.start()
+                }
                 onPositionChanged: drag => { entryDrop.dragY = drag.y }
                 onExited: autoScroll.stop()
                 Timer {
@@ -273,11 +300,15 @@ Item {
                     if (kind === "catalog") {
                         // COPY: the Library keeps the item; the service gains
                         // a linked show (or another cue over the existing one).
-                        drop.accept()
-                        songService.addToService(id, at)
+                        if (songService.addToService(id, at)) {
+                            drop.accept(Qt.CopyAction)
+                            servicePanel.entryChosen("")
+                        }
                     } else if (kind === "show") {
-                        drop.accept()
-                        docs.insertShowInPlaylist(id, at)
+                        if (docs.insertShowInPlaylist(id, at)) {
+                            drop.accept(Qt.CopyAction)
+                            servicePanel.entryChosen("")
+                        }
                     } else if (kind === "entry") {
                         let from = -1
                         const entries = docs.playlistEntries
@@ -287,10 +318,27 @@ Item {
                                 break
                             }
                         }
-                        drop.accept()
-                        docs.movePlaylistEntry(id, from >= 0 && from < at ? at - 1 : at)
+                        const to = from < at ? at - 1 : at
+                        if (from >= 0 && (from === to || docs.movePlaylistEntry(id, to))) {
+                            drop.accept(Qt.MoveAction)
+                            selection.select(id, servicePanel.entryIds, Qt.NoModifier)
+                            servicePanel.entryChosen(id)
+                        }
                     }
                 }
+            }
+
+            Rectangle {
+                objectName: "serviceDropIndicator"
+                visible: entryDrop.containsDrag
+                z: 2
+                x: 3
+                y: Math.max(2, Math.min(entryBox.height - 6,
+                    entryList.y + entryDrop.insertionIndex * 30 - entryList.contentY - 2))
+                width: entryBox.width - 6
+                height: 4
+                radius: 2
+                color: "#65c4ff"
             }
         }
     }

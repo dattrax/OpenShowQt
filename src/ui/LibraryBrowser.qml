@@ -358,7 +358,9 @@ Item {
             objectName: "librarySongsHeader"
             width: parent.width
             height: 26
-            color: songsDrop.containsDrag ? "#1c4c7c" : "transparent"
+            color: songsDrop.containsDrag ? "#164b78" : "transparent"
+            border.color: "#65c4ff"
+            border.width: songsDrop.containsDrag ? 2 : 0
             Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
@@ -368,7 +370,7 @@ Item {
             Text {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: browser.songRows.length + " / " + library.songCount
+                text: songsDrop.containsDrag ? "Move here" : browser.songRows.length + " / " + library.songCount
                 color: "#b0b0b0"; font.pixelSize: 11
             }
             property bool songsExpanded: true
@@ -378,20 +380,22 @@ Item {
             }
             DropArea {
                 id: songsDrop
+                readonly property int dropAction: Qt.MoveAction
+                readonly property string dropHint: "Move to Songs"
                 anchors.fill: parent
                 keys: ["text/plain"]
                 onEntered: drag => {
                     const payload = drag.source ? String(drag.source.payload || "") : ""
-                    if (payload.startsWith("catalog:"))
-                        drag.accept(Qt.MoveAction)
+                    drag.accepted = payload.startsWith("catalog:")
+                    if (drag.accepted) drag.accept(Qt.MoveAction)
                 }
                 onDropped: function (drop) {
                     const payload = drop.source && drop.source.payload
                         ? drop.source.payload : drop.getDataAsString("text/plain")
                     if (!payload.startsWith("catalog:"))
                         return
-                    drop.accept()
-                    library.moveItemToCategory(payload.substring(8), "songs")
+                    if (library.moveItemToCategory(payload.substring(8), "songs"))
+                        drop.accept(Qt.MoveAction)
                 }
             }
         }
@@ -410,6 +414,7 @@ Item {
 
             delegate: Item {
                 id: songRow
+                required property int index
                 required property var modelData
                 objectName: "librarySongRow"
                 width: songList.width
@@ -439,7 +444,10 @@ Item {
                     id: songMouse
                     anchors.fill: parent
                     hoverEnabled: true
+                    preventStealing: true
+                    cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
                     acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    drag.smoothed: false
                     drag.target: songDrag
                     property bool leftHeld: false
                     onClicked: function (mouse) {
@@ -458,6 +466,8 @@ Item {
                     onPressed: function(mouse) {
                         browser.forceActiveFocus()
                         browser.undoScope = "catalog"
+                        songList.currentIndex = songRow.index
+                        songDrag.begin(songRow, mouse.x, mouse.y)
                         songMouse.leftHeld = mouse.button === Qt.LeftButton
                     }
                     onReleased: {
@@ -469,15 +479,12 @@ Item {
                     }
                     onCanceled: { songMouse.leftHeld = false; songDrag.x = 0; songDrag.y = 0 }
                 }
-                Item {
+                DragFeedback {
                     id: songDrag
-                    readonly property string payload: "catalog:" + songRow.modelData.id
-                    Drag.source: songDrag
-                    width: songRow.width; height: songRow.height
-                    Drag.active: songMouse.drag.active
-                    Drag.keys: ["text/plain"]
-                    Drag.mimeData: ({"text/plain": songDrag.payload})
-                    Drag.hotSpot: Qt.point(width / 2, height / 2)
+                    payload: "catalog:" + songRow.modelData.id
+                    title: songRow.modelData.title
+                    hint: "Drag to the service or a category"
+                    dragging: songMouse.drag.active && songMouse.leftHeld
                 }
             }
             Text {
@@ -500,7 +507,9 @@ Item {
             objectName: "libraryPresentationsHeader"
             width: parent.width
             height: 26
-            color: presentationsDrop.containsDrag ? "#1c4c7c" : "transparent"
+            color: presentationsDrop.containsDrag ? "#164b78" : "transparent"
+            border.color: "#65c4ff"
+            border.width: presentationsDrop.containsDrag ? 2 : 0
             Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
@@ -510,7 +519,7 @@ Item {
             Text {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: browser.presentationRows.length + " / " + docs.songs.length
+                text: presentationsDrop.containsDrag ? "Move here" : browser.presentationRows.length + " / " + docs.songs.length
                 color: "#b0b0b0"; font.pixelSize: 11
             }
             property bool presentationsExpanded: true
@@ -521,20 +530,22 @@ Item {
             }
             DropArea {
                 id: presentationsDrop
+                readonly property int dropAction: Qt.MoveAction
+                readonly property string dropHint: "Move to Presentations"
                 anchors.fill: parent
                 keys: ["text/plain"]
                 onEntered: drag => {
                     const payload = drag.source ? String(drag.source.payload || "") : ""
-                    if (payload.startsWith("catalog:"))
-                        drag.accept(Qt.MoveAction)
+                    drag.accepted = payload.startsWith("catalog:")
+                    if (drag.accepted) drag.accept(Qt.MoveAction)
                 }
                 onDropped: function (drop) {
                     const payload = drop.source && drop.source.payload
                         ? drop.source.payload : drop.getDataAsString("text/plain")
                     if (!payload.startsWith("catalog:"))
                         return
-                    drop.accept()
-                    library.moveItemToCategory(payload.substring(8), "presentations")
+                    if (library.moveItemToCategory(payload.substring(8), "presentations"))
+                        drop.accept(Qt.MoveAction)
                 }
             }
         }
@@ -552,6 +563,7 @@ Item {
 
             delegate: Item {
                 id: libraryRow
+                required property int index
                 required property var modelData
                 objectName: "collectionLibraryRow"
                 width: libraryList.width
@@ -590,7 +602,10 @@ Item {
                     id: rowMouse
                     anchors.fill: parent
                     hoverEnabled: true
+                    preventStealing: true
+                    cursorShape: drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
                     acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    drag.smoothed: false
                     drag.target: libraryDragProxy
                     property bool leftHeld: false
                     onClicked: function (mouse) {
@@ -616,6 +631,8 @@ Item {
                     onPressed: function(mouse) {
                         browser.forceActiveFocus()
                         browser.undoScope = libraryRow.modelData.rowKind === "catalog" ? "catalog" : "shows"
+                        libraryList.currentIndex = libraryRow.index
+                        libraryDragProxy.begin(libraryRow, mouse.x, mouse.y)
                         rowMouse.leftHeld = mouse.button === Qt.LeftButton
                     }
                     onDoubleClicked: {
@@ -637,17 +654,13 @@ Item {
                         libraryDragProxy.y = 0
                     }
                 }
-                Item {
+                DragFeedback {
                     id: libraryDragProxy
-                    readonly property string payload:
-                        (libraryRow.modelData.rowKind === "catalog"
-                         ? "catalog:" : "show:") + libraryRow.modelData.id
-                    Drag.source: libraryDragProxy
-                    width: libraryRow.width; height: libraryRow.height
-                    Drag.active: rowMouse.drag.active
-                    Drag.keys: ["text/plain"]
-                    Drag.mimeData: ({"text/plain": libraryDragProxy.payload})
-                    Drag.hotSpot: Qt.point(width / 2, height / 2)
+                    payload: (libraryRow.modelData.rowKind === "catalog"
+                              ? "catalog:" : "show:") + libraryRow.modelData.id
+                    title: libraryRow.modelData.name
+                    hint: "Drag to the service"
+                    dragging: rowMouse.drag.active && rowMouse.leftHeld
                 }
             }
             Text {

@@ -212,6 +212,11 @@ the next occurrence opens the next row, and a group ending exactly at a row
 end forces no blank row. Cues within a group flow and wrap normally; the
 collection displays and maps and never reorders cues.
 
+Show draws a full-width separator in the existing gap above each subsequent
+service occurrence, without adding source rows or changing the cell mapping.
+Selecting a service entry keeps the complete source order and scrolls to that
+occurrence; only explicit Library browsing uses a single-show source.
+
 CR.6: fixed-cell column counts follow `cellWidth`, including a host override;
 stretched collections use `cardWidth` to choose a column count before dividing
 their width. Visible-band geometry includes the actual partial last row and

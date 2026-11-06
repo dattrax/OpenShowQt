@@ -1652,6 +1652,10 @@ amendments and the existing durable catalog. Complete and push each fix.
 | LRF.5 | DONE | Browse all prepared service shows | Clicking authored, catalog-song, scripture and detached service rows displays actual slides and title without presenting; real-worker regression journey |
 | LRF.6 | DONE | Replace service Remove buttons with keyboard removal | Shift+Up/Down extends/contracts ranges and scrolls; Delete removes selected entry occurrences in one undoable edit; keyboard boundary and duplicate-entry tests |
 | LRF.7 | DONE | Confirm permanent Library deletion and remove its toolbar button | Delete opens a modal warning with Cancel as default; confirmed deletion survives older undo/redo, retains service copies and cancels pending preparation. Durable failure, stale-dialog and restart regressions; [acceptance](docs/reviews/operator-delete-and-browse-2026-11-06.md) |
+| LRF.8 | DONE | Simplify Library rows and actions | Hide row CCLI labels while preserving attribution; remove sidebar Add/Import buttons and retain toolbar import; real-worker journey |
+| LRF.9 | DONE | Keep the whole service visible when selecting a cue group | Service selection uses stable occurrence IDs to scroll/select its first slide; full-order, Library-return and no-present regressions |
+| LRF.10 | DONE | Separate service slide groups | Full-width rules in existing group gaps, including repeated shows; visual geometry regression |
+| LRF.11 | DONE | Make dragging obvious and enable Show-mode service reorder | Overlay title/action badge, pointer-aligned hotspot, valid-target border and insertion marker; actual up/down/no-op/cancel/autoscroll/save/undo journeys; [acceptance](docs/reviews/service-workflow-followups-2026-11-06.md) |
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

@@ -81,7 +81,10 @@ SidePanel {
             height: Math.max(100, Math.min(parent.height - 130,
                 Math.max(minimumUsefulHeight, Math.round(parent.height * 0.47))))
             editingEnabled: playlistPanel.editingEnabled
-            onServiceFocusRequested: servicePanel.forceActiveFocus()
+            onServiceFocusRequested: {
+                servicePanel.forceActiveFocus()
+                playlistPanel.serviceEntryChosen("")
+            }
             onSongChosen: songId => playlistPanel.songChosen(songId)
             onPresentationChosen: showId => playlistPanel.sourceChosen("show", showId)
             onThemeMenuRequested: (showId, x, y) => {
