@@ -509,10 +509,8 @@ LyricsDraft parseLyrics(const std::string& plainText) {
     // --- the title suggestion -------------------------------------------
     //
     // The first non-blank line, provided it is not itself a section label.
-    // It stays in the lyrics (the plan's rule). When the first line runs
-    // straight into a section label after a blank line, it is the title;
-    // when there is no blank line before "Verse 1" the operator pasted a
-    // title-less sheet and the title must be typed.
+    // A lone title before a section is removed below; other leading words
+    // remain lyrics, even when they also supply the title suggestion.
     std::size_t firstContent = 0;
     while (firstContent < allLines.size() && trim(allLines[firstContent]).empty()) {
         ++firstContent;
@@ -522,6 +520,16 @@ LyricsDraft parseLyrics(const std::string& plainText) {
         if (!looksLikeSectionLabel(allLines[firstContent], &ignoredLabel)) {
             draft.title = trim(allLines[firstContent]);
         }
+    }
+
+    // A single leading line immediately before the first section (with
+    // optional blank lines) is a title, not a sung stanza. A multi-line
+    // preamble or unlabelled song retains every word.
+    if (!draft.title.empty()) {
+        std::size_t next = firstContent + 1;
+        while (next < allLines.size() && trim(allLines[next]).empty()) ++next;
+        if (next < allLines.size() && looksLikeSectionLabel(allLines[next], nullptr))
+            allLines.erase(allLines.begin() + static_cast<std::ptrdiff_t>(firstContent));
     }
 
     // --- stanzas ---------------------------------------------------------

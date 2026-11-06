@@ -1659,6 +1659,7 @@ amendments and the existing durable catalog. Complete and push each fix.
 | LRF.12 | DONE | Simplify Edit actions and remove slides with Delete | Remove toolbar Save/Load/Undo/Redo/Remove controls; Delete is one undoable slide edit, native in text inputs, safe for final/empty slides and inactive on Show |
 | LRF.13 | DONE | Navigate the selected presentation through Edit thumbnails | User clarified selected song/presentation only. Replace Library/service pane and picker with a worker-rendered preview rail; click/arrow selection, bounded thumbnail window, hidden-page silence and Add slide footer; [acceptance](docs/reviews/edit-slide-navigation-2026-11-06.md) |
 | LRF.14 | DONE | Remove redundant presentation menu routes | Remove New presentation and both PowerPoint import menu entries, their file/creation dialogs and menu-only signals; shared import/rendering stays behind both drag/drop destinations. UI regressions assert absence and import the real deck through both targets |
+| LRF.15 | DONE | Treat clipboard title as metadata and prepare a blank opening cue | Remove a lone title before the first section while preserving unlabelled/multi-line lyrics. Shared planner adds one explicit blank opening; validation, real-worker import/service and restart regressions pass |
 
 ### PowerPoint deck import (PX)
 

@@ -180,6 +180,12 @@ void SongPlanner::run() {
                 return;  // superseded while the last batch was artificial
             }
             fSlides = outcome.slides;
+            // The opening cue is intentionally wordless; it is presentation
+            // policy, not an empty stanza stored in the song database.
+            openshow::importer::SongSlide opening;
+            opening.label = "Blank";
+            opening.stanzaIndex = fInput.stanzas.size();
+            fSlides.insert(fSlides.begin(), std::move(opening));
             fFingerprint = openshow::importer::songPlanFingerprint(fInput);
             fHasPlan = true;
             fMeasuring = false;

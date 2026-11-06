@@ -155,8 +155,9 @@ void ServiceCatalogBridge::publishPlan() {
         const std::string group =
             slide.stanzaIndex < fPendingStanzas.size()
                 ? fPendingStanzas[slide.stanzaIndex].label
-                : std::string();
+                : slide.label;
         row.insert(QStringLiteral("group"), QString::fromStdString(group));
+        row.insert(QStringLiteral("blank"), slide.lines.empty());
         slides.append(row);
     }
     const QString showId = fDocuments->upsertCatalogSong(

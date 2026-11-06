@@ -2765,7 +2765,8 @@ QString DocumentController::upsertCatalogSong(
         const QVariantMap row = rowValue.toMap();
         SlideSpec spec;
         const QVariantList lines = row.value(QStringLiteral("lines")).toList();
-        if (lines.isEmpty()) {
+        const bool blank = row.value(QStringLiteral("blank")).toBool();
+        if (lines.isEmpty() ? (!blank || !specs.empty()) : blank) {
             setStatus(QStringLiteral("add song: a slide carries no words"));
             return QString();
         }
@@ -2775,6 +2776,11 @@ QString DocumentController::upsertCatalogSong(
         spec.group = row.value(QStringLiteral("group")).toString().toStdString();
         spec.label = row.value(QStringLiteral("label")).toString().toStdString();
         specs.push_back(std::move(spec));
+    }
+
+    if (specs.size() == 1 && specs.front().lines.empty()) {
+        setStatus(QStringLiteral("add song: no lyric slides were generated"));
+        return QString();
     }
 
     openshow::domain::SongProvenance provenance;

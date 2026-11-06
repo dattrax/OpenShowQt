@@ -4,6 +4,14 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**LRF.15 complete (song-section follow-up, 2026-11-06):** Clipboard import
+keeps a lone title before the first explicit section as metadata only. Ordinary
+unlabelled lyrics and multi-line preambles retain all words. The shared song
+planner adds one blank opening cue, without a fake empty catalog stanza; the
+service validates its explicit blank flag and persists it. Four focused suites
+pass (1.96 s): lyrics, removal/blank validation, real-worker import page and song
+service. Next: section captions, muted palette and repeated-label suppression.
+
 **LRF.14 complete (menu cleanup, 2026-11-06):** Removed New presentation
 and both PowerPoint import menu entries. Their creation/file dialogs, forwarding
 signals/handlers, unused sidebar New control and obsolete empty-state hints are

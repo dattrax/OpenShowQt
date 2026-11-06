@@ -93,12 +93,10 @@ void testFullSongAndFooter() {
               std::string::npos,
           "the licence line is kept, not dropped");
 
-    check(draft.stanzas.size() == 5,
-          "title stanza + verse + chorus + bridge + post-chorus");
-    check(draft.stanzas[0].label.empty() &&
-              draft.stanzas[0].lines ==
-                  std::vector<std::string>{"Morning Light"},
-          "the title line remains the first stanza (not removed from the lyrics)");
+    check(draft.stanzas.size() == 4, "only verse, chorus, bridge and post-chorus become stanzas");
+    check(draft.stanzas[0].label == "Verse 1"
+              && joinedLyrics(draft).find("Morning Light") == std::string::npos,
+          "the leading title stays metadata and never becomes lyric text");
     check(contains(draft.stanzas, "Verse 1"), "the bracketed verse label is kept");
     check(contains(draft.stanzas, "Chorus"), "the bracketed chorus label is kept");
     check(contains(draft.stanzas, "Bridge"), "the bare bridge label is kept");
@@ -206,8 +204,22 @@ void testMissingMetadataAndTitle() {
     const LyricsDraft titleFirst = parseLyrics("A Title\n[Verse]\nwords\n");
     check(titleFirst.title == "A Title",
           "a title immediately before a label is still suggested");
-    check(titleFirst.stanzas.size() == 2,
-          "and the title stays in the lyrics as its own stanza");
+    check(titleFirst.stanzas.size() == 1 && titleFirst.stanzas[0].lines[0] == "words",
+          "a title directly before a section is metadata only");
+}
+
+void testTitleSafety() {
+    const auto titled = parseLyrics("\n  A title  \r\n\r\nChorus\r\nActual words\r\n");
+    check(titled.ok && titled.title == "A title" && titled.stanzas.size() == 1
+              && joinedLyrics(titled) == "Actual words", "title removal handles whitespace and CRLF");
+    const auto unlabelled = parseLyrics("First lyric\n\nSecond lyric\n");
+    check(unlabelled.ok && joinedLyrics(unlabelled) == "First lyric\nSecond lyric",
+          "unlabelled lyrics are never mistaken for a removable title");
+    const auto preamble = parseLyrics("First lyric\nSecond lyric\n\nVerse 1\nMore words\n");
+    check(preamble.ok && preamble.stanzas[0].lines.size() == 2,
+          "a multi-line preamble keeps all of its lyric words");
+    check(!parseLyrics("Title only\n\nVerse 1\n").ok,
+          "a title and empty section cannot create a song with no lyrics");
 }
 
 void testAuthorsOnTheirOwnBlock() {
@@ -278,10 +290,10 @@ void testFixtureFiles() {
         bool metadata;
         std::size_t stanzas;
     } fixtures[] = {
-        {"morning-light.txt", true, 7},
-        {"grace-abounding.txt", true, 7},
+        {"morning-light.txt", true, 6},
+        {"grace-abounding.txt", true, 6},
         {"simple-praise.txt", false, 4},
-        {"long-verse.txt", true, 5},
+        {"long-verse.txt", true, 4},
     };
     for (const auto& fixture : fixtures) {
         std::ifstream in(root + "/docs/fixtures/songs/" + fixture.file,
@@ -314,13 +326,13 @@ void testFixtureFiles() {
     const LyricsDraft longVerse = parseLyrics(buffer.str());
     check(longVerse.ok, "the long-verse fixture parses");
     if (longVerse.ok) {
-        check(longVerse.stanzas[1].label == "Verse 1" &&
-                  longVerse.stanzas[1].lines.size() == 10,
+        check(longVerse.stanzas[0].label == "Verse 1" &&
+                  longVerse.stanzas[0].lines.size() == 10,
               "the long verse keeps its ten authored lines in one stanza");
-        check(std::find(longVerse.stanzas[1].lines.begin(),
-                        longVerse.stanzas[1].lines.end(),
+        check(std::find(longVerse.stanzas[0].lines.begin(),
+                        longVerse.stanzas[0].lines.end(),
                         "You are faithful, you are faithful") ==
-                  longVerse.stanzas[1].lines.end(),
+                  longVerse.stanzas[0].lines.end(),
               "the chorus never joins the verse's stanza");
     }
 }
@@ -333,6 +345,7 @@ int main() {
     testLabelsVersusProse();
     testStanzaBoundariesAndRepeats();
     testMissingMetadataAndTitle();
+    testTitleSafety();
     testAuthorsOnTheirOwnBlock();
     testBoundsAndRefusals();
     testFixtureFiles();

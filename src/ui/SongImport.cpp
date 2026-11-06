@@ -45,8 +45,9 @@ SongImport::SongImport(CatalogController* catalog, DocumentController* documents
                     const std::string group =
                         slide.stanzaIndex < fStanzas.size()
                             ? fStanzas[slide.stanzaIndex].label
-                            : std::string();
+                            : slide.label;
                     row.insert(QStringLiteral("group"), fromStd(group));
+                    row.insert(QStringLiteral("blank"), slide.lines.empty());
                     fSlides.append(row);
                 }
                 ++fPlanGeneration;

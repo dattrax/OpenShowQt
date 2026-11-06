@@ -136,5 +136,30 @@ int main(int argc, char** argv) {
         openshow::ui::CatalogController reopened(nullptr, scratch.path().toStdString());
         check(reopened.items().isEmpty(), "permanent catalog deletion remains durable after restart");
     }
+    {
+        openshow::ui::DocumentController opening(nullptr, scratch.path().toStdString() + "/opening");
+        const QVariantMap blank{{"lines", QVariantList{}}, {"blank", true}, {"group", "Blank"}};
+        const QVariantMap verse{{"lines", QStringList{"Verse words"}}, {"group", "Verse 1"}};
+        const auto show = opening.upsertCatalogSong("opening-source", "Title", "", "", "",
+                                                    {blank, verse}, true);
+        check(!show.isEmpty() && opening.slides().size() == 2, "prepare a song with an explicit blank opening cue");
+        opening.selectSlide(0);
+        check(opening.currentSlideText().isEmpty(), "the blank cue contains no title or lyric words");
+        const auto beforeOpening = opening.slides();
+        const auto beforeEntries = opening.playlistEntries();
+        for (const QVariantList bad : {QVariantList{QVariantMap{{"lines", QVariantList{}}}, verse},
+                                      QVariantList{verse, blank}, QVariantList{blank},
+                                      QVariantList{QVariantMap{{"lines", QStringList{"Words"}}, {"blank", true}}}}) {
+            check(opening.upsertCatalogSong("opening-source", "Title", "", "", "", bad, false).isEmpty()
+                      && opening.slides() == beforeOpening && opening.playlistEntries() == beforeEntries,
+                  "invalid blank plans refuse atomically without touching the prepared song");
+        }
+        check(opening.save(), "save the prepared blank opening");
+        openshow::ui::DocumentController reopened(nullptr, scratch.path().toStdString() + "/opening");
+        reopened.selectSong(show);
+        reopened.selectSlide(0);
+        check(reopened.slides().size() == 2 && reopened.currentSlideText().isEmpty(),
+              "the blank opening survives service reopening");
+    }
     return ok ? 0 : 1;
 }

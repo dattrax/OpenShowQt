@@ -13,11 +13,9 @@
  *     "Bridge 2", "Post-Chorus" — opens a labelled stanza and is not itself
  *     sung. Ordinary text that merely contains the word "chorus" stays
  *     lyrics; nothing guesses labels out of prose.
- *   - The first non-blank line is suggested as the title when it is neither
- *     a section label nor a lyric that continues straight into the first
- *     section. It is NOT removed from the lyrics (the plan's rule): the
- *     catalog keeps the whole pasted text, and the planner may give that
- *     first stanza its own slide.
+ *   - The first non-blank, non-label line suggests the title. A lone title
+ *     before the first explicit section is metadata
+ *     only. Unlabelled lyrics and multi-line preambles keep all their words.
  *   - A trailing blank-separated block that carries CCLI / © / SongSelect
  *     markers is attribution, not lyrics. Its CCLI number, author line and
  *     remaining copyright/licence lines fill the record's reporting fields

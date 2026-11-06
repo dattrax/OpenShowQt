@@ -172,7 +172,7 @@ int main(int argc, char* argv[]) {
     {
         const QStringList got = groups(session.slides());
         const QStringList wanted{
-            QString(), QStringLiteral("Verse 1"), QStringLiteral("Verse 2"),
+            QStringLiteral("Blank"), QStringLiteral("Verse 1"), QStringLiteral("Verse 2"),
             QStringLiteral("Chorus"), QStringLiteral("Bridge"),
             QStringLiteral("Chorus"), QStringLiteral("Ending")};
         check(got == wanted, "slides follow the authored section order");
@@ -184,11 +184,11 @@ int main(int argc, char* argv[]) {
         // The words are the parse's words, whitespace aside.
         check(!slidesText(session.slides()).isEmpty(),
               "the plan carries words");
-        check(!session.slides().isEmpty() &&
-                  session.slides().first().toMap().value(QStringLiteral("lines"))
-                          .toStringList().join(QString())
-                          .contains(QStringLiteral("Morning Light")),
-              "the title line stays the first stanza (the plan's rule)");
+        check(session.slides().first().toMap().value("blank").toBool()
+                  && session.slides().first().toMap().value("lines").toStringList().isEmpty(),
+              "the first prepared cue is intentionally blank");
+        check(!slidesText(session.slides()).contains("Morning Light"),
+              "the song title is metadata, never slide lyrics");
     }
     check(!worker.wordsOnAir() && worker.sceneActive() == 0,
           "measuring and previewing the import put nothing on air");
@@ -238,6 +238,13 @@ int main(int argc, char* argv[]) {
               QStringLiteral("Morning Light"),
           "the linked show wears the catalog title");
     check(!docs.slidesOf(showId).isEmpty(), "the linked show carries slides");
+    docs.selectSong(showId);
+    docs.selectSlide(0);
+    check(docs.currentSlideText().isEmpty() && !docs.sceneJsonForSlide(docs.slides().first().toMap().value("id").toString()).isEmpty(),
+          "the service's opening slide is blank and compiles to a real scene");
+    docs.selectSlide(1);
+    check(docs.currentSlideText().contains("Morning light is breaking"),
+          "the first verse follows the blank opening cue");
 
     // A second add is a second cue over the SAME show (a reference, not a
     // copy).
