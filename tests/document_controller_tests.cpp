@@ -26,6 +26,8 @@
 #include <boost/json.hpp>
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QTimer>
 
@@ -3759,13 +3761,227 @@ void exerciseScripturePassage(const std::filesystem::path& root) {
           "and the refusal names the missing target");
 }
 
-int main(int argc, char* argv[]) {
-    QCoreApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("openshow-document-tests"));
 
+// --- PowerPoint deck import (PX.2) -----------------------------------------
+
+// The sidecar is a process, so the controller fixtures drive it through a
+// scripted renderer: the happy path and every refusal are deterministic and
+// need no Rust build. PX.6 adds the real engine's end-to-end leg.
+std::filesystem::path writeFakeRenderer(const std::filesystem::path& root,
+                                        const char* manifest,
+                                        int exitCode = 0,
+                                        const char* stderrText = "") {
+    const auto path = root / "fake-pptx-render.sh";
+    std::ofstream out(path);
+    out << "#!/bin/sh\n"
+           "echo run >> \"$0.count\"\n"
+           "out=\"\"\n"
+           "while [ $# -gt 0 ]; do case \"$1\" in --out-dir) out=\"$2\"; shift 2;; "
+           "*) shift;; esac; done\n"
+           "[ -n \"$out\" ] || exit 2\n"
+           "mkdir -p \"$out\" || exit 2\n";
+    if (exitCode != 0) {
+        out << "echo '" << (stderrText[0] ? stderrText : "fake renderer failed")
+            << "' >&2\n"
+            << "exit " << exitCode << "\n";
+    } else {
+        out << "base64 -d > \"$out/slide-01.png\" <<'B64'\n"
+               "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC\n"
+               "B64\n"
+               "cp \"$out/slide-01.png\" \"$out/slide-02.png\"\n"
+               "cat > \"$out/manifest.json\" <<'JSON'\n"
+            << manifest << "\nJSON\n";
+    }
+    out.close();
+    std::filesystem::permissions(
+        path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+                  std::filesystem::perms::owner_exec | std::filesystem::perms::group_read |
+                  std::filesystem::perms::group_exec | std::filesystem::perms::others_read |
+                  std::filesystem::perms::others_exec);
+    return path;
+}
+
+const char* kFakeManifest =
+    "{\"format\":1,\"renderer\":\"fake\",\"source\":\"test-deck.pptx\","
+    "\"sourceBytes\":9,\"targetWidth\":1920,\"targetHeight\":1080,"
+    "\"scale\":1.5,\"slideWidth\":1280,\"slideHeight\":720,"
+    "\"pages\":[{\"page\":1,\"file\":\"slide-01.png\",\"width\":1920,"
+    "\"height\":1080,\"skippedImages\":0},{\"page\":2,\"file\":"
+    "\"slide-02.png\",\"width\":1920,\"height\":1080,\"skippedImages\":0}],"
+    "\"hiddenPages\":[],\"fontSubstitutions\":[]}";
+
+bool waitForPowerPointImport(DocumentController& docs, int timeoutMs = 15000) {
+    QElapsedTimer timer;
+    timer.start();
+    while (docs.powerPointImportBusy() && timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return !docs.powerPointImportBusy();
+}
+
+QString filePath(const std::filesystem::path& path) {
+    return QString::fromStdString(path.string());
+}
+
+void writeTextFile(const std::filesystem::path& path, const char* text) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream out(path);
+    out << text;
+}
+
+void exercisePowerPointImport(const std::filesystem::path& root) {
+    std::filesystem::create_directories(root);
+    const auto deck = root / "test-deck.pptx";
+    writeTextFile(deck, "fake deck bytes");
+    const auto fake = writeFakeRenderer(root, kFakeManifest);
+    qputenv("OPENSHOW_PPTX_RENDER", QByteArray::fromStdString(fake.string()));
+
+    DocumentController docs(nullptr, root);
+    const int libraryBefore = docs.songs().size();
+    check(docs.importPowerPointToService(filePath(deck), 0),
+          "a deck starts importing into the service");
+    check(waitForPowerPointImport(docs), "the service deck import finishes");
+    check(!docs.powerPointImportBusy(), "the busy flag clears after the import");
+    check(docs.playlistEntries().size() == 1,
+          "the service gained exactly one running-order row");
+    const QVariantMap entry = docs.playlistEntries().at(0).toMap();
+    const QString showId = entry.value(QStringLiteral("showId")).toString();
+    check(entry.value(QStringLiteral("showName")).toString() ==
+              QStringLiteral("test-deck"),
+          "the row is named after the deck");
+    check(entry.value(QStringLiteral("slideCount")).toInt() == 2,
+          "the row carries both rendered pages");
+    check(docs.songs().size() == libraryBefore,
+          "a service deck import is not a Library row");
+    check(docs.assets().size() == 2, "both pages joined the media library");
+    check(docs.slidesOf(showId).size() == 2,
+          "the imported show holds the rendered slides");
+    check(docs.status().contains(QStringLiteral("imported 2 slides")),
+          "the status line names the imported page count");
+
+    // The document itself, not only the view rows: each slide carries its
+    // rendered picture as a contained background.
+    check(docs.save(), "the service with the deck saves");
+    const std::string manifest =
+        readManifest(root / "service" / "service.json");
+    check(manifest.find("\"fit\":\"contain\"") != std::string::npos,
+          "every imported slide stores the contained fit");
+    check(manifest.find("test-deck - 01.png") != std::string::npos,
+          "the rendered pages are ordinary picture assets");
+
+    // The whole item is one edit: one undo removes the row and its media.
+    docs.undo();
+    check(docs.playlistEntries().isEmpty() && docs.assets().isEmpty(),
+          "one undo removes the running-order row and the rendered media");
+    docs.redo();
+    check(docs.playlistEntries().size() == 1 && docs.assets().size() == 2,
+          "redo restores the row and the media together");
+
+    // The Library destination creates a show and never touches the order.
+    const int entries = docs.playlistEntries().size();
+    check(docs.importPowerPointToLibrary(filePath(deck)),
+          "a deck starts importing into the Library");
+    check(waitForPowerPointImport(docs), "the Library deck import finishes");
+    check(docs.playlistEntries().size() == entries,
+          "a Library deck import leaves the running order alone");
+    check(docs.songs().size() == libraryBefore + 1,
+          "the Library gained the imported presentation");
+    check(docs.currentSongId().toStdString() ==
+              mapIds(docs.songs()).back(),
+          "the imported Library presentation becomes current");
+
+    // Same bytes, same cache: the scripted renderer ran once for both.
+    const std::string runs = readManifest(fake.string() + ".count");
+    check(std::count(runs.begin(), runs.end(), '\n') == 1,
+          "the second import of unchanged bytes reused the cached render");
+
+    // Old binary PowerPoint is refused before any process starts.
+    writeTextFile(root / "old.ppt", "binary powerpoint");
+    check(!docs.importPowerPointToLibrary(filePath(root / "old.ppt")),
+          "a .ppt deck is refused");
+    check(docs.status().contains(QStringLiteral(".pptx")),
+          "the refusal says to save it as .pptx");
+
+    // A missing renderer is an actionable refusal, not a silent no-op.
+    qputenv("OPENSHOW_PPTX_RENDER", "/no/such/pptx-render");
+    writeTextFile(root / "missing-tool.pptx", "another deck");
+    DocumentController missing(nullptr, root / "missing");
+    check(!missing.importPowerPointToLibrary(filePath(root / "missing-tool.pptx")),
+          "a missing renderer refuses the import");
+    check(missing.status().contains(QStringLiteral("renderer")),
+          "the missing-renderer line names the renderer");
+    check(missing.songs().isEmpty(), "a refused import changes no document");
+
+    // A bad manifest is refused without leaving assets or a show behind.
+    const auto bad = writeFakeRenderer(
+        root, "{\"format\":1,\"pages\":[{\"page\":1,\"file\":\"../escape.png\","
+              "\"width\":1920,\"height\":1080}]}");
+    qputenv("OPENSHOW_PPTX_RENDER", QByteArray::fromStdString(bad.string()));
+    writeTextFile(root / "bad-deck.pptx", "bad manifest deck");
+    DocumentController badDocs(nullptr, root / "bad");
+    check(badDocs.importPowerPointToLibrary(filePath(root / "bad-deck.pptx")),
+          "a bad-manifest deck starts and fails through the renderer");
+    check(waitForPowerPointImport(badDocs), "the bad-manifest import finishes");
+    check(badDocs.songs().isEmpty() && badDocs.assets().isEmpty(),
+          "a bad manifest leaves no show and no asset");
+    check(badDocs.status().contains(QStringLiteral("manifest")),
+          "the refusal names the manifest");
+
+    // A nonzero renderer exit is quoted, not swallowed.
+    const auto failed = writeFakeRenderer(root, "", 7, "fake renderer refuses this deck");
+    qputenv("OPENSHOW_PPTX_RENDER", QByteArray::fromStdString(failed.string()));
+    writeTextFile(root / "failed-deck.pptx", "failed deck");
+    DocumentController failedDocs(nullptr, root / "failed");
+    check(failedDocs.importPowerPointToLibrary(filePath(root / "failed-deck.pptx")),
+          "a failing deck starts and fails through the renderer");
+    check(waitForPowerPointImport(failedDocs), "the failed render finishes");
+    check(failedDocs.status().contains(QStringLiteral("fake renderer refuses")),
+          "the renderer's own sentence is surfaced");
+    check(failedDocs.songs().isEmpty(), "a failed render changes no document");
+
+#ifdef OPENSHOW_PPTX_RENDER_BIN
+    // PX.6 preview: the real engine on the committed operator deck. The
+    // end-to-end leaf broadens this; here it proves the controller talks to
+    // the shipped binary and lands six 1080p slides.
+    const QString realBinary = QString::fromUtf8(OPENSHOW_PPTX_RENDER_BIN);
+    const QString realDeck =
+        QStringLiteral(OPENSHOW_SOURCE_DIR "/tools/pptx-render/tests/fixtures/aug-8.pptx");
+    if (QFileInfo::exists(realBinary) && QFileInfo::exists(realDeck)) {
+        qputenv("OPENSHOW_PPTX_RENDER", QByteArray(OPENSHOW_PPTX_RENDER_BIN));
+        DocumentController real(nullptr, root / "real");
+        check(real.importPowerPointToLibrary(realDeck),
+              "the committed operator deck starts importing through the real renderer");
+        check(waitForPowerPointImport(real, 30000),
+              "the real deck import finishes");
+        check(real.songs().size() == 1, "the real deck is a Library presentation");
+        const QVariantList pages = real.slidesOf(
+            real.currentSongId());
+        check(pages.size() == 6, "August's deck lands six visible slides");
+        check(real.status().contains(QStringLiteral("imported 6 slides")),
+              "the real status line names six slides");
+        real.undo();
+        check(real.songs().isEmpty() && real.assets().isEmpty(),
+              "one undo removes the real deck and its renders");
+    }
+#else
+    (void)0;
+#endif
+}
+
+int main(int argc, char* argv[]) {
     const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() /
                                            ("openshow-docctrl-" + std::to_string(getpid()));
     std::filesystem::remove_all(tempRoot);
+    // The deck render cache is per user; keep this run's cache inside the
+    // scratch tree so a repeated test always starts cold.
+    const QByteArray cacheHome =
+        QByteArray::fromStdString((tempRoot / "xdg-cache").string());
+    qputenv("XDG_CACHE_HOME", cacheHome);
+
+    QCoreApplication app(argc, argv);
+    app.setApplicationName(QStringLiteral("openshow-document-tests"));
     exerciseEditingAndPresentation(tempRoot / "edit");
     exerciseCommitSilence(tempRoot / "silence");
     exerciseUndoRedo(tempRoot / "undo");
@@ -3792,6 +4008,7 @@ int main(int argc, char* argv[]) {
     exerciseMediaBinViews(tempRoot / "mediabin");
     exerciseAutosaveSurfacing(tempRoot / "surfacing");
     exerciseBackgroundPersistence(tempRoot / "background");
+    exercisePowerPointImport(tempRoot / "pptx");
     std::filesystem::remove_all(tempRoot);
 
     if (gFailed) {

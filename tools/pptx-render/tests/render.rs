@@ -90,6 +90,21 @@ fn corrupt_input_writes_nothing() {
 }
 
 #[test]
+fn real_deck_renders_six_pages_at_1080p() {
+    let out = temp("aug8");
+    let manifest = render_deck(&fixture("aug-8.pptx"), &out, &Options::default()).unwrap();
+    assert_eq!(manifest.pages.len(), 6);
+    assert!(manifest.hidden_pages.is_empty());
+    assert_eq!(manifest.source, "aug-8.pptx");
+    for page in &manifest.pages {
+        assert_eq!((page.width, page.height), (1920, 1080));
+        assert_eq!(page.skipped_images, 0);
+        assert!(out.join(&page.file).is_file());
+    }
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+#[test]
 fn unicode_paths_work() {
     let root = temp("unicode-礼物");
     std::fs::create_dir_all(&root).unwrap();

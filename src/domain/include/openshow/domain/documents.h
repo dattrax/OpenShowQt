@@ -823,6 +823,10 @@ public:
     // Names must be non-blank; duplicates are allowed (ids distinguish).
     // Returns the new show's Id, or "" on failure.
     Id createShow(const std::string& name, std::string* error = nullptr);
+    // A schedule-owned presentation with no provenance (PX.1's deck import):
+    // a real show that plays from the running order but never appears as a
+    // Library row. Slides join through appendSlide like any other show's.
+    Id createScheduleShow(const std::string& name, std::string* error = nullptr);
     // The online Bible import's destination shape (task BI.3): a
     // schedule-owned presentation carrying its provenance. Slides join
     // through appendSlide/setSlideLines like any other show's; what makes

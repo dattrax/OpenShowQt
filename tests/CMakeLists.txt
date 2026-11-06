@@ -320,6 +320,11 @@ if(OPENSHOW_BUILD_UI)
   # but Qt arrives with the UI switch, so this follows ui_links_qt.
   add_executable(document_controller_tests document_controller_tests.cpp)
   target_link_libraries(document_controller_tests PRIVATE openshow::ui-core)
+  if(TARGET pptx_render)
+    target_compile_definitions(document_controller_tests PRIVATE
+      OPENSHOW_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+      OPENSHOW_PPTX_RENDER_BIN="${OPENSHOW_PPTX_RENDER_BIN}")
+  endif()
   add_test(NAME document_controller_tests COMMAND document_controller_tests)
 
   # Task CS.4: the inspector read model and the one verb pair every shared

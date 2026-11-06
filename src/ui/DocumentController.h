@@ -50,6 +50,7 @@
 
 #include "DocumentPersistence.h"
 #include "DocumentViews.h"
+#include "PowerPointImport.h"
 
 namespace openshow::ui {
 
@@ -134,6 +135,10 @@ class DocumentController : public QObject {
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY stateChanged)
     // One-line operator note: the last save/recovery/error worth showing.
     Q_PROPERTY(QString status READ status NOTIFY stateChanged)
+    // A deck render is in flight (milestone PX): true between the start and
+    // the finished/failed edge. Drop targets disable while true.
+    Q_PROPERTY(bool powerPointImportBusy READ powerPointImportBusy
+               NOTIFY powerPointImportChanged)
 
 public:
     // baseDirectory defaults to the per-user application data location;
@@ -575,6 +580,21 @@ public:
     // possible, and the bin shows it as unsupported rather than hiding it.
     Q_INVOKABLE QStringList mediaImportNameFilters() const;
 
+    // --- PowerPoint import (PX.2) ---
+    //
+    // Renders a `.pptx` through the sidecar and lands one background-only
+    // slide per visible page, all in ONE edit: assets, show and (for the
+    // service) its running-order row undo together. The service destination
+    // creates a schedule-owned show at `index` (clamped; -1 appends) and never
+    // adds a Library row; the Library destination creates an ordinary show
+    // and leaves the running order alone. The URL forms are what a QML drop
+    // carries; non-local URLs are refused with a sentence.
+    Q_INVOKABLE bool importPowerPointToService(const QString& file, int index = -1);
+    Q_INVOKABLE bool importPowerPointToLibrary(const QString& file);
+    Q_INVOKABLE bool importPowerPointUrlToService(const QUrl& file, int index = -1);
+    Q_INVOKABLE bool importPowerPointUrlToLibrary(const QUrl& file);
+    bool powerPointImportBusy() const;
+
     // --- presentation hand-off ---
 
     // The current slide compiled to a scene (the scene.prepare JSON), or
@@ -633,6 +653,11 @@ signals:
     // autosave must not fire for a click that edited nothing.
     void boxSelectionChanged();
     void stateChanged();
+    // PX.2: a deck render started/stopped and what it produced. The finished
+    // signal carries the status line the operator reads; QML uses the busy
+    // property to close its drop targets.
+    void powerPointImportChanged();
+    void powerPointImportFinished(bool ok, const QString& message);
     // Task 6.12 (review R7): a save adopted the package-owned copies of
     // asset bytes — the map is old path -> new path. Anything still
     // holding a scene payload that names an old path must stop: the file
@@ -645,6 +670,11 @@ private slots:
 
 private:
     bool edit(const std::function<bool()>& mutation);  // history-wrapped edit
+    // PX.2: one deck import. begin validates and starts the sidecar; apply
+    // lands the manifest's pages as one edit and reports the operator line.
+    bool beginPowerPointImport(const QString& file, bool toLibrary, int index);
+    bool applyPowerPointImport(const PowerPointImport::Deck& deck, bool toLibrary, int index);
+    void reportPowerPointFailure(const QString& message);
     // The navigation as a value, for the row projections (task 6.19b2). The
     // ids live here and nowhere else; DocumentViews reads them through this
     // cursor and never stores one.
@@ -708,6 +738,12 @@ private:
     // base directory, and reads this class's documents only through the calls
     // above.
     DocumentPersistence* fPersistence = nullptr;
+    // PX.2: the deck renderer and the destination the in-flight render
+    // will land in. One deck at a time; the busy property is the drop
+    // targets' gate.
+    std::unique_ptr<PowerPointImport> fPptx;
+    bool fPptxToLibrary = false;
+    int fPptxIndex = -1;
     openshow::domain::Id fCurrentSongId;
     openshow::domain::Id fCurrentPlaylistId;
     int fCurrentSlide = 0;

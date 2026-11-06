@@ -50,6 +50,23 @@ DocumentController::DocumentController(QObject* parent, std::filesystem::path ba
         baseDirectory, this);
     fHistory = std::make_unique<openshow::domain::History>(&fDocuments);
 
+    // PX.2: the deck renderer is a child process; the controller only decides
+    // where a finished render lands. A failed start is reported through the
+    // same failed() line the UI reads.
+    fPptx = std::make_unique<PowerPointImport>(this);
+    connect(fPptx.get(), &PowerPointImport::busyChanged, this,
+            &DocumentController::powerPointImportChanged);
+    connect(fPptx.get(), &PowerPointImport::finished, this,
+            [this](const PowerPointImport::Deck& deck) {
+                const bool ok = applyPowerPointImport(deck, fPptxToLibrary, fPptxIndex);
+                emit powerPointImportFinished(ok, fStatus);
+            });
+    connect(fPptx.get(), &PowerPointImport::failed, this,
+            [this](const QString& message) {
+                reportPowerPointFailure(message);
+                emit powerPointImportFinished(false, fStatus);
+            });
+
     // Task 2.3's startup rule: autosave data, when present, is newer than
     // the saved service and wins; a missing service simply begins empty.
     const DocumentPersistence::Startup startup = fPersistence->open(&fDocuments);
@@ -3030,6 +3047,171 @@ QStringList DocumentController::mediaImportNameFilters() const {
                      glob(openshow::domain::kVideoExtensions),
                      glob(openshow::domain::kAudioExtensions)),
             QStringLiteral("All files (*)")};
+}
+
+bool DocumentController::importPowerPointToService(const QString& file, int index) {
+    return beginPowerPointImport(file, false, index);
+}
+
+bool DocumentController::importPowerPointToLibrary(const QString& file) {
+    return beginPowerPointImport(file, true, -1);
+}
+
+bool DocumentController::importPowerPointUrlToService(const QUrl& file, int index) {
+    if (!file.isLocalFile() || file.toLocalFile().isEmpty()) {
+        setStatus(QStringLiteral(
+            "PowerPoint import: choose a .pptx file on this computer"));
+        return false;
+    }
+    return importPowerPointToService(file.toLocalFile(), index);
+}
+
+bool DocumentController::importPowerPointUrlToLibrary(const QUrl& file) {
+    if (!file.isLocalFile() || file.toLocalFile().isEmpty()) {
+        setStatus(QStringLiteral(
+            "PowerPoint import: choose a .pptx file on this computer"));
+        return false;
+    }
+    return importPowerPointToLibrary(file.toLocalFile());
+}
+
+bool DocumentController::powerPointImportBusy() const {
+    return fPptx != nullptr && fPptx->busy();
+}
+
+bool DocumentController::beginPowerPointImport(const QString& file, bool toLibrary,
+                                               int index) {
+    flushText();
+    if (fPptx->busy()) {
+        setStatus(QStringLiteral(
+            "PowerPoint import: another deck is already rendering"));
+        return false;
+    }
+    const QFileInfo info(file);
+    if (!info.isFile()) {
+        setStatus(QStringLiteral(
+            "PowerPoint import: choose a .pptx file on this computer"));
+        return false;
+    }
+    if (info.suffix().compare(QStringLiteral("pptx"), Qt::CaseInsensitive) != 0) {
+        setStatus(QStringLiteral("PowerPoint import: only .pptx decks are supported — "
+                                 "save .ppt or .pps as .pptx first"));
+        return false;
+    }
+    fPptxToLibrary = toLibrary;
+    fPptxIndex = index;
+    if (!fPptx->start(file)) {
+        return false;
+    }
+    setStatus(QStringLiteral("rendering %1…").arg(info.fileName()));
+    return true;
+}
+
+void DocumentController::reportPowerPointFailure(const QString& message) {
+    setStatus(QStringLiteral("PowerPoint import: %1").arg(message));
+}
+
+bool DocumentController::applyPowerPointImport(const PowerPointImport::Deck& deck,
+                                               bool toLibrary, int index) {
+    if (deck.pages.isEmpty()) {
+        reportPowerPointFailure(QStringLiteral("the deck produced no visible slides"));
+        return false;
+    }
+    const QString sourceName =
+        deck.source.isEmpty() ? QStringLiteral("deck.pptx") : deck.source;
+    QString showName = QFileInfo(sourceName).completeBaseName().trimmed();
+    if (showName.isEmpty()) {
+        showName = QStringLiteral("PowerPoint deck");
+    }
+
+    openshow::domain::Id created;
+    std::vector<openshow::domain::Id> assets;
+    std::string error;
+    const bool applied = edit([&]() -> bool {
+        created = toLibrary ? fDocuments.createShow(showName.toStdString(), &error)
+                            : fDocuments.createScheduleShow(showName.toStdString(), &error);
+        if (created.empty()) {
+            return false;
+        }
+        // A refused mutation is not rolled back by History, so a late failure
+        // takes the young show and every asset it gained with it: the document
+        // never keeps half a deck.
+        auto abandon = [&]() -> bool {
+            for (const openshow::domain::Id& asset : assets) {
+                fDocuments.removeAsset(asset, nullptr);
+            }
+            fDocuments.removeShow(created, nullptr);
+            created.clear();
+            return false;
+        };
+        for (const PowerPointImport::Page& page : deck.pages) {
+            const QString assetName =
+                QStringLiteral("%1 - %2.png")
+                    .arg(showName,
+                         QString::number(page.page).rightJustified(
+                             2, QLatin1Char('0')));
+            const openshow::domain::Id asset = fDocuments.addAsset(
+                assetName.toStdString(),
+                (deck.cacheDir + QLatin1Char('/') + page.file).toStdString(), &error);
+            if (asset.empty()) {
+                return abandon();
+            }
+            assets.push_back(asset);
+            const openshow::domain::Id slide = fDocuments.appendSlide(created, &error);
+            if (slide.empty() ||
+                !fDocuments.setSlideBackground(created, slide, asset, &error) ||
+                !fDocuments.setSlideBackgroundFit(
+                    created, slide, openshow::domain::BackgroundFit::Contain, &error)) {
+                return abandon();
+            }
+        }
+        if (!toLibrary) {
+            const openshow::domain::Playlist* playlist =
+                fDocuments.findPlaylist(fCurrentPlaylistId);
+            if (playlist == nullptr) {
+                error = "there is no running order to add to";
+                return abandon();
+            }
+            const std::size_t count = playlist->entries.size();
+            const std::size_t at =
+                index < 0 ? count
+                          : std::min(static_cast<std::size_t>(index), count);
+            if (fDocuments
+                    .insertPlaylistEntry(fCurrentPlaylistId, created, std::string(), at,
+                                         &error)
+                    .empty()) {
+                return abandon();
+            }
+        }
+        return true;
+    });
+
+    if (!applied) {
+        reportPowerPointFailure(
+            error.empty() ? QStringLiteral("the deck could not be added")
+                          : QString::fromStdString(error));
+        return false;
+    }
+
+    fCurrentSongId = created;
+    fCurrentSlide = 0;
+    emit navigationChanged();
+    emit slideTextChanged();
+
+    QString status =
+        QStringLiteral("imported %1 slide%2 from %3")
+            .arg(static_cast<int>(deck.pages.size()))
+            .arg(deck.pages.size() == 1 ? QString() : QStringLiteral("s"))
+            .arg(sourceName);
+    if (deck.hiddenPages > 0) {
+        status += QStringLiteral(" (%1 hidden skipped)").arg(deck.hiddenPages);
+    }
+    if (!deck.substitutions.isEmpty()) {
+        status += QStringLiteral(" — font substituted: %1")
+                      .arg(deck.substitutions.mid(0, 2).join(QStringLiteral(", ")));
+    }
+    setStatus(status);
+    return true;
 }
 
 void DocumentController::seedDefaultPlaylist() {

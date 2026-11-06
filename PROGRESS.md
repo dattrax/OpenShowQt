@@ -11,14 +11,15 @@ native text Delete, Show-mode silence, deleting the final slide and empty-state
 undo. Next: replace the Edit library/service pane and picker with previews of
 only the selected song/presentation, as clarified by the operator.
 
-**PX.1 complete (2026-11-06):** `third_party/betteroffice` is pinned at commit
-`b98ef24` (0.5.1 line, shallow; the pointer landed in `15c8fcd`). The new
-`tools/pptx-render` sidecar builds through CMake into
-`build/cargo/release/pptx-render` (18 MB, no runtime dependencies): 16:9 →
-1920×1080, 4:3 → 1440×1080, hidden slides skipped, JSON manifest with font
-substitutions, corrupt input leaves no output, Unicode paths work. Cargo tests
-(6) and `pptx_render_fixture` pass. Next: **PX.2** — the controller import verb
-and transactional edit for the service and Library destinations.
+**PX.2 complete (2026-11-06):** `DocumentController` now imports a `.pptx`
+through `PowerPointImport`: tool discovery, bounded `QProcess`, SHA-256 cache,
+manifest validation and one transactional edit for both destinations. Service
+import creates a `scheduleOwned` show at the drop index; Library import creates
+an ordinary show and leaves the running order alone. The committed operator
+deck `tools/pptx-render/tests/fixtures/aug-8.pptx` (6 visible slides) renders at
+1920×1080 through the real sidecar. `document_controller_tests` covers one-undo,
+cache reuse, missing tool, bad manifest, renderer failure and the real deck.
+Next: **PX.3** — the service drop target and menu action.
 
 **LRF.8–LRF.11 complete (second operator report, 2026-11-06):** Library
 songs show titles without CCLI row labels, and redundant Add/Import buttons are

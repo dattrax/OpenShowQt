@@ -44,6 +44,8 @@ add_library(openshow-ui-core STATIC
   LibrarySearch.h
   PresentationModel.cpp
   PresentationModel.h
+  PowerPointImport.cpp
+  PowerPointImport.h
   PreviewConsumer.cpp
   PreviewConsumer.h
   RpcClient.cpp
@@ -84,6 +86,15 @@ target_compile_definitions(openshow-ui-core PRIVATE
   OPENSHOW_WORKER_PATH="$<TARGET_FILE:openshow-worker>"
 )
 add_dependencies(openshow-ui-core openshow-worker)
+
+# PX.2: the dev build's sidecar path. Installed builds find the executable
+# beside the application first; this is the in-tree fallback.
+if(TARGET pptx_render)
+  target_compile_definitions(openshow-ui-core PRIVATE
+    OPENSHOW_PPTX_RENDER_BIN="${OPENSHOW_PPTX_RENDER_BIN}"
+  )
+  add_dependencies(openshow-ui-core pptx_render)
+endif()
 
 qt_add_executable(openshow-ui
   main.cpp

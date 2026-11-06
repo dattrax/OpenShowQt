@@ -88,6 +88,20 @@ Id Documents::createShow(const std::string& name, std::string* error) {
     return fShows.back().id;
 }
 
+Id Documents::createScheduleShow(const std::string& name, std::string* error) {
+    const std::string clean = trimmed(name);
+    if (clean.empty()) {
+        fail(error, "a show needs a name");
+        return {};
+    }
+    Show show;
+    show.id = nextId("show");
+    show.name = clean;
+    show.scheduleOwned = true;
+    fShows.push_back(std::move(show));
+    return fShows.back().id;
+}
+
 Id Documents::createScriptureShow(const std::string& name, const ScriptureProvenance& scripture,
                                   std::string* error) {
     // The provenance is the point of the item: the reference says what the
