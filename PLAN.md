@@ -1657,6 +1657,60 @@ amendments and the existing durable catalog. Complete and push each fix.
 | LRF.10 | DONE | Separate service slide groups | Full-width rules in existing group gaps, including repeated shows; visual geometry regression |
 | LRF.11 | DONE | Make dragging obvious and enable Show-mode service reorder | Overlay title/action badge, pointer-aligned hotspot, valid-target border and insertion marker; actual up/down/no-op/cancel/autoscroll/save/undo journeys; [acceptance](docs/reviews/service-workflow-followups-2026-11-06.md) |
 
+### PowerPoint deck import (PX)
+
+Import a `.pptx` as static slides: one rendered PNG per visible slide, no
+animations, no PowerPoint or LibreOffice runtime. The renderer is
+[BetterOffice](https://github.com/openooxml/betteroffice) (Apache-2.0, native
+Rust, tiny-skia), pinned as `third_party/betteroffice` and driven by the
+separate `tools/pptx-render` process, so a malformed deck cannot crash the
+operator UI and the C++ build keeps no Rust ABI.
+
+**Storage.** The package already separates the editable manifest from media:
+`service.json` plus `assets/`. A rendered slide is an ordinary picture asset
+(`<id>-<name>.png`) and its slide is background-only (`backgroundAssetId`, fit
+`contain`). Bitmaps are **not** base64/ASCII inside JSON: PNG is already
+compressed, encoding adds a third to every file, makes `service.json`
+multi-megabyte and hand-editing/diffing worse, and defeats the save-time
+`AssetReuse` ledger by rewriting every bitmap on every autosave. A PNG can be
+replaced or repaired without touching the manifest, and a corrupt asset cannot
+damage the whole document. A single-file export (a ZIP of the same package) is
+a later convenience, not the storage format. No service-format bump is needed:
+`scheduleOwned` already exists.
+
+**Operator flow.** Drop a `.pptx` on the service to add a `scheduleOwned`
+presentation at the marked running-order position (session-only, never a
+Library row); drop one on the Library's Presentations header to add an ordinary
+Library presentation and nothing else — it does not enter the running order.
+Both are offline, one edit and one undo, also reachable from `More ⋯ → Import
+PowerPoint…`. `.ppt`/`.pps` is refused with "save it as .pptx first"; hidden
+slides are skipped. Renders are cached by SHA-256 under
+`$XDG_CACHE_HOME/openshow/pptx/` and copied into `assets/` on save, so the
+package is self-contained and needs no renderer to reopen. Deleting a show
+leaves its media until an explicit "Remove unused media" sweep; v1 never
+silently deletes bytes a duplicate or paste may still reference.
+
+Entry gate: none; independent of TV/TA/FO. Work one leaf at a time.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| PX.1 | TODO | Pin `third_party/betteroffice` (0.5.1) and add `tools/pptx-render`: Cargo crate using `betteroffice-pptx` (`default-features=false`, `raster`, `fonts`, `fonts-latin`), CMake build/install wiring, `--input/--out-dir/--width/--height`, hidden-slide filtering, scale from the display list, manifest, panic isolation | Release build and the CMake target both produce the sidecar; a 16:9 fixture renders exactly 1920×1080, 4:3 renders 1440×1080, hidden slides are omitted, corrupt/non-pptx input exits nonzero with no partial output, and a Unicode path works |
+| PX.2 | TODO | Controller import verb and renderer-job wrapper: tool discovery, bounded `QProcess`, SHA-256 cache, manifest parsing, transactional `edit()` creating assets + show + slides; Service = `scheduleOwned` show inserted at the drop index, Library = ordinary show | `document_controller_tests` with a scripted fake converter: one undo removes the whole import; service import is absent from Library lists/counts but plays; library import is present and not in the running order; missing tool, nonzero exit, malformed manifest and partial files change nothing; refusals name the file and reason |
+| PX.3 | TODO | Service-panel drop target and More-menu action: accept a local `.pptx` URL, reject `.ppt`/multiple/foreign payloads with sentences, busy state that blocks a second drop, insertion at the hovered gap | `workspace_ui_tests` simulate a real URL drop and the menu path: the deck lands at the marked index, the busy state clears, one undo removes it, and a `.ppt` or multi-file drop writes nothing; browsing or dropping never presents |
+| PX.4 | TODO | Library Presentations drop target and its menu action: accept `.pptx`, create the Library show, keep it out of the running order, preserve selection/scrolling; deletion removes it from the next session | `workspace_ui_tests` + controller regressions: the row appears under Presentations with its slide count, the running order is unchanged, save/reopen shows it, deleting it removes it and leaves no dangling reference; drops on Songs/Media do not import |
+| PX.5 | TODO | Persistence and cache hygiene: save copies rendered PNG bytes and reopens offline; interrupted/failed imports leave no temp or cache litter; explicit "Remove unused media" sweep; re-import of unchanged bytes reuses the cached render | save/reopen of both destinations works with the renderer absent; a killed conversion leaves no partial assets and no partial show; the same deck imported twice costs one render and produces two independent shows; the sweep removes only unreferenced assets, in one undo, and no slide references a missing asset |
+| PX.6 | TODO | Real-renderer acceptance: a committed two-slide fixture (one hidden) and a gated end-to-end test that runs the sidecar, imports to both destinations, presents every slide, and records dimensions/hidden-skip/determinism; a font-substitution warning surface | `pptx_import_e2e_tests` on a live worker: service drop presents the rendered slides, library drop survives save/reopen with the renderer removed, hidden slide absent, 4:3 letterboxed, repeated import byte-identical, substituted families reported without rewriting the deck |
+| PX.7 | TODO | Windows readiness: `windows-latest` CI job builds the sidecar with MSVC and runs the fixture; path/Unicode handling; document Rust 1.85+ (edition 2024), pinned toolchain and `--locked`; no Linux-only path or font assumptions | CI on Linux and Windows builds and runs `pptx-render` on the fixture; the same deck yields the same dimensions and slide count on both; the app locates the sidecar from its install directory; README build prerequisites list Rust and the submodule |
+| PX.8 | TODO | Documentation and close: README, `docs/architecture.md` import section, operator notes (service vs Library, deletion, `.ppt` refusal), PLAN/PROGRESS delivered-shape record | Operator can follow the documented flow without reading code; architecture states ownership, cache and transactional rules; PLAN row summaries and PROGRESS handoff are current; all gates pass |
+
+Test inventory: `pptx_render_tests` (Rust/CTest: scale math, hidden filtering,
+manifest shape, deterministic repeat, corrupt input, Unicode path, no partial
+output); `document_controller_tests` (both destinations, transactionality, one
+undo, missing tool, bad manifest, duplicate import, save/reopen);
+`workspace_ui_tests` (URL drops, rejections, busy state, menu actions, no
+presentation side effects); `pptx_import_e2e_tests` (gated on the built
+sidecar); `ui_loads` (new menu item and drop areas); Windows CI (fixture).
+
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
 **Entry gate: CS.1–CS.9, SL.1–SL.9, SI.1–SI.4, LRF.1–LRF.4, the remaining TV leaves and TA.1 must be DONE, with

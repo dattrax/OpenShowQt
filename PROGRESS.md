@@ -4,6 +4,15 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**PX planned (2026-11-06):** PowerPoint deck import is scheduled as PX.1–PX.8
+in PLAN.md. BetterOffice (Apache-2.0, native Rust) is pinned as a submodule and
+driven by a separate `tools/pptx-render` process; rendered slides are ordinary
+picture assets in the existing `service.json` + `assets/` package, never
+base64/ASCII inside JSON. Service drops create a `scheduleOwned` show at the
+marked running-order position; Library drops create an ordinary Library show
+and do not touch the running order. Current task: **PX.1** (sidecar and build
+wiring). No implementation commit yet.
+
 **LRF.8–LRF.11 complete (second operator report, 2026-11-06):** Library
 songs show titles without CCLI row labels, and redundant Add/Import buttons are
 removed. Import stays in the toolbar More menu and returns to its originating
