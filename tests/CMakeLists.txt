@@ -42,6 +42,14 @@ add_executable(textflow_tests textflow_tests.cpp)
 target_link_libraries(textflow_tests PRIVATE openshow::importer)
 add_test(NAME textflow_tests COMMAND textflow_tests)
 
+# Task SI.2: the stanza-aware song planner on a scripted measuring engine —
+# a section starts a new slide, overflow splits at authored lines, a single
+# over-long line uses the shared engine, words and font sizes survive, and
+# an unusable box refuses. Qt-free.
+add_executable(song_pagination_tests song_pagination_tests.cpp)
+target_link_libraries(song_pagination_tests PRIVATE openshow::importer)
+add_test(NAME song_pagination_tests COMMAND song_pagination_tests)
+
 add_executable(scene_tests
   scene_tests.cpp
 )

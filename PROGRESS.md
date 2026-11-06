@@ -4,6 +4,22 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**SI.2 complete: the stanza-aware measured song planner.** New Qt-free
+`paginateSong` measures each stanza whole first; when it overflows, whole
+authored lines are packed and only a single line taller than the box goes
+through the shared `textflow` sentence/word split. The hard rule the operator
+asked for is enforced: **a section starts on a new slide**, so a chorus never
+fills the leftover room of a verse's last slide. Continuations are labelled
+"(cont.)", words are never lost/repeated/reordered, no font shrinking is used
+to avoid a split, wordless stanzas make no blank slide, each distinct block is
+measured once, and `songPlanFingerprint` covers the full stanza+box+typography+
+effects record for staleness. Evidence: `song_pagination_tests` (all pass).
+
+Next: the Library/Service UI — split `PlaylistPanel` into a persistent
+`LibraryBrowser` (Songs/Presentations, title filter) and `CurrentServicePanel`
+(one running order, no service picker), then the clipboard import page and the
+reference-based service bridge.
+
 **SI.1 complete: the clipboard plain-lyrics parser, with the song's CCLI and
 attribution footer.** New Qt-free `openshow::importer::parseLyrics` returns a
 draft of the operator's title suggestion and canonical stanzas. It normalises

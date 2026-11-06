@@ -9,6 +9,7 @@ add_library(openshow_importer STATIC
   bookindex.cpp
   lyrics.cpp
   scripturepagination.cpp
+  songpagination.cpp
   textflow.cpp
 )
 target_include_directories(openshow_importer PUBLIC
