@@ -4,6 +4,16 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**Planning update, 2026-11-06: shared Library and clipboard song import.**
+The operator confirmed a Library shared across services. PLAN.md now contains
+SL.1–SL.9 and SI.1–SI.4: independent catalog/migration, separate upper Library
+and lower current service, expandable Songs/Presentations, title-only filtering,
+category moves, service-owned snapshots and clipboard-to-Songs import using
+measured current-lyrics-theme previews. The brief specifies stable IDs,
+service/catalog edit ownership, no implicit search insertion, persistence,
+real drag/worker acceptance and implementation order. All new leaves are TODO;
+this update changes documentation only. TV.3 remains TODO after its WIP reset.
+
 **TV.3 WIP discarded at the operator's request (2026-11-06).** The four
 remaining uncommitted diffs matched the saved TV.3 baseline and were restored
 to HEAD: domain documents.cpp/documents.h/storage.cpp and UI DocumentController.

@@ -1,7 +1,8 @@
 # OpenShowQt: implementation plan
 
 Accepted 2026-10-21; condensed 2026-10-30; theme architecture reviewed 2026-11-03;
-Qt control-set review and pre-FO work added 2026-11-04.
+Qt control-set review and pre-FO work added 2026-11-04;
+shared Library and clipboard song-import brief added 2026-11-06.
 Current checkpoint and verification: [PROGRESS.md](PROGRESS.md).
 Current code boundaries and open differences: [docs/architecture.md](docs/architecture.md).
 Detailed completed-task evidence: [history](docs/history/README.md).
@@ -1088,10 +1089,11 @@ TV/TA and M7 work. CS.0 records this review only.
 | CS.8 | DONE | Grouped-geometry preview requests and scroll-to-cue verified | The ask is the view's mapped window: viewport rows plus ONE bounded look-ahead row, filler gaps omitted; cap/dedupe/coalescing pinned (one ask per scroll burst, destination-true; cap cutting edge in UI.3c over grouped rows); bottom case ends on the order's last cue and scroll-to-cue lands flush there; every thumb size re-derives band, pixel size and contained cells |
 | CS.9 | DONE | Integrated reuse, accessibility, screenshot and regression acceptance | One tour walks the seams: a Themes-host size write lands in the Edit host's resolved field, a slide customization stays the slide's own (theme row unmoved, chip announces "Revert fontSize customization", Remove lands back on the theme value), Tab walks/Escape releases/page-leave takes the field, first/last rail controls reach the viewport at 1000×680, the hidden Show page asked the worker nothing across the tour while the shown one catches up, browsing moved no document/history/output byte, and the walk-back leaves no fingerprint; captures of all five pages at the three ledger sizes plus scales 1.5/2 |
 
-Current priority: **TV.3**.
+Current implementation priority: **SL/SI — shared song Library and clipboard import**,
+starting with SL.1 and the dependency order in that brief. TV.3 remains TODO.
 The aborted four-file TV.3 WIP was discarded at the operator's request on
-2026-11-06. TV.3 remains TODO; restart from the committed model and the brief
-below rather than relying on any partial implementation.
+2026-11-06. Restart TV.3 from the committed model and its brief above, rather
+than relying on any partial implementation.
 CS.9's integrated tour records the remaining open work — **TV.3 → TV.4a →
 TV.4b → TV.5 → TA.1** — as the leaves still gating FO; none of them is
 delivered.
@@ -1325,9 +1327,293 @@ reference field and Lookup.
 |---|---|---|---|
 | BIU.1 | DONE | Remove verse checkboxes/All/None and duplicate canvas; keep Lookup, generated cards and Add/Cancel | 6/6 affected tests pass; actual Lookup clicks replace the complete passage, reference changes retire old content, and renderer captures replace six slides with one fresh plan. 63 captures pass across three sizes/scales, with zero Bible Selection frames; local executable rebuilt |
 
+### Shared song Library, service preparation and clipboard import (SL / SI)
+
+Operator brief and screenshot: 2026-11-06. **The Library is shared across all
+services**, confirmed by the operator. It has exactly two expandable categories,
+**Songs** and **Presentations**. Search filters Library titles; drag/drop
+organises the Library or copies an item into the current service. Song import
+reads plain text from the clipboard and previews it using the current Songs
+view of the lyrics theme. These are new TODOs, not delivered functionality.
+
+#### Existing implementation and the mismatch
+
+- `DocumentViews::collectionOutline()` generates Library plus every playlist.
+  Those rows are collections, not filesystem folders. `PlaylistPanel.qml`
+  switches ONE detail list between Library contents and the selected playlist,
+  so the source list and destination running order cannot remain visible together.
+- `focusSearch()` changes that outline selection to Library. `searchShows()`
+  searches names AND slide words; `searchEnter()` inserts the best match and
+  clears the query. That differs from a title filter followed by an explicit drag.
+- Existing drag proxies use `text/plain` show/entry IDs. Some drop routes select
+  another playlist, and gap calculation uses a fixed row height without the
+  scrolled content offset. Reuse the document commands, not these assumptions.
+- Reusable shows currently live in the same `Documents` package as services;
+  there is no independent, application-wide song catalog or Songs/Presentations
+  classification. `scheduleOwned` scripture is intentionally excluded from Library.
+- The existing slide clipboard is an internal structured slide-copy buffer,
+  not a plain-text song importer. Generic measured text flow and the simplified
+  Bible import's worker-thumbnail components are already available to reuse.
+
+This brief supersedes UI.2/UI.4a's shared-outline/detail arrangement and
+search-to-insert behaviour. Keep their historical DONE evidence, but replace
+the old assertions with the new contracts rather than retaining two workflows.
+
+#### Agreed workflow and implementation decisions
+
+The upper and lower panes remain simultaneously visible and scroll independently:
+
+```text
+LIBRARY                       [Search library…]
+  v Songs                     [matching / total]
+      Amazing Grace
+      Jesus, Lover of My Soul
+  v Presentations             [matching / total]
+      Notices
+-------------------- resizable divider --------------------
+CURRENT SERVICE               [Service picker]
+  Opening song
+  Bible passage
+  Closing song
+```
+
+The hierarchy is application data, not a view of directories. The two category
+names are fixed; no arbitrary folder system, tags, online providers or network
+song-server work belongs in this milestone. A service picker/New service action
+belongs to the lower pane, never underneath Library. Persist pane sizes and
+expansion state as workspace preferences, not document edits.
+
+- Search is always attached to the upper Library. It filters titles across both
+  categories, using case/accent/whitespace normalization and all-query-word title
+  matching. Lyrics-only hits are excluded. Matching branches expand temporarily;
+  clearing the query restores the previous expansion state. Category headers
+  remain available as drop targets, including empty categories. Ctrl+F/header
+  Search focuses this field without changing the current service. Enter selects
+  or focuses a result; it never adds one. Escape clears the filter and releases
+  typing focus. Library selection does not replace the centre's service board.
+- Dropping between categories MOVES classification only. It preserves the item
+  ID, content revision, text, slides, assets and theme policy. Repeating a move to
+  its current category is a no-op. A category is independent of content kind,
+  theme view (`Songs`/`scripture`) and output destination.
+- Dropping into the running order COPIES a prepared, service-owned snapshot;
+  the catalog item remains. Every drop creates a separate service show/entry
+  with fresh local IDs and origin metadata. Reordering uses entry IDs. Removing
+  a service entry never deletes the Library original. Catalog edits, rename,
+  recategorisation or deletion never silently rewrite existing service copies.
+  Editing a service copy does not edit the catalog. An explicit Add to current
+  service command provides the keyboard alternative to dragging.
+- The shared catalog is local to this application/user profile and survives
+  New/Load service, service deletion and restart. Services remain portable and
+  contain all snapshots/assets/themes needed to play without the catalog.
+  Use a separate versioned local catalog package with the existing atomic
+  JSON/asset persistence approach; a SQL server or new database dependency is
+  not required for this first implementation.
+- Catalog records have globally stable IDs, a category (`songs`/`presentations`),
+  title, record revision, content revision and content kind. Record revision
+  changes for any mutation; content revision changes only with content/layout.
+  Clipboard imports hold canonical
+  lyrics/stanza text; existing authored decks hold their slide document and
+  dependency closure. Classification does not convert between these kinds.
+  Lyrics are prepared for each service's current Songs theme; authored decks
+  retain their explicit layout/look. No catalog record may retain dangling
+  service-local theme or asset IDs.
+- Clipboard import adds to **Library → Songs**, not directly to the service.
+  The next action is an explicit drag/Add to current service. It shows Paste
+  from clipboard, an editable title, generated thumbnails, Add to Library and
+  Cancel. Do not restore a verse checklist, duplicate large canvas or a permanent
+  second text display. Pasting again replaces the draft. No background polling
+  of the clipboard, automatic import on page entry, or web lookup.
+
+#### Control sets and ownership
+
+Use these names in source comments (`UI part: <name>`) and extend
+`docs/ui/control-sets.md` when implemented. Split `PlaylistPanel` as a host;
+do not build another competing navigation tree in Main or the media bin.
+
+| Part / boundary | Responsibility and likely source seams |
+|---|---|
+| `CatalogStore` | Qt-free catalog records, validation, independent persistence and migration ledger; new domain/catalog code beside `documents`/`storage` |
+| `CatalogController` | Qt read models and explicit catalog mutations; owns catalog history, never the worker's live state |
+| `LibraryBrowser` | Expandable Songs/Presentations, title filter, stable item selection and drag sources; extracted from `PlaylistPanel.qml` |
+| `CurrentServicePanel` | Service selection, entry list, insertion gaps, reorder and service drop target; existing playlist commands behind explicit service IDs |
+| `ServiceCatalogBridge` | Prepare a catalog item for a named service, remap dependency IDs and commit one service snapshot/entry atomically |
+| `SongImportWorkspace` / `SongImportSession` | Clipboard draft, title, measured plan, thumbnail generation and explicit catalog commit; reuse `SlidePreviewCollection`/`SlidePreviewCard` |
+
+`Documents`/`DocumentController` continue to own the current service. Keep the
+catalog a separate store rather than loading its contents into whichever
+service happens to be open. Editing context and undo scope must be explicit:
+Library edits use catalog history; running-order/service edits use service
+history; text fields keep native text undo. Show an appropriate Undo action/name
+for the focused preparation context. Browsing/search never adds a history entry.
+
+#### Delivery ledger
+
+Keep leaves small enough for one reviewable commit; split a leaf if it exceeds
+roughly two implementation days. Build and test each leaf, commit/push it, and
+refresh the in-tree executable when behaviour changes.
+
+| ID | Status | Work | Dependencies and acceptance |
+|---|---|---|---|
+| SL.1 | TODO | Catalog model, identities and ownership commands | Stable global item IDs, closed categories, independent content kind/revision; category moves preserve content and existing services; Qt-free `catalog_tests` |
+| SL.2 | TODO | Independent catalog persistence and application adapter | SL.1; durable catalog package, asset containment, atomic failure/recovery, catalog model notifications and history; restart and New/Load service leave catalog intact |
+| SL.3 | TODO | Migrate existing embedded Library safely | SL.2; migrate reusable shows once, preserve old service pixels/IDs, exclude schedule-owned scripture, retry migration without duplicates; old packages remain playable |
+| SL.4 | TODO | Separate LibraryBrowser and CurrentServicePanel | SL.2–3; both visible with independent scroll/selection, fixed category branches, service controls below, persistent workspace layout |
+| SL.5 | TODO | Bind title filtering to Library only | SL.4; Jesus title examples, empty results and clear/keyboard cases; no insert, service navigation or output change; cached normalized titles |
+| SL.6 | TODO | Prepare catalog items into portable service snapshots | SL.2–3 + SI.2; authored-deck clone and lyrics preparation, dependency remapping, explicit target service, origin metadata, one service undo; catalog unchanged |
+| SL.7 | TODO | Real drag/drop across categories and into the service | SL.4–6; stable-ID payloads, Move vs Copy, insertion/reorder with scroll and autoscroll, cancellation/stale targets, keyboard alternative; actual pointer tests |
+| SL.8 | TODO | Route creation/edit/rename/remove and undo to the correct store | SL.6–7; explicit Library vs service editing, catalog deletion leaves service snapshots playable, no accidental global edit from a service row |
+| SI.1 | TODO | Clipboard capture and plain-lyrics parser | SL.1; explicit normal clipboard read, Unicode/line-ending/stanza preservation, title separate from lyrics, bounded drafts, replace/cancel with no writes |
+| SI.2 | TODO | Song slide planner using current Songs theme | SI.1; stanza-aware shared text flow, real worker measurement, complete style/box fingerprint and latest-generation validity; no scripture reservations or font guesses |
+| SI.3 | TODO | Clipboard import workspace with worker slide cards | SL.4 + SI.2; simplified Bible-style page, reachable actions, no duplicate canvas, hidden page stops requests; worker/clipboard replacement cases |
+| SI.4 | TODO | Commit imported song to the shared catalog | SL.2, SL.6, SL.8 + SI.3; one durable catalog/history action, no service addition or double import, failure leaves no partial item; usable in two services |
+| SL.9 | TODO | Integrated catalog/service/import acceptance and handoff | All SL/SI leaves; real mouse/keyboard journeys, real worker pictures, persistence/recovery, populated size/scale captures, desktop/headless gates and updated docs |
+
+Suggested execution: **SL.1 → SL.2 → SL.3 → SL.4 → SL.5 → SI.1 → SI.2 →
+SL.6 → SL.7 → SL.8 → SI.3 → SI.4 → SL.9**. SI.1/SI.2 use the existing
+Songs/text-flow contracts and do not require TV.3's unfinished Bible view style.
+Keep remaining TV/TA and physical M7 gates separate; this work also precedes FO.
+
+#### SL.1–SL.3 — catalog and migration brief
+
+1. Specify catalog mutations and row shapes before connecting QML: list by
+   category/query, move category, create/rename/update/delete item, and retrieve
+   a content revision for preparation. Categories are metadata, not paths.
+   Assign fresh global IDs rather than treating service-local `show1` as global.
+   Keep duplicate titles as distinct items; no title-based automatic merging.
+2. Persist the catalog outside any service package under the application's data
+   directory. Reuse strict parsing, transactional writes, asset containment and
+   recovery patterns. Commit record changes and migration ledger together;
+   publish rows/history only after a successful durable write. Test interrupted
+   writes, malformed/unknown keys, missing assets, undo/redo persistence and
+   startup recovery. Undo/redo results must be durable; the undo stack itself
+   need not survive restart. Loading a service must never replace the catalog
+   singleton.
+3. Allocate catalog/service schema versions from the then-current committed
+   HEAD. The discarded TV.3 format-10 experiment is not an implementation or a
+   reserved schema to reuse blindly. Service origin metadata is optional in old
+   packages; old readers must refuse genuinely newer meanings explicitly.
+4. On the initial upgrade, migrate the current embedded reusable Library with
+   a backup and a durable source-package/show-ID ledger. Default legacy items
+   to **Songs** because there is no reliable category/type metadata; preserve
+   them as authored decks with their appearance/dependencies intact. The user
+   can move notices/decks to Presentations afterward. Exclude every
+   `scheduleOwned` item, especially Bible passages. Do not rewrite existing
+   running-order entries or deduplicate intentionally separate variants.
+5. A failed or interrupted migration must leave the old service usable and
+   permit a safe retry. Later opening an external legacy service offers an
+   explicit Import embedded Library action; it does not silently flood the
+   shared catalog. Normal service playback needs no catalog import.
+
+#### SL.4–SL.8 — browsing, preparation and drag/drop brief
+
+1. Keep Library query/selection/expansion separate from current service ID,
+   selected service entry and live cue. Selecting/filtering a Library item
+   highlights that item; the centre retains the current service board. Preview
+   or Edit commands must identify their scope explicitly. Retire
+   `searchEnter()`'s insertion and the outline-selection switch; preserve the
+   media bin's separate search and existing explicit Go behaviour.
+2. Test titles such as `Jesus Loves Me`, `All Hail King Jesus`, an unrelated
+   title whose lyrics contain Jesus, mixed case/accented titles, repeated names
+   and no matches. `Jesus` shows the title matches only. Clearing restores the
+   full Library; neither query nor branch expansion mutates a document. Exercise
+   10,000 synthetic records: cache normalized titles, avoid reconstructing all
+   slide content per keystroke and record responsiveness before sign-off.
+3. Use a versioned application MIME payload with catalog item ID or service
+   entry ID and source scope. Do not derive identity from the filtered index,
+   row text, file path or unvalidated `text/plain`. Reject stale/deleted records
+   and changed service targets. Category drops are Move; service drops are Copy;
+   reorder is Move. Cross-category moves do not change content revision.
+4. Compute insertion from mapped delegate boundaries, including `contentY`,
+   headers, clipping and empty/end gaps. Add visible insertion feedback and
+   bounded edge autoscroll. Preserve drag payload/selection across filtering,
+   model refresh and category moves; capture IDs before mutation destroys a
+   delegate. Real press/move/release tests must cover offscreen destinations,
+   a scrolled order, duplicates, cancel and two different services.
+5. The bridge takes an explicit item revision and target service ID; no helper
+   may secretly select a service before inserting. A drop performs one service
+   edit: prepared show + slides + entry + dependencies + origin metadata. Make
+   fresh local IDs, remap conflicting theme/asset IDs and adopt asset bytes into
+   the service package. An unavailable source, changed target/revision or failed
+   preparation adds nothing. One undo removes the whole addition; last-reference
+   cleanup removes its service-owned snapshot without touching the catalog.
+6. Catalog and service copies have independent edit/history ownership. Existing
+   Edit/New/Remove/context-menu actions must route through that explicit scope,
+   not whichever item `docs.currentSongId` last happened to hold. Removing or
+   renaming a catalog record affects future preparations; a saved service remains
+   self-contained and playable with the catalog unavailable. Test repeated drops
+   as distinct snapshots/entries and category moves after service preparation.
+
+#### SI.1–SI.4 — clipboard lyrics import brief
+
+1. Read `QClipboard::Clipboard` plain text only on Paste from clipboard; do not
+   read X11 primary selection, preserve HTML formatting, fetch a provider or
+   overwrite the existing structured slide clipboard. Title is separate metadata;
+   a first-line title suggestion must not remove that line from the lyrics.
+   Normalize CRLF/CR to LF, retain Unicode/punctuation/repeated chorus text and
+   authored line order, and use blank lines as stanza boundaries. Empty stanzas
+   do not become empty slides. Do not guess away Verse/Chorus labels or infer
+   verse numbers from ordinary text. Bound input/generated slide counts with
+   named limits and clear failure, never silent truncation.
+2. Start each stanza on a new slide. Keep it whole when measured to fit; split
+   oversized stanzas at authored line boundaries, then use shared Unicode-safe
+   text-flow splitting for a line that cannot fit. Do not join separate stanzas
+   merely to fill space, invent a fixed lines-per-slide setting, or shrink the
+   chosen font as an import shortcut. Use the current service's resolved Songs
+   view (`textContext` empty), including its placement, size/default-0, family,
+   spacing, weight, effects and fit metrics. No Bible reference/attribution
+   reservation, scripture context or fabricated caption belongs in a song.
+3. Keep the parser/`SongSlidePlanner` Qt-free and reuse
+   `openshow::importer::textflow` and its measurement/cache keys. Add an explicit
+   stanza-boundary policy/adapter without changing Bible's packing behaviour.
+   Store canonical lyrics/stanzas for clipboard-origin catalog items, so the
+   bridge can prepare them for another service's current Songs theme. Persisted
+   authored decks retain their boundaries and are not silently repaginated.
+4. Session state is draft → measuring → ready/error → committed/cancelled.
+   Clipboard replacement, title/body revision, theme/box/style, worker connection
+   and target-service changes invalidate the right plan/preview generations.
+   Re-measure held text without rereading the clipboard. Reject stale replies
+   and commits; no worker/measurement capability means no guessed ready state.
+   Preparation may await measurement without modifying the service or catalog.
+5. Reuse `SlidePreviewCollection`/`SlidePreviewCard` and bounded thumbnail windows;
+   keys include draft generation and slide index. The page owns thumbnails only,
+   stands down when hidden, and never presents or requests a duplicate Selection
+   canvas. Keep labels/status concise and preserve the simplified Bible page.
+   Ctrl+V in a title/text field keeps native editing; a page-level Paste action
+   cannot hijack the Edit page's structured slide-paste shortcut.
+6. Add to Library validates the latest title, text revision and measured plan,
+   then creates one durable Songs catalog item/history entry. Cancel, repaste,
+   page browsing and measurement failure create none. Protect double-clicks and
+   disk-write failures; a duplicate title does not silently overwrite a song.
+   The service is unchanged until an explicit drop/Add to current service.
+
+#### SL.9 — acceptance and outsourcing handoff
+
+Each leaf reports changed contracts/files, meaningful tests and any migration
+or compatibility limits. Extend existing `domain_tests`, `library_search_tests`,
+`document_controller_tests`, `workspace_ui_tests` and shared-control fixtures;
+add focused catalog persistence/bridge and clipboard parser/session fixtures
+where those boundaries are new. Register new tests before claiming completion.
+
+The integrated journey must: restart with the shared catalog; expand Songs;
+filter Jesus titles; drag a filtered result between categories and into a
+scrolled current service; reorder/remove/undo; import a clipboard song through
+real worker pictures; switch to another service and add the same song there;
+save/reopen both services; then demonstrate playback with the catalog absent.
+Category changes and edits in one service must not change the other service or
+its live output. Exercise an empty catalog, empty service, long names, Unicode,
+repeated entries, rapid repaste/query/theme changes and worker disconnects.
+
+Capture populated upper/lower panes and import at 1000×680, 1380×800 and
+1680×1020 with scales 1/1.5/2; test real drag and keyboard paths on visible
+controls. Run the affected leaf tests, then full desktop and enabled headless
+presets at integration. Record skips and remaining physical M7 checks honestly.
+Update `docs/architecture.md`, the control-set catalogue and PROGRESS.md with
+actual results. Do not mark SL/SI DONE from code inspection or empty UI captures.
+
+
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
-**Entry gate: CS.1–CS.9, the remaining TV leaves and TA.1 must be DONE, with
+**Entry gate: CS.1–CS.9, SL.1–SL.9, SI.1–SI.4, the remaining TV leaves and TA.1 must be DONE, with
 the current one-audience release gates satisfied, before starting FO.1.**
 Section order is not authorization to bypass those dependencies.
 
