@@ -177,6 +177,16 @@ now name each other: the map is where a key changes, the sheet is the promise
 the operator was given. That closes 6.19b; `Main.qml` is composition —
 placement, the page gate, the focus facts and the executors — at 255 lines.
 
+The later Edit operator follow-up replaces the Library/service dock in Edit
+with `EditorSlideRail`, a 220px virtualized list of only the selected
+presentation's slides. Cards reuse the shared preview surface and request the
+bounded worker thumbnail window; the canvas retains Selection. Clicks commit
+pending words through the controller before selecting a slide, and rail arrow
+navigation is excluded from canvas nudging. Hidden Edit releases its thumbnail
+requests. Add slide lives in the rail footer; the old picker and Save/Load/
+Undo/Redo/Remove toolbar actions are removed. Delete is an undoable slide edit
+outside text fields, with keyboard undo and persistence/autosave retained.
+
 | Boundary | Implementation and evidence | Assessment |
 |---|---|---|
 | Editable documents and history | `src/domain/{documents,history,storage}.cpp`; the Qt session adapter in `src/ui/DocumentController.cpp` with durability in `src/ui/DocumentPersistence.cpp` and the view rows in `src/ui/DocumentViews.cpp`; `domain_tests`, `document_controller_tests` | Matches. The frontend owns editable state and package writes; history has one observed Documents and bounded snapshots; since **6.19b1** exactly one class decides when either is written to disk, and since **6.19b2** exactly one place spells what a list row shows. |

@@ -107,7 +107,8 @@ Window {
         page: root.page
         typingIntoField: root.typingIntoField
         squattedFocus: root.squattedFocus
-        preparationListFocused: leftDock.libraryListFocused || leftDock.serviceListFocused
+        preparationListFocused: leftDock.visible && (leftDock.libraryListFocused || leftDock.serviceListFocused)
+        editorSlideListFocused: editorSlideRail.activeFocus
         boxSelected: editPage.boxSelected
         currentBox: docs.currentBox
         slideCount: docs.slides.length
@@ -129,7 +130,10 @@ Window {
         onToggleDrawerRequested: panels.toggleDrawer()
         // Ctrl+F searches PRESENTATIONS, which is what the sidebar lists
         // since UI.4a turned the bottom of the window into the media bin.
-        onFocusLibrarySearchRequested: leftDock.focusSearch()
+        onFocusLibrarySearchRequested: {
+            if (root.page === "edit") root.page = "show"
+            leftDock.focusSearch()
+        }
         onPageSelected: name => {
             if (name === "songimport") root.openSongImport()
             else root.page = name
@@ -157,6 +161,7 @@ Window {
         // asks the panel store to flip it — the bin's strip and the
         // keyboard stay live, and all three can never disagree.
         drawerOpen: mediaBin.open
+        onNewPresentationRequested: leftDock.createPresentation()
         onPageSelected: name => {
             if (name === "songimport") root.openSongImport()
             else root.page = name
@@ -170,7 +175,7 @@ Window {
     PlaylistPanel {
         id: leftDock
         objectName: "libraryDock"
-        visible: !root.themeMode  // TV.2: Themes reclaims the workspace
+        visible: !root.themeMode && root.page !== "edit"
         editingEnabled: root.page === "edit"
         width: panels.leftWidth <= 8 ? panels.leftWidth
                : Math.min(panels.leftWidth, root.width * 0.24)
@@ -183,6 +188,7 @@ Window {
             showPage.focusServiceEntry(entryId)
         }
         onSongChosen: id => root.browsedShowId = docs.showForCatalogItem(id)
+        onPresentationCreated: root.page = "edit"
     }
 
     OutputPanel {
@@ -210,11 +216,20 @@ Window {
         onEditRequested: root.page = "edit"
     }
 
+    EditorSlideRail {
+        id: editorSlideRail
+        visible: root.page === "edit"
+        width: 220
+        anchors.left: parent.left
+        anchors.top: topBar.bottom
+        anchors.bottom: mediaBin.top
+    }
+
     EditPage {
         id: editPage
         objectName: "editPage"
         visible: root.page === "edit"
-        anchors.left: leftDock.right
+        anchors.left: editorSlideRail.right
         anchors.right: rightDock.left
         anchors.top: topBar.bottom
         anchors.bottom: mediaBin.top

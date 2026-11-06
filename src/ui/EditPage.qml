@@ -60,22 +60,6 @@ Flickable {
 
     function askForWorkerPicture() { selectionAsk.restart() }
 
-    Flow {
-        id: slideActions
-        anchors.top: parent.top; anchors.left: parent.left
-        anchors.right: themeScroll.left; anchors.rightMargin: 12
-        spacing: 6
-        ComboBox {
-            width: Math.min(180, slideActions.width)
-            height: 30
-            model: docs.slides.map(s => ({label: (s.index + 1) + ". " + s.preview}))
-            textRole: "label"
-            currentIndex: docs.currentSlide
-            onActivated: docs.selectSlide(currentIndex)
-        }
-        PanelButton { text: "Add slide"; enabled: docs.currentSongId !== ""; onClicked: docs.addSlide() }
-    }
-
     ScrollView {
         id: lyricEditor
         anchors.left: parent.left; anchors.right: themeScroll.left
@@ -107,8 +91,7 @@ Flickable {
 
     EditCanvas {
         id: editCanvas
-        anchors.top: slideActions.bottom
-        anchors.topMargin: 12
+        anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: themeScroll.left
         anchors.rightMargin: 12

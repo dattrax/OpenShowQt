@@ -664,6 +664,76 @@ int main(int argc, char** argv) {
     QTest::keyClick(window, Qt::Key_2, Qt::ControlModifier);
     check(window->property("page").toString() == "edit",
           "Ctrl+2 is the page's key from anywhere now that no tab strip claims it");
+    // Edit replaces the service/Library outline with thumbnails of only
+    // the selected show. Preview clicks flush pending words and stay off air.
+    {
+        QTest::qWait(50);
+        auto* rail = findNamed(window->contentItem(), "editorSlideRail");
+        auto* list = findNamed(window->contentItem(), "editorSlideList");
+        check(rail && list && rail->isVisible() && !left->isVisible(),
+              "Edit shows a thumbnail rail instead of the Library/service pane");
+        auto* more = findNamed(window->contentItem(), "toolbarMore");
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          more->mapToScene(QPointF(20, 20)).toPoint());
+        QTest::qWait(40);
+        auto* newPresentation = findNamed(window->contentItem(), "newPresentationMenuItem");
+        if (newPresentation) QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+            newPresentation->mapToScene(QPointF(20, newPresentation->height() / 2)).toPoint());
+        QTest::qWait(40);
+        auto* newName = findNamed(window->contentItem(), "libraryNewPresentationName");
+        check(newName && newName->isVisible(), "New presentation stays reachable from More with Library hidden");
+        if (newName) newName->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTest::qWait(250);
+        const auto originalSlides = docs.slides();
+        const auto originalShow = docs.currentSongId();
+        const int originalIndex = docs.currentSlide();
+        check(list && list->property("count").toInt() == originalSlides.size(),
+              "Edit lists only the selected presentation's slides");
+        const int target = originalIndex == 2 ? 3 : 2;
+        docs.setSlideText("Pending words before thumbnail navigation");
+        QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, target), Q_ARG(int, 1));
+        QTest::qWait(30);
+        QList<QQuickItem*> tiles;
+        collectNamed(list, "editorSlideTile", tiles);
+        QQuickItem* tile = nullptr;
+        for (auto* candidate : tiles) if (candidate->property("index").toInt() == target) tile = candidate;
+        check(tile != nullptr, "an arbitrary slide thumbnail is reachable by scrolling");
+        if (tile) QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                    tile->mapToScene(QPointF(20, 20)).toPoint());
+        check(docs.currentSlide() == target && docs.currentSongId() == originalShow
+                  && docs.slides()[originalIndex].toMap().value("preview")
+                     == "Pending words before thumbnail navigation",
+              "a thumbnail click selects that slide and commits text to the slide being left");
+        const auto afterClick = docs.slides();
+        QTest::keyClick(window, Qt::Key_Down);
+        check(docs.currentSlide() == target + 1 && docs.slides() == afterClick,
+              "Down in the preview rail navigates without nudging a box or changing slides");
+        QTest::keyClick(window, Qt::Key_End);
+        QTest::qWait(30);
+        check(docs.currentSlide() == docs.slides().size() - 1 && list->property("contentY").toReal() > 0,
+              "End selects and reveals the last slide in a long presentation");
+        docs.undo();
+        docs.selectSlide(originalIndex);
+        check(docs.slides() == originalSlides, "preview navigation adds no history beyond the pending text edit");
+        docs.createSong("Preview-only fixture");
+        docs.addSlide();
+        docs.addSlide();
+        QTest::qWait(30);
+        check(list->property("count").toInt() == 2, "switching presentations replaces the thumbnail model");
+        auto* add = findNamed(window->contentItem(), "editorAddSlide");
+        if (add) QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                  add->mapToScene(QPointF(add->width() / 2, add->height() / 2)).toPoint());
+        check(add && docs.slides().size() == 3 && docs.currentSlide() == 2,
+              "Add slide remains reachable beside the thumbnail list");
+        docs.undo();
+        docs.undo();
+        docs.undo();
+        docs.undo();
+        docs.selectSong(originalShow);
+        docs.selectSlide(originalIndex);
+        check(docs.slides() == originalSlides, "the preview fixture leaves the original show intact");
+    }
     // Edit uses native text Delete while typing and one undoable slide
     // removal elsewhere. The same key remains inactive on Show.
     {

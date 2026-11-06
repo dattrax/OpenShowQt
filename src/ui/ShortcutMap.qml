@@ -43,6 +43,7 @@ Item {
     property string page: "show"
     property bool typingIntoField: false
     property bool preparationListFocused: false
+    property bool editorSlideListFocused: false
     property bool squattedFocus: false      // a button or combo holds it
     property bool boxSelected: false        // the canvas's handles are on
     property int currentBox: -1             // docs.currentBox
@@ -81,9 +82,9 @@ Item {
     // exclusive by construction (the arrow pair below adds !nudging), like
     // the two Escape owners at the top of the old Main.qml list.
     readonly property bool nudging: page === "edit" && boxSelected
-                                    && !typingIntoField && slideCount > 0
+                                    && !typingIntoField && !editorSlideListFocused && slideCount > 0
     readonly property bool boxStepping: page === "edit" && currentBox >= 0
-                                        && !typingIntoField
+                                        && !typingIntoField && !editorSlideListFocused
     readonly property bool presenterTyping: typingIntoField || squattedFocus
     readonly property bool presenterNav: page === "show" && !presenterTyping && cueCount > 0
     readonly property bool numberKeys: numberKeysPresent && !presenterTyping

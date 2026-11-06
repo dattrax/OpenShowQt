@@ -4,12 +4,24 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
-**Edit operator follow-up (2026-11-06):** Removed Edit toolbar Remove slide,
-Undo/Redo and Save/Load buttons. Delete removes the selected slide outside text
-fields; Ctrl+Z restores it. The workspace regression passes (40.23 s), including
-native text Delete, Show-mode silence, deleting the final slide and empty-state
-undo. Next: replace the Edit library/service pane and picker with previews of
-only the selected song/presentation, as clarified by the operator.
+**LRF.12–LRF.13 complete (Edit operator follow-up, 2026-11-06):** Edit now
+replaces the Library/service pane with worker-rendered previews of **only the
+selected song/presentation**, as clarified by the operator. Clicks select and
+reveal a slide, committing pending words to the slide being left; arrows in the
+rail navigate without nudging boxes. The selected thumbnail stays visible after
+resizing. Add slide is in the footer; New presentation remains in More. The old
+picker and top Save/Load/Undo/Redo/Remove actions are removed. Delete removes one
+slide outside text fields; keyboard undo, save and recovery autosave remain.
+
+The desktop UI and affected targets build. All **16 affected suites pass**
+(65.03 s), including real Thumbnail/Selection frames, selected-show replacement,
+pending-text ownership, final/empty slide Delete/undo, hidden-page silence,
+three-size resizing and no accidental presents/QML warnings. The pointer journey
+also passes at 150% scale (11.57 s). Populated Edit captures at three sizes and
+scales 1/1.5 were reviewed. Keyboard cleanup is pushed as `15c8fcd`; the user
+approved leaving its concurrently included PowerPoint submodule changes in
+place. Details: [acceptance](docs/reviews/edit-slide-navigation-2026-11-06.md).
+The concurrent PowerPoint checkpoint and its next steps remain below.
 
 **PX.5 complete (2026-11-06):** rendered decks live as ordinary picture assets
 inside `service.json` + `assets/`, so a saved service reopens with the renderer

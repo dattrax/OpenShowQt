@@ -192,8 +192,8 @@ focusable button (cue stepping must keep the keyboard).
 |---|---|
 | Inputs | the embedded `SlidePreviewSurface` via the `surface` alias (bound through by the host: target, key, controller, text fallback as `surface.placeholder` with `placeholderVisible`); `caption` (string; the strip fills the room under the picture); `selected`, `live` (booleans — chrome only, the host computes them from acknowledged worker state; a pending go wears a host chip, not the card border); `idleColor`/`hoverColor` |
 | Events | `activated()` (primary click), `contextRequested(mouseX, mouseY)` (right click, in CARD coordinates — the host maps it to wherever its menu lives) |
-| Adapter | the host decides what `activated()` means: Show presents the cue; Bible selects the generated slide off air; Themes selects the view. The card itself never calls a presentation verb |
-| Consumers | ShowPage cue tiles, Bible generated-slide cards, ThemeEditor Songs/Bible view tiles |
+| Adapter | the host decides what `activated()` means: Show presents the cue; Bible selects the generated slide off air; Edit selects the authored slide; Themes selects the view. The card itself never calls a presentation verb |
+| Consumers | ShowPage cue tiles, EditorSlideRail authored-slide tiles, Bible generated-slide cards, ThemeEditor Songs/Bible view tiles |
 | Automation | `objectName` per host (`operatorCueTile` keeps its `index`/`modelData`-compatible properties for the cue tests); Accessible.name assembled by the host |
 
 ### SlidePreviewCollection

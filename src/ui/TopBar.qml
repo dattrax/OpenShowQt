@@ -21,6 +21,7 @@ Rectangle {
     property bool drawerOpen: true
     signal pageSelected(string name)
     signal drawerToggleRequested()
+    signal newPresentationRequested()
 
     // One shape for everything in the strip: glyph over label, selected
     // pages carry the blue underline, the checkable visibility toggle
@@ -153,6 +154,11 @@ Rectangle {
                     onTriggered: bar.pageSelected("themes")
                 }
                 MenuSeparator {}
+                MenuItem {
+                    objectName: "newPresentationMenuItem"
+                    text: "New presentation\u2026"
+                    onTriggered: bar.newPresentationRequested()
+                }
                 MenuItem {
                     objectName: "songImportMenuItem"
                     text: "Import Song from Clipboard…"

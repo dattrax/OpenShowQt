@@ -35,6 +35,8 @@ Item {
         if (undoScope !== "catalog") docs.redo()
     }
     signal serviceFocusRequested()
+    signal presentationCreated()
+    function createPresentation() { libraryPanelNewDialog.open() }
     function addSongToService(id) {
         if (songService.addToService(id)) browser.serviceFocusRequested()
     }
@@ -710,13 +712,16 @@ Item {
     Dialog {
         id: libraryPanelNewDialog
         objectName: "libraryNewPresentationDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
         modal: true
         title: "New presentation"
         standardButtons: Dialog.Ok | Dialog.Cancel
-        width: Math.min(420, browser.width - 40)
+        width: Math.min(420, parent.width - 32)
         onAccepted: {
-            if (newPresentationField.text.trim().length > 0)
-                docs.createSong(newPresentationField.text.trim())
+            if (newPresentationField.text.trim().length > 0
+                    && docs.createSong(newPresentationField.text.trim()))
+                browser.presentationCreated()
             newPresentationField.text = ""
         }
         contentItem: Column {

@@ -106,6 +106,7 @@ set(OPENSHOW_WORKSPACE_QML_NAMES
   Main.qml TopBar.qml SidePanel.qml MediaBin.qml EditCanvas.qml
   ShortcutMap.qml OutputPanel.qml PlaylistPanel.qml ShowPage.qml
   LibraryBrowser.qml CurrentServicePanel.qml SongImportPage.qml ListSelection.qml DragFeedback.qml
+  EditorSlideRail.qml
   EditPage.qml SettingsPage.qml PanelField.qml PanelButton.qml
   ThemeEditorPage.qml BibleImportPage.qml
   SlidePreviewSurface.qml SlidePreviewCard.qml SlidePreviewCollection.qml

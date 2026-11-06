@@ -327,6 +327,70 @@ int main(int argc, char** argv) {
     check(!worker.wordsOnAir() && worker.sceneActive() == 0,
           "dragging and preparing never presented");
 
+    // The Edit rail shows real worker thumbnails for this song alone,
+    // follows selection and relinquishes its lane when the page is hidden.
+    {
+        const auto songId = library.items().first().toMap().value("id").toString();
+        const auto showId = docs.showForCatalogItem(songId);
+        docs.selectSong(showId);
+        docs.selectSlide(0);
+        const auto framesBeforeEdit = worker.thumbnailFrames();
+        window->setProperty("page", "edit");
+        auto* rail = findNamed(window->contentItem(), "editorSlideRail");
+        auto* list = findNamed(window->contentItem(), "editorSlideList");
+        check(rail && list && rail->isVisible()
+                  && !findNamed(window->contentItem(), "libraryDock")->isVisible(),
+              "Edit replaces the Library/service pane with its slide previews");
+        const auto slides = docs.slides();
+        check(!slides.isEmpty() && list->property("count").toInt() == slides.size(),
+              "the preview rail shows only the selected song's slides");
+        check(waitFor([&] { return worker.thumbnailFrames() > framesBeforeEdit
+            && !worker.thumbnail(slides.first().toMap().value("id").toString()).isNull(); }),
+              "the Edit rail receives real rendered slide thumbnails");
+        const int last = slides.size() - 1;
+        QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, last), Q_ARG(int, 1));
+        QTest::qWait(100);
+        QList<QQuickItem*> tiles;
+        collectNamed(list, "editorSlideTile", &tiles);
+        QQuickItem* tail = nullptr;
+        for (auto* tile : tiles) if (tile->property("index").toInt() == last) tail = tile;
+        if (tail) click(tail);
+        check(tail && docs.currentSlide() == last, "clicking a scrolled thumbnail selects it for editing");
+        check(waitFor([&] { return !worker.thumbnail(slides.last().toMap().value("id").toString()).isNull()
+                                  && worker.selectionReady(); }),
+              "both the selected canvas and the last thumbnail receive worker pictures");
+        {
+            const auto originalSize = window->size();
+            const bool drawerWasOpen = panels.drawerHeight() > 40;
+            if (drawerWasOpen) panels.toggleDrawer();
+            for (const auto size : {QSize(1000, 680), QSize(1380, 800), QSize(1680, 1020)}) {
+                window->resize(size);
+                QTest::qWait(250);
+                QList<QQuickItem*> resizedTiles;
+                collectNamed(list, "editorSlideTile", &resizedTiles);
+                bool selectedVisible = false;
+                for (auto* tile : resizedTiles) if (tile->property("selected").toBool()) {
+                    selectedVisible = QRectF(-1, -1, list->width() + 2, list->height() + 2).contains(
+                        QRectF(tile->mapToItem(list, QPointF()), QSizeF(tile->width(), tile->height())));
+                }
+                check(selectedVisible, "resizing keeps the selected slide thumbnail fully visible");
+                if (!debugCapture.isEmpty())
+                    check(window->grabWindow().save(debugCapture + "-edit-" + QString::number(size.width()) + ".png"),
+                          "capture the populated Edit preview rail");
+            }
+            window->resize(originalSize);
+            if (drawerWasOpen) panels.toggleDrawer();
+            QTest::qWait(80);
+        }
+        window->setProperty("page", "show");
+        const int sent = rail->property("bandSent").toInt();
+        QTest::qWait(300);
+        check(rail->property("bandSent").toInt() == sent && !rail->isVisible(),
+              "hidden Edit sends no thumbnail requests");
+        check(!worker.wordsOnAir() && worker.sceneActive() == 0,
+              "editing-slide navigation never presents to the audience");
+    }
+
     // Service browsing must resolve actual shows, even when they are absent
     // from the Library's authored-presentation projection.
     auto* showPage = findNamed(window->contentItem(), "showPage");
