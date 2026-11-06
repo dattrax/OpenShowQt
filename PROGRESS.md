@@ -41,8 +41,8 @@ removes the whole second add → Library rename renames/re-lays the running orde
 restart reopens the catalog as left. Desktop acceptance suite runs it under the
 `display` label.
 
-Final gates this session: **desktop 74/74 pass** (426 s), **headless 50/50
-pass** (218 s), `git diff --check` clean; a focused rerun of workspace, the
+Final gates this session: **desktop 75/75 pass** (431 s), **headless 50/50
+pass** (217 s), `git diff --check` clean; a focused rerun of workspace, the
 control set, UI loads, the import session/page and the service journey passed
 6/6. Populated captures of the import page and the two-pane workspace at
 1000×680, 1380×800 and 1680×1020, at device-pixel ratios 1, 1.5 and 2, are in
@@ -50,13 +50,18 @@ control set, UI loads, the import session/page and the service journey passed
 `control.show-*.png`; they were reviewed (Back/actions reachable, no control
 overlap, and the seven authored sections never share a slide).
 
-Still open: SL.7's autoscroll pointer case and the keyboard Add button, and
-SL.9's pointer drag of a filtered Library song into a scrolled service on the
-live-worker shell. The service journey, page acceptance, captures and gates
-above are delivered.
+`library_service_ui_tests` (new, production shell + real worker) closes the
+remaining acceptance: import a song, filter the Library, drag the filtered row
+to the bottom of a long running order (proving bounded edge autoscroll moves
+it), drop it as a reference-backed cue, use the Add-to-service button as the
+non-drag path, undo the whole add, then restart the service and the catalog
+with the cue, slides and reporting fields intact — zero presents and no
+unexpected QML warnings.
 
-Next: finish SL.7/SL.9 — the pointer/keyboard cases above and the control-set
-catalogue entry for the two new parts.
+SL.7 and SL.9 are DONE; SL/SI is complete.
+
+Next: the previously recorded TV.3 → TV.4a → TV.4b → TV.5 → TA.1 run, then the
+physical M7 gates. FO remains gated on TV/TA and the release checks.
 
 
 **SI.2 complete: the stanza-aware measured song planner.** New Qt-free

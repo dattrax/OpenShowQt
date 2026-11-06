@@ -414,6 +414,30 @@ if(OPENSHOW_BUILD_UI)
   # off air, and Add is the one door to today's schedule. Needs a display
   # like every row a live worker draws; the worker binary reaches the
   # controller through ui-core's compiled-in path.
+  # Task SL.9: the integrated Library journey on the production shell with a
+  # real worker — import, filter, drag a filtered row into a SCROLLED order,
+  # the Add-to-service alternative, one undo and restart persistence.
+  qt_add_executable(library_service_ui_tests library_service_ui_tests.cpp)
+  qt_add_qml_module(library_service_ui_tests
+    URI OpenShow
+    VERSION 1.0
+    OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/library-service/OpenShow
+    QML_FILES ${OPENSHOW_WORKSPACE_QML_FILES}
+    SOURCES ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.h
+            ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/InspectorAdapter.h
+            ${PROJECT_SOURCE_DIR}/src/ui/InspectorAdapter.cpp
+  )
+  target_link_libraries(library_service_ui_tests PRIVATE openshow::ui-core
+    Qt6::Quick Qt6::QuickControls2 Qt6::Test Qt6::Gui)
+  target_compile_definitions(library_service_ui_tests PRIVATE
+    OPENSHOW_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  add_test(NAME library_service_ui_tests COMMAND library_service_ui_tests)
+  set_tests_properties(library_service_ui_tests PROPERTIES
+    LABELS display
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    TIMEOUT 180)
+
   # Task SI.3: the import PAGE on the real worker — paste, measured cards,
   # real thumbnail requests, one-click Add to Library, zero presents and zero
   # QML warnings. The page's QML module is built beside the test so it loads
