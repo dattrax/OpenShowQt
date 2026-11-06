@@ -54,7 +54,7 @@ struct LyricsDraft {
     // The attribution footer, when one was found.
     openshow::catalog::SongMetadata metadata;
     // True when a metadata footer was recognised and removed from the
-    // words (so the page can say "CCLI 7231931 found" instead of guessing).
+    // words (so the page can say "CCLI 9000001 found" instead of guessing).
     bool hasMetadata = false;
 };
 

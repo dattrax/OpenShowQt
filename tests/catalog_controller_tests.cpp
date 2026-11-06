@@ -77,14 +77,14 @@ void testDurableAddAndRestart() {
               "no history before an edit");
 
         const QString id = library.addSong(
-            "Goodbye Yesterday", stanzas({"Goodbye yesterday", "Living in the light"}),
-            "7231931", "Example Writer", "\u00a9 2024 Example");
+            "Morning Light", stanzas({"Morning light is breaking", "Every shadow gone"}),
+            "9000001", "Example Writer", "\u00a9 2024 Example");
         check(!id.isEmpty(), "a valid song is added");
         check(library.songCount() == 1, "the Songs branch counts it");
         check(library.items().size() == 1, "the row list has it");
         check(library.canUndo(), "the add is undoable");
         const QVariantMap row = library.items().first().toMap();
-        check(row.value(QStringLiteral("ccli")).toString() == "7231931",
+        check(row.value(QStringLiteral("ccli")).toString() == "9000001",
               "the CCLI number is exposed");
         check(row.value(QStringLiteral("authors")).toString() == "Example Writer",
               "the author field is exposed");
@@ -103,13 +103,13 @@ void testDurableAddAndRestart() {
         // Restart: a new adapter over the same directory sees the song.
         CatalogController reopened(nullptr, dir);
         check(reopened.songCount() == 1, "the song survives a restart");
-        check(titlesOf(reopened.items()) == QStringList{"Goodbye Yesterday"},
+        check(titlesOf(reopened.items()) == QStringList{"Morning Light"},
               "the title survives a restart");
         check(!reopened.canUndo(),
               "the undo stack itself does not need to survive a restart");
         check(reopened.items().first().toMap()
                   .value(QStringLiteral("ccli"))
-                  .toString() == "7231931",
+                  .toString() == "9000001",
               "the CCLI number survives a restart");
     }
     std::error_code ignored;

@@ -232,7 +232,7 @@ bool hasMetadataMarker(const std::string& line) {
 }
 
 // "Words and Music by X", "Written by X", or a comma-separated name list
-// ("Gracie Binion, Joshua Holiday, Mitch Wong"). Deliberately narrow: a
+// ("Example Writer, Second Writer, Third Writer"). Deliberately narrow: a
 // prose line with a comma is not an author list.
 bool looksLikeAuthorLine(const std::string& line) {
     const std::string trimmed = trim(line);
@@ -301,7 +301,7 @@ bool lineNamesCcliSong(const std::string& line, std::string* digits) {
         return false;
     }
     // The number is the first run of 3+ digits after the marker (a "CCLI
-    // Song #7231931" line). A line naming only "CCLI" with no number is a
+    // Song #9000001" line). A line naming only "CCLI" with no number is a
     // licence line, not this one.
     std::size_t i = marker + std::string("ccli song").size();
     while (i < line.size() && !isAsciiDigit(line[i])) {

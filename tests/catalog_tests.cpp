@@ -50,16 +50,16 @@ Stanza stanza(const std::string& label, const std::vector<std::string>& lines) {
 
 std::vector<Stanza> sampleStanzas() {
     return {
-        stanza("Verse 1", {"Goodbye yesterday", "I\u2019m living in the light of a new day"}),
-        stanza("Chorus", {"Again and again", "You rescued me out of the mess I was in"}),
+        stanza("Verse 1", {"Morning light is breaking", "Every shadow turning into gold"}),
+        stanza("Chorus", {"Sing it out, sing it out", "Morning light is all around"}),
     };
 }
 
 SongMetadata sampleMetadata() {
     SongMetadata metadata;
-    metadata.ccli = "7231931";
-    metadata.authors = "Gracie Binion, Joshua Holiday";
-    metadata.copyright = "\u00a9 2024 BEC Worship";
+    metadata.ccli = "9000001";
+    metadata.authors = "Example Writer, Second Writer";
+    metadata.copyright = "\u00a9 2024 Example Music";
     return metadata;
 }
 
@@ -109,8 +109,8 @@ void testIdentitiesAndCategories() {
     if (item != nullptr) {
         check(item->recordRevision == 1 && item->contentRevision == 1,
               "a new record starts at revision 1/1");
-        check(item->metadata.ccli == "7231931", "the CCLI number is stored");
-        check(item->metadata.authors.find("Gracie") != std::string::npos,
+        check(item->metadata.ccli == "9000001", "the CCLI number is stored");
+        check(item->metadata.authors.find("Example") != std::string::npos,
               "the author text is stored");
         check(item->metadata.copyright.find("\xc2\xa9") != std::string::npos,
               "Unicode copyright text survives the model");
