@@ -4,6 +4,19 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**LRF.14 complete (menu cleanup, 2026-11-06):** Removed New presentation
+and both PowerPoint import menu entries. Their creation/file dialogs, forwarding
+signals/handlers, unused sidebar New control and obsolete empty-state hints are
+removed. Shared controller/import/rendering remains for both drag/drop targets;
+operator instructions now describe those routes. This supersedes the earlier
+New-in-More and PowerPoint file-picker notes below.
+
+The local UI and affected test targets rebuild successfully. All **5 relevant
+suites pass** (57.62 s): workspace, shared controls, UI load, the real-worker
+Library/service journey and PowerPoint URL drops. Tests assert absent menu-only
+objects and import the real six-slide deck into both Library and service, with
+one-step undo. `git diff --check` is clean.
+
 **LRF.12–LRF.13 complete (Edit operator follow-up, 2026-11-06):** Edit now
 replaces the Library/service pane with worker-rendered previews of **only the
 selected song/presentation**, as clarified by the operator. Clicks select and

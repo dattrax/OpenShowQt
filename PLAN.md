@@ -1658,6 +1658,7 @@ amendments and the existing durable catalog. Complete and push each fix.
 | LRF.11 | DONE | Make dragging obvious and enable Show-mode service reorder | Overlay title/action badge, pointer-aligned hotspot, valid-target border and insertion marker; actual up/down/no-op/cancel/autoscroll/save/undo journeys; [acceptance](docs/reviews/service-workflow-followups-2026-11-06.md) |
 | LRF.12 | DONE | Simplify Edit actions and remove slides with Delete | Remove toolbar Save/Load/Undo/Redo/Remove controls; Delete is one undoable slide edit, native in text inputs, safe for final/empty slides and inactive on Show |
 | LRF.13 | DONE | Navigate the selected presentation through Edit thumbnails | User clarified selected song/presentation only. Replace Library/service pane and picker with a worker-rendered preview rail; click/arrow selection, bounded thumbnail window, hidden-page silence and Add slide footer; [acceptance](docs/reviews/edit-slide-navigation-2026-11-06.md) |
+| LRF.14 | DONE | Remove redundant presentation menu routes | Remove New presentation and both PowerPoint import menu entries, their file/creation dialogs and menu-only signals; shared import/rendering stays behind both drag/drop destinations. UI regressions assert absence and import the real deck through both targets |
 
 ### PowerPoint deck import (PX)
 
@@ -1684,9 +1685,9 @@ a later convenience, not the storage format. No service-format bump is needed:
 presentation at the marked running-order position (session-only, never a
 Library row); drop one on the Library's Presentations header to add an ordinary
 Library presentation and nothing else — it does not enter the running order.
-Both are offline, one edit and one undo, also reachable from `More ⋯ → Import
-PowerPoint…`. `.ppt`/`.pps` is refused with "save it as .pptx first"; hidden
-slides are skipped. Renders are cached by SHA-256 under
+Both are offline, one edit and one undo. LRF.14 removes the redundant menu
+imports and file picker; drag/drop is the operator route. `.ppt`/`.pps` is
+refused with "save it as .pptx first"; hidden slides are skipped. Renders are cached by SHA-256 under
 the application cache (`QStandardPaths::CacheLocation`) under `pptx/` and copied into `assets/` on save, so the
 package is self-contained and needs no renderer to reopen. Deleting a show
 leaves its media until an explicit "Remove unused media" sweep; v1 never
@@ -1705,13 +1706,16 @@ Entry gate: none; independent of TV/TA/FO. Work one leaf at a time.
 | PX.7 | DONE | Windows readiness: `windows-latest` CI builds the sidecar with MSVC and runs the fixtures; path/Unicode handling; pinned Rust 1.96 toolchain and `--locked`; no Linux-only path or font assumptions | `.github/workflows/pptx-render-windows.yml` passed on GitHub Actions (5m24s): build, six Rust tests, 16:9 → 1920×1080, 4:3 → 1440×1080, hidden slide omitted, operator deck six pages, all with MSVC |
 | PX.8 | DONE | Documentation and close: README, operator notes (service vs Library, storage, deletion, `.ppt` refusal, limits), PLAN/PROGRESS delivered-shape record | `docs/pptx-import.md` carries the operator flow, JSON+assets storage decision, cache/offline rules, renderer build, Windows CI and known limits; README links it; desktop 79/79 and headless 41/41 pass, including the real operator deck on a live worker |
 
+The original PX.3/PX.4 menu acceptance above is historical; LRF.14 supersedes
+those menu routes while retaining both drop targets.
+
 Test inventory: `pptx_render_tests` (Rust/CTest: scale math, hidden filtering,
 manifest shape, deterministic repeat, corrupt input, Unicode path, no partial
 output); `document_controller_tests` (both destinations, transactionality, one
 undo, missing tool, bad manifest, duplicate import, save/reopen);
-`workspace_ui_tests` (URL drops, rejections, busy state, menu actions, no
-presentation side effects); `pptx_import_e2e_tests` (gated on the built
-sidecar); `ui_loads` (new menu item and drop areas); Windows CI (fixture).
+`workspace_ui_tests` (menu cleanup, keyboard and no presentation side effects);
+`pptx_ui_tests` (real URL drops on both targets and removed menu/dialog
+assertions, gated on the built sidecar); `ui_loads` (shell and drop areas); Windows CI (fixture).
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

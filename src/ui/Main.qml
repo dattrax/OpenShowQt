@@ -161,7 +161,6 @@ Window {
         // asks the panel store to flip it — the bin's strip and the
         // keyboard stay live, and all three can never disagree.
         drawerOpen: mediaBin.open
-        onNewPresentationRequested: leftDock.createPresentation()
         onPageSelected: name => {
             if (name === "songimport") root.openSongImport()
             else root.page = name
@@ -188,7 +187,6 @@ Window {
             showPage.focusServiceEntry(entryId)
         }
         onSongChosen: id => root.browsedShowId = docs.showForCatalogItem(id)
-        onPresentationCreated: root.page = "edit"
     }
 
     OutputPanel {

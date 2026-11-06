@@ -120,10 +120,10 @@ int main(int argc, char** argv) {
         window->findChild<QObject*>(QStringLiteral("powerPointServiceMenuItem"));
     check(serviceDrop != nullptr, "the service has a deck drop area");
     check(libraryDrop != nullptr, "the Library header has a deck drop area");
-    check(libraryItem != nullptr && libraryItem->property("enabled").toBool(),
-          "the Library PowerPoint menu entry is present and enabled");
-    check(serviceItem != nullptr && serviceItem->property("enabled").toBool(),
-          "the Service PowerPoint menu entry is present and enabled");
+    check(libraryItem == nullptr && serviceItem == nullptr,
+          "redundant PowerPoint import menu entries are absent");
+    check(window->findChild<QObject*>(QStringLiteral("powerPointImportDialog")) == nullptr,
+          "the menu-only PowerPoint file picker is removed");
     check(window->findChild<QObject*>(QStringLiteral("removeUnusedMediaMenuItem"))
               != nullptr,
           "the explicit unused-media sweep is reachable from More");

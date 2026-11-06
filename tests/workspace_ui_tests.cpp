@@ -676,13 +676,13 @@ int main(int argc, char** argv) {
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
                           more->mapToScene(QPointF(20, 20)).toPoint());
         QTest::qWait(40);
-        auto* newPresentation = findNamed(window->contentItem(), "newPresentationMenuItem");
-        if (newPresentation) QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-            newPresentation->mapToScene(QPointF(20, newPresentation->height() / 2)).toPoint());
-        QTest::qWait(40);
-        auto* newName = findNamed(window->contentItem(), "libraryNewPresentationName");
-        check(newName && newName->isVisible(), "New presentation stays reachable from More with Library hidden");
-        if (newName) newName->forceActiveFocus();
+        check(!findNamed(window->contentItem(), "newPresentationMenuItem")
+                  && !findNamed(window->contentItem(), "libraryNewPresentationName")
+                  && !window->findChild<QObject*>("libraryNewPresentationDialog"),
+              "More has no manual presentation creation entry or backing dialog");
+        check(findNamed(window->contentItem(), "songImportMenuItem")
+                  && findNamed(window->contentItem(), "bibleImportMenuItem"),
+              "clipboard song and Bible import remain available from More");
         QTest::keyClick(window, Qt::Key_Escape);
         QTest::qWait(250);
         const auto originalSlides = docs.slides();

@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
 
 // The toolbar (UI.6) is the plan's header row: the two
 // operator pages, then media-bin visibility on the left; the audience
@@ -21,7 +20,6 @@ Rectangle {
     property bool drawerOpen: true
     signal pageSelected(string name)
     signal drawerToggleRequested()
-    signal newPresentationRequested()
 
     // One shape for everything in the strip: glyph over label, selected
     // pages carry the blue underline, the checkable visibility toggle
@@ -155,11 +153,6 @@ Rectangle {
                 }
                 MenuSeparator {}
                 MenuItem {
-                    objectName: "newPresentationMenuItem"
-                    text: "New presentation\u2026"
-                    onTriggered: bar.newPresentationRequested()
-                }
-                MenuItem {
                     objectName: "songImportMenuItem"
                     text: "Import Song from Clipboard…"
                     onTriggered: bar.pageSelected("songimport")
@@ -174,27 +167,6 @@ Rectangle {
                     onTriggered: bar.pageSelected("bible")
                 }
                 MenuSeparator {}
-                // PX.4: the menu's two explicit destinations. Service appends
-                // to the running order (schedule-owned); Library only adds a
-                // reusable presentation. Drag/drop offers the same two doors.
-                MenuItem {
-                    objectName: "powerPointLibraryMenuItem"
-                    text: "Import PowerPoint into Library\u2026"
-                    enabled: !docs.powerPointImportBusy
-                    onTriggered: {
-                        powerPointDialog.destination = "library"
-                        powerPointDialog.open()
-                    }
-                }
-                MenuItem {
-                    objectName: "powerPointServiceMenuItem"
-                    text: "Import PowerPoint into Service\u2026"
-                    enabled: !docs.powerPointImportBusy
-                    onTriggered: {
-                        powerPointDialog.destination = "service"
-                        powerPointDialog.open()
-                    }
-                }
                 MenuItem {
                     objectName: "removeUnusedMediaMenuItem"
                     text: "Remove unused media"
@@ -280,19 +252,6 @@ Rectangle {
             label: "Settings"
             selected: bar.page === "settings"
             onClicked: bar.pageSelected("settings")
-        }
-    }
-    FileDialog {
-        id: powerPointDialog
-        objectName: "powerPointImportDialog"
-        property string destination: "library"
-        title: "Import PowerPoint"
-        nameFilters: ["PowerPoint presentations (*.pptx)"]
-        onAccepted: {
-            if (powerPointDialog.destination === "service")
-                docs.importPowerPointUrlToService(selectedFile, -1)
-            else
-                docs.importPowerPointUrlToLibrary(selectedFile)
         }
     }
 

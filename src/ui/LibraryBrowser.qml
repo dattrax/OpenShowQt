@@ -35,8 +35,6 @@ Item {
         if (undoScope !== "catalog") docs.redo()
     }
     signal serviceFocusRequested()
-    signal presentationCreated()
-    function createPresentation() { libraryPanelNewDialog.open() }
     function addSongToService(id) {
         if (songService.addToService(id)) browser.serviceFocusRequested()
     }
@@ -228,11 +226,11 @@ Item {
     }
 
     readonly property real minimumUsefulHeight: 16 + libraryHeading.height + searchField.height
-        + libraryActions.height + songsHeader.height + presentationsHeader.height
-        + 6 * libraryContent.spacing + 56
+        + songsHeader.height + presentationsHeader.height
+        + 5 * libraryContent.spacing + 56
     readonly property real listBudget: Math.max(0, libraryContent.height
-        - libraryHeading.height - searchField.height - libraryActions.height
-        - songsHeader.height - presentationsHeader.height - 6 * libraryContent.spacing)
+        - libraryHeading.height - searchField.height
+        - songsHeader.height - presentationsHeader.height - 5 * libraryContent.spacing)
 
     function focusSearch() {
         Qt.callLater(() => searchField.forceActiveFocus())
@@ -335,22 +333,6 @@ Item {
             Keys.onEscapePressed: {
                 browser.clearQuery()
                 focus = false
-            }
-        }
-
-        Flow {
-            id: libraryActions
-            visible: browser.editingEnabled
-            height: visible ? implicitHeight : 0
-            width: parent.width
-            spacing: 4
-            PanelButton {
-                objectName: "libraryNewPresentationButton"
-                width: 46
-                height: 24
-                text: "New"
-                visible: browser.editingEnabled
-                onClicked: libraryPanelNewDialog.open()
             }
         }
 
@@ -700,39 +682,9 @@ Item {
                 color: "#929292"; font.pixelSize: 12
                 text: browser.query !== ""
                       ? "no presentation titles match \u201c" + browser.query + "\u201d"
-                      : (browser.editingEnabled
-                         ? "No presentations \u2014 New to create one"
-                         : "No presentations \u2014 open Edit to create one")
+                      : "Drop PowerPoint files here"
             }
         }
     }
 
-    // The "New presentation" button's tiny dialog (kept from UI.4a so the
-    // presentation branch still owns its creation action).
-    Dialog {
-        id: libraryPanelNewDialog
-        objectName: "libraryNewPresentationDialog"
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
-        title: "New presentation"
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        width: Math.min(420, parent.width - 32)
-        onAccepted: {
-            if (newPresentationField.text.trim().length > 0
-                    && docs.createSong(newPresentationField.text.trim()))
-                browser.presentationCreated()
-            newPresentationField.text = ""
-        }
-        contentItem: Column {
-            spacing: 8
-            PanelField {
-                id: newPresentationField
-                objectName: "libraryNewPresentationName"
-                width: parent.width
-                placeholderText: "Presentation name"
-                placeholderTextColor: "#929292"
-            }
-        }
-    }
 }

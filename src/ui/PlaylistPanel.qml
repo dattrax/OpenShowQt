@@ -19,8 +19,6 @@ SidePanel {
     // air in the middle of the screen. Nothing here presents.
     signal sourceChosen(string kind, string id)
     signal serviceEntryChosen(string entryId)
-    signal presentationCreated()
-    function createPresentation() { libraryBrowser.createPresentation() }
     signal songChosen(string id)
 
     // The presentation row the theme context menu is acting on (task TH.5).
@@ -83,7 +81,6 @@ SidePanel {
             height: Math.max(100, Math.min(parent.height - 130,
                 Math.max(minimumUsefulHeight, Math.round(parent.height * 0.47))))
             editingEnabled: playlistPanel.editingEnabled
-            onPresentationCreated: playlistPanel.presentationCreated()
             onServiceFocusRequested: {
                 servicePanel.forceActiveFocus()
                 playlistPanel.serviceEntryChosen("")

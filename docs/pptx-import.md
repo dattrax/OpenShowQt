@@ -15,13 +15,11 @@ nonzero; it cannot take the operator's session with it.
 - **Drop on the Library's Presentations header** → the deck becomes an ordinary
   Library presentation and is not added to the running order. It is available
   next time the service is opened.
-- **More → Import PowerPoint into Library / Service…** offers the same two
-  destinations through a file dialog.
 - Both paths are offline, one edit and one undo. The whole import — rendered
   assets, show and running-order row — undoes together.
 - Hidden slides are skipped. `.ppt` and `.pps` are refused with "save it as
   .pptx first"; older binary PowerPoint files need a one-time conversion.
-- While a deck is rendering, both drop targets and menu entries are disabled.
+- While a deck is rendering, both drop targets are disabled.
   The status line reports the imported page count or the renderer's own
   refusal.
 
@@ -93,7 +91,8 @@ in a later build.
   missing renderer, bad manifest, renderer failure, save/reopen offline,
   deletion and the unused-media sweep.
 - `pptx_ui_tests` — real URL `QDropEvent`s over the service and Library
-  targets, the two menu entries, and the operator deck through both doors.
+  targets and the operator deck through both doors; redundant menu entries and
+  their file picker are absent.
 - `document_present_tests` — all six operator-deck slides on a live worker,
   then the saved package reopened with the renderer absent and presented again.
 - `.github/workflows/pptx-render-windows.yml` — MSVC build and the same
