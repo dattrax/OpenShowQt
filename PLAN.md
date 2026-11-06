@@ -1687,7 +1687,7 @@ Library presentation and nothing else — it does not enter the running order.
 Both are offline, one edit and one undo, also reachable from `More ⋯ → Import
 PowerPoint…`. `.ppt`/`.pps` is refused with "save it as .pptx first"; hidden
 slides are skipped. Renders are cached by SHA-256 under
-`$XDG_CACHE_HOME/openshow/pptx/` and copied into `assets/` on save, so the
+the application cache (`QStandardPaths::CacheLocation`) under `pptx/` and copied into `assets/` on save, so the
 package is self-contained and needs no renderer to reopen. Deleting a show
 leaves its media until an explicit "Remove unused media" sweep; v1 never
 silently deletes bytes a duplicate or paste may still reference.
@@ -1703,7 +1703,7 @@ Entry gate: none; independent of TV/TA/FO. Work one leaf at a time.
 | PX.5 | DONE | Persistence and cache hygiene: save copies rendered PNG bytes and reopens offline; failed imports leave no cache litter; explicit "Remove unused media" sweep; re-import of unchanged bytes reuses the cached render | `document_controller_tests`: save/reopen with the renderer absent keeps both decks playable; a deleted Library show keeps its media until the sweep, which removes only unreferenced assets in one undo and leaves the service copy runnable; a failed render leaves no manifest-less cache directory; the second import costs one render |
 | PX.6 | DONE | Real-renderer acceptance: the committed operator deck (`aug-8.pptx`, six visible slides) and gated tests that run the sidecar, import to both destinations, present every slide, and record dimensions/hidden-skip/determinism; a font-substitution warning surface | `pptx_render_tests` renders the deck at 1920×1080; `document_controller_tests` imports it and checks one undo; `pptx_ui_tests` drives real URL drops on both doors; `document_present_tests` presents all six slides on a live worker and reopens the saved package with the renderer absent |
 | PX.7 | DONE | Windows readiness: `windows-latest` CI builds the sidecar with MSVC and runs the fixtures; path/Unicode handling; pinned Rust 1.96 toolchain and `--locked`; no Linux-only path or font assumptions | `.github/workflows/pptx-render-windows.yml` passed on GitHub Actions (5m24s): build, six Rust tests, 16:9 → 1920×1080, 4:3 → 1440×1080, hidden slide omitted, operator deck six pages, all with MSVC |
-| PX.8 | TODO | Documentation and close: README, `docs/architecture.md` import section, operator notes (service vs Library, deletion, `.ppt` refusal), PLAN/PROGRESS delivered-shape record | Operator can follow the documented flow without reading code; architecture states ownership, cache and transactional rules; PLAN row summaries and PROGRESS handoff are current; all gates pass |
+| PX.8 | DONE | Documentation and close: README, operator notes (service vs Library, storage, deletion, `.ppt` refusal, limits), PLAN/PROGRESS delivered-shape record | `docs/pptx-import.md` carries the operator flow, JSON+assets storage decision, cache/offline rules, renderer build, Windows CI and known limits; README links it; PX suite and UI load pass |
 
 Test inventory: `pptx_render_tests` (Rust/CTest: scale math, hidden filtering,
 manifest shape, deterministic repeat, corrupt input, Unicode path, no partial
