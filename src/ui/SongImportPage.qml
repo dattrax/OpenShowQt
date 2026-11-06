@@ -89,7 +89,7 @@ ScrollView {
                 text: "Song Import"
                 color: "#eeeeee"; font.pixelSize: 18; font.bold: true
             }
-            Item { width: Math.max(0, parent.width - 360); height: 1 }
+            Item { width: Math.max(0, parent.width - 470); height: 1 }
             Button {
                 objectName: "songPasteButton"
                 text: "Paste from clipboard"

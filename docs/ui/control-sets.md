@@ -407,3 +407,14 @@ it captures populated Show, Bible, Edit and both Themes views at three sizes.
 Run separately at scales 1, 1.5 and 2. See the [acceptance record](../reviews/CS-remediation-acceptance-2026-11-05.md)
 for commands, limits and results. The old `OPENSHOW_WORKSPACE_CAPTURE` mode is
 shell/empty-state evidence, not a substitute for this populated tour.
+
+## Shared song Library and clipboard import (SL / SI)
+
+| Part | Contract |
+|---|---|
+| `LibraryBrowser` (`libraryBrowser`) | Hosts Songs (catalog) and Presentations (service shows + catalog records categorised as presentations). Owns `librarySearchField`, `librarySongList`, `collectionLibraryList`, both category headers as Move drop targets, `catalog:<id>`/`show:<id>` drag sources, the song context menu (`librarySongMenu`) and rename dialog (`libraryRenameSongDialog`). Actions: `libraryImportSongButton` (Edit only), `libraryAddSongButton` (needs a selected song), `libraryNewPresentationButton` (Edit only). Selecting/filtering/dragging never presents or edits a document. |
+| `CurrentServicePanel` (`currentServicePanel`) | The one running order (`collectionPlaylistList`, `collectionPlaylistRow`) with reorder/remove handles, scrolled insertion gaps, `catalog:`/`show:`/`entry:` drop handling and bounded edge autoscroll. No service picker in this milestone. Clicking a cue selects it and browses its show; it never presents. |
+| `SongImportPage` (`songImportPage`) | Off-air import page over `SongImport`: `songPasteButton` (normal clipboard only), `songTitleField`, `songCcliField`, `songAuthorsField`, `songCopyrightField`, `songSlideCollection`/`songSlideCard` (thumbnail target, keys `song:<plan>:<index>`), `songAddToLibraryButton`, `songCancelButton`, `songImportBackButton`. It owns thumbnails only (no Selection canvas), stands them down when hidden, and writes nothing before Add. |
+| `SongPlanner` (session) | Not a visual part: the shared non-blocking measurement runner (`text.measure` cache, one batch in flight, latest-ask-wins) used by both the import page and the service bridge. Exposes no persistence. |
+| `SongImport` (session) | Draft → measuring → ready/error → committed/cancelled; title and CCLI/author/copyright fields; `addToLibrary` is its only durable write. |
+| `ServiceCatalogBridge` (session) | `addToService`/`refreshFromLibrary`/`refreshAllLinked`/`renameInService`; prepares a catalog song into one referenced service show and reacts to `CatalogController::itemChanged`/`itemRemoved`. Never edits the catalog and never presents. |

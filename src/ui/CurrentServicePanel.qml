@@ -212,7 +212,28 @@ Item {
                 id: entryDrop
                 anchors.fill: parent
                 keys: ["text/plain"]
+                // Bounded edge autoscroll (SL.7): a drag held near the top or
+                // bottom of a long order scrolls toward the destination it is
+                // hovering, one small step per tick, and stops on exit/drop.
+                property real dragY: 0
+                onEntered: drag => { entryDrop.dragY = drag.y; autoScroll.start() }
+                onPositionChanged: drag => { entryDrop.dragY = drag.y }
+                onExited: autoScroll.stop()
+                Timer {
+                    id: autoScroll
+                    interval: 40
+                    repeat: true
+                    onTriggered: {
+                        if (entryDrop.dragY < 36)
+                            entryList.contentY = Math.max(0, entryList.contentY - 20)
+                        else if (entryDrop.dragY > entryList.height - 36)
+                            entryList.contentY = Math.min(
+                                Math.max(0, entryList.contentHeight - entryList.height),
+                                entryList.contentY + 20)
+                    }
+                }
                 onDropped: function (drop) {
+                    autoScroll.stop()
                     const payload = drop.source && drop.source.payload
                         ? drop.source.payload : drop.getDataAsString("text/plain")
                     const colon = payload.indexOf(":")

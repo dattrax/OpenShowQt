@@ -283,10 +283,12 @@ if(OPENSHOW_BUILD_UI)
   )
   target_link_libraries(control_set_ui_tests PRIVATE openshow::ui-core
     Qt6::Quick Qt6::QuickControls2 Qt6::Test)
+  target_compile_definitions(control_set_ui_tests PRIVATE
+    OPENSHOW_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   add_test(NAME control_set_ui_tests COMMAND control_set_ui_tests)
   set_tests_properties(control_set_ui_tests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
-    TIMEOUT 30)
+    TIMEOUT 60)
 
   add_test(NAME ui_loads
     COMMAND ${CMAKE_COMMAND}
@@ -412,6 +414,43 @@ if(OPENSHOW_BUILD_UI)
   # off air, and Add is the one door to today's schedule. Needs a display
   # like every row a live worker draws; the worker binary reaches the
   # controller through ui-core's compiled-in path.
+  # Task SI.3: the import PAGE on the real worker — paste, measured cards,
+  # real thumbnail requests, one-click Add to Library, zero presents and zero
+  # QML warnings. The page's QML module is built beside the test so it loads
+  # exactly the production files.
+  qt_add_executable(song_import_page_tests song_import_page_tests.cpp)
+  qt_add_qml_module(song_import_page_tests
+    URI OpenShow
+    VERSION 1.0
+    OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/song-import-page/OpenShow
+    QML_FILES ${OPENSHOW_WORKSPACE_QML_FILES}
+    SOURCES ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.h
+            ${PROJECT_SOURCE_DIR}/src/ui/PreviewView.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/InspectorAdapter.h
+            ${PROJECT_SOURCE_DIR}/src/ui/InspectorAdapter.cpp
+  )
+  target_link_libraries(song_import_page_tests PRIVATE openshow::ui-core
+    Qt6::Quick Qt6::QuickControls2 Qt6::Test Qt6::Gui)
+  target_compile_definitions(song_import_page_tests PRIVATE
+    OPENSHOW_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  add_test(NAME song_import_page_tests COMMAND song_import_page_tests)
+  set_tests_properties(song_import_page_tests PROPERTIES
+    LABELS display
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    TIMEOUT 180)
+
+  # Tasks SL.6/SI.3/SI.4/SL.9 (first half): the shared Library and import
+  # journey against a REAL worker — clipboard draft, stanza plan, Add to
+  # Library, a reference-backed cue (twice over one show), rename
+  # propagation, detachment on deletion, one-undo removal and restart.
+  qt_add_executable(song_service_tests song_service_tests.cpp)
+  target_link_libraries(song_service_tests PRIVATE openshow::ui-core Qt6::Test
+    Qt6::Gui)
+  target_compile_definitions(song_service_tests PRIVATE
+    OPENSHOW_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  add_test(NAME song_service_tests COMMAND song_service_tests)
+  set_tests_properties(song_service_tests PROPERTIES LABELS display TIMEOUT 240)
+
   add_executable(bible_import_page_tests bible_import_page_tests.cpp)
   target_link_libraries(bible_import_page_tests PRIVATE openshow::ui-core Qt6::Test)
   add_test(NAME bible_import_page_tests COMMAND bible_import_page_tests)

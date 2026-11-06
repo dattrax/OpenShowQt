@@ -244,7 +244,7 @@ Window {
         anchors.top: topBar.bottom
         anchors.bottom: mediaBin.top
         anchors.margins: 12
-        onCloseRequested: root.page = "show"
+        onCloseRequested: root.page = "edit"
     }
 
     MediaBin {

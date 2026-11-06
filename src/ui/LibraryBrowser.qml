@@ -70,12 +70,28 @@ Item {
         }
         return out
     }
+    // The Presentations branch lists authored service shows AND catalog
+    // records categorised as presentations (an operator move inside the
+    // Library). Catalog rows carry rowKind "catalog" and keep the same drop
+    // payloads as a song; a service row stays "show".
     readonly property var presentationRows: {
+        const items = library.items
         const all = docs.songs
         const out = []
+        for (let i = 0; i < items.length; ++i) {
+            if (items[i].category === "presentations" &&
+                titleMatches(items[i].title, browser.query)) {
+                out.push({rowKind: "catalog", id: items[i].id,
+                          name: items[i].title, slideCount: 0,
+                          catalog: items[i]})
+            }
+        }
         for (let i = 0; i < all.length; ++i) {
-            if (titleMatches(all[i].name, browser.query))
-                out.push(all[i])
+            if (titleMatches(all[i].name, browser.query)) {
+                const row = all[i]
+                out.push({rowKind: "show", id: row.id, name: row.name,
+                          slideCount: row.slideCount, catalog: null})
+            }
         }
         return out
     }
@@ -105,6 +121,11 @@ Item {
                 renameDialog.open()
                 Qt.callLater(() => renameField.forceActiveFocus())
             }
+        }
+        MenuItem {
+            objectName: "libraryAddSongToServiceItem"
+            text: "Add to current service"
+            onTriggered: songService.addToService(browser.contextSongId)
         }
         MenuItem {
             objectName: "libraryMoveSongItem"
@@ -151,31 +172,12 @@ Item {
         anchors.margins: 8
         spacing: 4
 
-        Row {
+        Text {
             width: parent.width
-            height: 24
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "LIBRARY"
-                color: "#b0b0b0"; font.pixelSize: 11; font.bold: true
-            }
-            Item { width: Math.max(0, parent.width - 190); height: 1 }
-            PanelButton {
-                objectName: "libraryImportSongButton"
-                width: 100
-                height: 24
-                text: "Import song"
-                visible: browser.editingEnabled
-                onClicked: browser.importRequested()
-            }
-            PanelButton {
-                objectName: "libraryNewPresentationButton"
-                width: 70
-                height: 24
-                text: "New"
-                visible: browser.editingEnabled
-                onClicked: libraryPanelNewDialog.open()
-            }
+            height: 20
+            verticalAlignment: Text.AlignVCenter
+            text: "LIBRARY"
+            color: "#b0b0b0"; font.pixelSize: 11; font.bold: true
         }
 
         PanelField {
@@ -189,6 +191,35 @@ Item {
             Keys.onEscapePressed: {
                 browser.clearQuery()
                 focus = false
+            }
+        }
+
+        Flow {
+            width: parent.width
+            spacing: 4
+            PanelButton {
+                objectName: "libraryAddSongButton"
+                width: 96
+                height: 24
+                text: "Add to service"
+                enabled: browser.selectedKind === "song" && browser.selectedId !== ""
+                onClicked: songService.addToService(browser.selectedId)
+            }
+            PanelButton {
+                objectName: "libraryImportSongButton"
+                width: 92
+                height: 24
+                text: "Import song"
+                visible: browser.editingEnabled
+                onClicked: browser.importRequested()
+            }
+            PanelButton {
+                objectName: "libraryNewPresentationButton"
+                width: 46
+                height: 24
+                text: "New"
+                visible: browser.editingEnabled
+                onClicked: libraryPanelNewDialog.open()
             }
         }
 
@@ -438,6 +469,18 @@ Item {
                     drag.target: libraryDragProxy
                     property bool leftHeld: false
                     onClicked: function (mouse) {
+                        if (libraryRow.modelData.rowKind === "catalog") {
+                            browser.selectedKind = "song"
+                            browser.selectedId = libraryRow.modelData.id
+                            if (mouse.button === Qt.RightButton) {
+                                browser.contextSongId = libraryRow.modelData.id
+                                const at = libraryRow.mapToItem(null, mouse.x, mouse.y)
+                                songMenu.popup(at.x, at.y)
+                            } else {
+                                browser.songChosen(libraryRow.modelData.id)
+                            }
+                            return
+                        }
                         if (mouse.button === Qt.RightButton) {
                             const at = libraryRow.mapToItem(null, mouse.x, mouse.y)
                             browser.themeMenuRequested(libraryRow.modelData.id,
@@ -450,7 +493,12 @@ Item {
                         browser.presentationChosen(libraryRow.modelData.id)
                     }
                     onPressed: rowMouse.leftHeld = mouse.button === Qt.LeftButton
-                    onDoubleClicked: docs.addShowToPlaylist(libraryRow.modelData.id)
+                    onDoubleClicked: {
+                        if (libraryRow.modelData.rowKind === "catalog")
+                            songService.addToService(libraryRow.modelData.id)
+                        else
+                            docs.addShowToPlaylist(libraryRow.modelData.id)
+                    }
                     onReleased: {
                         if (rowMouse.leftHeld && libraryDragProxy.Drag.active)
                             libraryDragProxy.Drag.drop()
@@ -466,7 +514,9 @@ Item {
                 }
                 Item {
                     id: libraryDragProxy
-                    readonly property string payload: "show:" + libraryRow.modelData.id
+                    readonly property string payload:
+                        (libraryRow.modelData.rowKind === "catalog"
+                         ? "catalog:" : "show:") + libraryRow.modelData.id
                     Drag.source: libraryDragProxy
                     width: libraryRow.width; height: libraryRow.height
                     Drag.active: rowMouse.drag.active

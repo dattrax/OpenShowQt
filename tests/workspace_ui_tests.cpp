@@ -417,6 +417,74 @@ int main(int argc, char** argv) {
               "both filter additions remain in the Library");
     }
 
+    // SL.7: a song row really drags between the two category headers, with
+    // the stable catalog id surviving both moves.
+    {
+        QVariantList stanzas;
+        QVariantMap stanza;
+        stanza.insert("label", "Verse 1");
+        stanza.insert("lines", QStringList{"drag me between categories"});
+        stanzas.append(stanza);
+        const QString dragId = library.addSong("Drag Me", stanzas, "", "", "");
+        check(!dragId.isEmpty(), "a song exists for the category drag");
+        QTest::qWait(40);
+        auto* songsHeader = findNamed(window->contentItem(), "librarySongsHeader");
+        auto* presentationsHeader =
+            findNamed(window->contentItem(), "libraryPresentationsHeader");
+        check(songsHeader && presentationsHeader,
+              "both category headers are present as drop targets");
+        const auto rowById = [&](QQuickItem* list, const QString& id) -> QQuickItem* {
+            QList<QQuickItem*> rows;
+            collectNamed(list, list == songList ? "librarySongRow" : "collectionLibraryRow",
+                         rows);
+            for (auto* row : rows) {
+                const QVariantMap data = row->property("modelData").toMap();
+                if (data.value("id").toString() == id)
+                    return row;
+            }
+            return nullptr;
+        };
+        QQuickItem* row = rowById(songList, dragId);
+        check(row != nullptr, "the new song is in the Songs branch");
+        if (row && presentationsHeader) {
+            const auto start = row->mapToScene(QPointF(25, 14)).toPoint();
+            const auto target = presentationsHeader->mapToScene(
+                QPointF(40, 13)).toPoint();
+            QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+            QTest::mouseMove(window, start + QPoint(60, 0), 15);
+            QTest::mouseMove(window, target + QPoint(20, 0), 15);
+            QTest::mouseMove(window, target, 15);
+            QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, target);
+            QTest::qWait(60);
+            check(library.itemOf(dragId).value("category").toString()
+                      == "presentations",
+                  "dragging to Presentations moves the classification");
+            check(library.itemOf(dragId).value("contentRevision").toULongLong() == 1,
+                  "a category move keeps the content revision");
+        }
+        // It is now listed in the Presentations branch and drags back.
+        QTest::qWait(30);
+        QQuickItem* backRow = rowById(libraryList, dragId);
+        check(backRow != nullptr &&
+                  backRow->property("modelData").toMap().value("rowKind").toString()
+                      == "catalog",
+              "the moved song is listed in Presentations as a Library row");
+        if (backRow && songsHeader) {
+            const auto start = backRow->mapToScene(QPointF(25, 14)).toPoint();
+            const auto target = songsHeader->mapToScene(QPointF(40, 13)).toPoint();
+            QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+            QTest::mouseMove(window, start + QPoint(60, 0), 15);
+            QTest::mouseMove(window, target + QPoint(20, 0), 15);
+            QTest::mouseMove(window, target, 15);
+            QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, target);
+            QTest::qWait(60);
+            check(library.itemOf(dragId).value("category").toString() == "songs",
+                  "dragging back to Songs restores the classification");
+        }
+        library.removeItem(dragId);
+        QTest::qWait(30);
+    }
+
     // Long presentation names stay one bounded, selectable row.
     const QString longName(180, 'x');
     check(docs.createSong(longName), "a long-named presentation is created");

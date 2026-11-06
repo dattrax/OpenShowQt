@@ -29,19 +29,34 @@ plan and creates one durable catalog record; the draft is retired so a
 double-click cannot add twice. Add/duplicate/failure tests pin the no-renderer,
 no-plan, replacement and cancel cases.
 
-Verification this stage: desktop build green; `domain_tests`,
-`catalog_tests`, `catalog_controller_tests`, `lyrics_tests`,
-`song_pagination_tests`, `song_import_tests`, `document_controller_tests`,
-`workspace_ui_tests` (updated to the two-pane layout and the title filter),
-`control_set_ui_tests`, `ui_loads`, `production_journey_tests` and
-`frontend_journey_tests` all pass. Still open: SL.7's pointer-level song-row
-drop/autoscroll and keyboard Add alternative, SI.3/SI.4's real-worker page
-acceptance and populated captures, and the integrated SL.9 journey (including
-the headless build and full desktop gate).
+`song_import_page_tests` (new, real worker) loads the production page, shows
+the parsed title/CCLI, one card per generated slide, a real thumbnail-frame
+increase, one-click Add to Library and zero presents/QML warnings.
+`song_service_tests` (new, real worker) now walks the import and reference
+journey: clipboard fixture → measured stanza plan whose slide groups follow the
+authored sections → Add to Library (one record with CCLI/authors/copyright, no
+cue, nothing on air) → two adds as two cues over ONE referenced show → one undo
+removes the whole second add → Library rename renames/re-lays the running order
+→ Library deletion detaches the link while the service keeps its slides →
+restart reopens the catalog as left. Desktop acceptance suite runs it under the
+`display` label.
 
-Next: SL.9 — walk the integrated journey with a live worker, add the remaining
-pointer/keyboard pins, run desktop+headless gates, capture the populated panes
-at 1000/1380/1680 and scales 1/1.5/2, then update the control-set catalogue.
+Final gates this session: **desktop 74/74 pass** (426 s), **headless 50/50
+pass** (218 s), `git diff --check` clean; a focused rerun of workspace, the
+control set, UI loads, the import session/page and the service journey passed
+6/6. Populated captures of the import page and the two-pane workspace at
+1000×680, 1380×800 and 1680×1020, at device-pixel ratios 1, 1.5 and 2, are in
+`/tmp/openshow-sl/{s1,s15,s2}/control.song-import-*.png` and
+`control.show-*.png`; they were reviewed (Back/actions reachable, no control
+overlap, and the seven authored sections never share a slide).
+
+Still open: SL.7's autoscroll pointer case and the keyboard Add button, and
+SL.9's pointer drag of a filtered Library song into a scrolled service on the
+live-worker shell. The service journey, page acceptance, captures and gates
+above are delivered.
+
+Next: finish SL.7/SL.9 — the pointer/keyboard cases above and the control-set
+catalogue entry for the two new parts.
 
 
 **SI.2 complete: the stanza-aware measured song planner.** New Qt-free

@@ -1,5 +1,6 @@
 // Focused regressions for the shared controls' actual QML geometry and input.
 #include <QGuiApplication>
+#include <QClipboard>
 #include <QJSValue>
 #include <QQmlComponent>
 #include <QQmlEngine>
@@ -24,7 +25,10 @@
 #include <QJsonObject>
 
 #include "BibleImport.h"
+#include "CatalogController.h"
 #include "DocumentController.h"
+#include "ServiceCatalogBridge.h"
+#include "SongImport.h"
 #include "InspectorAdapter.h"
 #include "ScriptureImport.h"
 #include "WorkerController.h"
@@ -33,6 +37,8 @@
 
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <cstring>
 #include <functional>
 #include <filesystem>
@@ -147,6 +153,9 @@ bool captureControlSets(const QString& prefix) {
     BibleImport bible;
     bible.setNetworkAccessManager(&network);
     openshow::ui::ScriptureImport scripture(&bible, &docs, &worker);
+    openshow::ui::CatalogController library(nullptr, base);
+    openshow::ui::SongImport songImport(&library, &docs, &worker);
+    openshow::ui::ServiceCatalogBridge songService(&library, &docs, &worker);
     docs.createSong("Opening song");
     const auto song = docs.currentSongId();
     for (int i = 1; i <= 3; ++i) {
@@ -186,6 +195,9 @@ bool captureControlSets(const QString& prefix) {
     context->setContextProperty("appSettings", &settings);
     context->setContextProperty("bible", &bible);
     context->setContextProperty("scripture", &scripture);
+    context->setContextProperty("library", &library);
+    context->setContextProperty("songImport", &songImport);
+    context->setContextProperty("songService", &songService);
     context->setContextProperty("uiSize", QSize(1680, 1020));
     engine.loadFromModule("OpenShow", "Main");
     auto* window = engine.rootObjects().isEmpty() ? nullptr
@@ -340,6 +352,81 @@ bool captureControlSets(const QString& prefix) {
               "Bible controls stay visible and editable without a context, and no box label is painted");
         save("themes-bible-inherited", size);
     }
+    // --- tasks SI.3/SI.4/SL.6: the import page on the REAL worker ---------
+    {
+        std::ifstream songFile(OPENSHOW_SOURCE_DIR
+                               "/docs/fixtures/songs/morning-light.txt");
+        std::ostringstream songText;
+        songText << songFile.rdbuf();
+        QGuiApplication::clipboard()->setText(QString::fromUtf8(songText.str().c_str()));
+        songImport.pasteFromClipboard();
+        check(waitFor([&] { return !songImport.measuring() &&
+                                  !songImport.slides().isEmpty(); }, 30000),
+              "the real worker measures the pasted song");
+        check(songImport.canAdd(), "the measured plan wakes Add");
+        check(songImport.slides().size() >= 7,
+              "every section produced at least one slide");
+        check(songImport.ccli() == "9000001" &&
+                  songImport.authors().contains("Example Writer"),
+              "the page carries the CCLI and author fields");
+        window->setProperty("page", "songimport");
+        QTest::qWait(150);
+        auto* page = window->findChild<QQuickItem*>("songImportPage");
+        auto* titleField = window->findChild<QQuickItem*>("songTitleField");
+        auto* addButton = window->findChild<QQuickItem*>("songAddToLibraryButton");
+        check(page && page->isVisible(), "the import page opens");
+        check(titleField && titleField->property("text").toString() == "Morning Light",
+              "the title field shows the parsed title");
+        check(addButton && addButton->property("enabled").toBool(),
+              "Add to Library is live after measuring");
+        const qint64 framesBefore = worker.thumbnailFrames();
+        QMetaObject::invokeMethod(page, "askPlanThumbnails");
+        check(waitFor([&] { return worker.thumbnailFrames() > framesBefore; }, 15000),
+              "the page's cards asked for real worker pictures");
+        check(!worker.wordsOnAir() && worker.sceneActive() == 0,
+              "the import page previews off air only");
+        for (const auto size : sizes) {
+            window->resize(size);
+            QTest::qWait(150);
+            save("song-import", size);
+        }
+        // Return to a comfortable size and scroll the page's own ScrollView
+        // so the Add row is inside the viewport before the real click.
+        window->resize(QSize(1680, 1020));
+        QTest::qWait(150);
+        if (page) {
+            const qreal maxY = page->property("contentHeight").toReal()
+                               - page->property("height").toReal();
+            page->setProperty("contentY", qMax(0.0, maxY));
+            QTest::qWait(120);
+        }
+        if (addButton) {
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                              addButton->mapToScene(
+                                  QPointF(addButton->width() / 2,
+                                          addButton->height() / 2)).toPoint());
+        }
+        check(waitFor([&] { return library.songCount() == 1; }, 5000),
+              "Add to Library wrote exactly one record");
+        check(window->property("page").toString() == "edit",
+              "Add returns to the editing page");
+        const QString songId =
+            library.songCount() > 0
+                ? library.items().first().toMap().value("id").toString()
+                : QString();
+        check(!songId.isEmpty(), "the added song has its id");
+        if (!songId.isEmpty()) {
+            check(songService.addToService(songId),
+                  "the song starts preparing for the service");
+            check(waitFor([&] { return !songService.busy(); }, 30000),
+                  "the service preparation finished");
+            check(!docs.showForCatalogItem(songId).isEmpty(),
+                  "the running order references the catalog song");
+        }
+        check(!worker.wordsOnAir() && worker.sceneActive() == 0,
+              "the whole import journey presented nothing");
+    }
+
     QFile output(prefix + ".manifest.json");
     check(output.open(QIODevice::WriteOnly), "open the capture manifest");
     output.write(QJsonDocument(manifest).toJson());
