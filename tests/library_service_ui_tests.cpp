@@ -332,18 +332,30 @@ int main(int argc, char** argv) {
         const auto value = showPage->property("cueRows");
         const auto cues = value.canConvert<QJSValue>()
             ? value.value<QJSValue>().toVariant().toList() : value.toList();
-        check(clicked && !cues.isEmpty() && cues.size() == docs.slidesOf(showId).size(),
-              "clicking a service entry displays its actual slides");
-        check(showPage->property("sourceName") == entry.value("showName"),
-              "service browsing displays the show's title");
-        for (const auto& cue : cues) {
-            check(cue.toMap().value("showId") == showId
-                      && !docs.sceneJsonForSlide(cue.toMap().value("slideId").toString()).isEmpty(),
-                  "every browsed slide belongs to the selected show and compiles");
+        QStringList expectedKeys, actualKeys;
+        for (const auto& groupValue : docs.runningOrderCues()) {
+            const auto group = groupValue.toMap();
+            for (const auto& slide : group.value("slides").toList())
+                expectedKeys.append(group.value("entryId").toString() + ":" + slide.toMap().value("id").toString());
         }
+        for (const auto& cue : cues) {
+            actualKeys.append(cue.toMap().value("cueKey").toString());
+            check(!docs.sceneJsonForSlide(cue.toMap().value("slideId").toString()).isEmpty(),
+                  "every service slide still compiles after selecting a group");
+        }
+        check(clicked && !cues.isEmpty() && actualKeys == expectedKeys,
+              "service clicks retain every slide and repeated occurrence in running order");
+        const int current = showPage->property("cueIndex").toInt();
+        check(current >= 0 && current < cues.size()
+                  && cues[current].toMap().value("entryId") == entry.value("entryId")
+                  && cues[current].toMap().value("slideIndex").toInt() == 0,
+              "service clicks select the first slide of the chosen occurrence without filtering");
+        check(showPage->property("sourceShowId").toString().isEmpty(),
+              "service clicks leave Library browsing and follow the full service");
         check(!worker.wordsOnAir() && worker.sceneActive() == 0,
               "service browsing never presents to the audience");
     };
+    window->setProperty("browsedShowId", fillerId);  // previously browsing just a Library deck
     browseServiceEntry(0);  // authored presentation
     browseServiceEntry(docs.playlistEntries().size() - 1);  // catalog song
     check(docs.addScripturePassage(docs.currentPlaylistId(), "Mark 1:1-4", "TEST", "Fixture",

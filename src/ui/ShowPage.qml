@@ -152,6 +152,17 @@ Rectangle {
     }
     function jumpToCue(at) { showPage.presentCue(at) }
 
+    // The service pane selects an occurrence, keeping the entire running
+    // order visible. Wait for the source binding after leaving Library browse.
+    function focusServiceEntry(entryId) {
+        Qt.callLater(() => {
+            const at = showPage.cueRows.findIndex(row => row.entryId === entryId)
+            if (at < 0) return
+            showPage.cueIndex = at
+            slideGrid.scrollCueIntoView(at)
+        })
+    }
+
     // Rows within the ask envelope (UI.3c, mapped by CS.7): the collection
     // answers which SOURCE cues are actually on screen — bottom partial row
     // and one row of look-ahead included, group padding never — deduplicated

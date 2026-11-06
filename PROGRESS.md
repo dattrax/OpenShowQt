@@ -8,8 +8,10 @@ Updated: 2026-11-06 (Europe/London).
 titles without CCLI numbers, while stored attribution remains intact. The
 redundant Add to service and Import song buttons are removed; import remains
 in the toolbar More menu. The real-worker Library journey passes (7.07 s),
-including import, drag/drop, persistence and deletion. Next: keep the complete
-service grid on selection, add group separators, and improve service dragging.
+including import, drag/drop, persistence and deletion. Service clicks now keep
+the complete running order visible and scroll/select the chosen occurrence;
+Library-only browsing is separate. Its expanded real-worker regression passes
+(7.37 s). Next: group separators and clearer service dragging/reordering.
 
 **LRF.5–LRF.7 complete (operator bug fixes, 2026-11-06):** Service-row
 browsing resolves actual shows, including prepared songs, scripture and retained

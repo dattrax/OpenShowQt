@@ -18,6 +18,7 @@ SidePanel {
     // Browsing: a presentation (or a linked song's service show) is shown off
     // air in the middle of the screen. Nothing here presents.
     signal sourceChosen(string kind, string id)
+    signal serviceEntryChosen(string entryId)
     signal songChosen(string id)
 
     // The presentation row the theme context menu is acting on (task TH.5).
@@ -82,6 +83,7 @@ SidePanel {
             editingEnabled: playlistPanel.editingEnabled
             onServiceFocusRequested: servicePanel.forceActiveFocus()
             onSongChosen: songId => playlistPanel.songChosen(songId)
+            onPresentationChosen: showId => playlistPanel.sourceChosen("show", showId)
             onThemeMenuRequested: (showId, x, y) => {
                 playlistPanel.contextShowId = showId
                 showThemeMenu.popup(x, y)
@@ -97,7 +99,7 @@ SidePanel {
             anchors.bottom: serviceDirText.top
             anchors.topMargin: 6
             editingEnabled: playlistPanel.editingEnabled
-            onEntryChosen: showId => playlistPanel.sourceChosen("show", showId)
+            onEntryChosen: entryId => playlistPanel.serviceEntryChosen(entryId)
         }
 
         Text {

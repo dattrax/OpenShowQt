@@ -174,6 +174,10 @@ Window {
         anchors.top: topBar.bottom
         anchors.bottom: mediaBin.top
         onSourceChosen: (kind, id) => root.browsedShowId = kind === "show" ? id : ""
+        onServiceEntryChosen: entryId => {
+            root.browsedShowId = ""
+            showPage.focusServiceEntry(entryId)
+        }
         onSongChosen: id => root.browsedShowId = docs.showForCatalogItem(id)
     }
 

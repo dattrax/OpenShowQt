@@ -33,7 +33,7 @@ Item {
         const showId = docs.playlistEntries[index].showId
         entryList.positionViewAtIndex(index, ListView.Contain)
         docs.selectSong(showId)
-        servicePanel.entryChosen(showId)
+        servicePanel.entryChosen(selection.currentKey)
     }
     Keys.enabled: servicePanel.activeFocus
     Keys.onPressed: event => {
@@ -51,7 +51,7 @@ Item {
     }
     property string dropTargetPlaylistId: ""
 
-    signal entryChosen(string showId)
+    signal entryChosen(string entryId)
 
     function playlistName() {
         const rows = docs.playlists
@@ -200,7 +200,7 @@ Item {
                         onClicked: function(mouse) {
                             selection.select(entryRow.modelData.entryId, servicePanel.entryIds, mouse.modifiers)
                             docs.selectSong(entryRow.modelData.showId)
-                            servicePanel.entryChosen(entryRow.modelData.showId)
+                            servicePanel.entryChosen(entryRow.modelData.entryId)
                         }
                         onReleased: {
                             if (entryDragProxy.Drag.active) entryDragProxy.Drag.drop()
