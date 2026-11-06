@@ -24,6 +24,8 @@
 #include "openshow/protocol/protocol.h"
 
 #include "CatalogController.h"
+#include "ServiceCatalogBridge.h"
+#include "SongImport.h"
 #include "DocumentController.h"
 #include "WorkerController.h"
 #include "BibleImport.h"
@@ -61,6 +63,12 @@ int main(int argc, char* argv[]) {
     // history, independent of whichever service is open; the songs it
     // holds survive a service load/save and an application restart.
     openshow::ui::CatalogController library;
+
+    // Tasks SI.3/SI.4 and SL.6: the clipboard import session (one durable
+    // catalog destination) and the bridge that prepares a referenced catalog
+    // song into the current service.
+    openshow::ui::SongImport songImport(&library, &documents, &worker);
+    openshow::ui::ServiceCatalogBridge songService(&library, &documents, &worker);
 
     // Task 6.14b (review R14): scratch persistence runs on the bounded,
     // coalescing executor — the UI thread only ever pays for a snapshot
@@ -124,6 +132,8 @@ int main(int argc, char* argv[]) {
     engine.rootContext()->setContextProperty("worker", &worker);
     engine.rootContext()->setContextProperty("docs", &documents);
     engine.rootContext()->setContextProperty("library", &library);
+    engine.rootContext()->setContextProperty("songImport", &songImport);
+    engine.rootContext()->setContextProperty("songService", &songService);
     engine.rootContext()->setContextProperty("panels", &panels);
     engine.rootContext()->setContextProperty("appSettings", &settings);
     // Milestone BI: the importer's page. The lookup session owns the

@@ -120,6 +120,13 @@ public:
 signals:
     void itemsChanged();
     void stateChanged();
+    // One item changed durably. The service bridge listens and re-prepares
+    // any linked running-order show, which is how an edit in the Library
+    // reaches the service (operator amendment: rows are references).
+    void itemChanged(const QString& id);
+    // One item was deleted. Linked service shows detach (keep playing with
+    // their copied attribution) rather than pointing at a dead record.
+    void itemRemoved(const QString& id);
 
 private:
     // Applies `edit` to a copy, writes it, then publishes model + history.

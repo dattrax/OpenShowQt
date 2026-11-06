@@ -1752,14 +1752,17 @@ namespace {
 // createShow stands in for createScriptureShow because the scripture
 // fields (ownership, provenance) speak nothing the compile reads. The
 // copy dies with the call: no history, no dirty flag, no output.
-bool compileScriptureFixture(const openshow::domain::Documents& documents,
-                             const std::vector<std::string>& lines,
-                             openshow::scene::Scene* scene, std::string* contextName = nullptr) {
+bool compileFixture(const openshow::domain::Documents& documents,
+                    const std::vector<std::string>& lines, const char* context,
+                    openshow::scene::Scene* scene, std::string* contextName = nullptr) {
     openshow::domain::Documents fixture = documents;
-    const openshow::domain::Id show = fixture.createShow("Scripture preview");
+    const openshow::domain::Id show = fixture.createShow("Import preview");
     const openshow::domain::Id slide = fixture.appendSlide(show);
-    if (show.empty() || slide.empty() || !fixture.setSlideLines(show, slide, lines) ||
-        !fixture.setSlideTextContext(show, slide, "scripture")) {
+    if (show.empty() || slide.empty() || !fixture.setSlideLines(show, slide, lines)) {
+        return false;
+    }
+    if (context != nullptr && *context != '\0' &&
+        !fixture.setSlideTextContext(show, slide, context)) {
         return false;
     }
     if (contextName != nullptr) {
@@ -1770,16 +1773,33 @@ bool compileScriptureFixture(const openshow::domain::Documents& documents,
     return openshow::scene::compileSlide(fixture, show, slide, scene);
 }
 
+bool compileScriptureFixture(const openshow::domain::Documents& documents,
+                             const std::vector<std::string>& lines,
+                             openshow::scene::Scene* scene, std::string* contextName = nullptr) {
+    return compileFixture(documents, lines, "scripture", scene, contextName);
+}
+
+bool compileSongFixture(const openshow::domain::Documents& documents,
+                        const std::vector<std::string>& lines,
+                        openshow::scene::Scene* scene) {
+    // A song slide wears the Songs view: no named context, so the theme's
+    // own typography and box answer exactly as they will on the added slide.
+    return compileFixture(documents, lines, nullptr, scene, nullptr);
+}
+
 }  // namespace
 
-QVariantMap DocumentController::scriptureBoxStyle() const {
+QVariantMap DocumentController::fixtureBoxStyle(bool scripture) const {
     // One word is enough: the primary box's rectangle and typography are
     // the chain's answer regardless of the words, and this compiles the
     // same first text item a generated slide's words would fill.
     openshow::scene::Scene scene;
     std::string contextName;
     QVariantMap style;
-    if (!compileScriptureFixture(fDocuments, {"a"}, &scene, &contextName)) {
+    const bool compiled = scripture
+                              ? compileScriptureFixture(fDocuments, {"a"}, &scene, &contextName)
+                              : compileSongFixture(fDocuments, {"a"}, &scene);
+    if (!compiled) {
         return style;
     }
     style.insert(QStringLiteral("context"), QString::fromStdString(contextName));
@@ -1819,17 +1839,37 @@ QVariantMap DocumentController::scriptureBoxStyle() const {
     return style;  // no text box at all: the importer refuses with its own sentence
 }
 
-QString DocumentController::scriptureSlideSceneJson(const QStringList& lines) const {
+QVariantMap DocumentController::scriptureBoxStyle() const {
+    return fixtureBoxStyle(true);
+}
+
+QVariantMap DocumentController::songBoxStyle() const {
+    return fixtureBoxStyle(false);
+}
+
+QString DocumentController::fixtureSlideSceneJson(const QStringList& lines,
+                                                  bool scripture) const {
     std::vector<std::string> authored;
     authored.reserve(lines.size());
     for (const QString& line : lines) {
         authored.push_back(line.toStdString());
     }
     openshow::scene::Scene scene;
-    if (!compileScriptureFixture(fDocuments, authored, &scene)) {
+    const bool compiled =
+        scripture ? compileScriptureFixture(fDocuments, authored, &scene)
+                  : compileSongFixture(fDocuments, authored, &scene);
+    if (!compiled) {
         return QString();
     }
     return QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
+}
+
+QString DocumentController::scriptureSlideSceneJson(const QStringList& lines) const {
+    return fixtureSlideSceneJson(lines, true);
+}
+
+QString DocumentController::songSlideSceneJson(const QStringList& lines) const {
+    return fixtureSlideSceneJson(lines, false);
 }
 
 // --- theme surfaces (task TH.5, themes plan) --------------------------------
@@ -2634,8 +2674,198 @@ bool DocumentController::insertShowInPlaylist(const QString& showId, int index) 
     return true;
 }
 
-bool DocumentController::insertShowAfterCurrentShow(const QString& showId) {
-    // The reference's Enter-from-search rule: land after the current show
+QString DocumentController::upsertCatalogSong(
+    const QString& catalogItemId, const QString& title, const QString& ccli,
+    const QString& authors, const QString& copyright, const QVariantList& slides,
+    bool addToRunningOrder, int index) {
+    flushText();
+    const std::string itemId = catalogItemId.toStdString();
+    if (itemId.empty()) {
+        setStatus(QStringLiteral("add song: the Library item has no id"));
+        return QString();
+    }
+    if (title.trimmed().isEmpty()) {
+        setStatus(QStringLiteral("add song: a title is required"));
+        return QString();
+    }
+    if (slides.isEmpty()) {
+        setStatus(QStringLiteral("add song: no slides were generated to add"));
+        return QString();
+    }
+
+    struct SlideSpec {
+        std::vector<std::string> lines;
+        std::string group;
+        std::string label;
+    };
+    std::vector<SlideSpec> specs;
+    for (const QVariant& rowValue : slides) {
+        const QVariantMap row = rowValue.toMap();
+        SlideSpec spec;
+        const QVariantList lines = row.value(QStringLiteral("lines")).toList();
+        if (lines.isEmpty()) {
+            setStatus(QStringLiteral("add song: a slide carries no words"));
+            return QString();
+        }
+        for (const QVariant& line : lines) {
+            spec.lines.push_back(line.toString().toStdString());
+        }
+        spec.group = row.value(QStringLiteral("group")).toString().toStdString();
+        spec.label = row.value(QStringLiteral("label")).toString().toStdString();
+        specs.push_back(std::move(spec));
+    }
+
+    openshow::domain::SongProvenance provenance;
+    provenance.ccli = ccli.trimmed().toStdString();
+    provenance.authors = authors.toStdString();
+    provenance.copyright = copyright.toStdString();
+
+    std::string error;
+    std::string showId = fDocuments.showForCatalogItem(itemId) != nullptr
+                             ? fDocuments.showForCatalogItem(itemId)->id
+                             : std::string();
+    bool created = false;
+    const bool changed = edit([&] {
+        const std::string showName = title.trimmed().toStdString();
+        if (showId.empty()) {
+            showId = fDocuments.createShow(showName, &error);
+            if (showId.empty()) {
+                return false;
+            }
+            created = true;
+        } else {
+            const openshow::domain::Show* existing = fDocuments.findShow(showId);
+            if (existing == nullptr) {
+                error = "the linked presentation vanished";
+                return false;
+            }
+            if (existing->name != showName &&
+                !fDocuments.renameShow(showId, showName, &error)) {
+                return false;
+            }
+        }
+        if (!fDocuments.setShowSongReference(showId, itemId, provenance, &error)) {
+            return false;
+        }
+        // Replace the old projection entirely: the catalog is the source of
+        // truth for the words and their section boundaries.
+        for (;;) {
+            const openshow::domain::Show* current = fDocuments.findShow(showId);
+            if (current == nullptr || current->slides.empty()) {
+                break;
+            }
+            const openshow::domain::Id first = current->slides.front().id;
+            if (!fDocuments.removeSlide(showId, first, &error)) {
+                return false;
+            }
+        }
+        for (const SlideSpec& spec : specs) {
+            const openshow::domain::Id slideId =
+                fDocuments.appendSlide(showId, &error);
+            if (slideId.empty()) {
+                return false;
+            }
+            if (!fDocuments.setSlideLines(showId, slideId, spec.lines, &error)) {
+                return false;
+            }
+            if (!spec.group.empty() &&
+                !fDocuments.setSlideGroup(showId, slideId, spec.group, &error)) {
+                return false;
+            }
+            if (!spec.label.empty() &&
+                !fDocuments.setSlideNotes(showId, slideId, spec.label, &error)) {
+                return false;
+            }
+        }
+        if (addToRunningOrder) {
+            if (fCurrentPlaylistId.empty()) {
+                error = "there is no running order to add to";
+                return false;
+            }
+            const openshow::domain::Playlist* playlist =
+                fDocuments.findPlaylist(fCurrentPlaylistId);
+            const std::size_t count =
+                playlist != nullptr ? playlist->entries.size() : 0;
+            const std::size_t at = index < 0
+                                       ? count
+                                       : std::min(static_cast<std::size_t>(index),
+                                                  count);
+            if (fDocuments.insertPlaylistEntry(fCurrentPlaylistId, showId,
+                                               std::string(), at, &error)
+                    .empty()) {
+                return false;
+            }
+        }
+        return true;
+    });
+
+    if (!changed) {
+        // A show created by a failed edit is removed with the history
+        // snapshot, so nothing half-prepared survives.
+        setStatus(QStringLiteral("add song: %1").arg(QString::fromStdString(error)));
+        return QString();
+    }
+
+    if (created || fCurrentSongId != showId) {
+        fCurrentSongId = showId;
+        fCurrentSlide = 0;
+        fCurrentBoxId.clear();
+    }
+    emit navigationChanged();
+    emit slideTextChanged();
+    emit boxSelectionChanged();
+    return QString::fromStdString(showId);
+}
+
+QString DocumentController::showForCatalogItem(const QString& catalogItemId) const {
+    const openshow::domain::Show* show =
+        fDocuments.showForCatalogItem(catalogItemId.toStdString());
+    return show == nullptr ? QString() : QString::fromStdString(show->id);
+}
+
+bool DocumentController::renameLinkedCatalogShow(const QString& catalogItemId,
+                                                 const QString& title) {
+    flushText();
+    const openshow::domain::Show* show =
+        fDocuments.showForCatalogItem(catalogItemId.toStdString());
+    if (show == nullptr || title.trimmed().isEmpty()) {
+        return false;
+    }
+    const std::string showId = show->id;
+    if (show->name == title.trimmed().toStdString()) {
+        return true;
+    }
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.renameShow(showId, title.trimmed().toStdString(), &error);
+        })) {
+        setStatus(QStringLiteral("rename song: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::detachLinkedCatalogShow(const QString& catalogItemId) {
+    flushText();
+    const openshow::domain::Show* show =
+        fDocuments.showForCatalogItem(catalogItemId.toStdString());
+    if (show == nullptr) {
+        return false;
+    }
+    const std::string showId = show->id;
+    const std::optional<openshow::domain::SongProvenance> attribution = show->song;
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setShowSongReference(showId, std::string(),
+                                                   attribution, &error);
+        })) {
+        setStatus(QStringLiteral("detach song: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
+bool DocumentController::insertShowAfterCurrentShow(const QString& showId) {    // The reference's Enter-from-search rule: land after the current show
     // when the playlist contains it, otherwise append.
     flushText();
     const openshow::domain::Playlist* playlist = fDocuments.findPlaylist(fCurrentPlaylistId);

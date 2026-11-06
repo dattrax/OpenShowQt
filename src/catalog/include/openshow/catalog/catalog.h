@@ -120,7 +120,7 @@ struct SongMetadata {
     bool operator==(const SongMetadata&) const = default;
 };
 
-// One catalog record.
+
 struct CatalogItem {
     Id id;
     Category category = Category::Songs;

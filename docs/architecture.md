@@ -748,3 +748,52 @@ revisions remain separate instances even when their values are equal.
 isolation from later edits to the caller's Scene, and survival after eviction.
 Existing publication, cap, transition and concurrent-command checks remain.
 No performance percentage is claimed without a benchmark.
+
+## Shared song Library and clipboard import (milestone SL/SI)
+
+The Library is application data outside every service package:
+`<app-data>/catalog/catalog.json` via `openshow::catalog`. Records carry a
+stable global `itemN` id, a closed category (`songs`/`presentations`), a title,
+independent `recordRevision`/`contentRevision` counters, canonical lyric
+stanzas and the reporting fields `ccli`, `authors`, `copyright`. The catalog's
+own `History` uses whole-state snapshots and a monotonic id watermark; the
+undo stack need not survive a restart but every undo/redo result is written
+durably before it is published. A strict reader refuses a future format,
+unknown keys, unsafe/duplicate ids and unknown categories without touching the
+target. `CatalogController` applies each edit to a copy, commits the file, and
+only then publishes rows and history; an unreadable catalog reads empty and
+refuses mutations rather than overwriting itself.
+
+**Service rows reference the catalog.** Adding a song creates or reuses ONE
+service show with `catalogItemId` and copies the attribution into the service
+(service format 10; `Show::catalogItemId` and `Show::song`). Repeated additions
+are separate running-order entries over that same show. `CatalogController::
+itemChanged` renames and re-lays every linked show in one service undo step;
+`itemRemoved` clears the link but keeps the attribution and slides, so a saved
+service remains playable and reportable with the Library absent. A refused
+compound service edit restores its pre-edit snapshot (domain `History`), so no
+partial show survives. Library edits use catalog history; service edits use
+document history; both stay separate.
+
+**Clipboard import** (`openshow::importer::parseLyrics`) reads only
+`QClipboard::Clipboard` on an explicit Paste, normalises CRLF/CR, preserves
+Unicode and authored line order, treats blank lines as stanza boundaries, keeps
+bracketed/bare section labels (prose stays lyrics), suggests the first line as
+the title without removing it, and moves a trailing CCLI/©/permission block
+into the record's reporting fields instead of slide words. `paginateSong` then
+measures each stanza whole, packs authored lines on overflow, delegates only one
+over-long line to the shared `textflow` sentence/word split, never shrinks the
+font, and — the operator's rule — starts every section on a new slide so a
+chorus never fills the previous verse's leftover room. `SongPlanner` provides
+the non-blocking worker measurement (content-keyed cache, one batch in flight,
+latest-ask-wins). `SongImportPage` shows the measured worker cards and offers
+one destination, Add to Library; `ServiceCatalogBridge` is the only component
+that writes a song into the running order.
+
+UI parts: `LibraryBrowser` (Songs/Presentations, title filter, drag sources) and
+`CurrentServicePanel` (one running order, no service picker under the
+operator's one-service amendment) sit permanently in `PlaylistPanel`. Drag
+payloads are `catalog:<id>` (category Move, service Copy), `show:<id>` (service
+add) and `entry:<id>` (reorder). Remaining acceptance is recorded in PLAN.md's
+SL.7/SI.3/SI.4/SL.9 rows: pointer-level song drops, real-worker import captures
+and the integrated SL.9 journey.

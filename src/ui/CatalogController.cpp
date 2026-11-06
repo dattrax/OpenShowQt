@@ -168,6 +168,9 @@ QString CatalogController::addSong(const QString& title, const QVariantList& sta
             return !newId.isEmpty();
         },
         QStringLiteral("Could not add the song to the Library"));
+    if (ok) {
+        emit itemChanged(newId);
+    }
     return ok ? newId : QString();
 }
 
@@ -185,19 +188,27 @@ bool CatalogController::updateSong(const QString& id, const QVariantList& stanza
     metadata.ccli = toStd(ccli);
     metadata.authors = toStd(authors);
     metadata.copyright = toStd(copyright);
-    return commit(
+    const bool ok = commit(
         [&](openshow::catalog::Catalog& catalog, std::string& error) {
             return catalog.updateSong(toStd(id), rows, metadata, &error);
         },
         QStringLiteral("Could not update the song"));
+    if (ok) {
+        emit itemChanged(id);
+    }
+    return ok;
 }
 
 bool CatalogController::renameItem(const QString& id, const QString& title) {
-    return commit(
+    const bool ok = commit(
         [&](openshow::catalog::Catalog& catalog, std::string& error) {
             return catalog.rename(toStd(id), toStd(title), &error);
         },
         QStringLiteral("Could not rename the Library item"));
+    if (ok) {
+        emit itemChanged(id);
+    }
+    return ok;
 }
 
 bool CatalogController::setItemMetadata(const QString& id, const QString& ccli,
@@ -207,11 +218,15 @@ bool CatalogController::setItemMetadata(const QString& id, const QString& ccli,
     metadata.ccli = toStd(ccli);
     metadata.authors = toStd(authors);
     metadata.copyright = toStd(copyright);
-    return commit(
+    const bool ok = commit(
         [&](openshow::catalog::Catalog& catalog, std::string& error) {
             return catalog.setMetadata(toStd(id), metadata, &error);
         },
         QStringLiteral("Could not update the song's attribution"));
+    if (ok) {
+        emit itemChanged(id);
+    }
+    return ok;
 }
 
 bool CatalogController::moveItemToCategory(const QString& id, const QString& category) {
@@ -229,11 +244,15 @@ bool CatalogController::moveItemToCategory(const QString& id, const QString& cat
 }
 
 bool CatalogController::removeItem(const QString& id) {
-    return commit(
+    const bool ok = commit(
         [&](openshow::catalog::Catalog& catalog, std::string& error) {
             return catalog.remove(toStd(id), &error);
         },
         QStringLiteral("Could not remove the Library item"));
+    if (ok) {
+        emit itemRemoved(id);
+    }
+    return ok;
 }
 
 void CatalogController::undo() {

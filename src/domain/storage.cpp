@@ -74,7 +74,7 @@ namespace {
 // resolves — and lands — exactly as it did before the setting existed. The
 // keys are era-guarded like every earlier meaning: a "transition" inside a
 // 8-file is somebody else's build meaning something by it.
-constexpr unsigned long long kServiceFormat = 9;
+constexpr unsigned long long kServiceFormat = 10;
 // The older versions this build reads: single-box slides (1), a stack whose
 // every item was necessarily text (2), a kinded stack whose slides had no
 // fit choice yet — cover was the only thing the worker knew (3) — a fitted
@@ -101,6 +101,12 @@ constexpr unsigned long long kServiceFormatTextStyle = 8;
 // claiming 10 cannot weaken the guard that says where "transition" means
 // what this build reads.
 constexpr unsigned long long kServiceFormatTransition = 9;
+// And 10 introduces the shared-catalog song reference (tasks SL.6/SL.8,
+// operator amendment 2026-11-06): a show names the catalog item it was
+// prepared from and copies that song's CCLI/author/copyright attribution.
+// Named like every introducer so the day 11 arrives these guards still say
+// "10", the format where the keys got their meaning.
+constexpr unsigned long long kServiceFormatSongLink = 10;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -923,6 +929,19 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             scriptureJson.emplace("attribution", show.scripture->attribution);
             entry.emplace("scripture", std::move(scriptureJson));
         }
+        // Format 10: the shared-catalog song this show was prepared from and
+        // the reporting attribution copied at preparation time (SL.6). The
+        // id is always written (empty means an authored presentation) so the
+        // key's existence is not itself a claim; the attribution is written
+        // only when the service actually carries one.
+        entry.emplace("catalogItemId", show.catalogItemId);
+        if (show.song.has_value()) {
+            boost::json::object songJson;
+            songJson.emplace("ccli", show.song->ccli);
+            songJson.emplace("authors", show.song->authors);
+            songJson.emplace("copyright", show.song->copyright);
+            entry.emplace("song", std::move(songJson));
+        }
         boost::json::array slides;
         for (const Slide& slide : show.slides) {
             boost::json::object slideJson;
@@ -1165,11 +1184,11 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         format != kServiceFormatLegacyTextOnly && format != kServiceFormatLegacyUnfit &&
         format != kServiceFormatLegacyFlat && format != kServiceFormatLegacyStyleNamed &&
         format != kServiceFormatLegacyContextless && format != kServiceFormatContexts &&
-        format != kServiceFormatTextStyle) {
+        format != kServiceFormatTextStyle && format != kServiceFormatTransition) {
         fail(error, "service.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " + std::to_string(kServiceFormat) +
                         " and formats " + std::to_string(kServiceFormatLegacyBoxes) +
-                        " through " + std::to_string(kServiceFormatTextStyle) +
+                        " through " + std::to_string(kServiceFormatTransition) +
                         " with their text boxes migrated to a kinded list, their"
                         " backgrounds to cover and their themes to flat)");
         return false;
@@ -1354,6 +1373,47 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                 return false;
             }
             show.scripture = std::move(scripture);
+        }
+        // Format 10's shared-catalog song reference (tasks SL.6/SL.8). An
+        // older file carrying either key is another build's meaning and is
+        // refused naming the format, the placement/scripture rule.
+        if (jsonShow.contains("catalogItemId") || jsonShow.contains("song")) {
+            if (format < kServiceFormatSongLink) {
+                fail(error, "service.json: a \"catalogItemId\"/\"song\" block in a "
+                            "format " + std::to_string(format) +
+                            " file, where those keys do not exist");
+                return false;
+            }
+        }
+        if (jsonShow.contains("catalogItemId") &&
+            !wantOptionalString(jsonShow, "catalogItemId", &show.catalogItemId,
+                                error)) {
+            return false;
+        }
+        if (jsonShow.contains("song")) {
+            const boost::json::value& songValue = jsonShow.at("song");
+            if (!songValue.is_object()) {
+                fail(error, "service.json: show '" + show.id +
+                                "' carries \"song\" that is not an object");
+                return false;
+            }
+            const boost::json::object& songJson = songValue.as_object();
+            SongProvenance song;
+            if (!wantOptionalString(songJson, "ccli", &song.ccli, error) ||
+                !wantOptionalString(songJson, "authors", &song.authors, error) ||
+                !wantOptionalString(songJson, "copyright", &song.copyright, error)) {
+                return false;
+            }
+            const bool ccliDigits =
+                std::all_of(song.ccli.begin(), song.ccli.end(), [](char c) {
+                    return c >= '0' && c <= '9';
+                });
+            if ((!song.ccli.empty() && !ccliDigits) || song.ccli.size() > 20) {
+                fail(error, "service.json: show '" + show.id +
+                                "' has a CCLI number that is not a number");
+                return false;
+            }
+            show.song = std::move(song);
         }
         const boost::json::array* slideArray = nullptr;
         if (!wantArray(jsonShow, "slides", &slideArray, error)) {

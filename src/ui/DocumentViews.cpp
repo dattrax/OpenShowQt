@@ -108,7 +108,10 @@ QVariantList DocumentViews::songs() const {
         // A schedule-owned presentation (task BI.3) is not a Library row:
         // the importer's item lives on today's schedule and nowhere else,
         // so the Library list — and with it the Show page — never sees it.
-        if (show->scheduleOwned) {
+        // A catalog-linked song (task SL.6) is not a PRESENTATION either:
+        // the Library's Songs branch reads the catalog, and this service
+        // show is its internal projection, not an authored deck.
+        if (show->scheduleOwned || !show->catalogItemId.empty()) {
             continue;
         }
         QVariantMap entry;
@@ -499,7 +502,7 @@ QVariantList DocumentViews::collectionOutline() const {
     int libraryShows = 0;
     for (const openshow::domain::Id& id : fDocuments.showIds()) {
         const openshow::domain::Show* show = fDocuments.findShow(id);
-        if (show != nullptr && !show->scheduleOwned) {
+        if (show != nullptr && !show->scheduleOwned && show->catalogItemId.empty()) {
             ++libraryShows;
         }
     }
@@ -605,10 +608,10 @@ QVariantList DocumentViews::searchShows(const QString& query) const {
         if (show == nullptr) {
             continue;
         }
-        // The drawer searches the Library (task BI.3); a schedule-owned
-        // scripture item is found where it lives — the schedule's rows —
-        // not by pulling it into the Library's index.
-        if (show->scheduleOwned) {
+        // The drawer searches the PRESENTATIONS Library (tasks BI.3 and
+        // SL.6); a schedule-owned scripture item is found where it lives,
+        // and a catalog song is found by the catalog's own title filter.
+        if (show->scheduleOwned || !show->catalogItemId.empty()) {
             continue;
         }
         LibraryRow row;

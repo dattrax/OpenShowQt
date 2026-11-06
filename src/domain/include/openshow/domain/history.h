@@ -53,6 +53,11 @@ public:
     bool apply(Edit edit) {
         Documents before = *fDocuments;
         if (!edit()) {
+            // Atomicity for compound edits (task SL.6): a mutation that
+            // changed several things and then refused must leave NOTHING
+            // behind. Single domain operations already obey this; restoring
+            // the snapshot makes the promise hold for wrappers too.
+            *fDocuments = std::move(before);
             return false;
         }
         bumpWatermark();

@@ -581,6 +581,19 @@ struct ScriptureProvenance {
     bool operator==(const ScriptureProvenance&) const = default;
 };
 
+// The reporting/attribution fields a catalog song carries into a service
+// (tasks SI.1 and SL.6, operator amendment 2026-11-06): the CCLI song
+// number for reporting and the writer/copyright-holder block. A service is
+// self-contained, so these are copied by value at preparation time and a
+// saved service can report even when the catalog is absent.
+struct SongProvenance {
+    std::string ccli;
+    std::string authors;
+    std::string copyright;
+
+    bool operator==(const SongProvenance&) const = default;
+};
+
 struct Show {
     Id id;
     std::string name;
@@ -596,6 +609,19 @@ struct Show {
     // Set exactly when the show came from a passage lookup; scheduleOwned
     // alone can also cover future schedule-only items without provenance.
     std::optional<ScriptureProvenance> scripture;
+    // Task SL.6 (operator amendment 2026-11-06): the shared-catalog song this
+    // service show was prepared from, if any. The running order REFERENCES
+    // the catalog item through this id: renaming, re-importing or correcting
+    // the song's metadata re-prepares every linked show, and the id is what
+    // lets the bridge find them. Empty for authored presentations and for a
+    // song whose catalog record was deleted — the show then stands alone and
+    // stays playable, exactly as a save/load without the catalog must.
+    Id catalogItemId;
+    // The reporting fields copied from the catalog at preparation time
+    // (SL.6/SL.9): a service is self-contained, so a CCLI report works after
+    // the catalog is gone. Kept beside the link rather than inside it for
+    // that reason — losing the catalog must not lose the attribution.
+    std::optional<SongProvenance> song;
 };
 
 // A named appearance. Colours are "#rgb" or "#rrggbb"; a zero font size
@@ -811,6 +837,24 @@ public:
     bool removeShow(const Id& showId, std::string* error = nullptr);
     bool renameShow(const Id& showId, const std::string& name, std::string* error = nullptr);
     bool setShowNotes(const Id& showId, const std::string& notes, std::string* error = nullptr);
+    // Links a service show to the shared catalog song it was prepared from
+    // (tasks SL.6/SL.8, operator amendment 2026-11-06). The running order
+    // references the catalog item through this id, so a later catalog rename
+    // or re-import can find and re-prepare every copy. `song` copies the
+    // reporting attribution into the service so a save without the catalog
+    // still reports correctly; it may stay present after the link is cleared
+    // ("" means the catalog record was deleted and the show stands alone).
+    // The reporting attribution is copied into the service so a save without
+    // the catalog still reports correctly; it may stay present after the
+    // link is cleared ("" means the catalog record was deleted and the show
+    // stands alone). A non-empty CCLI field must be digits only.
+    bool setShowSongReference(const Id& showId, const Id& catalogItemId,
+                              const std::optional<SongProvenance>& song,
+                              std::string* error = nullptr);
+    // The show prepared from a catalog item, or nullptr when none is linked
+    // in this service (a component that asks "is this song already here?"
+    // must never guess from a title).
+    const Show* showForCatalogItem(const Id& catalogItemId) const;
     // Lookups return nullptr when the Id is unknown. The Documents
     // object must outlive these views, and any operation touching the
     // affected show invalidates them.

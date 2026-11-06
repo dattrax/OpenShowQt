@@ -364,6 +364,18 @@ if(OPENSHOW_BUILD_UI)
   target_link_libraries(catalog_controller_tests PRIVATE openshow::ui-core)
   add_test(NAME catalog_controller_tests COMMAND catalog_controller_tests)
 
+  # Task SI.3/SI.4: the clipboard import session with no renderer — draft,
+  # editable metadata, the honest failure, replace/cancel and the rule that
+  # nothing reaches the catalog without a measured plan.
+  qt_add_executable(song_import_tests song_import_tests.cpp)
+  target_link_libraries(song_import_tests PRIVATE openshow::ui-core Qt6::Gui)
+  target_compile_definitions(song_import_tests PRIVATE
+    OPENSHOW_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  add_test(NAME song_import_tests COMMAND song_import_tests)
+  set_tests_properties(song_import_tests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 60)
+
   # Task 6.3a (review R3): WorkerController correlates replies by request id
   # and connection generation, mirrors each prepare's own payload, presents
   # only the latest go, and resets every intent when the worker dies. The

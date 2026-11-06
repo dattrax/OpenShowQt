@@ -166,6 +166,8 @@ Window {
         anchors.top: topBar.bottom
         anchors.bottom: mediaBin.top
         onSourceChosen: (kind, id) => root.browsedShowId = kind === "show" ? id : ""
+        onSongChosen: id => root.browsedShowId = docs.showForCatalogItem(id)
+        onImportRequested: root.page = "songimport"
     }
 
     OutputPanel {
@@ -233,6 +235,16 @@ Window {
         anchors.top: topBar.bottom
         anchors.bottom: mediaBin.top
         anchors.margins: 12
+    }
+
+    SongImportPage {
+        visible: root.page === "songimport"
+        anchors.left: leftDock.right
+        anchors.right: rightDock.left
+        anchors.top: topBar.bottom
+        anchors.bottom: mediaBin.top
+        anchors.margins: 12
+        onCloseRequested: root.page = "show"
     }
 
     MediaBin {

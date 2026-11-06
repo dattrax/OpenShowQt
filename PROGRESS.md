@@ -4,6 +4,46 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**SL.4–SL.8 and SI.3–SI.4 delivered in code: the shared Library pane, the
+clipboard import page, and reference-backed running-order rows.** The sidebar is
+now `LibraryBrowser` (Songs from the durable catalog, Presentations from this
+service, title-only filter with cached normalized titles) above
+`CurrentServicePanel` (one running order; no service picker, per the operator's
+amendment). Songs drag as `catalog:<id>` (category header = Move, service =
+reference-backed Copy) and presentations as `show:<id>`; the service list
+computes its insertion gap from scrolled row geometry. Double-click or Add
+prepares a song through the shared `SongPlanner` (current Songs view, worker
+measurement) into ONE service show carrying `catalogItemId` plus the copied
+CCLI/author/copyright (service format **10**); repeated adds are separate cues
+over the same referenced show. Catalog edits propagate: rename/re-lay through
+`CatalogController::itemChanged`, and deletion detaches the link while leaving a
+playable, reportable service copy. A refused compound service edit now rolls
+back through domain `History`, so no partial show survives.
+
+The import page (`songImport`/`songImportPage`) implements Paste (normal
+clipboard only), editable title/CCLI/authors/copyright, worker thumbnails keyed
+`song:<plan>:<index>`, measuring/empty states, Add to Library and Cancel; it
+stands thumbnails down when hidden and has no presenter path or selection
+canvas. `SongImport::addToLibrary` requires a title and the latest measured
+plan and creates one durable catalog record; the draft is retired so a
+double-click cannot add twice. Add/duplicate/failure tests pin the no-renderer,
+no-plan, replacement and cancel cases.
+
+Verification this stage: desktop build green; `domain_tests`,
+`catalog_tests`, `catalog_controller_tests`, `lyrics_tests`,
+`song_pagination_tests`, `song_import_tests`, `document_controller_tests`,
+`workspace_ui_tests` (updated to the two-pane layout and the title filter),
+`control_set_ui_tests`, `ui_loads`, `production_journey_tests` and
+`frontend_journey_tests` all pass. Still open: SL.7's pointer-level song-row
+drop/autoscroll and keyboard Add alternative, SI.3/SI.4's real-worker page
+acceptance and populated captures, and the integrated SL.9 journey (including
+the headless build and full desktop gate).
+
+Next: SL.9 — walk the integrated journey with a live worker, add the remaining
+pointer/keyboard pins, run desktop+headless gates, capture the populated panes
+at 1000/1380/1680 and scales 1/1.5/2, then update the control-set catalogue.
+
+
 **SI.2 complete: the stanza-aware measured song planner.** New Qt-free
 `paginateSong` measures each stanza whole first; when it overflows, whole
 authored lines are packed and only a single line taller than the box goes

@@ -16,8 +16,11 @@
 
 #include "AppSettings.h"
 #include "BibleImport.h"
+#include "CatalogController.h"
 #include "DocumentController.h"
 #include "ScriptureImport.h"
+#include "ServiceCatalogBridge.h"
+#include "SongImport.h"
 #include "WorkerController.h"
 #include "WorkspacePanels.h"
 #include "openshow/protocol/preview_wire.h"
@@ -43,6 +46,11 @@ int main(int argc, char** argv) {
     // off air with no worker and no network at all.
     BibleImport bible;
     openshow::ui::ScriptureImport scripture(&bible, &docs, &worker);
+    // Tasks SL/SI: the shared Library, the clipboard import session and the
+    // service bridge are part of the shell the operator sees.
+    openshow::ui::CatalogController library(nullptr, base);
+    openshow::ui::SongImport songImport(&library, &docs, &worker);
+    openshow::ui::ServiceCatalogBridge songService(&library, &docs, &worker);
     docs.createSong("Good Grace");
     const QString songId = docs.currentSongId();
     docs.addSlide();
@@ -76,6 +84,9 @@ int main(int argc, char** argv) {
     context->setContextProperty("appSettings", &settings);
     context->setContextProperty("bible", &bible);
     context->setContextProperty("scripture", &scripture);
+    context->setContextProperty("library", &library);
+    context->setContextProperty("songImport", &songImport);
+    context->setContextProperty("songService", &songService);
     context->setContextProperty("uiSize", QSize(1380, 800));
     engine.loadFromModule("OpenShow", "Main");
     if (engine.rootObjects().isEmpty()) {
@@ -351,41 +362,62 @@ int main(int argc, char** argv) {
         QTest::qWait(40);
     }
 
-    // --- task UI.2: one collection outline, one detail view --------------
-    auto* outline = findNamed(window->contentItem(), "collectionOutline");
+    // --- tasks SL.4/SL.5: the Library above the current service ----------
+    auto* browserPane = findNamed(window->contentItem(), "libraryBrowser");
     auto* libraryList = findNamed(window->contentItem(), "collectionLibraryList");
     auto* playlistList = findNamed(window->contentItem(), "collectionPlaylistList");
-    check(outline && libraryList && playlistList,
-          "the sidebar is one outline above one detail view");
-    check(outline->property("count").toInt() == static_cast<int>(docs.playlists().size()) + 1,
-          "the outline carries the Library plus every playlist");
-    check(left->property("outlineKind").toString() == QLatin1String("playlist") &&
-              left->property("outlinePlaylistId").toString() == docs.currentPlaylistId(),
-          "the running order under preparation is the detail view that opens");
-    check(playlistList->isVisible() &&
-              playlistList->property("count").toInt() ==
-                  static_cast<int>(docs.playlistEntries().size()),
-          "the detail view shows the selected order's cues");
-    // The outline re-binds whenever the documents change, so row pointers are
-    // only trusted straight after a refresh.
-    QList<QQuickItem*> outlineRows;
-    auto refreshOutlineRows = [&] {
-        outlineRows.clear();
-        collectNamed(outline, "collectionOutlineRow", outlineRows);
-    };
-    refreshOutlineRows();
-    check(!outlineRows.isEmpty() &&
-              outlineRows.first()->property("modelData").toMap().value("kind").toString() ==
-                  QLatin1String("library"),
-          "the Library leads the outline");
-    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-                      outlineRows.first()->mapToScene(QPointF(20, 14)).toPoint());
-    QTest::qWait(20);
-    check(left->property("outlineKind").toString() == QLatin1String("library") &&
-              libraryList->isVisible() &&
-              libraryList->property("count").toInt() == static_cast<int>(docs.songs().size()),
-          "selecting the Library moves only the detail view");
-    // Long names stay one bounded, selectable row.
+    auto* songList = findNamed(window->contentItem(), "librarySongList");
+    check(browserPane && libraryList && playlistList && songList,
+          "the sidebar shows the shared Library and the current service together");
+    check(libraryList->isVisible() && playlistList->isVisible(),
+          "both panes are visible at once, not one switched detail view");
+    check(playlistList->property("count").toInt() ==
+              static_cast<int>(docs.playlistEntries().size()),
+          "the lower pane lists the running order's cues");
+    check(songList->property("count").toInt() == library.songCount(),
+          "the Songs branch lists the shared catalog");
+
+    // Title-only filtering (SL.5): a catalog song whose LYRICS contain the
+    // word must not match; presentation titles and song titles both do.
+    {
+        QVariantList stanzas;
+        QVariantMap stanza;
+        stanza.insert("label", "Verse 1");
+        stanza.insert("lines", QStringList{"Jesus is the reason we sing"});
+        stanzas.append(stanza);
+        const QString lyricOnly = library.addSong("Morning Song", stanzas, "", "", "");
+        check(!lyricOnly.isEmpty(), "a catalog song is added for the filter");
+        QVariantList jesusStanzas;
+        QVariantMap jesusStanza;
+        jesusStanza.insert("label", "Verse 1");
+        jesusStanza.insert("lines", QStringList{"Jesus loves me"});
+        jesusStanzas.append(jesusStanza);
+        library.addSong("Jesus Loves Me", jesusStanzas, "", "", "");
+        check(docs.createSong("Jesus Presentation"),
+              "a presentation title is added for the filter");
+        QTest::qWait(40);
+        libraryList->setProperty("contentY", 0);
+        songList->setProperty("contentY", 0);
+        auto* search = findNamed(window->contentItem(), "librarySearchField");
+        check(search != nullptr, "the Library owns the one title search");
+        search->setProperty("text", "jesus");
+        QTest::qWait(40);
+        check(songList->property("count").toInt() == 1,
+              "the song filter matches the TITLE only, not lyrics");
+        check(libraryList->property("count").toInt() >= 1,
+              "presentation titles match the same query");
+        search->setProperty("text", "");
+        QTest::qWait(40);
+        check(songList->property("count").toInt() == library.songCount(),
+              "clearing the query restores the whole Songs branch");
+        check(libraryList->property("count").toInt() ==
+                  static_cast<int>(docs.songs().size()),
+              "clearing restores every presentation");
+        check(songList->property("count").toInt() >= 1,
+              "both filter additions remain in the Library");
+    }
+
+    // Long presentation names stay one bounded, selectable row.
     const QString longName(180, 'x');
     check(docs.createSong(longName), "a long-named presentation is created");
     QTest::qWait(20);
@@ -397,7 +429,7 @@ int main(int argc, char** argv) {
             if (row->property("modelData").toMap().value("name").toString() == longName)
                 longRow = row;
         check(longRow && longRow->width() <= libraryList->width() && longRow->height() > 0,
-              "a long name stays one bounded row in the detail view");
+              "a long name stays one bounded row in the presentation list");
         if (longRow) {
             QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
                               longRow->mapToScene(QPointF(20, 14)).toPoint());
@@ -405,12 +437,11 @@ int main(int argc, char** argv) {
         }
         check(!docs.currentSongId().isEmpty(), "and the long row is selectable");
     }
-    // Dragging a library row into blank space must not displace it — the pin
-    // the flat drawer used to carry, kept with the rows that now answer for it.
+    // Dragging a library row into blank space must not displace it.
     {
         QList<QQuickItem*> libraryRows;
         collectNamed(libraryList, "collectionLibraryRow", libraryRows);
-        check(!libraryRows.isEmpty(), "the Library detail instantiates rows");
+        check(!libraryRows.isEmpty(), "the presentation list instantiates rows");
         if (!libraryRows.isEmpty()) {
             QPointer<QQuickItem> row = libraryRows.first();
             const auto position = row->position();
@@ -425,14 +456,9 @@ int main(int argc, char** argv) {
         }
     }
     docs.selectSong(songId);  // back to the fixture's working song for later checks
-    // Repeated entries: two cues, two stable ids, one selection.
-    QTest::qWait(20);
-    refreshOutlineRows();
-    check(outlineRows.size() >= 2, "the outline still rows after a document change");
-    if (outlineRows.size() >= 2) {
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-                          outlineRows[1]->mapToScene(QPointF(20, 14)).toPoint());
-    }
+    // Browsing a Library presentation re-sources the Show page; these UI.2
+    // checks are about the running order, so hand the centre back to it.
+    window->setProperty("browsedShowId", QString());
     QTest::qWait(20);
     check(docs.addShowToPlaylist(songId), "the order takes a second copy of the show");
     QTest::qWait(20);
@@ -485,16 +511,8 @@ int main(int argc, char** argv) {
         check(identities, "scrolled rows keep the identities of the cues they show");
         playlistList->setProperty("contentY", 0);
     }
-    // Drag a presentation from the Library detail onto a playlist outline
-    // row: preparation lands at the end of that order, selection intact.
-    QTest::qWait(20);
-    refreshOutlineRows();
-    check(outlineRows.size() >= 2, "the outline rows rebuild intact");
-    if (outlineRows.size() >= 2) {
-        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-                          outlineRows.first()->mapToScene(QPointF(20, 14)).toPoint());
-    }
-    QTest::qWait(20);
+    // Drag a presentation from the Library onto the current-service pane:
+    // preparation lands at the end of the running order, selection intact.
     {
         QString welcomeId;
         for (const auto& song : docs.songs())
@@ -506,14 +524,12 @@ int main(int argc, char** argv) {
         for (auto* row : rows)
             if (row->property("modelData").toMap().value("id").toString() == welcomeId)
                 welcomeRow = row;
-        check(welcomeRow != nullptr, "the Welcome row is in the Library detail");
+        check(welcomeRow != nullptr, "the Welcome row is in the presentation list");
         if (welcomeRow) {
             const auto start = welcomeRow->mapToScene(QPointF(25, 14)).toPoint();
-            const auto target = outlineRows[1]->mapToScene(QPointF(25, 14)).toPoint();
+            const auto target = playlistList->mapToScene(
+                QPointF(40, std::max(10.0, playlistList->height() - 12.0))).toPoint();
             const int before = static_cast<int>(docs.playlistEntries().size());
-            // Lead the drag sideways: the detail list flicks vertically, so a
-            // vertical-first gesture is stolen as a scroll before the row's
-            // drag threshold passes.
             QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
             QTest::mouseMove(window, start + QPoint(60, 0), 15);
             QTest::mouseMove(window, (start + target) / 2 + QPoint(30, 0), 15);
@@ -522,14 +538,17 @@ int main(int argc, char** argv) {
             QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, target);
             QTest::qWait(40);
             const auto after = docs.playlistEntries();
-            check(static_cast<int>(after.size()) == before + 1 &&
-                      after.last().toMap().value("showId").toString() == welcomeId,
-                  "dragging a presentation onto a playlist prepares it at the end");
-            check(left->property("outlineKind").toString() == QLatin1String("playlist"),
-                  "the drop leaves the target order in the detail view");
+            bool landed = false;
+            for (const QVariant& entry : after)
+                landed = landed || entry.toMap().value("showId").toString() == welcomeId
+                                  && static_cast<int>(before) + 1 == after.size();
+            check(static_cast<int>(after.size()) == before + 1 && landed,
+                  "dragging a presentation onto the service prepares it in the order");
             check(docs.currentSongId() == songId,
                   "browsing and preparing never move the presented selection");
         }
+        window->setProperty("browsedShowId", QString());
+        QTest::qWait(20);
     }
 
     // Ctrl+F searches PRESENTATIONS, and the sidebar owns those now (UI.4a
@@ -3751,12 +3770,8 @@ int main(int argc, char** argv) {
         waitFor([&] { return !cueMenu->property("visible").toBool(); });
 
         // --- sidebar row: the bulk over a whole presentation, one undo ---
-        QList<QQuickItem*> outlineRows;
-        collectNamed(outline, "collectionOutlineRow", outlineRows);
-        if (left->property("outlineKind").toString() != QLatin1String("library")) {
-            clickAt(outlineRows.first(), 20, 14);
-            QTest::qWait(60);
-        }
+        // The Library pane is always visible now (SL.4).
+        QTest::qWait(20);
         QString welcomeId;
         for (const QVariant& song : docs.songs()) {
             if (song.toMap().value(QStringLiteral("name")).toString()

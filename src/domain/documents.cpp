@@ -155,6 +155,44 @@ bool Documents::setShowNotes(const Id& showId, const std::string& notes, std::st
     return true;
 }
 
+bool Documents::setShowSongReference(const Id& showId, const Id& catalogItemId,
+                                     const std::optional<SongProvenance>& song,
+                                     std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    if (song.has_value()) {
+        const std::string& ccli = song->ccli;
+        const bool digits = std::all_of(ccli.begin(), ccli.end(), [](char c) {
+            return c >= '0' && c <= '9';
+        });
+        if (!ccli.empty() && !digits) {
+            fail(error, "song attribution: the CCLI number must be digits only");
+            return false;
+        }
+        if (ccli.size() > 20) {
+            fail(error, "song attribution: the CCLI number is too long");
+            return false;
+        }
+    }
+    show->catalogItemId = catalogItemId;
+    show->song = song;
+    return true;
+}
+
+const Show* Documents::showForCatalogItem(const Id& catalogItemId) const {
+    if (catalogItemId.empty()) {
+        return nullptr;
+    }
+    const auto found = std::find_if(fShows.begin(), fShows.end(),
+                                    [&](const Show& show) {
+                                        return show.catalogItemId == catalogItemId;
+                                    });
+    return found == fShows.end() ? nullptr : &*found;
+}
+
 const Show* Documents::findShow(const Id& showId) const {
     const auto found = std::find_if(fShows.begin(), fShows.end(),
                                     [&](const Show& s) { return s.id == showId; });

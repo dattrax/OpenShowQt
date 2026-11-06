@@ -431,6 +431,38 @@ public:
     Q_INVOKABLE QVariantMap scriptureBoxStyle() const;
     Q_INVOKABLE QString scriptureSlideSceneJson(const QStringList& lines) const;
 
+    // The song import's off-air look (tasks SI.2/SI.3): the same fixture
+    // compile with NO named text context, i.e. the Songs view the prepared
+    // slide will wear. The importer measures and previews with these exact
+    // numbers; `songSlideSceneJson` compiles one generated slide whose words
+    // the document does not hold yet.
+    Q_INVOKABLE QVariantMap songBoxStyle() const;
+    Q_INVOKABLE QString songSlideSceneJson(const QStringList& lines) const;
+
+    // Task SL.6/SL.8: prepare a shared-catalog song into THIS service. One
+    // history entry. A show already linked to `catalogItemId` is reused (the
+    // running order references it), renamed and re-laid from `slides`;
+    // otherwise a new linked show is created. `slides` rows are
+    // {lines: QStringList, group: QString, label: QString} — `group` is the
+    // stanza label (the slide's group), `label` its notes text. With
+    // `addToRunningOrder` the show joins the current running order at
+    // `index` (-1 appends), and repeated adds are separate entries over the
+    // same referenced show. Returns the service show id, or "" with status.
+    Q_INVOKABLE QString upsertCatalogSong(const QString& catalogItemId,
+                                          const QString& title, const QString& ccli,
+                                          const QString& authors, const QString& copyright,
+                                          const QVariantList& slides,
+                                          bool addToRunningOrder, int index = -1);
+    // The service show prepared from a catalog item, "" when none is linked.
+    Q_INVOKABLE QString showForCatalogItem(const QString& catalogItemId) const;
+    // Propagates a catalog rename to the linked show without re-laying the
+    // words (the reference's whole point). One history entry when changed.
+    Q_INVOKABLE bool renameLinkedCatalogShow(const QString& catalogItemId,
+                                             const QString& title);
+    // The catalog record was deleted: clear the link but keep the copied
+    // attribution, so the service stays playable and reportable.
+    Q_INVOKABLE bool detachLinkedCatalogShow(const QString& catalogItemId);
+
     // --- theme surfaces (task TH.5, themes plan) ---
 
     // The current slide through the whole chain, per property: the value
@@ -624,6 +656,9 @@ private:
     // status line, which the adapter writes through this class.
     void autosaveNow(const char* what);
     QString compileSlideJson(const openshow::domain::Id& slideId) const;
+    // The fixture-compile style and scene helpers (Bible and Songs view).
+    QVariantMap fixtureBoxStyle(bool scripture) const;
+    QString fixtureSlideSceneJson(const QStringList& lines, bool scripture) const;
     // The current slide's id, or "" when navigation points nowhere.
     openshow::domain::Id currentSlideId() const;
     // Every session has a playlist to run: seed a default "Service" when

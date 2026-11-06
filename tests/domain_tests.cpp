@@ -48,6 +48,7 @@ using openshow::domain::AssetRebind;
 using openshow::domain::kDefaultLineSpacing;
 using openshow::domain::kMaxSlideItems;
 using openshow::domain::ScriptureProvenance;
+using openshow::domain::SongProvenance;
 using Asset = openshow::domain::Asset;
 using Autosave = openshow::domain::Autosave;
 using History = openshow::domain::History;
@@ -848,6 +849,10 @@ bool sameService(const Documents& a, const Documents& b) {
         if (sa == nullptr || sb == nullptr || sa->name != sb->name ||
             sa->notes != sb->notes || sa->defaultThemeId != sb->defaultThemeId ||
             sa->scheduleOwned != sb->scheduleOwned || sa->scripture != sb->scripture ||
+            // Task SL.6: the catalog link and the copied attribution are
+            // service state; a round trip that dropped either would let the
+            // running order's reference die silently.
+            sa->catalogItemId != sb->catalogItemId || sa->song != sb->song ||
             sa->slides.size() != sb->slides.size()) {
             return false;
         }
@@ -1788,9 +1793,9 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
                   manifest.find("\"backgroundGradient\":\"\"") != std::string::npos,
               "the gradient AND the flat are both written by name — leaving the "
               "default to an absent key is the rule this project refuses");
-        check(manifest.find("\"format\":9") != std::string::npos,
-              "the manifest says format 9 (TR.1: the service carries its own"
-              " transition record)");
+        check(manifest.find("\"format\":10") != std::string::npos,
+              "the manifest says format 10 (SL.6: the service also carries its"
+              " catalog song link and attribution)");
         check(manifest.find("\"transition\":{") != std::string::npos,
               "the root transition is written by name, not left to an absent key");
         check(openshow::domain::saveService(back, tempRoot / "v5-regraded", &error) &&
@@ -4469,6 +4474,94 @@ void exerciseAssetReuse(const fs::path& tempRoot) {
 
 }  // namespace
 
+void exerciseSongReference(const fs::path& tempRoot) {
+    Documents documents;
+    std::string error;
+    const Id authored = documents.createShow("Authored", &error);
+    const Id prepared = documents.createShow("Morning Light", &error);
+    check(!authored.empty() && !prepared.empty(), "the song-reference service builds");
+    check(documents.findShow(prepared)->catalogItemId.empty() &&
+              !documents.findShow(prepared)->song.has_value(),
+          "a new show carries neither a catalog link nor song attribution");
+    check(documents.showForCatalogItem("") == nullptr &&
+              documents.showForCatalogItem("item9") == nullptr,
+          "an empty or unknown catalog id finds no show");
+
+    const SongProvenance attribution{"9000001", "Example Writer",
+                                     "\xc2\xa9 2024 Example Music"};
+    check(documents.setShowSongReference(prepared, "item3", attribution, &error),
+          "a show is linked to the shared catalog song");
+    check(documents.findShow(prepared)->catalogItemId == "item3" &&
+              documents.findShow(prepared)->song == attribution,
+          "the link and the copied attribution are stored");
+    check(documents.showForCatalogItem("item3") == documents.findShow(prepared),
+          "the linked show is found by its catalog id");
+    check(documents.findShow(authored)->catalogItemId.empty(),
+          "other shows are untouched");
+
+    check(!documents.setShowSongReference(prepared, "item3",
+                                          SongProvenance{"CCLI 9000001", "", ""},
+                                          &error),
+          "a non-numeric CCLI field is refused");
+    check(error.find("CCLI") != std::string::npos,
+          "the refusal names the CCLI field");
+    check(documents.findShow(prepared)->song == attribution,
+          "the refused write changed nothing");
+    check(!documents.setShowSongReference("show999", "item3", attribution, &error),
+          "linking an unknown show is refused");
+
+    // The service is self-contained: the link and attribution round-trip
+    // without the catalog.
+    const fs::path package = tempRoot / "song-reference";
+    std::filesystem::create_directories(package);
+    check(openshow::domain::saveService(documents, package, &error),
+          "the song-linked service saves");
+    {
+        const boost::json::value manifest =
+            boost::json::parse(readFile(package / "service.json"));
+        const boost::json::array& shows = manifest.at("shows").as_array();
+        check(shows[0].as_object().at("catalogItemId").as_string().empty() &&
+                  shows[0].as_object().find("song") == shows[0].as_object().end(),
+              "an authored show writes an empty link and no attribution key");
+        check(shows[1].as_object().at("catalogItemId").as_string() == "item3" &&
+                  shows[1].as_object().at("song").at("ccli").as_string() == "9000001" &&
+                  shows[1].as_object().at("song").at("authors").as_string() ==
+                      "Example Writer",
+              "the linked show names its catalog item and attribution");
+    }
+    Documents back;
+    check(openshow::domain::loadService(&back, package, &error) &&
+              sameService(documents, back),
+          "the catalog link and attribution round-trip field for field");
+    check(back.findShow(prepared)->catalogItemId == "item3" &&
+              back.findShow(prepared)->song == attribution,
+          "the reloaded show still carries both");
+
+    // A pre-10 file carrying either key is another build's meaning: refused
+    // naming the keys, not guessed.
+    const fs::path earlier = tempRoot / "song-reference-earlier";
+    std::filesystem::create_directories(earlier);
+    writeFile(earlier / "service.json",
+              R"({"format":9,"nextOrdinal":9,"currentThemeId":"",)"
+              R"("transition":{"kind":"fade","textDurationMs":500,)"
+              R"("mediaDurationMs":800},"shows":[{"id":"show1",)"
+              R"("name":"Earlier","notes":"","defaultThemeId":"",)"
+              R"("catalogItemId":"item3","slides":[]}],"themes":[],)"
+              R"("assets":[],"playlists":[]})");
+    Documents older;
+    check(!openshow::domain::loadService(&older, earlier, &error) &&
+              error.find("catalogItemId") != std::string::npos,
+          "a format-9 file claiming a catalog link is refused naming the key");
+
+    // Detaching (the catalog record was deleted) keeps the attribution so
+    // reports survive; the show remains playable on its own.
+    check(documents.setShowSongReference(prepared, "", attribution, &error),
+          "the link can be cleared without losing the song");
+    check(documents.findShow(prepared)->catalogItemId.empty() &&
+              documents.findShow(prepared)->song == attribution,
+          "the attribution stays after the catalog link is gone");
+}
+
 int main() {
     const std::string_view version = openshow::domain::applicationVersion();
     bool ok = check(!version.empty(), "applicationVersion is not empty");
@@ -4502,6 +4595,7 @@ int main() {
     exerciseTransitionStorage(tempRoot);
     exerciseDefaultThemeFloor(tempRoot);
     exerciseScriptureShows(tempRoot);
+    exerciseSongReference(tempRoot);
     std::filesystem::remove_all(tempRoot);
 
     exerciseHistory();
