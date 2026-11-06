@@ -4,6 +4,29 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**SL.1 + SL.2 complete: the shared song Library exists as its own durable
+store.** New Qt-free `openshow::catalog` (model, revisions, closed
+validation, `History` with a monotonic id watermark) and its independent
+package `catalog/catalog.json` under the application data directory — staged,
+synced and renamed atomically, with `OPENSHOW_CATALOG_FAULT` per-step fault
+injection. Strict load refuses a future format, unknown keys, duplicate or
+unsafe ids and unknown categories, leaving the target untouched. New
+`CatalogController` (Qt Core) exposes rows/undo/status to QML, applies every
+edit to a copy, writes it durably, and only then publishes model + history; a
+failed write changes no row, no undo entry and no byte of the file. Songs
+carry `ccli`, `authors` and `copyright` (the operator's reporting fields,
+missing from the original brief and now recorded in PLAN.md's amendment).
+Title filtering caches normalized titles and never searches lyrics. Evidence:
+`catalog_tests` (model/persistence, all pass) and `catalog_controller_tests`
+(durable add/restart, title-only filter, no-op moves, undo/redo durability,
+faulted writes, unreadable file never overwritten, all pass). PLAN.md also
+records the operator's amendments: one service only (Save/Load later), and
+running-order rows reference the catalog song instead of copying a snapshot.
+
+Next: SI.1 clipboard text capture and the plain-lyrics parser (title,
+sections, stanzas, CCLI/author/copyright footer), then SI.2's stanza-aware
+measured planner.
+
 **Planning update, 2026-11-06: shared Library and clipboard song import.**
 The operator confirmed a Library shared across services. PLAN.md now contains
 SL.1–SL.9 and SI.1–SI.4: independent catalog/migration, separate upper Library

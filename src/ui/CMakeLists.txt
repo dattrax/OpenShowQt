@@ -32,6 +32,8 @@ add_library(openshow-ui-core STATIC
   AutosaveScheduler.h
   BibleImport.cpp
   BibleImport.h
+  CatalogController.cpp
+  CatalogController.h
   DocumentController.cpp
   DocumentController.h
   DocumentPersistence.cpp
@@ -63,6 +65,7 @@ target_link_libraries(openshow-ui-core PUBLIC
   Qt6::Core
   Qt6::Gui
   Qt6::Network
+  openshow::catalog
   openshow::domain
   openshow::importer
   openshow::protocol

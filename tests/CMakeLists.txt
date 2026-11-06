@@ -4,6 +4,12 @@ add_executable(domain_tests
 target_link_libraries(domain_tests PRIVATE openshow::domain)
 add_test(NAME domain_tests COMMAND domain_tests)
 
+# Task SL.1/SL.2: the shared catalog's model, revisions, history watermark
+# and its durable independent package. Qt-free, so both presets run it.
+add_executable(catalog_tests catalog_tests.cpp)
+target_link_libraries(catalog_tests PRIVATE openshow::catalog)
+add_test(NAME catalog_tests COMMAND catalog_tests)
+
 # Milestone BI (task BI.1): the passage parser's regressions on synthetic
 # fixtures — the live shapes are recorded in docs/ui/bible-import-plan.md,
 # and no fetched passage is ever stored here. Qt-free like the domain.
@@ -333,6 +339,13 @@ if(OPENSHOW_BUILD_UI)
   add_executable(library_search_tests library_search_tests.cpp)
   target_link_libraries(library_search_tests PRIVATE openshow::ui-core)
   add_test(NAME library_search_tests COMMAND library_search_tests)
+
+  # Task SL.2/SL.5: the shared Library adapter — durable edits, restart
+  # survival, title-only filtering, category moves, independent history and
+  # the honest write/read failures. Qt Core only; no display, no worker.
+  add_executable(catalog_controller_tests catalog_controller_tests.cpp)
+  target_link_libraries(catalog_controller_tests PRIVATE openshow::ui-core)
+  add_test(NAME catalog_controller_tests COMMAND catalog_controller_tests)
 
   # Task 6.3a (review R3): WorkerController correlates replies by request id
   # and connection generation, mirrors each prepare's own payload, presents

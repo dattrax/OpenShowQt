@@ -1424,6 +1424,31 @@ expansion state as workspace preferences, not document edits.
   second text display. Pasting again replaces the draft. No background polling
   of the clipboard, automatic import on page entry, or web lookup.
 
+#### Operator decisions, 2026-11-06 (amendments to this brief)
+
+- **One service.** The operator does not want a service picker or several
+  services in this milestone. A current service exists exactly as today; Save
+  and Load already cover moving it. `CurrentServicePanel` therefore shows the
+  one running order and its edit actions, with no service chooser. The catalog
+  still lives outside the service package so its songs survive a Save/Load.
+- **Running-order rows are references, not copies.** The operator's rule is
+  that the service list must reference the song so edits reach the database.
+  Adding a catalog song to the running order reuses/creates ONE service show
+  carrying `catalogItemId`; repeated additions add another entry naming that
+  show. Renaming, re-categorising, re-importing or correcting metadata on the
+  catalog item propagates to every linked service show (rename and re-laid
+  lyrics), and the catalog is the source of truth for the song's identity,
+  title, lyrics, CCLI number and attribution. This supersedes the earlier
+  "every drop is a separate independent snapshot" bullet; deletion of a
+  catalog item detaches (never breaks) the link, leaving a playable service
+  copy. Editing a linked show's slides in Edit remains a service edit while
+  the record link stands.
+- **CCLI and attribution are mandatory record fields.** This was missing from
+  the original brief. Every catalog song carries `ccli` (digits for reporting),
+  `authors` (writer/holder) and `copyright` (the © and permission block), and
+  the clipboard parser fills them from the pasted footer rather than turning
+  that footer into slides. Reports read these fields; they never draw.
+
 #### Control sets and ownership
 
 Use these names in source comments (`UI part: <name>`) and extend
@@ -1454,8 +1479,8 @@ refresh the in-tree executable when behaviour changes.
 
 | ID | Status | Work | Dependencies and acceptance |
 |---|---|---|---|
-| SL.1 | TODO | Catalog model, identities and ownership commands | Stable global item IDs, closed categories, independent content kind/revision; category moves preserve content and existing services; Qt-free `catalog_tests` |
-| SL.2 | TODO | Independent catalog persistence and application adapter | SL.1; durable catalog package, asset containment, atomic failure/recovery, catalog model notifications and history; restart and New/Load service leave catalog intact |
+| SL.1 | DONE | Catalog model, identities, categories and ownership commands | Stable global `itemN` ids, closed categories, independent record/content revisions, CCLI + authors + copyright record fields; category moves preserve content and cost no content revision; Qt-free `catalog_tests` (identities, duplicates, revisions, closed validation, refusals change nothing) |
+| SL.2 | DONE | Independent catalog persistence and application adapter | SL.1; durable `catalog/catalog.json` package with staged+synced atomic commit and fault injection, strict load (future format, unknown keys, duplicate/unsafe ids, bad categories each refused), `catalog::History` with a monotonic id watermark, `CatalogController` publishing rows/history only after a successful write, restart survival and cached title filtering; `catalog_tests` + `catalog_controller_tests` |
 | SL.3 | TODO | Migrate existing embedded Library safely | SL.2; migrate reusable shows once, preserve old service pixels/IDs, exclude schedule-owned scripture, retry migration without duplicates; old packages remain playable |
 | SL.4 | TODO | Separate LibraryBrowser and CurrentServicePanel | SL.2–3; both visible with independent scroll/selection, fixed category branches, service controls below, persistent workspace layout |
 | SL.5 | TODO | Bind title filtering to Library only | SL.4; Jesus title examples, empty results and clear/keyboard cases; no insert, service navigation or output change; cached normalized titles |

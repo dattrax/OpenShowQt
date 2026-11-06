@@ -23,6 +23,7 @@
 #include "openshow/domain/version.h"
 #include "openshow/protocol/protocol.h"
 
+#include "CatalogController.h"
 #include "DocumentController.h"
 #include "WorkerController.h"
 #include "BibleImport.h"
@@ -55,6 +56,11 @@ int main(int argc, char* argv[]) {
     // Task 3.3: the editable documents. Constructed after the application
     // object so QStandardPaths resolves; the lyric panel binds to it.
     openshow::ui::DocumentController documents;
+
+    // Tasks SL.1/SL.2: the shared Library. Its own package, its own
+    // history, independent of whichever service is open; the songs it
+    // holds survive a service load/save and an application restart.
+    openshow::ui::CatalogController library;
 
     // Task 6.14b (review R14): scratch persistence runs on the bounded,
     // coalescing executor — the UI thread only ever pays for a snapshot
@@ -117,6 +123,7 @@ int main(int argc, char* argv[]) {
                                                 openshow::protocol::offerPayload()));
     engine.rootContext()->setContextProperty("worker", &worker);
     engine.rootContext()->setContextProperty("docs", &documents);
+    engine.rootContext()->setContextProperty("library", &library);
     engine.rootContext()->setContextProperty("panels", &panels);
     engine.rootContext()->setContextProperty("appSettings", &settings);
     // Milestone BI: the importer's page. The lookup session owns the
