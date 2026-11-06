@@ -8,7 +8,10 @@ Updated: 2026-11-06 (Europe/London).
 actual show rather than the filtered Library projection. The real-worker
 `library_service_ui_tests` journey passes with populated authored, catalog-song,
 scripture and Library-detached service shows; each displays compilable slides
-without presenting. Next: Shift+arrow selection and confirmed Library deletion.
+without presenting. Shift+Up/Down now extends/contracts service ranges, scrolls
+to the current row and stops at either boundary. Delete removes that selection
+as one undoable edit; service Remove buttons are gone. The expanded real-worker
+journey passes. Next: confirmed permanent Library deletion.
 
 **LRF.1–LRF.4 complete:** Import song is visible on Show and in More, returning
 to its originating page after import. Search has a stationary hint, its toolbar

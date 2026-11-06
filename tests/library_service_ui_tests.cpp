@@ -398,6 +398,40 @@ int main(int argc, char** argv) {
         }
         check(false, "the service selection row is visible");
     };
+    check(!findNamed(window->contentItem(), "serviceRemoveSelectedButton"),
+          "the service header no longer has a redundant Remove button");
+    selectEntry(0, Qt::NoModifier);
+    QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
+    QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
+    check(selectedCount(servicePanel, "selectedEntryIds") == 3,
+          "Shift+Down extends the range from the clicked anchor");
+    QTest::keyClick(window, Qt::Key_Up, Qt::ShiftModifier);
+    check(selectedCount(servicePanel, "selectedEntryIds") == 2,
+          "Shift+Up contracts the range without losing its anchor");
+    QTest::keyClick(window, Qt::Key_Delete);
+    const auto afterKeyboardRemoval = docs.playlistEntries();
+    bool keyboardSurvivors = afterKeyboardRemoval.size() == beforeRemoval.size() - 2;
+    for (int i = 0; i < afterKeyboardRemoval.size(); ++i)
+        keyboardSurvivors = keyboardSurvivors && afterKeyboardRemoval[i].toMap().value("entryId")
+                            == beforeRemoval[i + 2].toMap().value("entryId");
+    check(keyboardSurvivors, "Delete removes exactly the keyboard-selected service occurrences");
+    QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
+    check(docs.playlistEntries() == beforeRemoval,
+          "one undo restores the keyboard range in order");
+    selectEntry(0, Qt::NoModifier);
+    QTest::keyClick(window, Qt::Key_Up, Qt::ShiftModifier);
+    check(selectedCount(servicePanel, "selectedEntryIds") == 1,
+          "Shift+Up stops at the first service entry");
+    for (int i = 0; i < beforeRemoval.size() + 2; ++i)
+        QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
+    check(selectedCount(servicePanel, "selectedEntryIds") == beforeRemoval.size()
+              && playlistList->property("contentY").toReal() > 0,
+          "keyboard selection reaches offscreen rows, scrolls and stops at the last entry");
+    QTest::keyClick(window, Qt::Key_Up);
+    check(selectedCount(servicePanel, "selectedEntryIds") == 1,
+          "an unmodified arrow replaces the range with one row");
+    playlistList->setProperty("contentY", 0);
+    QTest::qWait(40);
     selectEntry(0, Qt::NoModifier);
     selectEntry(2, Qt::ControlModifier);
     check(servicePanel && selectedCount(servicePanel, "selectedEntryIds") == 2,
@@ -426,8 +460,8 @@ int main(int argc, char** argv) {
     QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
     check(selectedCount(servicePanel, "selectedEntryIds") == beforeRemoval.size(),
           "Ctrl+A selects the complete service, including scrolled-off rows");
-    click(findNamed(window->contentItem(), "serviceRemoveSelectedButton"));
-    check(docs.playlistEntries().isEmpty(), "the visible Remove action removes the service selection");
+    QTest::keyClick(window, Qt::Key_Delete);
+    check(docs.playlistEntries().isEmpty(), "Delete removes the complete service selection without a dialog");
     QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
     check(docs.playlistEntries() == beforeRemoval, "one undo restores a complete service removal");
 

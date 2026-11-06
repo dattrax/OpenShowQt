@@ -35,6 +35,13 @@ QtObject {
         currentKey = order.length ? order[order.length - 1] : ""
         anchorKey = order.length ? order[0] : ""
     }
+    function move(delta, order, modifiers) {
+        if (!order.length) return
+        const current = order.indexOf(currentKey)
+        const at = current < 0 ? (delta > 0 ? 0 : order.length - 1)
+                              : Math.max(0, Math.min(order.length - 1, current + delta))
+        select(order[at], order, modifiers)
+    }
     function retain(order) {
         const next = keys.filter(key => order.indexOf(key) >= 0)
         if (next.length !== keys.length) keys = next

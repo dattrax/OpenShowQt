@@ -27,10 +27,22 @@ Item {
     function removeSelected() {
         if (docs.removePlaylistEntries(selection.keys.slice())) selection.clear()
     }
+    function browseSelection() {
+        const index = entryIds.indexOf(selection.currentKey)
+        if (index < 0) return
+        const showId = docs.playlistEntries[index].showId
+        entryList.positionViewAtIndex(index, ListView.Contain)
+        docs.selectSong(showId)
+        servicePanel.entryChosen(showId)
+    }
     Keys.enabled: servicePanel.activeFocus
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Delete) {
             servicePanel.removeSelected()
+            event.accepted = true
+        } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
+            selection.move(event.key === Qt.Key_Down ? 1 : -1, servicePanel.entryIds, event.modifiers)
+            servicePanel.browseSelection()
             event.accepted = true
         } else if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) {
             selection.selectAll(servicePanel.entryIds)
@@ -72,19 +84,11 @@ Item {
             }
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                width: Math.max(0, parent.width - serviceTitle.width - removeButton.width - 8)
+                width: Math.max(0, parent.width - serviceTitle.width - 4)
                 horizontalAlignment: Text.AlignRight
                 elide: Text.ElideRight
                 text: servicePanel.playlistName() + " · " + docs.playlistEntries.length + " cues"
                 color: "#b0b0b0"; font.pixelSize: 11
-            }
-            PanelButton {
-                id: removeButton
-                objectName: "serviceRemoveSelectedButton"
-                width: 76; height: 24
-                text: "Remove"
-                enabled: selection.keys.length > 0
-                onClicked: servicePanel.removeSelected()
             }
         }
 
@@ -129,7 +133,7 @@ Item {
                         anchors.leftMargin: 6
                         anchors.verticalCenter: parent.verticalCenter
                         width: Math.max(0, entryRow.width -
-                                         (servicePanel.editingEnabled ? 106 : 46))
+                                         (servicePanel.editingEnabled ? 86 : 46))
                         elide: Text.ElideRight
                         font.pixelSize: 13
                         color: entryRow.rowSelected ? "#ffffff" : "#eeeeee"
@@ -139,7 +143,7 @@ Item {
                     }
                     Text {
                         anchors.right: parent.right
-                        anchors.rightMargin: servicePanel.editingEnabled ? 76 : 8
+                        anchors.rightMargin: servicePanel.editingEnabled ? 56 : 8
                         anchors.verticalCenter: parent.verticalCenter
                         font.pixelSize: 11
                         color: entryRow.rowSelected ? "#d9ebff" : "#b0b0b0"
@@ -156,11 +160,10 @@ Item {
                         Repeater {
                             model: [
                                 {glyph: "\u25b2", enabled: entryRow.index > 0,
-                                 step: -1, action: "move"},
+                                 step: -1},
                                 {glyph: "\u25bc",
                                  enabled: entryRow.index < entryList.count - 1,
-                                 step: 1, action: "move"},
-                                {glyph: "\u2715", enabled: true, step: 0, action: "remove"}
+                                 step: 1}
                             ]
                             delegate: Text {
                                 id: handle
@@ -169,7 +172,7 @@ Item {
                                 height: 24
                                 horizontalAlignment: Text.AlignHCenter
                                 verticalAlignment: Text.AlignVCenter
-                                font.pixelSize: modelData.action === "remove" ? 11 : 9
+                                font.pixelSize: 9
                                 color: !modelData.enabled ? "#606060"
                                      : (handleMouse.containsMouse ? "#eeeeee" : "#b0b0b0")
                                 text: modelData.glyph
@@ -179,14 +182,9 @@ Item {
                                     hoverEnabled: true
                                     enabled: handle.modelData.enabled
                                     onClicked: {
-                                        if (handle.modelData.action === "move") {
-                                            docs.movePlaylistEntry(
-                                                entryRow.modelData.entryId,
-                                                entryRow.index + handle.modelData.step)
-                                        } else {
-                                            docs.removePlaylistEntry(
-                                                entryRow.modelData.entryId)
-                                        }
+                                        docs.movePlaylistEntry(
+                                            entryRow.modelData.entryId,
+                                            entryRow.index + handle.modelData.step)
                                     }
                                 }
                             }
