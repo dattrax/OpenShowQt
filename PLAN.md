@@ -1089,6 +1089,9 @@ TV/TA and M7 work. CS.0 records this review only.
 | CS.9 | DONE | Integrated reuse, accessibility, screenshot and regression acceptance | One tour walks the seams: a Themes-host size write lands in the Edit host's resolved field, a slide customization stays the slide's own (theme row unmoved, chip announces "Revert fontSize customization", Remove lands back on the theme value), Tab walks/Escape releases/page-leave takes the field, first/last rail controls reach the viewport at 1000×680, the hidden Show page asked the worker nothing across the tour while the shown one catches up, browsing moved no document/history/output byte, and the walk-back leaves no fingerprint; captures of all five pages at the three ledger sizes plus scales 1.5/2 |
 
 Current priority: **TV.3**.
+The aborted four-file TV.3 WIP was discarded at the operator's request on
+2026-11-06. TV.3 remains TODO; restart from the committed model and the brief
+below rather than relying on any partial implementation.
 CS.9's integrated tour records the remaining open work — **TV.3 → TV.4a →
 TV.4b → TV.5 → TA.1** — as the leaves still gating FO; none of them is
 delivered.

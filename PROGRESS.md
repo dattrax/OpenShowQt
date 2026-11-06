@@ -4,6 +4,23 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**TV.3 WIP discarded at the operator's request (2026-11-06).** The four
+remaining uncommitted diffs matched the saved TV.3 baseline and were restored
+to HEAD: domain documents.cpp/documents.h/storage.cpp and UI DocumentController.
+All committed CR/TE/BIU fixes remain intact, including resolved sample colours,
+neutral sample text and atomic first Bible-context transition creation. TV.3
+remains TODO and should be restarted from its brief, with no partial model or
+migration implementation assumed. Earlier notes about preserved unstaged TV.3
+work are historical and superseded by this checkpoint. The in-tree frontend
+and workspace test were rebuilt from HEAD; the workspace suite passes. The
+operator closed the running WIP app before recovery: its final autosave had
+format 10 but no TV.3-only context fields. A complete original-package backup
+was preserved locally as `autosave.before-tv3-revert-2026-11-06-624387de` in
+`~/.local/share/openshow-ui/`. Only the manifest's format marker was changed
+to 9 (every other byte preserved), and the restored build's actual service
+loader validated both the prepared copy and the installed autosave. The
+saved service was already format 9 and was not modified. Restart is safe.
+
 **Theme editor TE.6 complete.** Removed the setup checkbox that still hid
 Bible controls when there was no own scripture context, plus the captions
 above both placement rectangles. Bible controls always show the inherited
