@@ -107,6 +107,7 @@ Window {
         page: root.page
         typingIntoField: root.typingIntoField
         squattedFocus: root.squattedFocus
+        preparationListFocused: leftDock.libraryListFocused || leftDock.serviceListFocused
         boxSelected: editPage.boxSelected
         currentBox: docs.currentBox
         slideCount: docs.slides.length
@@ -137,8 +138,8 @@ Window {
         onPresenterStepRequested: delta => root.presenterStep(delta)
         onPresenterJumpRequested: index => root.presenterJump(index)
         onClearAllRequested: worker.clearAll()
-        onUndoRequested: docs.undo()
-        onRedoRequested: docs.redo()
+        onUndoRequested: leftDock.libraryListFocused ? leftDock.undoLibrary() : docs.undo()
+        onRedoRequested: leftDock.libraryListFocused ? leftDock.redoLibrary() : docs.redo()
         onSaveRequested: docs.save()
         onCopyRequested: docs.copyCurrentSlide()
         onCutRequested: docs.cutCurrentSlide()
@@ -260,7 +261,7 @@ Window {
         visible: !root.themeMode  // TV.2: Themes reclaims the workspace
         editingEnabled: root.page === "edit"
         height: Math.min(panels.drawerHeight, Math.max(40,
-                    root.height - topBar.height - 300))
+                    root.height - topBar.height - 400))
         anchors.left: parent.left
         anchors.right: rightDock.left
         anchors.bottom: parent.bottom

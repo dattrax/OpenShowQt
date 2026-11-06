@@ -1648,11 +1648,11 @@ amendments and the existing durable catalog. Complete and push each fix.
 | LRF.1 | DONE | Expose clipboard song import outside Edit | Real-worker library/service journey passes through Show → visible Import → Paste → Add, plus More alternative and return to originating page; local executable rebuilt |
 | LRF.2 | DONE | Remove search-field motion during drag and redundant toolbar Search | Fixed hint holds position on focus/blur, actual drag retains query, Ctrl+F remains; toolbar control/dead signal removed. Workspace and real-worker journey pass (2/2) |
 | LRF.3 | DONE | Multi-select and Delete current-service entries | Shared ListSelection, Ctrl/Shift/Ctrl+A and focused Delete/Remove on Show; atomic validated entry-ID batch and one undo. Removal unit + real-worker pointer/key journey pass (2/2) |
-| LRF.4 | TODO | Multi-select and Delete Library records | Same selection semantics across both branches, typed stable IDs, atomic catalog batches and scoped presentation removal; retain prepared service content; input fields keep native Delete |
+| LRF.4 | DONE | Multi-select and Delete Library records | Shared Ctrl/Shift/Ctrl+A selection across both branches; focused Delete/Remove, durable catalog batch, scoped presentation removal and keyboard Undo/Redo retain prepared service content. Text fields keep native Delete. Small-window list space and clipped action labels repaired. Fifteen affected suites pass; populated layout/interaction tour passes at three sizes × three scales. See the [acceptance record](docs/reviews/library-operator-fixes-2026-11-06.md) |
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
-**Entry gate: CS.1–CS.9, SL.1–SL.9, SI.1–SI.4, the remaining TV leaves and TA.1 must be DONE, with
+**Entry gate: CS.1–CS.9, SL.1–SL.9, SI.1–SI.4, LRF.1–LRF.4, the remaining TV leaves and TA.1 must be DONE, with
 the current one-audience release gates satisfied, before starting FO.1.**
 Section order is not authorization to bypass those dependencies.
 

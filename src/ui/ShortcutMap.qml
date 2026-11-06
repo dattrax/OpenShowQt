@@ -42,6 +42,7 @@ Item {
     // decision: the decisions are the enabled: lines below.
     property string page: "show"
     property bool typingIntoField: false
+    property bool preparationListFocused: false
     property bool squattedFocus: false      // a button or combo holds it
     property bool boxSelected: false        // the canvas's handles are on
     property int currentBox: -1             // docs.currentBox
@@ -292,17 +293,17 @@ Item {
     // reference.
     Shortcut {
         sequence: StandardKey.Undo
-        enabled: page === "edit" && !typingIntoField
+        enabled: (page === "edit" || preparationListFocused) && !typingIntoField
         onActivated: undoRequested()
     }
     Shortcut {
         sequence: "Ctrl+Y"
-        enabled: page === "edit" && !typingIntoField
+        enabled: (page === "edit" || preparationListFocused) && !typingIntoField
         onActivated: redoRequested()
     }
     Shortcut {
         sequence: "Ctrl+Shift+Z"
-        enabled: page === "edit" && !typingIntoField
+        enabled: (page === "edit" || preparationListFocused) && !typingIntoField
         onActivated: redoRequested()
     }
     Shortcut {

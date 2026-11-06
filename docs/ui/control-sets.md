@@ -412,9 +412,33 @@ shell/empty-state evidence, not a substitute for this populated tour.
 
 | Part | Contract |
 |---|---|
-| `LibraryBrowser` (`libraryBrowser`) | Hosts Songs (catalog) and Presentations (service shows + catalog records categorised as presentations). Owns `librarySearchField`, `librarySongList`, `collectionLibraryList`, both category headers as Move drop targets, `catalog:<id>`/`show:<id>` drag sources, the song context menu (`librarySongMenu`) and rename dialog (`libraryRenameSongDialog`). Actions: `libraryImportSongButton` (Edit only), `libraryAddSongButton` (needs a selected song), `libraryNewPresentationButton` (Edit only). Selecting/filtering/dragging never presents or edits a document. |
-| `CurrentServicePanel` (`currentServicePanel`) | The one running order (`collectionPlaylistList`, `collectionPlaylistRow`) with reorder/remove handles, scrolled insertion gaps, `catalog:`/`show:`/`entry:` drop handling and bounded edge autoscroll. No service picker in this milestone. Clicking a cue selects it and browses its show; it never presents. |
+| `LibraryBrowser` (`libraryBrowser`) | Hosts Songs (catalog) and Presentations (service shows + catalog records categorised as presentations). Owns `librarySearchField`, `librarySongList`, `collectionLibraryList`, both category headers as Move drop targets, `catalog:<id>`/`show:<id>` drag sources, the song context menu (`librarySongMenu`) and rename dialog (`libraryRenameSongDialog`). Actions: `libraryImportSongButton` (Show and Edit), `libraryAddSongButton` (needs a selected song), `libraryNewPresentationButton` (Edit only), `libraryRemoveSelectedButton`. Selecting/filtering/dragging never presents or edits a document. |
+| `CurrentServicePanel` (`currentServicePanel`) | The one running order (`collectionPlaylistList`, `collectionPlaylistRow`) with reorder/remove handles, `serviceRemoveSelectedButton`, scrolled insertion gaps, `catalog:`/`show:`/`entry:` drop handling and bounded edge autoscroll. No service picker in this milestone. Clicking a cue selects it and browses its show; it never presents. |
+| `ListSelection` | Shared stable-key selection model: ordinary click replaces, Ctrl toggles, Shift extends from the anchor, Ctrl+Shift adds a range, Ctrl+A selects all filtered rows in expanded branches (including scrolled-off rows). Library keys are typed `catalog:`/`show:` identities; service keys are occurrence-specific entry IDs. Filtering/collapsing prunes hidden selections. |
 | `SongImportPage` (`songImportPage`) | Off-air import page over `SongImport`: `songPasteButton` (normal clipboard only), `songTitleField`, `songCcliField`, `songAuthorsField`, `songCopyrightField`, `songSlideCollection`/`songSlideCard` (thumbnail target, keys `song:<plan>:<index>`), `songAddToLibraryButton`, `songCancelButton`, `songImportBackButton`. It owns thumbnails only (no Selection canvas), stands them down when hidden, and writes nothing before Add. |
 | `SongPlanner` (session) | Not a visual part: the shared non-blocking measurement runner (`text.measure` cache, one batch in flight, latest-ask-wins) used by both the import page and the service bridge. Exposes no persistence. |
 | `SongImport` (session) | Draft → measuring → ready/error → committed/cancelled; title and CCLI/author/copyright fields; `addToLibrary` is its only durable write. |
 | `ServiceCatalogBridge` (session) | `addToService`/`refreshFromLibrary`/`refreshAllLinked`/`renameInService`; prepares a catalog song into one referenced service show and reacts to `CatalogController::itemChanged`/`itemRemoved`. Never edits the catalog and never presents. |
+
+The Library search uses `PanelField.fixedPlaceholderText` for a stationary hint;
+Ctrl+F focuses it without changing the service. The redundant toolbar Search
+control is removed. More → Import song opens the same clipboard page as the
+Library button, and completion/cancel returns to the originating page.
+`PanelButton` leaves sufficient content height for labels on compact 24 px rows.
+The open Media drawer leaves at least 400 px for the preparation area; the
+Library reserves one full row in each expanded category and the service keeps
+its own scrolling viewport. Compact action widths include room for their labels.
+
+Delete acts only when a list itself has keyboard focus. Text fields keep their
+native Delete and Undo. Remove buttons use the same selection batches as Delete.
+Service removal validates all entry IDs and applies one history step. Library
+catalog removal writes one durable batch before publishing notifications; a
+failed write keeps both records and selection. Authored presentation removal is
+one document edit: referenced shows become service-only, while unreferenced
+shows are deleted. Detached catalog copies stay out of the Library. Prepared
+service cues and slide content survive Library removal and restart.
+
+Ctrl+Z/Ctrl+Y/Ctrl+Shift+Z route to the focused Library/service list on Show as
+well as Edit. A mixed Library removal spans catalog and document histories;
+its immediate undo/redo visits both stores. It is not a transaction across two
+files. Adding or dropping into the service hands focus to the destination.

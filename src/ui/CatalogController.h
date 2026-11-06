@@ -113,6 +113,7 @@ public:
     // alternative both land here.
     Q_INVOKABLE bool moveItemToCategory(const QString& id, const QString& category);
     Q_INVOKABLE bool removeItem(const QString& id);
+    Q_INVOKABLE bool removeItems(const QStringList& ids);
 
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();

@@ -275,6 +275,10 @@ int main(int argc, char* argv[]) {
     check(!docs.slidesOf(showId).isEmpty(),
           "the detached service show keeps its slides");
     check(catalog.songCount() == 0, "the Library record is gone");
+    bool reappeared = false;
+    for (const auto& row : docs.songs())
+        reappeared = reappeared || row.toMap().value("id").toString() == showId;
+    check(!reappeared, "a deleted catalog song does not reappear as a Library presentation");
 
     // The deletion is durable as well.
     {

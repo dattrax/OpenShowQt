@@ -111,7 +111,7 @@ QVariantList DocumentViews::songs() const {
         // A catalog-linked song (task SL.6) is not a PRESENTATION either:
         // the Library's Songs branch reads the catalog, and this service
         // show is its internal projection, not an authored deck.
-        if (show->scheduleOwned || !show->catalogItemId.empty()) {
+        if (show->scheduleOwned || !show->catalogItemId.empty() || show->song.has_value()) {
             continue;
         }
         QVariantMap entry;

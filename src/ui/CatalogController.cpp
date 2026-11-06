@@ -244,14 +244,21 @@ bool CatalogController::moveItemToCategory(const QString& id, const QString& cat
 }
 
 bool CatalogController::removeItem(const QString& id) {
+    return removeItems(QStringList{id});
+}
+
+bool CatalogController::removeItems(const QStringList& itemIds) {
+    QStringList ids = itemIds;
+    ids.removeDuplicates();
+    if (ids.isEmpty()) return false;
     const bool ok = commit(
         [&](openshow::catalog::Catalog& catalog, std::string& error) {
-            return catalog.remove(toStd(id), &error);
+            for (const auto& id : ids)
+                if (!catalog.remove(toStd(id), &error)) return false;
+            return true;
         },
-        QStringLiteral("Could not remove the Library item"));
-    if (ok) {
-        emit itemRemoved(id);
-    }
+        QStringLiteral("Could not remove the Library selection"));
+    if (ok) for (const auto& id : ids) emit itemRemoved(id);
     return ok;
 }
 

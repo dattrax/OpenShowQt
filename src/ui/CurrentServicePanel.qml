@@ -81,7 +81,7 @@ Item {
             PanelButton {
                 id: removeButton
                 objectName: "serviceRemoveSelectedButton"
-                width: 60; height: 24
+                width: 76; height: 24
                 text: "Remove"
                 enabled: selection.keys.length > 0
                 onClicked: servicePanel.removeSelected()
@@ -270,6 +270,8 @@ Item {
                     if (!id)
                         return
                     const at = servicePanel.gapIndex(drop.y)
+                    if (kind === "catalog" || kind === "show" || kind === "entry")
+                        servicePanel.forceActiveFocus()
                     if (kind === "catalog") {
                         // COPY: the Library keeps the item; the service gains
                         // a linked show (or another cue over the existing one).

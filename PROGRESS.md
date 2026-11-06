@@ -4,24 +4,21 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
-**LRF.3 complete:** service entries support Ctrl/Shift selection, Ctrl+A and
-focused Delete, plus an always-visible Remove action. A validated stable-entry
-batch removes repeated-show occurrences independently and costs one service
-undo. Unit and actual pointer/keyboard worker journey pass (2/2, 2.16 s),
-including search-text Delete isolation and restoring an entire service after
-bulk removal. Local executable rebuilt. Next: the same selection in Library.
+**LRF.1–LRF.4 complete:** Import song is visible on Show and in More, returning
+to its originating page after import. Search has a stationary hint, its toolbar
+button is removed, and Ctrl+F remains. Library and current-service lists share
+Ctrl/Shift/Ctrl+A selection with focused Delete and visible Remove actions;
+keyboard Undo/Redo routes to the focused pane. Removing Library sources retains
+prepared service cues and their content. Catalog batches write durably before
+publishing; failed writes retain the selection and records. Text-field Delete
+stays native. Compact labels and minimum sidebar space with Media open are fixed.
 
-**LRF.1–LRF.2 complete:** the Library search now uses a static hint and the
-redundant toolbar Search button/signal is removed. Ctrl+F still focuses the
-field; hint geometry stays fixed through focus/blur and actual drag keeps the
-query. Workspace plus real-worker journey pass (2/2, 38.49 s). Next: service
-and Library multi-selection/Delete.
-
-LRF.1: Import song is visible on Show and has a More-menu entry;
-opening/finishing import returns to its originating page. The production-shell
-journey now uses the actual visible Paste/Add buttons instead of prepopulating
-the catalog through C++; the real-worker test passes (1.84 s). Local frontend
-rebuilt. Next: LRF.2 search motion/toolbar cleanup, then list multi-delete.
+The desktop build, fifteen affected suites, and the populated pointer/keyboard
+journey at three sizes × scales 1/1.5/2 pass. The actual local executable is
+rebuilt. Commands, test-coordinate/layout corrections, persistence checks and
+the earlier individual commit IDs are in the
+[acceptance record](docs/reviews/library-operator-fixes-2026-11-06.md).
+Resume remaining TV/TA work; physical M7 gates and FO remain separate.
 
 **SL.4–SL.8 and SI.3–SI.4 delivered in code: the shared Library pane, the
 clipboard import page, and reference-backed running-order rows.** The sidebar is

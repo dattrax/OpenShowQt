@@ -7,6 +7,7 @@
 #include <QQmlExpression>
 #include <QJsonDocument>
 #include <QQuickItem>
+#include <QJSValue>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QPointer>
@@ -434,6 +435,16 @@ int main(int argc, char** argv) {
         check(songsHeader && presentationsHeader,
               "both category headers are present as drop targets");
         const auto rowById = [&](QQuickItem* list, const QString& id) -> QQuickItem* {
+            const auto property = browserPane->property(list == songList ? "songRows" : "presentationRows");
+            const auto model = property.canConvert<QJSValue>()
+                ? property.value<QJSValue>().toVariant().toList() : property.toList();
+            for (int i = 0; i < model.size(); ++i) {
+                if (model[i].toMap().value("id").toString() == id) {
+                    QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, i), Q_ARG(int, 1));
+                    QTest::qWait(30);
+                    break;
+                }
+            }
             QList<QQuickItem*> rows;
             collectNamed(list, list == songList ? "librarySongRow" : "collectionLibraryRow",
                          rows);
@@ -488,6 +499,7 @@ int main(int argc, char** argv) {
     // Long presentation names stay one bounded, selectable row.
     const QString longName(180, 'x');
     check(docs.createSong(longName), "a long-named presentation is created");
+    QMetaObject::invokeMethod(libraryList, "positionViewAtEnd");
     QTest::qWait(20);
     {
         QList<QQuickItem*> rows;

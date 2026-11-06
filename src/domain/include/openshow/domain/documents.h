@@ -835,6 +835,8 @@ public:
     // Removing a show also drops its playlist entries (an entry naming
     // a deleted show could never run); nothing else references shows.
     bool removeShow(const Id& showId, std::string* error = nullptr);
+    // Remove Library availability while retaining any prepared service copy.
+    bool removeLibraryShow(const Id& showId, std::string* error = nullptr);
     bool renameShow(const Id& showId, const std::string& name, std::string* error = nullptr);
     bool setShowNotes(const Id& showId, const std::string& notes, std::string* error = nullptr);
     // Links a service show to the shared catalog song it was prepared from

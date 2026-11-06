@@ -24,6 +24,10 @@ SidePanel {
 
     // The presentation row the theme context menu is acting on (task TH.5).
     property string contextShowId: ""
+    readonly property bool libraryListFocused: libraryBrowser.activeFocus
+    readonly property bool serviceListFocused: servicePanel.activeFocus
+    function undoLibrary() { libraryBrowser.undoFocused() }
+    function redoLibrary() { libraryBrowser.redoFocused() }
 
     // The selected cue lives with the lower pane; the host mirrors it so
     // other parts of the workspace can read one identity.
@@ -75,9 +79,11 @@ SidePanel {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            height: Math.max(120, Math.round(parent.height * 0.47))
+            height: Math.max(100, Math.min(parent.height - 130,
+                Math.max(minimumUsefulHeight, Math.round(parent.height * 0.47))))
             editingEnabled: playlistPanel.editingEnabled
             onImportRequested: playlistPanel.importRequested()
+            onServiceFocusRequested: servicePanel.forceActiveFocus()
             onSongChosen: songId => playlistPanel.songChosen(songId)
             onThemeMenuRequested: (showId, x, y) => {
                 playlistPanel.contextShowId = showId

@@ -797,3 +797,13 @@ payloads are `catalog:<id>` (category Move, service Copy), `show:<id>` (service
 add) and `entry:<id>` (reorder). Remaining acceptance is recorded in PLAN.md's
 SL.7/SI.3/SI.4/SL.9 rows: pointer-level song drops, real-worker import captures
 and the integrated SL.9 journey.
+
+The LRF operator fixes add shared `ListSelection` semantics and focused Delete
+to both panes. `removePlaylistEntries` validates occurrence IDs and removes one
+service batch; `CatalogController::removeItems` commits one durable catalog
+batch before notifying the bridge. `removeLibraryShows` hides referenced
+authored shows using the existing `scheduleOwned` flag and deletes unreferenced
+ones in one document edit. Service content survives both forms of Library
+removal; detached song copies are excluded from the Library projection. No
+service or catalog format changes are needed. Keyboard Undo/Redo routes to the
+focused pane, with mixed Library removal visiting each owning history.

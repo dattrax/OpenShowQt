@@ -25,6 +25,78 @@ Item {
     property string query: ""
     property string selectedKind: ""
     property string selectedId: ""
+    property string undoScope: "catalog"
+    function undoFocused() {
+        if (undoScope !== "catalog") docs.undo()
+        if (undoScope !== "shows") library.undo()
+    }
+    function redoFocused() {
+        if (undoScope !== "shows") library.redo()
+        if (undoScope !== "catalog") docs.redo()
+    }
+    signal serviceFocusRequested()
+    function addSongToService(id) {
+        if (songService.addToService(id)) browser.serviceFocusRequested()
+    }
+    readonly property var selectedLibraryKeys: selection.keys
+    readonly property var visibleKeys: {
+        let out = []
+        if (songsHeader.songsExpanded)
+            out = browser.songRows.map(row => "catalog:" + row.id)
+        if (presentationsHeader.presentationsExpanded)
+            out = out.concat(browser.presentationRows.map(row => row.rowKind + ":" + row.id))
+        return out
+    }
+    ListSelection {
+        id: selection
+        onKeysChanged: browser.syncPrimarySelection()
+    }
+    onVisibleKeysChanged: if (selection) {
+        selection.retain(visibleKeys)
+        browser.syncPrimarySelection()
+    }
+    function syncPrimarySelection() {
+        if (!selection) return
+        const key = selection.contains(selection.currentKey) ? selection.currentKey
+                    : (selection.keys.length ? selection.keys[0] : "")
+        const colon = key.indexOf(":")
+        selectedKind = key.startsWith("catalog:") ? "song" : (key ? "presentation" : "")
+        selectedId = colon >= 0 ? key.substring(colon + 1) : ""
+    }
+    function selectRow(key, modifiers) {
+        selection.select(key, visibleKeys, modifiers)
+        browser.syncPrimarySelection()
+    }
+    function removeSelected() {
+        const keys = selection.keys.slice()
+        const catalogIds = [], showIds = []
+        const catalogKeys = library.items.map(row => "catalog:" + row.id)
+        const showKeys = docs.songs.map(row => "show:" + row.id)
+        // Preflight both stores before the durable catalog batch. Catalog
+        // notifications only detach linked songs, never authored show IDs.
+        for (const key of keys) {
+            if (catalogKeys.indexOf(key) >= 0) catalogIds.push(key.substring(8))
+            else if (showKeys.indexOf(key) >= 0) showIds.push(key.substring(5))
+            else { selection.retain(visibleKeys); return }
+        }
+        if (catalogIds.length && !library.removeItems(catalogIds)) return
+        if (showIds.length && !docs.removeLibraryShows(showIds)) return
+        if (keys.length) undoScope = catalogIds.length && showIds.length ? "mixed"
+                                     : (showIds.length ? "shows" : "catalog")
+        selection.clear()
+    }
+    Keys.enabled: browser.activeFocus
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_Delete) {
+            browser.removeSelected()
+            event.accepted = true
+        } else if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) {
+            selection.selectAll(browser.visibleKeys)
+            browser.syncPrimarySelection()
+            event.accepted = true
+        }
+    }
+
 
     // The upper pane asks the shell for the import page; the page is the only
     // route that writes the catalog from pasted text.
@@ -96,6 +168,13 @@ Item {
         return out
     }
 
+    readonly property real minimumUsefulHeight: 16 + libraryHeading.height + searchField.height
+        + libraryActions.height + songsHeader.height + presentationsHeader.height
+        + 6 * libraryContent.spacing + 56
+    readonly property real listBudget: Math.max(0, libraryContent.height
+        - libraryHeading.height - searchField.height - libraryActions.height
+        - songsHeader.height - presentationsHeader.height - 6 * libraryContent.spacing)
+
     function focusSearch() {
         Qt.callLater(() => searchField.forceActiveFocus())
     }
@@ -125,7 +204,7 @@ Item {
         MenuItem {
             objectName: "libraryAddSongToServiceItem"
             text: "Add to current service"
-            onTriggered: songService.addToService(browser.contextSongId)
+            onTriggered: browser.addSongToService(browser.contextSongId)
         }
         MenuItem {
             objectName: "libraryMoveSongItem"
@@ -137,7 +216,7 @@ Item {
         MenuItem {
             objectName: "libraryRemoveSongItem"
             text: "Remove from Library"
-            onTriggered: library.removeItem(browser.contextSongId)
+            onTriggered: browser.removeSelected()
         }
     }
 
@@ -168,16 +247,29 @@ Item {
     }
 
     Column {
+        id: libraryContent
         anchors.fill: parent
         anchors.margins: 8
         spacing: 4
 
-        Text {
+        Row {
+            id: libraryHeading
             width: parent.width
-            height: 20
-            verticalAlignment: Text.AlignVCenter
-            text: "LIBRARY"
-            color: "#b0b0b0"; font.pixelSize: 11; font.bold: true
+            height: 24
+            Text {
+                width: parent.width - 76
+                height: parent.height
+                verticalAlignment: Text.AlignVCenter
+                text: "LIBRARY"
+                color: "#b0b0b0"; font.pixelSize: 11; font.bold: true
+            }
+            PanelButton {
+                objectName: "libraryRemoveSelectedButton"
+                width: 76; height: 24
+                text: "Remove"
+                enabled: selection.keys.length > 0
+                onClicked: browser.removeSelected()
+            }
         }
 
         PanelField {
@@ -195,15 +287,16 @@ Item {
         }
 
         Flow {
+            id: libraryActions
             width: parent.width
             spacing: 4
             PanelButton {
                 objectName: "libraryAddSongButton"
-                width: 96
+                width: 104
                 height: 24
                 text: "Add to service"
                 enabled: browser.selectedKind === "song" && browser.selectedId !== ""
-                onClicked: songService.addToService(browser.selectedId)
+                onClicked: browser.addSongToService(browser.selectedId)
             }
             PanelButton {
                 objectName: "libraryImportSongButton"
@@ -271,7 +364,7 @@ Item {
             width: parent.width
             height: songsHeader.songsExpanded
                     ? Math.min(Math.max(1, browser.songRows.length) * 28 + 4,
-                               Math.max(56, browser.height * 0.32))
+                               browser.listBudget * (presentationsHeader.presentationsExpanded ? 0.5 : 1))
                     : 0
             visible: height > 0
             clip: true
@@ -286,8 +379,8 @@ Item {
                 height: 28
                 readonly property string songId: modelData.id
                 readonly property bool rowSelected:
-                    browser.selectedKind === "song" && browser.selectedId === modelData.id
-                Accessible.name: "Song: " + modelData.name
+                    selection.contains("catalog:" + modelData.id)
+                Accessible.name: "Song: " + modelData.title
 
                 Rectangle {
                     anchors.fill: parent
@@ -321,18 +414,23 @@ Item {
                     drag.target: songDrag
                     property bool leftHeld: false
                     onClicked: function (mouse) {
+                        const key = "catalog:" + songRow.modelData.id
                         if (mouse.button === Qt.RightButton) {
+                            if (!selection.contains(key)) browser.selectRow(key, Qt.NoModifier)
                             browser.contextSongId = songRow.modelData.id
                             const at = songRow.mapToItem(browser, mouse.x, mouse.y)
                             songMenu.popup(at.x, at.y)
                             return
                         }
-                        browser.selectedKind = "song"
-                        browser.selectedId = songRow.modelData.id
+                        browser.selectRow(key, mouse.modifiers)
                         browser.songChosen(songRow.modelData.id)
                     }
-                    onDoubleClicked: songService.addToService(songRow.modelData.id)
-                    onPressed: songMouse.leftHeld = mouse.button === Qt.LeftButton
+                    onDoubleClicked: browser.addSongToService(songRow.modelData.id)
+                    onPressed: function(mouse) {
+                        browser.forceActiveFocus()
+                        browser.undoScope = "catalog"
+                        songMouse.leftHeld = mouse.button === Qt.LeftButton
+                    }
                     onReleased: {
                         if (songMouse.leftHeld && songDrag.Drag.active)
                             songDrag.Drag.drop()
@@ -416,7 +514,7 @@ Item {
             objectName: "collectionLibraryList"
             width: parent.width
             height: presentationsHeader.presentationsExpanded
-                    ? Math.max(56, browser.height - 140 - songList.height)
+                    ? Math.max(0, browser.listBudget - songList.height)
                     : 0
             visible: height > 0
             clip: true
@@ -431,8 +529,7 @@ Item {
                 height: 28
                 readonly property string rowShowId: modelData.id
                 readonly property bool rowSelected:
-                    browser.selectedKind === "presentation"
-                    && browser.selectedId === modelData.id
+                    selection.contains(modelData.rowKind + ":" + modelData.id)
                 Accessible.name: "Presentation: " + modelData.name
 
                 Rectangle {
@@ -468,35 +565,35 @@ Item {
                     drag.target: libraryDragProxy
                     property bool leftHeld: false
                     onClicked: function (mouse) {
+                        const key = libraryRow.modelData.rowKind + ":" + libraryRow.modelData.id
+                        if (mouse.button !== Qt.RightButton || !selection.contains(key))
+                            browser.selectRow(key, mouse.button === Qt.RightButton ? Qt.NoModifier : mouse.modifiers)
                         if (libraryRow.modelData.rowKind === "catalog") {
-                            browser.selectedKind = "song"
-                            browser.selectedId = libraryRow.modelData.id
                             if (mouse.button === Qt.RightButton) {
                                 browser.contextSongId = libraryRow.modelData.id
                                 const at = libraryRow.mapToItem(null, mouse.x, mouse.y)
                                 songMenu.popup(at.x, at.y)
-                            } else {
-                                browser.songChosen(libraryRow.modelData.id)
-                            }
+                            } else browser.songChosen(libraryRow.modelData.id)
                             return
                         }
                         if (mouse.button === Qt.RightButton) {
                             const at = libraryRow.mapToItem(null, mouse.x, mouse.y)
-                            browser.themeMenuRequested(libraryRow.modelData.id,
-                                                       at.x, at.y)
-                            return
+                            browser.themeMenuRequested(libraryRow.modelData.id, at.x, at.y)
+                        } else {
+                            docs.selectSong(libraryRow.modelData.id)
+                            browser.presentationChosen(libraryRow.modelData.id)
                         }
-                        browser.selectedKind = "presentation"
-                        browser.selectedId = libraryRow.modelData.id
-                        docs.selectSong(libraryRow.modelData.id)
-                        browser.presentationChosen(libraryRow.modelData.id)
                     }
-                    onPressed: rowMouse.leftHeld = mouse.button === Qt.LeftButton
+                    onPressed: function(mouse) {
+                        browser.forceActiveFocus()
+                        browser.undoScope = libraryRow.modelData.rowKind === "catalog" ? "catalog" : "shows"
+                        rowMouse.leftHeld = mouse.button === Qt.LeftButton
+                    }
                     onDoubleClicked: {
                         if (libraryRow.modelData.rowKind === "catalog")
-                            songService.addToService(libraryRow.modelData.id)
-                        else
-                            docs.addShowToPlaylist(libraryRow.modelData.id)
+                            browser.addSongToService(libraryRow.modelData.id)
+                        else if (docs.addShowToPlaylist(libraryRow.modelData.id))
+                            browser.serviceFocusRequested()
                     }
                     onReleased: {
                         if (rowMouse.leftHeld && libraryDragProxy.Drag.active)

@@ -10,6 +10,8 @@ Button {
     leftInset: 0
     rightInset: 0
     padding: 6
+    topPadding: 3
+    bottomPadding: 3
     leftPadding: 10
     rightPadding: 10
     font.pixelSize: 12

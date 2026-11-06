@@ -130,6 +130,22 @@ bool Documents::removeShow(const Id& showId, std::string* error) {
     return true;
 }
 
+bool Documents::removeLibraryShow(const Id& showId, std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (!show || show->scheduleOwned || !show->catalogItemId.empty() || show->song.has_value()) {
+        fail(error, "the selected Library presentation no longer exists");
+        return false;
+    }
+    for (const auto& playlist : fPlaylists) {
+        if (std::any_of(playlist.entries.begin(), playlist.entries.end(),
+                        [&](const auto& entry) { return entry.showId == showId; })) {
+            show->scheduleOwned = true;
+            return true;
+        }
+    }
+    return removeShow(showId, error);
+}
+
 bool Documents::renameShow(const Id& showId, const std::string& name, std::string* error) {
     Show* show = findShow_mut(showId);
     if (show == nullptr) {

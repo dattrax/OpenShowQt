@@ -226,6 +226,31 @@ bool DocumentController::addSlide() {
     return true;
 }
 
+bool DocumentController::removeLibraryShows(const QStringList& showIds) {
+    QStringList ids = showIds;
+    ids.removeDuplicates();
+    if (ids.isEmpty()) return false;
+    flushText();
+    std::string error;
+    if (!edit([&] {
+            for (const auto& id : ids)
+                if (!fDocuments.removeLibraryShow(id.toStdString(), &error)) return false;
+            return true;
+        })) {
+        setStatus(QStringLiteral("remove from Library: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    if (!fDocuments.findShow(fCurrentSongId)) {
+        fCurrentSongId.clear();
+        fCurrentSlide = 0;
+        fCurrentBoxId.clear();
+        emit navigationChanged();
+        emit slideTextChanged();
+        emit boxSelectionChanged();
+    }
+    return true;
+}
+
 bool DocumentController::removeCurrentSlide() {
     flushText();
     const openshow::domain::Id slideId = currentSlideId();
