@@ -11,6 +11,7 @@
 #include <QClipboard>
 #include <QElapsedTimer>
 #include <QGuiApplication>
+#include <QJSValue>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlError>
@@ -311,6 +312,61 @@ int main(int argc, char** argv) {
         check(static_cast<int>(docs.playlistEntries().size()) == before,
               "one undo removes the whole button add");
     }
+
+    // Windows-style selection/deletion is available on Show, scoped to the
+    // active list and keyed by entry identity (including repeated shows).
+    auto selectedCount = [](QObject* panel, const char* property) {
+        const auto value = panel->property(property);
+        return value.canConvert<QJSValue>() ? value.value<QJSValue>().toVariant().toList().size()
+                                           : value.toList().size();
+    };
+    auto* servicePanel = findNamed(window->contentItem(), "currentServicePanel");
+    playlistList->setProperty("contentY", 0);
+    QTest::qWait(60);
+    const auto beforeRemoval = docs.playlistEntries();
+    auto selectEntry = [&](int index, Qt::KeyboardModifiers modifiers) {
+        QList<QQuickItem*> rows;
+        collectNamed(playlistList, "collectionPlaylistRow", &rows);
+        const auto id = beforeRemoval[index].toMap().value("entryId");
+        for (auto* row : rows) if (row->property("modelData").toMap().value("entryId") == id) {
+            QTest::mouseClick(window, Qt::LeftButton, modifiers,
+                row->mapToScene(QPointF(25, 14)).toPoint());
+            return;
+        }
+        check(false, "the service selection row is visible");
+    };
+    selectEntry(0, Qt::NoModifier);
+    selectEntry(2, Qt::ControlModifier);
+    check(servicePanel && selectedCount(servicePanel, "selectedEntryIds") == 2,
+          "Ctrl-click selects two distinct service entries on Show");
+    QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
+    QTest::qWait(40);
+    search->setProperty("text", "morningx");
+    QTest::keyClick(window, Qt::Key_End);
+    QTest::keyClick(window, Qt::Key_Left);
+    QTest::keyClick(window, Qt::Key_Delete);
+    check(search->property("text") == "morning" && docs.playlistEntries() == beforeRemoval,
+          "Delete while typing edits search text and leaves selected service entries alone");
+    QTest::keyClick(window, Qt::Key_Escape);
+    selectEntry(0, Qt::NoModifier);
+    selectEntry(2, Qt::ShiftModifier);
+    check(selectedCount(servicePanel, "selectedEntryIds") == 3, "Shift-click selects the service range");
+    selectEntry(1, Qt::ControlModifier);
+    check(selectedCount(servicePanel, "selectedEntryIds") == 2, "Ctrl-click toggles a member out of the range");
+    QTest::keyClick(window, Qt::Key_Delete);
+    check(docs.playlistEntries().size() == beforeRemoval.size() - 2 && library.songCount() == 1,
+          "Delete removes only the two selected occurrences and preserves the Library song");
+    docs.undo();
+    QTest::qWait(40);
+    check(docs.playlistEntries() == beforeRemoval, "one undo restores the entire service selection in order");
+    servicePanel->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+    check(selectedCount(servicePanel, "selectedEntryIds") == beforeRemoval.size(),
+          "Ctrl+A selects the complete service, including scrolled-off rows");
+    click(findNamed(window->contentItem(), "serviceRemoveSelectedButton"));
+    check(docs.playlistEntries().isEmpty(), "the visible Remove action removes the service selection");
+    docs.undo();
+    check(docs.playlistEntries() == beforeRemoval, "one undo restores a complete service removal");
 
     // Persistence: reopen the service and the catalog.
     const int entries = static_cast<int>(docs.playlistEntries().size());

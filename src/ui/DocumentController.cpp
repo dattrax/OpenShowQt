@@ -2880,14 +2880,30 @@ bool DocumentController::insertShowAfterCurrentShow(const QString& showId) {    
 }
 
 bool DocumentController::removePlaylistEntry(const QString& entryId) {
+    return removePlaylistEntries(QStringList{entryId});
+}
+
+bool DocumentController::removePlaylistEntries(const QStringList& entryIds) {
+    QStringList ids = entryIds;
+    ids.removeDuplicates();
+    if (ids.isEmpty()) return false;
     flushText();
     std::string error;
     if (!edit([&] {
-            return fDocuments.removePlaylistEntry(fCurrentPlaylistId, entryId.toStdString(),
-                                                  &error);
+            const auto* playlist = fDocuments.findPlaylist(fCurrentPlaylistId);
+            if (!playlist) { error = "no current service"; return false; }
+            for (const auto& id : ids) {
+                if (std::none_of(playlist->entries.begin(), playlist->entries.end(),
+                    [&](const auto& entry) { return entry.id == id.toStdString(); })) {
+                    error = "the selected service entry no longer exists";
+                    return false;
+                }
+            }
+            for (const auto& id : ids)
+                if (!fDocuments.removePlaylistEntry(fCurrentPlaylistId, id.toStdString(), &error)) return false;
+            return true;
         })) {
-        setStatus(QStringLiteral("remove from playlist: %1")
-                      .arg(QString::fromStdString(error)));
+        setStatus(QStringLiteral("remove from playlist: %1").arg(QString::fromStdString(error)));
         return false;
     }
     return true;

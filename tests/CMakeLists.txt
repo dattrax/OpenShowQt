@@ -362,6 +362,10 @@ if(OPENSHOW_BUILD_UI)
   # Task SL.2/SL.5: the shared Library adapter — durable edits, restart
   # survival, title-only filtering, category moves, independent history and
   # the honest write/read failures. Qt Core only; no display, no worker.
+  add_executable(library_removal_tests library_removal_tests.cpp)
+  target_link_libraries(library_removal_tests PRIVATE openshow::ui-core)
+  add_test(NAME library_removal_tests COMMAND library_removal_tests)
+
   add_executable(catalog_controller_tests catalog_controller_tests.cpp)
   target_link_libraries(catalog_controller_tests PRIVATE openshow::ui-core)
   add_test(NAME catalog_controller_tests COMMAND catalog_controller_tests)

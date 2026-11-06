@@ -553,6 +553,8 @@ public:
     // the playlist (the reference's placement rule), otherwise append.
     Q_INVOKABLE bool insertShowAfterCurrentShow(const QString& showId);
     Q_INVOKABLE bool removePlaylistEntry(const QString& entryId);
+    // One preparation edit/undo, validated by entry identity before removal.
+    Q_INVOKABLE bool removePlaylistEntries(const QStringList& entryIds);
     Q_INVOKABLE bool movePlaylistEntry(const QString& entryId, int toIndex);
     // Songs matching the query by name and lyrics, best match first
     // (LibrarySearch); the full creation-order list when blank.

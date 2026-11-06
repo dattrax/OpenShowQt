@@ -4,6 +4,13 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**LRF.3 complete:** service entries support Ctrl/Shift selection, Ctrl+A and
+focused Delete, plus an always-visible Remove action. A validated stable-entry
+batch removes repeated-show occurrences independently and costs one service
+undo. Unit and actual pointer/keyboard worker journey pass (2/2, 2.16 s),
+including search-text Delete isolation and restoring an entire service after
+bulk removal. Local executable rebuilt. Next: the same selection in Library.
+
 **LRF.1–LRF.2 complete:** the Library search now uses a static hint and the
 redundant toolbar Search button/signal is removed. Ctrl+F still focuses the
 field; hint geometry stays fixed through focus/blur and actual drag keeps the

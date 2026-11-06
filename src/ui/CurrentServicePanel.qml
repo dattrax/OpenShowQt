@@ -19,7 +19,24 @@ Item {
     objectName: "currentServicePanel"
 
     property bool editingEnabled: false
-    property string selectedEntryId: ""
+    property alias selectedEntryId: selection.currentKey
+    readonly property var selectedEntryIds: selection.keys
+    readonly property var entryIds: docs.playlistEntries.map(row => row.entryId)
+    ListSelection { id: selection }
+    onEntryIdsChanged: if (selection) selection.retain(entryIds)
+    function removeSelected() {
+        if (docs.removePlaylistEntries(selection.keys.slice())) selection.clear()
+    }
+    Keys.enabled: servicePanel.activeFocus
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_Delete) {
+            servicePanel.removeSelected()
+            event.accepted = true
+        } else if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier)) {
+            selection.selectAll(servicePanel.entryIds)
+            event.accepted = true
+        }
+    }
     property string dropTargetPlaylistId: ""
 
     signal entryChosen(string showId)
@@ -46,20 +63,28 @@ Item {
         Row {
             width: parent.width
             height: 24
+            spacing: 4
             Text {
+                id: serviceTitle
                 anchors.verticalCenter: parent.verticalCenter
                 text: "CURRENT SERVICE"
                 color: "#b0b0b0"; font.pixelSize: 11; font.bold: true
             }
-            Item { width: Math.max(0, parent.width - 180); height: 1 }
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                width: 170
+                width: Math.max(0, parent.width - serviceTitle.width - removeButton.width - 8)
                 horizontalAlignment: Text.AlignRight
                 elide: Text.ElideRight
-                text: servicePanel.playlistName() + " \u00b7 "
-                      + docs.playlistEntries.length + " cues"
+                text: servicePanel.playlistName() + " · " + docs.playlistEntries.length + " cues"
                 color: "#b0b0b0"; font.pixelSize: 11
+            }
+            PanelButton {
+                id: removeButton
+                objectName: "serviceRemoveSelectedButton"
+                width: 60; height: 24
+                text: "Remove"
+                enabled: selection.keys.length > 0
+                onClicked: servicePanel.removeSelected()
             }
         }
 
@@ -88,7 +113,7 @@ Item {
                     height: 30
                     readonly property string rowEntryId: modelData.entryId
                     readonly property bool rowSelected:
-                        modelData.entryId === servicePanel.selectedEntryId
+                        selection.contains(modelData.entryId)
                     Accessible.name: "Cue " + (index + 1) + ": "
                                      + (modelData.section !== "" ? modelData.section + ", " : "")
                                      + modelData.showName
@@ -173,8 +198,9 @@ Item {
                         anchors.fill: parent
                         hoverEnabled: true
                         drag.target: servicePanel.editingEnabled ? entryDragProxy : null
-                        onClicked: {
-                            servicePanel.selectedEntryId = entryRow.modelData.entryId
+                        onPressed: servicePanel.forceActiveFocus()
+                        onClicked: function(mouse) {
+                            selection.select(entryRow.modelData.entryId, servicePanel.entryIds, mouse.modifiers)
                             docs.selectSong(entryRow.modelData.showId)
                             servicePanel.entryChosen(entryRow.modelData.showId)
                         }
