@@ -395,6 +395,16 @@ Rectangle {
             // Group padding is INERT: no name, no picture, no clicks, no
             // context menu, and nothing for a test to find.
             visible: modelData.filler !== true
+            // The existing 12px row gap leaves room for a full-width rule
+            // between service occurrences without adding cells or cues.
+            Rectangle {
+                objectName: "serviceGroupSeparator"
+                visible: cell.cue > 0 && cell.row.groupStart && showPage.sourceShowId === ""
+                y: -7
+                width: slideGrid.width - 12
+                height: 2
+                color: "#737373"
+            }
             SlidePreviewCard {
                 id: tile
                 objectName: "operatorCueTile"

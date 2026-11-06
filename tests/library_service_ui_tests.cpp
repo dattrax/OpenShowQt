@@ -357,6 +357,18 @@ int main(int argc, char** argv) {
     };
     window->setProperty("browsedShowId", fillerId);  // previously browsing just a Library deck
     browseServiceEntry(0);  // authored presentation
+    auto* cueGrid = findNamed(window->contentItem(), "operatorSlideGrid");
+    QList<QQuickItem*> groupRules;
+    collectNamed(cueGrid, "serviceGroupSeparator", &groupRules);
+    int visibleRules = 0;
+    for (auto* rule : groupRules) {
+        if (!rule->isVisible()) continue;
+        ++visibleRules;
+        check(rule->width() >= cueGrid->width() - 12 && rule->height() >= 2
+                  && rule->y() + rule->height() < 0,
+              "service boundaries have a full-width visible rule in the gap above the next group");
+    }
+    check(visibleRules > 0, "separate occurrences of the same show still have group separators");
     browseServiceEntry(docs.playlistEntries().size() - 1);  // catalog song
     check(docs.addScripturePassage(docs.currentPlaylistId(), "Mark 1:1-4", "TEST", "Fixture",
                                   {QStringList{"Synthetic passage words"}}), "prepare a schedule-only passage");
