@@ -266,7 +266,11 @@ int main(int argc, char* argv[]) {
           "the running order shows the renamed song");
 
     // --- deletion detaches; the service stays playable -------------------
-    check(catalog.removeItem(songId), "the Library record is deleted");
+    check(bridge.refreshFromLibrary(songId) && bridge.busy(),
+          "a background re-preparation is in flight before deletion");
+    check(catalog.removeItems({songId}, true), "the Library record is permanently deleted");
+    check(waitForBridge(bridge), "deletion cancels in-flight re-preparation");
+    QTest::qWait(120);  // any superseded measurement reply must stay retired
     check(docs.showForCatalogItem(songId).isEmpty(), "the service link is detached");
     const QVariantList survivors = docs.playlistEntries();
     check(!survivors.isEmpty() &&
@@ -279,6 +283,17 @@ int main(int argc, char* argv[]) {
     for (const auto& row : docs.songs())
         reappeared = reappeared || row.toMap().value("id").toString() == showId;
     check(!reappeared, "a deleted catalog song does not reappear as a Library presentation");
+
+    const QVariantList pendingStanzas{QVariantMap{{"label", "Verse"},
+        {"lines", QVariantList{"Synthetic pending song words"}}}};
+    const auto pendingId = catalog.addSong("Pending song", pendingStanzas, "", "", "");
+    const auto cuesBeforePending = docs.playlistEntries();
+    check(bridge.addToService(pendingId) && bridge.busy(), "a new song is preparing asynchronously");
+    check(catalog.removeItems({pendingId}, true), "delete a song before its preparation completes");
+    check(waitForBridge(bridge), "pending addition is cancelled by deletion");
+    QTest::qWait(120);
+    check(docs.playlistEntries() == cuesBeforePending && docs.showForCatalogItem(pendingId).isEmpty(),
+          "late measurement replies cannot add a cue or recreate a deleted catalog link");
 
     // The deletion is durable as well.
     {

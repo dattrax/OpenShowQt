@@ -226,7 +226,7 @@ bool DocumentController::addSlide() {
     return true;
 }
 
-bool DocumentController::removeLibraryShows(const QStringList& showIds) {
+bool DocumentController::removeLibraryShows(const QStringList& showIds, bool permanent) {
     QStringList ids = showIds;
     ids.removeDuplicates();
     if (ids.isEmpty()) return false;
@@ -239,6 +239,11 @@ bool DocumentController::removeLibraryShows(const QStringList& showIds) {
         })) {
         setStatus(QStringLiteral("remove from Library: %1").arg(QString::fromStdString(error)));
         return false;
+    }
+    if (permanent) {
+        std::vector<openshow::domain::Id> forgotten;
+        for (const auto& id : ids) forgotten.push_back(id.toStdString());
+        fHistory->forgetLibraryShows(forgotten);
     }
     if (!fDocuments.findShow(fCurrentSongId)) {
         fCurrentSongId.clear();
@@ -2527,6 +2532,12 @@ QVariantList DocumentController::collectionOutline() const {
 
 QVariantList DocumentController::runningOrderCues() const {
     return fViews.runningOrderCues(fCurrentPlaylistId);
+}
+
+void DocumentController::forgetDeletedCatalogItems(const QStringList& ids) {
+    std::vector<openshow::domain::Id> forgotten;
+    for (const auto& id : ids) forgotten.push_back(id.toStdString());
+    fHistory->forgetCatalogItems(forgotten);
 }
 
 QVariantMap DocumentController::showInfo(const QString& showId) const {

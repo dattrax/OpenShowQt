@@ -169,6 +169,8 @@ int main(int argc, char** argv) {
                        ? nullptr
                        : qobject_cast<QQuickWindow*>(engine.rootObjects().first());
     if (!check(window != nullptr, "the production shell loads")) {
+        for (const auto& warning : warnings)
+            std::fprintf(stderr, "  QML: %s\n", qPrintable(warning));
         worker.shutdownNow();
         return 1;
     }
@@ -542,27 +544,61 @@ int main(int argc, char** argv) {
         window->resize(1380, 800);
         QTest::qWait(60);
     }
-    QTest::keyClick(window, Qt::Key_Delete);
-    check(library.items().size() == 2 && docs.playlistEntries() == originalService,
-          "Library Delete removes selected songs while leaving the service alone");
-    QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
-    QTest::qWait(50);
-    check(library.items().size() == 4, "one Library undo restores both selected songs");
-    QTest::keyClick(window, Qt::Key_Y, Qt::ControlModifier);
-    check(library.items().size() == 2 && docs.playlistEntries() == originalService,
-          "focused Library redo repeats the entire catalog batch without changing service cues");
-    QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
-    QTest::qWait(50);
+    check(!findNamed(window->contentItem(), "libraryRemoveSelectedButton"),
+          "the Library header no longer has a redundant Remove button");
+    auto requestLibraryDelete = [&] {
+        QTest::keyClick(window, Qt::Key_Delete);
+        waitFor([&] {
+            auto* button = findNamed(window->contentItem(), "libraryConfirmDeleteButton");
+            auto* cancel = findNamed(window->contentItem(), "libraryCancelDeleteButton");
+            return button && button->isVisible() && cancel && cancel->hasActiveFocus();
+        }, 1000);
+        auto* confirm = findNamed(window->contentItem(), "libraryConfirmDeleteButton");
+        auto* warning = findNamed(window->contentItem(), "libraryDeleteWarningText");
+        check(confirm && confirm->isVisible() && warning
+                  && warning->property("text").toString().contains("cannot be undone"),
+              "Library Delete opens an explicit permanent-deletion warning");
+    };
+    auto confirmLibraryDelete = [&] {
+        click(findNamed(window->contentItem(), "libraryConfirmDeleteButton"));
+        waitFor([&] { return browser->hasActiveFocus(); }, 1000);
+    };
+    requestLibraryDelete();
+    if (!capture.isEmpty()) window->grabWindow().save(capture + "-confirmation.png");
+    check(library.items().size() == 4 && docs.playlistEntries() == originalService,
+          "opening the warning changes neither database nor service");
+    QTest::keyClick(window, Qt::Key_Return);
+    waitFor([&] { return browser->hasActiveFocus(); }, 1000);
+    check(library.items().size() == 4 && browser->hasActiveFocus(),
+          "Enter defaults to Cancel and returns focus to Library");
+    requestLibraryDelete();
+    QTest::keyClick(window, Qt::Key_Escape);
+    waitFor([&] { return browser->hasActiveFocus(); }, 1000);
+    check(library.items().size() == 4 && selectedCount(browser, "selectedLibraryKeys") == 2,
+          "Escape cancels deletion and retains the selection");
+    requestLibraryDelete();
+    click(findNamed(window->contentItem(), "libraryCancelDeleteButton"));
+    waitFor([&] { return browser->hasActiveFocus(); }, 1000);
+    check(library.items().size() == 4, "the Cancel button preserves the database");
     selectLibrary("catalog", alpha, Qt::NoModifier);
     selectLibrary("catalog", beta, Qt::ShiftModifier);
     selectLibrary("catalog", presentation, Qt::ControlModifier);
     check(selectedCount(browser, "selectedLibraryKeys") == 3,
           "selection spans Songs and catalog-backed Presentations without ID ambiguity");
+    requestLibraryDelete();
     qputenv("OPENSHOW_CATALOG_FAULT", "write");
-    QTest::keyClick(window, Qt::Key_Delete);
+    confirmLibraryDelete();
     qunsetenv("OPENSHOW_CATALOG_FAULT");
     check(library.items().size() == 4 && selectedCount(browser, "selectedLibraryKeys") == 3,
-          "a durable-write refusal preserves the complete Library selection");
+          "a confirmed deletion with a failed durable write preserves all records and selection");
+    requestLibraryDelete();
+    library.removeItem(beta);  // model changes while the confirmation is open
+    confirmLibraryDelete();
+    check(library.items().size() == 3 && !library.itemOf(alpha).isEmpty()
+              && !library.itemOf(presentation).isEmpty(),
+          "a stale confirmation refuses the whole batch without deleting valid members");
+    library.undo();
+    check(library.items().size() == 4, "the external database change remains independently undoable");
     QTest::keyClick(window, Qt::Key_F, Qt::ControlModifier);
     QTest::qWait(40);
     search->setProperty("text", "bulk ");
@@ -575,11 +611,14 @@ int main(int argc, char** argv) {
     QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
     check(selectedCount(browser, "selectedLibraryKeys") == 3,
           "Ctrl+A selects filtered Library items and excludes the hidden Morning Light song");
-    click(findNamed(window->contentItem(), "libraryRemoveSelectedButton"));
+    requestLibraryDelete();
+    confirmLibraryDelete();
     check(library.items().size() == 1 && docs.playlistEntries() == originalService,
-          "the Library Remove button deletes the filtered multi-selection only");
+          "confirmed Delete permanently removes the filtered selection only");
     QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
-    QTest::qWait(50);
+    check(library.items().size() == 1, "Library undo cannot restore permanently deleted items");
+    QTest::keyClick(window, Qt::Key_Y, Qt::ControlModifier);
+    check(library.items().size() == 1, "Library redo cannot restore permanently deleted items");
     search->setProperty("text", "");
     QTest::qWait(50);
     const auto linkedId = library.items().first().toMap().value("id").toString();
@@ -588,18 +627,30 @@ int main(int argc, char** argv) {
     selectLibrary("catalog", linkedId, Qt::ControlModifier);
     check(selectedCount(browser, "selectedLibraryKeys") == 2,
           "typed identities allow mixed catalog-song and authored-presentation selection");
-    QTest::keyClick(window, Qt::Key_Delete);
-    check(docs.playlistEntries().size() == originalService.size()
+    requestLibraryDelete();
+    confirmLibraryDelete();
+    check(library.items().isEmpty() && docs.playlistEntries().size() == originalService.size()
               && !docs.slidesOf(linkedShow).isEmpty() && docs.songs().isEmpty(),
-          "removing Library sources retains all their service cues and keeps detached songs out of Library");
+          "confirmed mixed deletion retains service cues and detached song slides");
     QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
-    check(!docs.songs().isEmpty() && library.items().size() == 4,
-          "each affected store restores its Library removal with one scoped undo");
+    check(docs.songs().isEmpty() && library.items().isEmpty()
+              && docs.showForCatalogItem(linkedId).isEmpty(),
+          "mixed undo cannot resurrect deleted sources or a deleted catalog link");
     QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
-    check(docs.songs().isEmpty() && library.items().size() == 3
-              && docs.playlistEntries().size() == originalService.size(),
-          "focused mixed redo removes both Library sources while preserving the service");
-    QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
+    check(docs.songs().isEmpty() && library.items().isEmpty(),
+          "mixed redo cannot resurrect either permanently deleted source");
+    browseServiceEntry(0);
+    browseServiceEntry(docs.playlistEntries().size() - 1);
+    while (docs.canUndo()) {
+        docs.undo();
+        check(docs.songs().isEmpty() && docs.showForCatalogItem(linkedId).isEmpty(),
+              "older service undo cannot resurrect Library sources or deleted catalog links");
+    }
+    while (docs.canRedo()) {
+        docs.redo();
+        check(docs.songs().isEmpty() && docs.showForCatalogItem(linkedId).isEmpty(),
+              "older service redo cannot resurrect Library sources or deleted catalog links");
+    }
 
     check(warnings.isEmpty(), "the shell emitted no QML warnings");
     for (const QString& warning : warnings) {

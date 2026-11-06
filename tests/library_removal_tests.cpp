@@ -85,5 +85,56 @@ int main(int argc, char** argv) {
         openshow::ui::CatalogController reopened(nullptr, scratch.path().toStdString());
         check(reopened.items() == catalogRows, "the undone catalog batch survives restart");
     }
+    // Confirmed Library deletions cannot reappear through any older whole-
+    // document snapshot. Service copies and future service undo still work.
+    openshow::ui::DocumentController permanent(nullptr, scratch.path().toStdString() + "/permanent-service");
+    permanent.createSong("Retained service presentation");
+    const auto retained = permanent.currentSongId();
+    permanent.addSlide();
+    permanent.setSlideText("Retained words");
+    permanent.flushText();
+    permanent.addShowToPlaylist(retained);
+    permanent.addShowToPlaylist(retained);
+    permanent.createSong("Unreferenced database presentation");
+    const auto discarded = permanent.currentSongId();
+    const auto retainedEntries = permanent.playlistEntries();
+    check(!permanent.removeLibraryShows({retained, "missing"}, true)
+              && permanent.songs().size() == 2, "stale permanent deletion is atomic");
+    check(permanent.removeLibraryShows({retained, discarded}, true), "permanently delete both presentations");
+    while (permanent.canUndo()) {
+        permanent.undo();
+        check(permanent.songs().isEmpty(), "older service undo cannot resurrect deleted Library presentations");
+    }
+    while (permanent.canRedo()) {
+        permanent.redo();
+        check(permanent.songs().isEmpty(), "older service redo cannot resurrect deleted Library presentations");
+    }
+    check(permanent.playlistEntries() == retainedEntries && !permanent.slidesOf(retained).isEmpty()
+              && permanent.showInfo(discarded).isEmpty(),
+          "history retains prepared service copies and discards unreferenced deleted presentations");
+    permanent.removePlaylistEntries({retainedEntries.first().toMap().value("entryId").toString()});
+    permanent.undo();
+    check(permanent.playlistEntries() == retainedEntries,
+          "service deletion remains undoable after permanent Library deletion");
+    check(permanent.save(), "permanent presentation deletion saves");
+    {
+        openshow::ui::DocumentController reopened(nullptr, scratch.path().toStdString() + "/permanent-service");
+        check(reopened.songs().isEmpty() && reopened.playlistEntries() == retainedEntries
+                  && !reopened.slidesOf(retained).isEmpty() && reopened.showInfo(discarded).isEmpty(),
+              "restart preserves permanent deletion and playable service copies");
+    }
+    check(library.removeItems({firstSong, secondSong}, true), "permanently delete catalog items");
+    while (library.canUndo()) {
+        library.undo();
+        check(library.items().isEmpty(), "older catalog undo cannot resurrect permanently deleted records");
+    }
+    while (library.canRedo()) {
+        library.redo();
+        check(library.items().isEmpty(), "older catalog redo cannot resurrect permanently deleted records");
+    }
+    {
+        openshow::ui::CatalogController reopened(nullptr, scratch.path().toStdString());
+        check(reopened.items().isEmpty(), "permanent catalog deletion remains durable after restart");
+    }
     return ok ? 0 : 1;
 }

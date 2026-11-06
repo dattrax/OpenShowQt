@@ -68,7 +68,11 @@ Item {
         browser.syncPrimarySelection()
     }
     function removeSelected() {
-        const keys = selection.keys.slice()
+        if (!selection.keys.length || deleteConfirmation.visible) return
+        deleteConfirmation.pendingKeys = selection.keys.slice()
+        deleteConfirmation.open()
+    }
+    function deleteConfirmed(keys) {
         const catalogIds = [], showIds = []
         const catalogKeys = library.items.map(row => "catalog:" + row.id)
         const showKeys = docs.songs.map(row => "show:" + row.id)
@@ -79,11 +83,67 @@ Item {
             else if (showKeys.indexOf(key) >= 0) showIds.push(key.substring(5))
             else { selection.retain(visibleKeys); return }
         }
-        if (catalogIds.length && !library.removeItems(catalogIds)) return
-        if (showIds.length && !docs.removeLibraryShows(showIds)) return
+        if (catalogIds.length && !library.removeItems(catalogIds, true)) return
+        if (showIds.length && !docs.removeLibraryShows(showIds, true)) return
         if (keys.length) undoScope = catalogIds.length && showIds.length ? "mixed"
                                      : (showIds.length ? "shows" : "catalog")
         selection.clear()
+    }
+
+    Dialog {
+        id: deleteConfirmation
+        objectName: "libraryDeleteConfirmation"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(460, parent.width - 32)
+        implicitHeight: deleteWarning.implicitHeight + topPadding + bottomPadding
+            + header.implicitHeight + footer.implicitHeight + 2 * spacing
+        modal: true
+        title: "Delete from Library?"
+        background: Rectangle { color: "#333333"; radius: 8; border.color: "#606060" }
+        Overlay.modal: Rectangle { color: "#99000000" }
+        property var pendingKeys: []
+        onOpened: cancelDeleteButton.forceActiveFocus()
+        footer: DialogButtonBox {
+            Button {
+                id: cancelDeleteButton
+                objectName: "libraryCancelDeleteButton"
+                text: "Cancel"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+                Keys.onReturnPressed: deleteConfirmation.reject()
+                Keys.onEnterPressed: deleteConfirmation.reject()
+            }
+            Button {
+                objectName: "libraryConfirmDeleteButton"
+                text: "Delete permanently"
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                Keys.onReturnPressed: deleteConfirmation.accept()
+                Keys.onEnterPressed: deleteConfirmation.accept()
+            }
+        }
+        onAccepted: {
+            const keys = pendingKeys.slice()
+            pendingKeys = []
+            browser.deleteConfirmed(keys)
+        }
+        onRejected: pendingKeys = []
+        onClosed: browser.forceActiveFocus()
+        contentItem: Item {
+            implicitWidth: 400
+            implicitHeight: deleteWarning.implicitHeight
+            Text {
+                id: deleteWarning
+                objectName: "libraryDeleteWarningText"
+                width: parent.width
+                color: "#eeeeee"
+                font.pixelSize: 14
+                text: "Permanently delete " + deleteConfirmation.pendingKeys.length
+                    + (deleteConfirmation.pendingKeys.length === 1 ? " item" : " items")
+                    + " from the song/presentation database? This cannot be undone."
+                    + "\n\nCopies already in the current service will be kept."
+                wrapMode: Text.WordWrap
+            }
+        }
     }
     Keys.enabled: browser.activeFocus
     Keys.onPressed: event => {
@@ -215,7 +275,7 @@ Item {
         MenuSeparator {}
         MenuItem {
             objectName: "libraryRemoveSongItem"
-            text: "Remove from Library"
+            text: "Delete from Library\u2026"
             onTriggered: browser.removeSelected()
         }
     }
@@ -257,18 +317,11 @@ Item {
             width: parent.width
             height: 24
             Text {
-                width: parent.width - 76
+                width: parent.width
                 height: parent.height
                 verticalAlignment: Text.AlignVCenter
                 text: "LIBRARY"
                 color: "#b0b0b0"; font.pixelSize: 11; font.bold: true
-            }
-            PanelButton {
-                objectName: "libraryRemoveSelectedButton"
-                width: 76; height: 24
-                text: "Remove"
-                enabled: selection.keys.length > 0
-                onClicked: browser.removeSelected()
             }
         }
 

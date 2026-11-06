@@ -1649,6 +1649,9 @@ amendments and the existing durable catalog. Complete and push each fix.
 | LRF.2 | DONE | Remove search-field motion during drag and redundant toolbar Search | Fixed hint holds position on focus/blur, actual drag retains query, Ctrl+F remains; toolbar control/dead signal removed. Workspace and real-worker journey pass (2/2) |
 | LRF.3 | DONE | Multi-select and Delete current-service entries | Shared ListSelection, Ctrl/Shift/Ctrl+A and focused Delete/Remove on Show; atomic validated entry-ID batch and one undo. Removal unit + real-worker pointer/key journey pass (2/2) |
 | LRF.4 | DONE | Multi-select and Delete Library records | Shared Ctrl/Shift/Ctrl+A selection across both branches; focused Delete/Remove, durable catalog batch, scoped presentation removal and keyboard Undo/Redo retain prepared service content. Text fields keep native Delete. Small-window list space and clipped action labels repaired. Fifteen affected suites pass; populated layout/interaction tour passes at three sizes × three scales. See the [acceptance record](docs/reviews/library-operator-fixes-2026-11-06.md) |
+| LRF.5 | DONE | Browse all prepared service shows | Clicking authored, catalog-song, scripture and detached service rows displays actual slides and title without presenting; real-worker regression journey |
+| LRF.6 | DONE | Replace service Remove buttons with keyboard removal | Shift+Up/Down extends/contracts ranges and scrolls; Delete removes selected entry occurrences in one undoable edit; keyboard boundary and duplicate-entry tests |
+| LRF.7 | DONE | Confirm permanent Library deletion and remove its toolbar button | Delete opens a modal warning with Cancel as default; confirmed deletion survives older undo/redo, retains service copies and cancels pending preparation. Durable failure, stale-dialog and restart regressions; [acceptance](docs/reviews/operator-delete-and-browse-2026-11-06.md) |
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

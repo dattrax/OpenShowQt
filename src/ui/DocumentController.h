@@ -185,7 +185,8 @@ public:
     // (with status) when the domain refuses.
     Q_INVOKABLE bool createSong(const QString& name);
     Q_INVOKABLE bool removeCurrentSong();
-    Q_INVOKABLE bool removeLibraryShows(const QStringList& showIds);
+    Q_INVOKABLE bool removeLibraryShows(const QStringList& showIds, bool permanent = false);
+    void forgetDeletedCatalogItems(const QStringList& ids);
     // Appends a slide to the current song and makes it current.
     Q_INVOKABLE bool addSlide();
     Q_INVOKABLE bool removeCurrentSlide();

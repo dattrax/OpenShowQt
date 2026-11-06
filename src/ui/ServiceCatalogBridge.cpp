@@ -46,10 +46,17 @@ ServiceCatalogBridge::ServiceCatalogBridge(CatalogController* catalog,
                 });
         connect(fCatalog, &CatalogController::itemRemoved, this,
                 [this](const QString& id) {
+                    if (fPendingId == id && fPlanner.measuring()) {
+                        fPlanner.cancel();
+                        setStatus(QStringLiteral("Preparation cancelled: the Library song was deleted"));
+                    }
+                    if (fDeferredRefresh == id) fDeferredRefresh.clear();
                     if (fDocuments != nullptr) {
                         fDocuments->detachLinkedCatalogShow(id);
                     }
                 });
+        connect(fCatalog, &CatalogController::itemsPermanentlyRemoved,
+                fDocuments, &DocumentController::forgetDeletedCatalogItems);
     }
 }
 

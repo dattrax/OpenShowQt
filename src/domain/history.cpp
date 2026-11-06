@@ -58,6 +58,21 @@ void History::clear() {
     bumpWatermark();
 }
 
+void History::forgetLibraryShows(const std::vector<Id>& ids) {
+    for (auto* stack : {&fUndo, &fRedo})
+        for (auto& snapshot : *stack)
+            for (const auto& id : ids)
+                snapshot.removeLibraryShow(id);
+}
+
+void History::forgetCatalogItems(const std::vector<Id>& ids) {
+    for (auto* stack : {&fUndo, &fRedo})
+        for (auto& snapshot : *stack)
+            for (const auto& id : ids)
+                if (const auto* show = snapshot.showForCatalogItem(id))
+                    snapshot.setShowSongReference(show->id, {}, show->song);
+}
+
 void History::adoptAssets(const std::vector<AssetRebind>& rebinds) {
     for (Documents& snapshot : fUndo) {
         snapshot.adoptAssets(rebinds);

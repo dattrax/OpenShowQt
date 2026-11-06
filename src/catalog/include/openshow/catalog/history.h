@@ -62,6 +62,8 @@ public:
 
     // Drops both stacks (loading a different catalog/restarting a session).
     void clear();
+    // Permanent Library deletion must not be reversed by an older snapshot.
+    void forgetItems(const std::vector<Id>& ids);
 
 private:
     void bumpWatermark();

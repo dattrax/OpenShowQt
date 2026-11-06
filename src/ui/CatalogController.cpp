@@ -247,7 +247,7 @@ bool CatalogController::removeItem(const QString& id) {
     return removeItems(QStringList{id});
 }
 
-bool CatalogController::removeItems(const QStringList& itemIds) {
+bool CatalogController::removeItems(const QStringList& itemIds, bool permanent) {
     QStringList ids = itemIds;
     ids.removeDuplicates();
     if (ids.isEmpty()) return false;
@@ -258,7 +258,15 @@ bool CatalogController::removeItems(const QStringList& itemIds) {
             return true;
         },
         QStringLiteral("Could not remove the Library selection"));
-    if (ok) for (const auto& id : ids) emit itemRemoved(id);
+    if (ok) {
+        if (permanent) {
+            std::vector<openshow::catalog::Id> forgotten;
+            for (const auto& id : ids) forgotten.push_back(toStd(id));
+            fHistory->forgetItems(forgotten);
+        }
+        for (const auto& id : ids) emit itemRemoved(id);
+        if (permanent) emit itemsPermanentlyRemoved(ids);
+    }
     return ok;
 }
 

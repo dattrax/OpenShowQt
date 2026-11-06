@@ -4,14 +4,23 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
-**Operator bug fixes (2026-11-06):** Service-row browsing now resolves the
-actual show rather than the filtered Library projection. The real-worker
-`library_service_ui_tests` journey passes with populated authored, catalog-song,
-scripture and Library-detached service shows; each displays compilable slides
-without presenting. Shift+Up/Down now extends/contracts service ranges, scrolls
-to the current row and stops at either boundary. Delete removes that selection
-as one undoable edit; service Remove buttons are gone. The expanded real-worker
-journey passes. Next: confirmed permanent Library deletion.
+**LRF.5–LRF.7 complete (operator bug fixes, 2026-11-06):** Service-row
+browsing resolves actual shows, including prepared songs, scripture and retained
+service copies. Shift+Up/Down extends/contracts and scrolls service selection;
+Delete removes selected entry identities in one undoable edit. Library Delete
+opens a permanent-deletion warning with Cancel as default. Confirmed deletions
+cannot return through older undo/redo snapshots; prepared service copies and
+unrelated history remain. In-flight preparation is cancelled on source deletion.
+Both header Remove buttons and service-row delete buttons are gone.
+
+The desktop build (including the local executable) and all **15 affected suites
+pass** (58.72 s), including real-worker UI and preparation-race regressions.
+The populated journey writes three window sizes plus the confirmation dialog;
+the compact view and dialog were visually checked. Rollback commits for preview
+and service keys are `24458a4` and `b08817f`, each pushed separately. Details and
+reproduction: [acceptance record](docs/reviews/operator-delete-and-browse-2026-11-06.md).
+These follow-ups supersede the earlier Remove-button and Library-undo behavior
+recorded below. Resume remaining TV/TA work; physical M7 and FO remain separate.
 
 **LRF.1–LRF.4 complete:** Import song is visible on Show and in More, returning
 to its originating page after import. Search has a stationary hint, its toolbar

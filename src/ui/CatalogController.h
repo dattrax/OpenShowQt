@@ -113,7 +113,7 @@ public:
     // alternative both land here.
     Q_INVOKABLE bool moveItemToCategory(const QString& id, const QString& category);
     Q_INVOKABLE bool removeItem(const QString& id);
-    Q_INVOKABLE bool removeItems(const QStringList& ids);
+    Q_INVOKABLE bool removeItems(const QStringList& ids, bool permanent = false);
 
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
@@ -128,6 +128,7 @@ signals:
     // One item was deleted. Linked service shows detach (keep playing with
     // their copied attribution) rather than pointing at a dead record.
     void itemRemoved(const QString& id);
+    void itemsPermanentlyRemoved(const QStringList& ids);
 
 private:
     // Applies `edit` to a copy, writes it, then publishes model + history.

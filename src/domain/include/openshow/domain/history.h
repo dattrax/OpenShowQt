@@ -90,6 +90,10 @@ public:
     // survives and absorbs the current counter, so ids stay monotonic
     // across a load of a file whose ids happen to be lower.
     void clear();
+    // Remove Library sources from snapshots while retaining service copies
+    // and unrelated undoable work.
+    void forgetLibraryShows(const std::vector<Id>& ids);
+    void forgetCatalogItems(const std::vector<Id>& ids);
 
 private:
     void bumpWatermark();

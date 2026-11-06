@@ -58,6 +58,13 @@ void History::clear() {
     bumpWatermark();
 }
 
+void History::forgetItems(const std::vector<Id>& ids) {
+    for (auto* stack : {&fUndo, &fRedo})
+        for (auto& snapshot : *stack)
+            for (const auto& id : ids)
+                if (snapshot.find(id)) snapshot.remove(id);
+}
+
 void History::bumpWatermark() {
     fWatermark = std::max(fWatermark, fCatalog->fNextOrdinal);
 }
