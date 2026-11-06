@@ -1,8 +1,25 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-11-05 (Europe/London).
+Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
+
+**Theme editor TE.6 complete.** Removed the setup checkbox that still hid
+Bible controls when there was no own scripture context, plus the captions
+above both placement rectangles. Bible controls always show the inherited
+appearance; the first deliberate edit creates one undoable override while
+preserving the other inherited typography, box and context movement. Reset
+Bible removes that record without hiding the controls. Unchanged font and
+geometry focus-out create no override.
+
+Affected suites pass **5/5** (48.83 s): workspace, shared controls, UI load,
+document controller and inspector adapter. The worker tour now includes
+`themes-bible-inherited` at each size: **72 captures** pass across three
+sizes/scales, with manifest dimensions checked and representative images
+visually reviewed. Outputs: `/tmp/openshow-theme-ungated/{s1,s15,s2}`. Local
+frontend rebuilt; restart to load it. Only the atomic context-transition
+parsing hunk in DocumentController joins this repair; the existing four-file
+TV.3 changes remain unstaged and are excluded from clean-source verification.
 
 **Bible import simplification BIU.1 complete.** Removed the verse checkbox
 list/All/None, duplicate selected canvas, separate Retry button and standing

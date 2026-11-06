@@ -276,8 +276,44 @@ void exerciseContextTarget(const std::filesystem::path& root) {
     const QString themeColour =
         themeRowNamed(docs, QStringLiteral("House")).value(QStringLiteral("textColor")).toString();
 
-    check(!adapter.fieldState(QStringLiteral("fontFamily")).value(QStringLiteral("ok")).toBool(),
-          "before the view exists the target is unusable");
+    check(adapter.fieldState(QStringLiteral("fontFamily")).value(QStringLiteral("editable")).toBool()
+              && !docs.themeContext(id, "scripture").value("set").toBool(),
+          "an absent view exposes editable inherited values without creating a record");
+    const auto inheritedLook = docs.themeSampleAppearance(id, "scripture");
+    check(adapter.commit("fontSize", 36.0) && docs.themeContext(id, "scripture").value("set").toBool(),
+          "the first field edit creates an absent context");
+    const auto createdLook = docs.themeSampleAppearance(id, "scripture");
+    check(createdLook.value("fontSize").toDouble() == 36.0
+              && createdLook.value("boxWidth") == inheritedLook.value("boxWidth")
+              && createdLook.value("fontFamily") == inheritedLook.value("fontFamily"),
+          "first edit preserves the other inherited appearance values");
+    docs.undo();
+    check(!docs.themeContext(id, "scripture").value("set").toBool(),
+          "one undo removes the first context creation");
+    check(adapter.commit("transition", QVariantMap{{"kind", "cut"}, {"textDurationMs", 0}, {"mediaDurationMs", 0}})
+              && docs.themeContext(id, "scripture").value("transitionSet").toBool(),
+          "a first transition edit also creates the context atomically");
+    docs.undo();
+    check(!docs.themeContext(id, "scripture").value("set").toBool(),
+          "one undo removes a first transition edit and its context");
+
+    const auto floor = themeRowNamed(docs, "Default").value("id").toString();
+    check(docs.applyThemeContext(floor, "scripture", QVariantMap{
+              {"fontFamily", "Lora"}, {"fontSize", 60.0}, {"lineSpacing", 1.7},
+              {"align", "center"}, {"box", rect(33, 44, 1234, 567)}})
+              && docs.setTextContextTransition(floor, "scripture", QVariantMap{
+                  {"kind", "fade"}, {"textDurationMs", 70}, {"mediaDurationMs", 80}}),
+          "Default supplies a distinct inherited Bible appearance and movement");
+    check(adapter.commit("fontSize", 52.0), "edit an absent view inheriting Default's context");
+    const auto kept = docs.themeSampleAppearance(id, "scripture");
+    check(kept.value("fontSize").toDouble() == 52 && kept.value("fontFamily") == "Lora"
+              && kept.value("boxX").toDouble() == 33 && kept.value("boxHeight").toDouble() == 567
+              && docs.themeContext(id, "scripture").value("transition").toMap().value("textDurationMs").toInt() == 70,
+          "first edit keeps inherited typography, placement and movement while changing only the chosen value");
+    docs.undo();
+    check(!docs.themeContext(id, "scripture").value("set").toBool(),
+          "one undo returns to Default's inherited context");
+    docs.removeThemeContext(floor, "scripture");
 
     QVariantMap seed;
     seed.insert(QStringLiteral("fontFamily"), QStringLiteral("DejaVu Serif"));

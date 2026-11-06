@@ -146,6 +146,12 @@ Column {
         const y = parseFloat(yField.text)
         const w = parseFloat(wField.text)
         const h = parseFloat(hField.text)
+        const current = geometry.state().value
+        if (current && x === Math.round(current.x) && y === Math.round(current.y)
+                && w === Math.round(current.width) && h === Math.round(current.height)) {
+            geometry.sync()  // focus-out on the displayed box is browsing
+            return
+        }
         if (!Number.isFinite(x) || !Number.isFinite(y)
                 || !(w >= 1) || !(h >= 1)
                 || !geometry.adapter.commit("box", {x: x, y: y, width: w, height: h}))

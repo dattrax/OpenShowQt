@@ -255,6 +255,16 @@ on its verb, and every refusal naming itself.
 | Centralised | the context's WHOLE-entry merge (read back the entry's own set, replace one member, write once). Since CS.5 this is the ONLY spelling: the Theme Editor's rails ride the adapter, and the page's private merge arithmetic is gone — `copyThemeBox` and the Bible drag both commit `"box"` through it |
 | Automation | none — not a visible part; hosts bind it inside their rails |
 
+TE.6: a valid theme's absent Bible context is an editable inherited target,
+not an unusable one. Reading never creates a record. The first supported
+field edit seeds the compiled typography/box (and inherited context movement,
+when present), merges the requested field and writes one undoable record.
+A first transition edit uses the same atomic path. ThemeEditor keeps its
+Bible controls visible and provides Reset Bible to remove the own record;
+placement outlines carry no instructional caption. BoxGeometryControls treats
+focus-out on unchanged displayed coordinates as a no-op, including inherited
+and fractional resolved boxes.
+
 ### AppearanceInspector
 
 `src/ui/AppearanceInspector.qml` (CS.5). Composition of the five style

@@ -320,6 +320,26 @@ bool captureControlSets(const QString& prefix) {
             save(view.isEmpty() ? "themes" : "themes-bible", size);
         }
     }
+    auto* resetBible = window->findChild<QQuickItem*>("themeEditorContextReset");
+    check(resetBible && resetBible->isEnabled(), "the Bible override can be reset through its visible action");
+    if (resetBible) QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+        resetBible->mapToScene(QPointF(resetBible->width() / 2, resetBible->height() / 2)).toPoint());
+    for (const auto size : sizes) {
+        window->resize(size);
+        QTest::qWait(150);
+        check(waitFor([&] { return worker.selectionCurrent() && variedPixels(worker.selectionImage()); }),
+              "the inherited Bible appearance is rendered after Reset Bible");
+        auto* fields = window->findChild<QQuickItem*>("themeEditorContextFields");
+        auto* sizeField = window->findChild<QQuickItem*>("themeEditorContextSize");
+        auto* browse = window->findChild<QQuickItem*>("themeEditorContextFontBrowse");
+        check(!docs.themeContext(theme, "scripture").value("set").toBool()
+                  && fields && fields->isVisible() && sizeField && sizeField->isVisible()
+                  && sizeField->property("text").toString() == "64"
+                  && browse && browse->isEnabled()
+                  && !window->findChild<QQuickItem*>("themeEditorBoxLabel"),
+              "Bible controls stay visible and editable without a context, and no box label is painted");
+        save("themes-bible-inherited", size);
+    }
     QFile output(prefix + ".manifest.json");
     check(output.open(QIODevice::WriteOnly), "open the capture manifest");
     output.write(QJsonDocument(manifest).toJson());

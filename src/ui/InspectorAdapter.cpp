@@ -306,10 +306,10 @@ QVariantMap InspectorAdapter::fieldState(const QString& field) const {
 
     if (kind == QLatin1String("context")) {
         const QVariantMap row = fDocument->themeContext(id, view);
-        if (!row.value(QStringLiteral("set")).toBool()) {
-            return nothing(QStringLiteral("theme '%1' carries no view '%2'").arg(id, view));
-        }
         const QVariantMap sample = fDocument->themeSampleAppearance(id, view);
+        if (!sample.value(QStringLiteral("ok")).toBool()) {
+            return nothing(QStringLiteral("no theme '%1'").arg(id));
+        }
         QVariantMap themeRow;
         for (const QVariant& entry : fDocument->themes()) {
             if (entry.toMap().value(QStringLiteral("id")).toString() == id) {
@@ -549,26 +549,25 @@ bool InspectorAdapter::commit(const QString& field, const QVariant& value) {
 
     if (kind == QLatin1String("context")) {
         const QVariantMap row = fDocument->themeContext(id, view);
-        if (!row.value(QStringLiteral("set")).toBool()) {
-            emit refused(field, QStringLiteral("theme '%1' carries no view '%2'").arg(id, view));
+        const bool exists = row.value(QStringLiteral("set")).toBool();
+        const QVariantMap sample = fDocument->themeSampleAppearance(id, view);
+        if (!sample.value(QStringLiteral("ok")).toBool()) {
+            emit refused(field, QStringLiteral("no theme '%1'").arg(id));
             return false;
         }
-        if (name == QLatin1String("transition")) {
+        if (name == QLatin1String("transition") && exists) {
             if (value.typeId() != QMetaType::QVariantMap) {
                 emit refused(field, QStringLiteral("a transition is a record"));
                 return false;
             }
-            const bool ok = fDocument->setTextContextTransition(id, view, value.toMap());
-            if (!ok) {
-                emit refused(field, QStringLiteral("the view refused its transition"));
-            }
-            return ok;
+            return fDocument->setTextContextTransition(id, view, value.toMap());
         }
         const bool isTypography = name == QLatin1String("fontFamily") ||
                                   name == QLatin1String("fontSize") ||
                                   name == QLatin1String("align") ||
                                   name == QLatin1String("lineSpacing");
-        if (!isTypography && name != QLatin1String("placement")) {
+        if (!isTypography && name != QLatin1String("placement")
+                && name != QLatin1String("transition")) {
             emit refused(field, QStringLiteral("a text context cannot store %1 yet (TV.3); "
                                                "the themes answer stays untouched").arg(name));
             return false;
@@ -579,6 +578,28 @@ bool InspectorAdapter::commit(const QString& field, const QVariant& value) {
         // A box write retires a stored inset, and an inset write retires
         // the box (task TV.1 — the view answers with one box).
         QVariantMap fields;
+        if (!exists) {
+            // First edit creates the view in one undo step. Preserve the
+            // currently rendered typography/box instead of changing its
+            // other answers when wholesale context inheritance stops.
+            for (const auto* key : {"fontFamily", "fontSize", "align", "lineSpacing"}) {
+                const auto value = sample.value(QLatin1String(key));
+                if ((QLatin1String(key) == QLatin1String("fontFamily") && value.toString().isEmpty())
+                        || (QLatin1String(key) == QLatin1String("fontSize") && value.toDouble() <= 0)) continue;
+                fields.insert(QLatin1String(key), value);
+            }
+            fields.insert(QStringLiteral("box"), boxFromSample(sample));
+            if (sample.value(QStringLiteral("context")).toString() == view) {
+                for (const auto& entry : fDocument->themes()) {
+                    const auto theme = entry.toMap();
+                    if (!theme.value(QStringLiteral("builtin")).toBool()) continue;
+                    const auto inherited = fDocument->themeContext(theme.value(QStringLiteral("id")).toString(), view);
+                    if (inherited.value(QStringLiteral("transitionSet")).toBool())
+                        fields.insert(QStringLiteral("transition"), inherited.value(QStringLiteral("transition")));
+                }
+            }
+        }
+
         if (row.value(QStringLiteral("fontFamilySet")).toBool()) {
             fields.insert(QStringLiteral("fontFamily"), row.value(QStringLiteral("fontFamily")));
         }

@@ -2229,6 +2229,8 @@ int main(int argc, char** argv) {
             }
         };
         checkPlacementHandles();
+        check(!findNamed(window->contentItem(), "themeEditorBoxLabel"),
+              "placement boxes have no instructional text above their outlines");
 
         const int themesBefore = docs.themes().size();
         clickAt(newButton, newButton->width() / 2, newButton->height() / 2);
@@ -2614,7 +2616,7 @@ int main(int argc, char** argv) {
         // says it cannot measure rather than invent a number — no worker
         // runs in this fixture. What the section writes is the SAME entry
         // the Bible page paginates against; the e2e leg pins that.
-        auto* ctxToggle = findNamed(window->contentItem(), "themeEditorContextToggle");
+        auto* ctxReset = findNamed(window->contentItem(), "themeEditorContextReset");
         auto* ctxSizeField = findNamed(window->contentItem(), "themeEditorContextSize");
         auto* ctxHField = findNamed(window->contentItem(), "themeEditorContextH");
         auto* ctxLinesLabel = findNamed(window->contentItem(), "themeEditorContextLines");
@@ -2655,23 +2657,33 @@ int main(int argc, char** argv) {
                   && editorPage->property("selectedId").toString() == viewedId
                   && editorPage->property("contextOn").toBool() == false,
               "the Bible button opens the reading-context view, selection and all, still silent");
-        check(ctxToggle && !ctxToggle->property("checked").toBool()
-                  && contextRow(placedId).value(QStringLiteral("set")).toBool() == false,
-              "a theme with no reading context opens the section asleep");
-        clickAt(ctxToggle, ctxToggle->width() / 2, ctxToggle->height() / 2);
+        auto* contextFields = findNamed(window->contentItem(), "themeEditorContextFields");
+        auto* initialAlign = findNamed(window->contentItem(), "themeEditorContextAlign");
+        check(ctxReset && !ctxReset->isEnabled() && contextFields && contextFields->isVisible()
+                  && ctxSizeField && ctxSizeField->isVisible()
+                  && !contextRow(placedId).value(QStringLiteral("set")).toBool(),
+              "Bible font controls are visible before an override exists, with no setup checkbox");
+        QMetaObject::invokeMethod(ctxSizeField, "editingFinished");
+        QMetaObject::invokeMethod(ctxHField, "editingFinished");
+        check(!contextRow(placedId).value(QStringLiteral("set")).toBool(),
+              "leaving inherited font and box fields unchanged creates no context");
+        if (initialAlign) QMetaObject::invokeMethod(initialAlign, "activated",
+            Q_ARG(int, initialAlign->property("currentIndex").toInt()));
+        QTest::qWait(80);
+        check(contextRow(placedId).value(QStringLiteral("set")).toBool(),
+              "the first deliberate font control edit creates the Bible view");
+        docs.undo();
+        QTest::qWait(80);
+        check(!contextRow(placedId).value(QStringLiteral("set")).toBool()
+                  && contextFields->isVisible(), "one undo removes the first edit and keeps the controls visible");
+        if (initialAlign) QMetaObject::invokeMethod(initialAlign, "activated",
+            Q_ARG(int, initialAlign->property("currentIndex").toInt()));
         QTest::qWait(80);
         const QVariantMap created = contextRow(placedId);
-        check(created.value(QStringLiteral("set")).toBool()
-                  && ctxToggle->property("checked").toBool()
-                  && created.value(QStringLiteral("boxSet")).toBool()
+        check(created.value(QStringLiteral("set")).toBool() && created.value(QStringLiteral("boxSet")).toBool()
                   && created.value(QStringLiteral("height")).toDouble() == 880.0
-                  && created.value(QStringLiteral("alignSet")).toBool()
-                  && !created.value(QStringLiteral("fontSizeSet")).toBool()
-                  // a context speaks type and a box — never colours; the
-                  // record has no colour fields to speak in the first place
-                  && !created.contains(QStringLiteral("textColor")),
-              "toggling creates the scripture context from the theme's current look: "
-              "the offered box is stated, a size of 0 stays silent");
+                  && !created.value(QStringLiteral("fontSizeSet")).toBool(),
+              "first edit preserves the inherited rectangle and renderer-default size");
         const auto inheritedReading = docs.themeSampleAppearance(placedId, "scripture");
         auto* contextBrowse = findNamed(window->contentItem(), "themeEditorContextFontBrowse");
         auto* contextFamily = findNamed(window->contentItem(), "themeEditorContextFont");
@@ -2718,17 +2730,17 @@ int main(int argc, char** argv) {
                           QStringLiteral("not measured"));
               }),
               "with no worker answering the line note says so instead of inventing a count");
-        clickAt(ctxToggle, ctxToggle->width() / 2, ctxToggle->height() / 2);
+        clickAt(ctxReset, ctxReset->width() / 2, ctxReset->height() / 2);
         QTest::qWait(80);
         check(!contextRow(placedId).value(QStringLiteral("set")).toBool()
-                  && !ctxToggle->property("checked").toBool(),
-              "toggling off removes the reading context and the fields sleep");
+                  && !ctxReset->isEnabled() && contextFields->isVisible(),
+              "Reset Bible removes the override and leaves inherited controls visible");
         docs.undo();
         QTest::qWait(80);
         check(contextRow(placedId).value(QStringLiteral("set")).toBool()
                   && contextRow(placedId).value(QStringLiteral("height")).toDouble() == 600.0
-                  && ctxToggle->property("checked").toBool(),
-              "one undo brings the whole context back — the toggle follows the record");
+                  && ctxReset->isEnabled() && contextFields->isVisible(),
+              "one undo restores the complete Bible override");
 
         // TV.1: the two views keep two records. Every context edit above is
         // the BIBLE view's; the theme's own placement stayed absent and a
@@ -3276,7 +3288,7 @@ int main(int argc, char** argv) {
         const auto contextRow = [&docs](const QString& id) {
             return docs.themeContext(id, QStringLiteral("scripture"));
         };
-        auto* ctxToggleMove = findNamed(window->contentItem(), "themeEditorContextToggle");
+        auto* ctxResetMove = findNamed(window->contentItem(), "themeEditorContextReset");
         auto* ctxMoveCombo = findNamed(window->contentItem(), "themeEditorContextTransitionKind");
         auto* ctxMoveInherit = findNamed(window->contentItem(),
                                          "themeEditorContextTransitionInherit");
@@ -3286,11 +3298,12 @@ int main(int argc, char** argv) {
                                         "themeEditorContextTransitionSource");
         auto* ctxMoveNote = findNamed(window->contentItem(), "themeEditorContextTransitionNote");
         auto* ctxSizeField = findNamed(window->contentItem(), "themeEditorContextSize");
-        check(ctxToggleMove && ctxMoveCombo && ctxMoveInherit && ctxMoveWords && ctxMoveBack
+        check(ctxResetMove && ctxMoveCombo && ctxMoveInherit && ctxMoveWords && ctxMoveBack
                   && ctxMoveSource && ctxMoveNote && ctxSizeField,
               "the Bible inspector carries the view's own Transition controls");
         if (!contextRow(movedId).value(QStringLiteral("set")).toBool()) {
-            clickAt(ctxToggleMove, ctxToggleMove->width() / 2, ctxToggleMove->height() / 2);
+            ctxSizeField->setProperty("text", "64");
+            QMetaObject::invokeMethod(ctxSizeField, "editingFinished");
             QTest::qWait(80);
         }
         check(contextRow(movedId).value(QStringLiteral("set")).toBool(),
@@ -3377,7 +3390,7 @@ int main(int argc, char** argv) {
         // undo stack keeps the steps, which is what an operator would have.
         QMetaObject::invokeMethod(viewEditor, "scrollInspectorToTop");
         QTest::qWait(60);
-        clickAt(ctxToggleMove, ctxToggleMove->width() / 2, ctxToggleMove->height() / 2);
+        clickAt(ctxResetMove, ctxResetMove->width() / 2, ctxResetMove->height() / 2);
         QTest::qWait(80);
         // Back to the Songs seat for the legs that follow: the rail they read
         // is the theme's own column, and a page left in the Bible view would

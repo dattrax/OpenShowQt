@@ -172,8 +172,8 @@ Item {
      */
     // The measure request id of the in-flight lines probe (0 = none).
     property int linesAskId: 0
-    // Whether the selected theme carries the context (derived on every
-    // sync; the toggle follows the record, never the other way round).
+    // Whether the selected theme owns an override; Reset follows this
+    // record state, while controls remain visible for inherited values.
     property bool contextOn: false
 
     function themeRow() {
@@ -198,44 +198,14 @@ Item {
                                      : themeEditor.boxFor(row)
         }
     }
-    // Re-read the TOGGLE from the record — the commit, the More menu's
-    // undo, a refused write: whatever moved, the toggle follows the record,
-    // never its own last click. The context's typography/box/movement rows
+    // Re-read ownership after commits, undo and refused writes. The context's typography/box/movement rows
     // re-sync through the shared parts' adapter connections (CS.5); the
     // lines probe re-asks because the entry's box may have moved.
     function syncContext() {
         const ctx = themeEditor.contextRecord()
         themeEditor.contextOn = ctx.set === true
-        ctxToggle.checked = ctx.set === true
         themeEditor.contextPlaces = ctx.boxSet === true || ctx.insetSet === true
         linesAsk.restart()
-    }
-    // Toggle on CREATES the context from this theme's current look and box:
-    // the reading starts as what the audience already sees, and the
-    // operator narrows it to a lectern from there. Toggle off removes the
-    // entry; a refusal (there was nothing to remove) leaves the toggle
-    // exactly where the record says it is.
-    function setContext(on) {
-        const row = themeEditor.themeRow()
-        if (row === null) {
-            ctxToggle.checked = themeEditor.contextOn
-            return
-        }
-        if (on) {
-            const box = themeEditor.boxFor(row)
-            const fields = {}
-            if (row.fontFamily !== "")
-                fields.fontFamily = row.fontFamily
-            if (row.fontSize > 0)
-                fields.fontSize = row.fontSize
-            fields.lineSpacing = row.lineSpacing
-            fields.align = row.align
-            fields.box = {x: box.x, y: box.y, width: box.width, height: box.height}
-            if (!docs.applyThemeContext(row.id, "scripture", fields))
-                ctxToggle.checked = false
-        } else if (!docs.removeThemeContext(row.id, "scripture")) {
-            ctxToggle.checked = true
-        }
     }
     // The Bible rail's "Theme's lyric box" (task TV.1): borrow the RECTANGLE
     // the theme itself places (or the offered default) into the view's
@@ -1114,19 +1084,6 @@ Item {
                     // is shown by inspector reset controls, not a second outline.
                     border.width: 2
                     border.color: "#1685f8"
-                    Text {
-                        objectName: "themeEditorBoxLabel"
-                        anchors.left: parent.left
-                        anchors.bottom: parent.top
-                        anchors.bottomMargin: 3
-                        color: "#1685f8"
-                        font.pixelSize: 11
-                        text: themeEditor.selectedView === ""
-                              ? (themeEditor.viewPlaces ? "lyric box"
-                                                        : "no placement — drag to place")
-                              : (themeEditor.viewPlaces ? "Bible box"
-                                                        : "no Bible box — drag to place")
-                    }
                     Repeater {
                         model: [Qt.point(0, 0), Qt.point(1, 0), Qt.point(0, 1), Qt.point(1, 1)]
                         delegate: Rectangle {
@@ -1294,20 +1251,16 @@ Item {
                 // nothing else — the colours stay the theme's and the line
                 // count stays the measurement's. An absent view is a real
                 // state: the passage simply wears the Songs look.
-                CheckBox {
-                    id: ctxToggle
-                    objectName: "themeEditorContextToggle"
-                    text: "set passages apart"
-                    font.pixelSize: 11
-                    enabled: themeEditor.selectedId !== ""
-                    checked: false
-                    onToggled: themeEditor.setContext(checked)
+                PanelButton {
+                    objectName: "themeEditorContextReset"
+                    text: "Reset Bible"
+                    enabled: themeEditor.contextOn
+                    onClicked: docs.removeThemeContext(themeEditor.selectedId, "scripture")
                 }
                 Column {
                     objectName: "themeEditorContextFields"
                     width: parent.width
                     spacing: 8
-                    visible: themeEditor.contextOn
                     // The shared inspector rail for the VIEW (task CS.5):
                     // sparse type rows, ONE box (with the theme's own
                     // rectangle borrowable), and the view's own movement.

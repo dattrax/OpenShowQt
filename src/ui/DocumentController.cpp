@@ -1336,6 +1336,15 @@ bool DocumentController::applyThemeContext(const QString& themeId, const QString
                     break;
                 }
             }
+            // A first inspector edit may create the view and its movement
+            // atomically; omitted movement still preserves an existing record.
+            if (fields.contains(QStringLiteral("transition"))) {
+                if (fields.value(QStringLiteral("transition")).typeId() != QMetaType::QVariantMap ||
+                    !transitionFromMap(fields.value(QStringLiteral("transition")).toMap(),
+                                       &context.transition, &error)) {
+                    return false;
+                }
+            }
             if (fields.contains(QStringLiteral("fontFamily"))) {
                 context.fontFamily = fields.value(QStringLiteral("fontFamily")).toString().toStdString();
             }

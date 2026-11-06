@@ -52,3 +52,32 @@ context colour metadata where the old test expects no colour member. The new
 handle checks passed there; this repair does not claim the TV.3 suite is clean.
 Only the neutral-sample hunk of DocumentController is committed here; its
 existing TV.3 additions and the three domain-file diffs are preserved.
+
+
+## TE.6 — inherited Bible editor and placement captions
+
+The follow-up screenshot exposed a gap in TE.4: its matching controls were
+still hidden unless the theme already owned a scripture context. The setup
+checkbox is now removed. All supported Bible fields remain visible and show
+the compiled inherited appearance; browsing and unchanged font/geometry
+focus-out create no context. The first deliberate field edit creates one
+undoable override, seeded with the existing typography, box and any inherited
+context movement. A first transition edit is atomic too. Reset Bible removes
+the own context while keeping the controls visible; undo restores it. The
+instructional captions above both Songs and Bible placement outlines are gone.
+
+Workspace regressions exercise the absent-record state, first edit, one-step
+undo, reset and restored controls. Adapter regressions also cover inheritance
+from a distinct Default Bible context, keeping its box, font family and
+movement when changing size. Unsupported advanced context typography remains
+TV.3; no unfinished domain/schema work is staged here.
+
+The real-worker tour now resets the owned Bible context through the visible
+button and captures `themes-bible-inherited` at each logical size. Each frame
+checks that there is no own record, font controls and Browse stay visible,
+the inherited size is correct and the placement caption is absent. This adds
+three images per scale: **24 per scale, 72 total** at 1/1.5/2. Local images
+are under `/tmp/openshow-theme-ungated/{s1,s15,s2}`. Final affected suites pass **5/5** (48.83 s), and all three capture runs
+return zero with verified manifest dimensions. Representative inherited Bible
+views were visually reviewed. The local frontend is rebuilt; pre-existing
+TV.3 edits remain separate.
