@@ -25,3 +25,6 @@ VP_VULKANINFO_*.json
 /background-media-fixtures/
 /playback-fixtures/
 /scene-render-*.png
+
+# Rust sidecar build artefacts when cargo is run by hand
+tools/pptx-render/target/

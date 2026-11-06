@@ -43,6 +43,7 @@ minimum versions for every dependency.
 | Fontconfig / HarfBuzz | 2.18.3 / 14.5.1 |
 | ICU development headers | 78.3; see the Skia compatibility note below |
 | Skia | `a94df1cdabb03d3ead2486413bc2999b500aa4f8`; `third_party/skia` submodule, built by `scripts/build-skia.sh` |
+| Rust / Cargo | 1.96.0; edition 2024 needs 1.85+; builds `tools/pptx-render` from the `third_party/betteroffice` submodule |
 | vk-bootstrap | `v1.3.225`; fetched by CMake |
 
 Use **CMake 3.25 or newer** for the commands below: `CMakePresets.json` uses
@@ -67,6 +68,7 @@ Install the build tools and dependencies from the project directory:
 ```sh
 sudo dnf install \
   gcc-c++ git python3 cmake ninja-build pkgconf-pkg-config \
+  cargo rust \
   qt6-qtbase-devel qt6-qtdeclarative-devel \
   glfw-devel boost-devel vulkan-loader-devel vulkan-headers \
   pipewire-devel ffmpeg ffmpeg-devel \
@@ -106,7 +108,10 @@ git clone --recursive https://github.com/dattrax/OpenShowQt.git
 
 (`git submodule update --init --recursive` is the equivalent for an existing
 checkout.) Skia arrives as the `third_party/skia` submodule pinned to the
-revision in the table above.
+revision in the table above. PowerPoint import arrives as
+`third_party/betteroffice`, pinned to the BetterOffice commit the sidecar was
+built and tested against; it is shallow-cloned because the engine repository is
+large.
 
 ## Build Skia
 
@@ -208,6 +213,22 @@ To inspect the selected tests without running them:
 ctest --preset desktop --show-only
 ctest --preset headless --show-only
 ```
+
+### PowerPoint import renderer
+
+`tools/pptx-render` is a small Rust sidecar built from the pinned
+`third_party/betteroffice` engine. The normal presets build it into
+`build/cargo/release/pptx-render` (or `build-headless/...`); the first cargo
+build downloads crates from crates.io. It has no LibreOffice, PowerPoint or
+browser runtime dependency. Configure with `-DOPENSHOW_BUILD_PPTX_RENDER=OFF`
+to skip it; PowerPoint import is then unavailable in that build.
+
+```sh
+./build/cargo/release/pptx-render --input deck.pptx --out-dir /tmp/deck-slides
+```
+
+The sidecar writes one PNG per visible slide plus `manifest.json` at the
+1920×1080 canvas fit (16:9 is exactly 1920×1080; 4:3 is 1440×1080).
 
 ### Use a different Skia location
 

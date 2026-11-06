@@ -4,3 +4,4 @@
 [submodule "third_party/betteroffice"]
 	path = third_party/betteroffice
 	url = https://github.com/openooxml/betteroffice.git
+	shallow = true

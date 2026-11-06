@@ -29,6 +29,7 @@ endif()
 
 option(OPENSHOW_BUILD_UI "Build the Qt 6 Quick frontend" ON)
 option(OPENSHOW_BUILD_TESTS "Build tests" ON)
+option(OPENSHOW_BUILD_PPTX_RENDER "Build the BetterOffice PPTX renderer sidecar" ON)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLFW REQUIRED IMPORTED_TARGET GLOBAL glfw3)
@@ -66,6 +67,16 @@ add_subdirectory(src/protocol)
 add_subdirectory(src/scene)
 add_subdirectory(src/worker)
 
+if(OPENSHOW_BUILD_PPTX_RENDER)
+  find_program(CARGO_EXECUTABLE cargo)
+  if(CARGO_EXECUTABLE)
+    add_subdirectory(tools/pptx-render)
+  else()
+    message(WARNING
+      "cargo not found: PowerPoint deck import is unavailable in this build")
+  endif()
+endif()
+
 if(OPENSHOW_BUILD_UI)
   add_subdirectory(src/ui)
 endif()
@@ -84,3 +95,8 @@ execute_process(COMMAND ${PKG_CONFIG_EXECUTABLE} --modversion libavcodec
 message(STATUS "  FFmpeg:      ${FFMPEG_VERSION} (libav*)")
 message(STATUS "  Boost:       ${Boost_VERSION}")
 message(STATUS "  Qt frontend: ${OPENSHOW_BUILD_UI}")
+if(TARGET pptx_render)
+  message(STATUS "  PPTX import: ${OPENSHOW_PPTX_RENDER_BIN}")
+else()
+  message(STATUS "  PPTX import: OFF")
+endif()

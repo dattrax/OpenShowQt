@@ -805,3 +805,21 @@ target_link_libraries(av_sync_tests PRIVATE
 )
 add_test(NAME av_sync_tests COMMAND av_sync_tests)
 set_tests_properties(av_sync_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+# PX.1: the PowerPoint sidecar. The fixture test runs the shipped binary; the
+# cargo test covers the renderer's own scale/hidden/determinism/corrupt rules.
+if(TARGET pptx_render)
+  add_test(NAME pptx_render_fixture
+    COMMAND "${CMAKE_COMMAND}"
+      "-DBIN=${OPENSHOW_PPTX_RENDER_BIN}"
+      "-DFIXTURE=${CMAKE_SOURCE_DIR}/tools/pptx-render/tests/fixtures/16x9.pptx"
+      "-DOUT_DIR=${CMAKE_BINARY_DIR}/pptx-render-fixture"
+      -P "${CMAKE_SOURCE_DIR}/tools/pptx-render/tests/run_fixture.cmake")
+  add_test(NAME pptx_render_tests
+    COMMAND "${CMAKE_COMMAND}" -E env
+      "CARGO_TARGET_DIR=${CMAKE_BINARY_DIR}/cargo"
+      "${CARGO_EXECUTABLE}" test --release --locked
+      --manifest-path "${CMAKE_SOURCE_DIR}/tools/pptx-render/Cargo.toml")
+  set_tests_properties(pptx_render_tests PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/tools/pptx-render")
+endif()

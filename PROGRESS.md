@@ -11,14 +11,14 @@ native text Delete, Show-mode silence, deleting the final slide and empty-state
 undo. Next: replace the Edit library/service pane and picker with previews of
 only the selected song/presentation, as clarified by the operator.
 
-**PX planned (2026-11-06):** PowerPoint deck import is scheduled as PX.1–PX.8
-in PLAN.md. BetterOffice (Apache-2.0, native Rust) is pinned as a submodule and
-driven by a separate `tools/pptx-render` process; rendered slides are ordinary
-picture assets in the existing `service.json` + `assets/` package, never
-base64/ASCII inside JSON. Service drops create a `scheduleOwned` show at the
-marked running-order position; Library drops create an ordinary Library show
-and do not touch the running order. Current task: **PX.1** (sidecar and build
-wiring). No implementation commit yet.
+**PX.1 complete (2026-11-06):** `third_party/betteroffice` is pinned at commit
+`b98ef24` (0.5.1 line, shallow; the pointer landed in `15c8fcd`). The new
+`tools/pptx-render` sidecar builds through CMake into
+`build/cargo/release/pptx-render` (18 MB, no runtime dependencies): 16:9 →
+1920×1080, 4:3 → 1440×1080, hidden slides skipped, JSON manifest with font
+substitutions, corrupt input leaves no output, Unicode paths work. Cargo tests
+(6) and `pptx_render_fixture` pass. Next: **PX.2** — the controller import verb
+and transactional edit for the service and Library destinations.
 
 **LRF.8–LRF.11 complete (second operator report, 2026-11-06):** Library
 songs show titles without CCLI row labels, and redundant Add/Import buttons are
