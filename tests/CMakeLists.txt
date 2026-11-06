@@ -835,7 +835,9 @@ if(TARGET pptx_render)
 endif()
 
 # PX.3/PX.4: the two operator doors for a .pptx drop, over the real shell.
-if(TARGET pptx_render)
+# Qt Quick only exists with the UI; the headless preset still builds the
+# sidecar and its Qt-free tests above.
+if(OPENSHOW_BUILD_UI AND TARGET pptx_render)
   qt_add_executable(pptx_ui_tests pptx_ui_tests.cpp)
   qt_add_qml_module(pptx_ui_tests
     URI OpenShow

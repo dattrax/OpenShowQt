@@ -26,8 +26,9 @@ The concurrent PowerPoint checkpoint and its next steps remain below.
 **PX.8 complete (2026-11-06):** `docs/pptx-import.md` records the operator flow,
 the `service.json` + `assets/` storage decision (no base64), cache/offline rules,
 the sidecar build, Windows CI and the chart/SmartArt limits; README links it.
-PX.1–PX.8 are DONE. Gates: `pptx_render_tests`, `document_controller_tests`,
-`pptx_ui_tests`, `document_present_tests` and `ui_loads` pass. Remaining PX
+PX.1–PX.8 are DONE. Gates: desktop **79/79** (443 s) and headless **41/41**
+(70 s); the PX rows include `pptx_render_tests`, `document_controller_tests`,
+`pptx_ui_tests`, `document_present_tests` and `ui_loads`. Remaining PX
 follow-ups, if any, are outside this milestone; physical Windows app acceptance
 is part of the port, not PX.7's sidecar gate.
 
