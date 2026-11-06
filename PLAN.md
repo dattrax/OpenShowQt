@@ -1637,6 +1637,19 @@ Update `docs/architecture.md`, the control-set catalogue and PROGRESS.md with
 actual results. Do not mark SL/SI DONE from code inspection or empty UI captures.
 
 
+### Library/service operator follow-ups (LRF)
+
+Reported after SL/SI completion on 2026-11-06; implement these fixes now,
+then resume the remaining TV/TA work. Preserve the one-service/catalog-reference
+amendments and the existing durable catalog. Complete and push each fix.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| LRF.1 | DONE | Expose clipboard song import outside Edit | Real-worker library/service journey passes through Show → visible Import → Paste → Add, plus More alternative and return to originating page; local executable rebuilt |
+| LRF.2 | TODO | Remove search-field motion during drag and redundant toolbar Search | Static placeholder through focus/drop; keep Ctrl+F; remove toolbar control and dead signal; actual drag leaves query unchanged |
+| LRF.3 | TODO | Multi-select and Delete current-service entries | Ctrl toggles, Shift ranges, Ctrl+A selects list; Delete only in focused list, stable entry IDs, one service undo, source Library unchanged |
+| LRF.4 | TODO | Multi-select and Delete Library records | Same selection semantics across both branches, typed stable IDs, atomic catalog batches and scoped presentation removal; retain prepared service content; input fields keep native Delete |
+
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
 **Entry gate: CS.1–CS.9, SL.1–SL.9, SI.1–SI.4, the remaining TV leaves and TA.1 must be DONE, with

@@ -4,6 +4,12 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**LRF.1 complete:** Import song is visible on Show and has a More-menu entry;
+opening/finishing import returns to its originating page. The production-shell
+journey now uses the actual visible Paste/Add buttons instead of prepopulating
+the catalog through C++; the real-worker test passes (1.84 s). Local frontend
+rebuilt. Next: LRF.2 search motion/toolbar cleanup, then list multi-delete.
+
 **SL.4–SL.8 and SI.3–SI.4 delivered in code: the shared Library pane, the
 clipboard import page, and reference-backed running-order rows.** The sidebar is
 now `LibraryBrowser` (Songs from the durable catalog, Presentations from this

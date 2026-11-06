@@ -133,7 +133,7 @@ Rectangle {
             Accessible.name: "More"
             glyph: "\u22ef"
             label: "More"
-            selected: bar.page === "themes" || bar.page === "bible"
+            selected: bar.page === "themes" || bar.page === "bible" || bar.page === "songimport"
             Menu {
                 id: themeMenu
                 objectName: "themeMenu"
@@ -163,6 +163,11 @@ Rectangle {
                     onTriggered: bar.pageSelected("themes")
                 }
                 MenuSeparator {}
+                MenuItem {
+                    objectName: "songImportMenuItem"
+                    text: "Import Song from Clipboard…"
+                    onTriggered: bar.pageSelected("songimport")
+                }
                 // The Bible import (task BI.5): one requested passage at a
                 // time into today's schedule. Opening the entry opens the
                 // page; it asks for nothing and presents nothing until the

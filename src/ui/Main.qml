@@ -31,6 +31,11 @@ Window {
 
     // Explicit modes separate presenting from content authoring.
     property string page: "show"
+    property string songImportReturnPage: "show"
+    function openSongImport() {
+        if (root.page !== "songimport") root.songImportReturnPage = root.page
+        root.page = "songimport"
+    }
     // Task TV.2 (theme-editor review): the Themes mode reclaims everything
     // under the header. The operator docks and the media bin are HIDDEN for
     // it — hidden, never resized, and `WorkspacePanels` keeps every stored
@@ -123,7 +128,10 @@ Window {
         // Ctrl+F searches PRESENTATIONS, which is what the sidebar lists
         // since UI.4a turned the bottom of the window into the media bin.
         onFocusLibrarySearchRequested: leftDock.focusSearch()
-        onPageSelected: name => root.page = name
+        onPageSelected: name => {
+            if (name === "songimport") root.openSongImport()
+            else root.page = name
+        }
         onBoxNudgeRequested: (dx, dy) => editPage.nudgeBox(dx, dy)
         onBoxStepRequested: delta => editPage.stepBox(delta)
         onPresenterStepRequested: delta => root.presenterStep(delta)
@@ -167,7 +175,7 @@ Window {
         anchors.bottom: mediaBin.top
         onSourceChosen: (kind, id) => root.browsedShowId = kind === "show" ? id : ""
         onSongChosen: id => root.browsedShowId = docs.showForCatalogItem(id)
-        onImportRequested: root.page = "songimport"
+        onImportRequested: root.openSongImport()
     }
 
     OutputPanel {
@@ -244,7 +252,7 @@ Window {
         anchors.top: topBar.bottom
         anchors.bottom: mediaBin.top
         anchors.margins: 12
-        onCloseRequested: root.page = "edit"
+        onCloseRequested: root.page = root.songImportReturnPage
     }
 
     MediaBin {

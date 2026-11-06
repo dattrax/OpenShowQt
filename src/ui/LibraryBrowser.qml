@@ -210,7 +210,6 @@ Item {
                 width: 92
                 height: 24
                 text: "Import song"
-                visible: browser.editingEnabled
                 onClicked: browser.importRequested()
             }
             PanelButton {

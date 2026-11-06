@@ -136,13 +136,6 @@ int main(int argc, char** argv) {
     const std::string text =
         readFile(OPENSHOW_SOURCE_DIR "/docs/fixtures/songs/morning-light.txt");
     QGuiApplication::clipboard()->setText(QString::fromUtf8(text.c_str()));
-    songImport.pasteFromClipboard();
-    check(waitFor([&] {
-              return !songImport.measuring() && !songImport.slides().isEmpty();
-          }),
-          "the clipboard fixture measured");
-    check(songImport.addToLibrary(), "the song entered the Library");
-
     QQmlApplicationEngine engine;
     QStringList warnings;
     QObject::connect(&engine, &QQmlEngine::warnings,
@@ -179,6 +172,38 @@ int main(int argc, char** argv) {
         return 1;
     }
     QTest::qWait(150);
+
+    // Import is a preparation action, reachable directly from Show.
+    auto click = [window](QQuickItem* item) {
+        if (item) QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+            item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint());
+    };
+    auto* importButton = findNamed(window->contentItem(), "libraryImportSongButton");
+    check(window->property("page") == "show" && importButton && importButton->isVisible(),
+          "Import song is visible on Show without entering Edit");
+    click(importButton);
+    QTest::qWait(50);
+    check(window->property("page") == "songimport", "the Library button opens clipboard import");
+    click(findNamed(window->contentItem(), "songPasteButton"));
+    check(waitFor([&] { return !songImport.measuring() && songImport.canAdd(); }),
+          "pasting through the visible page measures the clipboard fixture");
+    auto* importPage = findNamed(window->contentItem(), "songImportPage");
+    auto* importScroll = importPage ? importPage->property("contentItem").value<QQuickItem*>() : nullptr;
+    if (importScroll) importScroll->setProperty("contentY", qMax(0.0,
+        importScroll->property("contentHeight").toDouble() - importScroll->height()));
+    QTest::qWait(40);
+    click(findNamed(window->contentItem(), "songAddToLibraryButton"));
+    check(library.songCount() == 1 && window->property("page") == "show",
+          "Add to Library creates one song and returns to Show");
+    click(findNamed(window->contentItem(), "toolbarMore"));
+    QTest::qWait(40);
+    auto* importMenu = findNamed(window->contentItem(), "songImportMenuItem");
+    check(importMenu && importMenu->isVisible(), "More also exposes clipboard import");
+    click(importMenu);
+    QTest::qWait(40);
+    check(window->property("page") == "songimport", "the menu opens the same import page");
+    click(findNamed(window->contentItem(), "songImportBackButton"));
+    QTest::qWait(40);
 
     // A scrolled running order: a filler presentation listed many times.
     check(docs.createSong("Filler"), "a filler presentation exists");
