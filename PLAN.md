@@ -1663,6 +1663,7 @@ amendments and the existing durable catalog. Complete and push each fix.
 | LRF.14 | DONE | Remove redundant presentation menu routes | Remove New presentation and both PowerPoint import menu entries, their file/creation dialogs and menu-only signals; shared import/rendering stays behind both drag/drop destinations. UI regressions assert absence and import the real deck through both targets |
 | LRF.15 | DONE | Treat clipboard title as metadata and prepare a blank opening cue | Remove a lone title before the first section while preserving unlabelled/multi-line lyrics. Shared planner adds one explicit blank opening; validation, real-worker import/service and restart regressions pass |
 | LRF.16 | DONE | Display song sections with muted colours and concise captions | Share section captions across Show/Edit/import; consecutive labels render once while lyric thumbnails remain; preserve service name and live/selection markers. 19 affected suites plus 150% real-worker journey pass; [acceptance](docs/reviews/song-section-captions-2026-11-06.md) |
+| LRF.17 | DONE | Close the blank gap below the theme list in More | Hidden No themes yet row collapses to zero height. Regression reproduces the reserved row before the fix and checks single/multiple themes and reopening; theme data and defaults remain unchanged |
 
 ### PowerPoint deck import (PX)
 

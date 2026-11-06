@@ -142,6 +142,8 @@ Rectangle {
                 MenuItem {
                     objectName: "themeMenuEmpty"
                     visible: docs.themes.length === 0
+                    // Menu's ListView still reserves invisible rows' height.
+                    height: visible ? implicitHeight : 0
                     enabled: false
                     text: "No themes yet"
                 }

@@ -4,6 +4,13 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**LRF.17 complete (theme menu spacing, 2026-11-06):** The hidden No themes yet
+placeholder now has zero height, closing the blank row below the themes in
+More. Theme records and defaults are unchanged. The regression catches the
+reserved row before the fix and checks single/multiple themes, separator spacing
+and reopening. The local executable and affected UI targets build; workspace,
+shared controls and UI load all pass (3/3, 46.93 s). `git diff --check` is clean.
+
 **LRF.15–LRF.16 complete (song-section follow-up, 2026-11-06):** Clipboard import
 keeps a lone title before the first explicit section as metadata only. Ordinary
 unlabelled lyrics and multi-line preambles retain all words. The shared song

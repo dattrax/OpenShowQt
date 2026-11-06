@@ -2394,10 +2394,25 @@ int main(int argc, char** argv) {
                   && docs.themes().at(0).toMap().value(QStringLiteral("builtin")).toBool(),
               "More opens on the seeded Default theme and still offers the editor");
 
+        auto checkThemeMenuSpacing = [&](const QList<QQuickItem*>& rows) {
+            auto* empty = findNamed(window->contentItem(), "themeMenuEmpty");
+            auto* editor = findNamed(window->contentItem(), "themeMenuEditor");
+            check(empty && !empty->isVisible() && empty->height() == 0,
+                  "the hidden no-themes placeholder reserves no menu row");
+            if (rows.isEmpty() || !editor) return;
+            auto* last = rows.last();
+            const qreal gap = editor->mapToScene(QPointF(0, 0)).y()
+                - last->mapToScene(QPointF(0, last->height())).y();
+            check(gap >= 0 && gap < last->height() / 2,
+                  "only the separator separates the last theme and Theme Editor");
+        };
+        checkThemeMenuSpacing(menuRowsWith(1));
+
         check(docs.createBlankTheme("Alpha") && docs.createBlankTheme("Beta"),
               "two themes exist for the menu to name");
         QList<QQuickItem*> menuRows = menuRowsWith(3);
         check(!menuRows.isEmpty(), "every theme is a row in the open menu");
+        checkThemeMenuSpacing(menuRows);
         const QString alphaId = docs.themes().at(1).toMap().value(QStringLiteral("id")).toString();
         clickAt(menuRows.at(1), 40, menuRows.at(1)->height() / 2);
         check(waitFor([&] { return docs.wornThemeId() == alphaId; })
@@ -2408,6 +2423,7 @@ int main(int argc, char** argv) {
         check(!menuRows2.isEmpty()
                   && menuRows2.at(1)->property("text").toString().startsWith(QChar(0x2713)),
               "the worn theme is the checked one in the list");
+        checkThemeMenuSpacing(menuRows2);
         clickAt(menuRows2.at(1), 40, menuRows2.at(1)->height() / 2);
         check(waitFor([&] { return docs.wornThemeId().isEmpty(); }),
               "clicking the worn row again takes it off");
