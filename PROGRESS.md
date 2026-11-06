@@ -23,12 +23,11 @@ approved leaving its concurrently included PowerPoint submodule changes in
 place. Details: [acceptance](docs/reviews/edit-slide-navigation-2026-11-06.md).
 The concurrent PowerPoint checkpoint and its next steps remain below.
 
-**PX.6 complete (2026-11-06):** the operator deck `aug-8.pptx` (six visible
-slides) is the committed real-world fixture. `pptx_render_tests` renders it at
-1920×1080; `document_controller_tests` imports it and removes it with one undo;
-`pptx_ui_tests` drops it on both operator doors; and `document_present_tests`
-presents every slide on a live worker, then reopens the saved package with the
-renderer absent and presents again. Next: **PX.7** — Windows readiness.
+**PX.7 in progress (2026-11-06):** `.github/workflows/pptx-render-windows.yml`
+builds and tests the sidecar on `windows-latest` with the pinned Rust 1.96
+toolchain and `--locked`, then asserts 16:9 → 1920×1080, 4:3 → 1440×1080,
+hidden-slide omission and six pages from the operator deck. The workflow is
+pushed; the first run is the remaining evidence before PX.7 can close.
 
 **LRF.8–LRF.11 complete (second operator report, 2026-11-06):** Library
 songs show titles without CCLI row labels, and redundant Add/Import buttons are

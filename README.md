@@ -228,7 +228,10 @@ to skip it; PowerPoint import is then unavailable in that build.
 ```
 
 The sidecar writes one PNG per visible slide plus `manifest.json` at the
-1920×1080 canvas fit (16:9 is exactly 1920×1080; 4:3 is 1440×1080).
+1920×1080 canvas fit (16:9 is exactly 1920×1080; 4:3 is 1440×1080). A
+`windows-latest` GitHub Actions workflow builds and tests it with MSVC and
+asserts those dimensions on the committed fixtures; it is the port's early
+warning, not a substitute for running the app on Windows.
 
 ### Use a different Skia location
 

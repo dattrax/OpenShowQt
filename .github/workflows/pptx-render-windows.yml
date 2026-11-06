@@ -1,0 +1,85 @@
+name: pptx-render (Windows)
+
+on:
+  push:
+    paths:
+      - "tools/pptx-render/**"
+      - "third_party/betteroffice"
+      - ".github/workflows/pptx-render-windows.yml"
+  pull_request:
+    paths:
+      - "tools/pptx-render/**"
+      - "third_party/betteroffice"
+      - ".github/workflows/pptx-render-windows.yml"
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # Skia is not needed here; only the pinned BetterOffice submodule.
+      - name: Check out the renderer source
+        run: git submodule update --init --depth 1 third_party/betteroffice
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/pptx-render -> target
+
+      - name: Build
+        run: |
+          cargo build --release --locked --manifest-path tools/pptx-render/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Rust tests (scale, hidden slides, determinism, Unicode, real deck)
+        run: |
+          cargo test --release --locked --manifest-path tools/pptx-render/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Render fixtures and check the 1080p contract
+        run: |
+          $bin = "tools/pptx-render/target/release/pptx-render.exe"
+          $out = Join-Path $env:RUNNER_TEMP "pptx-16x9"
+          & $bin --input tools/pptx-render/tests/fixtures/16x9.pptx --out-dir $out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $manifest = Get-Content (Join-Path $out "manifest.json") | ConvertFrom-Json
+          if ($manifest.pages.Count -ne 2) { throw "expected 2 visible pages" }
+          if ($manifest.hiddenPages.Count -ne 1) { throw "expected 1 hidden page" }
+          Add-Type -AssemblyName System.Drawing
+          foreach ($page in $manifest.pages) {
+            $image = [System.Drawing.Image]::FromFile((Join-Path $out $page.file))
+            if ($image.Width -ne 1920 -or $image.Height -ne 1080) {
+              throw "$($page.file) is $($image.Width)x$($image.Height), not 1920x1080"
+            }
+            $image.Dispose()
+          }
+          $out4 = Join-Path $env:RUNNER_TEMP "pptx-4x3"
+          & $bin --input tools/pptx-render/tests/fixtures/4x3.pptx --out-dir $out4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $image = [System.Drawing.Image]::FromFile((Join-Path $out4 "slide-01.png"))
+          if ($image.Width -ne 1440 -or $image.Height -ne 1080) {
+            throw "4:3 rendered $($image.Width)x$($image.Height), not 1440x1080"
+          }
+          $image.Dispose()
+
+      - name: Render the operator deck
+        run: |
+          $bin = "tools/pptx-render/target/release/pptx-render.exe"
+          $out = Join-Path $env:RUNNER_TEMP "pptx-aug8"
+          & $bin --input tools/pptx-render/tests/fixtures/aug-8.pptx --out-dir $out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $manifest = Get-Content (Join-Path $out "manifest.json") | ConvertFrom-Json
+          if ($manifest.pages.Count -ne 6) { throw "expected 6 visible pages" }
+          if ($manifest.pages[0].width -ne 1920 -or $manifest.pages[0].height -ne 1080) {
+            throw "the operator deck did not render at 1080p"
+          }
