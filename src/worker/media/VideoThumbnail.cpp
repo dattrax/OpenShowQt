@@ -1,6 +1,7 @@
 #include "media/VideoThumbnail.h"
 
 #include "media/FFmpeg.h"
+#include "media/SwsScale.h"
 
 #include <png.h>
 
@@ -180,10 +181,10 @@ bool videoThumbnailBase64(const std::string& path, int maxWidth, int maxHeight,
              static_cast<double>(boxHeight) / frame->height});
         const int dstWidth = std::max(1, static_cast<int>(frame->width * scale));
         const int dstHeight = std::max(1, static_cast<int>(frame->height * scale));
-        SwsContext* sws = sws_getContext(
+        SwsContext* sws = swsContextFor(
             frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-            dstWidth, dstHeight, AV_PIX_FMT_RGB24, SWS_BILINEAR, nullptr, nullptr,
-            nullptr);
+            frame->color_range == AVCOL_RANGE_JPEG, dstWidth, dstHeight,
+            AV_PIX_FMT_RGB24, SWS_BILINEAR);
         if (sws == nullptr) {
             if (error != nullptr) *error = "video thumbnail: scale setup failed";
             goto cleanup;

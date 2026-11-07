@@ -629,7 +629,7 @@ set_tests_properties(font_fixture_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 3
 # Fixtures are generated with the ffmpeg CLI; the test exits 77 (skipped)
 # when the CLI is not available to produce them.
 add_executable(media_tests media_tests.cpp)
-target_link_libraries(media_tests PRIVATE openshow::worker_media)
+target_link_libraries(media_tests PRIVATE openshow::worker_media PkgConfig::FFMPEG)
 add_test(NAME media_tests COMMAND media_tests)
 set_tests_properties(media_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 

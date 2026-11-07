@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "media/FFmpeg.h"
+#include "media/SwsScale.h"
 
 namespace openshow::media {
 
@@ -551,9 +552,9 @@ void VideoFrameSource::run() {
             convert = nullptr;
         }
         if (!convert) {
-            convert = sws_getContext(pixels->width, pixels->height, pixelFormat, out.width,
-                                     out.height, ringFormat, SWS_BILINEAR, nullptr, nullptr,
-                                     nullptr);
+            convert = swsContextFor(pixels->width, pixels->height, pixelFormat,
+                                    pixels->color_range == AVCOL_RANGE_JPEG,
+                                    out.width, out.height, ringFormat, SWS_BILINEAR);
             convertFrom = pixelFormat;
             if (convert) {
                 std::fprintf(stderr, "openshow-worker: video decode: converting %s to %s\n",

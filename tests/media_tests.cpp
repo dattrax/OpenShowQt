@@ -15,6 +15,7 @@
 #include <atomic>
 #include <array>
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -26,10 +27,12 @@
 
 #include "media/AudioClock.h"
 #include "media/AudioRing.h"
+#include "media/FFmpeg.h"
 #include "media/FrameRing.h"
 #include "media/MediaProbe.h"
 #include "media/SeekQueue.h"
 #include "media/VideoFrameSource.h"
+#include "media/VideoThumbnail.h"
 
 namespace {
 
@@ -38,6 +41,21 @@ bool check(bool condition, const char* what) {
         std::fprintf(stderr, "FAIL: %s\n", what);
     }
     return condition;
+}
+
+// FFmpeg's swscale logs through av_log. The media module normalises the
+// deprecated full-range YUV formats and states the range itself, so a phone
+// or camera clip must not produce "deprecated pixel format used" on the
+// worker's console. This captures the log while the thumbnail path decodes
+// one such clip.
+std::mutex g_logMutex;
+std::vector<std::string> g_log;
+
+void captureAvLog(void*, int, const char* format, va_list args) {
+    char buffer[512];
+    std::vsnprintf(buffer, sizeof buffer, format, args);
+    std::lock_guard lock(g_logMutex);
+    g_log.emplace_back(buffer);
 }
 
 bool generate(const std::string& command) {
@@ -630,6 +648,7 @@ int main() {
     const std::string mp4 = (dir / "probe.mp4").string();
     const std::string wav = (dir / "probe.wav").string();
     const std::string hd = (dir / "decode-hd.mp4").string();
+    const std::string fullRange = (dir / "range-avi.avi").string();
     const std::string garbage = (dir / "garbage.bin").string();
 
     const bool generated =
@@ -641,7 +660,12 @@ int main() {
                  "-f lavfi -i sine=frequency=440:sample_rate=44100:duration=1 " + wav) &&
         generate("ffmpeg -hide_banner -loglevel error -y "
                  "-f lavfi -i testsrc2=size=1920x1080:rate=25:duration=4 "
-                 "-c:v libx264 -preset ultrafast -pix_fmt yuv420p -an " + hd);
+                 "-c:v libx264 -preset ultrafast -pix_fmt yuv420p -an " + hd) &&
+        // The deprecated full-range spelling most phone/camera clips decode
+        // to; swscale used to warn about it on every context.
+        generate("ffmpeg -hide_banner -loglevel error -y "
+                 "-f lavfi -i testsrc2=size=320x240:rate=30:duration=1 "
+                 "-c:v mjpeg -pix_fmt yuvj420p -q:v 3 -an " + fullRange);
     if (!generated) {
         std::printf("SKIP: the ffmpeg CLI could not generate the fixtures\n");
         return 77;
@@ -724,6 +748,35 @@ int main() {
     // ---- 6.7d: the seek protocol R19 asked for ----
     ok = exerciseMidApplySeek(hd) && ok;
     ok = exerciseSeekQueue() && ok;
+
+    // ---- MB.6 / swscale: the deprecated full-range spelling stays quiet ----
+    {
+        {
+            std::lock_guard lock(g_logMutex);
+            g_log.clear();
+        }
+        av_log_set_callback(captureAvLog);
+        std::string png;
+        std::string thumbError;
+        int thumbWidth = 0;
+        int thumbHeight = 0;
+        const bool made = openshow::media::videoThumbnailBase64(
+            fullRange, 160, 90, &png, &thumbWidth, &thumbHeight, &thumbError);
+        av_log_set_callback(av_log_default_callback);
+        bool warned = false;
+        {
+            std::lock_guard lock(g_logMutex);
+            for (const std::string& line : g_log) {
+                if (line.find("deprecated pixel format") != std::string::npos) {
+                    warned = true;
+                }
+            }
+        }
+        ok = check(made && !png.empty() && thumbWidth > 0 && thumbHeight > 0,
+                   "the thumbnail decodes a full-range clip") && ok;
+        ok = check(!warned,
+                   "a deprecated full-range format no longer logs swscale's range warning") && ok;
+    }
 
     if (!ok) {
         return 1;
