@@ -10,10 +10,13 @@ import QtQuick.Dialogs
 // What the bin is: the service's registered media as named cues, with the
 // kind each one has (DocumentViews writes it into every asset row from the
 // domain's one name rule), collections down the left that filter that list,
-// and import kept separate from every activation. The two controls that
-// change the document (Remove, Add to slide) stay behind editingEnabled; a
-// file the product cannot present is still listed and says so, because
-// hiding the row would leave the operator wondering where the import went.
+// and import kept separate from every activation. Removing an item is a
+// library action: the selected card answers both the context menu's Remove
+// and the Delete key on any page, because the bin browses the service's
+// media, not the slide under edit. Adding a picture TO a slide stays behind
+// editingEnabled — that is a slide edit. A file the product cannot present is
+// still listed and says so, because hiding the row would leave the operator
+// wondering where the import went.
 //
 // UI.4b adds the activation, and it is one control on one kind. What the
 // worker offers at runtime is the independent production audio track
@@ -521,12 +524,14 @@ FocusScope {
     }
 
     // Delete removes the selected asset, the same verb the context menu's
-    // Remove calls. The editor's Delete shortcut stands down while the bin owns
-    // the keyboard (ShortcutMap's binFocused), so this one is unambiguous.
+    // Remove calls. It needs the bin to own the keyboard (a card click gives
+    // it focus) and nothing else: removing media is a library action that is
+    // as valid on Show as on Edit. The editor's Delete shortcut stands down
+    // while the bin owns the keyboard (ShortcutMap's binFocused), so the two
+    // can never fire together.
     Shortcut {
         sequence: "Delete"
-        enabled: mediaBin.editingEnabled && mediaBin.activeFocus
-                 && mediaBin.selectedAssetId !== ""
+        enabled: mediaBin.activeFocus && mediaBin.selectedAssetId !== ""
         onActivated: {
             docs.removeAsset(mediaBin.selectedAssetId)
             mediaBin.selectedAssetId = ""
@@ -588,7 +593,9 @@ FocusScope {
         MenuItem {
             objectName: "mediaRemoveAction"
             text: "Remove"
-            visible: mediaBin.editingEnabled && mediaBin.selectedAssetId !== ""
+            // A library action, available wherever the bin is: the same verb
+            // the Delete key runs, and it requires an explicit selection.
+            visible: mediaBin.selectedAssetId !== ""
             onTriggered: {
                 docs.removeAsset(mediaBin.selectedAssetId)
                 mediaBin.selectedAssetId = ""

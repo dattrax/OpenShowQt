@@ -1225,6 +1225,21 @@ int main(int argc, char** argv) {
                   && docs.assets().size() == camerasBefore,
               "a fifth camera is refused and creates nothing");
 
+        // A camera is an asset like any other: the Delete key removes the
+        // selected one, with the card click giving the bin the keyboard.
+        {
+            for (auto* row : mediaRows())
+                if (row->property("modelData").toMap().value("name").toString()
+                    == QLatin1String("Camera 4"))
+                    clickAt(row, 20, 14);
+            QTest::qWait(30);
+            const int before = docs.assets().size();
+            QTest::keyClick(window, Qt::Key_Delete);
+            QTest::qWait(40);
+            check(docs.assets().size() == before - 1,
+                  "Delete removes a selected camera");
+        }
+
         // Closing the bin and dragging its edge give the workspace its area
         // back without disturbing what the operator was doing.
         docs.selectSong(songBeforeBin);
@@ -1285,12 +1300,15 @@ int main(int argc, char** argv) {
               "the last word is the cue control, honest about having no output");
 
         // The Delete key removes the selected asset, the same verb the menu's
-        // Remove calls. A disposable asset keeps the later expectations intact.
+        // Remove calls. It works on Show as well as in Edit: the bin browses
+        // the service's media, not the slide under edit. A disposable asset
+        // keeps the later expectations intact.
         {
             std::ofstream(std::filesystem::path(scratch.path().toStdString())
                           / "delete-me.txt") << "BYTES";
             check(docs.importMediaFile(files + "/delete-me.txt"),
                   "import a disposable asset");
+            window->setProperty("page", "show");
             QTest::qWait(40);
             for (auto* row : mediaRows())
                 if (row->property("modelData").toMap().value("name").toString()
@@ -1298,13 +1316,10 @@ int main(int argc, char** argv) {
                     clickAt(row, 20, 14);
             QTest::qWait(20);
             const int before = docs.assets().size();
-            window->setProperty("page", "edit");
-            QTest::qWait(30);
-            mediaBin->forceActiveFocus();
             QTest::keyClick(window, Qt::Key_Delete);
             QTest::qWait(40);
             check(docs.assets().size() == before - 1,
-                  "Delete removes the selected media asset");
+                  "Delete removes the selected media asset on the Show page");
         }
 
         // ND.7: the Add NDI action belongs to the bin's context menu. Its
