@@ -232,25 +232,57 @@ while open: the helper must emit a typed event and keep running.
 
 ## Tests
 
+The camera is needed only for the final manual acceptance. Every layer below it
+has a fake, so CI never depends on NDI, a licence, a LAN or a camera.
+
+| Layer | Test | Camera? |
+|---|---|---|
+| Helper protocol/ring | `helper_unit_tests`, `helper_process_roundtrip` | no |
+| Worker live core | `live_source_tests` (worker fake + test helper binary) | no |
+| UYVY→NV12 | `live_yuv_tests` | no |
+| ND.5 camera asset | domain/storage round trip and migration | no |
+| ND.6 background/renderer | headless scene + fake frames | no |
+| ND.7 Media Bin/RPC | QML/worker with the fake helper | no |
+| ND.8 crash/retry | controlled fake helper | no |
+| Real acceptance | `ndi_accept.py`, `ndi_cpu.py`, manual | yes |
+
 - `helper_unit_tests` (fake backend, no SDK): JSON parse/escape, frame-ring
   layout, write/read, newest-wins, a slot still being written, corrupt headers,
   probe/list/status/open/close, malformed and oversized commands, version
-  refusal, stdout JSON-only and shutdown on stdin EOF; plus a real mapped
-  `/dev/shm` segment.
+  refusal, stdout JSON-only, shutdown on stdin EOF, a real mapped `/dev/shm`
+  segment, the UYVY fake frame shape, and a fake `source-lost` event.
 - `helper_process_roundtrip`: the real helper binary with `--fake`, checking
-  exit status, JSON-only stdout, the published segment name and silent stderr.
+  exit status, JSON-only stdout, the published segment name, silent stderr, and
+  a UYVY `open` reply (`format`/`stride`).
 - `helper_has_no_ndi_link`: `ldd` proves the helper does not link the NDI
   runtime in either build.
-- Worker tests (fake helper, ND.3/ND.7): capability advertisement, source list,
-  open/close, shm mapping, newest-frame handoff, helper crash → typed fault, no
-  NDI symbols in the application binary.
-- Document/UI tests: camera asset round trip and storage migration, Media Bin
-  action hidden without capability, source picker, camera background compiles,
-  placeholder when the source disappears.
-- Real NDI acceptance is manual/gated: a camera on the LAN, `--list` shows it,
-  opening streams 1080p frames, the audience shows the live feed, and preview/
-  audience stay responsive. The SDK cannot be downloaded in CI, so this is not a
-  default CI gate.
+- `live_source_tests`: worker `FakeBackend` and `HelperBackend` against the
+  test helper binary, including the helper's `source-lost` event and the
+  helper's survival afterwards.
+- Document/UI tests (ND.5/ND.7): camera asset round trip and storage
+  migration, Media Bin action hidden without capability, source picker,
+  camera background compiles, placeholder when the source disappears.
+
+### Fake hooks
+
+The fake backend never initialises NDI, so a real camera attached to the
+machine cannot affect these tests and tests cannot open the operator's camera:
+
+- `--fake-format uyvy` emits the real 4:2:2 shape (2 bytes/pixel); the default
+  remains BGRA for the older tests.
+- `--fake-static` freezes the pattern for screenshot/snapshot tests.
+- `--fake-lose-source-ms N` emits `source-lost` after N ms, which covers the
+  event path deterministically instead of asking someone to unplug a camera.
+
+`HelperBackend` resolves `OPENSHOW_NDI_HELPER` before `ndi-helper` on `PATH`,
+so ND.7 tests point the worker at the test helper binary and never at the real
+one. Tests must assert on the fake names/format/sequence, never on a real
+source name or an exact source count.
+
+Real NDI acceptance is manual/gated: a camera on the LAN, `--list` shows it,
+opening streams 1080p frames, the audience shows the live feed, and preview/
+audience stay responsive. The SDK cannot be downloaded in CI, so this is not a
+default CI gate.
 
 ## Known limits (v1)
 

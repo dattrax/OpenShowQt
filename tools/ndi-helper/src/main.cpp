@@ -41,6 +41,9 @@ void printUsage(std::ostream& out) {
         << "  --wait-ms N       discovery wait for --list (default 1500, max 10000)\n"
         << "  --extra-ips LIST  also query these addresses for sources (comma-separated)\n"
         << "  --fake            use the built-in colour-bar source, not NDI\n"
+        << "  --fake-format F   fake frame format: bgra (default) or uyvy\n"
+        << "  --fake-static     freeze the fake pattern for deterministic snapshots\n"
+        << "  --fake-lose-source-ms N  emit source-lost after N ms (fake only)\n"
         << "  --input FILE      read protocol commands from FILE in server mode\n"
         << "  --version         print the helper version\n"
         << "  --help            print this text\n"
@@ -114,11 +117,36 @@ int main(int argc, char** argv) {
     bool list = false;
     std::uint32_t waitMs = 1500;
     std::string inputPath;
+    openshow::ndi::FakeOptions fakeOptions;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--fake") {
             fake = true;
+        } else if (arg == "--fake-format") {
+            if (i + 1 >= argc) {
+                return fail("--fake-format needs 'bgra' or 'uyvy'");
+            }
+            const std::string format = argv[++i];
+            if (format == "uyvy") {
+                fakeOptions.uyvy = true;
+            } else if (format == "bgra") {
+                fakeOptions.uyvy = false;
+            } else {
+                return fail("--fake-format must be 'bgra' or 'uyvy'");
+            }
+        } else if (arg == "--fake-static") {
+            fakeOptions.staticFrames = true;
+        } else if (arg == "--fake-lose-source-ms") {
+            if (i + 1 >= argc) {
+                return fail("--fake-lose-source-ms needs a value");
+            }
+            char* end = nullptr;
+            const long value = std::strtol(argv[++i], &end, 10);
+            if (!end || *end != '\0' || value < 0) {
+                return fail("--fake-lose-source-ms needs a non-negative integer");
+            }
+            fakeOptions.loseSourceAfterMs = static_cast<int>(value);
         } else if (arg == "--probe") {
             probe = true;
         } else if (arg == "--list") {
@@ -171,7 +199,7 @@ int main(int argc, char** argv) {
     }
 #endif
     if (!backend) {
-        backend = std::make_unique<openshow::ndi::FakeBackend>();
+        backend = std::make_unique<openshow::ndi::FakeBackend>(fakeOptions);
     }
 
     if (probe) {

@@ -105,4 +105,35 @@ if(NOT eofOut MATCHES "\"ok\":true")
   message(FATAL_ERROR "helper did not answer before EOF: ${eofOut}")
 endif()
 
+# The UYVY fake is the real receiver's frame shape: two bytes per pixel.
+set(uyvyCommands "${WORK_DIR}/helper-roundtrip-uyvy.jsonl")
+file(WRITE "${uyvyCommands}"
+  "{\"cmd\":\"probe\"}\n"
+  "{\"cmd\":\"open\",\"source\":\"Fake camera 1\"}\n"
+  "{\"cmd\":\"quit\"}\n"
+)
+execute_process(
+  COMMAND "${BINARY}" --fake --fake-format uyvy --input "${uyvyCommands}"
+  OUTPUT_VARIABLE uyvyOut
+  ERROR_VARIABLE uyvyErr
+  RESULT_VARIABLE uyvyResult
+  TIMEOUT 30
+)
+if(NOT uyvyResult EQUAL 0)
+  message(FATAL_ERROR "UYVY helper run failed: ${uyvyResult}\n${uyvyErr}")
+endif()
+string(REGEX REPLACE "\n$" "" uyvyOut "${uyvyOut}")
+string(REPLACE "\n" ";" uyvyLines "${uyvyOut}")
+list(LENGTH uyvyLines uyvyCount)
+if(NOT uyvyCount EQUAL 3)
+  message(FATAL_ERROR "expected 3 UYVY replies, got ${uyvyCount}:\n${uyvyOut}")
+endif()
+list(GET uyvyLines 1 uyvyOpen)
+if(NOT uyvyOpen MATCHES "\"format\":\"UYVY\"")
+  message(FATAL_ERROR "UYVY open does not report UYVY: ${uyvyOpen}")
+endif()
+if(NOT uyvyOpen MATCHES "\"stride\":640")
+  message(FATAL_ERROR "UYVY open does not report the packed stride: ${uyvyOpen}")
+endif()
+
 message(STATUS "helper process round trip passed")

@@ -195,6 +195,53 @@ void testHelperBackend() {
     check(backend.processId() == -1, "helper: stop reaps the process");
 }
 
+
+void testHelperSourceLoss() {
+    using namespace openshow::live;
+
+    HelperOptions options;
+    options.executable = OPENSHOW_FAKE_HELPER_BIN;
+    options.arguments = {"--fake", "--fake-lose-source-ms", "150"};
+    options.startTimeoutMs = 5000;
+    options.requestTimeoutMs = 5000;
+    options.openTimeoutMs = 15000;
+
+    HelperBackend backend(options);
+    std::string error;
+    check(backend.start(&error), "helper loss: starts");
+    std::vector<SourceInfo> sources;
+    check(backend.list(0, &sources, &error) && !sources.empty(),
+          "helper loss: lists a source");
+    OpenInfo info;
+    check(backend.open(sources.front().name, &info, &error), "helper loss: opens");
+
+    Frame frame;
+    check(waitForFrame(backend, 0, &frame, 2000, "helper loss: first frame"),
+          "helper loss: first frame");
+
+    Event event;
+    bool got = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        // readFrame drains the helper's stdout, where the event is queued.
+        (void)backend.readFrame(frame.sequence, &frame, &error);
+        if (backend.takeEvent(&event)) {
+            got = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    check(got, "helper loss: emits an event");
+    check(event.kind == "source-lost", "helper loss: reports source-lost");
+    check(!backend.streaming(), "helper loss: stops streaming");
+    std::string version;
+    check(backend.probe(&version, &error) && version == "fake",
+          "helper loss: the helper still answers probe");
+    check(backend.close(&error), "helper loss: closes");
+    backend.stop();
+}
+
 void testHelperFailures() {
     using namespace openshow::live;
 
@@ -223,6 +270,7 @@ void testHelperFailures() {
 int main() {
     testFakeBackend();
     testHelperBackend();
+    testHelperSourceLoss();
     testHelperFailures();
 
     if (gFailed) {

@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -463,12 +464,115 @@ void testMappedSegment() {
 
 }  // namespace
 
+
+void testFakeUyvy() {
+    using namespace openshow::ndi;
+    FakeOptions options;
+    options.uyvy = true;
+    FakeBackend backend(options);
+    std::string error;
+    OpenInfo info;
+    check(backend.open("Fake camera 1", &info, &error), "fake uyvy: opens");
+    check(info.format == static_cast<std::uint32_t>(openshow::live::FrameFormat::UYVY),
+          "fake uyvy: reports UYVY");
+    check(info.stride == 640, "fake uyvy: stride is two bytes per pixel");
+    check(info.bytes == openshow::live::frameRingBytes(info.stride, info.height),
+          "fake uyvy: ring size matches the frame");
+
+    const int fd = ::shm_open(info.shmName.c_str(), O_RDONLY, 0);
+    check(fd >= 0, "fake uyvy: segment maps");
+    if (fd >= 0) {
+        void* map = ::mmap(nullptr, static_cast<std::size_t>(info.bytes), PROT_READ,
+                           MAP_SHARED, fd, 0);
+        ::close(fd);
+        check(map != MAP_FAILED, "fake uyvy: maps read-only");
+        if (map != MAP_FAILED) {
+            openshow::live::FrameRing ring(map, static_cast<std::size_t>(info.bytes));
+            std::vector<std::uint8_t> pixels(
+                static_cast<std::size_t>(info.stride) * info.height);
+            openshow::live::FrameView view;
+            bool got = false;
+            for (int attempt = 0; attempt < 100 && !got; ++attempt) {
+                got = ring.read(&view, pixels.data(), pixels.size(), &error);
+                if (!got) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            }
+            check(got, "fake uyvy: a frame arrives");
+            if (got) {
+                check(view.format ==
+                          static_cast<std::uint32_t>(openshow::live::FrameFormat::UYVY),
+                      "fake uyvy: the slot is UYVY");
+                check(view.stride == 640, "fake uyvy: the slot stride is packed");
+                check((view.flags & openshow::live::kFrameFlagAlpha) == 0,
+                      "fake uyvy: no alpha flag");
+                bool picture = false;
+                for (std::uint8_t value : pixels) {
+                    if (value != 0) {
+                        picture = true;
+                        break;
+                    }
+                }
+                check(picture, "fake uyvy: the slot carries a picture");
+            }
+            ::munmap(map, static_cast<std::size_t>(info.bytes));
+        }
+    }
+    check(backend.close(&error), "fake uyvy: closes");
+    const int gone = ::shm_open(info.shmName.c_str(), O_RDONLY, 0);
+    check(gone < 0, "fake uyvy: close unlinks the segment");
+    if (gone >= 0) {
+        ::close(gone);
+    }
+}
+
+void testFakeSourceLoss() {
+    using namespace openshow::ndi;
+    FakeOptions options;
+    options.loseSourceAfterMs = 60;
+    FakeBackend backend(options);
+    std::mutex mutex;
+    Event captured;
+    bool got = false;
+    backend.setEventSink([&](const Event& event) {
+        std::lock_guard<std::mutex> lock(mutex);
+        captured = event;
+        got = true;
+    });
+    std::string error;
+    OpenInfo info;
+    check(backend.open("Fake camera 1", &info, &error), "fake loss: opens");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (got) {
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        check(got, "fake loss: emits an event");
+        check(captured.kind == "source-lost", "fake loss: reports source-lost");
+        check(captured.source == "Fake camera 1", "fake loss: names the source");
+    }
+    check(!backend.streaming(), "fake loss: stops streaming");
+    openshow::ndi::ProbeInfo probe;
+    check(backend.probe(&probe, &error) && probe.ndiVersion == "fake",
+          "fake loss: the backend still answers probe");
+    check(backend.close(&error), "fake loss: closes");
+}
+
 int main() {
     testJson();
     testFrameRing();
     testProtocolBasics();
     testProtocolBounds();
     testMappedSegment();
+    testFakeUyvy();
+    testFakeSourceLoss();
 
     if (gFailed) {
         std::fprintf(stderr, "helper_tests: FAILED\n");

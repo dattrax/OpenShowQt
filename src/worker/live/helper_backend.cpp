@@ -618,10 +618,16 @@ bool HelperBackend::takeEvent(Event* out) {
     if (fEvents.empty()) {
         return false;
     }
-    if (out) {
-        *out = std::move(fEvents.front());
-    }
+    Event event = std::move(fEvents.front());
     fEvents.pop_front();
+    // A lost or broken receiver is no longer streaming, even though the helper
+    // process and its last ring mapping remain until close().
+    if (event.kind == "source-lost" || event.kind == "receiver-error") {
+        fOpenValid = false;
+    }
+    if (out) {
+        *out = std::move(event);
+    }
     return true;
 }
 

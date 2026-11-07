@@ -74,6 +74,9 @@ a camera.
 | `--wait-ms N` | Discovery wait for `--list` (default 1500, capped at 10000) |
 | `--extra-ips LIST` | Also query these addresses for NDI sources (comma-separated) |
 | `--fake` | Use the built-in colour-bar source instead of NDI |
+| `--fake-format bgra\|uyvy` | Fake frame shape (default `bgra`; `uyvy` is the real 4:2:2 shape) |
+| `--fake-static` | Freeze the fake pattern for deterministic snapshots |
+| `--fake-lose-source-ms N` | Emit `source-lost` after N ms (fake backend only) |
 | `--input FILE` | Read server-mode commands from FILE (used by the process test) |
 | `--version` | Print the helper version |
 | `--help` | Print usage |
