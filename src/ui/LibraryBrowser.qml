@@ -408,11 +408,19 @@ Item {
                     selection.contains("catalog:" + modelData.id)
                 Accessible.name: "Song: " + modelData.title
 
-                Rectangle {
+                CardChrome {
                     anchors.fill: parent
                     anchors.margins: 1
-                    color: songRow.rowSelected ? "#1685f8"
-                         : (songMouse.containsMouse ? "#4a4a4a" : "transparent")
+                    selected: songRow.rowSelected
+                    hovered: songMouse.containsMouse
+                    idleColor: "transparent"
+                    hoverColor: "#4a4a4a"
+                    selectedColor: "#1685f8"
+                    selectedBorder: "#1685f8"
+                    idleBorder: "transparent"
+                    selectedBorderWidth: 1
+                    borderWidth: 1
+                    radius: 0
                 }
                 Text {
                     anchors.left: parent.left
@@ -584,11 +592,19 @@ Item {
                     selection.contains(modelData.rowKind + ":" + modelData.id)
                 Accessible.name: "Presentation: " + modelData.name
 
-                Rectangle {
+                CardChrome {
                     anchors.fill: parent
                     anchors.margins: 1
-                    color: libraryRow.rowSelected ? "#1685f8"
-                         : (rowMouse.containsMouse ? "#4a4a4a" : "transparent")
+                    selected: libraryRow.rowSelected
+                    hovered: rowMouse.containsMouse
+                    idleColor: "transparent"
+                    hoverColor: "#4a4a4a"
+                    selectedColor: "#1685f8"
+                    selectedBorder: "#1685f8"
+                    idleBorder: "transparent"
+                    selectedBorderWidth: 1
+                    borderWidth: 1
+                    radius: 0
                 }
                 Text {
                     anchors.left: parent.left

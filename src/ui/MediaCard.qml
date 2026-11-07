@@ -41,13 +41,10 @@ Item {
     readonly property string videoThumb: kind === "video" && sourcePath !== ""
         ? (worker.videoThumbnails[sourcePath] || "") : ""
 
-    Rectangle {
+    CardChrome {
         anchors.fill: parent
-        color: card.selected ? "#1d3b5c"
-             : (cardMouse.containsMouse ? "#3a3a3a" : "#242424")
-        border.width: card.selected ? 2 : 1
-        border.color: card.selected ? "#1685f8" : "#4a4a4a"
-        radius: 2
+        selected: card.selected
+        hovered: cardMouse.containsMouse
 
         Item {
             id: preview

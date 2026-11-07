@@ -208,6 +208,21 @@ Show, Edit and clipboard import supply section boundaries from model order.
 | Consumers | ShowPage cue tiles, EditorSlideRail authored-slide tiles, Bible generated-slide cards, ThemeEditor Songs/Bible view tiles |
 | Automation | `objectName` per host (`operatorCueTile` keeps its `index`/`modelData`-compatible properties for the cue tests); Accessible.name assembled by the host |
 
+### CardChrome
+
+`src/ui/CardChrome.qml` (MB.8). The shared card surface: idle/hover/selected
+colour, border width and radius, and the default content slot. It is
+display-only chrome; the host overlays its own MouseArea, so click, drag and
+context semantics stay with the wearer. `MediaCard` and the Library's song and
+presentation rows wear it, so the selection and hover colours cannot drift.
+
+| | |
+|---|---|
+| Inputs | `selected`, `hovered` (booleans); `idleColor`, `hoverColor`, `selectedColor`, `idleBorder`, `selectedBorder`; `borderWidth`, `selectedBorderWidth`, `radius`; the default `content` slot |
+| Events | none — the host owns the pointer |
+| Consumers | `MediaCard`; the Library's song and presentation rows |
+| Automation | the host's row names; CardChrome carries no objectName of its own |
+
 ### MediaCard
 
 `src/ui/MediaCard.qml` (MB.1–MB.5). One media asset as a preview card in the
