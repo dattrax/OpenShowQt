@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 
 /*
  * UI part: MediaCard; contract: docs/ui/control-sets.md#mediacard
@@ -24,6 +25,10 @@ Item {
     property bool selected: false
     // Camera cards wear 1..4; the host numbers them in creation order.
     property int cameraNumber: 0
+
+    // The card's drag payload, exposed so a host/test can read what a drag
+    // would carry without reaching into the overlay-parented proxy.
+    readonly property string dragPayload: "media:" + (modelData.id || "")
 
     signal activated()
 
@@ -135,11 +140,44 @@ Item {
         }
     }
 
+    // The card is a drag source: the payload names the asset, never a document
+    // verb. A drop target decides what placing it means (MB.3).
+    DragFeedback {
+        id: cardDrag
+        objectName: "mediaDragProxy"
+        payload: card.dragPayload
+        host: card.Window.window ? card.Window.window.contentItem : null
+        title: modelData.name || ""
+        hint: "Drop on a cue to set its background"
+        dragging: cardMouse.drag.active
+    }
+
     MouseArea {
         id: cardMouse
         anchors.fill: parent
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton
-        onClicked: card.activated()
+        // A click selects; a drag carries the card. The flag keeps a completed
+        // drag from also selecting on release.
+        property bool dragMoved: false
+        drag.smoothed: false
+        drag.target: cardDrag
+        onPressed: function (mouse) {
+            dragMoved = false
+            cardDrag.begin(card, mouse.x, mouse.y)
+        }
+        onPositionChanged: {
+            if (drag.active) dragMoved = true
+        }
+        onReleased: {
+            if (cardDrag.Drag.active) cardDrag.Drag.drop()
+            cardDrag.x = 0
+            cardDrag.y = 0
+        }
+        onCanceled: {
+            cardDrag.x = 0
+            cardDrag.y = 0
+        }
+        onClicked: if (!dragMoved) card.activated()
     }
 }

@@ -991,6 +991,23 @@ int main(int argc, char** argv) {
         QList<QQuickItem*> allFirst = collectionRows();
         if (!allFirst.isEmpty()) clickAt(allFirst.first(), 20, 12);
         QTest::qWait(40);
+
+        // MB.2: a card is a drag source carrying the asset id, not a verb.
+        {
+            QString loopId;
+            for (const QVariant& entry : docs.assets())
+                if (entry.toMap().value("name").toString() == QLatin1String("loop.mp4"))
+                    loopId = entry.toMap().value("id").toString();
+            QQuickItem* loopCard = nullptr;
+            for (auto* row : mediaRows())
+                if (row->property("modelData").toMap().value("name").toString()
+                    == QLatin1String("loop.mp4"))
+                    loopCard = row;
+            check(!loopId.isEmpty() && loopCard != nullptr
+                      && loopCard->property("dragPayload").toString()
+                             == "media:" + loopId,
+                  "a media card drags the asset id, not a document verb");
+        }
         auto* placeButton = findNamed(window->contentItem(), "placeAssetButton");
         auto* removeButton = findNamed(window->contentItem(), "mediaRemoveButton");
         check(placeButton != nullptr && placeButton->isVisible()

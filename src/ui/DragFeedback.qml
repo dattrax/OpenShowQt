@@ -7,7 +7,10 @@ import QtQuick.Controls
 // does not leave the hotspot behind the pointer by the initial movement.
 Item {
     id: feedback
-    parent: Overlay.overlay
+    // The host may name the item the badge should live in (a plain Window has
+    // no ApplicationWindow Overlay). Without one, the Overlay is the default.
+    property Item host: null
+    parent: host ? host : Overlay.overlay
     objectName: "listDragFeedback"
     property string payload: ""
     property string title: ""
