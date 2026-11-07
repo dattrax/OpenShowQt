@@ -8,9 +8,11 @@ Updated: 2026-11-07 (Europe/London).
 are in: a preview-card grid with the right-hand inspector, silent drag sources,
 drop-on-cue background placement, the document actions in the card menu, our
 own numbered camera/record/video artwork with the four-camera cap, and deck
-pages stored but hidden from the bin. MB.6 (worker video thumbnails and the
-inspector's duration/size probe) and MB.8 (shared card + docs) remain. The
-original note: The bin's list plus
+pages stored but hidden from the bin. MB.6's inspector half is also in:
+`media.describe` probes a file's headers (length, pixel size, audio/video) and
+the bin shows it, cached by path. Remaining: the worker's first-frame video
+thumbnail in the grid, and moving the presentation library onto the shared
+MediaCard. The original note: The bin's list plus
 mostly-empty inspector is to become a preview grid whose cards drag straight
 onto cue tiles, with the card component shared with the presentation library.
 The work items and the drop semantics are in PLAN.md: picture/video/camera drop

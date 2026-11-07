@@ -297,6 +297,15 @@ opening streams 1080p frames, the audience shows the live feed, and preview/
 audience stay responsive. The SDK cannot be downloaded in CI, so this is not a
 default CI gate.
 
+## Media Bin artwork and the four-camera cap
+
+Camera cards do not use the NDI logo (a trademark): a neutral camera silhouette
+is tinted into four source colours with the numeral 1–4 over it, one QML
+component rather than four bitmaps. The model caps camera assets at four
+(`kMaxCameraAssets`); a fifth add is refused with "at most four camera sources
+are supported" and creates nothing, and removing one frees the slot. NDI itself
+has no such cap, so the limit belongs to this product's numbering.
+
 ## Known limits (v1)
 
 - Video only; NDI audio is ignored.

@@ -208,6 +208,33 @@ Show, Edit and clipboard import supply section boundaries from model order.
 | Consumers | ShowPage cue tiles, EditorSlideRail authored-slide tiles, Bible generated-slide cards, ThemeEditor Songs/Bible view tiles |
 | Automation | `objectName` per host (`operatorCueTile` keeps its `index`/`modelData`-compatible properties for the cue tests); Accessible.name assembled by the host |
 
+### MediaCard
+
+`src/ui/MediaCard.qml` (MB.1–MB.5). One media asset as a preview card in the
+Media Bin grid: the picture where the file has one, our own kind artwork
+otherwise, the name, kind and one notice. It is a selection target and a
+drag-source host, never the owner of a document verb.
+
+Artwork is drawn, not shipped as per-kind bitmaps: a neutral camera silhouette
+tinted into four source colours with the numeral 1–4 over it (no NDI mark), a
+record/turntable glyph for audio, a play mark for video, a document mark for
+Other. The model caps camera assets at four (`kMaxCameraAssets`), so the
+numeral always has a slot; a fifth add is refused with a sentence.
+
+The card drags `media:<assetId>` through the shared `DragFeedback`. Dropping it
+on a Show cue sets that cue's slide **background media** in one undo. Audio is
+a production-track action, not a cue drop. A rendered deck page
+(`Asset::deckPage`) is stored but never a bin row: the deck is a unit and its
+pages are hidden from the grid and its collection counts.
+
+| | |
+|---|---|
+| Inputs | `modelData` (the asset row: id, name, kind, sourcePath, cameraSource, exists); `kindLabel`; `notice`; `selected`; `cameraNumber` (1–4, creation order) |
+| Events | `activated()` (primary click), `contextRequested(mouseX, mouseY)` (right click, in CARD coordinates), `dragPayload` (`media:<assetId>`) |
+| Adapter | the bin sets `selectedAssetId` on activation, opens its shared menu on context, and the Show tile's DropArea calls `setSlideBackgroundFor` |
+| Consumers | the Media Bin grid; the presentation library reuses the same card in MB.8 |
+| Automation | `mediaBinRow` (delegate root), `mediaRowName`, `mediaRowKind`, `mediaRowNotice`, `dragPayload`, `cameraNumber` |
+
 ### SlidePreviewCollection
 
 `src/ui/SlidePreviewCollection.qml` (ungrouped CS.3, grouped CS.7).

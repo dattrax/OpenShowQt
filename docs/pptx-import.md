@@ -69,6 +69,15 @@ in the manifest and in the operator status line; install the font or accept the
 substitution. CJK and other scripts need the optional BetterOffice font packs
 in a later build.
 
+## Media Bin visibility
+
+A rendered page is an asset like any picture (`assets/<id>-<name>.png`), but it
+is tagged `"deck":true` in the manifest. The Media Bin shows only the operator's
+own media, so a deck's pages never appear as cards or collection counts; the
+deck is found as its presentation in the Library, where its pages are the
+slides. `DocumentViews::storedAssets()` still includes them for storage,
+sweeps and tests, and a manifest without the tag reads as an ordinary picture.
+
 ## Known limits
 
 - Charts and SmartArt are the weakest fidelity area in BetterOffice. Standard
