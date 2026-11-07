@@ -1661,6 +1661,14 @@ Id Documents::addCameraAsset(const std::string& name, const std::string& source,
         fail(error, "camera '" + clean + "' has no NDI source name");
         return {};
     }
+    const std::size_t cameras = static_cast<std::size_t>(
+        std::count_if(fAssets.begin(), fAssets.end(),
+                      [](const Asset& asset) { return !asset.cameraSource.empty(); }));
+    if (cameras >= kMaxCameraAssets) {
+        fail(error, "at most four camera sources are supported (camera '" + clean +
+                        "' was not added)");
+        return {};
+    }
     Asset asset;
     asset.id = nextId("asset");
     asset.name = clean;

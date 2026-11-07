@@ -781,6 +781,11 @@ inline AssetKind assetKind(const Asset& asset) {
 
 inline const char* assetKindName(const Asset& asset) { return assetKindName(assetKind(asset)); }
 
+// The Media Bin numbers camera cards 1..4 and draws that numeral on the
+// card; a fifth has no slot to name itself with. NDI itself has no such cap,
+// so the model enforces it rather than leaving a fifth asset unnumbered.
+inline constexpr std::size_t kMaxCameraAssets = 4;
+
 // One asset's bytes now live at `to` rather than `from`: what a save
 // that adopts reports (task 6.12, review R7). Everyone still holding the
 // old path — the model, a history snapshot, a cached scene payload — has

@@ -556,6 +556,29 @@ void exerciseImageItems() {
     }
 }
 
+// ND.7: the bin numbers camera cards 1..4; a fifth has no icon to wear.
+void exerciseCameraCap() {
+    Documents docs;
+    std::string error;
+    for (int i = 1; i <= static_cast<int>(openshow::domain::kMaxCameraAssets); ++i) {
+        check(!docs.addCameraAsset("Camera " + std::to_string(i),
+                                   "SOURCE " + std::to_string(i), &error)
+                   .empty(),
+              "the first four camera assets are accepted");
+    }
+    const std::size_t before = docs.assetIds().size();
+    error.clear();
+    check(docs.addCameraAsset("Camera 5", "SOURCE 5", &error).empty() &&
+              error.find("four") != std::string::npos &&
+              docs.assetIds().size() == before,
+          "a fifth camera is refused with a reason and creates nothing");
+    check(docs.removeAsset(docs.assetIds().front(), nullptr),
+          "one camera is removed");
+    error.clear();
+    check(!docs.addCameraAsset("Camera 5", "SOURCE 5", &error).empty(),
+          "removing a camera frees the slot for a new one");
+}
+
 void exerciseGroups() {
     Documents docs;
     std::string error;
@@ -4642,6 +4665,7 @@ int main() {
     exerciseGeometry();
     exerciseTextBoxes();
     exerciseImageItems();
+    exerciseCameraCap();
     exerciseGroups();
     exerciseStyles();
     exerciseThemeChain();
