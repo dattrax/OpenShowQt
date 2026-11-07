@@ -59,15 +59,18 @@ GPL application (Qt frontend + worker)          Separate helper (MIT, NDI SDK)
          -> BackgroundTransport / SceneRenderer
 ```
 
-- The worker owns the generic `LiveSourceHub` and `LiveFrameStore`. It launches
-  the helper on demand, sends control commands and maps the frame ring. It
-  contains no NDI headers or symbols; a CI guard checks the app binary.
+- The worker owns the generic `LiveSourceHub` and `LiveFrameStore` (ND.6). It
+  launches the helper on demand, sends control commands and maps the frame ring.
+  It contains no NDI headers or symbols; a CI guard checks the app binary.
 - The helper owns NDI discovery and receiving. It is a separate executable with
   its own repository/submodule, licence and NDI attribution. It can be omitted
   entirely; the app still builds and runs.
 - The worker's `HelperBackend` and a `FakeBackend` implement the same
-  `LiveSourceBackend` interface. The fake backend is always built for tests; the
-  helper backend is generic IPC and part of the GPL app.
+  `LiveSourceBackend` interface (ND.3, `src/worker/live/`). `HelperBackend`
+  starts the process with `posix_spawn`, speaks the protocol over pipes and maps
+  the segment with `ShmFrameReader`; the fake publishes the same ring from a
+  thread. The fake backend is always built for tests; the helper backend is
+  generic IPC and part of the GPL app.
 - The frontend never sees NDI. It asks the worker for capability/sources and
   stores the chosen source as a camera asset in the document.
 
@@ -150,6 +153,10 @@ and the SDK is found.
 - The fake backend drives the protocol and frame ring in CI: JSON commands,
   stdout JSON-only, a published POSIX segment, newest-wins reads and a clean
   exit on `quit` or EOF.
+- `frame_ring_tests` and `live_source_tests` pin the worker side (ND.3): the
+  shared layout, Frame/NoFrame/Error, newest-wins, a real `/dev/shm` segment,
+  and `HelperBackend` driving the MIT helper's `--fake` mode over real pipes,
+  including a missing executable and an immediately exiting helper.
 - The real receiver requests `BGRX_BGRA` at the source's own frame rate with
   `allow_video_fields = false` (progressive frames). Audio frames are ignored
   and never captured. The first frame decides the ring dimensions, so a source

@@ -834,6 +834,38 @@ target_link_libraries(av_sync_tests PRIVATE
 add_test(NAME av_sync_tests COMMAND av_sync_tests)
 set_tests_properties(av_sync_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 
+# ND.3: the frame-ring layout from the application side. The helper's own
+# tests pin it too, but the worker's reader must not drift from the shared
+# MIT header either.
+add_executable(frame_ring_tests live_frame_ring_tests.cpp)
+target_link_libraries(frame_ring_tests PRIVATE openshow::worker_live)
+add_test(NAME frame_ring_tests COMMAND frame_ring_tests)
+
+# ND.3: the worker's live-source seam. The fake helper is the MIT helper's own
+# fake backend built from tools/ndi-helper/src, so HelperBackend is exercised
+# against a real child process, real pipes and a real POSIX segment without the
+# NDI SDK. The fake in-process backend covers the rest.
+add_executable(test-ndi-helper
+  ${CMAKE_SOURCE_DIR}/tools/ndi-helper/src/main.cpp
+  ${CMAKE_SOURCE_DIR}/tools/ndi-helper/src/protocol.cpp
+  ${CMAKE_SOURCE_DIR}/tools/ndi-helper/src/json.cpp
+  ${CMAKE_SOURCE_DIR}/tools/ndi-helper/src/shm_ring.cpp
+  ${CMAKE_SOURCE_DIR}/tools/ndi-helper/src/fake_backend.cpp
+)
+target_include_directories(test-ndi-helper PRIVATE
+  ${CMAKE_SOURCE_DIR}/tools/ndi-helper/src
+  ${CMAKE_SOURCE_DIR}/shared
+)
+target_link_libraries(test-ndi-helper PRIVATE Threads::Threads)
+
+add_executable(live_source_tests live_source_tests.cpp)
+target_link_libraries(live_source_tests PRIVATE openshow::worker_live)
+target_compile_definitions(live_source_tests PRIVATE
+  OPENSHOW_FAKE_HELPER_BIN="$<TARGET_FILE:test-ndi-helper>")
+add_dependencies(live_source_tests test-ndi-helper)
+add_test(NAME live_source_tests COMMAND live_source_tests)
+set_tests_properties(live_source_tests PROPERTIES TIMEOUT 120)
+
 # PX.1: the PowerPoint sidecar. The fixture test runs the shipped binary; the
 # cargo test covers the renderer's own scale/hidden/determinism/corrupt rules.
 if(TARGET pptx_render)

@@ -36,6 +36,26 @@ if(OPENSHOW_LIBRT)
   target_link_libraries(openshow-worker-preview PUBLIC ${OPENSHOW_LIBRT})
 endif()
 
+# The worker's live inputs (ND.3): the client for the separate NDI helper and
+# an in-process fake. No NDI headers or symbols — the helper owns those — and
+# the MIT frame-ring layout comes from the repository's shared/ directory. A
+# library so the backend and ring rules are pinned headless, with no window,
+# GPU or session.
+add_library(openshow-worker-live STATIC
+  live/fake_backend.cpp
+  live/helper_backend.cpp
+  live/shm_frame_reader.cpp
+)
+add_library(openshow::worker_live ALIAS openshow-worker-live)
+target_link_libraries(openshow-worker-live PUBLIC Boost::json)
+target_include_directories(openshow-worker-live PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/shared
+)
+if(OPENSHOW_LIBRT)
+  target_link_libraries(openshow-worker-live PUBLIC ${OPENSHOW_LIBRT})
+endif()
+
 # The output's scene truth (task 6.18a, review R1/R4/R5/R10/R13): the bounded
 # prepared store with the ids it mints, the output revision, and the desired /
 # landed / published halves of what the audience sees. A library so those rules
@@ -193,6 +213,7 @@ set(OPENSHOW_WORKER_LIBS
   openshow::scene
   openshow::skia
   openshow::worker_gpu
+  openshow::worker_live
   openshow::worker_media
   openshow::worker_playback
   openshow::worker_preview

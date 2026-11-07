@@ -4,6 +4,23 @@ Updated: 2026-11-07 (Europe/London).
 
 ## Current checkpoint
 
+**ND.3 complete (worker live core, 2026-11-07):** `src/worker/live/` now owns the
+worker's side of the live-input seam. `LiveSourceBackend` is the interface;
+`HelperBackend` launches the separate MIT helper with `posix_spawn`, speaks the
+JSON protocol over pipes, maps the helper's POSIX segment and copies the newest
+frame without ever naming NDI; `FakeBackend` publishes the same ring from a
+thread for headless tests; `ShmFrameReader` validates the MIT layout and returns
+Frame/NoFrame/Error. Writes to a dead helper cannot raise SIGPIPE in the worker,
+events are queued from the same serialised output, and a missing executable or
+an exiting helper is a typed start/probe error, not a crash.
+
+Verified: `frame_ring_tests` and `live_source_tests` pass, the latter driving
+`HelperBackend` against the real helper binary built from the MIT sources
+(`--fake`) with real pipes and a real `/dev/shm` segment, plus a missing-
+executable and an immediately-exiting helper. The worker and worker-dev targets
+still build and remain Qt-free; `app_has_no_ndi_symbols` stays green. The alpha/
+transparency WIP in `src/` was not touched.
+
 **ND.2 complete (helper protocol, 2026-11-07):** `tools/ndi-helper` is now a
 standalone MIT process that loads the NDI runtime with `dlopen` (never links it)
 and speaks one JSON command per line on stdin, one object per line on stdout.
