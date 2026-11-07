@@ -1,8 +1,29 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-11-06 (Europe/London).
+Updated: 2026-11-07 (Europe/London).
 
 ## Current checkpoint
+
+**ND.2 complete (helper protocol, 2026-11-07):** `tools/ndi-helper` is now a
+standalone MIT process that loads the NDI runtime with `dlopen` (never links it)
+and speaks one JSON command per line on stdin, one object per line on stdout.
+It answers `probe`, `list` (optional `waitMs`), `open`, `status`, `close` and
+`quit`; refusals and malformed commands are typed `ok:false` replies, protocol
+versions other than 1 are refused, lines over 64 KiB are drained, and the
+receiver thread emits `source-lost`/`receiver-error` events through the same
+serialised output. Frames travel through the MIT
+`shared/openshow/live/frame_ring.h`: a 128-byte header, three 64-byte slot
+headers and three aligned pixel slots, newest-wins with a torn-still-being-
+written slot skipped. `--fake` gives CI a 320x180 BGRA colour-bar source;
+`--input` lets the process test drive stdin.
+
+Verified: the SDK build reports `NDI SDK LINUX ... 6.3.2.0` from `--probe` and
+an empty `--list` on a network with no sender; `ldd` shows no `libndi`. Both
+builds (SDK and `-DOPENSHOW_NDI_HELPER_WITH_NDI=OFF`) pass all three tests:
+unit tests (JSON, ring, protocol, real `/dev/shm` mapping), the process round
+trip, and the no-NDI-link guard. The real camera listing/streaming acceptance
+still needs the operator's camera on the network. The alpha/transparency WIP in
+`src/` was not touched.
 
 **ND.0 complete (licence and NDI boundary, 2026-11-07):** The application now
 carries GPL-3.0 as its `LICENSE`. NDI camera input is planned as an optional,

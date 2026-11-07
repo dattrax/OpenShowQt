@@ -131,21 +131,48 @@ cmake --build build-ndi-helper
 build-ndi-helper/ndi-helper --probe
 ```
 
-The helper links the NDI runtime from the SDK's architecture directory. For
-packaging, copy the NDI runtime next to the helper and set its RPATH to
-`$ORIGIN`; never install NDI into the system path. The application build does
-not include the helper unless `OPENSHOW_ENABLE_NDI=ON` and the SDK is found.
+The helper loads the NDI runtime (`libndi.so.6` / `ProcessingNDI.dll`) with
+`dlopen`/`LoadLibrary` from `OPENSHOW_NDI_RUNTIME`, `NDILIB_REDIST_FOLDER`, its
+own directory, or the SDK path baked in at configure time. It never links NDI
+and never installs it into the system path. The configure step copies the
+runtime next to the built helper, so packaging ships the two together. The
+application build does not include the helper unless `OPENSHOW_ENABLE_NDI=ON`
+and the SDK is found.
+
+## Verified so far (2026-11-07)
+
+- The SDK acquisition script installed the 6.3.2 release to the gitignored
+  `third_party/ndi-sdk` (194 MB, including every architecture directory).
+- `ndi-helper --probe` loads the runtime and reports
+  `NDI SDK LINUX ... 6.3.2.0`, helper `0.1.0`, protocol `1`.
+- `ndi-helper --list` returns an empty source list on a network with no NDI
+  sender, and `ldd` shows no `libndi` dependency.
+- The fake backend drives the protocol and frame ring in CI: JSON commands,
+  stdout JSON-only, a published POSIX segment, newest-wins reads and a clean
+  exit on `quit` or EOF.
+- The real receiver requests `BGRX_BGRA` at the source's own frame rate with
+  `allow_video_fields = false` (progressive frames). Audio frames are ignored
+  and never captured. The first frame decides the ring dimensions, so a source
+  that changes resolution is reopened rather than resized in place.
+
+Still outstanding for ND.1/ND.4 acceptance: naming a real camera on the LAN and
+streaming its frames into the ring. That needs the operator's camera on the
+network and is recorded here when it is run.
 
 ## Tests
 
-- `frame_ring_tests` (shared header, no NDI): layout/size/alignment, write/read
-  sequence, newest-wins overwrite, torn-read detection, corrupt header refusal.
-- `ndi_helper_tests` (fake backend, no SDK): probe/list/open/close protocol,
-  malformed command handling, stdout JSON-only, shutdown on stdin EOF, frame
-  ring dimensions and sequence.
-- Worker tests (fake helper): capability advertisement, source list, open/close,
-  shm mapping, newest-frame handoff, helper crash → typed fault, no NDI symbols
-  in the application binary.
+- `helper_unit_tests` (fake backend, no SDK): JSON parse/escape, frame-ring
+  layout, write/read, newest-wins, a slot still being written, corrupt headers,
+  probe/list/status/open/close, malformed and oversized commands, version
+  refusal, stdout JSON-only and shutdown on stdin EOF; plus a real mapped
+  `/dev/shm` segment.
+- `helper_process_roundtrip`: the real helper binary with `--fake`, checking
+  exit status, JSON-only stdout, the published segment name and silent stderr.
+- `helper_has_no_ndi_link`: `ldd` proves the helper does not link the NDI
+  runtime in either build.
+- Worker tests (fake helper, ND.3/ND.7): capability advertisement, source list,
+  open/close, shm mapping, newest-frame handoff, helper crash → typed fault, no
+  NDI symbols in the application binary.
 - Document/UI tests: camera asset round trip and storage migration, Media Bin
   action hidden without capability, source picker, camera background compiles,
   placeholder when the source disappears.
