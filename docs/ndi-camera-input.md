@@ -117,6 +117,12 @@ GPL application (Qt frontend + worker)          Separate helper (MIT, NDI SDK)
   format, and feeds the existing `GpuYuvUploader` — the same Skia/Vulkan YUV
   path as FFmpeg playback. The ring carries UYVY; the GPU layer receives NV12.
   The ring is half the size a BGRA feed would need.
+- **Receive format matrix (real HX source):** `BGRX_BGRA` → BGRX 4:4:4
+  (stride 7680), `RGBX_RGBA` → RGBX 4:4:4, and `UYVY_BGRA`, `UYVY_RGBA`,
+  `fastest` and `best` all → **UYVY 4:2:2** (stride 3840). Passing
+  `NDIlib_FourCC_video_type_NV12` or `_I420` as the color format fails receiver
+  creation. NV12 is a frame-layout FourCC, not a receive request; the standard
+  SDK has no 4:2:0 output.
 - The worker's background transport detects the `ndi://` asset path and asks the
   live hub for frames instead of opening a file. The renderer draws the newest
   frame like a video background. Previews use the same path, so the operator
