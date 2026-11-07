@@ -127,6 +127,65 @@ std::uint64_t nowNs() {
             .count());
 }
 
+// Maps the FourCC the receiver actually delivered onto the ring's format. We
+// ask for UYVY (the HX decoder's native YUV output, 2 bytes per pixel, and no
+// RGB conversion inside the SDK); a source with alpha comes back as BGRA/RGBA
+// by the receiver's own rule, so name what arrived rather than what was asked.
+bool describeVideoFormat(const NDIlib_video_frame_v2_t& video, std::uint32_t* format,
+                         std::uint32_t* bytesPerPixel, bool* alpha) {
+    using openshow::live::FrameFormat;
+    switch (video.FourCC) {
+        case NDIlib_FourCC_video_type_UYVY:
+            *format = static_cast<std::uint32_t>(FrameFormat::UYVY);
+            *bytesPerPixel = 2;
+            *alpha = false;
+            return true;
+        case NDIlib_FourCC_video_type_BGRA:
+            *format = static_cast<std::uint32_t>(FrameFormat::BGRA8);
+            *bytesPerPixel = 4;
+            *alpha = true;
+            return true;
+        case NDIlib_FourCC_video_type_BGRX:
+            *format = static_cast<std::uint32_t>(FrameFormat::BGRA8);
+            *bytesPerPixel = 4;
+            *alpha = false;
+            return true;
+        case NDIlib_FourCC_video_type_RGBA:
+            *format = static_cast<std::uint32_t>(FrameFormat::RGBA8);
+            *bytesPerPixel = 4;
+            *alpha = true;
+            return true;
+        case NDIlib_FourCC_video_type_RGBX:
+            *format = static_cast<std::uint32_t>(FrameFormat::RGBA8);
+            *bytesPerPixel = 4;
+            *alpha = false;
+            return true;
+        default:
+            return false;
+    }
+}
+
+// NDI|HX streams are decoded inside the NDI runtime through FFmpeg 7.1
+// (libavcodec.so.61 / libavutil.so.59). The runtime dlopens those by soname;
+// loading them first with RTLD_GLOBAL means the runtime reuses them and, more
+// importantly, their own NEEDED siblings resolve from this executable's
+// $ORIGIN runpath. Best effort: a full-bandwidth source needs none of this, so
+// a missing or incompatible FFmpeg leaves full NDI working and HX showing the
+// runtime's "decoder not found" frame.
+void preloadHxDecoderLibraries() {
+#ifdef __linux__
+    const char* const names[] = {
+        "libavutil.so.59",
+        "libswresample.so.5",
+        "libswscale.so.8",
+        "libavcodec.so.61",
+    };
+    for (const char* name : names) {
+        ::dlopen(name, RTLD_NOW | RTLD_GLOBAL);
+    }
+#endif
+}
+
 }  // namespace
 
 struct NdiBackend::Impl {
@@ -168,6 +227,7 @@ struct NdiBackend::Impl {
         if (ndi) {
             return true;
         }
+        preloadHxDecoderLibraries();
         std::string lastError;
         for (const std::string& candidate : runtimeCandidates()) {
             handle = openLibrary(candidate, &lastError);
@@ -216,7 +276,11 @@ struct NdiBackend::Impl {
             NDIlib_find_create_t findDesc;
             findDesc.show_local_sources = true;
             findDesc.p_groups = nullptr;
-            findDesc.p_extra_ips = nullptr;
+            // Networks that drop mDNS multicast between clients need the
+            // sender's address named explicitly. The SDK treats this as a
+            // list of discovery addresses, comma-separated.
+            const char* extraIps = std::getenv("OPENSHOW_NDI_EXTRA_IPS");
+            findDesc.p_extra_ips = (extraIps && *extraIps) ? extraIps : nullptr;
             finder = ndi->find_create_v2(&findDesc);
             if (!finder) {
                 if (error) {
@@ -285,13 +349,26 @@ struct NdiBackend::Impl {
             if (type == NDIlib_frame_type_video) {
                 const std::uint32_t width = static_cast<std::uint32_t>(video.xres);
                 const std::uint32_t height = static_cast<std::uint32_t>(video.yres);
+                std::uint32_t format = 0;
+                std::uint32_t bytesPerPixel = 0;
+                bool alpha = false;
+                if (!describeVideoFormat(video, &format, &bytesPerPixel, &alpha)) {
+                    {
+                        std::lock_guard<std::mutex> lock(readyMutex);
+                        threadError = "unsupported NDI pixel format";
+                        ready = true;
+                    }
+                    readyCv.notify_all();
+                    emit({"receiver-error", sourceName, "unsupported NDI pixel format"});
+                    ndi->recv_free_video_v2(recv, &video);
+                    break;
+                }
                 const std::uint32_t stride = static_cast<std::uint32_t>(
-                    video.line_stride_in_bytes > 0 ? video.line_stride_in_bytes : video.xres * 4);
+                    video.line_stride_in_bytes > 0
+                        ? video.line_stride_in_bytes
+                        : video.xres * static_cast<int>(bytesPerPixel));
                 if (!ring.valid()) {
-                    if (!ring.create(width, height, stride,
-                                     static_cast<std::uint32_t>(
-                                         openshow::live::FrameFormat::BGRA8),
-                                     &error)) {
+                    if (!ring.create(width, height, stride, format, &error)) {
                         {
                             std::lock_guard<std::mutex> lock(readyMutex);
                             threadError = error;
@@ -314,9 +391,8 @@ struct NdiBackend::Impl {
                 frame.width = width;
                 frame.height = height;
                 frame.stride = stride;
-                frame.format = static_cast<std::uint32_t>(
-                    openshow::live::FrameFormat::BGRA8);
-                frame.flags = openshow::live::kFrameFlagAlpha;
+                frame.format = format;
+                frame.flags = alpha ? openshow::live::kFrameFlagAlpha : 0;
                 const std::int64_t timestamp = video.timestamp;
                 frame.timestampNs =
                     timestamp > 0 ? static_cast<std::uint64_t>(timestamp) * 100 : nowNs();
@@ -430,7 +506,7 @@ bool NdiBackend::open(const std::string& source, OpenInfo* out, std::string* err
     recvDesc.source_to_connect_to.p_ndi_name = fImpl->sourceName.c_str();
     recvDesc.source_to_connect_to.p_url_address =
         fImpl->sourceUrl.empty() ? nullptr : fImpl->sourceUrl.c_str();
-    recvDesc.color_format = NDIlib_recv_color_format_BGRX_BGRA;
+    recvDesc.color_format = NDIlib_recv_color_format_UYVY_BGRA;
     recvDesc.bandwidth = NDIlib_recv_bandwidth_highest;
     recvDesc.allow_video_fields = false;
     recvDesc.p_ndi_recv_name = "OpenShow NDI Helper";

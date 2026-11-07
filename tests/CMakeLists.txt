@@ -841,6 +841,13 @@ add_executable(frame_ring_tests live_frame_ring_tests.cpp)
 target_link_libraries(frame_ring_tests PRIVATE openshow::worker_live)
 add_test(NAME frame_ring_tests COMMAND frame_ring_tests)
 
+# ND.4/ND.6: the NDI UYVY feed becomes the same NV12 the FFmpeg video path
+# uploads. The compositor's multimedia layer takes one source at a time, so
+# this converter is the handoff, not a second layer.
+add_executable(live_yuv_tests live_yuv_tests.cpp)
+target_link_libraries(live_yuv_tests PRIVATE openshow::worker_live)
+add_test(NAME live_yuv_tests COMMAND live_yuv_tests)
+
 # ND.3: the worker's live-source seam. The fake helper is the MIT helper's own
 # fake backend built from tools/ndi-helper/src, so HelperBackend is exercised
 # against a real child process, real pipes and a real POSIX segment without the

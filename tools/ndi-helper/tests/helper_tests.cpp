@@ -191,6 +191,45 @@ void testFrameRing() {
     wrong.width = width + 4;
     check(!ring.write(wrong, &error), "ring: a changed frame size is refused");
 
+    // UYVY is packed 4:2:2: two bytes per pixel, no alpha, and the stride rule
+    // must follow the format rather than assuming BGRA.
+    constexpr std::uint32_t uyvyStride = width * 2;
+    const std::uint64_t uyvyBytes = frameRingBytes(uyvyStride, height);
+    std::vector<std::uint8_t> uyvyMapping(static_cast<std::size_t>(uyvyBytes), 0);
+    std::vector<std::uint8_t> uyvyPixels(static_cast<std::size_t>(uyvyStride) * height, 0x33);
+    FrameRing uyvyRing(uyvyMapping.data(), uyvyMapping.size());
+    check(uyvyRing.initForWrite(width, height, uyvyStride,
+                                static_cast<std::uint32_t>(FrameFormat::UYVY), &error),
+          "ring: initialises UYVY 4:2:2");
+    FrameView uyvyFrame;
+    uyvyFrame.data = uyvyPixels.data();
+    uyvyFrame.width = width;
+    uyvyFrame.height = height;
+    uyvyFrame.stride = uyvyStride;
+    uyvyFrame.format = static_cast<std::uint32_t>(FrameFormat::UYVY);
+    uyvyFrame.flags = 0;
+    check(uyvyRing.write(uyvyFrame, &error), "ring: writes UYVY");
+    FrameView uyvyOut;
+    std::vector<std::uint8_t> uyvyReceived(uyvyPixels.size());
+    check(uyvyRing.read(&uyvyOut, uyvyReceived.data(), uyvyReceived.size(), &error),
+          "ring: reads UYVY");
+    check(uyvyOut.format == static_cast<std::uint32_t>(FrameFormat::UYVY) &&
+              uyvyOut.stride == uyvyStride && uyvyReceived[0] == 0x33,
+          "ring: UYVY bytes and stride survive");
+    check((uyvyOut.flags & kFrameFlagAlpha) == 0, "ring: UYVY carries no alpha");
+
+    FrameView changedFormat = uyvyFrame;
+    changedFormat.format = static_cast<std::uint32_t>(FrameFormat::BGRA8);
+    check(!uyvyRing.write(changedFormat, &error), "ring: a changed format is refused");
+
+    std::vector<std::uint8_t> shortMapping(static_cast<std::size_t>(uyvyBytes), 0);
+    FrameRing shortRing(shortMapping.data(), shortMapping.size());
+    check(!shortRing.initForWrite(width, height, width,
+                                  static_cast<std::uint32_t>(FrameFormat::UYVY), &error),
+          "ring: a UYVY stride below two bytes per pixel is refused");
+    check(!shortRing.initForWrite(width, height, uyvyStride, 99, &error),
+          "ring: an unknown pixel format is refused");
+
     auto* header = reinterpret_cast<FrameRingHeader*>(mapping.data());
     const std::uint32_t savedVersion = header->version;
     header->version = savedVersion + 1;

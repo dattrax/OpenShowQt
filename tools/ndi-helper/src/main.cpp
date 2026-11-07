@@ -39,6 +39,7 @@ void printUsage(std::ostream& out) {
         << "  --probe           print helper, protocol and NDI runtime versions\n"
         << "  --list            print the discovered NDI sources\n"
         << "  --wait-ms N       discovery wait for --list (default 1500, max 10000)\n"
+        << "  --extra-ips LIST  also query these addresses for sources (comma-separated)\n"
         << "  --fake            use the built-in colour-bar source, not NDI\n"
         << "  --input FILE      read protocol commands from FILE in server mode\n"
         << "  --version         print the helper version\n"
@@ -51,6 +52,14 @@ void printUsage(std::ostream& out) {
 int printJson(const openshow::ndi::json::Value& value) {
     std::cout << openshow::ndi::json::write(value) << std::endl;
     return std::cout.good() ? 0 : 1;
+}
+
+bool setEnvironment(const char* name, const char* value) {
+#ifdef _WIN32
+    return _putenv_s(name, value) == 0;
+#else
+    return ::setenv(name, value, 1) == 0;
+#endif
 }
 
 int fail(const std::string& message) {
@@ -129,6 +138,13 @@ int main(int argc, char** argv) {
                 return fail("--input needs a path");
             }
             inputPath = argv[++i];
+        } else if (arg == "--extra-ips") {
+            if (i + 1 >= argc) {
+                return fail("--extra-ips needs a comma-separated address list");
+            }
+            if (!setEnvironment("OPENSHOW_NDI_EXTRA_IPS", argv[++i])) {
+                return fail("could not set OPENSHOW_NDI_EXTRA_IPS");
+            }
         } else if (arg == "--version") {
             std::cout << openshow::ndi::kHelperVersion << std::endl;
             return 0;

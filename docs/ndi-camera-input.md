@@ -104,6 +104,17 @@ GPL application (Qt frontend + worker)          Separate helper (MIT, NDI SDK)
   asset points at the camera asset and the scene compiles a camera background.
   The existing background fit (`cover`/`contain`) applies; `blur` is refused for
   live video. A camera cannot be an image foreground item in v1.
+- **One multimedia source per cue.** The compositor's multimedia layer holds
+  either the live NDI feed, an FFmpeg playback, or a static PNG/JPEG — never
+  more than one at a time. A camera background therefore uses the same layer and
+  the same geometry as a video background; it does not add a second video layer
+  and there is no live-plus-file-plus-still composition to arbitrate.
+- The NDI receiver asks for **UYVY** (2 bytes/pixel, the HX decoder's native
+  YUV output, no RGB conversion inside the SDK). The worker converts UYVY to
+  NV12, because RADV cannot sample a Vulkan 4:2:2 format, and feeds the existing
+  `GpuYuvUploader` — the same Skia/Vulkan YUV path as FFmpeg playback. The ring
+  carries UYVY; the GPU layer receives NV12. The ring is half the size a BGRA
+  feed would need.
 - The worker's background transport detects the `ndi://` asset path and asks the
   live hub for frames instead of opening a file. The renderer draws the newest
   frame like a video background. Previews use the same path, so the operator
@@ -111,6 +122,9 @@ GPL application (Qt frontend + worker)          Separate helper (MIT, NDI SDK)
 - The source name is stored in the document; the worker resolves it to a live
   receiver. If the source is missing, the document still opens and the slide
   shows a placeholder.
+- Wi-Fi strongly favours NDI|HX: full-bandwidth NDI at 1080p60 would saturate
+  the link. HX is the default expectation for phone and PTZ cameras; the HX
+  decoder needs the FFmpeg 7.1 libraries described below.
 
 ## SDK acquisition and build
 
@@ -124,6 +138,23 @@ scripts/fetch-ndi-sdk.sh /path/to/Install_NDI_SDK_v6_Linux.tar.gz
 The script extracts the SDK to `third_party/ndi-sdk` (gitignored) and prints the
 `OPENSHOW_NDI_SDK_DIR` to use. It also works with `NDI_SDK_ARCHIVE` and refuses
 to overwrite an existing SDK without `--force`.
+
+NDI|HX sources (phone cameras, many PTZ cameras) are decoded by the NDI runtime
+through FFmpeg **7.1** (`libavcodec.so.61` / `libavutil.so.59`). Fedora and RPM
+Fusion ship FFmpeg 9 only and no package provides the 7.1 sonames, so build the
+minimal decoder set once:
+
+```sh
+scripts/fetch-ndi-ffmpeg.sh
+```
+
+It downloads FFmpeg 7.1.1 and builds only the H.264/HEVC decoders into
+`third_party/ffmpeg-7.1` (gitignored, about 3.5 MB). The helper stages those
+libraries beside `libndi.so.6`, gives itself `$ORIGIN` in its runpath and
+preloads them with `RTLD_GLOBAL`, so the runtime's HX decoder resolves them
+without changing the system FFmpeg. Full-bandwidth NDI sources need none of
+this. `-DOPENSHOW_NDI_FFMPEG_DIR=<dir>` points the helper at an existing 7.1
+tree instead.
 
 Build the helper standalone:
 
@@ -148,23 +179,43 @@ and the SDK is found.
   `third_party/ndi-sdk` (194 MB, including every architecture directory).
 - `ndi-helper --probe` loads the runtime and reports
   `NDI SDK LINUX ... 6.3.2.0`, helper `0.1.0`, protocol `1`.
-- `ndi-helper --list` returns an empty source list on a network with no NDI
-  sender, and `ldd` shows no `libndi` dependency.
+- The real receiver asks for `UYVY` at the source's own frame rate with
+  `allow_video_fields = false` (progressive frames). Audio frames are ignored
+  and never captured. The first frame decides the ring dimensions; a later
+  format or size change is refused rather than reinterpreted.
+- **Real source acceptance:** an `IPHONE 7A94 (HX Camera)` at `192.168.0.232`
+  is listed and opened in about 0.3–0.5 s. It streams **1920x1080 UYVY, stride
+  3840, 60 fps**; 120–180 frames arrive in 2–3 s, the copied frame decodes to a
+  real camera picture, `status` reports it open, and `close` unlinks the
+  segment. The ring is 12.4 MB instead of the 24.9 MB a BGRA feed needed.
+- **UYVY to NV12:** `convertUyvyToNv12` deinterleaves luma and averages the two
+  chroma rows (odd last row averaged with itself), keeping stride padding out.
+  `live_yuv_tests` pin the pixels and the refusals. This is the handoff to the
+  existing `GpuYuvUploader`, the same Skia/Vulkan path FFmpeg playback uses;
+  RADV on this GPU reports no features for `B8G8R8G8_422_UNORM`, so a native
+  4:2:2 sample is not an option here.
+- **mDNS was the first surprise:** the venue Wi-Fi passes unicast but drops
+  multicast between clients. Avahi saw every other mDNS device yet no
+  `_ndi._tcp`; a unicast QU query found the phone, and
+  `p_extra_ips`/`--extra-ips` made discovery and open work. This is an operator
+  setting, not a code workaround.
+- **HX was the second:** the phone sends NDI|HX, which the runtime decodes with
+  FFmpeg 7.1. Fedora/RPM Fusion only ship FFmpeg 9, so the helper loads a
+  minimal 7.1 build (`scripts/fetch-ndi-ffmpeg.sh`) staged beside `libndi.so.6`
+  and preloaded with `RTLD_GLOBAL`. Without it the runtime's placeholder reads
+  "Video decoder not found"; with it the camera picture decodes at 1080p60.
 - The fake backend drives the protocol and frame ring in CI: JSON commands,
   stdout JSON-only, a published POSIX segment, newest-wins reads and a clean
   exit on `quit` or EOF.
 - `frame_ring_tests` and `live_source_tests` pin the worker side (ND.3): the
   shared layout, Frame/NoFrame/Error, newest-wins, a real `/dev/shm` segment,
   and `HelperBackend` driving the MIT helper's `--fake` mode over real pipes,
-  including a missing executable and an immediately exiting helper.
-- The real receiver requests `BGRX_BGRA` at the source's own frame rate with
-  `allow_video_fields = false` (progressive frames). Audio frames are ignored
-  and never captured. The first frame decides the ring dimensions, so a source
-  that changes resolution is reopened rather than resized in place.
+  including a missing executable and an immediately exiting helper. The same
+  `HelperBackend` was run against the real phone source through the POSIX
+  process boundary and read 180+ frames in 3 s.
 
-Still outstanding for ND.1/ND.4 acceptance: naming a real camera on the LAN and
-streaming its frames into the ring. That needs the operator's camera on the
-network and is recorded here when it is run.
+ND.1 is accepted. ND.4's remaining acceptance step is the sender disappearing
+while open: the helper must emit a typed event and keep running.
 
 ## Tests
 

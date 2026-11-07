@@ -29,6 +29,28 @@ the SDK directory baked in at configure time, then the system loader. The
 configure step copies the runtime beside the built helper, so packaging can
 ship the two together.
 
+### NDI|HX decoding
+
+NDI|HX sources (phone cameras and many PTZ cameras) are decoded **inside the
+NDI runtime** with FFmpeg 7.1 (`libavcodec.so.61`, `libavutil.so.59`). Fedora
+and RPM Fusion ship FFmpeg 9 (`libavcodec.so.63`), whose ABI the runtime cannot
+use, and no package provides the 7.1 sonames. Build the minimal decoder set
+once:
+
+```sh
+../../scripts/fetch-ndi-ffmpeg.sh
+```
+
+The script downloads FFmpeg 7.1.1 and builds only the H.264/HEVC decoders into
+`../../third_party/ffmpeg-7.1` (gitignored). The helper stages those libraries
+beside `libndi.so.6` and preloads them with `RTLD_GLOBAL`, so HX works without
+touching the system FFmpeg. A full-bandwidth NDI source needs none of this.
+
+Point the helper build at an existing 7.1 tree instead with
+`-DOPENSHOW_NDI_FFMPEG_DIR=/path/to/lib`. Without it the helper still builds
+and lists/opens full-NDI sources; an HX source shows the runtime's
+"Video decoder not found" frame.
+
 Without the SDK (CI and any machine that only needs the protocol), build the
 fake backend:
 
@@ -50,6 +72,7 @@ a camera.
 | `--probe` | Print helper, protocol and NDI runtime versions, then exit |
 | `--list` | Print discovered sources, then exit |
 | `--wait-ms N` | Discovery wait for `--list` (default 1500, capped at 10000) |
+| `--extra-ips LIST` | Also query these addresses for NDI sources (comma-separated) |
 | `--fake` | Use the built-in colour-bar source instead of NDI |
 | `--input FILE` | Read server-mode commands from FILE (used by the process test) |
 | `--version` | Print the helper version |
@@ -58,6 +81,22 @@ a camera.
 `--probe` and `--list` print one JSON object on stdout. The fake-only build
 refuses to start the NDI backend with a typed error rather than silently
 pretending to be NDI.
+
+## Networks that drop mDNS
+
+Some access points pass unicast between Wi-Fi clients but drop multicast
+mDNS. The sender is live and reachable, yet `--list` is empty and avahi sees
+no `_ndi._tcp` record. NDI then needs the sender's address named:
+
+```sh
+build-ndi-helper/ndi-helper --extra-ips 192.168.0.232 --list
+OPENSHOW_NDI_EXTRA_IPS=192.168.0.232 build-ndi-helper/ndi-helper
+```
+
+Both set `OPENSHOW_NDI_EXTRA_IPS`, which is passed to
+`NDIlib_find_create_t::p_extra_ips`. The worker inherits its environment to
+the helper, so setting the variable before launching the app works too. A
+unicast mDNS query can confirm the sender's address when avahi-browse cannot.
 
 ## Protocol
 
@@ -69,7 +108,7 @@ carry `"protocol":1`; any other version is refused without exiting.
 |---|---|
 | `{"cmd":"probe"}` | `{"ok":true,"helper":"<version>","protocol":1,"ndi":"<runtime version>","canList":true,"canReceive":true}` |
 | `{"cmd":"list","waitMs":1500}` | `{"ok":true,"sources":[{"name":"...","url":"..."}]}` |
-| `{"cmd":"open","source":"..."}` | `{"ok":true,"source":"...","shm":"/openshow-ndi-<pid>-<n>","width":1920,"height":1080,"stride":7680,"format":"BGRA","bytes":...,"fps":30}` |
+| `{"cmd":"open","source":"..."}` | `{"ok":true,"source":"...","shm":"/openshow-ndi-<pid>-<n>","width":1920,"height":1080,"stride":3840,"format":"UYVY","bytes":...,"fps":30}` |
 | `{"cmd":"status"}` | `{"ok":true,"open":true,...same fields while open}` |
 | `{"cmd":"close"}` | `{"ok":true}` |
 | `{"cmd":"quit"}` | `{"ok":true}` then exit |

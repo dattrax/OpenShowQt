@@ -45,6 +45,7 @@ add_library(openshow-worker-live STATIC
   live/fake_backend.cpp
   live/helper_backend.cpp
   live/shm_frame_reader.cpp
+  live/uyvy_to_nv12.cpp
 )
 add_library(openshow::worker_live ALIAS openshow-worker-live)
 target_link_libraries(openshow-worker-live PUBLIC Boost::json)

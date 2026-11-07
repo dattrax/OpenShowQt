@@ -90,6 +90,30 @@ if(OPENSHOW_NDI_HELPER_WITH_NDI)
     set(NDI_RUNTIME_DIR "${OPENSHOW_NDI_SDK_DIR}/bin")
   endif()
 
+  # NDI|HX decoding happens inside the NDI runtime through FFmpeg 7.1
+  # (libavcodec.so.61 / libavutil.so.59). A modern system FFmpeg is usually a
+  # newer, incompatible major, so stage a 7.1 build beside the helper and let
+  # it preload those libraries. Full-bandwidth NDI needs none of this.
+  set(OPENSHOW_NDI_FFMPEG_DIR "${OPENSHOW_NDI_FFMPEG_DIR}" CACHE PATH
+    "Directory with FFmpeg 7.1 shared libraries for NDI|HX decoding")
+  if(NOT OPENSHOW_NDI_FFMPEG_DIR)
+    set(_ndiHxDefault
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/ffmpeg-7.1/lib")
+    if(EXISTS "${_ndiHxDefault}/libavcodec.so.61")
+      set(OPENSHOW_NDI_FFMPEG_DIR "${_ndiHxDefault}" CACHE PATH
+        "Directory with FFmpeg 7.1 shared libraries for NDI|HX decoding" FORCE)
+    endif()
+  endif()
+  set(NDI_HX_LIBRARIES)
+  if(OPENSHOW_NDI_FFMPEG_DIR)
+    foreach(soname libavcodec.so.61 libavutil.so.59 libswscale.so.8
+                   libswresample.so.5)
+      if(EXISTS "${OPENSHOW_NDI_FFMPEG_DIR}/${soname}")
+        list(APPEND NDI_HX_LIBRARIES "${OPENSHOW_NDI_FFMPEG_DIR}/${soname}")
+      endif()
+    endforeach()
+  endif()
+
   list(APPEND NDI_SOURCES src/ndi_backend.cpp)
   list(APPEND NDI_DEFINITIONS
     OPENSHOW_NDI_HELPER_WITH_NDI
@@ -129,6 +153,32 @@ if(NDI_RUNTIME_FILE)
             "${NDI_RUNTIME_FILE}"
             "$<TARGET_FILE_DIR:ndi-helper>/libndi.so.6"
     COMMENT "Copying the NDI runtime beside the helper")
+endif()
+
+if(NDI_SOURCES)
+  # The helper preloads the staged FFmpeg 7.1 libraries by soname; $ORIGIN is
+  # what makes its own directory part of that search. libndi.so.6 already
+  # carries the same runpath for the same reason.
+  set_target_properties(ndi-helper PROPERTIES
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN")
+endif()
+
+set(NDI_HX_COPY_COMMANDS)
+foreach(library ${NDI_HX_LIBRARIES})
+  get_filename_component(real "${library}" REALPATH)
+  get_filename_component(name "${library}" NAME)
+  list(APPEND NDI_HX_COPY_COMMANDS
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${real}"
+            "$<TARGET_FILE_DIR:ndi-helper>/${name}")
+endforeach()
+if(NDI_HX_COPY_COMMANDS)
+  add_custom_command(TARGET ndi-helper POST_BUILD ${NDI_HX_COPY_COMMANDS}
+    COMMENT "Copying the FFmpeg 7.1 libraries for NDI|HX beside the helper")
+elseif(NDI_SOURCES)
+  message(STATUS
+    "NDI|HX decoding: no FFmpeg 7.1 libraries staged, so only full NDI "
+    "sources will decode (see scripts/fetch-ndi-ffmpeg.sh)")
 endif()
 
 if(OPENSHOW_NDI_HELPER_TESTS)

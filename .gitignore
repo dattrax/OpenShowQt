@@ -32,3 +32,6 @@ tools/pptx-render/target/
 # NDI SDK (proprietary, fetched locally; never committed)
 /third_party/ndi-sdk/
 /build-ndi-sdk/
+
+# Minimal FFmpeg 7.1 for NDI|HX decoding (built locally, never committed)
+/third_party/ffmpeg-7.1/

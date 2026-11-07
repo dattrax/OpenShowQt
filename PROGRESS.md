@@ -4,6 +4,36 @@ Updated: 2026-11-07 (Europe/London).
 
 ## Current checkpoint
 
+**ND.1 accepted; ND.4 streaming complete (2026-11-07):** A real NDI|HX phone
+source is discovered, opened and decoded on the target machine. The venue Wi-Fi
+drops multicast mDNS between clients, so discovery uses
+`NDIlib_find_create_t::p_extra_ips` (`--extra-ips` / `OPENSHOW_NDI_EXTRA_IPS`);
+avahi-browse sees every other mDNS device but no `_ndi._tcp`, while a unicast
+QU query and the helper find `IPHONE 7A94 (HX Camera)` at 192.168.0.232.
+
+HX is decoded inside the NDI runtime through FFmpeg 7.1. Fedora/RPM Fusion ship
+FFmpeg 9 only and no package provides `libavcodec.so.61`/`libavutil.so.59`, so
+`scripts/fetch-ndi-ffmpeg.sh` builds a minimal 7.1 decoder set (H.264/HEVC only)
+into gitignored `third_party/ffmpeg-7.1`. The helper stages it beside
+`libndi.so.6`, carries `$ORIGIN` in its runpath and preloads the libraries with
+`RTLD_GLOBAL`; HX then decodes without touching the system FFmpeg. Without it
+the runtime shows "Video decoder not found".
+
+The receiver asks for **UYVY** (2 bytes/pixel, the HX decoder's native YUV
+output) instead of BGRA. The real source streams 1920x1080 UYVY, stride 3840,
+60 fps, in a 12.4 MB ring (half the BGRA size); the copied frame decodes to the
+correct picture. `live_yuv_tests` pin `convertUyvyToNv12`, which deinterleaves
+luma and averages the two chroma rows for the existing `GpuYuvUploader` — the
+same Skia/Vulkan path FFmpeg playback uses. RADV reports no features for a
+Vulkan 4:2:2 format on this GPU, so NV12 is the right handoff. This is one
+multimedia source per cue (NDI, FFmpeg playback or a still), not a second layer.
+
+The helper and app suites pass (3/3 helper in both builds, `frame_ring_tests`,
+`live_yuv_tests`, `live_source_tests`); the worker still builds Qt-free. ND.4's
+remaining acceptance is the sender disappearing while open: the source-loss
+event and helper survival still need a live run. The alpha/transparency WIP in
+`src/` was not touched.
+
 **ND.3 complete (worker live core, 2026-11-07):** `src/worker/live/` now owns the
 worker's side of the live-input seam. `LiveSourceBackend` is the interface;
 `HelperBackend` launches the separate MIT helper with `posix_spawn`, speaks the

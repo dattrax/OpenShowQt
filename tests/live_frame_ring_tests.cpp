@@ -131,6 +131,33 @@ int main() {
     wrong.width = width + 4;
     check(!ring.write(wrong, &error), "ring: a changed frame size is refused");
 
+    // UYVY 4:2:2: two bytes per pixel, no alpha.
+    constexpr std::uint32_t uyvyStride = width * 2;
+    std::vector<std::uint8_t> uyvyMapping(
+        static_cast<std::size_t>(frameRingBytes(uyvyStride, height)), 0);
+    std::vector<std::uint8_t> uyvyPixels(static_cast<std::size_t>(uyvyStride) * height, 0x44);
+    FrameRing uyvyRing(uyvyMapping.data(), uyvyMapping.size());
+    check(uyvyRing.initForWrite(width, height, uyvyStride,
+                                static_cast<std::uint32_t>(FrameFormat::UYVY), &error),
+          "ring: initialises UYVY");
+    FrameView uyvyFrame;
+    uyvyFrame.data = uyvyPixels.data();
+    uyvyFrame.width = width;
+    uyvyFrame.height = height;
+    uyvyFrame.stride = uyvyStride;
+    uyvyFrame.format = static_cast<std::uint32_t>(FrameFormat::UYVY);
+    check(uyvyRing.write(uyvyFrame, &error), "ring: publishes UYVY");
+    Frame uyvyRead;
+    check(readNewestFrame(uyvyRing, 0, &uyvyRead, &error) == FrameStatus::Frame,
+          "ring: reads UYVY");
+    check(uyvyRead.format == static_cast<std::uint32_t>(FrameFormat::UYVY) &&
+              uyvyRead.stride == uyvyStride && uyvyRead.pixels[0] == 0x44,
+          "ring: UYVY format, stride and bytes survive");
+    check(!uyvyRead.alpha(), "ring: UYVY has no alpha flag");
+    FrameView formatChange = uyvyFrame;
+    formatChange.format = static_cast<std::uint32_t>(FrameFormat::BGRA8);
+    check(!uyvyRing.write(formatChange, &error), "ring: a changed format is refused");
+
     FrameRing unmapped(nullptr, 0);
     check(!unmapped.validate(&error), "ring: no mapping is refused");
 

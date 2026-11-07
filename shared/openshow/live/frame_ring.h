@@ -152,6 +152,20 @@ inline const char* frameFormatName(std::uint32_t format) {
     return "unknown";
 }
 
+// Bytes one pixel occupies in a slot. UYVY is packed 4:2:2 and the RGB formats
+// are 8-bit 4:4:4; nothing else is accepted, which keeps a corrupt header from
+// turning a stride check into a buffer overrun.
+inline std::uint32_t frameRingBytesPerPixel(std::uint32_t format) {
+    switch (static_cast<FrameFormat>(format)) {
+        case FrameFormat::BGRA8:
+        case FrameFormat::RGBA8:
+            return 4;
+        case FrameFormat::UYVY:
+            return 2;
+    }
+    return 0;
+}
+
 // A mapped ring. Construct it over an existing mapping to read; call
 // initForWrite() on a fresh, zeroed mapping before the writer's first frame.
 class FrameRing {
@@ -166,8 +180,13 @@ public:
         if (!fBase) {
             return fail(why, "frame ring: no mapping");
         }
-        if (width == 0 || height == 0 || stride < width * 4 || width > kFrameRingMaxWidth ||
-            height > kFrameRingMaxHeight || stride > kFrameRingMaxStride) {
+        const std::uint32_t bytesPerPixel = frameRingBytesPerPixel(format);
+        if (bytesPerPixel == 0) {
+            return fail(why, "frame ring: unsupported pixel format");
+        }
+        if (width == 0 || height == 0 || stride < width * bytesPerPixel ||
+            width > kFrameRingMaxWidth || height > kFrameRingMaxHeight ||
+            stride > kFrameRingMaxStride) {
             return fail(why, "frame ring: unusable frame dimensions");
         }
         const std::uint64_t slotBytes = frameRingSlotBytes(stride, height);
@@ -218,7 +237,11 @@ public:
             header->dataOffset != kFrameRingDataOffset) {
             return fail(why, "frame ring: layout does not match this build");
         }
-        if (header->width == 0 || header->height == 0 || header->stride < header->width * 4) {
+        if (header->width == 0 || header->height == 0) {
+            return fail(why, "frame ring: unusable frame dimensions");
+        }
+        const std::uint32_t bytesPerPixel = frameRingBytesPerPixel(header->format);
+        if (bytesPerPixel == 0 || header->stride < header->width * bytesPerPixel) {
             return fail(why, "frame ring: unusable frame dimensions");
         }
         if (header->slotBytes < header->frameBytes ||
@@ -237,7 +260,7 @@ public:
         }
         auto* header = headerPtr();
         if (frame.width != header->width || frame.height != header->height ||
-            frame.stride != header->stride) {
+            frame.stride != header->stride || frame.format != header->format) {
             return fail(why, "frame ring: frame dimensions changed");
         }
         const std::uint64_t bytes = static_cast<std::uint64_t>(frame.stride) * frame.height;
