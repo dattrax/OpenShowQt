@@ -564,6 +564,11 @@ private:
     QSet<QString> fThumbnailPending;
     QSet<QString> fThumbnailFailed;
     QHash<std::int64_t, QString> fThumbnailRequestPaths;
+    // Cards ask as soon as they are laid out, which is before the worker has
+    // identified itself (and again after a reconnect, when the map above was
+    // cleared). The paths are kept so the hello handler can ask again; a
+    // successful thumbnail makes the replay a no-op.
+    QSet<QString> fThumbnailWanted;
 
     // scene.transition-options.v1 (task TR.1): see
     // transitionOptionsSupported().

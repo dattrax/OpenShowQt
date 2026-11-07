@@ -30,7 +30,18 @@ Item {
     // would carry without reaching into the overlay-parented proxy.
     readonly property string dragPayload: "media:" + (modelData.id || "")
 
-    Component.onCompleted: if (kind === "video") worker.requestVideoThumbnail(sourcePath)
+    // Ask once for this card's video. The worker holds the want while it is
+    // not yet connected (and replays it after a reconnect), so a card built
+    // before the handshake still gets its picture. A GridView reuses
+    // delegates, so a card can become another file without being completed
+    // again — the property handlers cover that case too.
+    function requestThumbnail() {
+        if (kind === "video" && sourcePath !== "")
+            worker.requestVideoThumbnail(sourcePath)
+    }
+    Component.onCompleted: requestThumbnail()
+    onSourcePathChanged: requestThumbnail()
+    onKindChanged: requestThumbnail()
 
     signal activated()
     // A right-click in card coordinates; the host owns the menu.

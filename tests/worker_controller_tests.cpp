@@ -1352,6 +1352,21 @@ private:
             cleanupPreviewSegment();
             _exit(0);
         }
+        if (method == proto::kMethodMediaThumbnail) {
+            // One base64 payload, shaped like the real answer. The fixture
+            // watches the frontend's own map, so the bytes are irrelevant.
+            std::string wanted;
+            if (request.contains("params") && request.at("params").is_object()) {
+                const auto& params = request.at("params").as_object();
+                const auto it = params.find("path");
+                if (it != params.end() && it->value().is_string()) {
+                    wanted = std::string(it->value().as_string());
+                }
+            }
+            sendResult(id, boost::json::object{{"path", wanted},
+                                               {"data", "iVBORw0KGgo="}});
+            return;
+        }
         // Anything else the controller sent that this peer does not model
         // (layer.setEnabled is the one the fixtures count): counting it is what
         // lets a fixture prove a refused message never arrived, rather than
@@ -4815,6 +4830,33 @@ void scenarioThumbnailPreview() {
 // reads as empty with the words untouched, and the restore brings the ramp
 // back. The scripted peer's per-prepare gradient ledger is what proves the
 // second point on the wire rather than in the client's own books.
+// MB.6: the bin lays its cards out before the worker has said hello (and a
+// reconnect clears the answered map). A first-frame ask made in that window
+// must be remembered and sent once the session is up — otherwise reloading a
+// service shows the video's play glyph until the operator touches the bin.
+void scenarioThumbnailAskedBeforeHello() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
+    const std::string report = tempPath("thumb-before-hello");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    const QString path = QStringLiteral("/media/clip.mp4");
+    controller.requestVideoThumbnail(path);  // before start(): no socket yet
+    controller.start();
+    if (!check(waitUntil([&controller, &path] {
+                   return controller.videoThumbnails().contains(path);
+               }),
+               "thumbnail: an ask made before hello still arrives")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(controller.videoThumbnails().value(path).toString().startsWith(
+              QStringLiteral("data:image/png;base64,")),
+          "thumbnail: the card receives the worker's picture");
+    controller.shutdownNow();
+}
+
 void scenarioGradientClear() {
     ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
     const std::string report = tempPath("gradient");
@@ -5055,6 +5097,7 @@ int main(int argc, char* argv[]) {
     scenarioAdoptedPaths();
     scenarioAdoptedForeground();
     scenarioMediaTransport();
+    scenarioThumbnailAskedBeforeHello();
     scenarioSelectionPreview();
     scenarioThumbnailPreview();
     scenarioGradientClear();

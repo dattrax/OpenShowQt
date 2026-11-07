@@ -614,6 +614,13 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         fThumbnailFailed.clear();
         fThumbnailRequestPaths.clear();
         emit videoThumbnailsChanged();
+        // Cards that asked before this hello — the bin is laid out before the
+        // worker is — get their first frame now. Successful paths are in no
+        // set of wants that matters: the request above is a no-op for them.
+        const QSet<QString> wanted = fThumbnailWanted;
+        for (const QString& path : wanted) {
+            requestVideoThumbnail(path);
+        }
         // The pictures ride this session, so they are online when it is: an
         // ask sent before the worker has identified itself is a request the
         // worker would answer with a method it has not agreed to speak.
@@ -1264,7 +1271,15 @@ void WorkerController::describeAsset(const QString& path) {
 
 void WorkerController::requestVideoThumbnail(const QString& path, int width,
                                            int height) {
-    if (path.isEmpty() || !fConnected) {
+    if (path.isEmpty()) {
+        return;
+    }
+    if (!fConnected || !fHandshakeDone) {
+        // The bin builds its cards before the worker has said hello, and a
+        // reconnect clears the answered map. Remember the want; the hello
+        // handler asks again, so a reload shows the picture without the
+        // operator having to touch the bin.
+        fThumbnailWanted.insert(path);
         return;
     }
     if (fVideoThumbnails.contains(path) || fThumbnailPending.contains(path) ||
