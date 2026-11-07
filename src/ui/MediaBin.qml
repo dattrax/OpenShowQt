@@ -657,9 +657,11 @@ FocusScope {
                 wrapMode: Text.WordWrap
                 text: !worker.liveCapable
                       ? "NDI is not available in this worker."
-                      : (worker.liveSources.length === 0
-                         ? "Searching the network\u2026"
-                         : "Choose a camera. It becomes a Media Bin asset; set it as a slide background in Edit.")
+                      : (worker.liveScanning
+                         ? "Scanning the network\u2026"
+                         : (worker.liveSources.length === 0
+                            ? "No cameras yet \u2014 they appear here as they start broadcasting."
+                            : "Choose a camera. It becomes a Media Bin asset; set it as a slide background in Edit."))
             }
             ListView {
                 objectName: "ndiSourceList"
@@ -679,9 +681,9 @@ FocusScope {
             }
             Button {
                 objectName: "ndiRescanButton"
-                text: "Rescan"
-                enabled: worker.liveCapable
-                onClicked: worker.refreshLiveSources(1500)
+                text: worker.liveScanning ? "Scanning\u2026" : "Rescan"
+                enabled: worker.liveCapable && !worker.liveScanning
+                onClicked: worker.refreshLiveSources(2500)
             }
             Button {
                 text: "Close"
@@ -696,7 +698,10 @@ FocusScope {
     // what it already knows and costs nothing.
     Timer {
         id: ndiRescanTimer
-        interval: 1500
+        // Our share of the lag: poll sooner, but cheaply. The wait itself is
+        // the NDI runtime's finder, which reports a new source as soon as it
+        // sees one, so there is no fixed countdown to offer.
+        interval: 1000
         repeat: true
         running: ndiSourceDialog.opened && worker.liveCapable
         onTriggered: worker.refreshLiveSources(0)

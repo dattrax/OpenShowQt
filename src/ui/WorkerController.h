@@ -134,6 +134,10 @@ class WorkerController : public QObject {
     // the former and populated from the latter.
     Q_PROPERTY(bool liveCapable READ liveCapable NOTIFY liveChanged)
     Q_PROPERTY(QVariantList liveSources READ liveSources NOTIFY liveChanged)
+    // True while a discovery scan is in flight. The wait is the NDI runtime's
+    // own finder (it returns as soon as a source appears), so the picker can
+    // say "scanning" honestly but cannot promise a countdown.
+    Q_PROPERTY(bool liveScanning READ liveScanning NOTIFY liveChanged)
     Q_PROPERTY(bool fontListSupported READ fontListSupported NOTIFY fontListChanged)
     Q_PROPERTY(QString fontListState READ fontListState NOTIFY fontListChanged)
     Q_PROPERTY(QStringList fontFamilies READ fontFamilies NOTIFY fontListChanged)
@@ -394,6 +398,7 @@ public:
     // the audience will never see.
     bool liveCapable() const { return fLiveCapable; }
     QVariantList liveSources() const { return fLiveSources; }
+    bool liveScanning() const { return fLiveScanning; }
     bool fontListSupported() const { return fFontListCapable; }
 
     // --- how the audience moves (task TR.1) --------------------------------
@@ -527,6 +532,7 @@ private:
     bool fFontListCapable = false;
     bool fLiveCapable = false;
     QVariantList fLiveSources;
+    bool fLiveScanning = false;
 
     // scene.transition-options.v1 (task TR.1): see
     // transitionOptionsSupported().

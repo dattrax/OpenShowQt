@@ -519,6 +519,10 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             // built to forbid (task BI.4).
             emit textMeasureFailed(id, reason);
         }
+        if (pending.method == proto::kMethodLiveSources) {
+            fLiveScanning = false;
+            emit liveChanged();
+        }
         if (pending.method == proto::kMethodFontList) {
             // TS.4: a refused walk ends the walk. The picker shows the
             // state, the status line carries the worker's own sentence
@@ -960,8 +964,9 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         }
         if (discovered != fLiveSources) {
             fLiveSources = std::move(discovered);
-            emit liveChanged();
         }
+        fLiveScanning = false;
+        emit liveChanged();
         return;
     }
 
@@ -1089,10 +1094,20 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
 
 void WorkerController::refreshLiveSources(int waitMs) {
     if (!fLiveCapable || !fConnected) {
-        fLiveSources.clear();
-        emit liveChanged();
+        if (!fLiveSources.isEmpty() || fLiveScanning) {
+            fLiveSources.clear();
+            fLiveScanning = false;
+            emit liveChanged();
+        }
         return;
     }
+    // One scan at a time: the timer must not queue behind a slow finder wait.
+    // The answer in flight will update the list when it lands.
+    if (fLiveScanning) {
+        return;
+    }
+    fLiveScanning = true;
+    emit liveChanged();
     sendRequest(proto::kMethodLiveSources,
                 boost::json::object{{"waitMs", waitMs}});
 }
