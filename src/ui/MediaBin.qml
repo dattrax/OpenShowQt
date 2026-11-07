@@ -278,6 +278,7 @@ FocusScope {
                     text: "MEDIA INFO"
                 }
                 Text {
+                    objectName: "mediaInfoName"
                     width: parent.width
                     wrapMode: Text.WordWrap
                     color: "#eeeeee"
@@ -466,7 +467,9 @@ FocusScope {
                     // Roughly 170 px minimum per card; the columns reflow as
                     // the bin is resized and the inspector keeps its width.
                     cellWidth: Math.max(1, Math.floor(width / Math.max(1, Math.floor(width / 170))))
-                    cellHeight: Math.round(cellWidth * 9 / 16) + 52
+                    // The card is the preview: no caption row, so the cell is
+                    // the frame plus its 4px margins.
+                    cellHeight: Math.round(cellWidth * 9 / 16) + 8
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar {}
 
@@ -479,7 +482,10 @@ FocusScope {
                         sourcePath: modelData.sourcePath
                         cameraNumber: mediaBin.cameraNumber(modelData.id)
                         selected: modelData.id === mediaBin.selectedAssetId
-                        onActivated: mediaBin.selectedAssetId = modelData.id
+                        onActivated: {
+                            mediaBin.selectedAssetId = modelData.id
+                            mediaBin.forceActiveFocus()
+                        }
                         onContextRequested: function (mouseX, mouseY) {
                             mediaBin.selectedAssetId = modelData.id
                             mediaContextMenu.popup()
@@ -512,6 +518,19 @@ FocusScope {
         // something unsupported is possible and the row says so).
         nameFilters: docs.mediaImportNameFilters()
         onAccepted: docs.importMediaUrl(selectedFile)
+    }
+
+    // Delete removes the selected asset, the same verb the context menu's
+    // Remove calls. The editor's Delete shortcut stands down while the bin owns
+    // the keyboard (ShortcutMap's binFocused), so this one is unambiguous.
+    Shortcut {
+        sequence: "Delete"
+        enabled: mediaBin.editingEnabled && mediaBin.activeFocus
+                 && mediaBin.selectedAssetId !== ""
+        onActivated: {
+            docs.removeAsset(mediaBin.selectedAssetId)
+            mediaBin.selectedAssetId = ""
+        }
     }
 
     // ---------------------------------------------------------------------

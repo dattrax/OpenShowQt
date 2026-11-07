@@ -1256,15 +1256,17 @@ int main(int argc, char** argv) {
         window->resize(1000, 680);
         QTest::qWait(80);
         {
-            QList<QQuickItem*> names;
-            collectNamed(mediaBin, "mediaRowName", names);
-            const int cards = mediaRows().size();
-            bool namesReadable = !names.isEmpty() && names.size() == cards;
-            for (auto* name : names)
-                namesReadable = namesReadable && name->width() > 40
-                                && !name->property("text").toString().isEmpty();
-            check(cards >= 2 && namesReadable,
-                  "a narrow bin reflows the grid and keeps readable names");
+            // The card is the preview; the name lives in the inspector.
+            if (!mediaRows().isEmpty())
+                clickAt(mediaRows().first(), 20, 14);
+            QTest::qWait(20);
+            auto* name = findNamed(mediaBin, "mediaInfoName");
+            const bool named = name != nullptr && name->width() > 40
+                               && !name->property("text").toString().isEmpty()
+                               && name->property("text").toString()
+                                      != QLatin1String("nothing selected");
+            check(mediaRows().size() >= 2 && named,
+                  "a narrow bin reflows the grid and the inspector keeps the name");
         }
         window->resize(binSizeBefore);
         QTest::qWait(60);
@@ -1281,6 +1283,29 @@ int main(int argc, char** argv) {
         check(activate->isVisible() && !activate->property("enabled").toBool()
                   && !worker.standaloneOnAir(),
               "the last word is the cue control, honest about having no output");
+
+        // The Delete key removes the selected asset, the same verb the menu's
+        // Remove calls. A disposable asset keeps the later expectations intact.
+        {
+            std::ofstream(std::filesystem::path(scratch.path().toStdString())
+                          / "delete-me.txt") << "BYTES";
+            check(docs.importMediaFile(files + "/delete-me.txt"),
+                  "import a disposable asset");
+            QTest::qWait(40);
+            for (auto* row : mediaRows())
+                if (row->property("modelData").toMap().value("name").toString()
+                    == QLatin1String("delete-me.txt"))
+                    clickAt(row, 20, 14);
+            QTest::qWait(20);
+            const int before = docs.assets().size();
+            window->setProperty("page", "edit");
+            QTest::qWait(30);
+            mediaBin->forceActiveFocus();
+            QTest::keyClick(window, Qt::Key_Delete);
+            QTest::qWait(40);
+            check(docs.assets().size() == before - 1,
+                  "Delete removes the selected media asset");
+        }
 
         // ND.7: the Add NDI action belongs to the bin's context menu. Its
         // items are instantiated when the menu opens; this fixture has no

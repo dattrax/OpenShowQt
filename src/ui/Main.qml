@@ -107,6 +107,7 @@ Window {
         page: root.page
         typingIntoField: root.typingIntoField
         squattedFocus: root.squattedFocus
+        binFocused: root.activeFocusItem === mediaBin
         preparationListFocused: leftDock.visible && (leftDock.libraryListFocused || leftDock.serviceListFocused)
         editorSlideListFocused: editorSlideRail.activeFocus
         boxSelected: editPage.boxSelected

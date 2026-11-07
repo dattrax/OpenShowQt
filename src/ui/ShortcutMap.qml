@@ -45,6 +45,7 @@ Item {
     property bool preparationListFocused: false
     property bool editorSlideListFocused: false
     property bool squattedFocus: false      // a button or combo holds it
+    property bool binFocused: false          // the media bin owns the keyboard
     property bool boxSelected: false        // the canvas's handles are on
     property int currentBox: -1             // docs.currentBox
     property int slideCount: 0
@@ -296,7 +297,7 @@ Item {
     Shortcut {
         sequence: "Delete"
         enabled: page === "edit" && slideCount > 0 && !typingIntoField
-                 && !preparationListFocused && !squattedFocus
+                 && !preparationListFocused && !squattedFocus && !binFocused
         onActivated: removeSlideRequested()
     }
     Shortcut {

@@ -48,13 +48,8 @@ Item {
 
         Item {
             id: preview
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.topMargin: 4
-            anchors.leftMargin: 4
-            anchors.rightMargin: 4
-            height: Math.round(width * 9 / 16)
+            anchors.fill: parent
+            anchors.margins: 4
             clip: true
 
             Image {
@@ -215,44 +210,42 @@ Item {
             }
         }
 
-        Text {
-            id: kindText
-            objectName: "mediaRowKind"
-            anchors.top: preview.bottom
-            anchors.right: parent.right
-            anchors.rightMargin: 6
-            anchors.topMargin: 4
-            font.pixelSize: 10
-            color: "#8fb7dd"
-            text: card.kindLabel
-        }
-        Text {
-            id: nameText
-            objectName: "mediaRowName"
-            anchors.top: preview.bottom
+        // The name is in the inspector, so the card is the preview. Kind and
+        // notice stay as small overlays so the picture keeps the space.
+        Rectangle {
+            anchors.top: parent.top
             anchors.left: parent.left
-            anchors.leftMargin: 6
-            anchors.right: kindText.left
-            anchors.rightMargin: 6
-            anchors.topMargin: 4
-            elide: Text.ElideMiddle
-            font.pixelSize: 12
-            color: "#eeeeee"
-            text: modelData.name || ""
+            anchors.margins: 6
+            width: kindText.width + 8
+            height: kindText.height + 4
+            radius: 2
+            color: "#aa000000"
+            Text {
+                id: kindText
+                objectName: "mediaRowKind"
+                anchors.centerIn: parent
+                font.pixelSize: 10
+                color: "#8fb7dd"
+                text: card.kindLabel
+            }
         }
-        Text {
-            objectName: "mediaRowNotice"
-            anchors.top: nameText.bottom
+        Rectangle {
+            anchors.bottom: parent.bottom
             anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: 6
-            anchors.rightMargin: 6
-            anchors.topMargin: 2
+            anchors.margins: 6
             visible: card.notice !== ""
-            elide: Text.ElideRight
-            font.pixelSize: 10
-            color: "#c8a24a"
-            text: card.notice
+            width: noticeText.width + 8
+            height: noticeText.height + 4
+            radius: 2
+            color: "#aa000000"
+            Text {
+                id: noticeText
+                objectName: "mediaRowNotice"
+                anchors.centerIn: parent
+                font.pixelSize: 10
+                color: "#c8a24a"
+                text: card.notice
+            }
         }
     }
 
