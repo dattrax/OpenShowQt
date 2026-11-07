@@ -451,7 +451,7 @@ void testServedSession() {
         // shrinking is a wire change, and it should cost a looked-at line.
         // TR.2's scene.transition-options.v1 made this 21 — the real worker,
         // drawing the record's durations, now claims it for itself.
-        check(result.as_object().at("capabilities").as_array().size() == 22,
+        check(result.as_object().at("capabilities").as_array().size() == 23,
               "hello lists worker capabilities");
     }
 
@@ -1518,6 +1518,68 @@ void testMediaDescribe() {
     check(waitExit(pid, 5) == 0, "media-describe worker exits cleanly");
 }
 
+bool runCommand(const std::string& command) {
+    return std::system(command.c_str()) == 0;
+}
+
+void testMediaThumbnail() {
+    const std::string path = socketPath("media-thumbnail");
+    const pid_t pid = spawnWorker(path);
+    if (!check(pid > 0, "media-thumbnail worker spawned")) {
+        return;
+    }
+    const int fd = connectRetry(path);
+    if (!check(fd >= 0, "connected for media.thumbnail")) {
+        killWorker(pid);
+        return;
+    }
+    boost::json::value reply;
+    if (!check(call(fd, 1, "hello", proto::helloParams("ipc-test", 0, 1), &reply),
+               "hello succeeded (media.thumbnail)")) {
+        close(fd);
+        killWorker(pid);
+        return;
+    }
+    const std::string mp4 = "/tmp/openshow-thumb-" +
+                            std::to_string(static_cast<long>(getpid())) + ".mp4";
+    const bool generated = runCommand(
+        "ffmpeg -hide_banner -loglevel error -y "
+        "-f lavfi -i testsrc2=size=320x240:rate=30:duration=1 "
+        "-c:v libx264 -preset ultrafast -pix_fmt yuv420p -an " + mp4);
+    if (!generated) {
+        std::printf("SKIP: the ffmpeg CLI could not generate a thumbnail fixture\n");
+        call(fd, 4, "shutdown", {}, &reply);
+        close(fd);
+        waitExit(pid, 5);
+        return;
+    }
+    if (check(call(fd, 2, proto::kMethodMediaThumbnail,
+                   boost::json::object{{"path", mp4}, {"width", 320}, {"height", 180}},
+                   &reply) &&
+                  reply.as_object().contains("result"),
+              "media.thumbnail answers for a video")) {
+        const auto& result = reply.at("result").as_object();
+        const std::string data = result.at("data").is_string()
+                                     ? std::string(result.at("data").as_string())
+                                     : std::string();
+        check(result.at("width").to_number<int>() > 0 &&
+                  result.at("width").to_number<int>() <= 320 &&
+                  result.at("height").to_number<int>() > 0 &&
+                  result.at("height").to_number<int>() <= 180,
+              "the thumbnail fits the requested box");
+        check(data.rfind("iVBORw0KGgo", 0) == 0,
+              "the thumbnail is a base64 PNG");
+    }
+    check(call(fd, 3, proto::kMethodMediaThumbnail,
+               boost::json::object{{"path", "/no/such/openshow-video"}}, &reply) &&
+              isErrorCode(reply, proto::kInternalError),
+          "a missing video is a typed refusal");
+    ::unlink(mp4.c_str());
+    call(fd, 4, "shutdown", {}, &reply);
+    close(fd);
+    check(waitExit(pid, 5) == 0, "media-thumbnail worker exits cleanly");
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) {
         gWorkerBinary = argv[1];
@@ -1531,6 +1593,7 @@ int main(int argc, char** argv) {
     testLiveCrash();
     testLiveSources();
     testMediaDescribe();
+    testMediaThumbnail();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "%d IPC check(s) failed\n", gFailures);

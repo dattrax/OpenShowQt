@@ -214,9 +214,10 @@ add_library(openshow-worker-media STATIC
   media/PipeWireSink.cpp
   media/SeekQueue.cpp
   media/VideoFrameSource.cpp
+  media/VideoThumbnail.cpp
 )
 add_library(openshow::worker_media ALIAS openshow-worker-media)
-target_link_libraries(openshow-worker-media PRIVATE PkgConfig::FFMPEG PkgConfig::PIPEWIRE)
+target_link_libraries(openshow-worker-media PRIVATE PkgConfig::FFMPEG PkgConfig::PIPEWIRE PkgConfig::PNG)
 target_include_directories(openshow-worker-media PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Task 5.1: the production decode→present pipeline (bounded queues, paced

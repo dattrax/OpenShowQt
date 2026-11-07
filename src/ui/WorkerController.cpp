@@ -401,6 +401,11 @@ void WorkerController::onRpcDisconnected() {
     fAssetInfoPath.clear();
     fAssetInfoCache.clear();
     emit assetInfoChanged();
+    fVideoThumbnails.clear();
+    fThumbnailPending.clear();
+    fThumbnailFailed.clear();
+    fThumbnailRequestPaths.clear();
+    emit videoThumbnailsChanged();
     fStatusRequestId = 0;
     fPreview->setSessionLive(false);
     fPreview->closeStream();
@@ -523,6 +528,14 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             // built to forbid (task BI.4).
             emit textMeasureFailed(id, reason);
         }
+        if (pending.method == proto::kMethodMediaThumbnail) {
+            const QString key = fThumbnailRequestPaths.value(pending.id);
+            fThumbnailRequestPaths.remove(pending.id);
+            fThumbnailPending.remove(key);
+            if (!key.isEmpty()) {
+                fThumbnailFailed.insert(key);
+            }
+        }
         if (pending.method == proto::kMethodMediaDescribe) {
             QVariantMap row;
             row.insert(QStringLiteral("path"), fAssetInfoPath);
@@ -596,6 +609,11 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         fAssetInfoPath.clear();
         fAssetInfoCache.clear();
         emit assetInfoChanged();
+        fVideoThumbnails.clear();
+        fThumbnailPending.clear();
+        fThumbnailFailed.clear();
+        fThumbnailRequestPaths.clear();
+        emit videoThumbnailsChanged();
         // The pictures ride this session, so they are online when it is: an
         // ask sent before the worker has identified itself is a request the
         // worker would answer with a method it has not agreed to speak.
@@ -996,6 +1014,38 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         return;
     }
 
+    if (pending.method == proto::kMethodMediaThumbnail) {
+        const QVariantMap row = [&]() {
+            QVariantMap map;
+            if (!payloadValue.is_object()) {
+                return map;
+            }
+            const boost::json::object& info = payloadValue.as_object();
+            auto stringOf = [&info](const char* key) -> QString {
+                const auto it = info.find(key);
+                return it != info.end() && it->value().is_string()
+                           ? QString::fromStdString(std::string(it->value().as_string()))
+                           : QString();
+            };
+            map.insert(QStringLiteral("path"), stringOf("path"));
+            map.insert(QStringLiteral("data"), stringOf("data"));
+            return map;
+        }();
+        fThumbnailPending.remove(row.value(QStringLiteral("path")).toString());
+        fThumbnailRequestPaths.remove(pending.id);
+        const QString key = row.value(QStringLiteral("path")).toString();
+        const QString data = row.value(QStringLiteral("data")).toString();
+        if (key.isEmpty() || data.isEmpty()) {
+            return;
+        }
+        if (fVideoThumbnails.size() > 64) {
+            fVideoThumbnails.clear();
+        }
+        fVideoThumbnails.insert(key, QStringLiteral("data:image/png;base64,") + data);
+        emit videoThumbnailsChanged();
+        return;
+    }
+
     if (pending.method == proto::kMethodLiveSources) {
         // A rescan (the picker polls while it is open) must not reset the
         // list view when nothing changed: build the answer off to the side,
@@ -1210,6 +1260,26 @@ void WorkerController::describeAsset(const QString& path) {
     emit assetInfoChanged();
     sendRequest(proto::kMethodMediaDescribe,
                 boost::json::object{{"path", path.toStdString()}});
+}
+
+void WorkerController::requestVideoThumbnail(const QString& path, int width,
+                                           int height) {
+    if (path.isEmpty() || !fConnected) {
+        return;
+    }
+    if (fVideoThumbnails.contains(path) || fThumbnailPending.contains(path) ||
+        fThumbnailFailed.contains(path)) {
+        return;
+    }
+    fThumbnailPending.insert(path);
+    const std::int64_t id = sendRequest(
+        proto::kMethodMediaThumbnail,
+        boost::json::object{{"path", path.toStdString()},
+                            {"width", width},
+                            {"height", height}});
+    if (id > 0) {
+        fThumbnailRequestPaths.insert(id, path);
+    }
 }
 
 void WorkerController::pollStatus() {

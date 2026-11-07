@@ -30,11 +30,16 @@ Item {
     // would carry without reaching into the overlay-parented proxy.
     readonly property string dragPayload: "media:" + (modelData.id || "")
 
+    Component.onCompleted: if (kind === "video") worker.requestVideoThumbnail(sourcePath)
+
     signal activated()
     // A right-click in card coordinates; the host owns the menu.
     signal contextRequested(real mouseX, real mouseY)
 
     readonly property bool hasStill: kind === "picture" && sourcePath !== ""
+    // MB.6: the worker's first frame as a data URI, or "" for the glyph.
+    readonly property string videoThumb: kind === "video" && sourcePath !== ""
+        ? (worker.videoThumbnails[sourcePath] || "") : ""
 
     Rectangle {
         anchors.fill: parent
@@ -168,10 +173,22 @@ Item {
                 }
             }
 
-            // Video: a play mark until MB.6 gives the first frame.
+            // MB.6: the first frame, when the worker has answered.
+            Image {
+                id: videoFrame
+                anchors.fill: parent
+                visible: card.videoThumb !== ""
+                source: card.videoThumb
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                cache: true
+                smooth: true
+            }
+
+            // Video: a play mark while the first frame is not here yet.
             Text {
                 anchors.centerIn: parent
-                visible: !still.visible && card.kind === "video"
+                visible: card.kind === "video" && card.videoThumb === ""
                 text: "\u25B6"
                 color: "#dfe7ee"
                 font.pixelSize: Math.round(parent.height * 0.55)

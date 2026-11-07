@@ -40,6 +40,7 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET GLOBAL
 # libskshaper's harfbuzz backend references the system harfbuzz.
 pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET GLOBAL fontconfig)
 pkg_check_modules(HARFBUZZ REQUIRED IMPORTED_TARGET GLOBAL harfbuzz)
+pkg_check_modules(PNG REQUIRED IMPORTED_TARGET GLOBAL libpng)
 
 find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)

@@ -232,6 +232,9 @@ inline constexpr const char* kMethodLiveSources = "live.sources";
 // pixel size, which streams exist). Header-only; no decoding.
 inline constexpr const char* kCapabilityMediaDescribe = "media.describe.v1";
 inline constexpr const char* kMethodMediaDescribe = "media.describe";
+// MB.6: a video's first frame as a base64 PNG, bounded by the requested box.
+inline constexpr const char* kCapabilityMediaThumbnail = "media.thumbnail.v1";
+inline constexpr const char* kMethodMediaThumbnail = "media.thumbnail";
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without

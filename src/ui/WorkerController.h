@@ -24,6 +24,7 @@
 #include <boost/json.hpp>
 
 #include <QHash>
+#include <QSet>
 #include <QImage>
 #include <QProcess>
 #include <QTimer>
@@ -142,6 +143,9 @@ class WorkerController : public QObject {
     // {path, durationMs, width, height, video, audio} or {path, error}. The
     // bin asks on selection; the controller caches by path.
     Q_PROPERTY(QVariantMap assetInfo READ assetInfo NOTIFY assetInfoChanged)
+    // MB.6: a video's first frame as a "data:image/png;base64,..." string,
+    // keyed by file path. Cached; the card asks once when it appears.
+    Q_PROPERTY(QVariantMap videoThumbnails READ videoThumbnails NOTIFY videoThumbnailsChanged)
     Q_PROPERTY(bool fontListSupported READ fontListSupported NOTIFY fontListChanged)
     Q_PROPERTY(QString fontListState READ fontListState NOTIFY fontListChanged)
     Q_PROPERTY(QStringList fontFamilies READ fontFamilies NOTIFY fontListChanged)
@@ -404,6 +408,7 @@ public:
     QVariantList liveSources() const { return fLiveSources; }
     bool liveScanning() const { return fLiveScanning; }
     QVariantMap assetInfo() const { return fAssetInfo; }
+    QVariantMap videoThumbnails() const { return fVideoThumbnails; }
     bool fontListSupported() const { return fFontListCapable; }
 
     // --- how the audience moves (task TR.1) --------------------------------
@@ -445,6 +450,10 @@ public:
     // answer publishes immediately; otherwise one request is in flight and its
     // reply (or refusal) becomes assetInfo.
     Q_INVOKABLE void describeAsset(const QString& path);
+    // Asks for one video's first frame. A no-op when the path is already
+    // cached, in flight, or failed; a failed path is not retried.
+    Q_INVOKABLE void requestVideoThumbnail(const QString& path, int width = 320,
+                                           int height = 180);
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
@@ -480,6 +489,7 @@ signals:
     void fontListChanged();
     void liveChanged();
     void assetInfoChanged();
+    void videoThumbnailsChanged();
     void sceneChanged();
     void mediaChanged();
 
@@ -550,6 +560,10 @@ private:
     QVariantMap fAssetInfo;
     QString fAssetInfoPath;
     QHash<QString, QVariantMap> fAssetInfoCache;
+    QVariantMap fVideoThumbnails;
+    QSet<QString> fThumbnailPending;
+    QSet<QString> fThumbnailFailed;
+    QHash<std::int64_t, QString> fThumbnailRequestPaths;
 
     // scene.transition-options.v1 (task TR.1): see
     // transitionOptionsSupported().

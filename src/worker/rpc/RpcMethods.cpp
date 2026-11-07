@@ -21,6 +21,7 @@
 #include "openshow/scene/scene.h"
 
 #include "media/MediaProbe.h"
+#include "media/VideoThumbnail.h"
 
 #include "render/Layer.h"
 
@@ -698,6 +699,63 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
                         {"video", !info.videoStreams.empty()},
                         {"audio", !info.audioStreams.empty()},
                         {"format", info.formatName}}),
+            outbound);
+    } else if (name == proto::kMethodMediaThumbnail) {
+        // MB.6: one first frame, scaled into the requested box and returned as
+        // base64 PNG. The card caches by path; this never decodes audio.
+        const boost::json::value* pathValue =
+            given.is_object() ? given.as_object().if_contains("path") : nullptr;
+        if (pathValue == nullptr || !pathValue->is_string()) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "media.thumbnail requires a string \"path\""),
+                outbound);
+            return;
+        }
+        const std::string mediaPath(pathValue->as_string());
+        if (mediaPath.empty() || mediaPath.size() > 4096 ||
+            mediaPath.find('\0') != std::string::npos) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "media.thumbnail: the path is empty or too long"),
+                outbound);
+            return;
+        }
+        int boxWidth = 320;
+        int boxHeight = 180;
+        if (given.is_object()) {
+            const boost::json::object& params = given.as_object();
+            if (const auto* w = params.if_contains("width");
+                w != nullptr && w->is_number()) {
+                boxWidth = static_cast<int>(w->to_number<double>());
+            }
+            if (const auto* h = params.if_contains("height");
+                h != nullptr && h->is_number()) {
+                boxHeight = static_cast<int>(h->to_number<double>());
+            }
+        }
+        std::string base64;
+        int thumbWidth = 0;
+        int thumbHeight = 0;
+        std::string thumbError;
+        if (!openshow::media::videoThumbnailBase64(
+                mediaPath, boxWidth, boxHeight, &base64, &thumbWidth, &thumbHeight,
+                &thumbError)) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInternalError,
+                                 "media.thumbnail: " +
+                                     (thumbError.empty()
+                                          ? std::string("the frame could not be decoded")
+                                          : thumbError)),
+                outbound);
+            return;
+        }
+        proto::appendFrame(
+            proto::makeResult(
+                id, boost::json::object{{"path", mediaPath},
+                                        {"width", thumbWidth},
+                                        {"height", thumbHeight},
+                                        {"data", base64}}),
             outbound);
     } else if (name == proto::kMethodLiveSources) {
         std::uint32_t waitMs = 3000;

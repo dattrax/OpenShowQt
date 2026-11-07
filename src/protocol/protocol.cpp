@@ -271,7 +271,9 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                             kCapabilityTransitionOptions,
                             // MB.6: the bin asks the worker what a file is
                             // (length/size/streams) with a header probe.
-                            kCapabilityMediaDescribe};
+                            kCapabilityMediaDescribe,
+                            // MB.6: one first frame, scaled and PNG-encoded.
+                            kCapabilityMediaThumbnail};
     if (liveSources) {
         capabilities.push_back(kCapabilityLiveSources);
     }
