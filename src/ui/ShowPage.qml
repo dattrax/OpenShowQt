@@ -159,6 +159,15 @@ Rectangle {
     }
     function jumpToCue(at) { showPage.presentCue(at) }
 
+    // MB.3: a media card dropped on a cue sets that cue's slide background.
+    // The cue names its own show/slide, so a tile belonging to another show
+    // still edits the right slide. One edit, one undo; the editing cursor and
+    // the presenter's place do not move.
+    function applyMediaToCue(showId, slideId, assetId, fit) {
+        if (showId === "" || slideId === "" || assetId === "") return false
+        return docs.setSlideBackgroundFor(showId, slideId, assetId, fit || "cover")
+    }
+
     // The service pane selects an occurrence, keeping the entire running
     // order visible. Wait for the source binding after leaving Library browse.
     function focusServiceEntry(entryId) {
@@ -477,6 +486,36 @@ Rectangle {
                     const at = tile.mapToItem(showPage, mouseX, mouseY)
                     cueThemeMenu.popup(at.x, at.y)
                 }
+            }
+
+            // MB.3: a media card dropped on this cue sets its slide background.
+            DropArea {
+                id: mediaDrop
+                objectName: "cueMediaDrop"
+                anchors.fill: parent
+                enabled: cell.visible
+                keys: ["text/plain"]
+                onEntered: function (drag) {
+                    if (drag.text && drag.text.startsWith("media:")) {
+                        drag.accept(Qt.CopyAction)
+                        drag.accepted = true
+                    } else {
+                        drag.accepted = false
+                    }
+                }
+                onDropped: function (drop) {
+                    if (!drop.text || !drop.text.startsWith("media:")) return
+                    showPage.applyMediaToCue(cell.row.showId, cell.row.slideId,
+                                            drop.text.substring("media:".length),
+                                            "cover")
+                }
+            }
+            Rectangle {
+                anchors.fill: parent
+                visible: mediaDrop.containsDrag
+                color: "#331685f8"
+                border.color: "#65c4ff"
+                border.width: 2
             }
         }
     }

@@ -507,6 +507,13 @@ public:
     // Layering: an image behind the current slide's words; "" clears it
     // back to the theme's background colour.
     Q_INVOKABLE bool setSlideBackground(const QString& assetId);
+    // The drag/drop route (MB.3): set a NAMED slide's background from a media
+    // card, whichever show owns it, in one undo. The fit is the drop's rule
+    // (cover for pictures/video/camera); the caller supplies it so deck-page
+    // `contain` can survive once the page is tagged.
+    Q_INVOKABLE bool setSlideBackgroundFor(const QString& showId, const QString& slideId,
+                                           const QString& assetId,
+                                           const QString& fit = QString());
     // How the current slide's background sits on the canvas (6.17c1): the
     // two names the model spells, one history entry; a name the domain does
     // not know is refused here naming itself, before any edit is recorded.

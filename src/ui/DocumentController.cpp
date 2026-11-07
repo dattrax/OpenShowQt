@@ -2320,6 +2320,35 @@ bool DocumentController::setSlideBackground(const QString& assetId) {
     return true;
 }
 
+bool DocumentController::setSlideBackgroundFor(const QString& showId, const QString& slideId,
+                                               const QString& assetId, const QString& fit) {
+    flushText();
+    if (showId.isEmpty() || slideId.isEmpty()) {
+        setStatus(QStringLiteral("background: no such slide"));
+        return false;
+    }
+    openshow::domain::BackgroundFit parsed = openshow::domain::BackgroundFit::Cover;
+    if (!fit.isEmpty() &&
+        !openshow::domain::backgroundFitFromName(fit.toStdString(), &parsed)) {
+        setStatus(QStringLiteral("background fit: '%1' is not a fit this build draws")
+                      .arg(fit));
+        return false;
+    }
+    std::string error;
+    if (!edit([&] {
+            if (!fDocuments.setSlideBackground(showId.toStdString(), slideId.toStdString(),
+                                               assetId.toStdString(), &error)) {
+                return false;
+            }
+            return fDocuments.setSlideBackgroundFit(showId.toStdString(),
+                                                    slideId.toStdString(), parsed, &error);
+        })) {
+        setStatus(QStringLiteral("background: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
 QString DocumentController::currentBackgroundFit() const {
     return fViews.backgroundFit(viewCursor());
 }

@@ -7,6 +7,7 @@
 #include <QQmlContext>
 #include <QQmlExpression>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QQuickItem>
 #include <QJSValue>
 #include <QQuickStyle>
@@ -1104,6 +1105,46 @@ int main(int argc, char** argv) {
               "Add to slide places the picture the operator had selected");
         check(worker.pendingCueKey().isEmpty() && !worker.outputLive(),
               "and placing it still presents nothing");
+
+        // MB.3: a media card dropped on a cue sets that cue's slide background,
+        // whichever show owns the cue, in one undo. The actual drag event is
+        // Qt's; this drives the routing function the DropArea calls.
+        {
+            const QVariantList cues = showPageItem->property("cueRows").toList();
+            check(!cues.isEmpty(), "the Show page has a cue to drop onto");
+            if (!cues.isEmpty() && !pictureId.isEmpty()) {
+                const QVariantMap cue = cues.first().toMap();
+                const QString cueShow = cue.value("showId").toString();
+                const QString cueSlide = cue.value("slideId").toString();
+                auto backgroundId = [&docs](const QString& slideId) {
+                    const QJsonObject scene =
+                        QJsonDocument::fromJson(
+                            docs.sceneJsonForSlide(slideId).toUtf8()).object();
+                    return scene.value("background").toObject()
+                                .value("assetId").toString();
+                };
+                const QString before = backgroundId(cueSlide);
+                QVariant applied;
+                const bool called = QMetaObject::invokeMethod(
+                    showPageItem, "applyMediaToCue", Q_RETURN_ARG(QVariant, applied),
+                    Q_ARG(QVariant, cueShow), Q_ARG(QVariant, cueSlide),
+                    Q_ARG(QVariant, pictureId), Q_ARG(QVariant, QStringLiteral("cover")));
+                QTest::qWait(40);
+                check(called && applied.toBool() && backgroundId(cueSlide) == pictureId,
+                      "a dropped picture becomes the cue's background");
+                docs.undo();
+                QTest::qWait(40);
+                check(backgroundId(cueSlide) == before,
+                      "one undo restores the cue's previous background");
+                docs.redo();
+                QTest::qWait(40);
+            }
+            auto* drop = findNamed(showPageItem, "cueMediaDrop");
+            check(drop != nullptr
+                      && drop->property("keys").toStringList().contains(
+                             QStringLiteral("text/plain")),
+                  "a cue tile accepts the media drag payload");
+        }
 
         // Closing the bin and dragging its edge give the workspace its area
         // back without disturbing what the operator was doing.
