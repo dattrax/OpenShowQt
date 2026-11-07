@@ -109,12 +109,14 @@ GPL application (Qt frontend + worker)          Separate helper (MIT, NDI SDK)
   more than one at a time. A camera background therefore uses the same layer and
   the same geometry as a video background; it does not add a second video layer
   and there is no live-plus-file-plus-still composition to arbitrate.
-- The NDI receiver asks for **UYVY** (2 bytes/pixel, the HX decoder's native
-  YUV output, no RGB conversion inside the SDK). The worker converts UYVY to
-  NV12, because RADV cannot sample a Vulkan 4:2:2 format, and feeds the existing
-  `GpuYuvUploader` — the same Skia/Vulkan YUV path as FFmpeg playback. The ring
-  carries UYVY; the GPU layer receives NV12. The ring is half the size a BGRA
-  feed would need.
+- The NDI receiver asks for **UYVY** (2 bytes/pixel). The H.264/HEVC stream is
+  normally 4:2:0, but the standard NDI receive API exposes YUV only as 4:2:2
+  (UYVY, or P216 with `best`); the runtime's 4:2:0→4:2:2 expansion adds no
+  source detail. UYVY is still much better than the SDK's BGRA conversion. The
+  worker converts UYVY to NV12 because RADV cannot sample a Vulkan 4:2:2
+  format, and feeds the existing `GpuYuvUploader` — the same Skia/Vulkan YUV
+  path as FFmpeg playback. The ring carries UYVY; the GPU layer receives NV12.
+  The ring is half the size a BGRA feed would need.
 - The worker's background transport detects the `ndi://` asset path and asks the
   live hub for frames instead of opening a file. The renderer draws the newest
   frame like a video background. Previews use the same path, so the operator

@@ -1,12 +1,14 @@
 /*
  * UYVY (packed 4:2:2) to NV12 (semi-planar 4:2:0) for live sources (ND.4/ND.6).
  *
- * NDI|HX and full NDI hand the receiver UYVY: two bytes per pixel, no RGB
- * conversion inside the SDK. RADV on the target GPU cannot sample a 4:2:2
- * Vulkan format, so the worker converts to NV12 and feeds the same
- * GpuYuvUploader the FFmpeg video path uses. The conversion is a Y-plane
- * deinterleave and a vertical chroma average; it allocates nothing when the
- * caller reuses the output.
+ * NDI|HX and full NDI hand the receiver packed UYVY (4:2:2, two bytes per
+ * pixel), which is the standard receive API's YUV output. The compressed H.264
+ * or HEVC stream is usually 4:2:0; the runtime expands it on the way out, so
+ * no RGB conversion happens in the SDK but the vertical chroma rows are
+ * upsampled. RADV on the target GPU cannot sample a 4:2:2 Vulkan format, so
+ * the worker converts to NV12 and feeds the same GpuYuvUploader the FFmpeg
+ * video path uses. The conversion is a Y-plane deinterleave and a vertical
+ * chroma average; it allocates nothing when the caller reuses the output.
  */
 
 #pragma once
