@@ -1722,6 +1722,35 @@ undo, missing tool, bad manifest, duplicate import, save/reopen);
 `pptx_ui_tests` (real URL drops on both targets and removed menu/dialog
 assertions, gated on the built sidecar); `ui_loads` (shell and drop areas); Windows CI (fixture).
 
+### NDI camera input (ND)
+
+Show a live NDI camera from the room as a **camera asset in the Media Bin**
+(video only, no audio). This is an **input** milestone, separate from FO.3/FO.4
+(the NDI *sender* to OBS), and it is not a slide context or an output destination.
+Optional and not part of the default build. The NDI SDK is proprietary, so the
+GPL application must not link it: the boundary is a separate MIT helper process
+that links NDI and speaks a documented JSON + shared-memory protocol. The app
+contains no NDI headers or symbols; a CI guard checks the application binary.
+The helper is distributed separately and the app remains fully functional
+without it. Details and operator notes: `docs/ndi-camera-input.md`.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| ND.0 | DONE | Licence and build gate: add the GPL application `LICENSE`, the MIT helper licence and the documented process boundary; keep NDI optional and absent from the default build | The app configures/builds/tests with no NDI SDK present; `git grep` finds no NDI header/symbol in the application targets; the boundary and NDI attribution/EULA posture are recorded in `docs/ndi-camera-input.md` |
+| ND.1 | TODO | SDK acquisition and NDI spike: `scripts/fetch-ndi-sdk.sh` with explicit EULA acceptance, gitignored extraction and `OPENSHOW_NDI_SDK_DIR`; a standalone helper probe/list against a real camera | The script extracts a user-supplied SDK without committing it and refuses an accidental overwrite; `ndi-helper --probe` reports the NDI runtime version and `--list` names a camera on the LAN; the supported pixel formats and frame pacing are recorded |
+| ND.2 | TODO | Helper process protocol: line-delimited JSON over stdin/stdout, stdout protocol-only and stderr diagnostics, bounded commands `probe`, `list`, `open`, `close`, `quit`, version negotiation and typed errors | Fake-backend tests cover every command, malformed/oversized lines, EOF shutdown and stdout containing JSON only; an incompatible protocol version is refused with a typed error |
+| ND.3 | TODO | Shared frame ring and worker live core: MIT fixed-size header in `shared/`, ring writer/reader, newest-wins overwrite and torn-read detection; `LiveSourceBackend`, `HelperBackend` and `FakeBackend` | `frame_ring_tests` pin layout/size/alignment, write/read sequence, overwrite and corrupt-header refusal; worker tests map a real ring and hand the newest frame to the consumer without growing a queue |
+| ND.4 | TODO | NDI backend in the helper: discovery, receiver thread, BGRA/RGBA/UYVY frame copy, source-loss events, no audio capture | A real camera streams 1080p frames into the ring at source rate; audio frames are ignored; unplugging the source produces a typed event and the helper keeps running |
+| ND.5 | TODO | Camera asset and document model: `AssetKind::Camera`, source name storage, storage-format bump/migration and Media Bin badge/row | A camera asset round-trips through save/reopen; an old package without camera kinds still opens; the bin shows the camera badge and "NDI: source name"; deleting the asset leaves no orphan bytes |
+| ND.6 | TODO | Scene/background and renderer: compile a camera background, worker `LiveSourceHub`/`LiveFrameStore`, background transport reads `ndi://`, audience and previews draw the newest frame | A camera background compiles and presents on a live worker; preview and audience show the same newest frame; a missing source shows a placeholder without stalling the render thread |
+| ND.7 | TODO | Worker RPC and Media Bin UI: capability advertisement, `live.sources`/`live.open`/`live.close`, capability-gated right-click "Add NDI source…" and source picker | With a fake helper the menu appears and creates a camera asset; without it the action is absent; a real drop/click path opens the source and creates exactly one asset |
+| ND.8 | TODO | Lifecycle, reconnect, packaging and close: idle stop/retry, helper crash typed fault, Windows named memory/helper build, NDI notices and operator documentation | Kill/restart/disable tests keep the session running and offer retry; Windows CI builds the fake helper and the app; packaging carries the NDI runtime/notices beside the helper; the operator guide and PLAN/PROGRESS delivered-shape record are complete |
+
+The helper is `tools/ndi-helper` under MIT (its own `LICENSE`); the shared ring
+header is `shared/openshow/live/frame_ring.h` under MIT. The GPL app includes
+only the header's fixed layout and the generic IPC client. The NDI SDK is never
+committed. Work one leaf at a time; each leaf is one commit with tests and docs.
+
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
 **Entry gate: CS.1–CS.9, SL.1–SL.9, SI.1–SI.4, LRF.1–LRF.4, the remaining TV leaves and TA.1 must be DONE, with

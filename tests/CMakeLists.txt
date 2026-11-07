@@ -226,6 +226,24 @@ add_test(NAME render_target_guard_negative
 )
 set_tests_properties(render_target_guard_negative PROPERTIES WILL_FAIL TRUE)
 
+# ND.0 (docs/ndi-camera-input.md): the GPL application must never include or
+# name the proprietary NDI SDK. NDI lives only behind the separate
+# tools/ndi-helper process; the shared frame-ring header is in shared/ and
+# carries no NDI API. The negative fixture proves the scan is not vacuous.
+add_test(NAME app_has_no_ndi_symbols
+  COMMAND ${CMAKE_COMMAND}
+          -DROOT=${CMAKE_SOURCE_DIR}
+          -DSRC_DIRS=src
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoNdi.cmake
+)
+add_test(NAME app_has_no_ndi_symbols_negative
+  COMMAND ${CMAKE_COMMAND}
+          -DROOT=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/ndi_symbols
+          -DSRC_DIRS=.
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckNoNdi.cmake
+)
+set_tests_properties(app_has_no_ndi_symbols_negative PROPERTIES WILL_FAIL TRUE)
+
 # The same check, inverted, proves the guard is not vacuous.
 if(OPENSHOW_BUILD_UI)
   add_test(NAME ui_links_qt

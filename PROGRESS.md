@@ -4,6 +4,17 @@ Updated: 2026-11-06 (Europe/London).
 
 ## Current checkpoint
 
+**ND.0 complete (licence and NDI boundary, 2026-11-07):** The application now
+carries GPL-3.0 as its `LICENSE`. NDI camera input is planned as an optional,
+separate MIT helper process (`tools/ndi-helper`) that links the proprietary NDI
+SDK; the GPL app contains only the generic live-source hub, IPC client and shared
+frame-ring layout. The boundary, NDI EULA/attribution posture, operator flow and
+test plan are recorded in `docs/ndi-camera-input.md`, and the ND.0–ND.8 leaves
+are in `PLAN.md`. No application code changed, so the existing desktop/headless
+builds and suites are unaffected; the default build still needs no NDI SDK. The
+current alpha/transparency WIP in `src/domain`, `src/scene` and the preview/
+renderer files was not touched.
+
 **LRF.17 complete (theme menu spacing, 2026-11-06):** The hidden No themes yet
 placeholder now has zero height, closing the blank row below the themes in
 More. Theme records and defaults are unchanged. The regression catches the
