@@ -1056,12 +1056,22 @@ int main(int argc, char** argv) {
         };
         {
             QObject* object = openMenu();
-            auto* removeAction = menuItem(object, "mediaRemoveAction");
             auto* placeAction = menuItem(object, "placeAssetAction");
-            check(removeAction != nullptr && removeAction->isVisible(),
-                  "the context menu offers Remove for the selection");
+            auto* addNdi = menuItem(object, "mediaAddNdiAction");
+            check(menuItem(object, "mediaRemoveAction") == nullptr,
+                  "the context menu leaves removal to the Delete key");
             check(placeAction == nullptr || !placeAction->isVisible(),
                   "Add to slide is absent for a non-picture");
+            // An inapplicable row must not be a blank slot: with no live
+            // worker this fixture hides Add NDI too, and both must measure 0.
+            bool noBlank = placeAction == nullptr || placeAction->height() == 0.0;
+            if (addNdi != nullptr && !addNdi->isVisible())
+                noBlank = noBlank && addNdi->height() == 0.0;
+            check(noBlank, "an inapplicable menu item leaves no blank row");
+            // With only Import… applicable here, the popup is one row, not
+            // the three-row box the blank entries used to reserve.
+            check(object->property("height").toDouble() < 100.0,
+                  "the menu is only as tall as the items it offers");
             closeMenu(object);
         }
 
@@ -1114,10 +1124,13 @@ int main(int argc, char** argv) {
             auto* placeAction = menuItem(object, "placeAssetAction");
             check(placeAction == nullptr || !placeAction->isVisible(),
                   "Add to slide stays off for a file nothing places on a slide");
-            check(clickMenu(object, "mediaRemoveAction"),
-                  "Remove follows the selection, not the kind");
+            check(menuItem(object, "mediaRemoveAction") == nullptr,
+                  "the menu has no second removal door");
             closeMenu(object);
         }
+        QTest::qWait(40);
+        mediaBin->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Delete);
         QTest::qWait(40);
         const QVariantList afterRemove = docs.assets();
         QStringList remainingNames;
@@ -1125,7 +1138,7 @@ int main(int argc, char** argv) {
             remainingNames << entry.toMap().value("name").toString();
         check(!remainingNames.contains(QLatin1String("notes.txt"))
                   && remainingNames.size() == 3,
-              "Remove takes the card out of the media library");
+              "Delete takes the card out of the media library");
 
         // A picture is the one kind a bin card can join today; Add to slide
         // stays in the menu for the foreground item (the background is the

@@ -11,12 +11,12 @@ import QtQuick.Dialogs
 // kind each one has (DocumentViews writes it into every asset row from the
 // domain's one name rule), collections down the left that filter that list,
 // and import kept separate from every activation. Removing an item is a
-// library action: the selected card answers both the context menu's Remove
-// and the Delete key on any page, because the bin browses the service's
-// media, not the slide under edit. Adding a picture TO a slide stays behind
-// editingEnabled — that is a slide edit. A file the product cannot present is
-// still listed and says so, because hiding the row would leave the operator
-// wondering where the import went.
+// library action: the selected card answers the Delete key on any page,
+// because the bin browses the service's media, not the slide under edit. The
+// card's menu offers no second removal door. Adding a picture TO a slide stays
+// behind editingEnabled — that is a slide edit. A file the product cannot
+// present is still listed and says so, because hiding the row would leave the
+// operator wondering where the import went.
 //
 // UI.4b adds the activation, and it is one control on one kind. What the
 // worker offers at runtime is the independent production audio track
@@ -569,12 +569,12 @@ FocusScope {
         }
     }
 
-    // Delete removes the selected asset, the same verb the context menu's
-    // Remove calls. It needs the bin to own the keyboard (a card click gives
-    // it focus) and nothing else: removing media is a library action that is
-    // as valid on Show as on Edit. The editor's Delete shortcut stands down
-    // while the bin owns the keyboard (ShortcutMap's binFocused), so the two
-    // can never fire together.
+    // Delete removes the selected asset — the bin's only removal door. It
+    // needs the bin to own the keyboard (a card click gives it focus) and
+    // nothing else: removing media is a library action that is as valid on
+    // Show as on Edit. The editor's Delete shortcut stands down while the bin
+    // owns the keyboard (ShortcutMap's binFocused), so the two can never fire
+    // together.
     Shortcut {
         sequence: "Delete"
         enabled: mediaBin.activeFocus && mediaBin.selectedAssetId !== ""
@@ -624,6 +624,9 @@ FocusScope {
             text: "Add NDI source\u2026"
             visible: worker.liveCapable
             enabled: worker.liveCapable
+            // A Menu does not collapse an invisible item by itself: it keeps
+            // the row's height, which read as a blank entry. Give it none.
+            height: visible ? implicitHeight : 0
             onTriggered: {
                 // A short first scan, then the dialog's timer keeps looking.
                 worker.refreshLiveSources(1500, true)
@@ -635,24 +638,14 @@ FocusScope {
             text: "Import\u2026"
             onTriggered: mediaDialog.open()
         }
-        MenuSeparator {}
-        MenuItem {
-            objectName: "mediaRemoveAction"
-            text: "Remove"
-            // A library action, available wherever the bin is: the same verb
-            // the Delete key runs, and it requires an explicit selection.
-            visible: mediaBin.selectedAssetId !== ""
-            onTriggered: {
-                docs.removeAsset(mediaBin.selectedAssetId)
-                mediaBin.selectedAssetId = ""
-            }
-        }
         // A background is the DROP (MB.3). This stays for the other placement:
-        // a picture as a foreground item on the slide under edit.
+        // a picture as a foreground item on the slide under edit. Removing an
+        // asset is the Delete key's job, so the menu has no second door for it.
         MenuItem {
             objectName: "placeAssetAction"
             text: "Add to slide"
             visible: mediaBin.editingEnabled && mediaBin.selected.kind === "picture"
+            height: visible ? implicitHeight : 0
             onTriggered: docs.placeAssetOnSlide(mediaBin.selectedAssetId)
         }
     }
