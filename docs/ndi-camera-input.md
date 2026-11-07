@@ -157,12 +157,14 @@ scripts/fetch-ndi-ffmpeg.sh
 ```
 
 It downloads FFmpeg 7.1.1 and builds only the H.264/HEVC decoders into
-`third_party/ffmpeg-7.1` (gitignored, about 3.5 MB). The helper stages those
-libraries beside `libndi.so.6`, gives itself `$ORIGIN` in its runpath and
-preloads them with `RTLD_GLOBAL`, so the runtime's HX decoder resolves them
-without changing the system FFmpeg. Full-bandwidth NDI sources need none of
-this. `-DOPENSHOW_NDI_FFMPEG_DIR=<dir>` points the helper at an existing 7.1
-tree instead.
+`third_party/ffmpeg-7.1` (gitignored, about 3.5 MB). **Install `nasm` first**:
+the assembly build decoded 1080p60 HX at about **37% of one core**; the C
+fallback used about **56%**. The helper stages those libraries beside
+`libndi.so.6`, gives itself `$ORIGIN` in its runpath and preloads them with
+`RTLD_GLOBAL`, so the runtime's HX decoder resolves them without changing the
+system FFmpeg. Full-bandwidth NDI sources need none of this.
+`-DOPENSHOW_NDI_FFMPEG_DIR=<dir>` points the helper at an existing 7.1 tree
+instead.
 
 Build the helper standalone:
 
@@ -198,10 +200,13 @@ and the SDK is found.
   segment. The ring is 12.4 MB instead of the 24.9 MB a BGRA feed needed.
 - **UYVY to NV12:** `convertUyvyToNv12` deinterleaves luma and averages the two
   chroma rows (odd last row averaged with itself), keeping stride padding out.
-  `live_yuv_tests` pin the pixels and the refusals. This is the handoff to the
-  existing `GpuYuvUploader`, the same Skia/Vulkan path FFmpeg playback uses;
-  RADV on this GPU reports no features for `B8G8R8G8_422_UNORM`, so a native
-  4:2:2 sample is not an option here.
+  `live_yuv_tests` pin the pixels and the refusals. An SSSE3 path (with a scalar
+  fallback) converts 1080p in 0.15 ms synthetic and 0.31 ms in the real
+  pipeline, about 2% of one core at 60 fps. libswscale's UYVY→NV12 was measured
+  at 1.0–1.4 ms here, so the specialised loop is retained. This is the handoff
+  to the existing `GpuYuvUploader`, the same Skia/Vulkan path FFmpeg playback
+  uses; RADV reports no features for `B8G8R8G8_422_UNORM` on this GPU, so a
+  native 4:2:2 sample is not an option here.
 - **mDNS was the first surprise:** the venue Wi-Fi passes unicast but drops
   multicast between clients. Avahi saw every other mDNS device yet no
   `_ndi._tcp`; a unicast QU query found the phone, and

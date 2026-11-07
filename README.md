@@ -67,7 +67,7 @@ Install the build tools and dependencies from the project directory:
 
 ```sh
 sudo dnf install \
-  gcc-c++ git python3 cmake ninja-build pkgconf-pkg-config \
+  gcc-c++ git python3 cmake ninja-build pkgconf-pkg-config nasm \
   cargo rust \
   qt6-qtbase-devel qt6-qtdeclarative-devel \
   glfw-devel boost-devel vulkan-loader-devel vulkan-headers \
@@ -97,6 +97,40 @@ Optional diagnostic tools:
 ```sh
 sudo dnf install vulkan-tools vulkan-validation-layers libva-utils
 ```
+
+### NDI camera input helper (optional)
+
+Live NDI camera sources run in a separate, MIT-licensed helper process, so the
+GPL application never links the proprietary NDI SDK. The application itself
+builds without any of this; skip this section unless you want the **Add NDI
+source...** action. Requirements:
+
+- **`nasm`** (or `yasm`) — the helper's FFmpeg 7.1 build should include x86
+  assembly. Without an assembler, `scripts/fetch-ndi-ffmpeg.sh` warns and
+  builds without it; NDI|HX decoding then costs about **56% of one core** at
+  1080p60 instead of about **37%**. Installing `nasm` before running the script
+  is the difference.
+- **NDI SDK 6** — proprietary and not committed. Download it after accepting
+  the NDI licence, then run
+  `scripts/fetch-ndi-sdk.sh /path/to/Install_NDI_SDK_v6_Linux.tar.gz`. It
+  installs into the gitignored `third_party/ndi-sdk`.
+- **FFmpeg 7.1** — NDI|HX decodes through `libavcodec.so.61`, which Fedora and
+  RPM Fusion do not package (they ship FFmpeg 9). `scripts/fetch-ndi-ffmpeg.sh`
+  builds only the H.264/HEVC decoders into the gitignored
+  `third_party/ffmpeg-7.1`. Full-bandwidth NDI sources do not need it.
+
+```sh
+scripts/fetch-ndi-sdk.sh ~/Downloads/Install_NDI_SDK_v6_Linux.tar.gz
+scripts/fetch-ndi-ffmpeg.sh
+cmake -S tools/ndi-helper -B build-ndi-helper \
+  -DOPENSHOW_NDI_SDK_DIR="$PWD/third_party/ndi-sdk"
+cmake --build build-ndi-helper
+```
+
+`nasm` is already in the dependency list above, so no extra package is
+needed. The helper is standalone and is not built by the `desktop` or
+`headless` presets. See [docs/ndi-camera-input.md](docs/ndi-camera-input.md)
+for the architecture, protocol and operator flow.
 
 The application does not require a separate shader compiler: Skia includes its
 own SkSL-to-SPIR-V compiler. Boost.JSON is already the project's JSON library;

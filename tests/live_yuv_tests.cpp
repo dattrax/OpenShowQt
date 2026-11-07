@@ -120,6 +120,75 @@ void testReuse() {
     check(nv12.y.capacity() == firstCapacity, "uyvy: the luma buffer is not reallocated");
 }
 
+// Independent scalar reference for the wide (SIMD) cases.
+Nv12Frame reference(const Frame& source) {
+    Nv12Frame out;
+    out.width = source.width;
+    out.height = source.height;
+    out.y.resize(static_cast<std::size_t>(source.width) * source.height);
+    out.uv.resize(static_cast<std::size_t>(source.width) * ((source.height + 1) / 2));
+    for (std::uint32_t row = 0; row < source.height; ++row) {
+        const std::uint8_t* src = source.pixels.data() + static_cast<std::size_t>(row) * source.stride;
+        for (std::uint32_t x = 0; x < source.width; ++x) {
+            out.y[static_cast<std::size_t>(row) * source.width + x] = src[x * 2 + 1];
+        }
+    }
+    for (std::uint32_t row = 0; row < source.height; row += 2) {
+        const std::uint8_t* row0 = source.pixels.data() + static_cast<std::size_t>(row) * source.stride;
+        const std::uint8_t* row1 =
+            row + 1 < source.height ? row0 + source.stride : row0;
+        for (std::uint32_t x = 0; x < source.width; x += 2) {
+            out.uv[static_cast<std::size_t>(row / 2) * source.width + x] =
+                static_cast<std::uint8_t>((row0[x * 2] + row1[x * 2] + 1) >> 1);
+            out.uv[static_cast<std::size_t>(row / 2) * source.width + x + 1] =
+                static_cast<std::uint8_t>((row0[x * 2 + 2] + row1[x * 2 + 2] + 1) >> 1);
+        }
+    }
+    return out;
+}
+
+void testWideWidths() {
+    // 8/16/64 cover the SSSE3 blocks exactly; 10 leaves a remainder. Padding
+    // proves the SIMD loads never run past the visible row.
+    for (const std::uint32_t width : {8u, 10u, 16u, 64u}) {
+        for (const std::uint32_t height : {1u, 3u, 4u}) {
+            const std::uint32_t stride = width * 2 + 8;
+            Frame frame;
+            frame.width = width;
+            frame.height = height;
+            frame.stride = stride;
+            frame.format = static_cast<std::uint32_t>(FrameFormat::UYVY);
+            frame.sequence = 11;
+            frame.pixels.assign(static_cast<std::size_t>(stride) * height, 0xCD);
+            for (std::uint32_t row = 0; row < height; ++row) {
+                std::uint8_t* dst = frame.pixels.data() + static_cast<std::size_t>(row) * stride;
+                for (std::uint32_t pair = 0; pair < width / 2; ++pair) {
+                    dst[pair * 4] = static_cast<std::uint8_t>((pair * 17 + row * 31) & 0xFF);
+                    dst[pair * 4 + 1] =
+                        static_cast<std::uint8_t>((pair * 3 + row * 7) & 0xFF);
+                    dst[pair * 4 + 2] =
+                        static_cast<std::uint8_t>((pair * 23 + row * 11) & 0xFF);
+                    dst[pair * 4 + 3] =
+                        static_cast<std::uint8_t>((pair * 5 + row * 13) & 0xFF);
+                }
+            }
+            Nv12Frame nv12;
+            std::string error;
+            if (!check(openshow::live::convertUyvyToNv12(frame, &nv12, &error),
+                       "uyvy: wide conversion succeeds")) {
+                std::fprintf(stderr, "  width=%u height=%u: %s\n", width, height,
+                             error.c_str());
+                continue;
+            }
+            const Nv12Frame expected = reference(frame);
+            if (!check(nv12.y == expected.y && nv12.uv == expected.uv,
+                       "uyvy: SIMD and remainder match the reference")) {
+                std::fprintf(stderr, "  width=%u height=%u\n", width, height);
+            }
+        }
+    }
+}
+
 void testRefusals() {
     Nv12Frame nv12;
     std::string error;
@@ -160,6 +229,7 @@ int main() {
     testEvenHeight();
     testOddHeight();
     testPaddedStride();
+    testWideWidths();
     testReuse();
     testRefusals();
 

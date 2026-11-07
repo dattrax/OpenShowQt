@@ -28,6 +28,12 @@ same Skia/Vulkan path FFmpeg playback uses. RADV reports no features for a
 Vulkan 4:2:2 format on this GPU, so NV12 is the right handoff. This is one
 multimedia source per cue (NDI, FFmpeg playback or a still), not a second layer.
 
+Measured on the real source: 60.6 fps sustained; UYVY→NV12 costs 0.31 ms/frame
+(about 2% of one core) through the SSSE3 path, worker total 3%; swscale's
+UYVY→NV12 was 1.0–1.4 ms, so the specialised loop is kept. HX decode is the
+dominant cost: about **39% of one core with x86 assembly**, **56% without**, so
+`scripts/fetch-ndi-ffmpeg.sh` recommends installing `nasm` first.
+
 The helper and app suites pass (3/3 helper in both builds, `frame_ring_tests`,
 `live_yuv_tests`, `live_source_tests`); the worker still builds Qt-free. ND.4's
 remaining acceptance is the sender disappearing while open: the source-loss
