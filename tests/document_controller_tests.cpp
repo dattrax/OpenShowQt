@@ -3921,25 +3921,23 @@ void exercisePowerPointImport(const std::filesystem::path& root) {
     check(reopened.playlistEntries().size() == entries,
           "the reopened running order is unchanged");
 
-    // Deleting the Library show leaves its media until the explicit sweep;
-    // the sweep is one undo, and it never touches the service copy.
+    // Deleting the Library deck takes its rendered pages with it: the pages
+    // exist only to be that show's backgrounds, so the deck is one unit. The
+    // service deck's identical-looking pages are a different show's and stay.
     check(reopened.removeLibraryShows(QStringList{libraryShowId}),
           "the Library deck can be deleted");
     check(reopened.songs().size() == libraryBefore,
           "the deleted deck is gone from the Library");
-    check(reopened.storedAssets().size() == 4,
-          "its rendered media remains until the operator sweeps");
-    check(reopened.removeUnusedAssets() == 2,
-          "the sweep removes only the deleted deck's two renders");
     check(reopened.storedAssets().size() == 2,
-          "the service deck's referenced renders stay");
+          "deleting the deck removes its two rendered pages");
+    check(reopened.removeUnusedAssets() == 0,
+          "nothing else is unused: the service deck's pages are in use");
     check(reopened.playlistEntries().size() == entries,
-          "the sweep leaves the service deck runnable");
+          "the deletion leaves the service deck runnable");
     reopened.undo();
-    check(reopened.storedAssets().size() == 4, "one undo restores the swept media");
-    reopened.undo();
-    check(reopened.songs().size() == libraryBefore + 1,
-          "a second undo restores the deleted Library deck");
+    check(reopened.storedAssets().size() == 4
+              && reopened.songs().size() == libraryBefore + 1,
+          "one undo restores the deleted Library deck and its pages together");
 
     // Same bytes, same cache: the scripted renderer ran once for both.
     const std::string runs = readManifest(fake.string() + ".count");

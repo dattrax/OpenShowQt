@@ -773,7 +773,9 @@ struct Asset {
     // A rendered page of an imported presentation. It is a picture for every
     // scene purpose, but it is NOT a Media Bin row: the deck is a unit, and a
     // twenty-slide deck would bury the operator's own media. The package still
-    // stores its bytes like any other asset.
+    // stores its bytes like any other asset. A manifest written before this
+    // tag existed is recognised on load (adoptLegacyDeckPages), so the bin
+    // never shows an old deck's pages either.
     bool deckPage = false;
 };
 
@@ -863,7 +865,10 @@ public:
     Id createScriptureShow(const std::string& name, const ScriptureProvenance& scripture,
                            std::string* error = nullptr);
     // Removing a show also drops its playlist entries (an entry naming
-    // a deleted show could never run); nothing else references shows.
+    // a deleted show could never run); nothing else references shows. A
+    // rendered deck's pages go with it: they exist only to be that show's
+    // backgrounds, so they are removed too unless another show still uses
+    // them. Ordinary media stays behind for the explicit unused-media sweep.
     bool removeShow(const Id& showId, std::string* error = nullptr);
     // Remove Library availability while retaining any prepared service copy.
     bool removeLibraryShow(const Id& showId, std::string* error = nullptr);
@@ -1125,6 +1130,14 @@ public:
     // from the Media Bin (see Asset::deckPage).
     Id addDeckPageAsset(const std::string& name, const std::string& sourcePath,
                         std::string* error = nullptr);
+    // Tags the rendered pages of a presentation imported before the deck-page
+    // flag existed. A show is recognisably a rendered deck when every slide
+    // carries its own background picture, no slide carries words, and every
+    // one of those pictures uses the importer's name ("<show> - 01.png") and
+    // is used by that one slide only. Returns how many assets gained the tag.
+    // loadService() runs this after decoding, so an old package's Media Bin
+    // looks like a new import's from the first frame.
+    std::size_t adoptLegacyDeckPages();
     // Records a live NDI source as a camera asset. It owns no bytes; the
     // source name is stored exactly as discovery reported it. Returns the
     // new asset's Id, or "" on failure.

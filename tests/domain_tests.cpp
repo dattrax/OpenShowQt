@@ -4685,7 +4685,10 @@ void exerciseDeckPageAssets(const fs::path& tempRoot) {
               reloaded.findShow(show)->slides[0].backgroundAssetId == deckPage,
           "the slide still references its deck page");
 
-    // A legacy manifest (no tag) reads the same bytes as an ordinary picture.
+    // A legacy manifest (no tag) stores the same bytes as an ordinary
+    // picture. Loading recognises the deck's shape — one distinct
+    // background per wordless slide, named "<show> - NN.png" — and tags
+    // the pages, so an old package's bin matches a new import's.
     std::string legacyManifest = manifest;
     check(replaceOnce(legacyManifest, ",\"deck\":true", ""),
           "the tag is removable for the legacy case");
@@ -4697,8 +4700,76 @@ void exerciseDeckPageAssets(const fs::path& tempRoot) {
     Documents legacyDocs;
     check(openshow::domain::loadService(&legacyDocs, legacy, &error) &&
               legacyDocs.findAsset(deckPage) != nullptr &&
-              !legacyDocs.findAsset(deckPage)->deckPage,
-          "a manifest without the flag opens as an ordinary picture");
+              legacyDocs.findAsset(deckPage)->deckPage,
+          "a legacy manifest adopts its rendered page on load");
+
+    // The recognition is conservative: a worded slide is not a rendered
+    // deck, and neither is a picture that does not follow the importer's
+    // naming, so ordinary authored slides keep their media in the bin.
+    {
+        const fs::path authored = tempRoot / "authored-service";
+        Documents own;
+        const Id ownShow = own.createShow("Easter", &error);
+        const Id ownSlide = own.appendSlide(ownShow, &error);
+        const Id photo = own.addAsset("Easter - 01.png", page.string(), &error);
+        own.setSlideLines(ownShow, ownSlide, {"He is risen"}, &error);
+        own.setSlideBackground(ownShow, ownSlide, photo, &error);
+        check(openshow::domain::saveService(own, authored, &error),
+              "the authored service saves");
+        Documents reopened;
+        check(openshow::domain::loadService(&reopened, authored, &error) &&
+                  reopened.findAsset(photo) != nullptr &&
+                  !reopened.findAsset(photo)->deckPage,
+              "a slide with words never hides its background as a deck page");
+    }
+    {
+        const fs::path named = tempRoot / "named-service";
+        Documents own;
+        const Id ownShow = own.createShow("Deck", &error);
+        const Id ownSlide = own.appendSlide(ownShow, &error);
+        const Id photo = own.addAsset("stage.jpg", page.string(), &error);
+        own.setSlideBackground(ownShow, ownSlide, photo, &error);
+        check(openshow::domain::saveService(own, named, &error),
+              "the differently named service saves");
+        Documents reopened;
+        check(openshow::domain::loadService(&reopened, named, &error) &&
+                  reopened.findAsset(photo) != nullptr &&
+                  !reopened.findAsset(photo)->deckPage,
+              "a picture outside the importer's naming stays in the bin");
+    }
+
+    // The deck is a unit for deletion: removing the show removes the pages
+    // that existed only for it, while an ordinary picture waits for the
+    // explicit unused-media sweep.
+    {
+        Documents owned;
+        const Id ownShow = owned.createShow("Deck", &error);
+        const Id ownSlide = owned.appendSlide(ownShow, &error);
+        const Id ownPage = owned.addDeckPageAsset("Deck - 01.png", page.string(), &error);
+        const Id ownPicture = owned.addAsset("logo.png", page.string(), &error);
+        owned.setSlideBackground(ownShow, ownSlide, ownPage, &error);
+        check(owned.removeShow(ownShow, &error) &&
+                  owned.findAsset(ownPage) == nullptr &&
+                  owned.findAsset(ownPicture) != nullptr,
+              "removing a deck removes its pages but keeps ordinary media");
+    }
+    {
+        // A page another show still uses stays: removal never breaks a
+        // surviving slide.
+        Documents shared;
+        const Id deckShow = shared.createShow("Deck", &error);
+        const Id deckSlide = shared.appendSlide(deckShow, &error);
+        const Id pageId = shared.addDeckPageAsset("Deck - 01.png", page.string(), &error);
+        shared.setSlideBackground(deckShow, deckSlide, pageId, &error);
+        const Id otherShow = shared.createShow("Copy", &error);
+        const Id otherSlide = shared.appendSlide(otherShow, &error);
+        shared.setSlideBackground(otherShow, otherSlide, pageId, &error);
+        check(shared.removeShow(deckShow, &error) &&
+                  shared.findAsset(pageId) != nullptr &&
+                  shared.findShow(otherShow) != nullptr &&
+                  shared.findShow(otherShow)->slides[0].backgroundAssetId == pageId,
+              "a deck page another show copied stays with that show");
+    }
 }
 
 int main() {

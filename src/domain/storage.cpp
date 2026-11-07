@@ -2479,6 +2479,11 @@ bool ServiceCodec::load(Documents* documents, const std::filesystem::path& direc
     }
 
     *documents = std::move(loaded);
+    // A deck imported before the deck-page tag existed stored its pages as
+    // ordinary pictures. Recognise them on every read — loadService() and
+    // the autosave recovery both come through here — so an old package's
+    // Media Bin matches a new import's from the first frame.
+    documents->adoptLegacyDeckPages();
     return true;
 }
 

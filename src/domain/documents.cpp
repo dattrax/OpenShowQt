@@ -40,6 +40,55 @@ std::string idError(const char* what, const Id& id) {
     return std::string(what) + " '" + id + "' does not exist";
 }
 
+// A rendered page of a PowerPoint import is named "<show name> - 01.png" by
+// the importer. Only that shape is used to recognise pages an older manifest
+// stored as ordinary pictures (see adoptLegacyDeckPages): the name alone is
+// not proof, but together with the deck's slide shape it is precise enough,
+// and a wrong guess would only hide a picture the operator can still use.
+bool startsWithNoCase(const std::string& text, const std::string& prefix) {
+    if (text.size() < prefix.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < prefix.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(text[i])) !=
+            std::tolower(static_cast<unsigned char>(prefix[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isRenderedPageName(const std::string& name, const std::string& showName) {
+    const std::string prefix = showName + " - ";
+    if (!startsWithNoCase(name, prefix)) {
+        return false;
+    }
+    std::string tail = name.substr(prefix.size());
+    const std::string extension = ".png";
+    if (tail.size() <= extension.size() ||
+        !startsWithNoCase(tail.substr(tail.size() - extension.size()), extension)) {
+        return false;
+    }
+    tail.resize(tail.size() - extension.size());
+    return std::all_of(tail.begin(), tail.end(), [](unsigned char c) {
+        return std::isdigit(c) != 0;
+    });
+}
+
+bool slideHasWords(const Slide& slide) {
+    for (const SlideItem& item : slide.items) {
+        if (item.kind != ItemKind::Text) {
+            continue;
+        }
+        for (const std::string& line : item.lines) {
+            if (!blank(line)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // A box only paints if the math survives it: NaN/inf cannot be placed, and a
 // non-positive width or height leaves nothing to draw (task 4.3). Shared by
 // every path that places one, so the slide-level and box-level operations
@@ -134,12 +183,50 @@ bool Documents::removeShow(const Id& showId, std::string* error) {
         fail(error, idError("show", showId));
         return false;
     }
+    // A rendered deck's pages are the deck: each exists only to be one of
+    // this show's backgrounds. Collect them before the erase, then drop the
+    // ones no surviving show uses — a page another show copied stays for it.
+    std::vector<Id> deckPages;
+    for (const Slide& slide : found->slides) {
+        if (!slide.backgroundAssetId.empty()) {
+            deckPages.push_back(slide.backgroundAssetId);
+        }
+        for (const SlideItem& item : slide.items) {
+            if (item.kind == ItemKind::Image && !item.assetId.empty()) {
+                deckPages.push_back(item.assetId);
+            }
+        }
+    }
     fShows.erase(found);
     // Entries naming the show go with it: a playlist that could never
     // run a slide is worse than one with a hole.
     for (Playlist& playlist : fPlaylists) {
         std::erase_if(playlist.entries,
                       [&](const PlaylistEntry& e) { return e.showId == showId; });
+    }
+    for (const Id& page : deckPages) {
+        const Asset* asset = findAsset(page);
+        if (asset == nullptr || !asset->deckPage) {
+            continue;  // ordinary media: the explicit sweep removes it
+        }
+        const bool stillUsed = std::any_of(
+            fShows.begin(), fShows.end(), [&](const Show& show) {
+                return std::any_of(show.slides.begin(), show.slides.end(),
+                                   [&](const Slide& slide) {
+                                       if (slide.backgroundAssetId == page) {
+                                           return true;
+                                       }
+                                       return std::any_of(
+                                           slide.items.begin(), slide.items.end(),
+                                           [&](const SlideItem& item) {
+                                               return item.kind == ItemKind::Image &&
+                                                      item.assetId == page;
+                                           });
+                                   });
+            });
+        if (!stillUsed) {
+            removeAsset(page, nullptr);
+        }
     }
     return true;
 }
@@ -1659,6 +1746,64 @@ Id Documents::recordAsset(const std::string& name, const std::string& sourcePath
     asset.deckPage = deckPage;
     fAssets.push_back(std::move(asset));
     return fAssets.back().id;
+}
+
+std::size_t Documents::adoptLegacyDeckPages() {
+    // How many places in the whole document name this asset (a slide
+    // background or an image item). A rendered page belongs to exactly one
+    // slide of its own show; anything shared is someone's own media.
+    auto references = [this](const Id& assetId, const Id* skipShow) {
+        std::size_t count = 0;
+        for (const Show& show : fShows) {
+            if (skipShow != nullptr && show.id == *skipShow) {
+                continue;
+            }
+            for (const Slide& slide : show.slides) {
+                if (slide.backgroundAssetId == assetId) {
+                    ++count;
+                }
+                for (const SlideItem& item : slide.items) {
+                    if (item.kind == ItemKind::Image && item.assetId == assetId) {
+                        ++count;
+                    }
+                }
+            }
+        }
+        return count;
+    };
+
+    std::vector<Asset*> adopted;
+    for (const Show& show : fShows) {
+        if (show.slides.empty()) {
+            continue;
+        }
+        std::vector<Asset*> pages;
+        bool deckShaped = true;
+        for (const Slide& slide : show.slides) {
+            if (slide.backgroundAssetId.empty() || slideHasWords(slide)) {
+                deckShaped = false;
+                break;
+            }
+            auto found = std::find_if(fAssets.begin(), fAssets.end(), [&](const Asset& a) {
+                return a.id == slide.backgroundAssetId;
+            });
+            if (found == fAssets.end() || found->deckPage ||
+                !isRenderedPageName(found->name, show.name) ||
+                references(found->id, nullptr) != 1 ||
+                std::find(pages.begin(), pages.end(), &*found) != pages.end()) {
+                deckShaped = false;
+                break;
+            }
+            pages.push_back(&*found);
+        }
+        if (deckShaped) {
+            for (Asset* page : pages) {
+                page->deckPage = true;
+                adopted.push_back(page);
+            }
+        }
+    }
+    return adopted.size();
 }
 
 Id Documents::addCameraAsset(const std::string& name, const std::string& source,
