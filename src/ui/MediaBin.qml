@@ -343,25 +343,6 @@ FocusScope {
                         onClicked: worker.selectStandaloneTrack(
                             mediaBin.selectedLive ? "" : mediaBin.selected.sourcePath)
                     }
-                    PanelButton {
-                        objectName: "mediaRemoveButton"
-                        width: parent.width
-                        visible: mediaBin.editingEnabled
-                        text: "Remove"
-                        enabled: mediaBin.selectedAssetId !== ""
-                        onClicked: {
-                            docs.removeAsset(mediaBin.selectedAssetId)
-                            mediaBin.selectedAssetId = ""
-                        }
-                    }
-                    PanelButton {
-                        objectName: "placeAssetButton"
-                        width: parent.width
-                        visible: mediaBin.editingEnabled
-                        text: "Add to slide"
-                        enabled: mediaBin.selected.kind === "picture"
-                        onClicked: docs.placeAssetOnSlide(mediaBin.selectedAssetId)
-                    }
                 }
             }
         }
@@ -469,6 +450,10 @@ FocusScope {
                         cameraNumber: mediaBin.cameraNumber(modelData.id)
                         selected: modelData.id === mediaBin.selectedAssetId
                         onActivated: mediaBin.selectedAssetId = modelData.id
+                        onContextRequested: function (mouseX, mouseY) {
+                            mediaBin.selectedAssetId = modelData.id
+                            mediaContextMenu.popup()
+                        }
                     }
                 }
 
@@ -549,6 +534,24 @@ FocusScope {
             objectName: "mediaContextImportAction"
             text: "Import\u2026"
             onTriggered: mediaDialog.open()
+        }
+        MenuSeparator {}
+        MenuItem {
+            objectName: "mediaRemoveAction"
+            text: "Remove"
+            visible: mediaBin.editingEnabled && mediaBin.selectedAssetId !== ""
+            onTriggered: {
+                docs.removeAsset(mediaBin.selectedAssetId)
+                mediaBin.selectedAssetId = ""
+            }
+        }
+        // A background is the DROP (MB.3). This stays for the other placement:
+        // a picture as a foreground item on the slide under edit.
+        MenuItem {
+            objectName: "placeAssetAction"
+            text: "Add to slide"
+            visible: mediaBin.editingEnabled && mediaBin.selected.kind === "picture"
+            onTriggered: docs.placeAssetOnSlide(mediaBin.selectedAssetId)
         }
     }
 

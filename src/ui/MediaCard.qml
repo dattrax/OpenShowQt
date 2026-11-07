@@ -31,6 +31,8 @@ Item {
     readonly property string dragPayload: "media:" + (modelData.id || "")
 
     signal activated()
+    // A right-click in card coordinates; the host owns the menu.
+    signal contextRequested(real mouseX, real mouseY)
 
     readonly property bool hasStill: kind === "picture" && sourcePath !== ""
 
@@ -156,7 +158,7 @@ Item {
         id: cardMouse
         anchors.fill: parent
         hoverEnabled: true
-        acceptedButtons: Qt.LeftButton
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
         // A click selects; a drag carries the card. The flag keeps a completed
         // drag from also selecting on release.
         property bool dragMoved: false
@@ -164,7 +166,7 @@ Item {
         drag.target: cardDrag
         onPressed: function (mouse) {
             dragMoved = false
-            cardDrag.begin(card, mouse.x, mouse.y)
+            if (mouse.button === Qt.LeftButton) cardDrag.begin(card, mouse.x, mouse.y)
         }
         onPositionChanged: {
             if (drag.active) dragMoved = true
@@ -178,6 +180,12 @@ Item {
             cardDrag.x = 0
             cardDrag.y = 0
         }
-        onClicked: if (!dragMoved) card.activated()
+        onClicked: function (mouse) {
+            if (mouse.button === Qt.RightButton) {
+                card.contextRequested(mouse.x, mouse.y)
+            } else if (!dragMoved) {
+                card.activated()
+            }
+        }
     }
 }

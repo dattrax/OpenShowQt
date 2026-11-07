@@ -1009,13 +1009,46 @@ int main(int argc, char** argv) {
                              == "media:" + loopId,
                   "a media card drags the asset id, not a document verb");
         }
-        auto* placeButton = findNamed(window->contentItem(), "placeAssetButton");
-        auto* removeButton = findNamed(window->contentItem(), "mediaRemoveButton");
-        check(placeButton != nullptr && placeButton->isVisible()
-                  && removeButton != nullptr && removeButton->isVisible(),
-              "the bin's document actions are available while Edit is up");
+        // MB.4: the document actions live in the card's context menu, not in
+        // the body. Open it and read what it offers for the selection.
+        auto openMenu = [&]() -> QObject* {
+            auto* object = window->findChild<QObject*>("mediaContextMenu");
+            if (!object) return nullptr;
+            if (!object->property("visible").toBool()) {
+                QMetaObject::invokeMethod(object, "open");
+                for (int i = 0; i < 30 && !object->property("visible").toBool(); ++i)
+                    QTest::qWait(10);
+            }
+            QTest::qWait(30);
+            return object;
+        };
+        auto menuItem = [&](QObject* object, const char* name) -> QQuickItem* {
+            return object ? object->findChild<QQuickItem*>(name) : nullptr;
+        };
+        auto clickMenu = [&](QObject* object, const char* name) {
+            auto* item = menuItem(object, name);
+            return item != nullptr && item->isVisible()
+                   && QMetaObject::invokeMethod(item, "click");
+        };
+        auto closeMenu = [&](QObject* object) {
+            if (object) {
+                QMetaObject::invokeMethod(object, "close");
+                for (int i = 0; i < 30 && object->property("visible").toBool(); ++i)
+                    QTest::qWait(10);
+            }
+        };
+        {
+            QObject* object = openMenu();
+            auto* removeAction = menuItem(object, "mediaRemoveAction");
+            auto* placeAction = menuItem(object, "placeAssetAction");
+            check(removeAction != nullptr && removeAction->isVisible(),
+                  "the context menu offers Remove for the selection");
+            check(placeAction == nullptr || !placeAction->isVisible(),
+                  "Add to slide is absent for a non-picture");
+            closeMenu(object);
+        }
 
-        // The kinds with no runtime to fire are offered no button at all: a
+        // The kinds with no runtime to fire are offered no cue at all: a
         // greyed-out Play would read as something wrong with the output, where
         // the truth is that this file has no cue to fire — which is what the
         // notice column and the info line say instead.
@@ -1059,11 +1092,15 @@ int main(int argc, char** argv) {
                 == QLatin1String("notes.txt"))
                 clickAt(row, 20, 14);
         QTest::qWait(30);
-        check(!placeButton->property("enabled").toBool(),
-              "Add to slide stays off for a file nothing places on a slide");
-        check(removeButton->property("enabled").toBool(),
-              "Remove follows the selection, not the kind");
-        clickAt(removeButton, 20, 12);
+        {
+            QObject* object = openMenu();
+            auto* placeAction = menuItem(object, "placeAssetAction");
+            check(placeAction == nullptr || !placeAction->isVisible(),
+                  "Add to slide stays off for a file nothing places on a slide");
+            check(clickMenu(object, "mediaRemoveAction"),
+                  "Remove follows the selection, not the kind");
+            closeMenu(object);
+        }
         QTest::qWait(40);
         const QVariantList afterRemove = docs.assets();
         QStringList remainingNames;
@@ -1071,10 +1108,11 @@ int main(int argc, char** argv) {
             remainingNames << entry.toMap().value("name").toString();
         check(!remainingNames.contains(QLatin1String("notes.txt"))
                   && remainingNames.size() == 3,
-              "Remove takes the row out of the media library");
+              "Remove takes the card out of the media library");
 
-        // A picture is the one kind a bin row can join today, and the button's
-        // enablement is that same rule rather than a second copy of it.
+        // A picture is the one kind a bin card can join today; Add to slide
+        // stays in the menu for the foreground item (the background is the
+        // drop, MB.3).
         // A real image, not the "BYTES" placeholder: the bin's card now
         // renders the picture, and a fake file would make the QML image
         // loader warn (the harness treats a QML warning as a failure).
@@ -1094,9 +1132,12 @@ int main(int argc, char** argv) {
                 clickAt(row, 20, 14);
         QTest::qWait(40);
         const int boxesBefore = docs.currentSlideBoxes().size();
-        check(placeButton->property("enabled").toBool(),
-              "the picture makes Add to slide live");
-        clickAt(placeButton, 20, 12);
+        {
+            QObject* object = openMenu();
+            check(clickMenu(object, "placeAssetAction"),
+                  "the picture makes Add to slide live");
+            closeMenu(object);
+        }
         QTest::qWait(40);
         const QVariantList boxes = docs.currentSlideBoxes();
         check(boxes.size() == boxesBefore + 1
@@ -1105,7 +1146,6 @@ int main(int argc, char** argv) {
               "Add to slide places the picture the operator had selected");
         check(worker.pendingCueKey().isEmpty() && !worker.outputLive(),
               "and placing it still presents nothing");
-
         // MB.3: a media card dropped on a cue sets that cue's slide background,
         // whichever show owns the cue, in one undo. The actual drag event is
         // Qt's; this drives the routing function the DropArea calls.
