@@ -1201,6 +1201,11 @@ int main(int argc, char** argv) {
                       && drop->property("keys").toStringList().contains(
                              QStringLiteral("text/plain")),
                   "a cue tile accepts the media drag payload");
+            auto* binDrop = findNamed(mediaBin, "mediaBinDrop");
+            check(binDrop != nullptr
+                      && binDrop->property("keys").toStringList().contains(
+                             QStringLiteral("text/uri-list")),
+                  "the Media Bin accepts files dropped from the desktop");
         }
 
         // MB.5: camera cards wear our own glyph, numbered 1..4 in creation

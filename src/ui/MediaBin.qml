@@ -523,6 +523,52 @@ FocusScope {
         onAccepted: docs.importMediaUrl(selectedFile)
     }
 
+    // A file dragged from the desktop lands here. The controller copies its
+    // bytes into the app's own media store before registering it, so the
+    // source (a USB stick, a camera card) can be unplugged straight away.
+    // Internal card drags carry text/plain and are not accepted here.
+    DropArea {
+        id: fileDrop
+        objectName: "mediaBinDrop"
+        anchors.fill: parent
+        keys: ["text/uri-list"]
+        // `containsDrag` is also true for drags these keys refuse (a card
+        // dragged out of the grid), so the hint follows what was accepted.
+        property bool fileHover: false
+        onEntered: function (drag) {
+            const urls = drag.hasUrls ? drag.urls : []
+            drag.accepted = urls.length > 0 && !drag.source
+            fileDrop.fileHover = drag.accepted
+            if (drag.accepted) drag.accept(Qt.CopyAction)
+        }
+        onExited: fileDrop.fileHover = false
+        onDropped: function (drop) {
+            fileDrop.fileHover = false
+            if (!drop.hasUrls) return
+            if (docs.importMediaUrls(drop.urls) > 0) {
+                // The new cards are the answer to the drop; show them even
+                // when the drawer was collapsed to its bar.
+                if (!mediaBin.open) panels.toggleDrawer()
+                drop.accept(Qt.CopyAction)
+            }
+        }
+    }
+    Rectangle {
+        anchors.fill: parent
+        visible: fileDrop.fileHover
+        color: "#331685f8"
+        border.color: "#65c4ff"
+        border.width: 2
+        z: 20
+        Text {
+            anchors.centerIn: parent
+            text: "Drop files to add them to the media library"
+            color: "#e8f2ff"
+            font.pixelSize: 14
+            font.bold: true
+        }
+    }
+
     // Delete removes the selected asset, the same verb the context menu's
     // Remove calls. It needs the bin to own the keyboard (a card click gives
     // it focus) and nothing else: removing media is a library action that is

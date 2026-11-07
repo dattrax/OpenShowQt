@@ -1,9 +1,12 @@
 #include "DocumentController.h"
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QStringList>
+#include <QUuid>
 
 #include <algorithm>
 #include <cmath>
@@ -14,6 +17,33 @@
 namespace openshow::ui {
 
 namespace {
+
+// A user import is copied into the app's own media store before it is
+// registered, because the source may be a USB stick or a camera card that is
+// unplugged a minute later. Save and every autosave tick then read this copy,
+// never the original. A fresh UUID directory keeps two files called
+// "clip.mp4" apart without renaming either.
+QString storeImportedFile(const std::filesystem::path& directory,
+                          const QString& source, QString* error) {
+    const QFileInfo info(source);
+    QDir root(QString::fromStdWString(directory.wstring()));
+    const QString folder = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    if (!root.mkpath(folder)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("cannot create %1").arg(root.filePath(folder));
+        }
+        return {};
+    }
+    const QString destination =
+        root.filePath(folder + QLatin1Char('/') + info.fileName());
+    if (!QFile::copy(source, destination)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("cannot copy %1").arg(info.fileName());
+        }
+        return {};
+    }
+    return destination;
+}
 
 // One split of '\n' per authored line; empty text stores no lines at all,
 // so a slide cleared back to nothing compiles to an interlude, not a
@@ -3040,7 +3070,86 @@ bool DocumentController::importMediaUrl(const QUrl& file) {
         setStatus(QStringLiteral("Choose a media file on this computer"));
         return false;
     }
-    return importMediaFile(file.toLocalFile());
+    return importMediaFiles(QStringList{file.toLocalFile()}) > 0;
+}
+
+int DocumentController::importMediaUrls(const QVariantList& files) {
+    QStringList paths;
+    for (const QVariant& entry : files) {
+        const QUrl url = entry.toUrl();
+        if (url.isLocalFile() && !url.toLocalFile().isEmpty()) {
+            paths << url.toLocalFile();
+        } else if (QFileInfo(entry.toString()).isAbsolute()) {
+            // A drop may hand plain absolute paths as well as URLs.
+            paths << entry.toString();
+        }
+    }
+    if (paths.isEmpty()) {
+        setStatus(QStringLiteral("Choose a media file on this computer"));
+        return 0;
+    }
+    return importMediaFiles(paths);
+}
+
+int DocumentController::importMediaFiles(const QStringList& files) {
+    if (files.isEmpty()) {
+        setStatus(QStringLiteral("Choose a media file on this computer"));
+        return 0;
+    }
+    flushText();
+
+    struct Incoming {
+        QString name;
+        QString path;
+    };
+    std::vector<Incoming> incoming;
+    for (const QString& file : files) {
+        const QFileInfo info(file);
+        if (info.fileName().isEmpty() || info.isDir()) {
+            // A folder drop is not a media import; nothing registers for it.
+            continue;
+        }
+        QString path = file;
+        if (info.isFile()) {
+            // The source is real: make the app own the bytes before the
+            // operator can unplug it. A path that is already gone keeps the
+            // domain's missing-file rule below, so a registered name with
+            // nothing behind it still lists and says so.
+            QString copyError;
+            const QString copy = storeImportedFile(fPersistence->mediaDirectory(),
+                                                   file, &copyError);
+            if (copy.isEmpty()) {
+                setStatus(QStringLiteral("import media: %1").arg(copyError));
+                return 0;
+            }
+            path = copy;
+        }
+        incoming.push_back({info.fileName(), path});
+    }
+    if (incoming.empty()) {
+        setStatus(QStringLiteral("import media: nothing to import"));
+        return 0;
+    }
+
+    std::string error;
+    if (!edit([&] {
+            for (const Incoming& item : incoming) {
+                if (fDocuments
+                        .addAsset(item.name.toStdString(), item.path.toStdString(), &error)
+                        .empty()) {
+                    return false;
+                }
+            }
+            return true;
+        })) {
+        setStatus(QStringLiteral("import media: %1").arg(QString::fromStdString(error)));
+        return 0;
+    }
+    const int added = static_cast<int>(incoming.size());
+    setStatus(added == 1
+                  ? QStringLiteral("added %1 to the media library").arg(incoming.front().name)
+                  : QStringLiteral("added %1 files to the media library").arg(added));
+    return added;
 }
 
 bool DocumentController::importMediaFile(const QString& filePath) {

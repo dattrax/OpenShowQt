@@ -577,9 +577,17 @@ public:
     // Songs matching the query by name and lyrics, best match first
     // (LibrarySearch); the full creation-order list when blank.
     Q_INVOKABLE QVariantList searchShows(const QString& query) const;
-    // Media tab: register a file (bytes are copied by save(), the
-    // domain's rule) and remove one from the library.
+    // Media tab: register a file and remove one from the library. This raw
+    // entry point records the path exactly as given — the domain's rule that
+    // a missing file is legal until a save — and is what tests and legacy
+    // callers use. The two user-facing doors below (the Import dialog and a
+    // drag-and-drop) copy the bytes into the app's own media store first, so
+    // unplugging the source (a USB stick) changes nothing.
     Q_INVOKABLE bool importMediaFile(const QString& filePath);
+    // Copies every local file into <base>/media and registers the copies in
+    // one edit (one undo). A path that does not exist is registered as given,
+    // preserving the missing-file rule. Returns how many were added.
+    int importMediaFiles(const QStringList& filePaths);
     // ND.7: records a discovered NDI camera as a Media Bin asset. It owns no
     // bytes; `source` is the exact name discovery returned.
     Q_INVOKABLE bool addCameraAsset(const QString& name, const QString& source);
@@ -587,7 +595,10 @@ public:
     // from the Media Bin. The PPTX import adds its pages inside one edit;
     // this entry point is for an incremental renderer and the tests.
     QString addDeckPageAsset(const QString& name, const QString& sourcePath);
+    // The Import dialog and a desktop drop: local URLs only, copied into the
+    // app's own media store first. The plural form takes the drop's URL list.
     Q_INVOKABLE bool importMediaUrl(const QUrl& file);
+    Q_INVOKABLE int importMediaUrls(const QVariantList& files);
     Q_INVOKABLE bool removeAsset(const QString& assetId);
     // The bin's import filter (UI.4a), spelled from the domain's one
     // extension table so the dialog, the rows' kind labels and the pipeline's

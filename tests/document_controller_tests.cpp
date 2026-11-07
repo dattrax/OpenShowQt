@@ -2201,6 +2201,66 @@ void exerciseBackgroundPersistence(const std::filesystem::path& root) {
 
 }  // namespace
 
+// --- user imports copy the bytes before anything can be unplugged ----------
+// The Import dialog and a desktop drop go through the controller's copying
+// door: the file lands in <base>/media first, so a USB stick can be removed
+// before the next save. The raw importMediaFile() still records a path as
+// given (the domain's missing-file rule), which is what the fixtures above
+// rely on.
+void exerciseMediaImportCopy(const std::filesystem::path& root) {
+    const std::filesystem::path app = root / "app";
+    const std::filesystem::path usb = root / "usb";
+    std::filesystem::create_directories(usb);
+    const std::filesystem::path clip = usb / "clip.mp4";
+    { std::ofstream out(clip, std::ios::binary); out << "MP4BYTES"; }
+
+    DocumentController docs(nullptr, app);
+    check(docs.importMediaUrl(QUrl::fromLocalFile(QString::fromStdString(clip.string()))),
+          "a file-picker import succeeds");
+    check(docs.assets().size() == 1, "the import registers one asset");
+    const QVariantMap imported = docs.assets().front().toMap();
+    const QString owned = imported.value(QStringLiteral("sourcePath")).toString();
+    const QString mediaDirectory =
+        QString::fromStdString((app / "media").string());
+    check(imported.value(QStringLiteral("name")).toString() == QLatin1String("clip.mp4")
+              && owned.startsWith(mediaDirectory) && QFileInfo::exists(owned),
+          "the import copies the bytes into the app's own media store");
+
+    // The stick is pulled before any save: the copy is what the next save
+    // reads, and the package still gets its bytes.
+    std::filesystem::remove_all(usb);
+    check(!QFileInfo::exists(QString::fromStdString(clip.string())),
+          "the source is gone");
+    check(docs.save(), "a save after the source is removed still succeeds");
+    const QString packaged =
+        docs.assets().front().toMap().value(QStringLiteral("sourcePath")).toString();
+    check(packaged.startsWith(QString::fromStdString((app / "service").string()))
+              && QFileInfo::exists(packaged),
+          "the save folds the stored copy into the service package");
+
+    // A multi-file drop is one edit: one undo takes the whole drop back.
+    std::filesystem::create_directories(usb);
+    const std::filesystem::path first = usb / "one.png";
+    const std::filesystem::path second = usb / "two.mp3";
+    { std::ofstream out(first, std::ios::binary); out << "PNGBYTES"; }
+    { std::ofstream out(second, std::ios::binary); out << "AUDIOBYTES"; }
+    const int before = docs.assets().size();
+    const int added = docs.importMediaUrls(
+        {QUrl::fromLocalFile(QString::fromStdString(first.string())),
+         QUrl::fromLocalFile(QString::fromStdString(second.string()))});
+    check(added == 2 && docs.assets().size() == before + 2,
+          "a desktop drop imports every file it carries");
+    for (int i = before; i < docs.assets().size(); ++i) {
+        const QString path = docs.assets().at(i).toMap()
+                                 .value(QStringLiteral("sourcePath")).toString();
+        check(QFileInfo::exists(path) && path.startsWith(mediaDirectory),
+              "every dropped file is owned by the app before it is registered");
+    }
+    docs.undo();
+    check(docs.assets().size() == before,
+          "one undo takes the whole drop back");
+}
+
 // --- task UI.4a: what the media bin reads ---------------------------------
 // The bin's rows and its import filter both come out of the controller, and
 // both have to be the domain's own answer about a name. A row carrying a kind
@@ -4067,6 +4127,7 @@ int main(int argc, char* argv[]) {
     exerciseImageItemSession(tempRoot / "mixeditem");
     exerciseImageAuthoring(tempRoot / "imageauthoring");
     exerciseMediaBinViews(tempRoot / "mediabin");
+    exerciseMediaImportCopy(tempRoot / "mediacopy");
     exerciseAutosaveSurfacing(tempRoot / "surfacing");
     exerciseBackgroundPersistence(tempRoot / "background");
     exercisePowerPointImport(tempRoot / "pptx");

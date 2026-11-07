@@ -17,6 +17,7 @@ DocumentPersistence::DocumentPersistence(Sink sink, const std::filesystem::path&
                                          QObject* parent)
     : QObject(parent), fSink(std::move(sink)) {
     fServiceDirectory = baseDirectory / "service";
+    fMediaDirectory = baseDirectory / "media";
     fScheduler = std::make_unique<AutosaveScheduler>(baseDirectory / "autosave");
 
     // Task 6.14b (review R14): durability is acknowledged on the host's

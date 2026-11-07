@@ -54,12 +54,15 @@ public:
     };
 
     // baseDirectory is the same directory DocumentController was given: the
-    // service lives in <base>/service, the scratch in <base>/autosave.
+    // service lives in <base>/service, the scratch in <base>/autosave, and
+    // user imports are copied into <base>/media so a removable source (a USB
+    // stick) is never a live dependency.
     DocumentPersistence(Sink sink, const std::filesystem::path& baseDirectory,
                         QObject* parent = nullptr);
 
     const std::filesystem::path& serviceDirectory() const { return fServiceDirectory; }
     const std::filesystem::path& scratchDirectory() const { return fScheduler->directory(); }
+    const std::filesystem::path& mediaDirectory() const { return fMediaDirectory; }
 
     // The startup rule (task 2.3): autosave data, when present, is newer than
     // the saved service and wins; a missing service simply begins empty. The
@@ -143,6 +146,9 @@ private:
 
     Sink fSink;
     std::filesystem::path fServiceDirectory;
+    // Imported media's own home until a save folds it into the service
+    // package: <base>/media.
+    std::filesystem::path fMediaDirectory;
     // Held rather than parented: the executor's thread is stopped and joined in
     // ~DocumentPersistence, while this class is still itself, exactly as when
     // DocumentController owned it directly.
