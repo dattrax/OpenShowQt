@@ -44,6 +44,7 @@ void printUsage(std::ostream& out) {
         << "  --fake-format F   fake frame format: bgra (default) or uyvy\n"
         << "  --fake-static     freeze the fake pattern for deterministic snapshots\n"
         << "  --fake-lose-source-ms N  emit source-lost after N ms (fake only)\n"
+        << "  --fake-crash-ms N        exit the helper after N ms (fake only)\n"
         << "  --input FILE      read protocol commands from FILE in server mode\n"
         << "  --version         print the helper version\n"
         << "  --help            print this text\n"
@@ -147,6 +148,16 @@ int main(int argc, char** argv) {
                 return fail("--fake-lose-source-ms needs a non-negative integer");
             }
             fakeOptions.loseSourceAfterMs = static_cast<int>(value);
+        } else if (arg == "--fake-crash-ms") {
+            if (i + 1 >= argc) {
+                return fail("--fake-crash-ms needs a value");
+            }
+            char* end = nullptr;
+            const long value = std::strtol(argv[++i], &end, 10);
+            if (!end || *end != '\0' || value < 0) {
+                return fail("--fake-crash-ms needs a non-negative integer");
+            }
+            fakeOptions.crashAfterMs = static_cast<int>(value);
         } else if (arg == "--probe") {
             probe = true;
         } else if (arg == "--list") {

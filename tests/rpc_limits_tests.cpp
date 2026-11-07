@@ -478,6 +478,9 @@ void testOversizedContent() {
                                          std::string("http://host.example/backdrop.png"),
                                          std::string("DATA:image/png;base64,AAAA")}) {
         boost::json::object smuggled = plain;
+        // A picture background is opaque; the transparency rule must not
+        // shadow the asset-path rule this case is testing.
+        smuggled["background"].as_object()["transparent"] = false;
         smuggled["background"].as_object()["image"] = true;
         smuggled["background"].as_object()["assetPath"] = reference;
         refusedWith(session, id, "scene.prepare", smuggled, "local files only",
@@ -491,6 +494,7 @@ void testOversizedContent() {
     // chose on purpose (an unparseable URI gets the reason that fits it).
     {
         boost::json::object longPath = plain;
+        longPath["background"].as_object()["transparent"] = false;
         longPath["background"].as_object()["image"] = true;
         longPath["background"].as_object()["assetPath"] =
             "/shows/" + std::string(scene::kMaxPathChars, 'p') + ".png";

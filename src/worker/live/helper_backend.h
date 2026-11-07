@@ -77,6 +77,9 @@ private:
     std::unique_ptr<ShmFrameReader> fReader;
     OpenInfo fOpen;
     bool fOpenValid = false;
+    // The helper's output closed once. Queued as one typed event so the
+    // worker reports a crash instead of mistaking EOF for "no new frames".
+    bool fExitReported = false;
     mutable std::mutex fMutex;
 };
 

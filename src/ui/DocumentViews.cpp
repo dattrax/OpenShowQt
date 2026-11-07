@@ -317,6 +317,7 @@ QVariantMap DocumentViews::boxAsset(const openshow::domain::SlideItem* box) cons
     map.insert(QStringLiteral("id"), QString::fromStdString(asset->id));
     map.insert(QStringLiteral("name"), QString::fromStdString(asset->name));
     map.insert(QStringLiteral("sourcePath"), QString::fromStdString(asset->sourcePath));
+    map.insert(QStringLiteral("cameraSource"), QString::fromStdString(asset->cameraSource));
     return map;
 }
 
@@ -579,13 +580,15 @@ QVariantList DocumentViews::assets() const {
         entry.insert(QStringLiteral("id"), QString::fromStdString(id));
         entry.insert(QStringLiteral("name"), QString::fromStdString(asset->name));
         entry.insert(QStringLiteral("sourcePath"), QString::fromStdString(asset->sourcePath));
+        entry.insert(QStringLiteral("cameraSource"),
+                     QString::fromStdString(asset->cameraSource));
         // The kind the bin filters and labels by (UI.4a), from the domain's
         // one name rule — the same answer the model refuses a video with and
         // the scene compiles a background with, so a row cannot promise a
         // thing the pipeline will not do.
         entry.insert(QStringLiteral("kind"),
                      QString::fromLatin1(openshow::domain::assetKindName(
-                         openshow::domain::assetPathKind(asset->sourcePath))));
+                         openshow::domain::assetKind(*asset))));
         // And whether the file is where that name says it is (task UI.4b).
         // One stat per row, no decoding: whether the BYTES play is the
         // worker's probe's answer and this view never presumes to give it —
@@ -595,8 +598,9 @@ QVariantList DocumentViews::assets() const {
         // "this build cannot use the file", which the bin says separately.
         std::error_code present;
         entry.insert(QStringLiteral("exists"),
-                     !asset->sourcePath.empty()
-                         && std::filesystem::exists(asset->sourcePath, present));
+                     !asset->cameraSource.empty()
+                         || (!asset->sourcePath.empty()
+                             && std::filesystem::exists(asset->sourcePath, present)));
         list.append(entry);
     }
     return list;

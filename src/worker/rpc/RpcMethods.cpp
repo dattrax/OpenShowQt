@@ -644,6 +644,50 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
     } else if (name == "output.displays") {
         proto::appendFrame(
             proto::makeResult(id, displaysResult(fSession.displays())), outbound);
+    } else if (name == proto::kMethodLiveSources) {
+        std::uint32_t waitMs = 3000;
+        if (given.is_object()) {
+            std::int64_t requested = 0;
+            if (jsonIntInRange(given.as_object(), "waitMs", 0, 10000, &requested)) {
+                waitMs = static_cast<std::uint32_t>(requested);
+            } else if (given.as_object().contains("waitMs")) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams,
+                                     "live.sources wants \"waitMs\" from 0 to 10000"),
+                    outbound);
+                return;
+            }
+        } else if (!given.is_null()) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "live.sources takes no params or {waitMs}"),
+                outbound);
+            return;
+        }
+        if (!fLive) {
+            fLive = std::make_unique<openshow::live::HelperBackend>();
+        }
+        std::string error;
+        std::string version;
+        std::vector<openshow::live::SourceInfo> sources;
+        if (!fLive->start(&error) || !fLive->probe(&version, &error) ||
+            !fLive->list(waitMs, &sources, &error)) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInternalError,
+                                 "live.sources: " +
+                                     (error.empty() ? std::string("the NDI helper failed")
+                                                    : error)),
+                outbound);
+            return;
+        }
+        boost::json::array jsonSources;
+        for (const auto& source : sources) {
+            jsonSources.push_back(
+                boost::json::object{{"name", source.name}, {"url", source.url}});
+        }
+        proto::appendFrame(
+            proto::makeResult(id, boost::json::object{{"sources", std::move(jsonSources)}}),
+            outbound);
     } else if (name == "output.select") {
         if (!given.is_object()) {
             proto::appendFrame(proto::makeError(id, proto::kInvalidParams,

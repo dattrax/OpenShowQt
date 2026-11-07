@@ -1198,6 +1198,236 @@ void testSceneStore() {
     check(waitExit(pid, 5) == 0, "scene-scenario worker exits cleanly");
 }
 
+// Scenario G: a camera background actually applies on the live worker and
+// reports the source on air (ND.6/ND.7). The fake helper supplies frames; no
+// camera is involved.
+void testLiveScene() {
+    setenv("OPENSHOW_NDI_HELPER", OPENSHOW_FAKE_HELPER_BIN, 1);
+    // The live hub wants the real 4:2:2 shape, so the fake must publish UYVY.
+    setenv("OPENSHOW_NDI_HELPER_ARGS", "--fake --fake-format uyvy", 1);
+    const std::string path = socketPath("live-scene");
+    const pid_t pid = spawnWorker(path);
+    unsetenv("OPENSHOW_NDI_HELPER");
+    unsetenv("OPENSHOW_NDI_HELPER_ARGS");
+    if (!check(pid > 0, "live-scene worker spawned")) {
+        return;
+    }
+    const int fd = connectRetry(path);
+    if (!check(fd >= 0, "connected for the live scene")) {
+        killWorker(pid);
+        return;
+    }
+    boost::json::value reply;
+    if (!check(call(fd, 1, "hello", proto::helloParams("ipc-test", 0, 1), &reply),
+               "hello succeeded (live scene)")) {
+        close(fd);
+        killWorker(pid);
+        return;
+    }
+
+    openshow::scene::Scene cameraScene;
+    cameraScene.showId = "show1";
+    cameraScene.slideId = "slide1";
+    cameraScene.background.color = 0x202040;
+    cameraScene.background.hasImage = true;
+    cameraScene.background.isCamera = true;
+    cameraScene.background.cameraSource = "Fake camera 1";
+    cameraScene.background.assetPath = "Fake camera 1";
+    cameraScene.background.fit = openshow::domain::BackgroundFit::Cover;
+
+    const boost::json::object payload =
+        openshow::scene::toJson(cameraScene).as_object();
+    std::uint64_t revision = 0;
+    if (!check(call(fd, 2, "scene.prepare", payload, &reply) &&
+                   reply.as_object().contains("result"),
+               "the camera scene is prepared")) {
+        close(fd);
+        killWorker(pid);
+        return;
+    }
+    revision = numberValue(reply.at("result").as_object().at("revision"));
+
+    bool onAir = false;
+    if (check(call(fd, 3, "scene.present", boost::json::object{{"revision", revision}},
+                   &reply) &&
+                  reply.as_object().contains("result"),
+              "presenting the camera scene is acknowledged")) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(6);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (call(fd, 4, "output.status", {}, &reply) && reply.at("result").is_object()) {
+                const auto& media = reply.at("result").as_object().at("media").as_object();
+                if (media.at("playing").as_bool() &&
+                    media.at("path").as_string() == "Fake camera 1" &&
+                    media.at("error").as_string().empty()) {
+                    onAir = true;
+                    break;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+    check(onAir, "the camera source reaches output.status.media as on air");
+
+    // A plain scene takes it down again.
+    openshow::scene::Scene clearScene;
+    clearScene.showId = "show1";
+    clearScene.slideId = "slide2";
+    clearScene.background.color = 0x101010;
+    if (check(call(fd, 5, "scene.prepare", openshow::scene::toJson(clearScene).as_object(),
+                   &reply) &&
+                  reply.as_object().contains("result"),
+              "the clear scene is prepared")) {
+        const std::uint64_t clear = numberValue(reply.at("result").as_object().at("revision"));
+        if (check(call(fd, 6, "scene.present", boost::json::object{{"revision", clear}},
+                       &reply) &&
+                      reply.as_object().contains("result"),
+                  "presenting the clear scene is acknowledged")) {
+            bool offAir = false;
+            const auto deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(4);
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (call(fd, 7, "output.status", {}, &reply) &&
+                    reply.at("result").is_object()) {
+                    const auto& media =
+                        reply.at("result").as_object().at("media").as_object();
+                    if (!media.at("playing").as_bool()) {
+                        offAir = true;
+                        break;
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            check(offAir, "leaving the camera scene takes it off air");
+        }
+    }
+    call(fd, 8, "shutdown", {}, &reply);
+    close(fd);
+    check(waitExit(pid, 5) == 0, "live-scene worker exits cleanly");
+}
+
+// Scenario H: the helper process dies while a camera is on air. The fault is
+// typed, the worker keeps serving, and it exits cleanly (ND.8).
+void testLiveCrash() {
+    setenv("OPENSHOW_NDI_HELPER", OPENSHOW_FAKE_HELPER_BIN, 1);
+    setenv("OPENSHOW_NDI_HELPER_ARGS", "--fake --fake-format uyvy --fake-crash-ms 150", 1);
+    const std::string path = socketPath("live-crash");
+    const pid_t pid = spawnWorker(path);
+    unsetenv("OPENSHOW_NDI_HELPER");
+    unsetenv("OPENSHOW_NDI_HELPER_ARGS");
+    if (!check(pid > 0, "live-crash worker spawned")) {
+        return;
+    }
+    const int fd = connectRetry(path);
+    if (!check(fd >= 0, "connected for the live crash")) {
+        killWorker(pid);
+        return;
+    }
+    boost::json::value reply;
+    if (!check(call(fd, 1, "hello", proto::helloParams("ipc-test", 0, 1), &reply),
+               "hello succeeded (live crash)")) {
+        close(fd);
+        killWorker(pid);
+        return;
+    }
+
+    openshow::scene::Scene cameraScene;
+    cameraScene.showId = "show1";
+    cameraScene.slideId = "slide1";
+    cameraScene.background.color = 0x202040;
+    cameraScene.background.hasImage = true;
+    cameraScene.background.isCamera = true;
+    cameraScene.background.cameraSource = "Fake camera 1";
+    cameraScene.background.assetPath = "Fake camera 1";
+    cameraScene.background.fit = openshow::domain::BackgroundFit::Cover;
+
+    std::uint64_t revision = 0;
+    if (!check(call(fd, 2, "scene.prepare",
+                    openshow::scene::toJson(cameraScene).as_object(), &reply) &&
+                   reply.as_object().contains("result"),
+               "the crashing camera scene is prepared")) {
+        close(fd);
+        killWorker(pid);
+        return;
+    }
+    revision = numberValue(reply.at("result").as_object().at("revision"));
+    check(call(fd, 3, "scene.present", boost::json::object{{"revision", revision}}, &reply) &&
+              reply.as_object().contains("result"),
+          "presenting the crashing camera scene is acknowledged");
+
+    // The helper exits 150 ms in. The worker must report a sticky media error
+    // rather than pretending the last frame is still live.
+    bool faulted = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (call(fd, 4, "output.status", {}, &reply) && reply.at("result").is_object()) {
+            const auto& media = reply.at("result").as_object().at("media").as_object();
+            if (!media.at("error").as_string().empty()) {
+                faulted = true;
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    check(faulted, "a helper crash reports a typed media error");
+
+    // The session survives the crash: it still answers, and exits cleanly.
+    check(call(fd, 5, "ping", {}, &reply) && reply.as_object().contains("result"),
+          "the worker keeps serving after the helper crashed");
+    check(call(fd, 6, "output.status", {}, &reply) && reply.at("result").is_object(),
+          "status still answers after the helper crashed");
+    call(fd, 7, "shutdown", {}, &reply);
+    close(fd);
+    check(waitExit(pid, 5) == 0, "live-crash worker exits cleanly");
+}
+
+// Scenario F: a worker that can see the helper advertises the capability,
+// and live.sources returns the fake sources over the real socket (ND.7).
+void testLiveSources() {
+    setenv("OPENSHOW_NDI_HELPER", OPENSHOW_FAKE_HELPER_BIN, 1);
+    setenv("OPENSHOW_NDI_HELPER_ARGS", "--fake", 1);
+    const std::string path = socketPath("live");
+    const pid_t pid = spawnWorker(path);
+    unsetenv("OPENSHOW_NDI_HELPER");
+    unsetenv("OPENSHOW_NDI_HELPER_ARGS");
+    if (!check(pid > 0, "live-scenario worker spawned")) {
+        return;
+    }
+    const int fd = connectRetry(path);
+    if (!check(fd >= 0, "connected for live.sources")) {
+        killWorker(pid);
+        return;
+    }
+    boost::json::value reply;
+    if (!check(call(fd, 1, "hello", proto::helloParams("ipc-test", 0, 1), &reply),
+               "hello succeeded (live scenario)")) {
+        close(fd);
+        killWorker(pid);
+        return;
+    }
+    bool liveCapable = false;
+    for (const auto& capability : reply.at("result").as_object().at("capabilities").as_array()) {
+        if (capability.is_string() &&
+            capability.as_string() == proto::kCapabilityLiveSources) {
+            liveCapable = true;
+        }
+    }
+    check(liveCapable, "a probed helper advertises live.sources.v1");
+    if (liveCapable &&
+        check(call(fd, 2, proto::kMethodLiveSources,
+                   boost::json::object{{"waitMs", 0}}, &reply) &&
+                  reply.at("result").is_object(),
+              "live.sources answers")) {
+        const auto& sources = reply.at("result").as_object().at("sources").as_array();
+        check(sources.size() == 2, "live.sources lists the fake sources");
+        check(sources.front().as_object().at("name").as_string() == "Fake camera 1",
+              "live.sources names the first source");
+    }
+    call(fd, 3, "shutdown", {}, &reply);
+    close(fd);
+    check(waitExit(pid, 5) == 0, "live-scenario worker exits cleanly");
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) {
         gWorkerBinary = argv[1];
@@ -1207,6 +1437,9 @@ int main(int argc, char** argv) {
     testDisplaySelection();
     testPreviewStream();
     testSceneStore();
+    testLiveScene();
+    testLiveCrash();
+    testLiveSources();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "%d IPC check(s) failed\n", gFailures);

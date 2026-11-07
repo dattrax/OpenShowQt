@@ -818,6 +818,7 @@ int main(int argc, char** argv) {
         check(mediaBin->property("open").toBool(), "the bin opens with a body over its bar");
         check(findNamed(mediaBin, "librarySearchField") == nullptr,
               "the bin carries no second search for presentations");
+
         check(docs.assets().isEmpty(), "the fixture authors no media of its own");
         // The files behind these names are written for real (bytes nobody
         // decodes: this fixture has no worker, and the bin never claims a file
@@ -1137,6 +1138,26 @@ int main(int argc, char** argv) {
         check(activate->isVisible() && !activate->property("enabled").toBool()
                   && !worker.standaloneOnAir(),
               "the last word is the cue control, honest about having no output");
+
+        // ND.7: the Add NDI action belongs to the bin's context menu. Its
+        // items are instantiated when the menu opens; this fixture has no
+        // worker, so the action must be present but hidden.
+        if (auto* menuObject = mediaBin->findChild<QObject*>("mediaContextMenu")) {
+            QMetaObject::invokeMethod(menuObject, "open");
+            QTest::qWait(30);
+            QQuickItem* addNdi = nullptr;
+            const bool found = QMetaObject::invokeMethod(
+                menuObject, "itemAt", Q_RETURN_ARG(QQuickItem*, addNdi), Q_ARG(int, 0));
+            check(found && addNdi != nullptr &&
+                      addNdi->objectName() == QLatin1String("mediaAddNdiAction"),
+                  "the Media Bin offers an Add NDI action");
+            if (addNdi != nullptr) {
+                check(!addNdi->property("visible").toBool(),
+                      "the Add NDI action is hidden without a live-capable worker");
+            }
+            QMetaObject::invokeMethod(menuObject, "close");
+            QTest::qWait(20);
+        }
     }
 
     window->setProperty("page", "show");

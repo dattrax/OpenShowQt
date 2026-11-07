@@ -131,6 +131,11 @@ struct Background {
     bool hasGradient = false;
     bool hasImage = false;
     bool isVideo = false;  // only meaningful when hasImage
+    // A live NDI camera (ND.6): the multimedia layer's source is the newest
+    // frame from cameraSource instead of a decoded still or video file.
+    // assetPath carries the same source name for status and identity.
+    bool isCamera = false;
+    std::string cameraSource;
     domain::Id assetId;
     std::string assetPath;
     // How the picture (still or video frame) sits on the canvas (task

@@ -3027,6 +3027,21 @@ bool DocumentController::importMediaFile(const QString& filePath) {
     return true;
 }
 
+bool DocumentController::addCameraAsset(const QString& name, const QString& source) {
+    flushText();
+    std::string error;
+    openshow::domain::Id created;
+    if (!edit([&] {
+            created = fDocuments.addCameraAsset(name.toStdString(), source.toStdString(),
+                                                &error);
+            return !created.empty();
+        })) {
+        setStatus(QStringLiteral("add camera: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    return true;
+}
+
 bool DocumentController::removeAsset(const QString& assetId) {
     flushText();
     std::string error;

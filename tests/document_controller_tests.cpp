@@ -644,6 +644,27 @@ void exercisePlaylistAndLibrary(const std::filesystem::path& root) {
         docs.assets().front().toMap().value(QStringLiteral("id")).toString();
     check(docs.removeAsset(assetId) && docs.assets().isEmpty(), "and it can be removed");
 
+    // ND.7: a discovered NDI camera becomes a Media Bin asset with no bytes.
+    check(docs.addCameraAsset(QStringLiteral("Stage Camera"),
+                              QStringLiteral("STAGE (Camera 1)")),
+          "a camera asset is added");
+    {
+        const QVariantMap row = docs.assets().front().toMap();
+        check(row.value(QStringLiteral("kind")) == QStringLiteral("camera") &&
+                  row.value(QStringLiteral("cameraSource")) ==
+                      QStringLiteral("STAGE (Camera 1)") &&
+                  row.value(QStringLiteral("sourcePath")) ==
+                      QStringLiteral("ndi://STAGE (Camera 1)") &&
+                  row.value(QStringLiteral("exists")).toBool(),
+              "the bin row names the live source and is not mistaken for a missing file");
+    }
+    docs.undo();
+    check(docs.assets().isEmpty(), "undo takes the camera asset back");
+    docs.redo();
+    check(docs.assets().size() == 1 && docs.assets().front().toMap().value(
+              QStringLiteral("kind")) == QStringLiteral("camera"),
+          "redo restores the camera asset");
+
     // The drawer's find: title and lyrics both answer (the scoring itself
     // is library_search_tests' job).
     QVariantList hits = docs.searchShows(QStringLiteral("sweet"));

@@ -571,6 +571,9 @@ public:
     // Media tab: register a file (bytes are copied by save(), the
     // domain's rule) and remove one from the library.
     Q_INVOKABLE bool importMediaFile(const QString& filePath);
+    // ND.7: records a discovered NDI camera as a Media Bin asset. It owns no
+    // bytes; `source` is the exact name discovery returned.
+    Q_INVOKABLE bool addCameraAsset(const QString& name, const QString& source);
     Q_INVOKABLE bool importMediaUrl(const QUrl& file);
     Q_INVOKABLE bool removeAsset(const QString& assetId);
     // The bin's import filter (UI.4a), spelled from the domain's one

@@ -466,6 +466,7 @@ bool operator==(const Background& a, const Background& b) {
     // — but the second colour only MEANS something when hasGradient says
     // so, so the comparison gates on the flag exactly as the draw does.
     return a.transparent == b.transparent && a.color == b.color && a.hasImage == b.hasImage && a.isVideo == b.isVideo &&
+           a.isCamera == b.isCamera && a.cameraSource == b.cameraSource &&
            a.fit == b.fit && a.assetId == b.assetId && a.assetPath == b.assetPath &&
            a.hasGradient == b.hasGradient &&
            (a.hasGradient ? a.gradient : kBlack) == (b.hasGradient ? b.gradient : kBlack);
@@ -749,27 +750,44 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         }
         scene.background.color = backgroundColor;
         scene.background.hasImage = true;
-        // Task 5.5: the kind is decided by the name, not the bytes —
-        // a video-extension asset plays frames; anything else stays a
-        // decoded still. Whether the file cooperates is reported by the
-        // renderer (and degrades to the colour fill).
-        scene.background.isVideo = assetPathIsVideo(asset->sourcePath);
-        // The blur fit's backdrop is built ONCE per image where the bytes
-        // are cached (6.17c2); playing frames change every frame, so a
-        // blurred video background is not a thing this composition budget
-        // honours — the compile says so at authoring/present time rather
-        // than letting the worker quietly draw something else (the cover
-        // or contain rules are, and blur's picture-over-backdrop maths are
-        // the reference's, all pinned in the render fixtures).
-        if (scene.background.isVideo &&
-            scene.background.fit == domain::BackgroundFit::Blur) {
-            fail(error, "slide '" + slideId + "' requests the blur background fit on a"
-                            " video ('" + asset->sourcePath +
-                            "'); this worker does not blur playing frames");
-            return false;
+        if (!asset->cameraSource.empty()) {
+            // A camera is live by definition; the source name is the
+            // multimedia layer's whole instruction. The blur fit is refused
+            // for the same reason it is refused on video: the backdrop is
+            // built once, and a live frame is never the same picture twice.
+            scene.background.isCamera = true;
+            scene.background.cameraSource = asset->cameraSource;
+            scene.background.assetPath = asset->cameraSource;
+            if (scene.background.fit == domain::BackgroundFit::Blur) {
+                fail(error, "slide '" + slideId + "' requests the blur background fit on a"
+                                " live camera ('" + asset->cameraSource +
+                                "'); this worker does not blur live frames");
+                return false;
+            }
+            scene.background.assetId = asset->id;
+        } else {
+            // Task 5.5: the kind is decided by the name, not the bytes —
+            // a video-extension asset plays frames; anything else stays a
+            // decoded still. Whether the file cooperates is reported by the
+            // renderer (and degrades to the colour fill).
+            scene.background.isVideo = assetPathIsVideo(asset->sourcePath);
+            // The blur fit's backdrop is built ONCE per image where the bytes
+            // are cached (6.17c2); playing frames change every frame, so a
+            // blurred video background is not a thing this composition budget
+            // honours — the compile says so at authoring/present time rather
+            // than letting the worker quietly draw something else (the cover
+            // or contain rules are, and blur's picture-over-backdrop maths are
+            // the reference's, all pinned in the render fixtures).
+            if (scene.background.isVideo &&
+                scene.background.fit == domain::BackgroundFit::Blur) {
+                fail(error, "slide '" + slideId + "' requests the blur background fit on a"
+                                " video ('" + asset->sourcePath +
+                                "'); this worker does not blur playing frames");
+                return false;
+            }
+            scene.background.assetId = asset->id;
+            scene.background.assetPath = asset->sourcePath;
         }
-        scene.background.assetId = asset->id;
-        scene.background.assetPath = asset->sourcePath;
     } else {
         scene.background.color = backgroundColor;
     }
@@ -791,6 +809,10 @@ boost::json::value toJson(const Scene& scene) {
     background.emplace("transparent", scene.background.transparent);
     background.emplace("image", scene.background.hasImage);
     background.emplace("video", scene.background.isVideo);
+    if (scene.background.isCamera) {
+        background.emplace("camera", true);
+        background.emplace("cameraSource", scene.background.cameraSource);
+    }
     // Always written, always the domain's spelling (6.17c1): the compiler
     // and the reader share the one name function, so the two ends of the
     // wire cannot each keep their own list of what a fit is called.
@@ -895,7 +917,8 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     }
     const boost::json::object& jsonBackground = background->as_object();
     if (!noUnknownKeys(jsonBackground,
-                       {"image", "video", "fit", "assetId", "assetPath", "gradient", "transparent"},
+                       {"image", "video", "camera", "cameraSource", "fit", "assetId",
+                        "assetPath", "gradient", "transparent"},
                        "'background'", error)) {
         return false;
     }
@@ -927,6 +950,35 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         fail(error, "scene: background fit '" + fitName + "' is not a fit this worker draws");
         return false;
     }
+    // A live camera (ND.6) names an NDI source, not a filesystem path: the
+    // source picker already chose it, and assetPathIsLocal's scheme/path
+    // rules do not apply. The source is still bounded by wantString and
+    // refused if it carries control bytes.
+    const boost::json::value* camera = field(jsonBackground, "camera");
+    if (camera != nullptr) {
+        if (!camera->is_bool()) {
+            fail(error, "scene: background 'camera' must be a bool");
+            return false;
+        }
+        scene.background.isCamera = camera->as_bool();
+    }
+    if (scene.background.isCamera) {
+        if (!wantString(jsonBackground, "cameraSource", &scene.background.cameraSource,
+                        kMaxPathChars, error) ||
+            scene.background.cameraSource.empty()) {
+            fail(error, "scene: camera background requires 'cameraSource'");
+            return false;
+        }
+        for (const unsigned char byte : scene.background.cameraSource) {
+            if (byte == 0u || byte < 0x20u || byte == 0x7Fu) {
+                fail(error, "scene: camera source contains a control character");
+                return false;
+            }
+        }
+        scene.background.assetPath = scene.background.cameraSource;
+        scene.background.hasImage = true;
+        scene.background.isVideo = false;
+    }
     // A media reference is checked WHOLE, before the hasImage clear below, and
     // BEFORE the length rule that wantString would apply to it: a 200 KB data:
     // URI is a media-byte payload smuggled into a control message, and calling
@@ -935,17 +987,19 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     // control bytes whatever its size) and only then through the length budget,
     // which now bounds what is left — a genuinely local path. Both are still
     // refused; what the order decides is which reason the operator is given.
-    const boost::json::value* rawPath = field(jsonBackground, "assetPath");
-    if (rawPath != nullptr && rawPath->is_string()) {
-        std::string why;
-        if (!assetPathIsLocal(std::string(rawPath->as_string()), &why)) {
-            fail(error, "scene: " + why);
+    if (!scene.background.isCamera) {
+        const boost::json::value* rawPath = field(jsonBackground, "assetPath");
+        if (rawPath != nullptr && rawPath->is_string()) {
+            std::string why;
+            if (!assetPathIsLocal(std::string(rawPath->as_string()), &why)) {
+                fail(error, "scene: " + why);
+                return false;
+            }
+        }
+        if (!wantString(jsonBackground, "assetPath", &scene.background.assetPath,
+                        kMaxPathChars, error)) {
             return false;
         }
-    }
-    if (!wantString(jsonBackground, "assetPath", &scene.background.assetPath, kMaxPathChars,
-                    error)) {
-        return false;
     }
     if (scene.background.hasImage && scene.background.assetPath.empty()) {
         fail(error, "scene: background 'image' requires an 'assetPath'");
@@ -966,6 +1020,10 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         fail(error, "scene: background 'video' requires 'image'");
         return false;
     }
+    if (scene.background.isCamera && scene.background.isVideo) {
+        fail(error, "scene: a camera background cannot also be a video");
+        return false;
+    }
     // The blur pairing is refused at the wire too (6.17c2), not only at the
     // compile: the worker's draw degrades an unblurrable video to the
     // contain picture, and a payload that names "blur" while being shown
@@ -973,6 +1031,10 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     // whoever can see both halves of it first.
     if (scene.background.isVideo && scene.background.fit == domain::BackgroundFit::Blur) {
         fail(error, "scene: the blur background fit does not apply to a video");
+        return false;
+    }
+    if (scene.background.isCamera && scene.background.fit == domain::BackgroundFit::Blur) {
+        fail(error, "scene: the blur background fit does not apply to a camera");
         return false;
     }
     // The gradient (task 6.17c3) is the one OPTIONAL background key, and
@@ -990,6 +1052,8 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         scene.background.assetId.clear();
         scene.background.assetPath.clear();
         scene.background.isVideo = false;
+        scene.background.isCamera = false;
+        scene.background.cameraSource.clear();
     }
 
     const boost::json::value* items = field(root, "items");

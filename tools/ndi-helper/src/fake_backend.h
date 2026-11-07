@@ -26,6 +26,10 @@ struct FakeOptions {
     bool staticFrames = false;
     // Emit source-lost after this many milliseconds; 0 never loses the source.
     int loseSourceAfterMs = 0;
+    // Exit the whole helper process after this many milliseconds, without a
+    // close handshake; 0 never crashes. This is the deterministic "helper
+    // crashed" path ND.8 needs, distinct from a source that stops sending.
+    int crashAfterMs = 0;
 };
 
 class FakeBackend final : public Backend {

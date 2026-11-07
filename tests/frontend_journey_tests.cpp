@@ -670,6 +670,15 @@ int main(int argc, char* argv[]) {
             }
             return serialized(compiled);
         };
+        // Presentation themes no longer carry a ground (format 11): the
+        // background is authored on the slide, and the theme supplies the
+        // words. This keeps the chain's real claim — the theme layer re-skins
+        // the text — over a ground the slide owns.
+        openshow::domain::SlideCustomization houseGround;
+        houseGround.backgroundColor = "#101820";
+        houseGround.backgroundGradient = "";
+        check(chain.setSlideCustomizations(worn, cue, houseGround),
+              "chain: the slide authors its dark ground");
         check(chain.setSlideTheme(worn, cue, house), "chain: the slide follows its house theme");
         const auto revision = controller.sceneActive();
         controller.presentSceneJson(chainJson());
@@ -683,8 +692,13 @@ int main(int argc, char* argv[]) {
                   return nearColor(rgbAt(frame, 0.02, 0.03), 0x101820u, 12) &&
                          whitePixels(frame) > 20;
               }),
-              "chain: the house theme paints its dark ground and white words");
+              "chain: the house theme paints white words over the authored dark ground");
 
+        openshow::domain::SlideCustomization brightGround;
+        brightGround.backgroundColor = "#200000";
+        brightGround.backgroundGradient = "#602020";
+        check(chain.setSlideCustomizations(worn, cue, brightGround),
+              "chain: the slide authors its graded ground");
         check(chain.setCurrentTheme(bright), "chain: the service puts on the current theme");
         const auto revisionWorn = controller.sceneActive();
         controller.presentSceneJson(chainJson());
@@ -698,9 +712,10 @@ int main(int argc, char* argv[]) {
                          nearColor(rgbAt(frame, 0.02, 0.97), 0x602020u, 24) &&
                          yellowPixels(frame) > 10;
               }),
-              "chain: the audience sees the current theme's graded ground and yellow words");
+              "chain: the audience sees the authored graded ground and yellow words");
 
         openshow::domain::SlideCustomization flat;
+        flat.backgroundColor = "#200000";
         flat.backgroundGradient = "";  // the slide says flat OVER the graded current theme
         check(chain.setSlideCustomizations(worn, cue, flat),
               "chain: the slide customizes itself flat");
@@ -716,7 +731,7 @@ int main(int argc, char* argv[]) {
                          nearColor(rgbAt(frame, 0.02, 0.97), 0x200000u, 12) &&
                          yellowPixels(frame) > 10;
               }),
-              "chain: the floor holds the ground colour — the ramp is gone, the words stay");
+              "chain: the floor holds the authored ground colour — the ramp is gone, the words stay");
     }
 
     // --- 10. the operator's numbers are the audience's seconds (task TR.3) ---

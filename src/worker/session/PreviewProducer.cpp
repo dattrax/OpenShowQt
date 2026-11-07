@@ -396,7 +396,8 @@ bool PreviewProducer::requestThumbnails(const std::vector<ThumbnailEntry>& batch
                     unique.push_back(path);
                 }
             };
-            if (entry.scene.background.hasImage && !entry.scene.background.isVideo) {
+            if (entry.scene.background.hasImage && !entry.scene.background.isVideo &&
+                !entry.scene.background.isCamera) {
                 want(entry.scene.background.assetPath);
             }
             for (const openshow::scene::SceneItem& item : entry.scene.items) {
@@ -1015,7 +1016,8 @@ void PreviewProducer::publishMirrorFrame(const DrawInput& input) {
     // later reuse.
     const ActiveScene* onAir = input.audienceScene;
     const bool asSceneBackground =
-        input.video != nullptr && onAir != nullptr && *onAir && (*onAir)->background.isVideo;
+        input.video != nullptr && onAir != nullptr && *onAir &&
+        ((*onAir)->background.isVideo || (*onAir)->background.isCamera);
     const PreviewFill fill =
         fillPreviewSlot(frame, asSceneBackground ? input.video : nullptr,
                         asSceneBackground ? nullptr : input.video, *stream, slot, width, height,
@@ -1141,10 +1143,14 @@ bool PreviewProducer::publishSelectionFrame(const DrawInput& input) {
     // pretending otherwise would put a moving picture behind an edit that
     // the audience has no reason to be seeing.
     const ActiveScene* onAir = input.audienceScene;
+    const bool sameCamera =
+        content->background.isCamera && (*onAir)->background.isCamera &&
+        content->background.cameraSource == (*onAir)->background.cameraSource;
     const bool sameVideoAsset =
         input.video != nullptr && onAir != nullptr && *onAir &&
-        (*onAir)->background.isVideo && content->background.isVideo &&
-        content->background.assetPath == (*onAir)->background.assetPath;
+        (((*onAir)->background.isVideo && content->background.isVideo &&
+          content->background.assetPath == (*onAir)->background.assetPath) ||
+         sameCamera);
 
     const PreviewFill fill =
         fillPreviewSlot(frame, sameVideoAsset ? input.video : nullptr, nullptr, *stream, slot,
@@ -1322,10 +1328,14 @@ bool PreviewProducer::publishThumbnailFrame(const DrawInput& input) {
     // asset, because a scene with no transport has no business wearing
     // someone else's.
     const ActiveScene* onAir = input.audienceScene;
+    const bool sameCamera =
+        content->background.isCamera && (*onAir)->background.isCamera &&
+        content->background.cameraSource == (*onAir)->background.cameraSource;
     const bool sameVideoAsset =
         input.video != nullptr && onAir != nullptr && *onAir &&
-        (*onAir)->background.isVideo && content->background.isVideo &&
-        content->background.assetPath == (*onAir)->background.assetPath;
+        (((*onAir)->background.isVideo && content->background.isVideo &&
+          content->background.assetPath == (*onAir)->background.assetPath) ||
+         sameCamera);
 
     const PreviewFill fill =
         fillPreviewSlot(frame, sameVideoAsset ? input.video : nullptr, nullptr, *stream, slot,

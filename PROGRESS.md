@@ -4,6 +4,31 @@ Updated: 2026-11-07 (Europe/London).
 
 ## Current checkpoint
 
+**ND.5–ND.7 complete; ND.8 crash path delivered (2026-11-07):** A live NDI
+camera is now a first-class asset and background. ND.5 adds
+`AssetKind::Camera` with `Asset::cameraSource`; the manifest stores
+`kind:"camera"` + `source` and copies no bytes, and because the asset keys are
+optional an existing format-11 package still opens (no bump was needed). ND.6
+compiles a camera background to scene 5's `camera`/`cameraSource` and gives the
+worker `LiveSourceHub`: the helper receiver's UYVY frame is converted to NV12
+(SSSE3) and uploaded through the same `GpuYuvUploader` the FFmpeg video path
+uses, so the one multimedia layer takes the NDI feed, a video or a still —
+never two. Opening a source waits for the first frame (up to the helper's 15 s
+timeout), so the hub starts on its own thread and the render thread only polls
+and pumps the newest frame; the event-driven loop keeps presenting while a
+camera is on air, and a missing source draws the colour fill without stalling
+the frame loop. ND.7 advertises `live.sources.v1` only when the helper answered
+a startup probe, serves `live.sources`, and gates a right-click "Add NDI
+source…" picker that creates exactly one camera asset. ND.8's crash path: a
+helper that exits closes its output pipe, `HelperBackend::pollEvents` turns EOF
+into a one-shot `helper-exit` event, the hub treats it as fatal, and
+`mediaCameraFailed` clears "playing" and names the reason; `--fake-crash-ms N`
+makes the crash deterministic. Media status is honest throughout — applying a
+camera leaves it "on air, not playing" until the first frame is actually drawn,
+and a crash or source-lost clears it. The full suite passes (85/85, 446 s).
+Remaining ND.8 work is Windows named-memory/helper build, packaging notices and
+the operator guide; ND.4's real-unplug analogue is still manual.
+
 **LRF.18 complete (transparent presentations, 2026-11-07):** Lyrics/Bible
 presentation themes no longer store or resolve fills/gradients. Format 11 omits
 those fields and reads older projects by retiring theme backdrops while keeping

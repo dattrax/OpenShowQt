@@ -54,6 +54,9 @@ public:
     struct Options {
         std::string socketPath;
         std::string workerVersion;
+        // The helper answered a startup probe: the hello may advertise
+        // live.sources.v1 (ND.7).
+        bool liveSources = false;
     };
 
     RpcServer(OutputSession& session, Options options);

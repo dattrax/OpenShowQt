@@ -848,6 +848,22 @@ add_executable(live_yuv_tests live_yuv_tests.cpp)
 target_link_libraries(live_yuv_tests PRIVATE openshow::worker_live)
 add_test(NAME live_yuv_tests COMMAND live_yuv_tests)
 
+# ND.6: the live source's presentation half, headless. The fake helper emits
+# UYVY, the hub converts and uploads through the FFmpeg video path's uploader,
+# and Skia wraps the slot; source-lost is deterministic.
+# ND.7 uses the same fake helper through a real worker socket.
+target_compile_definitions(rpc_ipc_tests PRIVATE
+  OPENSHOW_FAKE_HELPER_BIN="$<TARGET_FILE:test-ndi-helper>")
+add_dependencies(rpc_ipc_tests test-ndi-helper)
+
+add_executable(live_hub_tests live_hub_tests.cpp)
+target_link_libraries(live_hub_tests PRIVATE openshow::worker_live_render)
+target_compile_definitions(live_hub_tests PRIVATE
+  OPENSHOW_FAKE_HELPER_BIN="$<TARGET_FILE:test-ndi-helper>")
+add_dependencies(live_hub_tests test-ndi-helper)
+add_test(NAME live_hub_tests COMMAND live_hub_tests)
+set_tests_properties(live_hub_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
 # ND.3: the worker's live-source seam. The fake helper is the MIT helper's own
 # fake backend built from tools/ndi-helper/src, so HelperBackend is exercised
 # against a real child process, real pipes and a real POSIX segment without the

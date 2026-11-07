@@ -288,6 +288,27 @@ void BackgroundTransport::mediaStopped() {
     // path stays so the message and the asset that caused it stay paired.
 }
 
+void BackgroundTransport::mediaCameraFailed(const std::string& source,
+                                            const std::string& message) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    fMedia.playing = false;
+    fMedia.position = -1.0;
+    fMedia.audio = "none";
+    fMedia.path = source;
+    mediaFailedLocked(MediaFault::kVideo, source, message);
+}
+
+void BackgroundTransport::mediaCameraPlaying(const std::string& source) {
+    std::lock_guard<std::mutex> lock(fMutex);
+    // Only the camera the status already names may promote itself, and only
+    // while its open is not carrying a fault. A camera requested but not yet
+    // delivering frames stays "on air, not playing" — the colour fill is what
+    // the audience is seeing.
+    if (fMedia.live && fMedia.path == source && fMedia.error.empty()) {
+        fMedia.playing = true;
+    }
+}
+
 void BackgroundTransport::mediaFailed(MediaFault fault, const std::string& path,
                                 const std::string& message) {
     std::lock_guard<std::mutex> lock(fMutex);
@@ -1463,6 +1484,7 @@ bool BackgroundTransport::backgroundChangeBlocked(
     const openshow::scene::Background& wanted) const {
     const bool same = fAppliedBackground.hasImage == wanted.hasImage &&
                       fAppliedBackground.isVideo == wanted.isVideo &&
+                      fAppliedBackground.isCamera == wanted.isCamera &&
                       fAppliedBackground.assetId == wanted.assetId &&
                       fAppliedBackground.assetPath == wanted.assetPath;
     return fBackground && !same && inFlightRetirement() != nullptr;
@@ -1478,6 +1500,12 @@ BackgroundTransport::BackgroundApply BackgroundTransport::applyBackground(
     const bool sameIdentity =
         fBackground != nullptr && fAppliedBackground.hasImage == wanted.hasImage &&
         fAppliedBackground.isVideo == wanted.isVideo &&
+        // ND.6: a live camera is its own kind of background. A still or a
+        // video sharing an id/path with it is a different picture on air, so
+        // the flag and the source both join the identity — otherwise a
+        // camera-to-file switch would keep the old transport rolling.
+        fAppliedBackground.isCamera == wanted.isCamera &&
+        fAppliedBackground.cameraSource == wanted.cameraSource &&
         fAppliedBackground.assetId == wanted.assetId &&
         fAppliedBackground.assetPath == wanted.assetPath;
     if (sameIdentity) {
@@ -1492,6 +1520,30 @@ BackgroundTransport::BackgroundApply BackgroundTransport::applyBackground(
     if (backgroundChangeBlocked(wanted)) return BackgroundApply::kDeferred;
     teardownBackgroundTransport();
     fAppliedBackground = wanted;
+    if (wanted.isCamera) {
+        // The live hub is the session's, but the media status is this
+        // transport's mirror: a camera is on air, has no clock, seek, loop
+        // or audio, and is never commandable as a file.
+        std::lock_guard<std::mutex> lock(fMutex);
+        // Opening a source waits for its first frame, so "on air" is not yet
+        // "playing": the render thread promotes playing when it actually draws
+        // a frame (mediaCameraPlaying). Until then the colour fill is what the
+        // audience sees, and the status says so honestly.
+        fMedia.playing = false;
+        fMedia.path = wanted.cameraSource;
+        fMedia.error.clear();
+        fMediaFault.reset();
+        fMedia.position = -1.0;
+        fMedia.audio = "none";
+        fMedia.live = true;
+        fMedia.loop = false;
+        fMedia.duration = -1.0;
+        fMediaTransportLive.store(false, std::memory_order_release);
+        fMediaSourceMask.store(fMediaSourceMask.load(std::memory_order_relaxed) & ~1,
+                               std::memory_order_release);
+        rebuildMediaSourcesLocked();
+        return BackgroundApply::kApplied;
+    }
     if (!wanted.hasImage || !wanted.isVideo) {
         // Colour fill or still image: no video transport, so the media
         // status goes idle (a stale video error is not the story of the

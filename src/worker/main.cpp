@@ -27,6 +27,7 @@
 #include "DependencyReport.h"
 
 #include "openshow/domain/version.h"
+#include "live/helper_backend.h"
 #include "rpc/RpcServer.h"
 #include "session/OutputSession.h"
 
@@ -121,6 +122,16 @@ int main(int argc, char** argv) {
     openshow::worker::RpcServer::Options rpc;
     rpc.socketPath = socketPath;
     rpc.workerVersion = openshow::domain::applicationVersion();
+    {
+        // Advertise NDI only when the separate helper answers at startup.
+        // The probe starts the helper, so a missing binary is a capability
+        // the frontend never sees rather than a menu action that fails.
+        openshow::live::HelperBackend probe;
+        std::string version;
+        std::string probeError;
+        rpc.liveSources = probe.probe(&version, &probeError);
+        probe.stop();
+    }
     openshow::worker::RpcServer server(session, std::move(rpc));
     std::string error;
     if (!server.listen(&error)) {

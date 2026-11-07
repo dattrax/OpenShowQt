@@ -128,6 +128,12 @@ class WorkerController : public QObject {
     // can resolve. fontListState walks idle/loading/ready/unsupported/
     // unavailable; fontFamilies is sorted; fontFaces maps family name to
     // [{weight, italic}]. See refreshFontFamilies() below.
+    // ND.7: NDI discovery. liveCapable is the hello capability (the helper
+    // answered a startup probe); liveSources is the last discovery answer as
+    // [{name, url}]. The Media Bin's "Add NDI source..." action is gated on
+    // the former and populated from the latter.
+    Q_PROPERTY(bool liveCapable READ liveCapable NOTIFY liveChanged)
+    Q_PROPERTY(QVariantList liveSources READ liveSources NOTIFY liveChanged)
     Q_PROPERTY(bool fontListSupported READ fontListSupported NOTIFY fontListChanged)
     Q_PROPERTY(QString fontListState READ fontListState NOTIFY fontListChanged)
     Q_PROPERTY(QStringList fontFamilies READ fontFamilies NOTIFY fontListChanged)
@@ -386,6 +392,8 @@ public:
     // only honest answerer — the renderer falls back silently from names
     // it cannot match, so a picker listing anything else offers families
     // the audience will never see.
+    bool liveCapable() const { return fLiveCapable; }
+    QVariantList liveSources() const { return fLiveSources; }
     bool fontListSupported() const { return fFontListCapable; }
 
     // --- how the audience moves (task TR.1) --------------------------------
@@ -420,6 +428,9 @@ public:
     // Re-walk the worker's list from zero. Any walk in flight is retired
     // first: the newest ask is the only one whose pages may land.
     Q_INVOKABLE void refreshFontFamilies();
+    // Asks the worker for its discovered NDI sources. The action is absent
+    // without liveCapable; the answer arrives as liveSourcesChanged.
+    Q_INVOKABLE void refreshLiveSources(int waitMs = 3000);
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
@@ -453,6 +464,7 @@ signals:
     // The font walk moved (task TS.4): a page landed, the state changed,
     // or the session retired the list. The picker binds to this alone.
     void fontListChanged();
+    void liveChanged();
     void sceneChanged();
     void mediaChanged();
 
@@ -513,6 +525,8 @@ private:
     // beside it belongs to the CONNECTION: a page that never gets sent,
     // or an answer that arrives after the session died, is nobody's list.
     bool fFontListCapable = false;
+    bool fLiveCapable = false;
+    QVariantList fLiveSources;
 
     // scene.transition-options.v1 (task TR.1): see
     // transitionOptionsSupported().

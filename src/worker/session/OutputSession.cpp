@@ -36,6 +36,7 @@
 #include "output/Swapchain.h"
 #include "output/VulkanContext.h"
 #include "output/VulkanQueueGuard.h"
+#include "live/live_source_hub.h"
 #include "media/MediaProbe.h"
 #include "render/SceneRenderer.h"
 #include "session/Faults.h"
@@ -167,6 +168,14 @@ void OutputSession::close() {
     // transport's fault lane and the GPU below are never torn down under
     // a decode. Idempotent, like this close() is.
     fPrepares.stop();
+    // The live camera owns a helper process and an uploader on this device;
+    // stop() waits for its start thread, because the Vulkan device below is
+    // about to be destroyed and the thread may still be opening a source.
+    if (fLive) {
+        fLive->stop();
+        fLive.reset();
+    }
+    fLiveSource.clear();
     // The audience-side media — background transport and standalone track —
     // goes down by name and in its owner's documented order (task 5.5's:
     // before every GPU resource it decodes into), ahead of the context
@@ -381,6 +390,12 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
     }
     const openshow::scene::Background& background = scene.background;
     if (!background.hasImage || stopped()) {
+        return;
+    }
+    if (background.isCamera) {
+        // The live hub opens on present; there is no file to decode, probe or
+        // prime. Starting it here would open a receiver for a scene the
+        // audience has not been shown.
         return;
     }
     if (!background.isVideo) {
@@ -985,6 +1000,43 @@ void OutputSession::applyPendingDisplayChange(const FrameSnapshot& snapshot) {
     // commit block: a moved window is on air when its frame presents.
 }
 
+void OutputSession::applyLiveBackground(const openshow::scene::Background& wanted) {
+    const std::string source = wanted.isCamera ? wanted.cameraSource : std::string();
+    if (source == fLiveSource) {
+        return;
+    }
+    if (fLive) {
+        // Non-blocking: opening a source waits for the first frame (up to the
+        // helper's 15 s timeout), and the render thread must never wait for
+        // that. A hub cancelled mid-open keeps a reference to itself and
+        // finishes its teardown on its own thread.
+        fLive->cancel();
+        fLive.reset();
+    }
+    fLiveSource.clear();
+    fLiveErrorReportedFor.clear();
+    if (source.empty()) {
+        return;
+    }
+
+    const GpuHandles handles = gpuHandles();
+    openshow::live::LiveSourceHub::Gpu gpu;
+    gpu.device = handles.device;
+    gpu.physicalDevice = handles.physicalDevice;
+    gpu.graphicsQueueIndex = handles.graphicsQueueIndex;
+    gpu.uploadQueueIndex = handles.uploadQueueIndex;
+    gpu.uploadQueue = handles.uploadQueue;
+    gpu.context = handles.context;
+
+    auto hub = std::make_shared<openshow::live::LiveSourceHub>();
+    if (!hub->beginStart(source, gpu)) {
+        fTransport.mediaCameraFailed(source, "camera: could not begin opening the source");
+        return;
+    }
+    fLive = std::move(hub);
+    fLiveSource = source;
+}
+
 bool OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
     const uint64_t desired = snapshot.scene;
     if (desired == fStore.landedScene()) {
@@ -1025,6 +1077,7 @@ bool OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
         if (result == BackgroundTransport::BackgroundApply::kVideoStarted) fNeedsPresent = true;
         // Failed media has an explicit colour-fill fallback and named fault;
         // it still belongs to this scene. Only deferral keeps the old scene.
+        applyLiveBackground(wanted);
     }
     fStore.landScene(desired);
     fRenderScene = snapshot.content;
@@ -1069,7 +1122,8 @@ void OutputSession::syncScenePins() {
     std::vector<std::string> held;
     const auto collect = [&held](const openshow::scene::Scene& scene) {
         const openshow::scene::Background& background = scene.background;
-        if (background.hasImage && !background.isVideo && !background.assetPath.empty()) {
+        if (background.hasImage && !background.isVideo && !background.isCamera &&
+            !background.assetPath.empty()) {
             held.push_back(background.assetPath);
         }
         // A foreground picture (task 6.17b) can be put on air exactly as
@@ -1216,6 +1270,7 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
     // Video hand-off state for this frame (task 1.5e).
     SkImage* videoImage = nullptr;
     unsigned videoToken = 0;
+    int liveSlot = -1;
     VkSemaphore videoDone = VK_NULL_HANDLE;
     // The seam's presenter (task 6.18b): render-thread only, and unchanged
     // while this frame samples it — the transport swaps presenters only
@@ -1292,8 +1347,61 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
         // transform (the fit of the authored 1920x1080 canvas) on this
         // canvas — the dev video rect is in swapchain pixels, so it must
         // be drawn on the identity.
+        // ND.6: the live camera is the other source of the one multimedia
+        // layer. It has no seam or clock: pump() uploads the newest NV12
+        // frame and returns the slot to draw; presented() registers the
+        // draw's completion so the uploader may reuse the slot.
+        if (fLive) {
+            // The source opens on the hub's own thread. Poll here so the
+            // audience keeps drawing the colour fill while it connects, and so
+            // a missing camera reports its reason without stalling the frame.
+            std::string startError;
+            const auto startState = fLive->pollStart(&startError);
+            if (startState == openshow::live::LiveSourceHub::StartState::kFailed) {
+                if (fLiveErrorReportedFor != fLiveSource) {
+                    fTransport.mediaCameraFailed(fLiveSource, "camera: " + startError);
+                    fLiveErrorReportedFor = fLiveSource;
+                }
+                fLive.reset();
+                fLiveSource.clear();
+            }
+        }
+        if (fLive && fLive->active() && fRenderScene &&
+            fRenderScene->background.isCamera) {
+            std::string liveError;
+            liveSlot = fLive->pump(&liveError);
+            if (liveSlot >= 0) {
+                videoImage = fLive->image(liveSlot, &liveError);
+                videoToken = 0;
+                if (videoImage == nullptr) {
+                    fLive->presented(liveSlot, VK_NULL_HANDLE);
+                    liveSlot = -1;
+                } else {
+                    // The first frame the audience can actually be shown. Until
+                    // here the status said "on air, not playing" — the colour
+                    // fill was the picture — so promote only now.
+                    fTransport.mediaCameraPlaying(fLiveSource);
+                }
+            }
+            if (!liveError.empty()) {
+                if (fLiveErrorReportedFor != fLiveSource) {
+                    // A camera that stops delivering is NOT playing: the
+                    // colour fill is what the audience sees. The camera setter
+                    // clears "playing" and names the source with the reason,
+                    // exactly as the open-failure path above does.
+                    fTransport.mediaCameraFailed(fLiveSource, "camera: " + liveError);
+                    fLiveErrorReportedFor = fLiveSource;
+                }
+                if (!fLive->active()) {
+                    fLive->cancel();
+                    fLive.reset();
+                    fLiveSource.clear();
+                }
+            }
+        }
         const bool videoIsBackground =
-            videoImage != nullptr && fRenderScene && fRenderScene->background.isVideo;
+            videoImage != nullptr && fRenderScene &&
+            (fRenderScene->background.isVideo || fRenderScene->background.isCamera);
         // One frame, every target (task 6.11a, review R13). The composition
         // is captured exactly once for this audience frame — on-air scene,
         // crossfade blends, clock and the revision the frame presents — and
@@ -1393,8 +1501,11 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
         if (!presented) {
             // flushAndPresent only fails after flushing, so an attached
             // semaphore will still be signalled: the hand-off stands.
-            if (videoDone != VK_NULL_HANDLE && videoPresenter) {
+            if (videoDone != VK_NULL_HANDLE && videoPresenter && liveSlot < 0) {
                 videoPresenter->onPresented(videoToken, videoDone);
+            }
+            if (liveSlot >= 0 && fLive) {
+                fLive->presented(liveSlot, videoDone);
             }
             fSwapchain->destroy();
             createSwapchain();
@@ -1438,8 +1549,11 @@ void OutputSession::frame(const FrameSnapshot& snapshot) {
     // submission (the transport's slot) is sampled again (task 6.6a), and
     // the producer waits for the lease to end
     // AND for every registered doneVk before writing the slot again.
-    if (videoDone != VK_NULL_HANDLE && videoPresenter) {
+    if (videoDone != VK_NULL_HANDLE && videoPresenter && liveSlot < 0) {
         videoPresenter->onPresented(videoToken, videoDone);
+    }
+    if (liveSlot >= 0 && fLive) {
+        fLive->presented(liveSlot, videoDone);
     }
 
     fNeedsPresent = false;
@@ -1570,6 +1684,19 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             presentNow = (decision.commandsDue && !deferred) || decision.destinationDue ||
                          fPreview.streamChangePending() ||
                          fNeedsPresent || fWindow->framebufferResized();
+            // ND.6: a live camera has no clock, no pts and no "next frame due"
+            // signal the way a video slot does — its frames simply appear in
+            // the helper's ring. The event-driven loop would otherwise present
+            // the scene-change frame and then sleep forever, so pump() would
+            // never run again and the audience would hold one stale frame.
+            // While a camera background is on air and its hub is alive (still
+            // starting, or streaming), keep presenting: vsync in the swapchain
+            // paces the loop, and pump() takes only the newest frame, so an
+            // idle camera costs one repaint per refresh and nothing more.
+            if (!presentNow && fLive != nullptr && fRenderScene &&
+                fRenderScene->background.isCamera) {
+                presentNow = true;
+            }
             // The revision this frame represents, captured in the same
             // critical section as the decision and therefore ahead of
             // every apply the frame performs (see frame()'s header note).

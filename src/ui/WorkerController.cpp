@@ -600,6 +600,7 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         bool styleCapable = false;
         bool measureV2Capable = false;
         bool fontListCapable = false;
+        bool liveCapable = false;
         bool transitionOptionsCapable = false;
         if (payload.contains("capabilities") && payload.at("capabilities").is_array()) {
             for (const auto& capability : payload.at("capabilities").as_array()) {
@@ -646,6 +647,8 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                     // would answer a styled ask with default-metric numbers
                     // and no way for anyone to tell.
                     measureV2Capable = true;
+                } else if (capability.as_string() == proto::kCapabilityLiveSources) {
+                    liveCapable = true;
                 } else if (capability.as_string() == proto::kCapabilityFontListV1) {
                     // The worker enumerates its own shaper's families
                     // (task TS.4): the picker gets its list from here and
@@ -670,6 +673,11 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         fFontListState = fontListCapable ? QStringLiteral("idle")
                                          : QStringLiteral("unsupported");
         emit fontListChanged();
+        if (fLiveCapable != liveCapable) {
+            fLiveCapable = liveCapable;
+            fLiveSources.clear();
+            emit liveChanged();
+        }
         // Both targets at once, before anything is asked of them: the hello
         // reply is the only place either answer changes, and the consumer's
         // gates are what stop a worker that dropped a capability from being
@@ -925,6 +933,32 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         return;
     }
 
+    if (pending.method == proto::kMethodLiveSources) {
+        fLiveSources.clear();
+        if (payload.contains("sources") && payload.at("sources").is_array()) {
+            for (const auto& source : payload.at("sources").as_array()) {
+                if (!source.is_object()) {
+                    continue;
+                }
+                const auto& entry = source.as_object();
+                QVariantMap row;
+                if (entry.contains("name") && entry.at("name").is_string()) {
+                    row.insert(QStringLiteral("name"),
+                               QString::fromStdString(std::string(entry.at("name").as_string())));
+                }
+                if (entry.contains("url") && entry.at("url").is_string()) {
+                    row.insert(QStringLiteral("url"),
+                               QString::fromStdString(std::string(entry.at("url").as_string())));
+                }
+                if (row.contains(QStringLiteral("name"))) {
+                    fLiveSources.append(row);
+                }
+            }
+        }
+        emit liveChanged();
+        return;
+    }
+
     if (pending.method == "output.status") {  // the poll answer
         if (!payload.contains("frames")) {
             return;
@@ -1045,6 +1079,16 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
     // Acks of layer.setEnabled, scene.present, output.select and shutdown
     // carry no display state of their own; the next status poll confirms
     // them. Their pending entries were already consumed above.
+}
+
+void WorkerController::refreshLiveSources(int waitMs) {
+    if (!fLiveCapable || !fConnected) {
+        fLiveSources.clear();
+        emit liveChanged();
+        return;
+    }
+    sendRequest(proto::kMethodLiveSources,
+                boost::json::object{{"waitMs", waitMs}});
 }
 
 void WorkerController::pollStatus() {

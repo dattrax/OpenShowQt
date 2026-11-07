@@ -343,12 +343,16 @@ Presented presentJson(int fd, std::int64_t& nextId, const QString& sceneJson) {
     boost::json::value reply;
     if (!call(fd, nextId++, "scene.prepare", parsed.as_object(), &reply) ||
         !reply.as_object().contains("result")) {
+        std::fprintf(stderr, "scene.prepare refused: %s\n",
+                     boost::json::serialize(reply).c_str());
         return {};
     }
     const std::uint64_t scene = numberValue(reply.at("result").as_object().at("revision"));
     if (!call(fd, nextId++, "scene.present",
               boost::json::object{{"revision", scene}, {"transition", "cut"}}, &reply) ||
         !reply.as_object().contains("result")) {
+        std::fprintf(stderr, "scene.present refused: %s\n",
+                     boost::json::serialize(reply).c_str());
         return {};
     }
     const Presented presented{scene,
@@ -700,7 +704,15 @@ int main(int argc, char* argv[]) {
         // it, and BOTH halves of the claim are sampled off the live stream:
         // the ramp while it stands, black where it stood once cleared.
         boost::json::value gradedValue = boost::json::parse(json1.toStdString());
-        gradedValue.as_object()["background"].as_object().emplace("gradient", 0xFF8000u);
+        // A gradient is a background authored on the slide, so the payload
+        // stops being transparent the moment it carries one (6.21e, and the
+        // transparency rule in scene 5: a transparent background cannot carry
+        // media or gradients). json1's theme leaves the slide transparent, so
+        // the graded copy has to say "opaque" itself.
+        // Assignment, not emplace: emplace leaves an existing key untouched,
+        // and json1 already carries "transparent": true.
+        gradedValue.as_object()["background"].as_object()["transparent"] = false;
+        gradedValue.as_object()["background"].as_object()["gradient"] = 0xFF8000u;
         const QString gradedJson = QString::fromStdString(boost::json::serialize(gradedValue));
         const Presented gradedGo = presentJson(fd, nextId, gradedJson);
         check(gradedGo.scene != 0, "the black-to-colour gradient is acknowledged on air");

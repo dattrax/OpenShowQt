@@ -1,6 +1,7 @@
 #include "fake_backend.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 
 namespace openshow::ndi {
@@ -189,6 +190,17 @@ void FakeBackend::run() {
                 emit({"source-lost", fSource, "the fake source stopped"});
                 fStreaming.store(false);
                 return;
+            }
+        }
+        if (fOptions.crashAfterMs > 0) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - start)
+                                     .count();
+            if (elapsed >= fOptions.crashAfterMs) {
+                // ND.8: an uncontrolled death. No close handshake, no
+                // source-lost event — the worker must see the closed pipe as
+                // a typed fault and keep its session running.
+                std::_Exit(1);
             }
         }
         paint(pixels, kFakeWidth, kFakeHeight, fOptions.staticFrames ? 0 : frame,

@@ -198,7 +198,7 @@ boost::json::object helloParams(std::string_view clientName, std::uint32_t major
 
 bool handleHello(const boost::json::value& params, std::string_view workerVersion,
                  boost::json::object* result, ErrorCode* code, std::string* message,
-                 boost::json::value* errorData) {
+                 boost::json::value* errorData, bool liveSources) {
     if (!params.is_object()) {
         *code = kInvalidParams;
         *message = "hello params must be an object";
@@ -233,13 +233,8 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
         return false;
     }
 
-    *result = boost::json::object{
-        {"application", "openshow-worker"},
-        {"version", std::string(workerVersion)},
-        {"protocol", boost::json::object{{"major", kProtocolMajor},
-                                         {"minor", kProtocolMinor}}},
-        {"capabilities",
-         boost::json::array{"output.status.v1", "output.layers.v1", "preview.shm.v1",
+    boost::json::array capabilities{
+         "output.status.v1", "output.layers.v1", "preview.shm.v1",
                             "preview.stream-id.v1", "preview.select.v1",
                             "preview.thumbnail.v1", "scene.store.v1", "shutdown.v1",
                             "media.error.v1", "media.audio-state.v1", "media.transport.v1",
@@ -273,7 +268,16 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                             // because the pixels did not do this yet; earning
                             // it means a peer may now send numbers it would
                             // otherwise have had to leave off the socket.
-                            kCapabilityTransitionOptions}}};
+                            kCapabilityTransitionOptions};
+    if (liveSources) {
+        capabilities.push_back(kCapabilityLiveSources);
+    }
+    *result = boost::json::object{
+        {"application", "openshow-worker"},
+        {"version", std::string(workerVersion)},
+        {"protocol", boost::json::object{{"major", kProtocolMajor},
+                                         {"minor", kProtocolMinor}}},
+        {"capabilities", std::move(capabilities)}};
     return true;
 }
 

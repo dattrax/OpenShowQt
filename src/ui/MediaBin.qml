@@ -45,7 +45,8 @@ FocusScope {
     property string selectedAssetId: ""
 
     readonly property var kindLabels: ({
-        picture: "Pictures", video: "Video", audio: "Audio", other: "Other"
+        picture: "Pictures", video: "Video", audio: "Audio",
+        camera: "Cameras", other: "Other"
     })
     // One row per kind the library actually holds, each with its count, and
     // "All media" first: it is the view the operator widens back out to, and
@@ -53,13 +54,13 @@ FocusScope {
     // honour — every one is a filter over rows whose type the product already
     // knows — and a kind with no assets is absent rather than a dead click.
     readonly property var collections: {
-        const counts = ({picture: 0, video: 0, audio: 0, other: 0})
+        const counts = ({picture: 0, video: 0, audio: 0, camera: 0, other: 0})
         for (const asset of docs.assets) {
             if (counts[asset.kind] === undefined) counts[asset.kind] = 0
             counts[asset.kind]++
         }
         const list = [{kind: "", label: "All media", count: docs.assets.length}]
-        for (const kind of ["picture", "video", "audio", "other"]) {
+        for (const kind of ["picture", "video", "audio", "camera", "other"]) {
             if (counts[kind] > 0) {
                 list.push({kind: kind, label: mediaBin.kindLabels[kind],
                            count: counts[kind]})
@@ -96,6 +97,7 @@ FocusScope {
         // and the reason below is the one that stops an operator trying.
         if (!present && kind !== "other") return "file is not here"
         if (kind === "video") return "background only \u2014 set it in Edit"
+        if (kind === "camera") return "live NDI \u2014 set it as a background in Edit"
         if (kind === "other") return "nothing presents this file type"
         if (kind === "audio" && refused) return "cannot play"
         return ""
@@ -109,6 +111,8 @@ FocusScope {
             return worker.standaloneOnAir && row.sourcePath === worker.standalonePath
         if (row.kind === "video")
             return worker.mediaOnAir && row.sourcePath === worker.mediaPath
+        if (row.kind === "camera")
+            return worker.mediaOnAir && row.cameraSource === worker.mediaPath
         return false
     }
     function isRefused(row) {
@@ -155,6 +159,11 @@ FocusScope {
             return mediaBin.selectedLive
                    ? "on air as this slide\u2019s background"
                    : "a video goes to output as a slide\u2019s background \u2014 set it in Edit"
+        }
+        if (row.kind === "camera") {
+            return mediaBin.selectedLive
+                   ? "live on air as this slide\u2019s background"
+                   : "live NDI source \u2014 set it as a background in Edit"
         }
         if (row.kind === "other") return "nothing presents this file type"
         // An audio cue, off air: what is standing between this row and sound.
@@ -606,6 +615,87 @@ FocusScope {
             // reference's available height.
             panels.resizeDrawer(mediaBin.parent.height - y - pressOffset,
                                 mediaBin.parent.height - 64 - 300)
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // ND.7: right-click the bin to add a discovered NDI camera. The action
+    // is present only when the worker's hello named live.sources.v1 — a
+    // worker without the helper has nothing to offer and says no by absence.
+    // ---------------------------------------------------------------------
+    Menu {
+        id: mediaContextMenu
+        objectName: "mediaContextMenu"
+
+        MenuItem {
+            objectName: "mediaAddNdiAction"
+            text: "Add NDI source\u2026"
+            visible: worker.liveCapable
+            enabled: worker.liveCapable
+            onTriggered: {
+                worker.refreshLiveSources()
+                ndiSourceDialog.open()
+            }
+        }
+        MenuItem {
+            objectName: "mediaContextImportAction"
+            text: "Import\u2026"
+            onTriggered: mediaDialog.open()
+        }
+    }
+
+    Dialog {
+        id: ndiSourceDialog
+        objectName: "ndiSourceDialog"
+        title: "Add NDI source"
+        modal: true
+        width: 460
+        height: 360
+
+        contentItem: Column {
+            spacing: 8
+            Text {
+                width: parent.width
+                color: "#b0b0b0"
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+                text: !worker.liveCapable
+                      ? "NDI is not available in this worker."
+                      : (worker.liveSources.length === 0
+                         ? "Searching the network\u2026"
+                         : "Choose a camera. It becomes a Media Bin asset; set it as a slide background in Edit.")
+            }
+            ListView {
+                objectName: "ndiSourceList"
+                width: parent.width
+                height: 240
+                clip: true
+                model: worker.liveSources
+                delegate: ItemDelegate {
+                    width: ListView.view.width
+                    text: modelData.name
+                    onClicked: {
+                        if (docs.addCameraAsset(modelData.name, modelData.name)) {
+                            ndiSourceDialog.close()
+                        }
+                    }
+                }
+            }
+            Button {
+                text: "Close"
+                onClicked: ndiSourceDialog.close()
+            }
+        }
+    }
+
+    // Right-click anywhere on the bin. A handler, not a covering MouseArea:
+    // it takes only the secondary button and leaves every left click, hover
+    // and wheel event to the controls underneath.
+    TapHandler {
+        acceptedButtons: Qt.RightButton
+        onTapped: {
+            worker.refreshLiveSources()
+            mediaContextMenu.popup()
         }
     }
 }

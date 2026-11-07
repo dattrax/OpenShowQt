@@ -1650,6 +1650,28 @@ Id Documents::addAsset(const std::string& name, const std::string& sourcePath,
     return fAssets.back().id;
 }
 
+Id Documents::addCameraAsset(const std::string& name, const std::string& source,
+                             std::string* error) {
+    const std::string clean = trimmed(name);
+    if (clean.empty()) {
+        fail(error, "a camera needs a name");
+        return {};
+    }
+    if (source.empty()) {
+        fail(error, "camera '" + clean + "' has no NDI source name");
+        return {};
+    }
+    Asset asset;
+    asset.id = nextId("asset");
+    asset.name = clean;
+    asset.cameraSource = source;
+    // The marker is what a path-shaped consumer (status, logs, the bin's
+    // display) sees; the worker resolves cameraSource, never this string.
+    asset.sourcePath = "ndi://" + source;
+    fAssets.push_back(std::move(asset));
+    return fAssets.back().id;
+}
+
 bool Documents::removeAsset(const Id& assetId, std::string* error) {
     const auto found = std::find_if(fAssets.begin(), fAssets.end(),
                                     [&](const Asset& a) { return a.id == assetId; });

@@ -223,6 +223,11 @@ inline constexpr const char* kCapabilityFontListV1 = "font.list.v1";
 // deviating duration on the wire (PresentationModel::Outbound::honoursDurations),
 // which is how a 0.17 worker keeps receiving the legacy-shaped present.
 inline constexpr const char* kCapabilityTransitionOptions = "scene.transition-options.v1";
+// ND.7: the worker can ask a separate helper for NDI sources. The capability
+// is advertised only when the helper answered a startup probe, so the
+// frontend's "Add NDI source..." action is absent on a worker without NDI.
+inline constexpr const char* kCapabilityLiveSources = "live.sources.v1";
+inline constexpr const char* kMethodLiveSources = "live.sources";
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without
@@ -574,6 +579,6 @@ boost::json::object helloParams(std::string_view clientName, std::uint32_t major
 // version pairs.
 bool handleHello(const boost::json::value& params, std::string_view workerVersion,
                  boost::json::object* result, ErrorCode* code, std::string* message,
-                 boost::json::value* errorData = nullptr);
+                 boost::json::value* errorData = nullptr, bool liveSources = false);
 
 }  // namespace openshow::protocol

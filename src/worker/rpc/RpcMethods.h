@@ -32,11 +32,14 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "openshow/protocol/protocol.h"
+
+#include "live/helper_backend.h"
 
 #include "session/OutputSession.h"
 
@@ -84,6 +87,9 @@ public:
 private:
     OutputSession& fSession;
     DeferredSink fDefer;
+    // Started lazily by live.sources; the startup probe already told the
+    // hello whether this worker may offer it at all.
+    std::unique_ptr<openshow::live::HelperBackend> fLive;
 };
 
 }  // namespace openshow::worker

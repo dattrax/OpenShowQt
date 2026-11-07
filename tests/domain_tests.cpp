@@ -347,6 +347,7 @@ void exerciseImageItems() {
     check(std::string(assetKindName(AssetKind::Picture)) == "picture"
               && std::string(assetKindName(AssetKind::Video)) == "video"
               && std::string(assetKindName(AssetKind::Audio)) == "audio"
+              && std::string(assetKindName(AssetKind::Camera)) == "camera"
               && std::string(assetKindName(AssetKind::Other)) == "other",
           "a kind names itself with one lower-case word");
     {
@@ -806,6 +807,7 @@ void buildSampleService(Documents* docs, const fs::path& assetSource) {
     const Id loud = docs->createTheme("Loud", "#ffff00", "#000000", "", "Impact", 96.0, "center",
                                       kDefaultLineSpacing);
     const Id asset = docs->addAsset("stage loop.jpg", assetSource.string());
+    const Id camera = docs->addCameraAsset("Stage camera", "STAGE (Camera 1)");
 
     const Id order = docs->createShow("Service Order");
     docs->setShowDefaultTheme(order, house);
@@ -822,6 +824,7 @@ void buildSampleService(Documents* docs, const fs::path& assetSource) {
     docs->setSlideGroup(order, chorus2, "Chorus");
     docs->setSlideNotes(order, chorus1, "repeat ad lib");
     docs->setSlideBackground(order, chorus1, asset);
+    docs->setSlideBackground(order, chorus2, camera);
 
     const Id hymn = docs->createShow("Hymn");
     const Id verse = docs->appendSlide(hymn);
@@ -886,6 +889,17 @@ bool sameService(const Documents& a, const Documents& b) {
                     return false;
                 }
             }
+        }
+    }
+    for (const Id& assetId : a.assetIds()) {
+        const Asset* xa = a.findAsset(assetId);
+        const Asset* xb = b.findAsset(assetId);
+        // sourcePath intentionally differs for a packaged file (load
+        // rewrites it); the identity that must round-trip is name + camera
+        // source. A camera has no bytes and keeps its source verbatim.
+        if (xa == nullptr || xb == nullptr || xa->name != xb->name ||
+            xa->cameraSource != xb->cameraSource) {
+            return false;
         }
     }
     for (const Id& themeId : a.themeIds()) {
@@ -991,6 +1005,26 @@ void exercisePersistence(const fs::path& tempRoot) {
     check(reloadedAsset != nullptr && readFile(reloadedAsset->sourcePath) ==
               "PNGBYTES-not-really-a-jpeg",
           "the loaded asset's sourcePath points at the packaged file");
+    // A camera asset owns no bytes: the manifest carries the source, the
+    // package carries no file, and loadRestores the exact NDI name.
+    const Id camera = source.assetIds().back();
+    const Asset* reloadedCamera = reloaded.findAsset(camera);
+    check(reloadedCamera != nullptr &&
+              reloadedCamera->cameraSource == "STAGE (Camera 1)" &&
+              reloadedCamera->sourcePath == "ndi://STAGE (Camera 1)",
+          "a camera asset round-trips its NDI source");
+    check(readFile(package / "service.json").find("\"kind\":\"camera\"") !=
+                  std::string::npos &&
+              readFile(package / "service.json").find("STAGE (Camera 1)") !=
+                  std::string::npos,
+          "the manifest stores a camera kind and source");
+    bool cameraFile = false;
+    for (const auto& entry : fs::directory_iterator(package / "assets")) {
+        if (entry.path().filename().string().rfind(camera + "-", 0) == 0) {
+            cameraFile = true;
+        }
+    }
+    check(!cameraFile, "a camera asset copies no file into the package");
 
     // --- re-save stability: the manifest is byte-identical, and a
     // reloaded service re-saves identically too ---

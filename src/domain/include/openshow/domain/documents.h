@@ -106,7 +106,7 @@ inline bool backgroundFitFromName(const std::string& name, BackgroundFit* fit) {
 // with the show controls), and Other is the honest answer for a name nothing
 // claims — the bin shows that as unsupported instead of hiding the row, which
 // is the only way an operator can find out the file is the wrong thing.
-enum class AssetKind { Picture, Video, Audio, Other };
+enum class AssetKind { Picture, Video, Audio, Camera, Other };
 
 // The three lists the kind rule claims, in the order the kind asks them,
 // null-terminated so a caller can walk them. The media import dialog builds
@@ -172,6 +172,8 @@ inline const char* assetKindName(AssetKind kind) {
             return "video";
         case AssetKind::Audio:
             return "audio";
+        case AssetKind::Camera:
+            return "camera";
         case AssetKind::Other:
             break;
     }
@@ -762,8 +764,22 @@ struct ResolvedAppearance {
 struct Asset {
     Id id;
     std::string name;       // display/filename, e.g. "stage-loop.jpg"
-    std::string sourcePath; // current location of the file's bytes
+    std::string sourcePath; // current location of the file's bytes, or
+                            // "ndi://<source>" for a camera asset
+    // Non-empty makes this a camera asset: the exact NDI source name the
+    // worker opens. No bytes are ever owned or copied for it, which is why
+    // the package stores the source instead of a file.
+    std::string cameraSource;
 };
+
+// What an asset IS. A camera is named by cameraSource, not by a file
+// extension, so every caller that used assetPathKind(sourcePath) asks this
+// instead once assets can be cameras.
+inline AssetKind assetKind(const Asset& asset) {
+    return asset.cameraSource.empty() ? assetPathKind(asset.sourcePath) : AssetKind::Camera;
+}
+
+inline const char* assetKindName(const Asset& asset) { return assetKindName(assetKind(asset)); }
 
 // One asset's bytes now live at `to` rather than `from`: what a save
 // that adopts reports (task 6.12, review R7). Everyone still holding the
@@ -1095,6 +1111,11 @@ public:
     // Returns the new asset's Id, or "" on failure.
     Id addAsset(const std::string& name, const std::string& sourcePath,
                 std::string* error = nullptr);
+    // Records a live NDI source as a camera asset. It owns no bytes; the
+    // source name is stored exactly as discovery reported it. Returns the
+    // new asset's Id, or "" on failure.
+    Id addCameraAsset(const std::string& name, const std::string& source,
+                      std::string* error = nullptr);
     // Drops the asset and clears every slide's background reference.
     bool removeAsset(const Id& assetId, std::string* error = nullptr);
     // Points a slide's background at an asset; "" means no background.

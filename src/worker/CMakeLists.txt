@@ -57,6 +57,23 @@ if(OPENSHOW_LIBRT)
   target_link_libraries(openshow-worker-live PUBLIC ${OPENSHOW_LIBRT})
 endif()
 
+# The live source's presentation half (ND.6): the helper receiver's newest
+# UYVY frame, the NV12 conversion and the GPU uploader the FFmpeg video path
+# already uses. A library so the live path can be driven headlessly; it needs
+# the GPU uploader, which is why it is separate from worker_live's protocol
+# and ring tests.
+add_library(openshow-worker-live-render STATIC
+  live/live_source_hub.cpp
+)
+add_library(openshow::worker_live_render ALIAS openshow-worker-live-render)
+target_link_libraries(openshow-worker-live-render PUBLIC
+  openshow::worker_live
+  openshow::worker_gpu
+)
+target_include_directories(openshow-worker-live-render PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
 # The output's scene truth (task 6.18a, review R1/R4/R5/R10/R13): the bounded
 # prepared store with the ids it mints, the output revision, and the desired /
 # landed / published halves of what the audience sees. A library so those rules
@@ -215,6 +232,7 @@ set(OPENSHOW_WORKER_LIBS
   openshow::skia
   openshow::worker_gpu
   openshow::worker_live
+  openshow::worker_live_render
   openshow::worker_media
   openshow::worker_playback
   openshow::worker_preview

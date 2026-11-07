@@ -273,6 +273,10 @@ machine cannot affect these tests and tests cannot open the operator's camera:
 - `--fake-static` freezes the pattern for screenshot/snapshot tests.
 - `--fake-lose-source-ms N` emits `source-lost` after N ms, which covers the
   event path deterministically instead of asking someone to unplug a camera.
+- `--fake-crash-ms N` exits the helper process after N ms with no close
+  handshake. The worker sees EOF on the helper's output, turns it into a
+  one-shot `helper-exit` fault, and keeps the session running — the
+  deterministic "helper crashed" path ND.8 needs.
 
 `HelperBackend` resolves `OPENSHOW_NDI_HELPER` before `ndi-helper` on `PATH`,
 so ND.7 tests point the worker at the test helper binary and never at the real

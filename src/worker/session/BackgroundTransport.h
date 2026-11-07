@@ -291,6 +291,13 @@ public:
     // reports through it (a file the probe cannot read is NAMED before the
     // audience ever sees the colour fill).
     void mediaFailed(MediaFault fault, const std::string& path, const std::string& message);
+    // A live camera that could not open: on air is false, the source is
+    // still named, and the reason is the sticky media.error (ND.6).
+    void mediaCameraFailed(const std::string& source, const std::string& message);
+    // A live camera whose first frame has been uploaded: only then is the
+    // audience actually watching it. Called from the render thread each time
+    // a frame is drawn, and idempotent while the same source stays on air.
+    void mediaCameraPlaying(const std::string& source);
     // Clears the sticky error when (and only when) it is this class of
     // fault for this asset: the honest shape of "recovered".
     void mediaFaultCleared(MediaFault fault, const std::string& path);

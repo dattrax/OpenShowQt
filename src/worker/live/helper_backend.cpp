@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 #include <thread>
 
 #include <fcntl.h>
@@ -156,7 +157,18 @@ std::string replyError(const boost::json::object& object, const std::string& fal
 
 }  // namespace
 
-HelperBackend::HelperBackend(HelperOptions options) : fOptions(std::move(options)) {}
+HelperBackend::HelperBackend(HelperOptions options) : fOptions(std::move(options)) {
+    // A deployment/test override for the helper's own arguments. Production
+    // leaves it unset and the helper's defaults apply; the camera-free tests
+    // point it at the fake backend with "--fake".
+    if (const char* extra = std::getenv("OPENSHOW_NDI_HELPER_ARGS"); extra && *extra) {
+        std::istringstream stream(extra);
+        std::string argument;
+        while (stream >> argument) {
+            fOptions.arguments.push_back(std::move(argument));
+        }
+    }
+}
 
 HelperBackend::~HelperBackend() { stop(); }
 
@@ -246,6 +258,9 @@ bool HelperBackend::ensureStarted(std::string* error) {
     fEvents.clear();
     fProbed = false;
     fNdiVersion.clear();
+    // A fresh process has not exited yet; a reused backend must forget the
+    // previous crash so the next pipe close is reported as a new fault.
+    fExitReported = false;
 
     std::string reply;
     std::string probeError;
@@ -413,17 +428,43 @@ void HelperBackend::pollEvents() {
         return;
     }
     char buffer[4096];
+    bool pipeClosed = false;
     for (;;) {
         struct pollfd descriptor = {fReadFd, POLLIN, 0};
         const int ready = ::poll(&descriptor, 1, 0);
-        if (ready <= 0) {
+        if (ready < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            // A failed poll on the helper's output pipe is the pipe telling
+            // us the process is gone.
+            pipeClosed = true;
+            break;
+        }
+        if (ready == 0) {
             break;
         }
         const ssize_t got = ::read(fReadFd, buffer, sizeof buffer);
+        if (got < 0 && errno == EINTR) {
+            continue;
+        }
         if (got <= 0) {
+            // ND.8: EOF or a read error is a typed fault, not "no new frame
+            // yet". A crashed helper closes the pipe without a close
+            // handshake, and the worker must say so rather than keep
+            // presenting its last frame as if nothing happened.
+            pipeClosed = true;
             break;
         }
         fReadBuffer.append(buffer, static_cast<std::size_t>(got));
+    }
+    if (pipeClosed && !fExitReported) {
+        Event event;
+        event.kind = "helper-exit";
+        event.message = "the NDI helper closed its output";
+        fEvents.push_back(std::move(event));
+        fOpenValid = false;
+        fExitReported = true;
     }
     std::size_t newline = fReadBuffer.find('\n');
     while (newline != std::string::npos) {
@@ -621,8 +662,11 @@ bool HelperBackend::takeEvent(Event* out) {
     Event event = std::move(fEvents.front());
     fEvents.pop_front();
     // A lost or broken receiver is no longer streaming, even though the helper
-    // process and its last ring mapping remain until close().
-    if (event.kind == "source-lost" || event.kind == "receiver-error") {
+    // process and its last ring mapping remain until close(). A helper that
+    // closed its output pipe has EXITED: its ring is gone with it, so this is
+    // the same no-longer-streaming state plus a reason the consumer can report.
+    if (event.kind == "source-lost" || event.kind == "receiver-error" ||
+        event.kind == "helper-exit") {
         fOpenValid = false;
     }
     if (out) {

@@ -386,6 +386,28 @@ void testHello() {
                 });
             check(hasThumbnails, "capabilities name preview.thumbnail.v1");
         }
+        {  // ND.7: the helper probe is what earns live.sources.v1. A worker
+            // without it omits the name, and the Media Bin hides the action.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasLive = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == proto::kCapabilityLiveSources;
+                });
+            check(!hasLive, "a worker without the helper omits live.sources.v1");
+            boost::json::object liveResult;
+            proto::ErrorCode liveCode = proto::kInternalError;
+            std::string liveMessage;
+            boost::json::value liveData;
+            check(proto::handleHello(proto::helloParams("openshow-ui", 0, 0), "0.1.0",
+                                     &liveResult, &liveCode, &liveMessage, &liveData, true),
+                  "hello with a probed helper succeeds");
+            const auto& liveCaps = liveResult.at("capabilities").as_array();
+            const bool hasLiveName = std::any_of(
+                liveCaps.begin(), liveCaps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == proto::kCapabilityLiveSources;
+                });
+            check(hasLiveName, "a probed helper advertises live.sources.v1");
+        }
     }
 
     // Major mismatch: structured refusal with both versions.

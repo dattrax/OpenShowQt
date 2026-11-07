@@ -1126,9 +1126,16 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
         boost::json::object entry;
         entry.emplace("id", asset.id);
         entry.emplace("name", asset.name);
-        // Package-relative, always: the loaded sourcePath never leaks
-        // into the file, which is what makes re-saves byte-stable.
-        entry.emplace("file", std::string(kAssetsDir) + "/" + assetFileName(asset));
+        if (!asset.cameraSource.empty()) {
+            // A camera owns no bytes: the manifest carries the NDI source
+            // name and no "file", so a package never pretends to hold it.
+            entry.emplace("kind", "camera");
+            entry.emplace("source", asset.cameraSource);
+        } else {
+            // Package-relative, always: the loaded sourcePath never leaks
+            // into the file, which is what makes re-saves byte-stable.
+            entry.emplace("file", std::string(kAssetsDir) + "/" + assetFileName(asset));
+        }
         assets.push_back(std::move(entry));
     }
     root.emplace("assets", std::move(assets));
@@ -2050,18 +2057,39 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         }
         const boost::json::object& jsonAsset = element.as_object();
         Asset asset;
-        std::string file;
         if (!wantString(jsonAsset, "id", &asset.id, error) || !claimId(asset.id, "asset") ||
-            !wantString(jsonAsset, "name", &asset.name, error) ||
-            !wantString(jsonAsset, "file", &file, error) || file.empty()) {
-            if (error != nullptr && error->empty()) {
-                fail(error, "service.json: an asset has no file");
-            }
+            !wantString(jsonAsset, "name", &asset.name, error)) {
             return false;
         }
-        // During validation sourcePath carries the package-relative
-        // path; loadService() rewrites it to a usable location last.
-        asset.sourcePath = file;
+        std::string kind;
+        if (jsonAsset.contains("kind") && !wantString(jsonAsset, "kind", &kind, error)) {
+            return false;
+        }
+        if (kind == "camera") {
+            std::string source;
+            if (!wantString(jsonAsset, "source", &source, error) || source.empty()) {
+                fail(error, "service.json: camera asset '" + asset.name +
+                                "' has no source");
+                return false;
+            }
+            asset.cameraSource = source;
+            asset.sourcePath = "ndi://" + source;
+        } else if (kind.empty() || kind == "file") {
+            std::string file;
+            if (!wantString(jsonAsset, "file", &file, error) || file.empty()) {
+                if (error != nullptr && error->empty()) {
+                    fail(error, "service.json: an asset has no file");
+                }
+                return false;
+            }
+            // During validation sourcePath carries the package-relative
+            // path; loadService() rewrites it to a usable location last.
+            asset.sourcePath = file;
+        } else {
+            fail(error, "service.json: asset '" + asset.name + "' has unknown kind '" +
+                            kind + "'");
+            return false;
+        }
         assetIds.insert(asset.id);
         assets.push_back(std::move(asset));
     }
@@ -2207,6 +2235,9 @@ bool ServiceCodec::save(const Documents& documents, const std::filesystem::path&
         }
     }
     for (const Asset& asset : documents.fAssets) {
+        if (!asset.cameraSource.empty()) {
+            continue;  // a camera owns no bytes to copy into the package
+        }
         const std::filesystem::path source =
             std::filesystem::path(asset.sourcePath).lexically_normal();
         const std::filesystem::path destination =
@@ -2393,6 +2424,9 @@ bool ServiceCodec::load(Documents* documents, const std::filesystem::path& direc
         return false;
     }
     for (Asset& asset : loaded.fAssets) {
+        if (!asset.cameraSource.empty()) {
+            continue;  // no file in the package to contain-check
+        }
         const std::filesystem::path recorded(asset.sourcePath);
         if (recorded.is_absolute()) {
             fail(error, "service.json: asset '" + asset.name + "' names an absolute file '" +
@@ -2469,6 +2503,9 @@ bool saveServiceAndAdopt(Documents& documents, const std::filesystem::path& dire
     std::vector<AssetRebind> moved;
     for (const Id& id : documents.assetIds()) {
         const Asset* asset = documents.findAsset(id);
+        if (asset == nullptr || !asset->cameraSource.empty()) {
+            continue;  // a camera is never adopted to package bytes
+        }
         const std::filesystem::path packaged =
             (directory / kAssetsDir / assetFileName(*asset)).lexically_normal();
         std::error_code ec;

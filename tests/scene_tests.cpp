@@ -53,8 +53,10 @@ struct Fixture {
     Id unstyled;    // slide with no theme anywhere
     Id backed;      // slide with the asset as background
     Id videoBacked;  // slide with the video asset as background (task 5.5)
+    Id cameraBacked; // slide with the live camera asset as background (ND.5)
     Id asset;
     Id videoAsset;
+    Id cameraAsset;
 };
 
 Fixture buildFixture() {
@@ -67,6 +69,7 @@ Fixture buildFixture() {
     fx.asset = fx.docs.addAsset("stage loop.jpg", "/services/svc/assets/asset-loop.jpg");
     fx.videoAsset =
         fx.docs.addAsset("Stage Loop.MP4", "/services/svc/assets/asset-loop.mp4");
+    fx.cameraAsset = fx.docs.addCameraAsset("Stage Camera", "STAGE (Camera 1)");
 
     const Id show = fx.docs.createShow("Order");
     fx.docs.setShowDefaultTheme(show, house);
@@ -80,6 +83,9 @@ Fixture buildFixture() {
     fx.videoBacked = fx.docs.appendSlide(show);
     fx.docs.setSlideBackground(show, fx.videoBacked, fx.videoAsset);
     fx.docs.setSlideLines(show, fx.videoBacked, {"Video stays"});
+    fx.cameraBacked = fx.docs.appendSlide(show);
+    fx.docs.setSlideBackground(show, fx.cameraBacked, fx.cameraAsset);
+    fx.docs.setSlideLines(show, fx.cameraBacked, {"Camera stays"});
     fx.docs.setSlideLines(show, fx.defaulted, {"Come, all people", "", "Sing"});
 
     // The unstyled slide lives in a show without a default theme.
@@ -154,6 +160,27 @@ void exerciseCompile(const Fixture& fx) {
               out.background.assetId == fx.videoAsset &&
               out.background.assetPath == "/services/svc/assets/asset-loop.mp4",
           "a video-extension asset compiles as a playing background");
+    // ND.5: a camera background names its NDI source, is never a file and
+    // never a video, and carries the same fit rules as playing media.
+    check(scene::compileSlide(fx.docs, fx.show, fx.cameraBacked, &out, &error),
+          "a camera-backed slide compiles");
+    check(out.background.hasImage && out.background.isCamera &&
+              !out.background.isVideo && out.background.assetId == fx.cameraAsset &&
+              out.background.cameraSource == "STAGE (Camera 1)" &&
+              out.background.assetPath == "STAGE (Camera 1)",
+          "a camera asset compiles to the live source, not a file or a video");
+    {
+        Documents cameraDocs = fx.docs;
+        check(cameraDocs.setSlideBackgroundFit(fx.show, fx.cameraBacked,
+                                               openshow::domain::BackgroundFit::Blur,
+                                               &error),
+              "the camera slide can be asked for blur");
+        error.clear();
+        scene::Scene keeper;
+        check(!scene::compileSlide(cameraDocs, fx.show, fx.cameraBacked, &keeper, &error) &&
+                  error.find("blur") != std::string::npos,
+              "a camera background refuses blur");
+    }
     check(scene::assetPathIsVideo("a/b/movie.MKV") && scene::assetPathIsVideo("loop.webm") &&
               !scene::assetPathIsVideo("stage.jpg") && !scene::assetPathIsVideo("note") &&
               !scene::assetPathIsVideo("trailing.") && !scene::assetPathIsVideo(""),
@@ -390,6 +417,27 @@ void exerciseWireRoundTrip(const Fixture& fx) {
           "a video background survives the JSON round-trip intact");
     check(boost::json::serialize(scene::toJson(videoBack)) == videoText,
           "the video background re-serialises byte-equal");
+    // ND.5: the camera source crosses the wire, stays byte-stable, and is
+    // refused when it also claims to be a video.
+    scene::Scene cameraScene;
+    check(scene::compileSlide(fx.docs, fx.show, fx.cameraBacked, &cameraScene, &error) &&
+              cameraScene.background.isCamera,
+          "compile the camera-backed slide for the wire");
+    const std::string cameraText = boost::json::serialize(scene::toJson(cameraScene));
+    scene::Scene cameraBack;
+    check(scene::fromJson(boost::json::parse(cameraText), &cameraBack, &error) &&
+              cameraBack == cameraScene,
+          "a camera background survives the JSON round-trip intact");
+    check(boost::json::serialize(scene::toJson(cameraBack)) == cameraText,
+          "the camera background re-serialises byte-equal");
+    {
+        boost::json::object obj = scene::toJson(cameraScene).as_object();
+        obj["background"].as_object()["video"] = true;
+        scene::Scene refused;
+        check(!scene::fromJson(boost::json::parse(boost::json::serialize(obj)), &refused,
+                              &error),
+              "a camera that also claims to be a video is refused");
+    }
     {  // Scene 1 payloads that predate the kind read as stills.
         boost::json::object obj = scene::toJson(videoScene).as_object();
         obj["background"].as_object().erase("video");

@@ -498,7 +498,7 @@ bool RpcServer::handle(const boost::json::value& message, bool handshakeDone,
         std::string helloText;
         boost::json::value data;
         if (proto::handleHello(given, fOptions.workerVersion, &result, &helloCode, &helloText,
-                               &data)) {
+                               &data, fOptions.liveSources)) {
             *handshakeNow = true;
             proto::appendFrame(proto::makeResult(id, result), outbound);
         } else {

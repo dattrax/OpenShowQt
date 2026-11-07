@@ -61,6 +61,7 @@
 #include "output/OutputWindow.h"
 #include "output/Swapchain.h"
 #include "output/VulkanContext.h"
+#include "live/live_source_hub.h"
 #include "playback/VideoSeam.h"
 #include "render/Layer.h"
 #include "render/SceneRenderer.h"
@@ -601,6 +602,9 @@ private:
     void applyPendingLayerChanges(const FrameSnapshot& snapshot);
     void applyPendingDisplayChange(const FrameSnapshot& snapshot);
     bool applyPendingSceneChange(const FrameSnapshot& snapshot);
+    // Start/stop the live camera hub for the scene's multimedia layer (ND.6).
+    // The camera is never a PlaybackPipeline: newest wins, no clock or audio.
+    void applyLiveBackground(const openshow::scene::Background& wanted);
     uint64_t fDeferredSceneRevision = 0;  // render thread; suppress only this blocked command
     uint64_t fLandedFrameRevision = 0;    // complete commands actually staged for drawing
     // Transaction backup while media has switched but no frame has committed.
@@ -736,6 +740,16 @@ private:
     // pipeline's device objects are released before the context they live
     // on — the same rule that ordered it inside the session before.
     BackgroundTransport fTransport;
+
+    // The live camera (ND.6), started only while the on-air background names
+    // one. Declared after the transport so its uploader and helper are torn
+    // down before the transport's device objects.
+    // Shared, not unique: a hub's start runs on its own thread and keeps a
+    // reference to itself, so a source cancelled mid-open finishes and cleans
+    // itself up rather than leaving the render thread blocked in join().
+    std::string fLiveSource;
+    std::string fLiveErrorReportedFor;
+    std::shared_ptr<openshow::live::LiveSourceHub> fLive;
 };
 
 }  // namespace openshow::worker
