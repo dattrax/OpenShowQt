@@ -431,6 +431,20 @@ FocusScope {
                     text: "Import\u2026"
                     onClicked: mediaDialog.open()
                 }
+                // ND.7: the same action as the bin's right-click menu, made
+                // visible because a hidden context menu is easy to miss. The
+                // capability is the worker's: a build without the NDI helper
+                // has nothing to offer and shows no button.
+                PanelButton {
+                    objectName: "mediaAddNdiButton"
+                    visible: worker.liveCapable
+                    text: "Add NDI\u2026"
+                    Accessible.name: "Add an NDI camera source"
+                    onClicked: {
+                        worker.refreshLiveSources()
+                        ndiSourceDialog.open()
+                    }
+                }
                 PanelButton {
                     objectName: "mediaRemoveButton"
                     visible: mediaBin.editingEnabled

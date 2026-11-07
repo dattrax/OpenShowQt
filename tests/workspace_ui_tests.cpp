@@ -1158,6 +1158,14 @@ int main(int argc, char** argv) {
             QMetaObject::invokeMethod(menuObject, "close");
             QTest::qWait(20);
         }
+        // The visible button mirrors the context-menu action and is gated by
+        // the same capability, so a build without the helper shows neither.
+        auto* addNdiButton = findNamed(mediaBin, "mediaAddNdiButton");
+        check(addNdiButton != nullptr, "the Media Bin offers a visible Add NDI button");
+        if (addNdiButton != nullptr) {
+            check(!addNdiButton->property("visible").toBool(),
+                  "the Add NDI button is hidden without a live-capable worker");
+        }
     }
 
     window->setProperty("page", "show");
