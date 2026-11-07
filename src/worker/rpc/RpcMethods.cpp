@@ -20,6 +20,8 @@
 #include "openshow/protocol/protocol.h"
 #include "openshow/scene/scene.h"
 
+#include "media/MediaProbe.h"
+
 #include "render/Layer.h"
 
 namespace openshow::worker {
@@ -644,6 +646,59 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
     } else if (name == "output.displays") {
         proto::appendFrame(
             proto::makeResult(id, displaysResult(fSession.displays())), outbound);
+    } else if (name == proto::kMethodMediaDescribe) {
+        // MB.6: what a file IS, from container headers only. The bin asks on
+        // selection and caches the answer; this never decodes a frame.
+        const boost::json::value* pathValue =
+            given.is_object() ? given.as_object().if_contains("path") : nullptr;
+        if (pathValue == nullptr || !pathValue->is_string()) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "media.describe requires a string \"path\""),
+                outbound);
+            return;
+        }
+        const std::string mediaPath(pathValue->as_string());
+        if (mediaPath.empty() || mediaPath.size() > 4096 ||
+            mediaPath.find('\0') != std::string::npos) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInvalidParams,
+                                 "media.describe: the path is empty or too long"),
+                outbound);
+            return;
+        }
+        openshow::media::MediaInfo info;
+        std::string probeError;
+        const openshow::media::ProbeStatus status =
+            openshow::media::probeMedia(mediaPath, &info, &probeError);
+        if (status != openshow::media::ProbeStatus::kOk) {
+            proto::appendFrame(
+                proto::makeError(id, proto::kInternalError,
+                                 "media.describe: " +
+                                     (probeError.empty()
+                                          ? std::string("the file could not be read")
+                                          : probeError)),
+                outbound);
+            return;
+        }
+        int width = 0;
+        int height = 0;
+        if (!info.videoStreams.empty()) {
+            width = info.videoStreams.front().width;
+            height = info.videoStreams.front().height;
+        }
+        proto::appendFrame(
+            proto::makeResult(
+                id, boost::json::object{
+                        {"path", mediaPath},
+                        {"durationMs",
+                         static_cast<std::int64_t>(info.durationSeconds * 1000.0 + 0.5)},
+                        {"width", width},
+                        {"height", height},
+                        {"video", !info.videoStreams.empty()},
+                        {"audio", !info.audioStreams.empty()},
+                        {"format", info.formatName}}),
+            outbound);
     } else if (name == proto::kMethodLiveSources) {
         std::uint32_t waitMs = 3000;
         if (given.is_object()) {

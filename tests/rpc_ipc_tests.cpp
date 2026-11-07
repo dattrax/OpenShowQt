@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -450,7 +451,7 @@ void testServedSession() {
         // shrinking is a wire change, and it should cost a looked-at line.
         // TR.2's scene.transition-options.v1 made this 21 — the real worker,
         // drawing the record's durations, now claims it for itself.
-        check(result.as_object().at("capabilities").as_array().size() == 21,
+        check(result.as_object().at("capabilities").as_array().size() == 22,
               "hello lists worker capabilities");
     }
 
@@ -1440,6 +1441,83 @@ void testLiveSources() {
     check(waitExit(pid, 5) == 0, "live-scenario worker exits cleanly");
 }
 
+void writeWav(const std::string& path) {
+    std::ofstream out(path, std::ios::binary);
+    auto u32 = [&out](std::uint32_t value) {
+        const char bytes[4] = {static_cast<char>(value & 0xFF),
+                               static_cast<char>((value >> 8) & 0xFF),
+                               static_cast<char>((value >> 16) & 0xFF),
+                               static_cast<char>((value >> 24) & 0xFF)};
+        out.write(bytes, 4);
+    };
+    auto u16 = [&out](std::uint16_t value) {
+        const char bytes[2] = {static_cast<char>(value & 0xFF),
+                               static_cast<char>((value >> 8) & 0xFF)};
+        out.write(bytes, 2);
+    };
+    const std::uint32_t rate = 8000;
+    const std::uint16_t channels = 1;
+    const std::uint32_t frames = 8000;  // one second of 8-bit mono
+    out.write("RIFF", 4);
+    u32(36 + frames * channels);
+    out.write("WAVE", 4);
+    out.write("fmt ", 4);
+    u32(16);
+    u16(1);
+    u16(channels);
+    u32(rate);
+    u32(rate * channels);
+    u16(channels);
+    u16(8);
+    out.write("data", 4);
+    u32(frames * channels);
+    for (std::uint32_t i = 0; i < frames * channels; ++i) {
+        out.put(static_cast<char>(128));
+    }
+}
+
+void testMediaDescribe() {
+    const std::string path = socketPath("media-describe");
+    const pid_t pid = spawnWorker(path);
+    if (!check(pid > 0, "media-describe worker spawned")) {
+        return;
+    }
+    const int fd = connectRetry(path);
+    if (!check(fd >= 0, "connected for media.describe")) {
+        killWorker(pid);
+        return;
+    }
+    boost::json::value reply;
+    if (!check(call(fd, 1, "hello", proto::helloParams("ipc-test", 0, 1), &reply),
+               "hello succeeded (media.describe)")) {
+        close(fd);
+        killWorker(pid);
+        return;
+    }
+
+    const std::string wav =
+        "/tmp/openshow-media-" + std::to_string(static_cast<long>(getpid())) + ".wav";
+    writeWav(wav);
+    if (check(call(fd, 2, proto::kMethodMediaDescribe,
+                   boost::json::object{{"path", wav}}, &reply) &&
+                  reply.as_object().contains("result"),
+              "media.describe answers for a WAV")) {
+        const auto& result = reply.at("result").as_object();
+        const double duration = result.at("durationMs").to_number<double>();
+        check(result.at("audio").as_bool() && !result.at("video").as_bool() &&
+                  duration > 900.0 && duration < 1100.0,
+              "media.describe reports a one-second audio file with no video");
+    }
+    check(call(fd, 3, proto::kMethodMediaDescribe,
+               boost::json::object{{"path", "/no/such/openshow-file"}}, &reply) &&
+              isErrorCode(reply, proto::kInternalError),
+          "a missing file is a typed refusal");
+    ::unlink(wav.c_str());
+    call(fd, 4, "shutdown", {}, &reply);
+    close(fd);
+    check(waitExit(pid, 5) == 0, "media-describe worker exits cleanly");
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) {
         gWorkerBinary = argv[1];
@@ -1452,6 +1530,7 @@ int main(int argc, char** argv) {
     testLiveScene();
     testLiveCrash();
     testLiveSources();
+    testMediaDescribe();
 
     if (gFailures != 0) {
         std::fprintf(stderr, "%d IPC check(s) failed\n", gFailures);

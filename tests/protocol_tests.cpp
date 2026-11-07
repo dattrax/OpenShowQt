@@ -217,7 +217,7 @@ void testHello() {
         // belongs in the hello (TR.2's scene.transition-options.v1 made it 21),
         // and reading this fail means a name was added or dropped — which is
         // exactly the kind of change that should cost a looked-at line.
-        check(result.at("capabilities").as_array().size() == 21, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 22, "hello lists capabilities");
         {  // Task 6.17b's scene 2 (kinded items) is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasImageItems = std::any_of(

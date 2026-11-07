@@ -397,6 +397,10 @@ void WorkerController::onRpcDisconnected() {
     fFontFamilies.clear();
     fFontFaces.clear();
     emit fontListChanged();
+    fAssetInfo.clear();
+    fAssetInfoPath.clear();
+    fAssetInfoCache.clear();
+    emit assetInfoChanged();
     fStatusRequestId = 0;
     fPreview->setSessionLive(false);
     fPreview->closeStream();
@@ -519,6 +523,13 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             // built to forbid (task BI.4).
             emit textMeasureFailed(id, reason);
         }
+        if (pending.method == proto::kMethodMediaDescribe) {
+            QVariantMap row;
+            row.insert(QStringLiteral("path"), fAssetInfoPath);
+            row.insert(QStringLiteral("error"), reason);
+            fAssetInfo = row;
+            emit assetInfoChanged();
+        }
         if (pending.method == proto::kMethodLiveSources && id == fLiveUserScanId) {
             fLiveScanning = false;
             fLiveUserScanId = 0;
@@ -581,6 +592,10 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             return;
         }
         fHandshakeDone = true;
+        fAssetInfo.clear();
+        fAssetInfoPath.clear();
+        fAssetInfoCache.clear();
+        emit assetInfoChanged();
         // The pictures ride this session, so they are online when it is: an
         // ask sent before the worker has identified itself is a request the
         // worker would answer with a method it has not agreed to speak.
@@ -938,6 +953,49 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         return;
     }
 
+    if (pending.method == proto::kMethodMediaDescribe) {
+        if (!payloadValue.is_object()) {
+            return;
+        }
+        const boost::json::object& info = payloadValue.as_object();
+        auto stringOf = [&info](const char* key) -> QString {
+            const auto it = info.find(key);
+            return it != info.end() && it->value().is_string()
+                       ? QString::fromStdString(std::string(it->value().as_string()))
+                       : QString();
+        };
+        auto numberOf = [&info](const char* key) -> qint64 {
+            const auto it = info.find(key);
+            return it != info.end() && it->value().is_number()
+                       ? static_cast<qint64>(it->value().to_number<double>())
+                       : 0;
+        };
+        auto boolOf = [&info](const char* key) -> bool {
+            const auto it = info.find(key);
+            return it != info.end() && it->value().is_bool() && it->value().as_bool();
+        };
+        QVariantMap row;
+        row.insert(QStringLiteral("path"), stringOf("path"));
+        row.insert(QStringLiteral("durationMs"), numberOf("durationMs"));
+        row.insert(QStringLiteral("width"), numberOf("width"));
+        row.insert(QStringLiteral("height"), numberOf("height"));
+        row.insert(QStringLiteral("video"), boolOf("video"));
+        row.insert(QStringLiteral("audio"), boolOf("audio"));
+        row.insert(QStringLiteral("format"), stringOf("format"));
+        if (fAssetInfoCache.size() > 64) {
+            fAssetInfoCache.clear();
+        }
+        const QString key = row.value(QStringLiteral("path")).toString();
+        if (!key.isEmpty()) {
+            fAssetInfoCache.insert(key, row);
+        }
+        if (key == fAssetInfoPath) {
+            fAssetInfo = row;
+            emit assetInfoChanged();
+        }
+        return;
+    }
+
     if (pending.method == proto::kMethodLiveSources) {
         // A rescan (the picker polls while it is open) must not reset the
         // list view when nothing changed: build the answer off to the side,
@@ -1126,6 +1184,32 @@ void WorkerController::refreshLiveSources(int waitMs, bool userInitiated) {
         fLiveUserScanId = id;
         emit liveChanged();
     }
+}
+
+void WorkerController::describeAsset(const QString& path) {
+    if (path.isEmpty() || !fConnected) {
+        if (!fAssetInfo.isEmpty() || !fAssetInfoPath.isEmpty()) {
+            fAssetInfo.clear();
+            fAssetInfoPath.clear();
+            emit assetInfoChanged();
+        }
+        return;
+    }
+    if (path == fAssetInfoPath && !fAssetInfo.isEmpty()) {
+        return;
+    }
+    const auto cached = fAssetInfoCache.constFind(path);
+    if (cached != fAssetInfoCache.constEnd()) {
+        fAssetInfo = *cached;
+        fAssetInfoPath = path;
+        emit assetInfoChanged();
+        return;
+    }
+    fAssetInfoPath = path;
+    fAssetInfo.clear();
+    emit assetInfoChanged();
+    sendRequest(proto::kMethodMediaDescribe,
+                boost::json::object{{"path", path.toStdString()}});
 }
 
 void WorkerController::pollStatus() {

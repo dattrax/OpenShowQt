@@ -228,6 +228,10 @@ inline constexpr const char* kCapabilityTransitionOptions = "scene.transition-op
 // frontend's "Add NDI source..." action is absent on a worker without NDI.
 inline constexpr const char* kCapabilityLiveSources = "live.sources.v1";
 inline constexpr const char* kMethodLiveSources = "live.sources";
+// MB.6: bounded container/stream inspection for the bin's inspector (length,
+// pixel size, which streams exist). Header-only; no decoding.
+inline constexpr const char* kCapabilityMediaDescribe = "media.describe.v1";
+inline constexpr const char* kMethodMediaDescribe = "media.describe";
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
 // render the PREPARED scene `r` into the running preview stream without

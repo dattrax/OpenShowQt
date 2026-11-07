@@ -43,6 +43,13 @@ FocusScope {
     // "" is every row; anything else is one kind from DocumentViews.
     property string filter: ""
     property string selectedAssetId: ""
+    // MB.6: the inspector's length/size comes from the worker's header probe,
+    // cached by path; a camera has no file to probe.
+    onSelectedAssetIdChanged: {
+        const row = mediaBin.selected
+        worker.describeAsset(row && row.kind !== "camera" && row.sourcePath !== ""
+                             ? row.sourcePath : "")
+    }
 
     readonly property var kindLabels: ({
         picture: "Pictures", video: "Video", audio: "Audio",
@@ -324,6 +331,29 @@ FocusScope {
                     color: "#b0b0b0"
                     font.pixelSize: 10
                     text: mediaBin.selected.sourcePath || ""
+                }
+                Text {
+                    objectName: "mediaInfoMeta"
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    visible: text !== ""
+                    color: "#b0b0b0"
+                    font.pixelSize: 10
+                    text: {
+                        const info = worker.assetInfo
+                        const row = mediaBin.selected
+                        if (!info || !row || !row.sourcePath
+                            || info.path !== row.sourcePath) return ""
+                        if (info.error) return info.error
+                        const parts = []
+                        if (info.width > 0 && info.height > 0)
+                            parts.push(info.width + "\u00d7" + info.height)
+                        if (info.durationMs > 0)
+                            parts.push((info.durationMs / 1000).toFixed(1) + " s")
+                        if (info.audio) parts.push("audio")
+                        else if (info.video) parts.push("video")
+                        return parts.join(" \u00b7 ")
+                    }
                 }
                 // The bin's controls live in the inspector, so the grid keeps
                 // its full width and the top edges line up. MB.4 retires

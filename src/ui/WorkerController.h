@@ -138,6 +138,10 @@ class WorkerController : public QObject {
     // own finder (it returns as soon as a source appears), so the picker can
     // say "scanning" honestly but cannot promise a countdown.
     Q_PROPERTY(bool liveScanning READ liveScanning NOTIFY liveChanged)
+    // MB.6: header-probe metadata for the selected bin asset:
+    // {path, durationMs, width, height, video, audio} or {path, error}. The
+    // bin asks on selection; the controller caches by path.
+    Q_PROPERTY(QVariantMap assetInfo READ assetInfo NOTIFY assetInfoChanged)
     Q_PROPERTY(bool fontListSupported READ fontListSupported NOTIFY fontListChanged)
     Q_PROPERTY(QString fontListState READ fontListState NOTIFY fontListChanged)
     Q_PROPERTY(QStringList fontFamilies READ fontFamilies NOTIFY fontListChanged)
@@ -399,6 +403,7 @@ public:
     bool liveCapable() const { return fLiveCapable; }
     QVariantList liveSources() const { return fLiveSources; }
     bool liveScanning() const { return fLiveScanning; }
+    QVariantMap assetInfo() const { return fAssetInfo; }
     bool fontListSupported() const { return fFontListCapable; }
 
     // --- how the audience moves (task TR.1) --------------------------------
@@ -436,6 +441,10 @@ public:
     // Asks the worker for its discovered NDI sources. The action is absent
     // without liveCapable; the answer arrives as liveSourcesChanged.
     Q_INVOKABLE void refreshLiveSources(int waitMs = 3000, bool userInitiated = false);
+    // What a media file IS, from container headers only. "" clears. A cached
+    // answer publishes immediately; otherwise one request is in flight and its
+    // reply (or refusal) becomes assetInfo.
+    Q_INVOKABLE void describeAsset(const QString& path);
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
@@ -470,6 +479,7 @@ signals:
     // or the session retired the list. The picker binds to this alone.
     void fontListChanged();
     void liveChanged();
+    void assetInfoChanged();
     void sceneChanged();
     void mediaChanged();
 
@@ -537,6 +547,9 @@ private:
     // touch the scanning state, so the picker's message cannot flicker every
     // poll: only this id's answer clears it.
     std::int64_t fLiveUserScanId = 0;
+    QVariantMap fAssetInfo;
+    QString fAssetInfoPath;
+    QHash<QString, QVariantMap> fAssetInfoCache;
 
     // scene.transition-options.v1 (task TR.1): see
     // transitionOptionsSupported().

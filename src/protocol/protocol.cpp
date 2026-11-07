@@ -268,7 +268,10 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                             // because the pixels did not do this yet; earning
                             // it means a peer may now send numbers it would
                             // otherwise have had to leave off the socket.
-                            kCapabilityTransitionOptions};
+                            kCapabilityTransitionOptions,
+                            // MB.6: the bin asks the worker what a file is
+                            // (length/size/streams) with a header probe.
+                            kCapabilityMediaDescribe};
     if (liveSources) {
         capabilities.push_back(kCapabilityLiveSources);
     }
