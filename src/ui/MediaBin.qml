@@ -173,6 +173,13 @@ FocusScope {
         if (worker.standaloneOnAir) return "replaces the track now on air"
         return "press Play to start it on the production audio track"
     }
+    // Camera cards wear 1..4 in creation order, whatever the current filter
+    // shows. The model caps the list at four, so the numeral always has a slot.
+    function cameraNumber(assetId) {
+        const cameras = docs.assets.filter(a => a.kind === "camera")
+        const index = cameras.findIndex(a => a.id === assetId)
+        return index >= 0 ? index + 1 : 0
+    }
     function fileName(path) {
         const parts = String(path).split("/")
         return parts[parts.length - 1]
@@ -318,6 +325,44 @@ FocusScope {
                     font.pixelSize: 10
                     text: mediaBin.selected.sourcePath || ""
                 }
+                // The bin's controls live in the inspector, so the grid keeps
+                // its full width and the top edges line up. MB.4 retires
+                // Remove to the context menu and replaces Add to slide with a
+                // drop; until then they stay here rather than over the grid.
+                Column {
+                    width: parent.width
+                    spacing: 6
+                    PanelButton {
+                        objectName: "mediaActivateButton"
+                        width: parent.width
+                        visible: mediaBin.selected.kind === "audio"
+                        enabled: mediaBin.canActivate
+                        text: mediaBin.selectedLive ? "Stop" : "Play"
+                        Accessible.name: text + (mediaBin.canActivate
+                                                 ? "" : " \u2014 no output connected")
+                        onClicked: worker.selectStandaloneTrack(
+                            mediaBin.selectedLive ? "" : mediaBin.selected.sourcePath)
+                    }
+                    PanelButton {
+                        objectName: "mediaRemoveButton"
+                        width: parent.width
+                        visible: mediaBin.editingEnabled
+                        text: "Remove"
+                        enabled: mediaBin.selectedAssetId !== ""
+                        onClicked: {
+                            docs.removeAsset(mediaBin.selectedAssetId)
+                            mediaBin.selectedAssetId = ""
+                        }
+                    }
+                    PanelButton {
+                        objectName: "placeAssetButton"
+                        width: parent.width
+                        visible: mediaBin.editingEnabled
+                        text: "Add to slide"
+                        enabled: mediaBin.selected.kind === "picture"
+                        onClicked: docs.placeAssetOnSlide(mediaBin.selectedAssetId)
+                    }
+                }
             }
         }
 
@@ -395,186 +440,53 @@ FocusScope {
             anchors.leftMargin: 10
             anchors.rightMargin: 10
 
-            Row {
-                id: mediaActions
-                anchors.top: parent.top
-                anchors.left: parent.left
-                anchors.right: parent.right
-                spacing: 6
-
-                // The bin's runtime cue (UI.4b), and the only one this product
-                // has: the worker's independent production audio track, which
-                // slide changes neither restart nor stop. The kinds with no cue
-                // of their own are absent rather than greyed out — a video
-                // reaches the audience as a slide's background and a picture as
-                // a slide's content, both authored in Edit, and a disabled Play
-                // would read as a fault with the output when the truth is that
-                // this file has no runtime to fire.
-                //
-                // Nothing here edits the document, so nothing here waits for
-                // Edit: this is a presenter's control. And what the row shows
-                // afterwards is the worker's, never the click's — the track
-                // reads ON AIR when the status block says it is live, and a
-                // refused probe reads "cannot play" with the reason beside it.
-                PanelButton {
-                    objectName: "mediaActivateButton"
-                    visible: mediaBin.selected.kind === "audio"
-                    enabled: mediaBin.canActivate
-                    text: mediaBin.selectedLive ? "Stop" : "Play"
-                    Accessible.name: text + (mediaBin.canActivate
-                                             ? "" : " \u2014 no output connected")
-                    onClicked: worker.selectStandaloneTrack(
-                        mediaBin.selectedLive ? "" : mediaBin.selected.sourcePath)
-                }
-                PanelButton {
-                    objectName: "mediaRemoveButton"
-                    visible: mediaBin.editingEnabled
-                    text: "Remove"
-                    enabled: mediaBin.selectedAssetId !== ""
-                    onClicked: {
-                        docs.removeAsset(mediaBin.selectedAssetId)
-                        mediaBin.selectedAssetId = ""
-                    }
-                }
-                // Task 6.17b2's placement, still Edit-only and now honest
-                // about its range: a picture is the only kind this build
-                // composites onto a slide, so the button offers that kind and
-                // no other. The model's own refusal still stands behind it
-                // (Documents::addItem turns a video down by name), so this is
-                // the surface matching the rule rather than a second copy of
-                // the rule — and a name nothing claims is not offered either,
-                // even though the model would take it and the renderer would
-                // then have nothing to draw.
-                PanelButton {
-                    objectName: "placeAssetButton"
-                    visible: mediaBin.editingEnabled
-                    text: "Add to slide"
-                    enabled: mediaBin.selected.kind === "picture"
-                    onClicked: docs.placeAssetOnSlide(mediaBin.selectedAssetId)
-                }
-            }
-
             Rectangle {
-                anchors.top: mediaActions.bottom
-                anchors.topMargin: 8
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
+                anchors.fill: parent
                 color: "#242424"
                 border.color: "#4a4a4a"
 
-                ListView {
-                    id: mediaList
+                GridView {
+                    id: mediaGrid
                     objectName: "mediaBinList"
                     anchors.fill: parent
                     anchors.margins: 1
                     clip: true
                     model: mediaBin.rows
+                    // Roughly 170 px minimum per card; the columns reflow as
+                    // the bin is resized and the inspector keeps its width.
+                    cellWidth: Math.max(1, Math.floor(width / Math.max(1, Math.floor(width / 170))))
+                    cellHeight: Math.round(cellWidth * 9 / 16) + 52
+                    boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar {}
 
-                    delegate: Item {
-                        id: mediaRow
+                    delegate: MediaCard {
                         objectName: "mediaBinRow"
-
-                        required property var modelData
-                        width: mediaList.width
-                        height: 28
-                        readonly property string rowAssetId: modelData.id
-                        readonly property string rowKind: modelData.kind
-                        Accessible.name: modelData.name + ", "
-                                         + mediaBin.kindLabels[modelData.kind]
-                                         + (mediaBin.noticeFor(modelData) === ""
-                                            ? "" : ", " + mediaBin.noticeFor(modelData))
-
-                        Rectangle {
-                            anchors.fill: parent
-                            anchors.margins: 1
-                            color: mediaRow.rowAssetId === mediaBin.selectedAssetId
-                                ? "#1685f8" : (rowMouse.containsMouse ? "#4a4a4a" : "transparent")
-                        }
-
-                        // Name, kind, and — when the row is wide enough for
-                        // all three — the one thing worth knowing about this
-                        // file: that it is on air, or why it cannot be used.
-                        // The name takes whatever the two fixed columns leave,
-                        // so a long file name elides in the middle instead of
-                        // pushing the kind off the row; and at bin widths
-                        // where the notice would eat the name it steps aside
-                        // and the info column carries the explanation alone.
-                        Row {
-                            id: rowParts
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.leftMargin: 8
-                            anchors.rightMargin: 8
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 10
-                            readonly property real kindWidth: 78
-                            readonly property real noticeWidth: mediaRow.width >= 470 ? 200 : 0
-
-                            Text {
-                                objectName: "mediaRowName"
-                                width: rowParts.width - rowParts.kindWidth
-                                       - rowParts.noticeWidth
-                                       - rowParts.spacing * (rowParts.noticeWidth > 0 ? 2 : 1)
-                                elide: Text.ElideMiddle
-                                font.pixelSize: 13
-                                color: mediaRow.rowAssetId === mediaBin.selectedAssetId
-                                    ? "#ffffff" : "#eeeeee"
-                                text: modelData.name
-                            }
-                            Text {
-                                objectName: "mediaRowKind"
-                                width: rowParts.kindWidth
-                                elide: Text.ElideRight
-                                font.pixelSize: 11
-                                color: mediaRow.rowAssetId === mediaBin.selectedAssetId
-                                    ? "#d9ebff" : "#8fb7dd"
-                                text: mediaBin.kindLabels[modelData.kind]
-                            }
-                            Text {
-                                objectName: "mediaRowNotice"
-                                width: rowParts.noticeWidth
-                                visible: rowParts.noticeWidth > 0
-                                         && mediaBin.noticeFor(modelData) !== ""
-                                elide: Text.ElideRight
-                                font.pixelSize: 11
-                                color: mediaBin.noticeColor(modelData,
-                                                           mediaRow.rowAssetId
-                                                           === mediaBin.selectedAssetId)
-                                text: mediaBin.noticeFor(modelData)
-                            }
-                        }
-                        MouseArea {
-                            id: rowMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            acceptedButtons: Qt.LeftButton
-                            // Selecting a media row inspects it. It does not
-                            // present, does not place, and does not touch the
-                            // slide under edit — activation is UI.4b's, and
-                            // this is the boundary the acceptance names.
-                            onClicked: mediaBin.selectedAssetId = mediaRow.rowAssetId
-                        }
+                        width: mediaGrid.cellWidth - 8
+                        height: mediaGrid.cellHeight - 8
+                        kindLabel: mediaBin.kindLabels[modelData.kind] || ""
+                        notice: mediaBin.noticeFor(modelData)
+                        sourcePath: modelData.sourcePath
+                        cameraNumber: mediaBin.cameraNumber(modelData.id)
+                        selected: modelData.id === mediaBin.selectedAssetId
+                        onActivated: mediaBin.selectedAssetId = modelData.id
                     }
+                }
 
-                    Text {
-                        anchors.centerIn: parent
-                        visible: mediaList.count === 0
-                        color: "#929292"
-                        font.pixelSize: 13
-                        horizontalAlignment: Text.AlignHCenter
-                        width: parent.width
-                        text: docs.assets.length === 0
-                              ? "no media \u2014 import a file"
-                              : "no " + mediaBin.kindLabels[mediaBin.filter]
-                                + " \u2014 choose All media to see the rest"
-                    }
+                Text {
+                    anchors.centerIn: parent
+                    visible: mediaBin.rows.length === 0
+                    color: "#929292"
+                    font.pixelSize: 13
+                    horizontalAlignment: Text.AlignHCenter
+                    width: parent.width
+                    text: docs.assets.length === 0
+                          ? "no media \u2014 import a file"
+                          : "no " + mediaBin.kindLabels[mediaBin.filter]
+                            + " \u2014 choose All media to see the rest"
                 }
             }
         }
     }
-
     FileDialog {
         id: mediaDialog
         title: "Import media"

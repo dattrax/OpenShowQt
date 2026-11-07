@@ -1,5 +1,6 @@
 // Interaction regressions for the operator workspace. No worker or user files.
 #include <QGuiApplication>
+#include <QImage>
 #include <QElapsedTimer>
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
@@ -1056,6 +1057,14 @@ int main(int argc, char** argv) {
 
         // A picture is the one kind a bin row can join today, and the button's
         // enablement is that same rule rather than a second copy of it.
+        // A real image, not the "BYTES" placeholder: the bin's card now
+        // renders the picture, and a fake file would make the QML image
+        // loader warn (the harness treats a QML warning as a failure).
+        {
+            QImage cross(8, 8, QImage::Format_ARGB32);
+            cross.fill(Qt::red);
+            check(cross.save(files + "/cross.png"), "the picture fixture is written");
+        }
         check(docs.importMediaFile(files + "/cross.png"), "a picture is imported");
         QTest::qWait(40);
         QString pictureId;
@@ -1104,24 +1113,21 @@ int main(int argc, char** argv) {
         check(docs.currentSongId() == songBeforeBin && docs.currentSlide() == 0,
               "opening and sizing the bin never moves the editing cursor");
 
-        // And at the smallest supported size: the notice steps aside so the
-        // name stays whole, rather than a long kind label eating the name. The
-        // info column still explains whichever row the operator picks.
+        // At the smallest supported size the grid reflows to fewer columns
+        // without losing names. The card's notice is the part that gives way
+        // first; the file name always keeps a readable share of the width.
         window->resize(1000, 680);
         QTest::qWait(80);
         {
-            QList<QQuickItem*> noticeItems;
-            collectNamed(mediaBin, "mediaRowNotice", noticeItems);
             QList<QQuickItem*> names;
             collectNamed(mediaBin, "mediaRowName", names);
-            bool noticesAside = !noticeItems.isEmpty();
-            for (auto* notice : noticeItems)
-                noticesAside = noticesAside && !notice->isVisible();
-            bool namesWhole = names.size() == 4;
+            const int cards = mediaRows().size();
+            bool namesReadable = !names.isEmpty() && names.size() == cards;
             for (auto* name : names)
-                namesWhole = namesWhole && !name->property("elided").toBool();
-            check(noticesAside && namesWhole,
-                  "a narrow bin drops the notice and keeps whole file names");
+                namesReadable = namesReadable && name->width() > 40
+                                && !name->property("text").toString().isEmpty();
+            check(cards >= 2 && namesReadable,
+                  "a narrow bin reflows the grid and keeps readable names");
         }
         window->resize(binSizeBefore);
         QTest::qWait(60);
