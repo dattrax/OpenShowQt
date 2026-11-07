@@ -519,8 +519,9 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             // built to forbid (task BI.4).
             emit textMeasureFailed(id, reason);
         }
-        if (pending.method == proto::kMethodLiveSources) {
+        if (pending.method == proto::kMethodLiveSources && id == fLiveUserScanId) {
             fLiveScanning = false;
+            fLiveUserScanId = 0;
             emit liveChanged();
         }
         if (pending.method == proto::kMethodFontList) {
@@ -962,11 +963,20 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                 }
             }
         }
-        if (discovered != fLiveSources) {
+        const bool changed = discovered != fLiveSources;
+        if (changed) {
             fLiveSources = std::move(discovered);
         }
-        fLiveScanning = false;
-        emit liveChanged();
+        // Only the answer to the operator's own scan ends the scanning state;
+        // a background refresh must not make the message flip.
+        const bool scanFinished = id != 0 && id == fLiveUserScanId;
+        if (scanFinished) {
+            fLiveScanning = false;
+            fLiveUserScanId = 0;
+        }
+        if (changed || scanFinished) {
+            emit liveChanged();
+        }
         return;
     }
 
@@ -1092,24 +1102,30 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
     // them. Their pending entries were already consumed above.
 }
 
-void WorkerController::refreshLiveSources(int waitMs) {
+void WorkerController::refreshLiveSources(int waitMs, bool userInitiated) {
     if (!fLiveCapable || !fConnected) {
         if (!fLiveSources.isEmpty() || fLiveScanning) {
             fLiveSources.clear();
             fLiveScanning = false;
+            fLiveUserScanId = 0;
             emit liveChanged();
         }
         return;
     }
-    // One scan at a time: the timer must not queue behind a slow finder wait.
-    // The answer in flight will update the list when it lands.
-    if (fLiveScanning) {
+    // A user scan owns the scanning state. A background refresh while one is
+    // running would only queue behind the finder's wait, so skip it; the
+    // answer in flight updates the list when it lands.
+    if (!userInitiated && fLiveScanning) {
         return;
     }
-    fLiveScanning = true;
-    emit liveChanged();
-    sendRequest(proto::kMethodLiveSources,
-                boost::json::object{{"waitMs", waitMs}});
+    const std::int64_t id =
+        sendRequest(proto::kMethodLiveSources,
+                    boost::json::object{{"waitMs", waitMs}});
+    if (userInitiated && !fLiveScanning) {
+        fLiveScanning = true;
+        fLiveUserScanId = id;
+        emit liveChanged();
+    }
 }
 
 void WorkerController::pollStatus() {

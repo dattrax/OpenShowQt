@@ -629,7 +629,7 @@ FocusScope {
             enabled: worker.liveCapable
             onTriggered: {
                 // A short first scan, then the dialog's timer keeps looking.
-                worker.refreshLiveSources(1500)
+                worker.refreshLiveSources(1500, true)
                 ndiSourceDialog.open()
             }
         }
@@ -655,13 +655,17 @@ FocusScope {
                 color: "#b0b0b0"
                 font.pixelSize: 12
                 wrapMode: Text.WordWrap
+                // One message per settled state. A rescan only says
+                // "Scanning..." when there is nothing else to show, so a
+                // refresh cannot overwrite the instruction with a transient
+                // line and then back again.
                 text: !worker.liveCapable
                       ? "NDI is not available in this worker."
-                      : (worker.liveScanning
-                         ? "Scanning the network\u2026"
-                         : (worker.liveSources.length === 0
-                            ? "No cameras yet \u2014 they appear here as they start broadcasting."
-                            : "Choose a camera. It becomes a Media Bin asset; set it as a slide background in Edit."))
+                      : (worker.liveSources.length > 0
+                         ? "Choose a camera. It becomes a Media Bin asset; set it as a slide background in Edit."
+                         : (worker.liveScanning
+                            ? "Scanning the network\u2026"
+                            : "No cameras yet \u2014 they appear here as they start broadcasting."))
             }
             ListView {
                 objectName: "ndiSourceList"
@@ -683,7 +687,7 @@ FocusScope {
                 objectName: "ndiRescanButton"
                 text: worker.liveScanning ? "Scanning\u2026" : "Rescan"
                 enabled: worker.liveCapable && !worker.liveScanning
-                onClicked: worker.refreshLiveSources(2500)
+                onClicked: worker.refreshLiveSources(2500, true)
             }
             Button {
                 text: "Close"

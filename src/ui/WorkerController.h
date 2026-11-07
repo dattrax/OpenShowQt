@@ -435,7 +435,7 @@ public:
     Q_INVOKABLE void refreshFontFamilies();
     // Asks the worker for its discovered NDI sources. The action is absent
     // without liveCapable; the answer arrives as liveSourcesChanged.
-    Q_INVOKABLE void refreshLiveSources(int waitMs = 3000);
+    Q_INVOKABLE void refreshLiveSources(int waitMs = 3000, bool userInitiated = false);
     bool mediaPlaying() const { return fMediaPlaying; }
     QString mediaError() const { return fMediaError; }
     QString mediaAudio() const { return fMediaAudio; }
@@ -533,6 +533,10 @@ private:
     bool fLiveCapable = false;
     QVariantList fLiveSources;
     bool fLiveScanning = false;
+    // The scan the operator started (open/Rescan). Background refreshes do not
+    // touch the scanning state, so the picker's message cannot flicker every
+    // poll: only this id's answer clears it.
+    std::int64_t fLiveUserScanId = 0;
 
     // scene.transition-options.v1 (task TR.1): see
     // transitionOptionsSupported().
