@@ -411,7 +411,19 @@ void killWorker(pid_t pid) {
 // Scenario A: full session — gated commands, hello, live change, shutdown.
 void testServedSession() {
     const std::string path = socketPath("serve");
+    // Pin the capability set: a worker that cannot find a helper advertises 21
+    // names. Without this the tripwire count would depend on whether the
+    // machine running the suite has a real ndi-helper installed.
+    const char* saved = std::getenv("OPENSHOW_NDI_HELPER");
+    const std::string savedValue = saved ? saved : std::string();
+    const bool hadSaved = saved != nullptr;
+    setenv("OPENSHOW_NDI_HELPER", "/nonexistent/openshow-ndi-helper", 1);
     const pid_t pid = spawnWorker(path);
+    if (hadSaved) {
+        setenv("OPENSHOW_NDI_HELPER", savedValue.c_str(), 1);
+    } else {
+        unsetenv("OPENSHOW_NDI_HELPER");
+    }
     if (!check(pid > 0, "worker spawned")) {
         return;
     }

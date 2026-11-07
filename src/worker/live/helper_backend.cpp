@@ -72,12 +72,43 @@ std::uint32_t formatFromName(const std::string& name) {
     return static_cast<std::uint32_t>(FrameFormat::BGRA8);
 }
 
+std::string workerExecutableDir() {
+#ifdef __linux__
+    char buffer[4096];
+    const ssize_t length = ::readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+    if (length > 0) {
+        buffer[length] = '\0';
+        const std::string path(buffer);
+        const std::size_t slash = path.find_last_of('/');
+        if (slash != std::string::npos) {
+            return path.substr(0, slash);
+        }
+    }
+#endif
+    return {};
+}
+
 std::string resolveExecutable(const HelperOptions& options) {
     if (!options.executable.empty()) {
         return options.executable;
     }
     if (const char* env = std::getenv("OPENSHOW_NDI_HELPER"); env && *env) {
         return env;
+    }
+#ifdef OPENSHOW_NDI_HELPER_DEFAULT
+    // A build that knows where the packaged helper lives needs no environment
+    // variable; this is the dev/installed default chosen at configure time.
+    if (::access(OPENSHOW_NDI_HELPER_DEFAULT, X_OK) == 0) {
+        return OPENSHOW_NDI_HELPER_DEFAULT;
+    }
+#endif
+    // Installed beside the worker (the packaging layout), then PATH.
+    const std::string directory = workerExecutableDir();
+    if (!directory.empty()) {
+        const std::string beside = directory + "/ndi-helper";
+        if (::access(beside.c_str(), X_OK) == 0) {
+            return beside;
+        }
     }
     return "ndi-helper";
 }

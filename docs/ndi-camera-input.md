@@ -278,10 +278,19 @@ machine cannot affect these tests and tests cannot open the operator's camera:
   one-shot `helper-exit` fault, and keeps the session running — the
   deterministic "helper crashed" path ND.8 needs.
 
-`HelperBackend` resolves `OPENSHOW_NDI_HELPER` before `ndi-helper` on `PATH`,
-so ND.7 tests point the worker at the test helper binary and never at the real
-one. Tests must assert on the fake names/format/sequence, never on a real
-source name or an exact source count.
+`HelperBackend` finds the helper without configuration: an explicit
+`OPENSHOW_NDI_HELPER`, then the path the build recorded
+(`-DOPENSHOW_NDI_HELPER_PATH=...`), then `ndi-helper` beside the worker
+binary, then `PATH`. The test helper is passed explicitly, so ND.7 tests never
+open the real one. Tests must assert on the fake names/format/sequence, never
+on a real source name or an exact source count.
+
+Discovery also needs no address by hand. NDI normally finds senders over mDNS
+multicast; on a network that drops it between clients the helper first uses
+`OPENSHOW_NDI_EXTRA_IPS` if set, and otherwise queries this host's own IPv4
+broadcast addresses (e.g. `192.168.0.255` on a /24). A camera on the same
+subnet is then found by the ordinary query path. `OPENSHOW_NDI_EXTRA_IPS`
+remains the escape hatch for a sender on another subnet.
 
 Real NDI acceptance is manual/gated: a camera on the LAN, `--list` shows it,
 opening streams 1080p frames, the audience shows the live feed, and preview/

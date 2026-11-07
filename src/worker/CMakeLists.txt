@@ -57,6 +57,17 @@ if(OPENSHOW_LIBRT)
   target_link_libraries(openshow-worker-live PUBLIC ${OPENSHOW_LIBRT})
 endif()
 
+# Where the separate MIT helper lives, when the build knows. Unset means the
+# worker finds it beside itself or on PATH; an explicit OPENSHOW_NDI_HELPER
+# still wins at runtime. This exists so a dev/installed layout needs no
+# environment variable to enable NDI.
+set(OPENSHOW_NDI_HELPER_PATH "" CACHE FILEPATH
+    "Default path to the built ndi-helper executable (optional)")
+if(OPENSHOW_NDI_HELPER_PATH)
+  target_compile_definitions(openshow-worker-live PRIVATE
+    OPENSHOW_NDI_HELPER_DEFAULT="${OPENSHOW_NDI_HELPER_PATH}")
+endif()
+
 # The live source's presentation half (ND.6): the helper receiver's newest
 # UYVY frame, the NV12 conversion and the GPU uploader the FFmpeg video path
 # already uses. A library so the live path can be driven headlessly; it needs

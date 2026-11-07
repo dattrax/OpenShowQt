@@ -19,6 +19,10 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #endif
 
 namespace openshow::ndi {
@@ -86,6 +90,44 @@ std::string executableDir() {
     }
 #endif
     return {};
+}
+
+// Discovery addresses to try when the network drops mDNS multicast between
+// clients: every non-loopback IPv4 broadcast address this host owns. NDI sends
+// a unicast query to each, so the operator no longer has to know (or type) the
+// camera's address. An explicit OPENSHOW_NDI_EXTRA_IPS still wins.
+std::string defaultExtraIps() {
+#ifdef _WIN32
+    return {};
+#else
+    std::string result;
+    ifaddrs* list = nullptr;
+    if (::getifaddrs(&list) != 0) {
+        return result;
+    }
+    for (ifaddrs* entry = list; entry != nullptr; entry = entry->ifa_next) {
+        if (entry->ifa_addr == nullptr || entry->ifa_addr->sa_family != AF_INET) {
+            continue;
+        }
+        if ((entry->ifa_flags & IFF_UP) == 0 || (entry->ifa_flags & IFF_LOOPBACK) != 0) {
+            continue;
+        }
+        if (entry->ifa_broadaddr == nullptr) {
+            continue;
+        }
+        const auto* address = reinterpret_cast<const sockaddr_in*>(entry->ifa_broadaddr);
+        char text[INET_ADDRSTRLEN] = {};
+        if (::inet_ntop(AF_INET, &address->sin_addr, text, sizeof(text)) == nullptr) {
+            continue;
+        }
+        if (!result.empty()) {
+            result += ',';
+        }
+        result += text;
+    }
+    ::freeifaddrs(list);
+    return result;
+#endif
 }
 
 std::vector<std::string> runtimeCandidates() {
@@ -196,6 +238,8 @@ struct NdiBackend::Impl {
     NDIlib_recv_instance_t recv = nullptr;
     std::string sourceName;
     std::string sourceUrl;
+    // Kept for the finder's lifetime: p_extra_ips points at this.
+    std::string extraIps;
     ShmRing ring;
     std::thread thread;
     std::atomic<bool> stop{false};
@@ -276,11 +320,13 @@ struct NdiBackend::Impl {
             NDIlib_find_create_t findDesc;
             findDesc.show_local_sources = true;
             findDesc.p_groups = nullptr;
-            // Networks that drop mDNS multicast between clients need the
-            // sender's address named explicitly. The SDK treats this as a
-            // list of discovery addresses, comma-separated.
-            const char* extraIps = std::getenv("OPENSHOW_NDI_EXTRA_IPS");
-            findDesc.p_extra_ips = (extraIps && *extraIps) ? extraIps : nullptr;
+            // Networks that drop mDNS multicast between clients need a
+            // discovery address named explicitly. An operator override wins;
+            // otherwise use this host's IPv4 broadcast addresses, so the
+            // camera does not have to be configured by address by hand.
+            const char* configured = std::getenv("OPENSHOW_NDI_EXTRA_IPS");
+            extraIps = (configured && *configured) ? configured : defaultExtraIps();
+            findDesc.p_extra_ips = extraIps.empty() ? nullptr : extraIps.c_str();
             finder = ndi->find_create_v2(&findDesc);
             if (!finder) {
                 if (error) {
