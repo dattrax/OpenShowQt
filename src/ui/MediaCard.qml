@@ -66,8 +66,8 @@ Item {
                 smooth: true
             }
 
-            // Camera artwork: a neutral glyph tinted per source, with the
-            // numeral over it. No NDI mark (MB.5).
+            // Camera artwork: our own neutral silhouette, tinted per source
+            // and numbered 1..4. No NDI mark (MB.5).
             Item {
                 anchors.centerIn: parent
                 visible: card.kind === "camera"
@@ -79,25 +79,125 @@ Item {
                     color: ["#2f5f8f", "#2f7f5f", "#8f5f2f", "#6f3f8f"][
                         Math.max(0, Math.min(3, card.cameraNumber - 1))]
                 }
-                Text {
+                Item {
                     anchors.centerIn: parent
+                    width: parent.width * 0.66
+                    height: width * 0.72
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 3
+                        color: "#ffffff"
+                    }
+                    Rectangle {  // viewfinder hump
+                        x: parent.width * 0.16
+                        y: -parent.height * 0.26
+                        width: parent.width * 0.38
+                        height: parent.height * 0.30
+                        radius: 2
+                        color: "#ffffff"
+                    }
+                    Rectangle {  // lens barrel
+                        anchors.centerIn: parent
+                        width: parent.height * 0.62
+                        height: width
+                        radius: width / 2
+                        color: "#202020"
+                    }
+                    Rectangle {  // lens
+                        anchors.centerIn: parent
+                        width: parent.width * 0.32
+                        height: width
+                        radius: width / 2
+                        color: "#ffffff"
+                    }
+                }
+                Text {
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 3
                     text: card.cameraNumber > 0 ? card.cameraNumber : ""
                     color: "#ffffff"
-                    font.pixelSize: Math.round(parent.height * 0.42)
+                    font.pixelSize: Math.max(9, Math.round(parent.height * 0.20))
                     font.bold: true
                 }
             }
 
+            // Audio: a record/turntable glyph, not a note.
+            Item {
+                anchors.centerIn: parent
+                visible: card.kind === "audio"
+                width: Math.min(parent.width, parent.height) * 0.8
+                height: width
+                Rectangle {
+                    anchors.fill: parent
+                    radius: width / 2
+                    color: "#dfe7ee"
+                }
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: parent.width * 0.72
+                    height: width
+                    radius: width / 2
+                    color: "#2a2a2a"
+                }
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: parent.width * 0.18
+                    height: width
+                    radius: width / 2
+                    color: "#dfe7ee"
+                }
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: parent.width * 0.06
+                    height: width
+                    radius: width / 2
+                    color: "#2a2a2a"
+                }
+                Rectangle {  // tonearm
+                    x: parent.width * 0.70
+                    y: parent.height * 0.06
+                    width: Math.max(2, parent.width * 0.055)
+                    height: parent.height * 0.52
+                    color: "#dfe7ee"
+                    transform: Rotation {
+                        origin.x: width / 2
+                        origin.y: 0
+                        angle: 28
+                    }
+                }
+            }
+
+            // Video: a play mark until MB.6 gives the first frame.
             Text {
                 anchors.centerIn: parent
-                visible: !still.visible && card.kind !== "camera"
-                text: card.kind === "video" ? "VIDEO"
-                      : card.kind === "audio" ? "AUDIO"
-                      : card.kind === "other" ? "OTHER" : ""
-                color: "#9fb2c4"
-                font.pixelSize: 13
-                font.bold: true
-                font.letterSpacing: 1
+                visible: !still.visible && card.kind === "video"
+                text: "\u25B6"
+                color: "#dfe7ee"
+                font.pixelSize: Math.round(parent.height * 0.55)
+            }
+
+            // Other: a plain document mark.
+            Item {
+                anchors.centerIn: parent
+                visible: card.kind === "other"
+                width: Math.min(parent.width, parent.height) * 0.45
+                height: width * 1.25
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 2
+                    color: "#dfe7ee"
+                }
+                Repeater {
+                    model: [0.32, 0.50, 0.68]
+                    delegate: Rectangle {
+                        x: parent.width * 0.18
+                        y: parent.height * modelData
+                        width: parent.width * 0.64
+                        height: 2
+                        color: "#2a2a2a"
+                    }
+                }
             }
         }
 

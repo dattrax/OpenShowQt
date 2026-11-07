@@ -1186,6 +1186,28 @@ int main(int argc, char** argv) {
                   "a cue tile accepts the media drag payload");
         }
 
+        // MB.5: camera cards wear our own glyph, numbered 1..4 in creation
+        // order; the model refuses a fifth, so no unnumbered camera can exist.
+        check(docs.addCameraAsset(QStringLiteral("Camera 1"), QStringLiteral("SOURCE 1")),
+              "a camera asset is added");
+        check(docs.addCameraAsset(QStringLiteral("Camera 2"), QStringLiteral("SOURCE 2")),
+              "a second camera is added");
+        QTest::qWait(40);
+        int numbered = 0;
+        for (auto* row : mediaRows())
+            if (row->property("modelData").toMap().value("kind").toString()
+                == QLatin1String("camera"))
+                numbered += row->property("cameraNumber").toInt() >= 1;
+        check(numbered == 2, "camera cards are numbered 1..4 by creation order");
+        check(docs.addCameraAsset(QStringLiteral("Camera 3"), QStringLiteral("SOURCE 3"))
+                  && docs.addCameraAsset(QStringLiteral("Camera 4"),
+                                         QStringLiteral("SOURCE 4")),
+              "the third and fourth cameras are accepted");
+        const int camerasBefore = docs.assets().size();
+        check(!docs.addCameraAsset(QStringLiteral("Camera 5"), QStringLiteral("SOURCE 5"))
+                  && docs.assets().size() == camerasBefore,
+              "a fifth camera is refused and creates nothing");
+
         // Closing the bin and dragging its edge give the workspace its area
         // back without disturbing what the operator was doing.
         docs.selectSong(songBeforeBin);
