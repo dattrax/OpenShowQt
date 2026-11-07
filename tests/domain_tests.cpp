@@ -966,7 +966,8 @@ bool sameService(const Documents& a, const Documents& b) {
     for (const Id& assetId : a.assetIds()) {
         const Asset* aa = a.findAsset(assetId);
         const Asset* ab = b.findAsset(assetId);
-        if (aa == nullptr || ab == nullptr || aa->name != ab->name) {
+        if (aa == nullptr || ab == nullptr || aa->name != ab->name ||
+            aa->deckPage != ab->deckPage) {
             return false;
         }
     }
@@ -4652,6 +4653,54 @@ void exerciseSongReference(const fs::path& tempRoot) {
           "the attribution stays after the catalog link is gone");
 }
 
+// MB.7: a rendered deck page is stored like a picture but tagged so the
+// Media Bin can hide it; old manifests without the tag still open.
+void exerciseDeckPageAssets(const fs::path& tempRoot) {
+    std::string error;
+    std::filesystem::create_directories(tempRoot);
+    const fs::path package = tempRoot / "deck-service";
+    const fs::path page = tempRoot / "page.png";
+    writeFile(page, "PNGBYTES-deck-page");
+
+    Documents docs;
+    const Id show = docs.createShow("Deck", &error);
+    const Id slide = docs.appendSlide(show, &error);
+    const Id deckPage = docs.addDeckPageAsset("deck - 01.png", page.string(), &error);
+    check(!deckPage.empty() && docs.findAsset(deckPage) != nullptr &&
+              docs.findAsset(deckPage)->deckPage,
+          "a deck page is recorded with the bin flag");
+    check(!slide.empty() && docs.setSlideBackground(show, slide, deckPage, &error),
+          "a slide uses the deck page as its background");
+    check(openshow::domain::saveService(docs, package, &error), "the deck service saves");
+    const std::string manifest = readFile(package / "service.json");
+    check(manifest.find("\"deck\":true") != std::string::npos,
+          "the manifest tags the page as a deck page");
+
+    Documents reloaded;
+    check(openshow::domain::loadService(&reloaded, package, &error) &&
+              reloaded.findAsset(deckPage) != nullptr &&
+              reloaded.findAsset(deckPage)->deckPage,
+          "the deck page flag round-trips");
+    check(reloaded.findShow(show) != nullptr &&
+              reloaded.findShow(show)->slides[0].backgroundAssetId == deckPage,
+          "the slide still references its deck page");
+
+    // A legacy manifest (no tag) reads the same bytes as an ordinary picture.
+    std::string legacyManifest = manifest;
+    check(replaceOnce(legacyManifest, ",\"deck\":true", ""),
+          "the tag is removable for the legacy case");
+    const fs::path legacy = tempRoot / "deck-legacy";
+    std::filesystem::create_directories(legacy);
+    std::filesystem::copy(package / "assets", legacy / "assets",
+                          std::filesystem::copy_options::recursive);
+    check(writeFile(legacy / "service.json", legacyManifest), "the legacy manifest is written");
+    Documents legacyDocs;
+    check(openshow::domain::loadService(&legacyDocs, legacy, &error) &&
+              legacyDocs.findAsset(deckPage) != nullptr &&
+              !legacyDocs.findAsset(deckPage)->deckPage,
+          "a manifest without the flag opens as an ordinary picture");
+}
+
 int main() {
     const std::string_view version = openshow::domain::applicationVersion();
     bool ok = check(!version.empty(), "applicationVersion is not empty");
@@ -4681,6 +4730,7 @@ int main() {
                                            ("openshow-domain-tests-" + std::to_string(getpid()));
     std::filesystem::remove_all(tempRoot);
     exercisePersistence(tempRoot);
+    exerciseDeckPageAssets(tempRoot / "deck-pages");
     exerciseBoxStorage(tempRoot);
     exerciseTextStyleStorage(tempRoot);
     exerciseTransitionStorage(tempRoot);

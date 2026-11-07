@@ -770,6 +770,11 @@ struct Asset {
     // worker opens. No bytes are ever owned or copied for it, which is why
     // the package stores the source instead of a file.
     std::string cameraSource;
+    // A rendered page of an imported presentation. It is a picture for every
+    // scene purpose, but it is NOT a Media Bin row: the deck is a unit, and a
+    // twenty-slide deck would bury the operator's own media. The package still
+    // stores its bytes like any other asset.
+    bool deckPage = false;
 };
 
 // What an asset IS. A camera is named by cameraSource, not by a file
@@ -1116,6 +1121,10 @@ public:
     // Returns the new asset's Id, or "" on failure.
     Id addAsset(const std::string& name, const std::string& sourcePath,
                 std::string* error = nullptr);
+    // Records a rendered presentation page: same bytes as a picture, hidden
+    // from the Media Bin (see Asset::deckPage).
+    Id addDeckPageAsset(const std::string& name, const std::string& sourcePath,
+                        std::string* error = nullptr);
     // Records a live NDI source as a camera asset. It owns no bytes; the
     // source name is stored exactly as discovery reported it. Returns the
     // new asset's Id, or "" on failure.
@@ -1195,6 +1204,10 @@ private:
     static bool validStroke(const TextStroke& stroke, std::string* error);
     static bool validShadow(const TextShadow& shadow, std::string* error);
     Id nextId(const char* kind);
+    // The one asset recorder: a deck page is the same record with the bin
+    // flag set, so the two entry points cannot drift.
+    Id recordAsset(const std::string& name, const std::string& sourcePath,
+                   bool deckPage, std::string* error);
 
     // The theme layers for one slide in the fixed priority order (task
     // TH.2's walk, extracted for TR.1 so two resolvers cannot quietly

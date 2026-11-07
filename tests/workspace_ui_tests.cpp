@@ -878,6 +878,23 @@ int main(int argc, char** argv) {
                   && counts == (QStringList{"3", "1", "1", "1"}),
               "the bin lists every kind its media fills, with a count on each");
 
+        // MB.7: a rendered deck page is stored but never a bin row or count.
+        {
+            const QVariantList beforeDeck = docs.assets();
+            const QString deckPage = docs.addDeckPageAsset(
+                QStringLiteral("deck - 01.png"),
+                files + QStringLiteral("/deck-page.png"));
+            QTest::qWait(40);
+            check(!deckPage.isEmpty() && docs.assets() == beforeDeck
+                      && docs.storedAssets().size() == beforeDeck.size() + 1,
+                  "a deck page is stored without joining the bin");
+            check(mediaRows().size() == beforeDeck.size()
+                      && collectionRows().first()->property("modelData").toMap()
+                             .value(QStringLiteral("count")).toInt()
+                         == beforeDeck.size(),
+                  "a deck page adds no card and no collection count");
+        }
+
         QStringList chips;
         {
             QList<QQuickItem*> found;

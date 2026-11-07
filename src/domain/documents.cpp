@@ -1633,6 +1633,16 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
 
 Id Documents::addAsset(const std::string& name, const std::string& sourcePath,
                        std::string* error) {
+    return recordAsset(name, sourcePath, false, error);
+}
+
+Id Documents::addDeckPageAsset(const std::string& name, const std::string& sourcePath,
+                               std::string* error) {
+    return recordAsset(name, sourcePath, true, error);
+}
+
+Id Documents::recordAsset(const std::string& name, const std::string& sourcePath,
+                          bool deckPage, std::string* error) {
     const std::string clean = trimmed(name);
     if (clean.empty()) {
         fail(error, "an asset needs a name");
@@ -1646,6 +1656,7 @@ Id Documents::addAsset(const std::string& name, const std::string& sourcePath,
     asset.id = nextId("asset");
     asset.name = clean;
     asset.sourcePath = sourcePath;
+    asset.deckPage = deckPage;
     fAssets.push_back(std::move(asset));
     return fAssets.back().id;
 }

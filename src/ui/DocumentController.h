@@ -161,6 +161,8 @@ public:
     Q_INVOKABLE QVariantMap showInfo(const QString& showId) const;
     QVariantList playlistEntries() const;
     QVariantList assets() const;
+    // Every stored asset, deck pages included (the bin hides those).
+    QVariantList storedAssets() const;
     QVariantList themes() const;
     QVariantMap currentTheme() const;
     bool currentThemeIsOverride() const;
@@ -581,6 +583,10 @@ public:
     // ND.7: records a discovered NDI camera as a Media Bin asset. It owns no
     // bytes; `source` is the exact name discovery returned.
     Q_INVOKABLE bool addCameraAsset(const QString& name, const QString& source);
+    // MB.7: records a rendered deck page: stored like a picture but hidden
+    // from the Media Bin. The PPTX import adds its pages inside one edit;
+    // this entry point is for an incremental renderer and the tests.
+    QString addDeckPageAsset(const QString& name, const QString& sourcePath);
     Q_INVOKABLE bool importMediaUrl(const QUrl& file);
     Q_INVOKABLE bool removeAsset(const QString& assetId);
     // The bin's import filter (UI.4a), spelled from the domain's one

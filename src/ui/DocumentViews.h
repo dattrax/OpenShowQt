@@ -137,6 +137,14 @@ public:
     // no cursor and moves none. Read-only like every other row.
     QVariantList runningOrderCues(const openshow::domain::Id& playlistId) const;
     QVariantList assets() const;
+    // Every asset the document owns, deck pages included. The bin shows
+    // assets(); storage, sweeps and tests use this.
+    QVariantList storedAssets() const;
+
+private:
+    QVariantList assetRows(bool includeDeckPages) const;
+
+public:
     // The drawer's search: the reference's normalise-and-every-word-matches
     // filter over show name and all box lines, projected to the drawer's
     // rows (id, name, slideCount).

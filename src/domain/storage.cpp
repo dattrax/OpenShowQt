@@ -1135,6 +1135,10 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             // Package-relative, always: the loaded sourcePath never leaks
             // into the file, which is what makes re-saves byte-stable.
             entry.emplace("file", std::string(kAssetsDir) + "/" + assetFileName(asset));
+            if (asset.deckPage) {
+                // A rendered deck page: stored, but not a Media Bin row.
+                entry.emplace("deck", true);
+            }
         }
         assets.push_back(std::move(entry));
     }
@@ -2064,6 +2068,15 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         std::string kind;
         if (jsonAsset.contains("kind") && !wantString(jsonAsset, "kind", &kind, error)) {
             return false;
+        }
+        if (jsonAsset.contains("deck")) {
+            const boost::json::value& deck = jsonAsset.at("deck");
+            if (!deck.is_bool()) {
+                fail(error, "service.json: asset '" + asset.name +
+                                "' has a non-bool deck flag");
+                return false;
+            }
+            asset.deckPage = deck.as_bool();
         }
         if (kind == "camera") {
             std::string source;

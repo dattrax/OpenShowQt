@@ -2607,6 +2607,10 @@ QVariantList DocumentController::assets() const {
     return fViews.assets();
 }
 
+QVariantList DocumentController::storedAssets() const {
+    return fViews.storedAssets();
+}
+
 bool DocumentController::createPlaylist(const QString& name) {
     flushText();
     openshow::domain::Id created;
@@ -3071,6 +3075,22 @@ bool DocumentController::addCameraAsset(const QString& name, const QString& sour
     return true;
 }
 
+QString DocumentController::addDeckPageAsset(const QString& name,
+                                            const QString& sourcePath) {
+    flushText();
+    std::string error;
+    openshow::domain::Id created;
+    if (!edit([&] {
+            created = fDocuments.addDeckPageAsset(name.toStdString(),
+                                                  sourcePath.toStdString(), &error);
+            return !created.empty();
+        })) {
+        setStatus(QStringLiteral("add deck page: %1").arg(QString::fromStdString(error)));
+        return {};
+    }
+    return QString::fromStdString(created);
+}
+
 bool DocumentController::removeAsset(const QString& assetId) {
     flushText();
     std::string error;
@@ -3249,7 +3269,7 @@ bool DocumentController::applyPowerPointImport(const PowerPointImport::Deck& dec
                     .arg(showName,
                          QString::number(page.page).rightJustified(
                              2, QLatin1Char('0')));
-            const openshow::domain::Id asset = fDocuments.addAsset(
+            const openshow::domain::Id asset = fDocuments.addDeckPageAsset(
                 assetName.toStdString(),
                 (deck.cacheDir + QLatin1Char('/') + page.file).toStdString(), &error);
             if (asset.empty()) {

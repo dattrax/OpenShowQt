@@ -3869,7 +3869,8 @@ void exercisePowerPointImport(const std::filesystem::path& root) {
           "the row carries both rendered pages");
     check(docs.songs().size() == libraryBefore,
           "a service deck import is not a Library row");
-    check(docs.assets().size() == 2, "both pages joined the media library");
+    check(docs.assets().isEmpty() && docs.storedAssets().size() == 2,
+          "the pages are stored but are not Media Bin rows");
     check(docs.slidesOf(showId).size() == 2,
           "the imported show holds the rendered slides");
     check(docs.status().contains(QStringLiteral("imported 2 slides")),
@@ -3887,10 +3888,10 @@ void exercisePowerPointImport(const std::filesystem::path& root) {
 
     // The whole item is one edit: one undo removes the row and its media.
     docs.undo();
-    check(docs.playlistEntries().isEmpty() && docs.assets().isEmpty(),
+    check(docs.playlistEntries().isEmpty() && docs.storedAssets().isEmpty(),
           "one undo removes the running-order row and the rendered media");
     docs.redo();
-    check(docs.playlistEntries().size() == 1 && docs.assets().size() == 2,
+    check(docs.playlistEntries().size() == 1 && docs.storedAssets().size() == 2,
           "redo restores the row and the media together");
 
     // The Library destination creates a show and never touches the order.
@@ -3926,16 +3927,16 @@ void exercisePowerPointImport(const std::filesystem::path& root) {
           "the Library deck can be deleted");
     check(reopened.songs().size() == libraryBefore,
           "the deleted deck is gone from the Library");
-    check(reopened.assets().size() == 4,
+    check(reopened.storedAssets().size() == 4,
           "its rendered media remains until the operator sweeps");
     check(reopened.removeUnusedAssets() == 2,
           "the sweep removes only the deleted deck's two renders");
-    check(reopened.assets().size() == 2,
+    check(reopened.storedAssets().size() == 2,
           "the service deck's referenced renders stay");
     check(reopened.playlistEntries().size() == entries,
           "the sweep leaves the service deck runnable");
     reopened.undo();
-    check(reopened.assets().size() == 4, "one undo restores the swept media");
+    check(reopened.storedAssets().size() == 4, "one undo restores the swept media");
     reopened.undo();
     check(reopened.songs().size() == libraryBefore + 1,
           "a second undo restores the deleted Library deck");

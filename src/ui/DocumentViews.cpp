@@ -569,11 +569,19 @@ QVariantList DocumentViews::runningOrderCues(const openshow::domain::Id& playlis
     return list;
 }
 
-QVariantList DocumentViews::assets() const {
+QVariantList DocumentViews::assets() const { return assetRows(false); }
+
+QVariantList DocumentViews::storedAssets() const { return assetRows(true); }
+
+QVariantList DocumentViews::assetRows(bool includeDeckPages) const {
     QVariantList list;
     for (const openshow::domain::Id& id : fDocuments.assetIds()) {
         const openshow::domain::Asset* asset = fDocuments.findAsset(id);
         if (asset == nullptr) {
+            continue;
+        }
+        if (asset->deckPage && !includeDeckPages) {
+            // A deck is a unit; its rendered pages are not bin rows.
             continue;
         }
         QVariantMap entry;
@@ -582,6 +590,7 @@ QVariantList DocumentViews::assets() const {
         entry.insert(QStringLiteral("sourcePath"), QString::fromStdString(asset->sourcePath));
         entry.insert(QStringLiteral("cameraSource"),
                      QString::fromStdString(asset->cameraSource));
+        entry.insert(QStringLiteral("deckPage"), asset->deckPage);
         // The kind the bin filters and labels by (UI.4a), from the domain's
         // one name rule — the same answer the model refuses a video with and
         // the scene compiles a background with, so a row cannot promise a
