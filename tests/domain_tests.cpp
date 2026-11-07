@@ -636,7 +636,7 @@ void exerciseStyles() {
 
     check(docs.updateTheme(other, "#ff0000", "#000", "", "Arial", 0.0, "left", 2.0, &error) &&
               docs.findTheme(other)->textColor == "#ff0000" &&
-              docs.findTheme(other)->backgroundColor == "#000" &&
+              docs.findTheme(other)->backgroundColor.empty() &&
               docs.findTheme(other)->fontSize == 0.0 &&
               docs.findTheme(other)->align == "left" &&
               docs.findTheme(other)->lineSpacing == 2.0,
@@ -657,8 +657,8 @@ void exerciseStyles() {
     const Id sunset = docs.createTheme("Sunset", "#ffffff", "#301020", "#c05020",
                                        "DejaVu Serif", 64.0, "center", kDefaultLineSpacing,
                                        &error);
-    check(!sunset.empty() && docs.findTheme(sunset)->backgroundGradient == "#c05020",
-          "a style can name a second background colour");
+    check(!sunset.empty() && docs.findTheme(sunset)->backgroundGradient.empty(),
+          "legacy background parameters do not become theme fields");
     check(docs.findTheme(theme)->backgroundGradient.empty(),
           "a style that names none stays flat");
     error.clear();
@@ -669,8 +669,8 @@ void exerciseStyles() {
           "a named gradient colour is refused naming its role");
     check(docs.updateTheme(sunset, "#ffffff", "#301020", "#20c050", "DejaVu Serif", 64.0,
                            "center", kDefaultLineSpacing, &error) &&
-              docs.findTheme(sunset)->backgroundGradient == "#20c050",
-          "updateStyle replaces the gradient too");
+              docs.findTheme(sunset)->backgroundGradient.empty(),
+          "theme edits cannot add a gradient");
     check(docs.updateTheme(sunset, "#ffffff", "#301020", "", "DejaVu Serif", 64.0, "center",
                            kDefaultLineSpacing, &error) &&
               docs.findTheme(sunset)->backgroundGradient.empty(),
@@ -1784,17 +1784,15 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         check(openshow::domain::saveService(graded, gradedDir, &error) &&
                   openshow::domain::loadService(&back, gradedDir, &error),
               "a service of graded styles saves and reloads");
-        check(back.findTheme(sunset)->backgroundGradient == "#c05020" &&
+        check(back.findTheme(sunset)->backgroundGradient.empty() &&
                   back.findTheme(plain)->backgroundGradient.empty(),
-              "the second colour survives the round trip, flat stays flat");
+              "themes remain background-free after reopening");
         check(sameService(graded, back), "the whole graded service compares field by field");
         const std::string manifest = readFile(gradedDir / "service.json");
-        check(manifest.find("\"backgroundGradient\":\"#c05020\"") != std::string::npos &&
-                  manifest.find("\"backgroundGradient\":\"\"") != std::string::npos,
-              "the gradient AND the flat are both written by name — leaving the "
-              "default to an absent key is the rule this project refuses");
-        check(manifest.find("\"format\":10") != std::string::npos,
-              "the manifest says format 10 (SL.6: the service also carries its"
+        check(manifest.find("\"backgroundGradient\"") == std::string::npos,
+              "theme backgrounds are absent from saved files");
+        check(manifest.find("\"format\":11") != std::string::npos,
+              "the manifest says format 11 (foreground themes and the service"
               " catalog song link and attribution)");
         check(manifest.find("\"transition\":{") != std::string::npos,
               "the root transition is written by name, not left to an absent key");
@@ -2317,7 +2315,7 @@ void exerciseThemeChain() {
 
     // With no current theme the chain is the two layers the service always had.
     ResolvedAppearance a = docs.appearanceForSlide(show, slide);
-    check(a.textColor == "#333333" && a.backgroundColor == "#444444" &&
+    check(a.textColor == "#333333" && a.backgroundColor.empty() &&
               a.backgroundGradient.empty() && a.fontFamily == "Slide Serif" &&
               a.fontSize == 50.0 && a.align == "right" && a.lineSpacing == 1.3,
           "with no current theme the slide theme speaks every property");
@@ -2329,8 +2327,8 @@ void exerciseThemeChain() {
     check(docs.setCurrentTheme(current) && docs.currentThemeId() == current,
           "setting the current theme names it service-wide");
     a = docs.appearanceForSlide(show, slide);
-    check(a.textColor == "#555555" && a.backgroundColor == "#666666" &&
-              a.backgroundGradient == "#777777" && a.fontFamily == "Current Sans" &&
+    check(a.textColor == "#555555" && a.backgroundColor.empty() &&
+              a.backgroundGradient.empty() && a.fontFamily == "Current Sans" &&
               a.fontSize == 60.0 && a.align == "center" && a.lineSpacing == 1.5,
           "the current theme outranks the slide theme and the show default");
 
@@ -2350,7 +2348,7 @@ void exerciseThemeChain() {
     check(docs.setSlideCustomizations(show, slide, changed, &error),
           "a slide customizes one colour");
     a = docs.appearanceForSlide(show, slide);
-    check(a.textColor == "#eeeeee" && a.backgroundColor == "#666666" &&
+    check(a.textColor == "#eeeeee" && a.backgroundColor.empty() &&
               a.fontFamily == "Current Sans" && a.fontSize == 60.0,
           "the customized field wins and every other still comes from the chain");
 
@@ -2722,7 +2720,7 @@ void exerciseTextContextChain() {
     const ResolvedAppearance a = docs.appearanceForSlide(show, reading);
     check(a.fontSize == 28.0 && a.lineSpacing == 1.15 && a.align == "right",
           "the context sets size, spacing and alignment over both themes");
-    check(a.textColor == "#555555" && a.backgroundColor == "#666666" &&
+    check(a.textColor == "#555555" && a.backgroundColor.empty() &&
               a.fontFamily == "Current Sans",
           "the look still comes from the themes — a context carries no colour, and its "
           "silence on a family falls through to its own theme, not a namesake's");
@@ -3601,6 +3599,41 @@ void exerciseTransitionStorage(const fs::path& tempRoot) {
     }
 }
 
+void exerciseForegroundThemeStorage(const fs::path& tempRoot) {
+    Documents docs;
+    std::string error;
+    const auto theme = docs.createTheme("Bright", "#ffd23f", "#101828", "#303848", "", 64, "left", 1.6);
+    const auto show = docs.createShow("Lyrics");
+    const auto slide = docs.appendSlide(show);
+    docs.setShowDefaultTheme(show, theme);
+    check(docs.findTheme(theme)->backgroundColor.empty() && docs.findTheme(theme)->backgroundGradient.empty()
+              && docs.appearanceForSlide(show, slide).backgroundColor.empty(),
+          "theme creation cannot store or resolve a backdrop");
+    check(docs.updateTheme(theme, "#ffffff", "#f00", "#00f", "", 72, "center", 1.25)
+              && docs.findTheme(theme)->backgroundColor.empty(),
+          "legacy theme edits also leave the backdrop absent");
+    const auto dir = tempRoot / "foreground-themes";
+    check(openshow::domain::saveService(docs, dir, &error), "save foreground themes");
+    auto json = boost::json::parse(readFile(dir / "service.json"));
+    check(json.at("format").as_int64() == 11, "foreground theme files identify format 11");
+    for (auto& value : json.at("themes").as_array()) {
+        check(!value.as_object().contains("backgroundColor") && !value.as_object().contains("backgroundGradient"),
+              "new service files contain no theme background settings");
+        value.as_object()["backgroundColor"] = "#101828";
+        value.as_object()["backgroundGradient"] = "";
+    }
+    writeFile(dir / "service.json", boost::json::serialize(json));
+    Documents back;
+    check(!openshow::domain::loadService(&back, dir, &error), "format 11 refuses theme backgrounds");
+    json.as_object()["format"] = 10;
+    writeFile(dir / "service.json", boost::json::serialize(json));
+    check(openshow::domain::loadService(&back, dir, &error)
+              && back.findTheme(theme)->backgroundColor.empty()
+              && back.findTheme(theme)->textColor == "#ffffff"
+              && back.appearanceForSlide(show, slide).backgroundColor.empty(),
+          "legacy backgrounds are retired while text styling and references survive");
+}
+
 void exerciseDefaultThemeFloor(const fs::path& tempRoot) {
     Documents docs;
     std::string error;
@@ -3612,14 +3645,14 @@ void exerciseDefaultThemeFloor(const fs::path& tempRoot) {
           "a fresh service is seeded with exactly the Default theme");
     const Theme& floor = *docs.findTheme("default");
     check(floor.name == "Default" && floor.textColor == "#ffffff" &&
-              floor.backgroundColor == "#000000" && floor.backgroundGradient.empty() &&
+              floor.backgroundColor.empty() && floor.backgroundGradient.empty() &&
               floor.fontFamily.empty() && floor.fontSize == 0.0 && floor.align == "center" &&
               floor.lineSpacing == kDefaultLineSpacing && !floor.placement,
           "the Default look is the built-in look it replaced, property for property");
     const Id show = docs.createShow("Deck", &error);
     const Id slide = docs.appendSlide(show, &error);
     const ResolvedAppearance bare = docs.appearanceForSlide(show, slide);
-    check(bare.textColor == "#ffffff" && bare.backgroundColor == "#000000" && !bare.placement,
+    check(bare.textColor == "#ffffff" && bare.backgroundColor.empty() && !bare.placement,
           "an unthemed slide resolves through the Default floor");
     // A theme like any other, except at the delete button...
     check(docs.renameTheme("default", "House floor", &error) &&
@@ -4593,6 +4626,7 @@ int main() {
     exerciseBoxStorage(tempRoot);
     exerciseTextStyleStorage(tempRoot);
     exerciseTransitionStorage(tempRoot);
+    exerciseForegroundThemeStorage(tempRoot);
     exerciseDefaultThemeFloor(tempRoot);
     exerciseScriptureShows(tempRoot);
     exerciseSongReference(tempRoot);

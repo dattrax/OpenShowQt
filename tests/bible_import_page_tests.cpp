@@ -334,6 +334,14 @@ int main(int argc, char* argv[]) {
         scripture.previewSlide(scripture.slides().size() > 1 ? 1 : 0);
         QTest::qWait(120);
         check(!worker.wordsOnAir(), "a clicked preview is still off air");
+        QElapsedTimer alphaWait;
+        alphaWait.start();
+        while ((!worker.selectionReady() || worker.selectionImage().isNull()) && alphaWait.elapsed() < 5000)
+            QTest::qWait(25);
+        check(worker.selectionReady() && !worker.selectionImage().isNull()
+                  && qAlpha(worker.selectionImage().pixel(0, 0)) == 0,
+              "Bible selection previews retain genuine alpha outside their text");
+
 
         // --- CS.3: the plan owns an identity, the canvas knows its answer --
         // Thumbnail keys name the plan GENERATION and the slide, so a new

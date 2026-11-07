@@ -2109,7 +2109,7 @@ std::vector<std::pair<std::int64_t, std::int64_t>> selectLedger(
 // RGBA8888 straight out of the slot, and that is the layout under test.
 bool pixelsAre(const QImage& image, int red, int green, int blue) {
     if (image.isNull() || image.sizeInBytes() < 3 ||
-        image.format() != QImage::Format_RGBA8888) {
+        image.format() != QImage::Format_RGBA8888_Premultiplied) {
         return false;
     }
     const auto* bytes = static_cast<const uchar*>(image.constBits());

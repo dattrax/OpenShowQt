@@ -69,6 +69,12 @@ void SceneStore::forEachPrepared(const SceneVisitor& visit) const {
     for (const auto& entry : fScenes) {
         visit(*entry.second);
     }
+    // A queued transparent foreground may retain a background whose original
+    // prepared revision was evicted before its frame landed. Keep its assets
+    // in the same held-content walk used by the image cache's pin set.
+    const auto desired = fScenes.find(fDesiredScene);
+    if (fDesiredContent && (desired == fScenes.end() || desired->second != fDesiredContent))
+        visit(*fDesiredContent);
 }
 
 std::size_t SceneStore::prepared() const {
@@ -91,6 +97,14 @@ bool SceneStore::present(uint64_t preparedRevision,
     fPublished.pendingScene = alreadyConfirmed ? 0 : preparedRevision;
     const bool changed = preparedRevision != fDesiredScene;
     if (changed) {
+        const auto incoming = fScenes.at(preparedRevision);
+        if (incoming->background.transparent && fDesiredContent) {
+            auto composition = std::make_shared<openshow::scene::Scene>(*incoming);
+            composition->background = fDesiredContent->background;
+            fDesiredContent = std::move(composition);
+        } else {
+            fDesiredContent = incoming;
+        }
         fDesiredScene = preparedRevision;
         // The whole record travels with the change to the frame that reveals
         // it (task TR.1): the durations belong to this command, not to the
@@ -155,8 +169,7 @@ void SceneStore::decide(Decision* out) {
     out->snapshot.scene = fDesiredScene;
     out->snapshot.transition = fDesiredTransition;
     out->snapshot.monitor = fDesiredMonitor;
-    const auto entry = fScenes.find(out->snapshot.scene);
-    out->snapshot.content = entry != fScenes.end() ? entry->second : nullptr;
+    out->snapshot.content = fDesiredContent;
 }
 
 void SceneStore::seed(uint32_t mask, int monitor) {

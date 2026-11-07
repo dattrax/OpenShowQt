@@ -623,7 +623,43 @@ void commandAndRenderThreadsConcurrently() {
 
 }  // namespace
 
+void transparentCuesRetainOnlyTheBackdrop() {
+    SceneStore store;
+    auto media = makeScene("media");
+    const auto background = media.background;
+    const auto first = store.prepare(media);
+    check(store.present(first, kFade, nullptr, nullptr), "a background cue is queued");
+    openshow::scene::Scene lyrics;
+    lyrics.background.transparent = true;
+    openshow::scene::SceneItem words;
+    words.lines = {"Only new lyrics"};
+    lyrics.items.push_back(words);
+    const auto second = store.prepare(lyrics);
+    check(store.present(second, kFade, nullptr, nullptr), "transparent lyrics queue over the background");
+    SceneStore::Decision decision;
+    store.decide(&decision);
+    check(decision.snapshot.content->background == background
+              && decision.snapshot.content->items == lyrics.items,
+          "the background remains while previous presentation items are replaced");
+    ActiveScene pin;
+    check(store.pin(second, &pin) && pin->background.transparent,
+          "prepared lyrics remain transparent for off-air previews");
+    for (int i = 0; i < 24; ++i) store.prepare(makeScene("unused" + std::to_string(i)));
+    bool retainsBackground = false;
+    store.forEachPrepared([&](const openshow::scene::Scene& scene) {
+        retainsBackground = retainsBackground || scene.background == background;
+    });
+    check(!store.holds(first) && retainsBackground,
+          "queued composition keeps inherited background assets held after source eviction");
+    const auto clear = store.prepare(openshow::scene::clearedScene());
+    check(store.present(clear, kFade, nullptr, nullptr), "explicit clear still queues");
+    store.decide(&decision);
+    check(!decision.snapshot.content->background.hasImage && decision.snapshot.content->items.empty(),
+          "an explicit clear removes both the retained background and words");
+}
+
 int main() {
+    transparentCuesRetainOnlyTheBackdrop();
     freshStoreIsHonestlyEmpty();
     onlyAHeldRevisionCanBePresented();
     layerBitsAndRevisions();

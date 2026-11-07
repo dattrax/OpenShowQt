@@ -126,6 +126,7 @@ Rectangle {
             height: slides.rowHeight - 8
             selected: index === docs.currentSlide
             caption: (index + 1) + "  " + modelData.preview
+            sectionSuffix: rail.showName
             sectionLabel: modelData.sectionLabel || ""
             showSectionLabel: index === 0 || modelData.sectionLabel.trim().toLowerCase()
                 !== rail.rows[index - 1].sectionLabel.trim().toLowerCase()

@@ -196,6 +196,7 @@ ScrollView {
                 caption: (index + 1) + "  " + (modelData.row.group !== ""
                                                 ? modelData.row.group
                                                 : modelData.row.label)
+                sectionSuffix: songImport.title
                 sectionLabel: modelData.row.group
                 showSectionLabel: index === 0 || modelData.row.group.trim().toLowerCase()
                     !== songImport.slides[index - 1].group.trim().toLowerCase()

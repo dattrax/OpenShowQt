@@ -229,6 +229,22 @@ void exerciseClears() {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+    {
+        openshow::scene::Scene alpha;
+        alpha.background.transparent = true;
+        openshow::scene::SceneItem words;
+        words.lines = {"Foreground only"};
+        alpha.items.push_back(words);
+        const auto raw = QString::fromStdString(boost::json::serialize(openshow::scene::toJson(alpha)));
+        const auto composed = openshow::ui::withRetainedBackground(raw, fullSceneJson());
+        check(openshow::ui::sceneContent(composed).background && !openshow::ui::sceneContent(raw).background,
+              "foreground Go retains the previous media background without changing preview JSON");
+        const auto cleared = openshow::ui::withBackgroundCleared(composed);
+        check(!openshow::ui::sceneContent(cleared).background
+                  && openshow::ui::sceneContent(cleared).words,
+              "explicit background clear still removes the inherited background alone");
+    }
+
     QCoreApplication app(argc, argv);
     exerciseContentFlags();
     exerciseClears();

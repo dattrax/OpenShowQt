@@ -164,6 +164,11 @@ int would be; `"700"` and 400.5 stay refused on both sides.
 
 ### SlidePreviewSurface
 
+Transparent Selection/Thumbnail pixels are painted over a cached muted
+checkerboard by PreviewView. The worker frame and scene stay alpha; audience
+mirrors and opaque media keep their actual composition. Letterbox regions stay
+black. Song captions use “Section – Song name” at each section boundary.
+
 `src/ui/SlidePreviewSurface.qml` (extracted in CS.2). Aspect-fit worker
 pixels in a frame, with status/placeholder and an overlay slot. Wraps the
 existing `PreviewView`; it is the only place the fit arithmetic lives.
@@ -197,7 +202,7 @@ Show, Edit and clipboard import supply section boundaries from model order.
 
 | | |
 |---|---|
-| Inputs | the embedded `SlidePreviewSurface` via the `surface` alias (bound through by the host: target, key, controller, text fallback as `surface.placeholder` with `placeholderVisible`); `caption` (string; the strip fills the room under the picture); `sectionLabel`/`showSectionLabel`/`sectionPrefix` (optional section caption, consecutive-heading gate and service-name prefix; neutral default preserves ordinary captions), `selected`, `live` (booleans — chrome only, the host computes them from acknowledged worker state; a pending go wears a host chip, not the card border); `idleColor`/`hoverColor` |
+| Inputs | the embedded `SlidePreviewSurface` via the `surface` alias (bound through by the host: target, key, controller, text fallback as `surface.placeholder` with `placeholderVisible`); `caption` (string; the strip fills the room under the picture); `sectionLabel`/`showSectionLabel`/`sectionPrefix`/`sectionSuffix` (optional section caption, consecutive-heading gate and title affixes; neutral default preserves ordinary captions), `selected`, `live` (booleans — chrome only, the host computes them from acknowledged worker state; a pending go wears a host chip, not the card border); `idleColor`/`hoverColor` |
 | Events | `activated()` (primary click), `contextRequested(mouseX, mouseY)` (right click, in CARD coordinates — the host maps it to wherever its menu lives) |
 | Adapter | the host decides what `activated()` means: Show presents the cue; Bible selects the generated slide off air; Edit selects the authored slide; Themes selects the view. The card itself never calls a presentation verb |
 | Consumers | ShowPage cue tiles, EditorSlideRail authored-slide tiles, Bible generated-slide cards, ThemeEditor Songs/Bible view tiles |
@@ -323,8 +328,10 @@ editing with enable/off state, own/inherited badges and the resolved values.
 ### BackgroundControls
 
 `src/ui/BackgroundControls.qml` (CS.5). The colour rows a base record
-stores: text colour, background colour, and the gradient colour whose empty
-string is the EXPLICIT flat.
+stores: text colour for presentation themes, plus background colour and gradient
+for authored slide targets. The two backdrop rows are hidden for themes; their
+adapter refuses backdrop writes. A slide gradient whose empty string is explicit
+flat stays distinct from inheritance.
 
 | | |
 |---|---|

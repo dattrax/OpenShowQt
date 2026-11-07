@@ -675,7 +675,7 @@ Theme Documents::defaultTheme() {
     theme.id = kDefaultThemeId;
     theme.name = "Default";
     theme.textColor = "#ffffff";
-    theme.backgroundColor = "#000000";
+    theme.backgroundColor.clear();
     theme.backgroundGradient.clear();  // flat
     theme.fontFamily.clear();          // the platform font
     theme.fontSize = 0.0;              // the renderer's own default size
@@ -705,7 +705,7 @@ Id Documents::createTheme(const std::string& name, const std::string& textColor,
         fail(error, "a theme needs a name");
         return {};
     }
-    if (!validColor(textColor, error) || !validColor(backgroundColor, nullptr)) {
+    if (!validColor(textColor, error) || (!backgroundColor.empty() && !validColor(backgroundColor, nullptr))) {
         if (error && error->empty()) {
             fail(error, "background colour '" + backgroundColor + "' is not #rgb or #rrggbb");
         }
@@ -726,8 +726,10 @@ Id Documents::createTheme(const std::string& name, const std::string& textColor,
     theme.id = nextId("theme");
     theme.name = clean;
     theme.textColor = textColor;
-    theme.backgroundColor = backgroundColor;
-    theme.backgroundGradient = backgroundGradient;
+    // Legacy call signatures still accept backdrop arguments. Presentation
+    // themes never retain them; backgrounds are authored on slides/media.
+    theme.backgroundColor.clear();
+    theme.backgroundGradient.clear();
     theme.fontFamily = fontFamily;
     theme.fontSize = fontSize;
     theme.align = align;
@@ -799,7 +801,7 @@ bool Documents::updateTheme(const Id& themeId, const std::string& textColor,
         fail(error, idError("theme", themeId));
         return false;
     }
-    if (!validColor(textColor, error) || !validColor(backgroundColor, nullptr)) {
+    if (!validColor(textColor, error) || (!backgroundColor.empty() && !validColor(backgroundColor, nullptr))) {
         if (error && error->empty()) {
             fail(error, "background colour '" + backgroundColor + "' is not #rgb or #rrggbb");
         }
@@ -814,8 +816,8 @@ bool Documents::updateTheme(const Id& themeId, const std::string& textColor,
         return false;
     }
     theme->textColor = textColor;
-    theme->backgroundColor = backgroundColor;
-    theme->backgroundGradient = backgroundGradient;
+    theme->backgroundColor.clear();
+    theme->backgroundGradient.clear();
     theme->fontFamily = fontFamily;
     theme->fontSize = fontSize;
     theme->align = align;
@@ -1489,8 +1491,8 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
         return std::string();
     };
     out.textColor = pickString(c.textColor, nullptr, &Theme::textColor);
-    out.backgroundColor = pickString(c.backgroundColor, nullptr, &Theme::backgroundColor);
-    out.backgroundGradient = pickString(c.backgroundGradient, nullptr, &Theme::backgroundGradient);
+    out.backgroundColor = c.backgroundColor.value_or("");
+    out.backgroundGradient = c.backgroundGradient.value_or("");
     out.fontFamily = pickString(c.fontFamily, &TextContext::fontFamily, &Theme::fontFamily);
     out.align = pickString(c.align, &TextContext::align, &Theme::align);
     // A customized number is an ANSWER, even 0 — "renderer default" over

@@ -840,3 +840,16 @@ confirmation, with Cancel focused by default. Confirmed source identities and
 catalog links are removed from older history snapshots so undo cannot resurrect
 them, while unrelated history and playable service copies remain. In-flight
 song preparation is cancelled if its Library source is deleted.
+
+
+### Transparent presentation content (2026-11-07)
+
+Themes no longer supply backgrounds. Format 11 saves only foreground theme
+settings and migrates formats 1–10 by retiring theme fills/gradients. Slide-owned
+backgrounds and assets retain their authored behavior. Scene 5 carries explicit
+`background.transparent`; scenes 3/4 remain readable with their old opaque
+semantics. The worker preserves RGBA for off-air pictures and retains the active
+background when replacing it with transparent presentation content. The Qt
+preview paints a checkerboard behind alpha; it never reaches worker scene
+content or audience frames. Details and regression evidence:
+[acceptance](reviews/transparent-presentations-2026-11-07.md).

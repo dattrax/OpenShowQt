@@ -228,6 +228,7 @@ private:
 
     // Desired: what the newest accepted command asked for.
     uint64_t fDesiredScene = 0;
+    ActiveScene fDesiredContent;  // foreground plus the independently retained backdrop
     // The whole transition the newest accepted command named (task TR.1) —
     // kind and both durations, held together so no half of one reveal can be
     // newer than the other.

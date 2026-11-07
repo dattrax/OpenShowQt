@@ -118,6 +118,8 @@ inline constexpr double kDefaultBoxHeight = 880.0;
 // background: whether the file exists and decodes stays the renderer's
 // problem (and the renderer's reported error, task 5.5).
 struct Background {
+    // No backdrop supplied by this cue: presentation pixels remain alpha.
+    bool transparent = false;
     Color color = kBlack;
     // Second colour of a gradient background (task 6.17c3, review R17):
     // the canvas fills from `color` at the top to `gradient` at the bottom

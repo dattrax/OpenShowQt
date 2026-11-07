@@ -430,8 +430,7 @@ Rectangle {
                 live: rowLive
                 sectionLabel: modelData.sectionLabel
                 showSectionLabel: modelData.sectionStart
-                sectionPrefix: modelData.groupStart && showPage.sourceShowId === ""
-                    ? modelData.showName + " \u00b7 " : ""
+                sectionSuffix: modelData.showName
                 caption: (modelData.groupStart && showPage.sourceShowId === ""
                           ? modelData.showName + " \u00b7 " : "")
                          + (modelData.slideIndex + 1) + "  " + modelData.preview

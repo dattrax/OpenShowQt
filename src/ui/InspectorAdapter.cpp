@@ -222,6 +222,11 @@ QVariantMap InspectorAdapter::fieldState(const QString& field) const {
         if (row.isEmpty()) {
             return nothing(QStringLiteral("no theme '%1'").arg(id));
         }
+        if (name == QLatin1String("backgroundColor") || name == QLatin1String("backgroundGradient")) {
+            auto state = shape(QVariant(), QVariant(), false, QString(), false, false);
+            state.insert(QStringLiteral("reason"), QStringLiteral("themes style presentation content; backgrounds belong to slides/media"));
+            return state;
+        }
         // The compiled fixture is the value authority. In particular a silent
         // style field inherits the editable Default theme before the contract
         // floor; substituting 400/disabled here can contradict the picture.
@@ -461,6 +466,11 @@ bool InspectorAdapter::commit(const QString& field, const QVariant& value) {
     const QString id = fTarget.value(QStringLiteral("id")).toString();
     const QString view = fTarget.value(QStringLiteral("view")).toString();
     const QString name = canonicalField(field);
+    if (kind == QLatin1String("theme") && (name == QLatin1String("backgroundColor") || name == QLatin1String("backgroundGradient"))) {
+        emit refused(field, QStringLiteral("themes cannot store backgrounds"));
+        return false;
+    }
+
 
     // NOTE: there is deliberately NO "value unchanged" guard here. A commit
     // that equals the RESOLVED value can still be a materialise — the view
@@ -726,6 +736,11 @@ bool InspectorAdapter::reset(const QString& field) {
     const QString id = fTarget.value(QStringLiteral("id")).toString();
     const QString view = fTarget.value(QStringLiteral("view")).toString();
     const QString name = canonicalField(field);
+    if (kind == QLatin1String("theme") && (name == QLatin1String("backgroundColor") || name == QLatin1String("backgroundGradient"))) {
+        emit refused(field, QStringLiteral("themes cannot store backgrounds"));
+        return false;
+    }
+
 
     if (kind == QLatin1String("theme")) {
         if (isBaseField(name)) {

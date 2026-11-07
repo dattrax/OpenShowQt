@@ -4062,16 +4062,14 @@ int main(int argc, char** argv) {
               "the fields open showing the worn theme's resolved values and nothing is customized");
         check(!badge->property("visible").toBool(), "a clean field carries no badge");
 
-        // House gains a gradient, so the slide's "" has a theme to override.
-        check(docs.editTheme(house, QStringLiteral("House"), QStringLiteral("#ffffff"),
-                             QStringLiteral("#000000"), QStringLiteral("#333333"),
-                             QString(), 0.0, QStringLiteral("center"), 1.25),
-              "House is restyled graded in the Theme Editor's way");
+        // Backgrounds belong to the slide, independently of its theme.
+        check(docs.customizeCurrentSlide("backgroundGradient", "#333333"),
+              "the slide gains its own explicit background gradient");
         check(waitFor([&] {
                   return gradientField->property("text").toString()
                          == QLatin1String("#333333");
               }),
-              "the gradient field follows the worn theme through the binding");
+              "the gradient field follows the authored slide backdrop");
 
         // Typing a colour customizes the SLIDE; the entity is untouched.
         colourField->setProperty("text", "#00ff00");

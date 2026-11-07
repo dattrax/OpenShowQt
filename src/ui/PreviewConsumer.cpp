@@ -828,7 +828,7 @@ void PreviewConsumer::handleReady(const boost::json::object& params) {
             header->width == width && header->height == height && header->rowBytes == rowBytes;
         if (seqBefore == seq && (seqBefore & 1) == 0 && geometryAgrees) {
             QImage image(static_cast<int>(width), static_cast<int>(height),
-                         QImage::Format_RGBA8888);
+                         QImage::Format_RGBA8888_Premultiplied);
             if (!image.isNull()) {
                 std::memcpy(image.bits(), slotBase + sizeof(proto::PreviewSlotHeader),
                             static_cast<std::size_t>(rowBytes) * height);

@@ -1498,6 +1498,7 @@ sk_sp<SkShader> backgroundFillShader(const openshow::scene::Scene& scene, SkColo
 void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
                          SceneImageCache* images, const SkPaint* paint,
                          const SkImage* video) {
+    if (scene.background.transparent) return;
     const uint32_t color = scene.background.color;
     const SkColor fill =
         SkColorSetARGB(0xFF, (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF);
@@ -1688,7 +1689,7 @@ bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string&
     }
     SkCanvas* canvas = surface->getCanvas();
     canvas->resetMatrix();
-    canvas->clear(SK_ColorBLACK);
+    canvas->clear(scene.background.transparent ? SK_ColorTRANSPARENT : SK_ColorBLACK);
 
     // The output rule, identical to SceneRenderer::draw.
     const float scale = std::min(static_cast<float>(width) / kSceneCanvasWidth,

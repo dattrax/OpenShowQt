@@ -501,6 +501,9 @@ int main(int argc, char** argv) {
         check(card->property("displayCaption").toString() == label,
               "a song card labels its section instead of repeating the first lyric");
     }
+    card->setProperty("sectionSuffix", "Synthetic song");
+    check(card->property("displayCaption").toString() == "Ending – Synthetic song",
+          "the section caption includes the song title without a numeric prefix");
     card->setProperty("sectionLabel", "CHORUS");
     check(card->property("sectionTitle").toString() == "Chorus", "section labels have consistent display casing");
     card->setProperty("showSectionLabel", false);
@@ -512,6 +515,7 @@ int main(int argc, char** argv) {
     card->setProperty("live", false);
     card->setProperty("showSectionLabel", true);
     card->setProperty("sectionLabel", "");
+    card->setProperty("sectionSuffix", "");
     check(card->property("displayCaption") == card->property("caption"),
           "Bible and ordinary presentation captions retain their existing text");
 

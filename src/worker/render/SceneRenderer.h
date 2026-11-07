@@ -200,7 +200,7 @@ public:
     // size, so it belongs to the draw call rather than the frame (the
     // audience's footer and the preview's empty one are the same scene).
     void draw(const SceneFrame& frame, SkCanvas* canvas, int widthPx, int heightPx,
-              const std::string& statusLine = {}, const SkImage* backgroundVideo = nullptr);
+              const std::string& statusLine = {}, const SkImage* backgroundVideo = nullptr, bool alphaPreview = false);
 
     // Single-target convenience for the development harness and the CLI:
     // capture, draw and commit in one call, which is right only when this

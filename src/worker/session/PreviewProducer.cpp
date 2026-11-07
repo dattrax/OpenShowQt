@@ -850,7 +850,7 @@ void PreviewProducer::applyStreamState() {
 PreviewProducer::PreviewFill PreviewProducer::fillPreviewSlot(
     const SceneFrame& frame, const SkImage* sceneVideo, const SkImage* overlayVideo,
     PreviewStream& stream, int slot, uint32_t width, uint32_t height, SceneRenderer* renderer,
-    sk_sp<SkSurface>* surface) {
+    sk_sp<SkSurface>* surface, bool alphaPreview) {
     // One target's draw into a claimed slot, shared by every target of the
     // stream (task 6.16a, and the list's thumbnails in 6.16b): they differ
     // in WHICH frame they draw, WHOSE request the result answers, and with
@@ -894,7 +894,7 @@ PreviewProducer::PreviewFill PreviewProducer::fillPreviewSlot(
     // The diagnostics status line stays empty so it does not crowd the
     // preview; video goes where the caller decided it belongs.
     renderer->draw(frame, target->getCanvas(), static_cast<int>(width),
-                   static_cast<int>(height), std::string(), sceneVideo);
+                   static_cast<int>(height), std::string(), sceneVideo, alphaPreview);
     if (overlayVideo != nullptr) {
         // The development placement only (task 1.5e): the bench's video,
         // when it is not the scene's own background, over the whole preview.
@@ -1148,7 +1148,7 @@ bool PreviewProducer::publishSelectionFrame(const DrawInput& input) {
 
     const PreviewFill fill =
         fillPreviewSlot(frame, sameVideoAsset ? input.video : nullptr, nullptr, *stream, slot,
-                        width, height, fAudience, &fPreviewSurface);
+                        width, height, fAudience, &fPreviewSurface, true);
     if (fill == PreviewFill::kNoSurface) {
         stream->abort(slot);
         std::lock_guard<std::mutex> lock(fMutex);
@@ -1329,7 +1329,7 @@ bool PreviewProducer::publishThumbnailFrame(const DrawInput& input) {
 
     const PreviewFill fill =
         fillPreviewSlot(frame, sameVideoAsset ? input.video : nullptr, nullptr, *stream, slot,
-                        width, height, renderer.get(), &fThumbnailSurface);
+                        width, height, renderer.get(), &fThumbnailSurface, true);
     if (fill == PreviewFill::kNoSurface) {
         stream->abort(slot);
         std::lock_guard<std::mutex> lock(fMutex);

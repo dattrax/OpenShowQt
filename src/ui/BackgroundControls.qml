@@ -134,8 +134,11 @@ Column {
         }
         RevertChip { id: textChip; chipField: "textColor" }
     }
-    Text { text: "Background colour"; color: "#b0b0b0"; font.pixelSize: 11 }
+    readonly property bool supportsBackdrop: background.adapter.target.kind === "slide"
+
+    Text { visible: background.supportsBackdrop; text: "Background colour"; color: "#b0b0b0"; font.pixelSize: 11 }
     Row {
+        visible: background.supportsBackdrop
         spacing: 2
         PanelField {
             id: backField
@@ -145,8 +148,9 @@ Column {
         }
         RevertChip { id: backChip; chipField: "backgroundColor" }
     }
-    Text { text: "Gradient colour (\"\" = flat)"; color: "#b0b0b0"; font.pixelSize: 11 }
+    Text { visible: background.supportsBackdrop; text: "Gradient colour (\"\" = flat)"; color: "#b0b0b0"; font.pixelSize: 11 }
     Row {
+        visible: background.supportsBackdrop
         spacing: 2
         PanelField {
             id: gradientField

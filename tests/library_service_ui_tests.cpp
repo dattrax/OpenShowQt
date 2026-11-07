@@ -11,6 +11,8 @@
 #include <QClipboard>
 #include <QElapsedTimer>
 #include <QGuiApplication>
+#include <QPainter>
+#include <QQuickPaintedItem>
 #include <QJSValue>
 #include <QLineF>
 #include <QQmlApplicationEngine>
@@ -436,7 +438,7 @@ int main(int argc, char** argv) {
             if (row.value("showId").toString() != fixture) continue;
             const int i = row.value("slideIndex").toInt();
             check(tile->property("showSectionLabel").toBool() == starts[i], "Show passes section boundaries to its actual cards");
-            if (i == 0) check(tile->property("displayCaption").toString() == "Section captions \u00b7 Blank",
+            if (i == 0) check(tile->property("displayCaption").toString() == "Blank \u2013 Section captions",
                               "the opening caption retains the service item's name");
             if (!starts[i]) {
                 ++continuations;
@@ -450,6 +452,27 @@ int main(int argc, char** argv) {
                 if (worker.thumbnail(slide.toMap().value("id").toString()).isNull()) return false;
             return true;
         }), "all section and continuation cards receive real lyric thumbnails");
+        for (const auto& slide : fixtureSlides) {
+            const auto pixels = worker.thumbnail(slide.toMap().value("id").toString());
+            check(pixels.hasAlphaChannel() && qAlpha(pixels.pixel(0, 0)) == 0,
+                  "real song thumbnails preserve alpha outside the presentation content");
+        }
+        for (auto* tile : tiles) {
+            const auto row = tile->property("modelData").toMap();
+            if (row.value("showId").toString() != fixture || row.value("slideIndex").toInt() != 0) continue;
+            auto* surface = tile->property("surface").value<QQuickItem*>();
+            auto* painterItem = qobject_cast<QQuickPaintedItem*>(surface->property("preview").value<QQuickItem*>());
+            check(painterItem != nullptr, "the blank card has a preview painter");
+            if (!painterItem) continue;
+            QImage painted(painterItem->size().toSize(), QImage::Format_ARGB32_Premultiplied);
+            painted.fill(Qt::transparent);
+            QPainter painter(&painted);
+            painterItem->paint(&painter);
+            painter.end();
+            check(painted.pixelColor(1, 1) != painted.pixelColor(9, 1)
+                      && painted.pixelColor(1, 1).alpha() == 255,
+                  "the preview paints a checkerboard behind genuine alpha pixels");
+        }
         if (!debugCapture.isEmpty()) window->grabWindow().save(debugCapture + "-sections-show.png");
         const auto selectedFrames = worker.selectionFrames();
         window->setProperty("page", "edit");
@@ -470,6 +493,8 @@ int main(int argc, char** argv) {
               "Edit suppresses a repeated heading even when its predecessor is offscreen, without hiding lyric words");
         check(waitFor([&] { return worker.selectionReady() && worker.selectionFrames() > selectedFrames; }),
               "the continuation's lyric words also render on the Edit canvas");
+        check(!worker.selectionImage().isNull() && qAlpha(worker.selectionImage().pixel(0, 0)) == 0,
+              "the large Edit preview also retains alpha outside the presentation content");
         check(waitFor([&] {
             for (int i = 2; i < fixtureSlides.size(); ++i)
                 if (worker.thumbnail(fixtureSlides[i].toMap().value("id").toString()).isNull()) return false;

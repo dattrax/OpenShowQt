@@ -280,6 +280,7 @@ int main(int argc, char* argv[]) {
     // the untouched layer rides through unchanged.
     auto withColor = [](const QString& sceneJson) {
         boost::json::value parsed = boost::json::parse(sceneJson.toStdString());
+        parsed.as_object()["background"].as_object()["transparent"] = false;
         parsed.as_object()["backgroundColor"] = 0x1a2b3cu;
         return QString::fromStdString(boost::json::serialize(parsed));
     };
@@ -517,9 +518,8 @@ int main(int argc, char* argv[]) {
         const boost::json::value wornPayload = boost::json::parse(wornJson.toStdString());
         check(numberValue(wornPayload.at("items").as_array()[0].as_object().at("color")) ==
                       0xFFE000u &&
-                  numberValue(wornPayload.at("backgroundColor")) == 0x200000u &&
-                  numberValue(wornPayload.at("background").as_object().at("gradient")) ==
-                      0x602020u,
+                  numberValue(wornPayload.at("backgroundColor")) == 0u &&
+                  wornPayload.at("background").as_object().at("transparent").as_bool(),
               "the compiled payload wears the current theme: colour, background, gradient");
         const std::uint64_t revBright = presentJson(fd, nextId, wornJson);
         check(revBright != 0 && revBright != revLoud,

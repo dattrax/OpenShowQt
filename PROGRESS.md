@@ -4,6 +4,25 @@ Updated: 2026-11-07 (Europe/London).
 
 ## Current checkpoint
 
+**LRF.18 complete (transparent presentations, 2026-11-07):** Lyrics/Bible
+presentation themes no longer store or resolve fills/gradients. Format 11 omits
+those fields and reads older projects by retiring theme backdrops while keeping
+text styling, placements, contexts, assets and assignments. Authored slide/media
+backgrounds remain separate. Scene 5 represents absent backdrops explicitly;
+the worker retains the active background when replacing foreground content.
+Selection and Thumbnail pixels preserve premultiplied alpha, including blank
+cues; previews alone paint a checkerboard. Captions use Section – Song name,
+with consecutive repeated headings still suppressed.
+
+The local UI and worker build succeeds. All **19 affected suites pass**
+(168.32 s). A final **11-suite acceptance pass** also succeeds (34.85 s), with
+real song/Bible previews at 150% scale, queued-background cache retention,
+background transport, frame composition, transitions and the render-layer guard.
+Populated Show/Edit captures at normal/150% scale were visually reviewed,
+including the large Edit canvas. `git diff --check` is clean. This supersedes
+older theme-background notes. Details:
+[acceptance](docs/reviews/transparent-presentations-2026-11-07.md).
+
 **ND.1 accepted; ND.4 streaming complete (2026-11-07):** A real NDI|HX phone
 source is discovered, opened and decoded on the target machine. The venue Wi-Fi
 drops multicast mDNS between clients, so discovery uses

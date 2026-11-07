@@ -45,6 +45,7 @@ SceneContent sceneContent(const QString& sceneJson);
 // background removed (words untouched); "" when the input is not a scene
 // object. Everything else — provenance, style, the other part — carries
 // over verbatim.
+QString withRetainedBackground(const QString& sceneJson, const QString& previousJson);
 QString withWordsCleared(const QString& sceneJson);
 QString withBackgroundCleared(const QString& sceneJson);
 

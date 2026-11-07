@@ -79,6 +79,23 @@ void PreviewView::paint(QPainter* painter) {
     const QRectF target((bounds.width() - size.width()) / 2.0,
                         (bounds.height() - size.height()) / 2.0, size.width(),
                         size.height());
+    // A preview-only checkerboard shows through actual alpha pixels. Opaque
+    // audience/media frames cover it, and letterboxing remains black.
+    if (fTarget != Target::Audience && image.hasAlphaChannel()) {
+        painter->save();
+        static const QBrush checkerboard = [] {
+            QImage tile(16, 16, QImage::Format_RGB32);
+            tile.fill(QColor("#141414"));
+            QPainter pattern(&tile);
+            pattern.fillRect(8, 0, 8, 8, QColor("#252525"));
+            pattern.fillRect(0, 8, 8, 8, QColor("#252525"));
+            pattern.end();
+            return QBrush(tile);
+        }();
+        painter->setBrushOrigin(target.topLeft());
+        painter->fillRect(target, checkerboard);
+        painter->restore();
+    }
     painter->drawImage(target, image);
 }
 

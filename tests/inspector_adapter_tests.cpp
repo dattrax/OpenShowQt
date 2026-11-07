@@ -136,6 +136,10 @@ void exerciseThemeTarget(const std::filesystem::path& root) {
     InspectorAdapter adapter;
     adapter.setDocument(&docs);
     adapter.setTarget(fieldTarget(QStringLiteral("theme"), id));
+    check(!adapter.fieldState("backgroundColor").value("editable").toBool()
+              && !adapter.fieldState("backgroundGradient").value("canReset").toBool(),
+          "theme targets do not offer background editing or inheritance");
+
     Refusals refusals;
     watchRefusals(adapter, refusals);
 

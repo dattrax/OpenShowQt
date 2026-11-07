@@ -74,7 +74,9 @@ namespace {
 // resolves — and lands — exactly as it did before the setting existed. The
 // keys are era-guarded like every earlier meaning: a "transition" inside a
 // 8-file is somebody else's build meaning something by it.
-constexpr unsigned long long kServiceFormat = 10;
+// Format 11 removes background fills/gradients from presentation themes.
+constexpr unsigned long long kServiceFormat = 11;
+constexpr unsigned long long kLastBackgroundThemeFormat = 10;
 // The older versions this build reads: single-box slides (1), a stack whose
 // every item was necessarily text (2), a kinded stack whose slides had no
 // fit choice yet — cover was the only thing the worker knew (3) — a fitted
@@ -1060,11 +1062,6 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
         entry.emplace("id", theme.id);
         entry.emplace("name", theme.name);
         entry.emplace("textColor", theme.textColor);
-        entry.emplace("backgroundColor", theme.backgroundColor);
-        // The gradient colour always travels (6.17c3): the empty string IS
-        // the statement "flat", so a flat theme saved by this build reads
-        // back flat instead of depending on an absent key.
-        entry.emplace("backgroundGradient", theme.backgroundGradient);
         entry.emplace("fontFamily", theme.fontFamily);
         entry.emplace("fontSize", theme.fontSize);
         // Typography (task 4.4) always travels; the loader defaults it
@@ -1180,7 +1177,7 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     // backgroundGradient "" the same way (task 6.17c3). A
     // future version is refused naming both numbers, because guessing at a
     // format means quietly dropping whatever the newer build's operator wrote.
-    if (format != kServiceFormat && format != kServiceFormatLegacyBoxes &&
+    if (format != kServiceFormat && format != kLastBackgroundThemeFormat && format != kServiceFormatLegacyBoxes &&
         format != kServiceFormatLegacyTextOnly && format != kServiceFormatLegacyUnfit &&
         format != kServiceFormatLegacyFlat && format != kServiceFormatLegacyStyleNamed &&
         format != kServiceFormatLegacyContextless && format != kServiceFormatContexts &&
@@ -1188,7 +1185,7 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         fail(error, "service.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " + std::to_string(kServiceFormat) +
                         " and formats " + std::to_string(kServiceFormatLegacyBoxes) +
-                        " through " + std::to_string(kServiceFormatTransition) +
+                        " through " + std::to_string(kLastBackgroundThemeFormat) +
                         " with their text boxes migrated to a kinded list, their"
                         " backgrounds to cover and their themes to flat)");
         return false;
@@ -1736,7 +1733,7 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         if (!wantString(jsonTheme, "id", &theme.id, error) || !claimId(theme.id, "theme") ||
             !wantString(jsonTheme, "name", &theme.name, error) ||
             !wantString(jsonTheme, "textColor", &theme.textColor, error) ||
-            !wantString(jsonTheme, "backgroundColor", &theme.backgroundColor, error) ||
+            (format <= kLastBackgroundThemeFormat && !wantString(jsonTheme, "backgroundColor", &theme.backgroundColor, error)) ||
             !wantOptionalString(jsonTheme, "fontFamily", &theme.fontFamily, error) ||
             !wantNumber(jsonTheme, "fontSize", &theme.fontSize, error) ||
             !wantOptionalString(jsonTheme, "align", &theme.align, error) ||
@@ -1753,7 +1750,7 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         // here, exactly like backgroundColor one line up: a bad colour is
         // the scene compile's to refuse, once, with the theme named.
         if (format >= kServiceFormatLegacyStyleNamed) {
-            if (!wantString(jsonTheme, "backgroundGradient", &theme.backgroundGradient, error)) {
+            if (format <= kLastBackgroundThemeFormat && !wantString(jsonTheme, "backgroundGradient", &theme.backgroundGradient, error)) {
                 return false;
             }
         } else {
@@ -2030,6 +2027,13 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             return false;
         }
         themeIds.insert(theme.id);
+        if (format > kLastBackgroundThemeFormat &&
+            (jsonTheme.contains("backgroundColor") || jsonTheme.contains("backgroundGradient"))) {
+            fail(error, "service.json: themes cannot store backgrounds in format 11");
+            return false;
+        }
+        theme.backgroundColor.clear();
+        theme.backgroundGradient.clear();
         themes.push_back(std::move(theme));
     }
 

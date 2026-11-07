@@ -1076,9 +1076,8 @@ void exerciseWornChain(const std::filesystem::path& root) {
               a.items[0].fontFamily == QStringLiteral("Current Sans") &&
               a.items[0].fontSize == 72.0 && a.items[0].align == QStringLiteral("center"),
           "the customized colour beats the current theme and the rest falls through");
-    check(a.background.color == 0x200000u && a.background.hasGradient &&
-              a.background.gradient == 0x602020u,
-          "and the current theme lays its ground under the customized word");
+    check(a.background.transparent && !a.background.hasGradient,
+          "the current theme leaves the presentation background transparent");
     const openshow::scene::Scene b = compiledFor(docs, slide2);
     check(b.items.size() == 1 && b.items[0].color == 0xFFE000u,
           "the uncustomized slide wears the current theme whole");
@@ -1103,8 +1102,7 @@ void exerciseWornChain(const std::filesystem::path& root) {
         }
     }
     check(made.value(QStringLiteral("textColor")).toString() == QStringLiteral("#00ffff") &&
-              made.value(QStringLiteral("backgroundColor")).toString() ==
-                  QStringLiteral("#200000") &&
+              made.value(QStringLiteral("backgroundColor")).toString().isEmpty() &&
               made.value(QStringLiteral("fontFamily")).toString() ==
                   QStringLiteral("Current Sans") &&
               made.value(QStringLiteral("fontSize")).toDouble() == 72.0 &&
@@ -1132,8 +1130,7 @@ void exerciseThemePanel(const std::filesystem::path& root) {
     const QString chorusId = chorus.value(QStringLiteral("id")).toString();
     check(chorus.value(QStringLiteral("name")).toString() == QStringLiteral("Chorus") &&
               chorus.value(QStringLiteral("textColor")).toString() == QStringLiteral("#ffffff") &&
-              chorus.value(QStringLiteral("backgroundColor")).toString() ==
-                  QStringLiteral("#000000") &&
+              chorus.value(QStringLiteral("backgroundColor")).toString().isEmpty() &&
               chorus.value(QStringLiteral("fontSize")).toDouble() == 0.0 &&
               chorus.value(QStringLiteral("align")).toString() == QStringLiteral("center") &&
               chorus.value(QStringLiteral("lineSpacing")).toDouble() == 1.25 &&
@@ -1202,13 +1199,11 @@ void exerciseThemePanel(const std::filesystem::path& root) {
                          QStringLiteral("#101010"), QStringLiteral("#20c050"), QString(),
                          72.0, QStringLiteral("left"), 1.5),
           "a style gains a second background colour");
-    check(docs.currentTheme().value(QStringLiteral("backgroundGradient")).toString() ==
-              QStringLiteral("#20c050"),
-          "the currentTheme map carries it for the panel");
-    check(compiledFor(docs, slideA).background.hasGradient &&
-              compiledFor(docs, slideA).background.gradient == 0x20C050u &&
-              compiledFor(docs, slideA).background.color == 0x101010u,
-          "the compiled scene carries the pair: top colour, bottom colour");
+    check(docs.currentTheme().value(QStringLiteral("backgroundGradient")).toString().isEmpty(),
+          "the theme read model keeps background settings empty");
+    check(compiledFor(docs, slideA).background.transparent &&
+              !compiledFor(docs, slideA).background.hasGradient,
+          "the compiled theme remains transparent");
     docs.undo();  // the gradient edit back — the theme is flat again
     check(!compiledFor(docs, slideA).background.hasGradient &&
               docs.currentTheme()
@@ -1230,17 +1225,15 @@ void exerciseThemePanel(const std::filesystem::path& root) {
     if (check(docs.save(), "saving a graded style succeeds")) {
         DocumentController reloaded(nullptr, root);
         check(reloaded.load() &&
-                  reloaded.currentTheme().value(QStringLiteral("backgroundGradient")).toString() ==
-                      QStringLiteral("#20c050"),
-              "a reload returns the gradient through the controller");
+                  reloaded.currentTheme().value(QStringLiteral("backgroundGradient")).toString().isEmpty(),
+              "reopening retains a background-free theme");
     }
     // And a fork of a graded slide starts WITH the gradient — "wear what
     // the slide draws now" includes the second colour.
     check(docs.createThemeFromCurrent(QStringLiteral("Shaded")),
           "a slide wearing the graded style forks it");
-    check(docs.currentTheme().value(QStringLiteral("backgroundGradient")).toString() ==
-              QStringLiteral("#20c050"),
-          "createThemeFromCurrent snapshots the gradient too");
+    check(docs.currentTheme().value(QStringLiteral("backgroundGradient")).toString().isEmpty(),
+          "theme snapshots exclude slide backgrounds");
     docs.undo();  // the fork (and its override) back
 
     // Explicitly point a slide at a theme, then hand it back (empty id).
@@ -1812,7 +1805,7 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
         std::ifstream manifest(root / "service" / "service.json");
         const std::string text{std::istreambuf_iterator<char>(manifest),
                                std::istreambuf_iterator<char>()};
-        check(text.find("\"format\":10") != std::string::npos &&
+        check(text.find("\"format\":11") != std::string::npos &&
                   text.find("\"fit\":\"contain\"") != std::string::npos,
               "the manifest is this build's format (10 since SL.6) and spells the slide's fit");
     }

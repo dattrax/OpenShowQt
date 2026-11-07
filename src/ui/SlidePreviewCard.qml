@@ -27,6 +27,7 @@ Item {
     property string sectionLabel: ""
     property bool showSectionLabel: true
     property string sectionPrefix: ""
+    property string sectionSuffix: ""
     readonly property string sectionTitle: {
         const raw = sectionLabel.trim().replace(/\s*\(cont\.\)$/i, "")
         const folded = raw.toLowerCase().replace(/-/g, " ").replace(/([a-z])(\d)/g, "$1 $2")
@@ -47,7 +48,7 @@ Item {
         return colors[kind] || "#414141"
     }
     readonly property string displayCaption: sectionLabel !== ""
-        ? (showSectionLabel ? sectionPrefix + sectionTitle : "") : caption
+        ? (showSectionLabel ? sectionPrefix + sectionTitle + (sectionSuffix !== "" ? " \u2013 " + sectionSuffix : "") : "") : caption
 
     property color idleColor: "#2d2d2d"
     property color hoverColor: "#393939"

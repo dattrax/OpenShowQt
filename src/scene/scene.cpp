@@ -18,7 +18,7 @@ namespace {
 // contract names, which are the pixels every scene-3 worker drew (see the
 // wire doc in scene.h for why this direction is safe and the other one is
 // gated by capability instead).
-constexpr int kSceneFormat = 4;
+constexpr int kSceneFormat = 5;
 constexpr int kSceneFormatLegacy = 3;
 
 void fail(std::string* error, const std::string& message) {
@@ -465,7 +465,7 @@ bool operator==(const Background& a, const Background& b) {
     // flat-to-gradient, and one gradient to another, are both new pictures
     // — but the second colour only MEANS something when hasGradient says
     // so, so the comparison gates on the flag exactly as the draw does.
-    return a.color == b.color && a.hasImage == b.hasImage && a.isVideo == b.isVideo &&
+    return a.transparent == b.transparent && a.color == b.color && a.hasImage == b.hasImage && a.isVideo == b.isVideo &&
            a.fit == b.fit && a.assetId == b.assetId && a.assetPath == b.assetPath &&
            a.hasGradient == b.hasGradient &&
            (a.hasGradient ? a.gradient : kBlack) == (b.hasGradient ? b.gradient : kBlack);
@@ -734,6 +734,8 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
     // The fit belongs to the slide, not the picture: a slide with no
     // background still answers the question for when it gets one, and the
     // worker reads the field only when there is something to fit (6.17c1).
+    scene.background.transparent = look.backgroundColor.empty()
+        && look.backgroundGradient.empty() && slide->backgroundAssetId.empty();
     scene.background.fit = slide->backgroundFit;
     if (!slide->backgroundAssetId.empty()) {
         const domain::Asset* asset = documents.findAsset(slide->backgroundAssetId);
@@ -786,6 +788,7 @@ boost::json::value toJson(const Scene& scene) {
     root.emplace("backgroundColor", static_cast<std::uint32_t>(scene.background.color));
 
     boost::json::object background;
+    background.emplace("transparent", scene.background.transparent);
     background.emplace("image", scene.background.hasImage);
     background.emplace("video", scene.background.isVideo);
     // Always written, always the domain's spelling (6.17c1): the compiler
@@ -867,9 +870,9 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     const bool legacyScene = format != nullptr && format->is_int64() &&
                              format->as_int64() == kSceneFormatLegacy;
     if ((format == nullptr || !format->is_int64() ||
-         (format->as_int64() != kSceneFormat && !legacyScene))) {
+         (format->as_int64() != kSceneFormat && format->as_int64() != 4 && !legacyScene))) {
         fail(error,
-             "scene: unsupported scene format (this build reads scene 4 and legacy scene 3)");
+             "scene: unsupported scene format (this build reads scene 5 and legacy scenes 3/4)");
         return false;
     }
 
@@ -892,8 +895,20 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     }
     const boost::json::object& jsonBackground = background->as_object();
     if (!noUnknownKeys(jsonBackground,
-                       {"image", "video", "fit", "assetId", "assetPath", "gradient"},
+                       {"image", "video", "fit", "assetId", "assetPath", "gradient", "transparent"},
                        "'background'", error)) {
+        return false;
+    }
+    if (format->as_int64() == kSceneFormat) {
+        if (!wantBool(jsonBackground, "transparent", &scene.background.transparent, error)) return false;
+        const auto* image = jsonBackground.if_contains("image");
+        if (scene.background.transparent &&
+            ((image && image->is_bool() && image->as_bool()) || jsonBackground.contains("gradient"))) {
+            fail(error, "scene: transparent backgrounds cannot carry media or gradients");
+            return false;
+        }
+    } else if (jsonBackground.contains("transparent")) {
+        fail(error, "scene: transparent requires scene 5");
         return false;
     }
     if (!wantBool(jsonBackground, "image", &scene.background.hasImage, error) ||

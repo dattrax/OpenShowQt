@@ -492,14 +492,15 @@ void SceneRenderer::commitFrame(const SceneFrame& frame) {
 }
 
 void SceneRenderer::draw(const SceneFrame& frame, SkCanvas* canvas, int widthPx, int heightPx,
-                         const std::string& statusLine, const SkImage* backgroundVideo) {
+                         const std::string& statusLine, const SkImage* backgroundVideo, bool alphaPreview) {
     // The swapchain surface hands out the same canvas every frame and Skia
     // keeps its matrix: without this reset the output-rule scale below
     // compounds frame after frame and the scene collapses into the top-left
     // corner (seen live 2026-10-22; CPU snapshots rendered one frame per
     // process, so they hid it).
     canvas->resetMatrix();
-    canvas->clear(SK_ColorBLACK);
+    canvas->clear(alphaPreview && frame.scene && frame.scene->background.transparent
+                      ? SK_ColorTRANSPARENT : SK_ColorBLACK);
 
     // The output rule: scale the authored 1920x1080 canvas uniformly and
     // centre it, exactly like FreeShow's zoom = boxWidth / 1920.

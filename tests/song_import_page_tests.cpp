@@ -185,6 +185,8 @@ int main(int argc, char** argv) {
     check(waitFor([&] { return worker.thumbnailFrames() > framesBefore
               && !worker.thumbnail(songImport.previewKey(1)).isNull(); }, 15000),
           "the page's cards asked the worker for real pictures");
+    check(qAlpha(worker.thumbnail(songImport.previewKey(1)).pixel(0, 0)) == 0,
+          "clipboard previews receive genuinely transparent worker pixels");
     check(!worker.wordsOnAir() && worker.sceneActive() == 0,
           "the import page previews only, never presents");
 
@@ -210,7 +212,7 @@ int main(int argc, char** argv) {
           "the continuation fixture plans one blank cue and five lyric slides");
     QTest::qWait(120);
     int checkedCaptions = 0;
-    const QStringList captions{"Blank", "Verse 1", "", "Chorus", "Bridge", "Chorus"};
+    const QStringList captions{"Blank – Caption Test", "Verse 1 – Caption Test", "", "Chorus – Caption Test", "Bridge – Caption Test", "Chorus – Caption Test"};
     auto verifyCaptions = [&](auto&& self, QQuickItem* item) -> void {
         if (item->objectName() == "songSlideCard") {
             const int index = item->property("index").toInt();

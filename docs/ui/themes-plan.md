@@ -23,6 +23,18 @@ operator window. Reference:
    **per-slide customization → current theme → slide theme → show default
    theme → built-in default.**
 
+## Presentation transparency amendment — 2026-11-07
+
+Themes style foreground presentation content and cannot store a background fill
+or gradient. Lyrics and Bible cues compile with alpha unless a slide explicitly
+owns a background. Service format 11 removes theme backdrop fields; older files
+retain their text styling while those theme fills are retired. Authored slide
+backgrounds and media remain separate. See
+[acceptance](../reviews/transparent-presentations-2026-11-07.md).
+
+The original design below records the earlier background-capable theme model;
+this amendment supersedes its theme background fields and storage example.
+
 ## Model decisions
 
 - **One concept.** Today's `Style` already carries exactly the appearance

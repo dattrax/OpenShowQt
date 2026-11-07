@@ -61,7 +61,7 @@ void PresentationModel::presentScene(qint64 revision, bool fromGoIntent,
     }
     // An explicit present re-targets the logical presentation: later
     // clears derive from what this revision was prepared with (task 6.3b).
-    fDesiredSceneJson = fSceneJson.value(revision);
+    fDesiredSceneJson = withRetainedBackground(fSceneJson.value(revision), fDesiredSceneJson);
     boost::json::object params{
         {"revision", static_cast<std::uint64_t>(revision)},
         {"transition", openshow::domain::transitionKindName(transition.kind)},
@@ -532,6 +532,8 @@ std::int64_t PresentationModel::presentSceneInternal(const QString& sceneJson,
     if (!readableScene(sceneJson, "scene.present", parsed)) {
         return 0;
     }
+    const auto composed = withRetainedBackground(sceneJson, fDesiredSceneJson);
+    if (composed != sceneJson && !readableScene(composed, "scene.present", parsed)) return 0;
     // Same hand-off as presentCompiledScene: present on the prepare ack, so
     // the audience switch lands as soon as the store names the revision.
     const std::int64_t id = fOut.request("scene.prepare", parsed.as_object());

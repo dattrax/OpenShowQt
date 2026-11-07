@@ -100,8 +100,8 @@ void exerciseCompile(const Fixture& fx) {
     check(out.items.size() == 1 && out.items[0].color == 0xFFFFFFu &&
               out.items[0].fontFamily == "DejaVu Serif" && out.items[0].fontSize == 64.0,
           "the show default style is baked into the text item");
-    check(out.background.color == 0x202040u && !out.background.hasImage,
-          "the resolved background colour fills, no image");
+    check(out.background.transparent && !out.background.hasImage,
+          "the presentation has no backdrop unless the slide explicitly supplies one");
     check(out.showId == fx.show && out.slideId == fx.defaulted, "provenance ids travel");
     check(out.items[0].lines.size() == 3 && out.items[0].lines[1].empty(),
           "lines keep their blank stanza break");
@@ -308,7 +308,7 @@ void exerciseWireRoundTrip(const Fixture& fx) {
     // scene 3 now reads — but "one past" stays the future the way 6.17c1
     // pinned it: anchoring on the wrong side of the move is how a version
     // check gets tested against a format someone else agreed to).
-    refuses(mutate("scene", 5), "unsupported scene format", "a future scene format refuses");
+    refuses(mutate("scene", 6), "unsupported scene format", "a future scene format refuses");
     refuses(boost::json::serialize(7), "top level must be an object",
             "a bare number refuses");
     refuses(mutate("backgroundColor", 0x1000000), "outside 0xRRGGBB",
@@ -563,6 +563,10 @@ void exerciseBackgroundGradient() {
                                       openshow::domain::kDefaultLineSpacing, &error);
     check(!theme.empty() && docs.setSlideTheme(show, slide, theme),
           "a slide follows a style with a second colour");
+    openshow::domain::SlideCustomization backdrop;
+    backdrop.backgroundColor = "#301020";
+    backdrop.backgroundGradient = "#c05020";
+    check(docs.setSlideCustomizations(show, slide, backdrop), "a gradient belongs to the slide background");
     scene::Scene out;
     check(scene::compileSlide(docs, show, slide, &out, &error) &&
               out.background.hasGradient && out.background.gradient == 0xC05020u &&
@@ -673,8 +677,8 @@ void exerciseBackgroundGradient() {
               "file is not storage's job, exactly as backgroundColor never was");
         scene::Scene ignored;
         error.clear();
-        check(!scene::compileSlide(loaded, "show1", "slide1", &ignored, &error) &&
-                  error.find("background gradient 'dusk'") != std::string::npos,
+        check(scene::compileSlide(loaded, "show1", "slide1", &ignored, &error) &&
+                  ignored.background.transparent,
               "and the compile refuses it naming the style and the word — the one "
               "gate, before a pixel of the show is promised to the audience");
         fs::remove_all(dir);
@@ -707,7 +711,7 @@ void exerciseChainCompile() {
 
     scene::Scene out;
     check(scene::compileSlide(docs, show, assigned, &out, &error) &&
-              out.items[0].color == 0xFF0000u && out.background.color == 0x00FF00u,
+              out.items[0].color == 0xFF0000u && out.background.transparent,
           "before anything is worn the two-layer chain compiles as it always did");
 
     // The current theme is worn OVER both layers — assigned slides and
@@ -716,11 +720,11 @@ void exerciseChainCompile() {
     check(scene::compileSlide(docs, show, assigned, &out, &error) &&
               out.items[0].color == 0xFFFF00u && out.items[0].fontFamily == "Current Sans" &&
               out.items[0].fontSize == 60.0 && out.items[0].align == "center" &&
-              out.items[0].lineSpacing == 1.5 && out.background.color == 0x202020u &&
-              out.background.hasGradient && out.background.gradient == 0x606060u,
+              out.items[0].lineSpacing == 1.5 && out.background.transparent &&
+              !out.background.hasGradient,
           "the current theme re-skins the slide that had its own theme");
     check(scene::compileSlide(docs, show, follower, &out, &error) &&
-              out.items[0].color == 0xFFFF00u && out.background.gradient == 0x606060u,
+              out.items[0].color == 0xFFFF00u && out.background.transparent,
           "and the slide that only followed the show");
 
     // Customization wins field by field; the empties and zeroes that ARE
@@ -736,27 +740,27 @@ void exerciseChainCompile() {
     check(scene::compileSlide(docs, show, assigned, &out, &error) &&
               out.items[0].color == 0x0000FFu && out.items[0].fontSize == 0.0 &&
               out.items[0].fontFamily.empty() && !out.background.hasGradient &&
-              out.background.color == 0x202020u && out.items[0].align == "center" &&
+              out.background.transparent && out.items[0].align == "center" &&
               out.items[0].lineSpacing == 1.5,
           "customized fields win and the rest still comes through the chain");
     check(scene::compileSlide(docs, show, follower, &out, &error) &&
-              out.background.hasGradient,
+              out.background.transparent && !out.background.hasGradient,
           "the other slide wears the gradient — customization is per slide");
 
     // Restoring sends the slide back to the chain; clearing the current
     // theme returns each layer to its old voice.
     check(docs.removeSlideCustomizations(show, assigned, &error) &&
               scene::compileSlide(docs, show, assigned, &out, &error) &&
-              out.items[0].color == 0xFFFF00u && out.background.hasGradient &&
+              out.items[0].color == 0xFFFF00u && out.background.transparent &&
               out.items[0].fontSize == 60.0,
           "removing the customizations puts the current theme's whole look back");
     check(docs.setCurrentTheme("") &&
               scene::compileSlide(docs, show, assigned, &out, &error) &&
-              out.items[0].color == 0xFF0000u && out.background.color == 0x00FF00u &&
+              out.items[0].color == 0xFF0000u && out.background.transparent &&
               !out.background.hasGradient,
           "with the current theme off the slide theme speaks again");
     check(scene::compileSlide(docs, show, follower, &out, &error) &&
-              out.items[0].color == 0x111111u && out.background.color == 0x222222u,
+              out.items[0].color == 0x111111u && out.background.transparent,
           "and the follower follows the show default again");
 
     // A vanished current theme cannot haunt the compile: removeTheme clears
@@ -952,7 +956,7 @@ void exerciseDemoFixture() {
         scene::Scene compiled;
         allCompile = allCompile && scene::compileDemoSlide(docs, i, &compiled, &error);
         // Every slide of the fixture sits on the #14161f backdrop.
-        allCompile = allCompile && compiled.background.color == 0x14161Fu;
+        allCompile = allCompile && compiled.background.transparent;
         if (i > 0) {
             distinct = distinct && !(compiled == previous);
         }
@@ -1247,7 +1251,7 @@ void exerciseImageWire(Fixture& fx) {
 
     // --- the wire: per-kind keys, and a round trip that changes nothing ---
     const boost::json::value written = scene::toJson(out);
-    check(written.at("scene").to_number<int>() == 4, "the payload says scene 4");
+    check(written.at("scene").to_number<int>() == 5, "the payload says scene 5");
     const boost::json::object& imageJson = written.at("items").as_array().at(2).as_object();
     check(imageJson.at("kind").as_string() == "image" &&
               imageJson.at("assetId").as_string() == fx.asset &&
@@ -1372,6 +1376,7 @@ void exerciseImageWire(Fixture& fx) {
        // scene — the legacy defaults are not an approximation.
         boost::json::object legacy = scene::toJson(out).as_object();
         legacy["scene"] = 3;
+        legacy["background"].as_object().erase("transparent");
         for (boost::json::value& element : legacy.at("items").as_array()) {
             if (!element.as_object().contains("lines")) {
                 continue;  // image items never carried style anyway
@@ -1385,9 +1390,11 @@ void exerciseImageWire(Fixture& fx) {
             text.erase("shadow");
         }
         scene::Scene fromLegacy;
+        auto opaqueLegacy = out;
+        opaqueLegacy.background.transparent = false;
         error.clear();
         check(scene::fromJson(boost::json::value(legacy), &fromLegacy, &error) &&
-                  fromLegacy == out && fromLegacy.items.front().fontWeight == 400 &&
+                  fromLegacy == opaqueLegacy && fromLegacy.items.front().fontWeight == 400 &&
                   fromLegacy.items.front().fontStyle == "normal" &&
                   fromLegacy.items.front().fitMode == "shrink" &&
                   fromLegacy.items.front().minFontSize == 12.0 &&

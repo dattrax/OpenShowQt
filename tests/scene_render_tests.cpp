@@ -274,6 +274,30 @@ scene::Scene singleItemScene(std::vector<std::string> lines, double fontSize,
 
 /* --- fixtures ------------------------------------------------------------ */
 
+void testTransparentPresentationPixels() {
+    openshow::domain::Documents docs;
+    const auto show = docs.createShow("Alpha lyrics");
+    const auto slide = docs.appendSlide(show);
+    docs.setSlideLines(show, slide, {"Transparent words"});
+    const auto theme = docs.createTheme("Legacy navy", "#ffffff", "#101828", "#303848", "", 80, "center", 1.25);
+    docs.setCurrentTheme(theme);
+    scene::Scene compiled;
+    std::string error;
+    check(scene::compileSlide(docs, show, slide, &compiled, &error)
+              && compiled.background.transparent, "themes compile words without a background");
+    Frame pixels;
+    if (!check(renderFixture(compiled, "alpha-presentation", &pixels, &error), "render real alpha presentation pixels")) return;
+    bool ink = false;
+    for (auto color : pixels.pixels) ink = ink || SkColorGetA(color) > 0;
+    check(SkColorGetA(pixels.at(0, 0)) == 0 && ink,
+          "outside words is alpha zero while glyphs retain their own alpha");
+    docs.setSlideLines(show, slide, {});
+    check(scene::compileSlide(docs, show, slide, &compiled, &error), "compile the blank opening");
+    if (renderFixture(compiled, "alpha-blank", &pixels, &error))
+        check(std::all_of(pixels.pixels.begin(), pixels.pixels.end(), [](auto color) { return SkColorGetA(color) == 0; }),
+              "the blank opening is fully transparent, with no baked checkerboard");
+}
+
 void testEmptyScenesDrawNothing() {
     Frame frame;
     std::string error;
@@ -611,19 +635,20 @@ void testAuthoredBoxStackRenders() {
         // scene_tests). If migration or compilation ever shifts a default by a
         // pixel, this equality is what breaks.
         scene::Scene oldShape;
+        oldShape.background.transparent = true;
         oldShape.showId = "show1";
         oldShape.slideId = "slide1";
         scene::SceneItem only;
         only.lines = {"Ancient grace", "", "still centred"};
         oldShape.items.push_back(only);
         check(legacyCompiled == oldShape,
-              "the migrated slide compiles to the exact scene the single-box compiler emitted");
+              "the migrated slide preserves its legacy words and geometry on alpha");
         Frame now;
         Frame then;
         if (renderFixture(legacyCompiled, "legacy-now", &now, &error) &&
             renderFixture(oldShape, "legacy-old", &then, &error)) {
             check(now.pixels == then.pixels,
-                  "and the frame is byte-for-byte the frame that file always drew");
+                  "migration preserves the lyric picture with the retired background transparent");
             check(inkBands(now) >= 1, "which is still ink");
         } else {
             check(false, "the legacy frames render: " + error);
@@ -3783,6 +3808,7 @@ int main() {
         return 77;
     }
 
+    testTransparentPresentationPixels();
     testEmptyScenesDrawNothing();
     testTextIsCentred();
     testWrapping();

@@ -454,7 +454,7 @@ private:
     PreviewFill fillPreviewSlot(const SceneFrame& frame, const SkImage* sceneVideo,
                                 const SkImage* overlayVideo, PreviewStream& stream, int slot,
                                 uint32_t width, uint32_t height, SceneRenderer* renderer,
-                                sk_sp<SkSurface>* surface);
+                                sk_sp<SkSurface>* surface, bool alphaPreview = false);
 
     // The audience mirror of the frame the session drew.
     void publishMirrorFrame(const DrawInput& input);

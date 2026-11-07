@@ -42,6 +42,8 @@ void dropBackground(boost::json::object& root) {
     root["backgroundColor"] = 0u;
     if (root.contains("background") && root.at("background").is_object()) {
         boost::json::object& background = root.at("background").as_object();
+        if (const auto* format = root.if_contains("scene"); format && format->is_number() && format->to_number<int>() >= 5)
+            background["transparent"] = false;
         background["image"] = false;
         background["assetId"] = "";
         background["assetPath"] = "";
@@ -89,7 +91,26 @@ SceneContent sceneContent(const QString& sceneJson) {
             content.background = true;
         }
     }
+    if (background != root.end() && background->value().is_object()) {
+        const auto* alpha = background->value().as_object().if_contains("transparent");
+        if (alpha && alpha->is_bool() && alpha->as_bool()) content.background = false;
+    }
     return content;
+}
+
+QString withRetainedBackground(const QString& sceneJson, const QString& previousJson) {
+    bool ok = false;
+    auto current = parseObject(sceneJson, &ok);
+    if (!ok) return sceneJson;
+    auto* background = current.as_object().if_contains("background");
+    if (!background || !background->is_object()) return sceneJson;
+    auto* alpha = background->as_object().if_contains("transparent");
+    if (!alpha || !alpha->is_bool() || !alpha->as_bool()) return sceneJson;
+    auto previous = parseObject(previousJson, &ok);
+    if (!ok || !sceneContent(previousJson).background) return sceneJson;
+    current.as_object()["background"] = previous.as_object().at("background");
+    current.as_object()["backgroundColor"] = previous.as_object().at("backgroundColor");
+    return serializeJson(std::move(current));
 }
 
 QString withWordsCleared(const QString& sceneJson) {
