@@ -247,7 +247,7 @@ pages are hidden from the grid and its collection counts.
 | Inputs | `modelData` (the asset row: id, name, kind, sourcePath, cameraSource, exists); `kindLabel`; `notice`; `selected`; `cameraNumber` (1–4, creation order) |
 | Events | `activated()` (primary click), `contextRequested(mouseX, mouseY)` (right click, in CARD coordinates), `dragPayload` (`media:<assetId>`) |
 | Adapter | the bin sets `selectedAssetId` on activation, opens its shared menu on context, and the Show tile's DropArea calls `setSlideBackgroundFor` |
-| Consumers | the Media Bin grid; the presentation library reuses the same card in MB.8 |
+| Consumers | the Media Bin grid; the Library's row cards share `CardChrome`, not this whole card |
 | Automation | `mediaBinRow` (delegate root), `mediaRowName`, `mediaRowKind`, `mediaRowNotice`, `dragPayload`, `cameraNumber` |
 
 ### SlidePreviewCollection

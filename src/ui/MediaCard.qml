@@ -7,7 +7,7 @@ import QtQuick.Window
  *
  * One media asset as a preview card: the picture where the file has one, a
  * kind banner where it does not, the name, and the one notice worth carrying.
- * The bin's grid and (in MB.8) the presentation library's deck pages wear it.
+ * The bin's grid wears it; the Library's row cards wear the same CardChrome.
  *
  * The card is a selection target and a drag-source host, never the owner of a
  * document verb: `activated` and the host's drop handling decide what a click
