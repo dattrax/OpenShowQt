@@ -427,25 +427,6 @@ FocusScope {
                         mediaBin.selectedLive ? "" : mediaBin.selected.sourcePath)
                 }
                 PanelButton {
-                    objectName: "mediaImportButton"
-                    text: "Import\u2026"
-                    onClicked: mediaDialog.open()
-                }
-                // ND.7: the same action as the bin's right-click menu, made
-                // visible because a hidden context menu is easy to miss. The
-                // capability is the worker's: a build without the NDI helper
-                // has nothing to offer and shows no button.
-                PanelButton {
-                    objectName: "mediaAddNdiButton"
-                    visible: worker.liveCapable
-                    text: "Add NDI\u2026"
-                    Accessible.name: "Add an NDI camera source"
-                    onClicked: {
-                        worker.refreshLiveSources()
-                        ndiSourceDialog.open()
-                    }
-                }
-                PanelButton {
                     objectName: "mediaRemoveButton"
                     visible: mediaBin.editingEnabled
                     text: "Remove"
@@ -647,7 +628,8 @@ FocusScope {
             visible: worker.liveCapable
             enabled: worker.liveCapable
             onTriggered: {
-                worker.refreshLiveSources()
+                // A short first scan, then the dialog's timer keeps looking.
+                worker.refreshLiveSources(1500)
                 ndiSourceDialog.open()
             }
         }
@@ -696,10 +678,28 @@ FocusScope {
                 }
             }
             Button {
+                objectName: "ndiRescanButton"
+                text: "Rescan"
+                enabled: worker.liveCapable
+                onClicked: worker.refreshLiveSources(1500)
+            }
+            Button {
                 text: "Close"
                 onClicked: ndiSourceDialog.close()
             }
         }
+    }
+
+    // The picker stays live while it is open: a camera that starts
+    // broadcasting after the dialog opened still appears without reopening
+    // it. The worker's helper keeps a finder, so the zero-wait scan returns
+    // what it already knows and costs nothing.
+    Timer {
+        id: ndiRescanTimer
+        interval: 1500
+        repeat: true
+        running: ndiSourceDialog.opened && worker.liveCapable
+        onTriggered: worker.refreshLiveSources(0)
     }
 
     // Right-click anywhere on the bin. A handler, not a covering MouseArea:
@@ -707,9 +707,6 @@ FocusScope {
     // and wheel event to the controls underneath.
     TapHandler {
         acceptedButtons: Qt.RightButton
-        onTapped: {
-            worker.refreshLiveSources()
-            mediaContextMenu.popup()
-        }
+        onTapped: mediaContextMenu.popup()
     }
 }

@@ -934,7 +934,10 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
     }
 
     if (pending.method == proto::kMethodLiveSources) {
-        fLiveSources.clear();
+        // A rescan (the picker polls while it is open) must not reset the
+        // list view when nothing changed: build the answer off to the side,
+        // and only publish it when it differs.
+        QVariantList discovered;
         if (payload.contains("sources") && payload.at("sources").is_array()) {
             for (const auto& source : payload.at("sources").as_array()) {
                 if (!source.is_object()) {
@@ -951,11 +954,14 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                                QString::fromStdString(std::string(entry.at("url").as_string())));
                 }
                 if (row.contains(QStringLiteral("name"))) {
-                    fLiveSources.append(row);
+                    discovered.append(row);
                 }
             }
         }
-        emit liveChanged();
+        if (discovered != fLiveSources) {
+            fLiveSources = std::move(discovered);
+            emit liveChanged();
+        }
         return;
     }
 
