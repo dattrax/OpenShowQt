@@ -4,6 +4,15 @@ Updated: 2026-11-07 (Europe/London).
 
 ## Current checkpoint
 
+**Media bin rework planned (MB.1–MB.7, 2026-11-07):** The bin's list plus
+mostly-empty inspector is to become a preview grid whose cards drag straight
+onto cue tiles, with the card component shared with the presentation library.
+The work items and the drop semantics are in PLAN.md: picture/video/camera drop
+sets that cue's slide background, audio drops on the production-track target,
+and a deck's page PNGs leave the bin and group under the deck. The current
+misalignment, the re-appearing Remove/Add-to-slide buttons and the MEDIA INFO
+dead space are MB.1/MB.4 rather than separate patches.
+
 **ND.5–ND.7 complete; ND.8 crash path delivered (2026-11-07):** A live NDI
 camera is now a first-class asset and background. ND.5 adds
 `AssetKind::Camera` with `Asset::cameraSource`; the manifest stores

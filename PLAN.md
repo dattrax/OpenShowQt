@@ -1752,6 +1752,43 @@ header is `shared/openshow/live/frame_ring.h` under MIT. The GPL app includes
 only the header's fixed layout and the generic IPC client. The NDI SDK is never
 committed. Work one leaf at a time; each leaf is one commit with tests and docs.
 
+### Media bin rework — preview grid, drag/drop and deck pages (MB)
+
+The Media Bin is the last list-shaped surface in the workspace: a table plus a
+mostly-empty inspector, with document actions that belong to the thing the
+operator is actually editing. It should look and behave like the rest of the
+operator UI — a grid of previews that can be dragged straight onto a cue.
+Each leaf is one commit with tests and docs.
+
+Design decisions (defaults; revisit only with a reason):
+
+- A media card wears the same chrome as `SlidePreviewCard`: a preview, a name,
+  and the existing kind/notice line. Pictures render a local thumbnail; video,
+  camera and audio show a kind banner until MB.6 gives them worker frames.
+- Dropping a **picture/video/camera** on a cue tile sets that cue's slide
+  **background media** — the compositor's one multimedia layer. Pictures and
+  video use `cover`; a deck-page picture keeps `contain`. Adding a foreground
+  image item stays an Edit/context action, not the default drop.
+- Dropping **audio** is a production-track action, not a slide one: it belongs
+  on the service/preview target that already starts the standalone track, not
+  on a cue tile.
+- A deck's page PNGs stop being bin rows (MB.5). The presentation library shows
+  a deck and its pages together; the bin shows the assets an operator actually
+  places.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| MB.1 | TODO | Preview grid: replace the row list and the MEDIA INFO column with a GridView of media cards; reuse the shared card chrome and preview surface; pictures render a local thumbnail, video/camera/audio a kind banner until MB.6; audio Play/Stop moves onto the card; collections, grid and header share one top edge | `workspace_ui_tests` at fixed sizes: the collection rail and the grid align on one edge, the MEDIA INFO panel is gone, the selected card carries its own description, an audio card still enables/sends nothing without a worker, and keyboard/scroll behaviour is unchanged; a picture card shows its picture |
+| MB.2 | TODO | Drag source: a media card drags a `media:<assetId>` payload through the shared `DragFeedback`; the badge names the item and its kind; starting a drag changes nothing | `workspace_ui_tests` synthesizes a drag from a card and asserts the payload and badge; the document, editing cursor and output are untouched until a drop |
+| MB.3 | TODO | Drop on service tiles: each Show cue tile accepts `media:`; the hovered tile previews the target and names the change; drop routes by kind (picture/video/camera → that cue's slide background) through a per-slide verb with one undo; foreign or unsupported payloads are refused with a sentence | `workspace_ui_tests` drags a picture, a video and a camera from the bin onto cue tiles and asserts each slide's background and fit plus one undo; a cue from another show updates that show; a `.pptx`/URL payload is refused |
+| MB.4 | TODO | Retire the bin's document buttons: Remove joins the context menu; Add to slide is superseded by MB.3 for backgrounds (foreground items stay a context-menu action if still wanted); no body action row and no inspector dead space | `workspace_ui_tests`: no `mediaRemoveButton`/`placeAssetButton` in the body; the context menu covers Remove and foreground placement; the old body assertions move to the menu |
+| MB.5 | TODO | Deck pages out of the bin: tag imported PPTX pages (`AssetKind::DeckPage` or `Asset::binVisible=false`), write the tag in the manifest, exclude them from the bin and its collection counts, and group them under the deck in the presentation library; old packages still open | A deck import adds no bin rows and no collection counts; the show presents every page; save/reopen keeps the tag; an old format-11 package opens; "Remove unused media" still sweeps deck pages; `workspace_ui_tests` and `document_controller_tests` cover it |
+| MB.6 | TODO | Worker media thumbnails: extend the thumbnail lane to a video's first frame and a camera's live frame keyed by asset id, budgeted like slide thumbnails; the grid falls back to the kind banner with no worker | A video/camera card shows a frame on a live worker and never blocks the bin; no worker → banner; the preview budget counters stay bounded |
+| MB.7 | TODO | One card component and docs: extract the card chrome/caption/badge so the bin and the presentation library use one component; update `docs/ui/control-sets.md` and the operator guide | One component with both wearers; visual fixture and QML load; the docs name the drop semantics, the audio target and deck grouping |
+
+Entry gate: none. MB.1–MB.4 are UI-only; MB.5 is domain/storage; MB.6 is worker.
+MB.4 depends on MB.3; MB.1 depends on nothing.
+
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
 **Entry gate: CS.1–CS.9, SL.1–SL.9, SI.1–SI.4, LRF.1–LRF.4, the remaining TV leaves and TA.1 must be DONE, with
