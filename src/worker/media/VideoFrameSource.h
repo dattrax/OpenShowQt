@@ -68,6 +68,12 @@ public:
     // ordinary callers.
     void noteFormatNegotiated(const char* decoderName, bool hardware);
 
+    // The format the direct decoder's mapped buffers were allocated for.
+    // Called from the get_format hook (see softwareFormat in the .cpp) so
+    // the decoder produces the layout the allocator expects. Not for
+    // ordinary callers.
+    int preferredNativeFormat() const { return fNativePixelFormat; }
+
     const VideoStreamInfo& streamInfo() const { return fStreamInfo; }
     FrameRing& ring() { return fRing; }
     const FrameRing& ring() const { return fRing; }

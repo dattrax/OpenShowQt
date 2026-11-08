@@ -47,7 +47,20 @@ int directBuffer(AVCodecContext* codec, AVFrame* frame, int) {
         return AVERROR(ENOMEM); // no C++ exception may escape into FFmpeg
     }
 }
-AVPixelFormat softwareFormat(AVCodecContext*, const AVPixelFormat* formats) {
+AVPixelFormat softwareFormat(AVCodecContext* avctx, const AVPixelFormat* formats) {
+    // The direct path's buffers are allocated for the native format the
+    // stream promises, so the decoder must actually produce that format.
+    // A yuvj420p stream's own format list offers only the "j" spelling, so
+    // the preference is that alias; the ring still lays it out as 4:2:0
+    // because the bytes are identical.
+    if (auto* self = static_cast<VideoFrameSource*>(avctx->opaque)) {
+        const int preferred = self->preferredNativeFormat();
+        if (preferred != AV_PIX_FMT_NONE) {
+            for (const auto* p = formats; *p != AV_PIX_FMT_NONE; ++p) {
+                if (*p == preferred) return *p;
+            }
+        }
+    }
     for (const auto* p = formats; *p != AV_PIX_FMT_NONE; ++p) {
         const auto* desc = av_pix_fmt_desc_get(*p);
         if (desc && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) return *p;
@@ -216,15 +229,26 @@ bool VideoFrameSource::openInternal(const std::string& path, std::string* error)
     }
     if (fDirectDecode) {
         const AVPixelFormat native = av_get_pix_fmt(best->pixelFormat.c_str());
+        // yuvj420p is the full-range alias of yuv420p: same 8-bit 4:2:0
+        // bytes, only the range metadata differs. The mapped Vulkan buffers
+        // and the YUV sampler are identical, so decode it as yuv420p and
+        // let the stream's color_range — which pickYuvColorSpace already
+        // reads — tell the sampler it is full range. Rejecting it would
+        // force a per-frame copy for a format that is byte-for-byte the
+        // same.
+        const bool fullRangeAlias = native == AV_PIX_FMT_YUVJ420P;
         if (!codec || !(codec->capabilities & AV_CODEC_CAP_DR1) ||
-            (native != AV_PIX_FMT_YUV420P && native != AV_PIX_FMT_NV12 &&
-             native != AV_PIX_FMT_P010LE)) {
+            ((native != AV_PIX_FMT_YUV420P && native != AV_PIX_FMT_NV12 &&
+              native != AV_PIX_FMT_P010LE) && !fullRangeAlias)) {
             avcodec_free_context(&decoder);
             avformat_close_input(&format);
             return fail("direct video decode requires a get_buffer2-capable software decoder "
-                        "and native yuv420p, nv12 or p010le (stream: " + best->codec + " " +
-                        best->pixelFormat + "); use --allow-video-copy for compatibility");
+                        "and native yuv420p/yuvj420p, nv12 or p010le (stream: " + best->codec +
+                        " " + best->pixelFormat + "); use --allow-video-copy for compatibility");
         }
+        // The decoder's own format list for a full-range stream contains
+        // only the "j" spelling, so keep the native format and let the ring
+        // layout treat it as the plain 4:2:0 alias below.
         fNativePixelFormat = native;
         decoder->thread_count = 4;
         decoder->opaque = this;
@@ -252,8 +276,11 @@ bool VideoFrameSource::openInternal(const std::string& path, std::string* error)
     // NV12/P010 staging and may convert into that layout.
     fFrameWidth = decoder->width;
     fFrameHeight = decoder->height;
-    fRingFormat = fDirectDecode && fNativePixelFormat == AV_PIX_FMT_YUV420P
-        ? FrameFormat::kYUV420P : deriveRingFormat(best->pixelFormat);
+    fRingFormat = fDirectDecode &&
+                          (fNativePixelFormat == AV_PIX_FMT_YUV420P ||
+                           fNativePixelFormat == AV_PIX_FMT_YUVJ420P)
+                      ? FrameFormat::kYUV420P
+                      : deriveRingFormat(best->pixelFormat);
 
     fPath = path;
     fStreamInfo = *best;
@@ -388,7 +415,13 @@ int VideoFrameSource::allocateDecoderBuffer(void* codecPtr, void* framePtr) {
     if (!fBacking || frame->format != fNativePixelFormat ||
         codec->width != fFrameWidth || codec->height != fFrameHeight ||
         frame->width < fFrameWidth || frame->height < fFrameHeight)
-        return fail("decoder requested a different native format or resolution");
+        return fail("decoder requested a different native format or resolution "
+                    "(format " + std::to_string(frame->format) + " vs " +
+                    std::to_string(fNativePixelFormat) + ", codec " +
+                    std::to_string(codec->width) + "x" + std::to_string(codec->height) +
+                    ", frame " + std::to_string(frame->width) + "x" +
+                    std::to_string(frame->height) + ", expected " +
+                    std::to_string(fFrameWidth) + "x" + std::to_string(fFrameHeight) + ")");
 
     FrameAllocation request;
     request.format = fRingFormat;

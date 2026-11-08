@@ -663,6 +663,106 @@ bool gpuHeldFrameLease(const std::string& path, openshow::worker::VulkanContext&
     return ok;
 }
 
+// A full-range yuvj420p clip is byte-for-byte the same 4:2:0 layout as
+// yuv420p — only the range metadata differs — so the direct path must
+// accept it and let the sampler's color space read full range. The other
+// GPU scenarios use native yuv420p fixtures; this one is the phone/camera
+// clip whose "j" spelling used to be rejected.
+bool gpuFullRangeDirect(const std::string& path, openshow::worker::VulkanContext& vk,
+                        GrDirectContext* gr) {
+    PlaybackPipeline pipeline;
+    PlaybackPipeline::Options options;
+    options.path = path;
+    // Prove the direct path alone: a copy fallback would hide a rejection.
+    options.allowVideoCopy = false;
+    PlaybackPipeline::Gpu gpu;
+    gpu.device = vk.device();
+    gpu.physicalDevice = vk.physicalDevice();
+    gpu.graphicsQueueIndex = vk.queueIndex();
+    gpu.uploadQueueIndex = vk.uploadQueueIndex();
+    gpu.uploadQueue = vk.uploadQueue();
+    gpu.context = gr;
+    std::string error;
+    if (!check(pipeline.openGpu(gpu, options, &error),
+               "a full-range yuvj420p clip opens on the direct path")) {
+        std::fprintf(stderr, "  open: %s\n", error.c_str());
+        return false;
+    }
+    SinkState state;
+    if (!check(pipeline.start(makeSink(pipeline, state, true), nullptr, &error),
+               "the full-range direct clip starts")) {
+        std::fprintf(stderr, "  start: %s\n", error.c_str());
+        return false;
+    }
+    const bool drained = waitFor([&] { return pipeline.stats().submitted >= 24; }, 20000);
+    pipeline.requestStop();
+    pipeline.join();
+    const auto stats = pipeline.stats();
+    bool ok = drained && stats.submitted == 24;
+    ok = check(ok, "the 24-frame full-range clip paces out") && ok;
+    ok = check(stats.eof && stats.decoded == 24 && stats.presents == 24 &&
+                   state.allImagesValid,
+               "every frame carried a wrapped YCbCr image") && ok;
+    ok = check(stats.directFrames == 24 && stats.copiedFrames == 0 &&
+                   stats.downloadedFrames == 0 && stats.convertedFrames == 0,
+               "yuvj420p stays on the direct path: zero CPU copies") && ok;
+    ok = check(stats.decodeErrors == 0 && stats.fatalError.empty(),
+               "clean full-range direct decode, no fatal error") && ok;
+    std::printf("ok: full-range direct drain peak=%llu of %u slots, %llu uploads\n",
+                static_cast<unsigned long long>(stats.ringPeakFilled), stats.ringDepth,
+                static_cast<unsigned long long>(stats.gpuUploads));
+    return ok;
+}
+
+// A 4:2:2 stream genuinely cannot be direct-decoded, so the copying
+// compatibility reopen is the path that plays it. This is the fallback the
+// FILE half must reach, not just the GPU half.
+bool gpuCopyFallback(const std::string& path, openshow::worker::VulkanContext& vk,
+                     GrDirectContext* gr) {
+    PlaybackPipeline pipeline;
+    PlaybackPipeline::Options options;
+    options.path = path;
+    options.allowVideoCopy = true;
+    PlaybackPipeline::Gpu gpu;
+    gpu.device = vk.device();
+    gpu.physicalDevice = vk.physicalDevice();
+    gpu.graphicsQueueIndex = vk.queueIndex();
+    gpu.uploadQueueIndex = vk.uploadQueueIndex();
+    gpu.uploadQueue = vk.uploadQueue();
+    gpu.context = gr;
+    std::string error;
+    if (!check(pipeline.openGpu(gpu, options, &error),
+               "a yuv422p clip opens through the copying fallback")) {
+        std::fprintf(stderr, "  open: %s\n", error.c_str());
+        return false;
+    }
+    SinkState state;
+    if (!check(pipeline.start(makeSink(pipeline, state, true), nullptr, &error),
+               "the copy-fallback clip starts")) {
+        std::fprintf(stderr, "  start: %s\n", error.c_str());
+        return false;
+    }
+    const bool drained = waitFor([&] { return pipeline.stats().submitted >= 24; }, 20000);
+    pipeline.requestStop();
+    pipeline.join();
+    const auto stats = pipeline.stats();
+    bool ok = drained && stats.submitted == 24;
+    ok = check(ok, "the 24-frame yuv422p clip paces out") && ok;
+    ok = check(stats.eof && stats.decoded == 24 && stats.presents == 24 &&
+                   state.allImagesValid,
+               "every frame carried a wrapped YCbCr image") && ok;
+    ok = check(stats.directFrames == 0 &&
+                   stats.copiedFrames + stats.downloadedFrames + stats.convertedFrames > 0,
+               "the copy path decoded and staged every frame, not the direct path") && ok;
+    ok = check(stats.decodeErrors == 0 && stats.fatalError.empty(),
+               "clean copy-fallback decode, no fatal error") && ok;
+    std::printf("ok: copy-fallback drain peak=%llu of %u slots, copied=%llu downloaded=%llu\n",
+                static_cast<unsigned long long>(stats.ringPeakFilled), stats.ringDepth,
+                static_cast<unsigned long long>(stats.copiedFrames),
+                static_cast<unsigned long long>(stats.downloadedFrames));
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -682,6 +782,8 @@ int main() {
     const std::string small = (dir / "stall-2s.mp4").string();
     const std::string hd = (dir / "stall-hd.mp4").string();
     const std::string gpu = (dir / "gpu-24f.mp4").string();
+    const std::string fullRange = (dir / "full-range-24f.mp4").string();
+    const std::string fourTwoTwo = (dir / "four-two-two-24f.mp4").string();
     if (!generate("ffmpeg -hide_banner -loglevel error -nostdin -y "
                   "-f lavfi -i testsrc2=size=320x240:rate=30:duration=2 "
                   "-c:v libx264 -preset ultrafast -pix_fmt yuv420p -an " + small) ||
@@ -691,7 +793,17 @@ int main() {
         !generate("ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
                   "\"nullsrc=s=130x98:r=12,geq=lum='32+mod(N*7,180)':cb='64+mod(N*5,128)':"
                   "cr='80+mod(N*3,112)'\" -frames:v 24 "
-                  "-c:v libx264 -preset fast -g 24 " + gpu)) {
+                  "-c:v libx264 -preset fast -g 24 " + gpu) ||
+        !generate("ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+                  "\"nullsrc=s=130x98:r=12,geq=lum='32+mod(N*7,180)':cb='64+mod(N*5,128)':"
+                  "cr='80+mod(N*3,112)'\" -frames:v 24 "
+                  "-c:v libx264 -preset fast -g 24 -pix_fmt yuvj420p -color_range pc " +
+                  fullRange) ||
+        !generate("ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+                  "\"nullsrc=s=130x98:r=12,geq=lum='32+mod(N*7,180)':cb='64+mod(N*5,128)':"
+                  "cr='80+mod(N*3,112)'\" -frames:v 24 "
+                  "-c:v libx264 -preset fast -profile:v high422 -g 24 -pix_fmt yuv422p " +
+                  fourTwoTwo)) {
         std::printf("SKIP: the ffmpeg CLI could not generate the fixtures\n");
         return 77;
     }
@@ -716,6 +828,8 @@ int main() {
     ok = gpuHealthyDrain(gpu, vk, gr.get()) && ok;
     ok = gpuStuckPresenter(gpu, vk, gr.get()) && ok;
     ok = gpuHeldFrameLease(gpu, vk, gr.get()) && ok;
+    ok = gpuFullRangeDirect(fullRange, vk, gr.get()) && ok;
+    ok = gpuCopyFallback(fourTwoTwo, vk, gr.get()) && ok;
     gr.reset();
     vk.destroy();
     ok = check(vk.validationErrors() == 0, "no Vulkan validation or synchronization errors") && ok;

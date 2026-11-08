@@ -70,21 +70,44 @@ bool PlaybackPipeline::openFile(const Options& options, std::string* error) {
         return false;
     }
     // The FILE half: container, streams, decoder — every cost a slow disk
-    // can impose (task 6.9b). Chosen for the direct-decode plan; the
-    // copying fallback below stays attachGpu's exception. The ring format
-    // and dimensions come out of the source, so the GPU half needs no
-    // second probe to size its uploader.
+    // can impose (task 6.9b). The direct-decode plan is the default; the
+    // copying compatibility path is the explicitly permitted exception
+    // (task 1.5i), and it has to be reachable HERE as well as at the GPU
+    // half: a stream the direct decoder cannot represent at all (4:2:2 or
+    // 10-bit, for instance) fails at the FILE half, so a retry only in
+    // attachGpu would never see it. The ring format and
+    // dimensions come out of the source, so the GPU half needs no second
+    // probe to size its uploader.
     fStagedPath = options.path;
     fStagedRingDepth = options.ringDepth;
     fStagedCopyFallback = options.allowVideoCopy;
     fSource.setDirectDecodeEnabled(true);
     fSource.setHardwareDecodeEnabled(options.hardwareDecode);
-    if (!fSource.open(options.path, error)) {
+    if (fSource.open(options.path, error)) {
+        fMode = Mode::kFile;
+        return true;
+    }
+    // The direct plan is not the only plan when the caller permits the
+    // compatibility path: reopen the FILE half with copying storage. A copy
+    // that already opened needs no second attempt at attachGpu, so the
+    // staged fallback is consumed here.
+    if (!fStagedCopyFallback) {
         fMode = Mode::kClosed;
         return false;
     }
-    fMode = Mode::kFile;
-    return true;
+    const std::string directError = error ? *error : std::string();
+    fSource.close();
+    fSource.setDirectDecodeEnabled(false);
+    if (fSource.open(options.path, error)) {
+        fStagedCopyFallback = false;
+        std::fprintf(stderr, "openshow-worker: playback: direct decode unavailable (%s); "
+                             "using the copying compatibility path\n",
+                     directError.c_str());
+        fMode = Mode::kFile;
+        return true;
+    }
+    fMode = Mode::kClosed;
+    return false;
 }
 
 bool PlaybackPipeline::attachGpu(const Gpu& gpu, std::string* error) {
@@ -111,6 +134,9 @@ bool PlaybackPipeline::attachGpu(const Gpu& gpu, std::string* error) {
     // started, so the copying compatibility path is the explicitly
     // permitted fallback (task 1.5i): it reopens the FILE — on this thread
     // — which is precisely why the prime exists and why this stays rare.
+    // A FILE half that already took the copy path (openFile consumed the
+    // fallback) leaves fStagedCopyFallback false, so this loop stays one
+    // attempt and never reopens a stream that is already copying.
     for (int attempt = 0; attempt < (fStagedCopyFallback ? 2 : 1); ++attempt) {
         if (attempt > 0) {
             fSource.close();
