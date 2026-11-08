@@ -170,7 +170,7 @@ bool GpuYuvUploader::create(VkDevice device, VkPhysicalDevice physicalDevice,
     // The sampler's YUV→RGB matrix. Skia's colour-space names map onto
     // Vulkan's models directly; kJPEG_Full is the full-range Rec.601
     // mapping (this Skia revision has no Rec.601 full-range entry, see
-    // main.cpp's pickYuvColorSpace), and anything else — the source offers
+    // PlaybackPipeline.cpp's pickYuvColorSpace), and anything else — the source offers
     // no other today — falls back to limited Rec.601.
     VkSamplerYcbcrModelConversion model = VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
     VkSamplerYcbcrRange range = VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;

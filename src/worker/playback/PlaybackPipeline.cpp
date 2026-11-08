@@ -19,7 +19,8 @@ SkYUVColorSpace pickYuvColorSpace(const media::VideoStreamInfo& info) {
     const bool fullRange =
         info.colorRange == "jpeg" || info.colorRange == "pc" || info.colorRange == "full";
     bool bt709 = info.colorSpace == "bt709";
-    const bool bt601 = info.colorSpace == "bt601" || info.colorSpace == "smpte240m";
+    const bool bt601 = info.colorSpace == "bt601" || info.colorSpace == "smpte240m" ||
+                       info.colorSpace == "bt470bg";
     if (!bt709 && !bt601) {
         bt709 = info.height >= 720;
     }
