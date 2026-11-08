@@ -3210,6 +3210,96 @@ bool DocumentController::removeAsset(const QString& assetId) {
     return true;
 }
 
+bool DocumentController::addMediaCue(const QString& assetId, int index) {
+    flushText();
+    const openshow::domain::Asset* asset =
+        fDocuments.findAsset(assetId.toStdString());
+    if (asset == nullptr) {
+        setStatus(QStringLiteral("media cue: no such media item"));
+        return false;
+    }
+    // A cue is a picture the audience watches: a video, a still or a live
+    // camera. Audio is a production-track action (it is never a slide's
+    // picture) and an "other" file has nothing to draw, so neither can become
+    // a cue from this drop.
+    const openshow::domain::AssetKind kind = openshow::domain::assetKind(*asset);
+    if (kind != openshow::domain::AssetKind::Video &&
+        kind != openshow::domain::AssetKind::Picture &&
+        kind != openshow::domain::AssetKind::Camera) {
+        setStatus(QStringLiteral(
+            "media cue: only a video, a picture or a camera can become a cue"));
+        return false;
+    }
+    if (fCurrentPlaylistId.empty()) {
+        setStatus(QStringLiteral("media cue: there is no running order to add to"));
+        return false;
+    }
+    const openshow::domain::Playlist* playlist =
+        fDocuments.findPlaylist(fCurrentPlaylistId);
+    const std::size_t count = playlist != nullptr ? playlist->entries.size() : 0;
+    const std::size_t at =
+        index < 0 ? count
+                  : std::min(static_cast<std::size_t>(index), count);
+    const std::string name = asset->name;
+    const openshow::domain::Id assetIdValue = asset->id;
+    std::string error;
+    const bool changed = edit([&] {
+        // The cue is one schedule-owned show, never a Library row: the drop
+        // belongs to THIS running order, and the asset's own bin card stays
+        // the reusable copy.
+        const openshow::domain::Id show =
+            fDocuments.createScheduleShow(name, &error);
+        if (show.empty()) {
+            return false;
+        }
+        const openshow::domain::Id slide =
+            fDocuments.appendSlide(show, &error);
+        if (slide.empty()) {
+            return false;
+        }
+        // appendSlide gives the new slide a lyric box by contract. A video
+        // cue is ONE media layer and nothing else: remove that box before
+        // setting the background, so the slide has no words and no "Blank"
+        // lyric layer to show. The history's atomic snapshot makes the whole
+        // creation one undo entry.
+        const openshow::domain::Show* created = fDocuments.findShow(show);
+        if (created == nullptr) {
+            return false;
+        }
+        const openshow::domain::Slide* createdSlide = nullptr;
+        for (const openshow::domain::Slide& candidate : created->slides) {
+            if (candidate.id == slide) {
+                createdSlide = &candidate;
+                break;
+            }
+        }
+        if (createdSlide == nullptr || createdSlide->items.empty()) {
+            return false;
+        }
+        if (!fDocuments.removeItem(show, slide, createdSlide->items.front().id,
+                                   &error)) {
+            return false;
+        }
+        if (!fDocuments.setSlideBackground(show, slide, assetIdValue, &error)) {
+            return false;
+        }
+        if (!fDocuments.setSlideBackgroundFit(
+                show, slide, openshow::domain::BackgroundFit::Cover, &error)) {
+            return false;
+        }
+        return !fDocuments
+                    .insertPlaylistEntry(fCurrentPlaylistId, show, std::string(), at,
+                                         &error)
+                    .empty();
+    });
+    if (!changed) {
+        setStatus(QStringLiteral("media cue: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    setStatus(QStringLiteral("media cue added"));
+    return true;
+}
+
 QStringList DocumentController::mediaImportNameFilters() const {
     // One table (openshow::domain) spells the kinds, so this filter, the
     // bin's labels and the pipeline's decision cannot drift apart: a dialog

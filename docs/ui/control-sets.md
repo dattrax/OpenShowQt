@@ -237,10 +237,12 @@ Other. The model caps camera assets at four (`kMaxCameraAssets`), so the
 numeral always has a slot; a fifth add is refused with a sentence.
 
 The card drags `media:<assetId>` through the shared `DragFeedback`. Dropping it
-on a Show cue sets that cue's slide **background media** in one undo. Audio is
-a production-track action, not a cue drop. A rendered deck page
-(`Asset::deckPage`) is stored but never a bin row: the deck is a unit and its
-pages are hidden from the grid and its collection counts.
+on a Show cue sets that cue's slide **background media** in one undo; dropping
+it on the running order's list creates a cue of its own — one schedule-owned
+show with a single slide carrying that media as its whole background and no
+lyric layer. Audio is a production-track action, not a cue drop. A rendered
+deck page (`Asset::deckPage`) is stored but never a bin row: the deck is a
+unit and its pages are hidden from the grid and its collection counts.
 
 | | |
 |---|---|
@@ -474,7 +476,7 @@ shell/empty-state evidence, not a substitute for this populated tour.
 | Part | Contract |
 |---|---|
 | `LibraryBrowser` (`libraryBrowser`) | Hosts Songs (catalog) and Presentations (service shows + catalog records categorised as presentations). Owns `librarySearchField`, `librarySongList`, `collectionLibraryList`, both category headers as Move drop targets, `catalog:<id>`/`show:<id>` drag sources, the song context menu (`librarySongMenu`) and rename dialog (`libraryRenameSongDialog`). Focused Delete confirms permanent Library removal. PowerPoint files drop on the Presentations header; songs/presentations drag into the service. The redundant Add/Import/New/Remove buttons and manual-creation dialog are removed. Browsing never presents. |
-| `CurrentServicePanel` (`currentServicePanel`) | The one running order (`collectionPlaylistList`, `collectionPlaylistRow`) with reorder/remove handles, `serviceRemoveSelectedButton`, scrolled insertion gaps, `catalog:`/`show:`/`entry:` drop handling and bounded edge autoscroll. No service picker in this milestone. Clicking a cue selects it and browses its show; it never presents. |
+| `CurrentServicePanel` (`currentServicePanel`) | The one running order (`collectionPlaylistList`, `collectionPlaylistRow`) with reorder/remove handles, `serviceRemoveSelectedButton`, scrolled insertion gaps, `catalog:`/`show:`/`entry:`/`media:` drop handling and bounded edge autoscroll. A `media:` drop creates a single-slide cue with that media as its background and no lyric layer. No service picker in this milestone. Clicking a cue selects it and browses its show; it never presents. |
 | `ListSelection` | Shared stable-key selection model: ordinary click replaces, Ctrl toggles, Shift extends from the anchor, Ctrl+Shift adds a range, Ctrl+A selects all filtered rows in expanded branches (including scrolled-off rows). Library keys are typed `catalog:`/`show:` identities; service keys are occurrence-specific entry IDs. Filtering/collapsing prunes hidden selections. |
 | `SongImportPage` (`songImportPage`) | Off-air import page over `SongImport`: `songPasteButton` (normal clipboard only), `songTitleField`, `songCcliField`, `songAuthorsField`, `songCopyrightField`, `songSlideCollection`/`songSlideCard` (thumbnail target, keys `song:<plan>:<index>`), `songAddToLibraryButton`, `songCancelButton`, `songImportBackButton`. It owns thumbnails only (no Selection canvas), stands them down when hidden, and writes nothing before Add. |
 | `SongPlanner` (session) | Not a visual part: the shared non-blocking measurement runner (`text.measure` cache, one batch in flight, latest-ask-wins) used by both the import page and the service bridge. Exposes no persistence. |

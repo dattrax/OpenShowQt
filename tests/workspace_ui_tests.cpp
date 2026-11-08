@@ -1,6 +1,9 @@
 // Interaction regressions for the operator workspace. No worker or user files.
 #include <QGuiApplication>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QImage>
+#include <QMimeData>
 #include <QElapsedTimer>
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
@@ -1365,6 +1368,69 @@ int main(int argc, char** argv) {
     QTest::qWait(80);
     panels.resizeDrawer(300, window->height() - 364);
     QTest::qWait(50);
+    // MB.9: a media card dropped on the running order becomes its own cue:
+    // one schedule-owned show with a single slide whose whole picture is the
+    // video's background — no lyric layer, no Library row.
+    {
+        auto* serviceDrop = findNamed(window->contentItem(), "serviceDropArea");
+        check(serviceDrop != nullptr, "the running order accepts drops");
+        QString videoId;
+        for (const QVariant& entry : docs.assets()) {
+            const QVariantMap row = entry.toMap();
+            if (row.value(QStringLiteral("name")).toString() == QLatin1String("loop.mp4"))
+                videoId = row.value(QStringLiteral("id")).toString();
+        }
+        check(!videoId.isEmpty(), "the video is still in the bin");
+        if (!videoId.isEmpty() && serviceDrop) {
+            const QVariantList entriesBefore = docs.playlistEntries();
+            QStringList entryIdsBefore;
+            for (const QVariant& entry : entriesBefore)
+                entryIdsBefore << entry.toMap().value(QStringLiteral("entryId")).toString();
+            QMimeData mime;
+            mime.setText(QStringLiteral("media:") + videoId);
+            const QPoint target = serviceDrop->mapToScene(
+                QPointF(serviceDrop->width() / 2, 20)).toPoint();
+            QDragEnterEvent enter(target, Qt::CopyAction, &mime, Qt::LeftButton,
+                                  Qt::NoModifier);
+            QCoreApplication::sendEvent(serviceDrop, &enter);
+            QTest::qWait(20);
+            check(enter.isAccepted(),
+                  "the running order accepts a video card drag");
+            QDropEvent drop(target, Qt::CopyAction, &mime, Qt::LeftButton,
+                            Qt::NoModifier);
+            QCoreApplication::sendEvent(serviceDrop, &drop);
+            QTest::qWait(40);
+            check(drop.isAccepted(), "the video drop is accepted");
+            const QVariantList entries = docs.playlistEntries();
+            check(entries.size() == entriesBefore.size() + 1,
+                  "the video becomes one cue in the running order");
+            QString newShowId;
+            for (const QVariant& entry : entries) {
+                const QString id = entry.toMap().value(QStringLiteral("entryId")).toString();
+                if (!entryIdsBefore.contains(id))
+                    newShowId = entry.toMap().value(QStringLiteral("showId")).toString();
+            }
+            check(!newShowId.isEmpty(), "the video cue names a new show");
+            bool inLibrary = false;
+            for (const QVariant& row : docs.songs())
+                if (row.toMap().value(QStringLiteral("id")).toString() == newShowId)
+                    inLibrary = true;
+            check(!inLibrary, "the video cue is not a Library row");
+            const QVariantList slides = docs.slidesOf(newShowId);
+            check(slides.size() == 1, "the video cue is a single slide");
+            if (slides.size() == 1) {
+                const QVariantMap slide = slides.first().toMap();
+                check(slide.value(QStringLiteral("backgroundAssetId")).toString() == videoId,
+                      "the video fills the cue's background layer");
+                check(slide.value(QStringLiteral("preview")).toString()
+                          == QLatin1String("(empty)"),
+                      "the video cue's slide has no lyric text");
+            }
+            docs.undo();
+            check(docs.playlistEntries().size() == entriesBefore.size(),
+                  "one undo removes the video cue");
+        }
+    }
     {
         // UI.3c: the thumbnail size control and the bounded band schedule it
         // re-triggers. To pin the schedule off the wire, deepen the running

@@ -66,6 +66,22 @@ Item {
         const raw = (y - entryList.y + entryList.contentY) / 30.0
         return Math.max(0, Math.min(entryList.count, Math.round(raw)))
     }
+    // The kind of a media asset, or "" when the id is not in the bin. A
+    // media card can only become a cue when its picture is a slide's
+    // background: a video, a picture or a live camera. Audio is a
+    // production-track action and "other" has no picture to draw, so a
+    // drop of either is refused rather than becoming a blank cue.
+    function mediaCueKind(id) {
+        const rows = docs.assets
+        for (let i = 0; i < rows.length; ++i) {
+            if (rows[i].id === id) {
+                const kind = rows[i].kind
+                return kind === "video" || kind === "picture" || kind === "camera"
+                    ? kind : ""
+            }
+        }
+        return ""
+    }
 
     Column {
         anchors.fill: parent
@@ -248,7 +264,8 @@ Item {
                 readonly property int dropAction: payloadKind === "entry" ? Qt.MoveAction : Qt.CopyAction
                 readonly property string dropHint: payloadKind === "entry" ? "Move to the marked position"
                     : (payloadKind === "pptx" ? "Import this deck at the marked position"
-                                              : "Add at the marked position")
+                       : (payloadKind === "media" ? "Add a media cue at the marked position"
+                                                  : "Add at the marked position"))
                 readonly property int insertionIndex: servicePanel.gapIndex(dragY)
                 // Bounded edge autoscroll (SL.7): a drag held near the top or
                 // bottom of a long order scrolls toward the destination it is
@@ -270,13 +287,15 @@ Item {
                         autoScroll.start()
                         return
                     }
-                    const payload = drag.source ? String(drag.source.payload || "") : ""
+                    const payload = drag.source ? String(drag.source.payload || "")
+                                                : drag.getDataAsString("text/plain")
                     const colon = payload.indexOf(":")
                     const kind = payload.substring(0, colon)
                     const id = payload.substring(colon + 1)
                     const valid = id && (kind === "entry" ? servicePanel.entryIds.indexOf(id) >= 0
                         : (kind === "show" ? !!docs.showInfo(id).id
-                           : (kind === "catalog" && !!library.itemOf(id).id)))
+                           : (kind === "catalog" ? !!library.itemOf(id).id
+                              : (kind === "media" && !!servicePanel.mediaCueKind(id)))))
                     drag.accepted = !!valid
                     if (!valid) return
                     entryDrop.payloadKind = kind
@@ -322,7 +341,8 @@ Item {
                     if (!id)
                         return
                     const at = servicePanel.gapIndex(drop.y)
-                    if (kind === "catalog" || kind === "show" || kind === "entry")
+                    if (kind === "catalog" || kind === "show" || kind === "entry"
+                        || kind === "media")
                         servicePanel.forceActiveFocus()
                     if (kind === "catalog") {
                         // COPY: the Library keeps the item; the service gains
@@ -333,6 +353,15 @@ Item {
                         }
                     } else if (kind === "show") {
                         if (docs.insertShowInPlaylist(id, at)) {
+                            drop.accept(Qt.CopyAction)
+                            servicePanel.entryChosen("")
+                        }
+                    } else if (kind === "media") {
+                        // MB.9: a video or picture card becomes a cue of its
+                        // own — one slide carrying that media as its whole
+                        // background and no lyric layer. The bin's card stays
+                        // in the library; the cue is a copy of the picture.
+                        if (docs.addMediaCue(id, at)) {
                             drop.accept(Qt.CopyAction)
                             servicePanel.entryChosen("")
                         }

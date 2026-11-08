@@ -600,6 +600,14 @@ public:
     Q_INVOKABLE bool importMediaUrl(const QUrl& file);
     Q_INVOKABLE int importMediaUrls(const QVariantList& files);
     Q_INVOKABLE bool removeAsset(const QString& assetId);
+    // MB.9: a media card dropped on the running order becomes a cue of its
+    // own: one schedule-owned show with one slide whose whole picture is the
+    // asset's background (no lyric box, no words). `index` is the running
+    // order's insertion gap, clamped; -1 appends. One edit, one undo. Only
+    // the kinds a slide can draw as a picture are accepted — a video, a
+    // picture or a live camera; audio is a production-track action and an
+    // "other" file has no picture to draw.
+    Q_INVOKABLE bool addMediaCue(const QString& assetId, int index = -1);
     // The bin's import filter (UI.4a), spelled from the domain's one
     // extension table so the dialog, the rows' kind labels and the pipeline's
     // own decision cannot hold three opinions about what a name means.
