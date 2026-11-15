@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1360,6 +1361,90 @@ void testAudioOnlyLayer() {
     transport.shutdown();
 }
 
+// Review D4: a staged bundle is the player AND the metadata that describes
+// it, taken whole under one lock. The fixture blocks the render thread
+// between "taken" and "adopted" and publishes the NEXT bundle in that exact
+// window: the player being adopted must keep ITS OWN source flags, not the
+// newcomer's. Before the fix the flags were loose fields the second prepare
+// overwrote, so A's player was adopted wearing B's answer.
+void testStagedBundleOwnership() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) {
+        std::printf("   skipped the staged-bundle ownership fixture (no ffmpeg)\n");
+        return;
+    }
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string trackA = "transport-fixtures/ownership-a.wav";
+    const std::string trackB = "transport-fixtures/ownership-b.wav";
+    for (const auto& [path, freq] : {std::pair{trackA, 440}, std::pair{trackB, 660}}) {
+        const std::string command =
+            "ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+            "\"sine=frequency=" + std::to_string(freq) +
+            ":duration=2:sample_rate=48000\" -ac 2 \"" + path + "\"";
+        if (std::system(command.c_str()) != 0) {
+            check(false, "the ownership fixtures were written");
+            return;
+        }
+    }
+    BackgroundTransport transport;
+    const auto resident = [](const std::string&) { return true; };
+    openshow::scene::AudioLayer layerA;
+    layerA.present = true;
+    layerA.assetId = "asset-a";
+    layerA.assetPath = trackA;
+    openshow::scene::AudioLayer layerB;
+    layerB.present = true;
+    layerB.assetId = "asset-b";
+    layerB.assetPath = trackB;
+
+    // A is staged and about to be adopted; B is published in the window.
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool publishedB = false;
+    bool holdFirstTake = true;
+    transport.setStagedBundleTakeHook([&] {
+        if (!holdFirstTake) return;
+        holdFirstTake = false;
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return publishedB; });
+    });
+    check(transport.primeAudio(openshow::scene::Background{}, layerA, nullptr, nullptr),
+          "ownership: A is staged");
+    std::thread primer([&] {
+        std::string error;
+        transport.primeAudio(openshow::scene::Background{}, layerB, nullptr, &error);
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            publishedB = true;
+        }
+        cv.notify_all();
+    });
+    const auto adopted = transport.applyBackground(openshow::scene::Background{}, layerA,
+                                                   openshow::worker::GpuHandles{}, resident);
+    primer.join();
+    check(adopted == BackgroundTransport::BackgroundApply::kApplied,
+          "ownership: A's scene is adopted");
+    transport.refreshMediaState();
+    const openshow::worker::MediaStatus afterA = transport.mediaStatus();
+    check(afterA.path == trackA && afterA.live,
+          "ownership: A's player is the one on air, naming A's track");
+    bool aHasAudioSource = false;
+    for (const auto& source : afterA.sources) {
+        if (source.name == "audio") aHasAudioSource = true;
+    }
+    check(aHasAudioSource,
+          "ownership: A's player keeps A's source flags even though B was published in the window");
+
+    // B's own bundle is intact and adopts with B's identity.
+    const auto adoptedB = transport.applyBackground(openshow::scene::Background{}, layerB,
+                                                    openshow::worker::GpuHandles{}, resident);
+    check(adoptedB == BackgroundTransport::BackgroundApply::kApplied,
+          "ownership: B's scene is adopted from its own bundle");
+    transport.refreshMediaState();
+    check(transport.mediaStatus().path == trackB,
+          "ownership: B's player is the one on air, naming B's track");
+    transport.shutdown();
+}
+
 }  // namespace
 
 int main() {
@@ -1378,6 +1463,7 @@ int main() {
     testClockEpochDropsUndrawnDeadlines();
     testStillsAndIdentity(transport);
     testAudioOnlyLayer();
+    testStagedBundleOwnership();
     testSeam(transport);
     testScheduleGrammar();
 

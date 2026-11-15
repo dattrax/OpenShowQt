@@ -25,6 +25,33 @@
 
 namespace openshow::worker {
 
+namespace {
+
+// The audible identity of a scene (DR.0/DR.3): the picture whose embedded
+// stream is part of the mix, and the show's own layer. A visual-only change
+// leaves both alone, so the player, its position and its clock survive it; a
+// different picture-video or a different track is a different mix and starts
+// a new player.
+struct AudioIdentity {
+    std::string embedded;  // the video path whose own audio is mixed ("" = none)
+    std::string layer;     // the show's track ("" = none)
+    bool operator==(const AudioIdentity& other) const = default;
+};
+
+AudioIdentity audioIdentityOf(const openshow::scene::Background& background,
+                              const openshow::scene::AudioLayer& audio) {
+    AudioIdentity identity;
+    if (background.hasImage && background.isVideo && !background.isCamera) {
+        identity.embedded = background.assetPath;
+    }
+    if (audio.present) {
+        identity.layer = audio.assetPath;
+    }
+    return identity;
+}
+
+}  // namespace
+
 BackgroundTransport::~BackgroundTransport() {
     shutdown();
 }
@@ -38,9 +65,9 @@ void BackgroundTransport::shutdown() {
     {
         const std::lock_guard<std::mutex> lock(fPrimeMutex);
         fPrimed.reset();
-        fPrimedAudio.reset();
-        fPrimedAudioWanted = false;
-        fPrimedAudioLoss.clear();
+        // The staged bundle dies with the session (review D4): its player is
+        // stopped here, on this thread, like every other staged death.
+        fStagedAudio.reset();
         fPrimedPath.clear();
     }
     // 6.21c2: a retirement may still be in flight; shutdown is not a frame
@@ -1516,123 +1543,154 @@ bool BackgroundTransport::primeVideo(const std::string& path,
     // dies on THIS thread (a file-only close: no GPU call, no thread to
     // join), so a stream of prepared videos never grows the primed set and
     // the retirement is never in a frame tick — R10's "superseded primed
-    // transports are bounded". Task 6.21c1: the pair bound to a DIFFERENT
-    // path is superseded too — the held audio player is taken under the
-    // leaf lock and stopped after it, on this same executor thread (its
-    // ~AvPlayer joins feeders, mixer and sink; no GPU is anywhere near it).
-    std::unique_ptr<AvPlayer> supersededAudio;
+    // transports are bounded". The AUDIO half is its own bundle now (review
+    // D3/D4) and is not tied to this path, so a new file prime leaves it
+    // alone.
     {
         const std::lock_guard<std::mutex> lock(fPrimeMutex);
-        if (!fPrimedPath.empty() && fPrimedPath != path) {
-            supersededAudio = std::move(fPrimedAudio);
-            fPrimedAudioWanted = false;
-            fPrimedAudioLoss.clear();
-        }
         fPrimed = std::move(pipeline);
         fPrimedPath = path;
     }
     return true;
 }
 
-bool BackgroundTransport::primeAudio(const std::string& path,
-                                     const std::string& audioLayerPath,
+bool BackgroundTransport::primeAudio(const openshow::scene::Background& wanted,
+                                     const openshow::scene::AudioLayer& audio,
                                      const std::atomic<bool>* cancelled,
                                      std::string* error) {
     // Runs on the CALLER's thread — the prepare executor's, never the render
     // loop (task 6.21c1, review F3). An audio bring-up holds real waits:
     // the server connection and negotiation, the feeder opens, and the
-    // pre-roll window (up to seconds at a cold daemon). They belong HERE,
-    // beside the file prime they pair with; the frame boundary keeps only
-    // the release of the hold, which is microseconds.
+    // pre-roll window (up to seconds at a cold daemon). They belong HERE;
+    // the frame boundary keeps only the release of the hold, which is
+    // microseconds.
+    //
+    // Review D3: this is NOT tied to a video prime any more. An audio-only
+    // cue, a still and a camera with a show layer all reach the frame thread
+    // with a bundle ready, and the same video with a new layer stages the new
+    // mix rather than cold-opening. Review D4: the player and every flag that
+    // describes it are parked as ONE bundle, taken whole.
     const auto stopped = [cancelled] {
         return cancelled != nullptr && cancelled->load();
     };
-    if (path.empty() || stopped()) {
-        return false;
+    const bool wantsVideo = wanted.hasImage && wanted.isVideo && !wanted.isCamera;
+    StagedAudioBundle bundle;
+    bundle.videoPath = wantsVideo ? wanted.assetPath : std::string();
+    bundle.layerPath = audio.present ? audio.assetPath : std::string();
+    if ((bundle.videoPath.empty() && bundle.layerPath.empty()) || stopped()) {
+        return false;  // a silent scene has nothing to stage
     }
-    // The same probe applyBackground runs, on the thread that can afford
-    // it: which stream the clip carries and whether a decoder exists. The
-    // answer rides the park, so the adopt side neither re-probes nor loses
-    // the "wanted and lost" story (R18) by going staged.
-    openshow::media::MediaInfo info;
-    if (openshow::media::probeMedia(path, &info, error) !=
-        openshow::media::ProbeStatus::kOk) {
-        return false;  // the file prime told the same story; the present reports
-    }
+    // Publish "a prime is in flight" for the whole bring-up (review D3): a
+    // scene that needs audio and finds no bundle is deferred once instead of
+    // opening the file on the frame thread. The flag falls and the loop is
+    // woken on every exit — success, failure and cancellation alike — so a
+    // deferred scene always gets its retry.
+    struct StagingFlag {
+        BackgroundTransport* self;
+        ~StagingFlag() {
+            self->fStagingAudio.store(false, std::memory_order_release);
+            self->wakeRenderThread();
+        }
+    } staging{this};
+    fStagingAudio.store(true, std::memory_order_release);
+
     AvPlayer::Config config;
     config.loop = true;
     config.startHeld = true;
-    bool wantsAudio = false;
     bool embeddedAudio = false;
     bool layerAudio = false;
+    double layerDuration = -1.0;
     std::string loss;
-    if (!info.audioStreams.empty()) {
-        if (info.audioStreams.front().decoderAvailable) {
-            config.videoAudioPath = path;
-            embeddedAudio = true;
-            wantsAudio = true;
-        } else {
-            loss = "background video has an audio stream no decoder can handle; "
-                   "playing muted";
+    // The same probes applyBackground runs, on the thread that can afford
+    // them: which stream the picture carries and whether the layer is
+    // playable. The answers ride the bundle, so the adopt side neither
+    // re-probes nor loses the "wanted and lost" story (R18) by going staged.
+    if (!bundle.videoPath.empty()) {
+        openshow::media::MediaInfo info;
+        std::string probeError;
+        if (openshow::media::probeMedia(bundle.videoPath, &info, &probeError) ==
+            openshow::media::ProbeStatus::kOk) {
+            if (!info.audioStreams.empty()) {
+                if (info.audioStreams.front().decoderAvailable) {
+                    config.videoAudioPath = bundle.videoPath;
+                    embeddedAudio = true;
+                } else {
+                    loss = "background video has an audio stream no decoder can handle; "
+                           "playing muted";
+                }
+            }
         }
     }
-    if (!audioLayerPath.empty()) {
+    if (!bundle.layerPath.empty()) {
         // The show's audio layer rides the same held player as the video's
         // own stream, so the adopt side gets one clock for both.
-        config.secondAudioPath = audioLayerPath;
         openshow::media::MediaInfo layerInfo;
         std::string layerError;
-        if (openshow::media::probeMedia(audioLayerPath, &layerInfo, &layerError) !=
-            openshow::media::ProbeStatus::kOk || layerInfo.audioStreams.empty() ||
-            !layerInfo.audioStreams.front().decoderAvailable) {
-            loss = "show audio layer '" + audioLayerPath +
-                   "' cannot be played; the video's own audio continues";
+        if (openshow::media::probeMedia(bundle.layerPath, &layerInfo, &layerError) ==
+            openshow::media::ProbeStatus::kOk) {
+            layerDuration = layerInfo.durationSeconds;
+            if (layerInfo.audioStreams.empty()) {
+                loss = "show audio layer '" + bundle.layerPath +
+                       "' carries no audio stream; playing silent";
+            } else if (!layerInfo.audioStreams.front().decoderAvailable) {
+                loss = "show audio layer '" + bundle.layerPath +
+                       "' has audio no decoder can handle (" +
+                       layerInfo.audioStreams.front().codec + "); playing silent";
+            } else {
+                config.secondAudioPath = bundle.layerPath;
+                layerAudio = true;
+            }
         } else {
-            layerAudio = true;
-            wantsAudio = true;
+            loss = "show audio layer '" + bundle.layerPath +
+                   "' cannot be opened: " + layerError;
         }
     }
-    auto player = std::make_unique<AvPlayer>();
-    player->setMasterMute(fMasterMute.load(std::memory_order_relaxed));
-    if (!player->start(config, error)) {
-        // A failed start has self-cleaned (6.7a). Park nothing: the adopt
-        // side runs the inline path and reports the bad news once, exactly
-        // as it does for a scene nobody primed.
-        return false;
+    bundle.embeddedAudio = embeddedAudio;
+    bundle.layerAudio = layerAudio;
+    bundle.wantsAudio = embeddedAudio || layerAudio;
+    bundle.loss = std::move(loss);
+    bundle.layerDuration = layerDuration;
+    if (bundle.wantsAudio) {
+        auto player = std::make_unique<AvPlayer>();
+        player->setMasterMute(fMasterMute.load(std::memory_order_relaxed));
+        std::string startError;
+        if (!player->start(config, &startError)) {
+            // A failed start has self-cleaned (6.7a). The failure RIDES the
+            // bundle (review D3): the adopt side reports this sentence and
+            // plays without audio instead of re-opening the file on the frame
+            // thread to discover the same thing.
+            bundle.error = "background media audio failed to start: " + startError +
+                           "; playing muted";
+            bundle.wantsAudio = false;
+            bundle.embeddedAudio = false;
+            bundle.layerAudio = false;
+        } else if (stopped()) {
+            return false;  // ~player stops the staged transport on this thread
+        } else {
+            bundle.player = std::move(player);
+        }
     }
-    if (stopped()) {
-        return false;  // ~player stops the staged transport on this thread
-    }
-    // The pair rule: the audio half rides the FILE prime's lane, and the
-    // lane names one path. preloadScene primes the video first; a file
-    // prime that never parked leaves this held player with no lane, and it
-    // dies here (again: stop on this thread, off the loop). A re-prime of
-    // the SAME path replaces its own staged player.
-    std::unique_ptr<AvPlayer> superseded;
-    bool parked = false;
+    // One bundle, superseded here. The previous one's player dies on THIS
+    // thread (~AvPlayer joins feeder, mixer and sink; no GPU is anywhere near
+    // it), so a stream of prepares never grows the staged set.
+    std::optional<StagedAudioBundle> superseded;
     {
         const std::lock_guard<std::mutex> lock(fPrimeMutex);
-        if (fPrimedPath == path) {
-            superseded = std::move(fPrimedAudio);
-            fPrimedAudio = std::move(player);
-            fPrimedAudioWanted = wantsAudio;
-            fPrimedEmbeddedAudio = embeddedAudio;
-            fPrimedLayerAudio = layerAudio;
-            fPrimedAudioLoss = loss;
-            fPrimedSecondPath = audioLayerPath;
-            parked = true;
-        }
+        superseded = std::move(fStagedAudio);
+        fStagedAudio = std::move(bundle);
     }
-    return parked;
+    return true;
 }
 
-bool BackgroundTransport::backgroundVideoOnAir(const std::string& assetId,
-                                               const std::string& path) const {
+bool BackgroundTransport::backgroundOnAir(const std::string& assetId,
+                                          const std::string& path,
+                                          const openshow::scene::AudioLayer& audio) const {
     if (path.empty() || !fMediaTransportLive.load(std::memory_order_acquire)) {
         return false;
     }
     const std::lock_guard<std::mutex> lock(fOnAirMutex);
-    return fOnAirVideoAssetId == assetId && fOnAirVideoPath == path;
+    return fOnAirVideoAssetId == assetId && fOnAirVideoPath == path &&
+           fOnAirAudioPath == (audio.present ? audio.assetPath : std::string());
 }
 
 bool BackgroundTransport::backgroundChangeBlocked(
@@ -1775,11 +1833,29 @@ BackgroundTransport::BackgroundApply BackgroundTransport::applyBackground(
         }
     }
 
+    // The staged bundle for THIS identity (review D3/D4): taken WHOLE under
+    // one lock — the held player and every flag that describes it — so a
+    // prepare that publishes the next bundle in the same window can never
+    // hand its source flags to this player. A bundle that does not match is
+    // left for its own scene; a scene with none cold-opens below (the bench
+    // path, and the honest recovery when a prime was superseded).
+    std::optional<StagedAudioBundle> stagedBundle;
+    {
+        const std::lock_guard<std::mutex> lock(fPrimeMutex);
+        if (fStagedAudio.has_value() &&
+            fStagedAudio->videoPath == (wantsVideo ? wanted.assetPath : std::string()) &&
+            fStagedAudio->layerPath == (audio.present ? audio.assetPath : std::string())) {
+            stagedBundle = std::move(fStagedAudio);
+            fStagedAudio.reset();
+        }
+    }
+    if (stagedBundle.has_value() && fStagedBundleTakeHook) {
+        // Test seam (review D4): the window between "taken" and "adopted".
+        fStagedBundleTakeHook();
+    }
+
     std::string error;
     std::unique_ptr<PlaybackPipeline> pipeline;
-    std::unique_ptr<AvPlayer> stagedAudio;
-    bool stagedWantsAudio = false;
-    std::string stagedAudioLoss;
     if (wantsVideo) {
         PlaybackPipeline::Gpu gpu;
         gpu.device = handles.device;
@@ -1799,21 +1875,13 @@ BackgroundTransport::BackgroundApply BackgroundTransport::applyBackground(
         options.loop = true;
         options.allowVideoCopy = true;
 
-        // Task 6.9b (review R10): the prime, if one covers THIS scene. A
-        // prime only serves the same picture AND the same show audio layer;
-        // a different audio half is a different mix, so it cold-starts.
+        // Task 6.9b (review R10): the file prime, if one covers this picture.
+        // The AUDIO half is a separate bundle (review D3/D4) and is taken
+        // below, keyed by the complete media identity.
         {
             const std::lock_guard<std::mutex> lock(fPrimeMutex);
-            if (fPrimed && fPrimedPath == wanted.assetPath &&
-                fPrimedSecondPath == audio.assetPath) {
+            if (fPrimed && fPrimedPath == wanted.assetPath) {
                 pipeline = std::move(fPrimed);
-                // Task 6.21c1: the audio half of the pair comes too, held.
-                stagedAudio = std::move(fPrimedAudio);
-                stagedWantsAudio = fPrimedAudioWanted;
-                stagedAudioLoss = std::move(fPrimedAudioLoss);
-                fPrimedAudioWanted = false;
-                fPrimedAudioLoss.clear();
-                fPrimedSecondPath.clear();
                 fPrimedPath.clear();
             }
         }
@@ -1859,28 +1927,39 @@ BackgroundTransport::BackgroundApply BackgroundTransport::applyBackground(
     bool layerAudio = false;
     std::string audioLoss;
     double layerDuration = -1.0;
-    if (stagedAudio != nullptr) {
-        // The instance swap is under fMutex (the 6.21c1 ownership rule): a
-        // status reader on another thread sees the outgoing silent
-        // placeholder or the staged player, never a player being destroyed.
-        std::unique_ptr<AvPlayer> placeholder;
-        {
-            const std::lock_guard<std::mutex> lock(fMutex);
-            placeholder = std::move(fAudio);
-            fAudio = std::move(stagedAudio);
+    if (stagedBundle.has_value()) {
+        // A bundle covers this identity: its player (when it has one) is
+        // adopted, and its flags, loss and duration are the ones that were
+        // measured for it — the pairing review D4 requires.
+        embeddedAudio = stagedBundle->embeddedAudio;
+        layerAudio = stagedBundle->layerAudio;
+        wantsAudio = stagedBundle->wantsAudio;
+        audioLoss = stagedBundle->loss;
+        layerDuration = stagedBundle->layerDuration;
+        if (!stagedBundle->error.empty()) {
+            // The staged bring-up failed for THIS identity. Report that
+            // sentence and play without audio; re-opening the file on the
+            // frame thread would only discover the same thing more slowly
+            // (review D3).
+            audioLoss = stagedBundle->error;
         }
-        fAudio->setMasterMute(fMasterMute.load(std::memory_order_relaxed));
-        // Release the hold BEFORE anything else: no pipeline is attached to
-        // this player yet, so the release touches only its own sink and
-        // clock — and the first audible millisecond belongs to the scene
-        // this transport was staged for.
-        fAudio->play();
-        embeddedAudio = fPrimedEmbeddedAudio;
-        layerAudio = fPrimedLayerAudio;
-        wantsAudio = stagedWantsAudio;
-        audioLoss = std::move(stagedAudioLoss);
-        fPrimedEmbeddedAudio = false;
-        fPrimedLayerAudio = false;
+        if (stagedBundle->player != nullptr) {
+            // The instance swap is under fMutex (the 6.21c1 ownership rule): a
+            // status reader on another thread sees the outgoing silent
+            // placeholder or the staged player, never a player being destroyed.
+            std::unique_ptr<AvPlayer> placeholder;
+            {
+                const std::lock_guard<std::mutex> lock(fMutex);
+                placeholder = std::move(fAudio);
+                fAudio = std::move(stagedBundle->player);
+            }
+            fAudio->setMasterMute(fMasterMute.load(std::memory_order_relaxed));
+            // Release the hold BEFORE anything else: no pipeline is attached
+            // to this player yet, so the release touches only its own sink and
+            // clock — and the first audible millisecond belongs to the scene
+            // this transport was staged for.
+            fAudio->play();
+        }
     } else {
         AvPlayer::Config config;
         config.loop = true;

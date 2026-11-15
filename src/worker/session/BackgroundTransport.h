@@ -358,19 +358,30 @@ public:
     // applyBackground touches the device, always on the render thread.
     bool primeVideo(const std::string& path, const std::atomic<bool>* cancelled,
                     std::string* error);
-    // Prepare-time audio prime (task 6.21c1, review F3). Runs on the
-    // CALLER's thread (the prepare executor) like primeVideo: probes the
-    // clip's audio story, starts an AvPlayer over it with
-    // Config::startHeld — sink connection and negotiation, feeders, mixer,
-    // pre-roll all paid HERE — and parks the held player beside the file
-    // prime of the same path. The next applyBackground for that path adopts
-    // the player (microseconds) instead of paying up to 1.5 s of negotiation
-    // and 2 s of pre-roll on the render thread. A prime whose file half
-    // never parked stages nothing; a superseded staged player is stopped on
-    // the calling thread, never in a frame tick. The player touches no GPU,
-    // so staging it keeps every GPU rule untouched.
-    bool primeAudio(const std::string& path, const std::string& audioLayerPath,
+    // Prepare-time audio prime (task 6.21c1, review F3; keyed by the whole
+    // media identity since review D3/D4). Runs on the CALLER's thread (the
+    // prepare executor) like primeVideo: probes the picture's audio story and
+    // the show's layer, starts an AvPlayer over them with Config::startHeld —
+    // sink connection and negotiation, feeders, mixer, pre-roll all paid HERE
+    // — and parks the held player WITH the metadata that describes it as ONE
+    // staged bundle. It works for every background kind: a video's embedded
+    // stream, a still or camera with a show layer, and an audio-only cue (no
+    // picture at all). The next applyBackground whose identity matches adopts
+    // the bundle whole (microseconds) instead of paying up to 1.5 s of
+    // negotiation and 2 s of pre-roll on the render thread. A bundle is
+    // superseded by the next prime and stopped on the calling thread, never in
+    // a frame tick. The player touches no GPU, so staging it keeps every GPU
+    // rule untouched.
+    bool primeAudio(const openshow::scene::Background& wanted,
+                    const openshow::scene::AudioLayer& audio,
                     const std::atomic<bool>* cancelled, std::string* error);
+    // Test seam (review D4): called on the render thread after a staged bundle
+    // has been TAKEN under fPrimeMutex and before its player is adopted. A
+    // fixture blocks here, publishes the next bundle, then releases: the two
+    // bundles' source identities must not mix.
+    void setStagedBundleTakeHook(std::function<void()> hook) {
+        fStagedBundleTakeHook = std::move(hook);
+    }
     // End everything by name: the background transport (R6 order — quiesce,
     // then the slots, then the players) and the standalone track, which is
     // deliberately NOT part of the background's lifetime (task 6.15b) and
@@ -398,16 +409,18 @@ public:
     // Any thread: a background video transport is up (between a successful
     // bring-up and the teardown).
     bool mediaTransportLive() const { return fMediaTransportLive.load(); }
-    // Whether this exact video identity is the transport the audience is
+    // Whether this exact media identity is the transport the audience is
     // already watching. The prepare executor asks before opening a second
-    // decoder for a clip that needs no head start: a slide change over the
-    // same background is an identity no-op at present, so priming it would
-    // only pay a file open and a decoder for a transport nobody adopts.
-    // A false answer is always safe (the prime is merely redundant); the
-    // live flag is checked first so a scene prepared while a teardown runs
-    // never reads an identity out of service.
-    bool backgroundVideoOnAir(const std::string& assetId,
-                              const std::string& path) const;
+    // decoder — or a second staged player — for a cue that needs no head
+    // start: a slide change over the same picture and the same show layer is
+    // an identity no-op at present. Review D3: the LAYER is part of the
+    // question, because adding or changing a track over the same video is a
+    // new mix that must be staged, not skipped. A false answer is always safe
+    // (the prime is merely redundant); the live flag is checked first so a
+    // scene prepared while a teardown runs never reads an identity out of
+    // service.
+    bool backgroundOnAir(const std::string& assetId, const std::string& path,
+                         const openshow::scene::AudioLayer& audio) const;
     // Whether this transport registered that audio identity (embedded
     // audio present and decodable), independent of whether the sink is
     // audible — the gain belongs to the mixer either way.
@@ -615,6 +628,7 @@ private:
     mutable std::mutex fOnAirMutex;
     std::string fOnAirVideoAssetId;
     std::string fOnAirVideoPath;
+    std::string fOnAirAudioPath;
 
     // The in-flight seek (task 6.22e4, review A5). AvPlayer's seek wait —
     // up to 500 ms per feeder, a poll deadline rather than a promise from
@@ -689,23 +703,35 @@ private:
     // holds fMutex across the swap. A primed transport has touched no GPU,
     // so retiring it never runs a Ganesh call off its owner thread.
     //
-    // Task 6.21c1 adds the audio half to the same lane, bound to the same
-    // path: primeAudio stages a HELD AvPlayer (sink connected, feeders open,
-    // pre-roll paid, clock parked — Config::startHeld) that
-    // applyBackground adopts instead of probing and starting on the frame
-    // boundary. The pair retires as a pair: a prime for a new path stops the
-    // superseded audio on the executor thread, never in a tick.
+    // Task 6.21c1 adds the audio half to the same lane, but keyed by the
+    // COMPLETE media identity rather than by the file prime (review D3): a
+    // still, a camera or an audio-only cue has no pipeline to pair with, and
+    // the same video with a new layer is a new mix. primeAudio stages a HELD
+    // AvPlayer (sink connected, feeders open, pre-roll paid, clock parked —
+    // Config::startHeld) as ONE StagedAudioBundle: the player and the source
+    // flags, loss and duration that describe it travel together under one
+    // lock (review D4), so a bundle published by another prepare can never be
+    // half-adopted. A superseded bundle is stopped on the executor thread,
+    // never in a tick.
     std::mutex fPrimeMutex;
     std::unique_ptr<PlaybackPipeline> fPrimed;
-    std::unique_ptr<AvPlayer> fPrimedAudio;
-    bool fPrimedAudioWanted = false;      // the prime's probe found a decodable stream
-    bool fPrimedEmbeddedAudio = false;    // the video's own stream opened
-    bool fPrimedLayerAudio = false;       // the show audio layer opened
-    std::string fPrimedAudioLoss;         // and what the audience would miss, if anything
-    // The show audio layer the staged player was built for ("" = none). A
-    // prime only serves a scene with the SAME audio half; anything else
-    // cold-starts rather than adopting a player mixed for another layer.
-    std::string fPrimedSecondPath;
+    struct StagedAudioBundle {
+        std::unique_ptr<AvPlayer> player;  // held player; null when nothing is playable
+        std::string videoPath;             // the picture whose embedded stream is mixed
+        std::string layerPath;             // the show's own track
+        bool wantsAudio = false;
+        bool embeddedAudio = false;
+        bool layerAudio = false;
+        std::string loss;                  // what the audience would miss, if anything
+        double layerDuration = -1.0;       // the layer's probe answer, carried with it
+        std::string error;                 // a failed bring-up; the player is null
+    };
+    std::optional<StagedAudioBundle> fStagedAudio;
+    std::function<void()> fStagedBundleTakeHook;  // test seam, review D4
+    // True while a prime is in flight for SOME identity (review D3): a scene
+    // that needs audio but finds no matching bundle is deferred once rather
+    // than opened on the frame thread, because the bundle is moments away.
+    std::atomic<bool> fStagingAudio{false};
     std::string fPrimedPath;
 
     // Standalone production audio (task 6.15b, review R15). A SEPARATE

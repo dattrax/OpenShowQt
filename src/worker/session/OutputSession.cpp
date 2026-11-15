@@ -414,13 +414,6 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
                                 "background image: " + error);
         } else {
             fTransport.mediaFaultCleared(MediaFault::kImage, background.assetPath);
-            // Task 6.9b: the blur fit's companion rides this same unit of
-            // file work — built NOW, on the executor thread, once the pixels
-            // it derives from are resident — so the frame boundary that
-            // switches to this scene pays only the map probe. Blur is a fit
-            // (task 6.17c1), not a flag; a cover/contain still has no
-            // backdrop to prewarm, and a blur over a VIDEO composites from
-            // the presented frame (6.6), so this belongs to the still alone.
             if (background.fit == openshow::domain::BackgroundFit::Blur) {
                 fScene->imageCache()->prewarmBackdrop(background.assetPath);
             }
@@ -434,20 +427,10 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
     // (5.5d) instead of discovered as a silent colour fill one frame after
     // the change. A file the probe could read is then PRIME-OPENED on THIS
     // thread — the prepare executor's — so the audience's boundary attaches
-    // the GPU half instead of opening from disk (task 6.9b, review R10):
-    // the slow open happens while the old scene is still on air, and the
-    // prime is the one bounded transport R10 asks for (a superseded prime
-    // retires on this thread). The prime changes nothing on screen — it is
-    // readiness, and the present remains the decision.
-    // The audience may already be watching this exact clip: a slide change
-    // over one background video compiles to the same identity, so the
-    // present is the transport's no-op. Opening a second decoder for it
-    // here would be a head start on nothing — one file open, one decoder
-    // and one held audio player per slide — while the transport that is
-    // actually playing is the one that keeps the clock. The identity check
-    // is the prepare executor's read of the render thread's published
-    // transport state; a miss merely primes redundantly.
-    if (fTransport.backgroundVideoOnAir(background.assetId, background.assetPath)) {
+    // the GPU half instead of opening from disk (task 6.9b, review R10).
+    // The identity check is the prepare executor's read of the render
+    // thread's published transport state; a miss merely primes redundantly.
+    if (fTransport.backgroundOnAir(background.assetId, background.assetPath, scene.audio)) {
         return;
     }
     openshow::media::MediaInfo info;
@@ -459,27 +442,13 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
         fTransport.mediaFailed(MediaFault::kVideo, background.assetPath,
                              "background preload: " + error);
     } else if (!fTransport.primeVideo(background.assetPath, cancelled, &error)) {
-        // A prime failure is not a reportable media fault: the file reads
-        // (the probe just said so), and the present will open cold and
-        // report anything truly wrong. It is only the loss of the head
-        // start, so it stays in the log.
         std::fprintf(stderr, "openshow-worker: background prime %s skipped: %s\n",
                      background.assetPath.c_str(), error.c_str());
     } else {
-        // Task 6.21c1 (review F3): the audio half rides the same lane, on
-        // the same thread — negotiation, feeders and pre-roll paid here, so
-        // the frame boundary that starts this clip releases a held player
-        // instead of building one. A staging failure is the same kind of
-        // non-story as a file-prime failure: the present falls back to the
-        // inline start and reports there.
+        // The audio half rides the same lane: negotiation, feeders and
+        // pre-roll paid here, so the frame boundary releases a held player.
         std::string audioError;
-        // The show's audio layer (when it has one) rides the same held
-        // player, so the adopt side starts one clock for the picture and
-        // the track together.
-        if (!fTransport.primeAudio(background.assetPath,
-                                   scene.audio.present ? scene.audio.assetPath
-                                                       : std::string(),
-                                   cancelled, &audioError)) {
+        if (!fTransport.primeAudio(background, scene.audio, cancelled, &audioError)) {
             std::fprintf(stderr, "openshow-worker: background audio prime %s skipped: %s\n",
                          background.assetPath.c_str(), audioError.c_str());
         }
