@@ -9,6 +9,8 @@ Detailed completed-task evidence: [history](docs/history/README.md).
 Post-M6 conformance review: [original findings](docs/reviews/M6-conformance-2026-10-30.md).
 Architecture review: [after 6.22](docs/reviews/M6-post-6.22-review-2026-10-31.md); [6.23 closure evidence](docs/reviews/M6-6.23-verification-2026-10-31.md).
 Theme/editor review and proposed contracts: [2026-11-03 review](docs/reviews/theme-editor-2026-11-03.md).
+Current design conformance review and correction scope:
+[2026-11-15 review](docs/reviews/design-conformance-2026-11-15.md), tasks **DR** below.
 
 ## Goal and reference
 
@@ -1799,6 +1801,31 @@ Design decisions:
 
 Entry gate: none. MB.1–MB.5 are UI-only; MB.7 is domain/storage; MB.6 is worker.
 MB.4 depends on MB.3; MB.5/MB.6 depend on MB.1; MB.8 after MB.1 and MB.5.
+
+### Design conformance corrections — 2026-11-15 review (DR)
+
+Review of `054a1d0`: the core process/document/render split remains in place;
+new media integration has clear/restore, path-adoption, staging and async
+ownership gaps. [Findings D1–D7, evidence and correction detail](docs/reviews/design-conformance-2026-11-15.md).
+These are new follow-ups; earlier DONE checkpoints remain historical evidence.
+Complete DR before FO; existing TV/TA/ND and M7 gates remain open.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| DR.0 | TODO | Reconcile the current audio cue contract and continuity across visual changes, clear, seek/loop and Restore | One recorded policy covers show audio, embedded video audio and legacy standalone RPC; preserve the latest cue workflow; specify transport identity and acknowledged output activity |
+| DR.1 | TODO | Clear video/camera backgrounds through a complete valid scene transformation (D1) | Still/video/camera/gradient clears validate, remove the actual background and agree with indicators; preserve words/show audio, retire the camera and Restore correctly (`scene_edit_tests`, controller/output journeys) |
+| DR.2 | TODO | Adopt every scene asset path, including show audio, in retained/pending payloads (D2) | Save → delete old bytes → clear/restore plays audio-only and mixed cues; pending prepares use saved paths; save/adoption alone never re-presents (`worker_controller_tests`, `frontend_journey_tests`) |
+| DR.3 | TODO | Stage audio for every background kind and complete media identity; defer unready scenes (D3) | After DR.0/DR.4: slow audio-only/still/camera/same-video-new-audio starts never block frame-thread operations; cancellation/replacement/failure stay bounded; duration and faults travel with the staged bundle |
+| DR.4 | TODO | Transfer staged player and all source metadata atomically under one owner (D4) | A barrier-controlled A-adopt/B-publish interleaving preserves both bundles' source identities; no unlocked shared flags; CPU handoff passes race checking where supported |
+| DR.5 | TODO | Include acknowledged show audio in overall output activity and Clear All/Escape gates (D5) | Audio-only Go → active → Clear All → silence → Restore works through actual UI/worker state; paused/muted and pending cues covered; audio remains separate from composition layers |
+| DR.6 | TODO | Preserve every linked Library refresh across delayed preparation (D6) | Same-ID and multiple-ID edits converge to current catalog revisions; initial Add/Refresh, metadata, deletion and destination-service replacement cannot publish stale plans (`song_service_tests`) |
+| DR.7a | TODO | Defer Media Bin probe/decode work through a bounded cancellable executor (D7) | Delayed/failing describe/thumbnail work leaves Go/clear/status responsive; queue, cancellation and reconnect generations have deterministic IPC coverage |
+| DR.7b | TODO | Deliver Media Bin pixels outside JSON-RPC media payloads (D7) | Use shared preview transport or worker-produced cache paths, with byte/lifetime budgets and stale-card rejection; preserve existing bin artwork/first-frame behavior |
+| DR.8 | TODO | Close corrective journeys, reconcile architecture and archive superseded handoff narratives | DR leaves plus desktop/headless suites and source guards pass with skips reported; one current handoff and concise ledger; physical M7/ND checks remain explicitly open |
+
+Order: DR.0 → DR.1/DR.2/DR.4 → DR.3/DR.5 → DR.6/DR.7a/DR.7b → DR.8.
+Target 0.5–2 engineer-days per implementation leaf; split further when needed.
+Review/probes are complete; no corrective implementation is claimed yet.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

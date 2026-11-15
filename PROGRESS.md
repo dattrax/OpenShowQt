@@ -1,8 +1,22 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-11-14 (Europe/London).
+Updated: 2026-11-15 (Europe/London).
 
 ## Current checkpoint
+
+**Design conformance review (2026-11-15):** reviewed `054a1d0` against PLAN.md;
+the core architecture remains in place. The [review](docs/reviews/design-conformance-2026-11-15.md)
+records seven findings and production-library probe evidence: video/camera
+background clears, audio path adoption, blocking audio bring-up, staged metadata
+ownership, audio-only clear controls, lost Library refreshes and Media Bin RPC.
+PLAN.md now carries **DR.0–DR.8** correction tasks (DR.7 split a/b), all TODO.
+This turn changes documentation only; no fixes are implemented. Desktop build,
+18 focused tests and 10 architecture guards passed. The broader non-display run
+passed 63/64; its socket-blocked worker-controller test passed when rerun outside
+the sandbox. PipeWire branches skipped; full evidence is in the review. Next action:
+DR.0's audio continuity contract, then DR.1/DR.2/DR.4. Earlier next-action/count
+paragraphs below are historical and need archiving under DR.8. Existing TV/TA,
+ND physical acceptance and M7 gates stay open; complete DR before FO.
 
 **Media library: audio is a cue, not a transport (2026-11-14):** audio now
 takes the same route to the audience as video. `Show::audioAssetId` is the
