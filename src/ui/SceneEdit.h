@@ -33,18 +33,27 @@ namespace openshow::ui {
 struct SceneContent {
     bool words = false;
     bool background = false;
+    // The acknowledged scene carries the show's audio layer (DR.5). Audio is
+    // its own layer: it never makes `background` true, and a cue that is only
+    // audible is still output activity.
+    bool audio = false;
 };
 
-// Content flags of a scene JSON; {} for anything unparseable. The
-// background counts when it carries an image, a non-black colour, or a
-// gradient (6.21e) — a black fill with nothing second to it is what
-// "no background" looks like.
+// Content flags of a scene JSON, read through the SAME typed contract the
+// worker validates with (review D1), so the indicator and the audience cannot
+// disagree: a camera background reports a background because the codec
+// reinstates its picture, and a payload the codec refuses reports nothing.
+// The background counts when it carries an image, a non-black colour, or a
+// gradient (6.21e) — a black fill with nothing second to it is what "no
+// background" looks like, and transparency suppresses it.
 SceneContent sceneContent(const QString& sceneJson);
 
-// The scene with its words removed (background untouched) or its
-// background removed (words untouched); "" when the input is not a scene
-// object. Everything else — provenance, style, the other part — carries
-// over verbatim.
+// The scene with its words removed (background untouched) or its background
+// removed (words untouched); "" when the input is not a scene this build can
+// present. The background clear is a complete transformation through the typed
+// contract (review D1): picture, video, camera and gradient all go, so the
+// result validates and the camera is really retired. Everything else —
+// provenance, style, the words, the show's audio layer — carries over.
 QString withRetainedBackground(const QString& sceneJson, const QString& previousJson);
 QString withWordsCleared(const QString& sceneJson);
 QString withBackgroundCleared(const QString& sceneJson);

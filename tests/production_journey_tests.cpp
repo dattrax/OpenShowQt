@@ -776,6 +776,80 @@ int main(int argc, char* argv[]) {
               "and the same words ride over it");
     }
 
+    // --- a VIDEO background clears through a complete scene ----------------
+    // Review D1: the old clear left `video:true` with `image:false`, which the
+    // codec refuses — so Clear Background over a clip could not reach the
+    // worker at all. The fixed transformation is proven where it matters:
+    // the payload is accepted, the audience goes black, the words stay, and
+    // Restore brings the clip back.
+    const std::string clipPath = (scratch / "clip.mp4").string();
+    const std::string clipCmd =
+        "ffmpeg -v error -y -f lavfi -i color=c=0x40C040:s=320x180:d=2:r=25 -pix_fmt yuv420p " +
+        clipPath;
+    if (std::system(clipCmd.c_str()) == 0) {
+        check(docs.importMediaFile(QString::fromStdString(clipPath)),
+              "the clip imports as media");
+        QString clipId;
+        for (const QVariant& row : docs.assets()) {
+            if (row.toMap().value(QStringLiteral("sourcePath")).toString() ==
+                QString::fromStdString(clipPath)) {
+                clipId = row.toMap().value(QStringLiteral("id")).toString();
+            }
+        }
+        check(!clipId.isEmpty(), "the clip is a library asset");
+        docs.selectSlide(0);
+        check(docs.setSlideBackground(clipId), "the live slide takes the clip as its background");
+        const QString clipJson = docs.currentSceneJson();
+        check(openshow::ui::sceneContent(clipJson).background,
+              "the compiled clip scene carries a background");
+        const Presented clip = presentJson(fd, nextId, clipJson);
+        check(clip.scene != 0, "the clip background is acknowledged on air");
+        g.maxPresentedSeen = clip.tag;
+        check(waitFor(&g.audience, clip.tag, fd, 6),
+              "an audience frame tagged with the clip's revision arrives");
+        // The scene-change frame is presented at once, but the clip's first
+        // decoded frame arrives on its own clock: pump until the transport is
+        // actually drawing, within a bounded wait.
+        bool sawClip = false;
+        const auto clipDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!sawClip && std::chrono::steady_clock::now() < clipDeadline) {
+            pump(fd, 200);
+            sawClip = g.audience.ok && nearColor(pixelAt(g.audience, 0.02, 0.90), 0x40C040, 40);
+        }
+        check(sawClip,
+              "the corner samples the clip's green — the video transport is drawing");
+
+        const QString clipGone = openshow::ui::withBackgroundCleared(clipJson);
+        const Presented clipCleared = presentJson(fd, nextId, clipGone);
+        check(clipCleared.scene != 0,
+              "clearing a VIDEO background is accepted by the codec (it used to be refused)");
+        g.maxPresentedSeen = clipCleared.tag;
+        check(waitFor(&g.audience, clipCleared.tag, fd, 6),
+              "the audience frame after the clip clear arrives");
+        check(g.audience.ok && nearColor(pixelAt(g.audience, 0.02, 0.90), 0x000000),
+              "the clip is gone from the audience (corner is black)");
+        check(g.audience.ok && litPixels(g.audience) > 0,
+              "and the words rode through the clip clear");
+        check(!openshow::ui::sceneContent(clipGone).background,
+              "the indicator agrees with the cleared clip scene");
+
+        const Presented clipBack = presentRevision(fd, nextId, clip.scene);
+        check(clipBack.scene == clip.scene, "restore re-presents the clip revision");
+        g.maxPresentedSeen = clipBack.tag;
+        check(waitFor(&g.audience, clipBack.tag, fd, 6),
+              "restore's audience frame arrives");
+        bool clipBackSaw = false;
+        const auto backDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!clipBackSaw && std::chrono::steady_clock::now() < backDeadline) {
+            pump(fd, 200);
+            clipBackSaw =
+                g.audience.ok && nearColor(pixelAt(g.audience, 0.02, 0.90), 0x40C040, 40);
+        }
+        check(clipBackSaw, "restore brings the clip's picture back");
+    } else {
+        std::printf("   skipped the video clear journey (no ffmpeg)\n");
+    }
+
     // The stream carried every step: author to off-air to go, both clears,
     // the restore and the swap — each one released, so the waits above were
     // never starved of slots.

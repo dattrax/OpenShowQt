@@ -226,6 +226,117 @@ void exerciseClears() {
           "garbage in, empty out — nothing presents garbage");
 }
 
+// Review D1: clears for the media backgrounds the earlier fixtures never
+// carried. A video clear used to leave `video:true` with `image:false` — a
+// payload the codec refuses — and a camera clear left the camera in place
+// while the indicator said the background was gone. Each case is judged
+// through the worker's own reader, which is the only honest verdict.
+QString mediaSceneJson(bool video, bool camera, bool mirror) {
+    Scene scene;
+    scene.showId = "show-media";
+    scene.slideId = video ? "slide-video" : "slide-camera";
+    scene.background.color = 0x203040;
+    scene.background.hasImage = true;
+    scene.background.assetId = video ? "asset-video" : "asset-cam";
+    scene.background.assetPath = video ? "/media/clip.mp4" : "IPHONE (Camera)";
+    scene.background.isVideo = video;
+    scene.background.isCamera = camera;
+    if (camera) {
+        scene.background.cameraSource = "IPHONE (Camera)";
+        scene.background.cameraMirror = mirror;
+    }
+    scene.background.gradient = 0x102030;
+    scene.background.hasGradient = true;
+    SceneItem words;
+    words.lines = {"Under the media"};
+    scene.items.push_back(words);
+    // The show's audio layer rides beside the picture (scene 7).
+    scene.audio.present = true;
+    scene.audio.assetId = "asset-track";
+    scene.audio.assetPath = "/media/track.wav";
+    return QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
+}
+
+bool carriesKey(const QString& json, const char* key) {
+    boost::system::error_code error;
+    const boost::json::value parsed = boost::json::parse(json.toStdString(), error);
+    if (error || !parsed.is_object()) {
+        return false;
+    }
+    const auto background = parsed.as_object().find("background");
+    return background != parsed.as_object().end() && background->value().is_object() &&
+           background->value().as_object().contains(key);
+}
+
+void exerciseMediaBackgroundClears() {
+    // A camera on air reports a background (the codec reinstates its picture),
+    // which is exactly what the audience draws — the indicator the old JSON
+    // edit disagreed with.
+    check(openshow::ui::sceneContent(mediaSceneJson(false, true, true)).background,
+          "a camera background counts as a background on air");
+
+    for (const bool video : {true, false}) {
+        const QString raw = mediaSceneJson(video, !video, true);
+        const QString cleared = openshow::ui::withBackgroundCleared(raw);
+        bool ok = false;
+        const Scene parsed = parseScene(cleared, &ok);
+        const char* which = video ? "video" : "camera";
+        check(ok, (std::string("clear-background yields a valid scene for a ") + which +
+                   " background").c_str());
+        check(ok && !parsed.background.hasImage && !parsed.background.isVideo &&
+                  !parsed.background.isCamera,
+              (std::string("clear-background removes the ") + which +
+               " picture and its kind flags").c_str());
+        check(ok && parsed.background.cameraSource.empty() && !parsed.background.cameraMirror,
+              (std::string("clear-background retires the ") + which +
+               " source and its mirroring").c_str());
+        check(ok && parsed.background.color == openshow::scene::kBlack &&
+                  !parsed.background.hasGradient,
+              (std::string("clear-background leaves the flat black fill under a ") + which)
+                  .c_str());
+        check(!carriesKey(cleared, "gradient"),
+              (std::string("the cleared payload does not name a gradient under a ") + which)
+                  .c_str());
+        check(!carriesKey(cleared, "camera"),
+              (std::string("the cleared payload does not name a camera under a ") + which)
+                  .c_str());
+        check(ok && parsed.items.size() == 1,
+              (std::string("clear-background keeps the words under a ") + which).c_str());
+        // The show's audio layer is its OWN layer: a background clear must not
+        // take the music down with the picture (DR.0/DR.1).
+        check(ok && parsed.audio.present && parsed.audio.assetPath == "/media/track.wav",
+              (std::string("clear-background preserves the show audio layer under a ") + which)
+                  .c_str());
+        check(!openshow::ui::sceneContent(cleared).background,
+              (std::string("the indicator agrees with the cleared ") + which).c_str());
+        check(openshow::ui::sceneContent(cleared).audio,
+              (std::string("and the cleared scene still reports its audio layer under a ") +
+               which)
+                  .c_str());
+    }
+
+    // Clear Slide is the other half of the pair, and it must leave the media
+    // background AND the audio layer exactly where they were.
+    const QString camera = mediaSceneJson(false, true, false);
+    bool ok = false;
+    const Scene wordsGone = parseScene(openshow::ui::withWordsCleared(camera), &ok);
+    check(ok && wordsGone.items.empty() && wordsGone.background.isCamera &&
+              wordsGone.background.cameraSource == "IPHONE (Camera)" &&
+              wordsGone.audio.present,
+          "clear-slide leaves the camera background and the audio layer alone");
+
+    // A camera payload whose edited form said image:false (the shape the old
+    // clear produced) is still read as a camera by the codec — which is why
+    // the transformation, not the key edit, had to change.
+    boost::system::error_code error;
+    boost::json::value hand = boost::json::parse(camera.toStdString(), error);
+    hand.as_object().at("background").as_object()["image"] = false;
+    check(openshow::ui::sceneContent(
+              QString::fromStdString(boost::json::serialize(hand)))
+              .background,
+          "a camera payload with image:false still reads as a background, as the worker draws it");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -248,6 +359,7 @@ int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     exerciseContentFlags();
     exerciseClears();
+    exerciseMediaBackgroundClears();
     if (gFailed) {
         return 1;
     }

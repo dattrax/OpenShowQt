@@ -24,6 +24,14 @@ QString serializeJson(boost::json::value value) {
     return QString::fromStdString(boost::json::serialize(value));
 }
 
+// The typed reading of a scene payload; false for anything the worker's own
+// reader would refuse.
+bool parseScene(const QString& sceneJson, openshow::scene::Scene* scene) {
+    boost::system::error_code error;
+    const boost::json::value parsed = boost::json::parse(sceneJson.toStdString(), error);
+    return !error && openshow::scene::fromJson(parsed, scene);
+}
+
 // Edit one object in place; returns "" when the input was not an object.
 QString edited(const QString& sceneJson, void (*mutate)(boost::json::object&)) {
     bool ok = false;
@@ -38,63 +46,28 @@ QString edited(const QString& sceneJson, void (*mutate)(boost::json::object&)) {
 
 void dropWords(boost::json::object& root) { root["items"] = boost::json::array{}; }
 
-void dropBackground(boost::json::object& root) {
-    root["backgroundColor"] = 0u;
-    if (root.contains("background") && root.at("background").is_object()) {
-        boost::json::object& background = root.at("background").as_object();
-        if (const auto* format = root.if_contains("scene"); format && format->is_number() && format->to_number<int>() >= 5)
-            background["transparent"] = false;
-        background["image"] = false;
-        background["assetId"] = "";
-        background["assetPath"] = "";
-        // The gradient goes with the rest (task 6.21e, review F4). Its
-        // ABSENCE is the flat answer the codec defines (6.17c3: written
-        // only when set), so the key must be REMOVED, not zeroed — a
-        // present-but-black second colour would keep the renderer drawing
-        // a ramp and the "cleared" canvas would grade from black to black
-        // under a UI that says nothing is on air.
-        background.erase("gradient");
-    }
-}
-
 }  // namespace
 
 SceneContent sceneContent(const QString& sceneJson) {
     SceneContent content;
-    bool ok = false;
-    const boost::json::value parsed = parseObject(sceneJson, &ok);
-    if (!ok) {
+    // The flags are the WORKER's reading of the payload, not this client's
+    // guess at its keys (review D1). The typed reader normalises every
+    // relationship the codec defines — a camera reinstates its picture, a
+    // kind flag with no media is refused, transparency suppresses the
+    // backdrop — so the indicator and the audience cannot disagree about
+    // what is on air. A payload the reader refuses reports nothing, loudly.
+    openshow::scene::Scene scene;
+    if (!parseScene(sceneJson, &scene)) {
         return content;
     }
-    const boost::json::object& root = parsed.as_object();
-    const auto items = root.find("items");
-    content.words = items != root.end() && items->value().is_array() &&
-                    !items->value().as_array().empty();
-    const auto color = root.find("backgroundColor");
-    content.background =
-        color != root.end() && color->value().is_number() &&
-        color->value().to_number<std::uint64_t>() != 0;
-    const auto background = root.find("background");
-    if (background != root.end() && background->value().is_object()) {
-        const auto image = background->value().as_object().find("image");
-        if (image != background->value().as_object().end() && image->value().is_bool() &&
-            image->value().as_bool()) {
-            content.background = true;
-        }
-        // A gradient IS a background (task 6.21e, review F4): the black-to-
-        // colour scene the flat flag missed paints a full canvas of ramp.
-        // The key's presence is the answer, whatever its colour — even a
-        // black-on-black pair is a payload whose Clear button must be live
-        // to reach the flat form the absence spells.
-        const auto gradient = background->value().as_object().find("gradient");
-        if (gradient != background->value().as_object().end()) {
-            content.background = true;
-        }
-    }
-    if (background != root.end() && background->value().is_object()) {
-        const auto* alpha = background->value().as_object().if_contains("transparent");
-        if (alpha && alpha->is_bool() && alpha->as_bool()) content.background = false;
-    }
+    content.words = !scene.items.empty();
+    content.background = !scene.background.transparent &&
+                         (scene.background.hasImage || scene.background.hasGradient ||
+                          scene.background.color != openshow::scene::kBlack);
+    // The show's audio layer is its OWN layer: audible activity, never a
+    // composition layer (DR.5). It rides the acknowledged payload, so the
+    // answer is the cue's, not a hopeful click's.
+    content.audio = scene.audio.present;
     return content;
 }
 
@@ -118,7 +91,23 @@ QString withWordsCleared(const QString& sceneJson) {
 }
 
 QString withBackgroundCleared(const QString& sceneJson) {
-    return edited(sceneJson, &dropBackground);
+    // Review D1: a clear is a COMPLETE scene transformation, built through the
+    // typed contract rather than by deleting a few keys. The old edit left
+    // `video`, `camera`, `cameraSource` and `cameraMirror` behind, so a video
+    // clear produced a payload the codec refused ("background 'video' requires
+    // 'image'") and a camera clear came back on air as the same camera while
+    // the indicator said the background was gone.
+    openshow::scene::Scene scene;
+    if (!parseScene(sceneJson, &scene)) {
+        return QString();  // not a scene this build can present: nothing to clear
+    }
+    const openshow::scene::Background cleared;
+    // The fit is the SLIDE's standing answer for the next picture, not part of
+    // the cleared backdrop, so it rides through the clear untouched.
+    const auto fit = scene.background.fit;
+    scene.background = cleared;
+    scene.background.fit = fit;
+    return QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
 }
 
 QString clearedSceneJson() {
