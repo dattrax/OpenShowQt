@@ -798,6 +798,57 @@ starts the player with no playback pipeline. `media.mute` source `"all"` is the
 master media-audio switch over every source (`output.status.media.muted`);
 `media.gain` deliberately has no `"all"`.
 
+**Media audio: one contract, and when it restarts** (DR.0, review D-series
+2026-11-15). Three audio lifetimes exist and this section is their single
+recorded policy:
+
+| Lifetime | Owner | Starts / stops | Reported as |
+|---|---|---|---|
+| Cue audio — the show's layer, mixed with the background video's embedded stream | the CUE (the transport bundle the scene names) | with the cue's media identity; the player is one `AvPlayer` with up to two inputs | `output.status.media` (`path`, `sources[]` "video"/"audio", `muted`) |
+| Embedded video audio | the same player, one input | with the picture that carries it | `sources[]` "video" |
+| Production track (`media.standalone`) | the OPERATOR, independent of every scene | explicit `media.standalone`, and nothing else | `output.status.media.standalone` |
+
+The cue workflow is the current one and is retained: a cue's audio is authored
+on the show, not on a transport panel, and the rail has one master mute. The
+standalone RPC stays as it is — a separate player with its own lifetime, kept
+for the API's history — and no scene change starts or stops it.
+
+**The audible identity is the pair (embedded stream, show layer).** A scene
+change is an audio no-op exactly when that pair is unchanged:
+
+- stepping through a show's slides compiles the same `audio` block, so the
+  track keeps its position, clock and sink across the change (the M3
+  continuity rule);
+- a **visual-only** change — a different still, a colour, a gradient, a
+  camera, or the same video with the same layer — keeps the player and only
+  the picture is rebuilt, so a picture dropped onto a lyric cue does not
+  restart the music;
+- a change that alters the audible mix starts a new player: a different
+  background video (its embedded stream is part of the mix) or a different
+  show track. There is no cross-fade between two players; the new cue's track
+  starts at its beginning, and the outgoing audio goes silent at the hand-off
+  (6.22c's rule).
+- moving between two shows that name the same track file continues it: the
+  identity is the file, not the show id.
+
+**Clear and Restore.** Clear Background and Clear Slide preserve the audio
+layer (the clears are layer-scoped, and audio is its own layer), so the
+audience keeps hearing the cue and the transport is untouched. Clear All is
+the whole-output clear and does include audio: the cleared scene carries no
+`audio` block, so the track stops and the audience hears silence. Restore
+re-presents the retained cue, which starts its track again from the beginning
+— a deliberate re-present, not a resume. `canRestore` and the Clear
+All/Escape gates count the acknowledged audio layer as output activity
+(`audioOnAir`), so a cue that is only audible is never labelled "Output
+clear".
+
+**Seek and loop** are operator intents on the live player, not scene state:
+they survive a visual-only change because the player does, and they are
+discarded with the player when the audible mix changes. Loop defaults to on
+for cue media. **Mute and gain** are mixer state: the master mute and every
+per-source row survive a transport rebuild, and the master mute is applied to
+each instance as it is adopted.
+
 Prepared songs begin with one intentional wordless cue supplied by `SongPlanner`,
 not an empty catalog stanza. The import preview and service bridge share that
 plan; the service adapter admits an explicitly marked blank only at the start
