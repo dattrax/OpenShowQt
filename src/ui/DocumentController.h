@@ -277,9 +277,10 @@ public:
     // The theme's OWN text style (task TS.1, theme-editor review): WHOLE-SET
     // replacement in applyThemeContext's manner — a key present becomes the
     // theme's answer, a key absent makes the theme silent (it stops carrying
-    // an override that used to be there), and {} silences all six. The map
-    // names: fontWeight (integer 100..900), fontStyle ("normal"/"italic"),
-    // fitMode ("shrink"/"fixed"), minFontSize (1..4096), stroke and shadow
+    // an override that used to be there), and {} silences all of them. The
+    // map names: fontWeight (integer 100..900), fontStyle ("normal"/"italic"),
+    // fontUnderline (true/false), fitMode ("shrink"/"fixed"),
+    // minFontSize (1..4096), stroke and shadow
     // (whole records — stroke {enabled,color,width}, shadow {enabled,color,
     // opacity,offsetX,offsetY,blurSigma}; a fragment is refused, because an
     // effect means one thing whole). Unknown keys, stringy weights and
@@ -337,7 +338,7 @@ public:
     // that edits one property of a shared block must not have to know the
     // other five, and a drag gesture that lands many values must cost ONE
     // undo, not one per intermediate. `field` names a leaf — fontWeight,
-    // fontStyle, fitMode, minFontSize, strokeEnabled, strokeColor,
+    // fontStyle, fontUnderline, fitMode, minFontSize, strokeEnabled, strokeColor,
     // strokeWidth, shadowEnabled, shadowColor, shadowOpacity,
     // shadowOffsetX, shadowOffsetY, shadowBlurSigma — or a whole effect
     // record ("stroke"/"shadow") for the inherit button to clear. A null
@@ -590,7 +591,11 @@ public:
     int importMediaFiles(const QStringList& filePaths);
     // ND.7: records a discovered NDI camera as a Media Bin asset. It owns no
     // bytes; `source` is the exact name discovery returned.
-    Q_INVOKABLE bool addCameraAsset(const QString& name, const QString& source);
+    Q_INVOKABLE bool addCameraAsset(const QString& name, const QString& source,
+                                    bool mirror = false);
+    // ND.9: flip a camera's picture (its front-camera mirror). One document
+    // edit, undoable like any other asset change.
+    Q_INVOKABLE bool setCameraMirror(const QString& assetId, bool mirror);
     // MB.7: records a rendered deck page: stored like a picture but hidden
     // from the Media Bin. The PPTX import adds its pages inside one edit;
     // this entry point is for an incremental renderer and the tests.
@@ -608,6 +613,11 @@ public:
     // picture or a live camera; audio is a production-track action and an
     // "other" file has no picture to draw.
     Q_INVOKABLE bool addMediaCue(const QString& assetId, int index = -1);
+    // The show's audio layer (media library): "" clears it. Dropping an
+    // audio card on a running-order item is this verb — the cue keeps its
+    // pictures and gains a track, so a lyric chart plays while its words
+    // step. A video/picture/camera id is refused by the model.
+    Q_INVOKABLE bool setShowAudioFor(const QString& showId, const QString& assetId);
     // The bin's import filter (UI.4a), spelled from the domain's one
     // extension table so the dialog, the rows' kind labels and the pipeline's
     // own decision cannot hold three opinions about what a name means.

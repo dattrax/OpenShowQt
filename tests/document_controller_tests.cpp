@@ -664,6 +664,27 @@ void exercisePlaylistAndLibrary(const std::filesystem::path& root) {
     check(docs.assets().size() == 1 && docs.assets().front().toMap().value(
               QStringLiteral("kind")) == QStringLiteral("camera"),
           "redo restores the camera asset");
+    // ND.9: the front-camera mirror is the asset's own answer; it is set at
+    // add time or later, and each change is one undoable edit.
+    {
+        const QString cameraId =
+            docs.assets().front().toMap().value(QStringLiteral("id")).toString();
+        check(!docs.assets().front().toMap().value(
+                  QStringLiteral("cameraMirror")).toBool(),
+              "a camera added without the flag is not mirrored");
+        check(docs.setCameraMirror(cameraId, true) &&
+                  docs.assets().front().toMap().value(
+                      QStringLiteral("cameraMirror")).toBool(),
+              "the mirror can be turned on from the bin's menu");
+        docs.undo();
+        check(!docs.assets().front().toMap().value(
+                  QStringLiteral("cameraMirror")).toBool(),
+              "one undo takes the mirror back off");
+        docs.redo();
+        check(docs.assets().front().toMap().value(
+                  QStringLiteral("cameraMirror")).toBool(),
+              "redo puts it back");
+    }
 
     // The drawer's find: title and lyrics both answer (the scoring itself
     // is library_search_tests' job).
@@ -1826,9 +1847,9 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
         std::ifstream manifest(root / "service" / "service.json");
         const std::string text{std::istreambuf_iterator<char>(manifest),
                                std::istreambuf_iterator<char>()};
-        check(text.find("\"format\":11") != std::string::npos &&
+        check(text.find("\"format\":13") != std::string::npos &&
                   text.find("\"fit\":\"contain\"") != std::string::npos,
-              "the manifest is this build's format (10 since SL.6) and spells the slide's fit");
+              "the manifest is this build's format (13 since the show audio layer) and spells the slide's fit");
     }
     {
         DocumentController reopened(nullptr, root);
@@ -4091,6 +4112,70 @@ void exercisePowerPointImport(const std::filesystem::path& root) {
 #endif
 }
 
+
+// The media library's audio route: a dropped audio file becomes a service cue
+// with no picture and the show's own track, and a drop on an existing cue adds
+// it to that show's audio layer. One gesture, one undo either way.
+void exerciseMediaAudioCue(const std::filesystem::path& root) {
+    std::filesystem::create_directories(root);
+    const std::filesystem::path track = root / "song.mp3";
+    const std::filesystem::path picture = root / "plate.png";
+    std::ofstream(track, std::ios::binary) << "MP3BYTES";
+    std::ofstream(picture, std::ios::binary) << "PNGBYTES";
+
+    DocumentController docs(nullptr, root / "service");
+    check(docs.importMediaFile(QString::fromStdString(track.string())),
+          "media audio: the track imports");
+    check(docs.importMediaFile(QString::fromStdString(picture.string())),
+          "media audio: the picture imports");
+    QString audioId;
+    QString pictureId;
+    for (const QVariant& entry : docs.assets()) {
+        const QVariantMap row = entry.toMap();
+        if (row.value(QStringLiteral("kind")).toString() == QLatin1String("audio"))
+            audioId = row.value(QStringLiteral("id")).toString();
+        if (row.value(QStringLiteral("name")).toString() == QLatin1String("plate.png"))
+            pictureId = row.value(QStringLiteral("id")).toString();
+    }
+    check(!audioId.isEmpty() && !pictureId.isEmpty(),
+          "media audio: the bin names the audio and picture rows");
+
+    check(docs.createPlaylist(QStringLiteral("Order")),
+          "media audio: a running order exists");
+    check(docs.addMediaCue(audioId, -1), "media audio: audio becomes a cue of its own");
+    const QVariantList entries = docs.playlistEntries();
+    check(entries.size() == 1, "media audio: the cue joins the running order");
+    const QString cueShow = entries.first().toMap().value(QStringLiteral("showId")).toString();
+    const QVariantList slides = docs.slidesOf(cueShow);
+    check(slides.size() == 1,
+          "media audio: the audio cue is one slide with no picture");
+    check(slides.first().toMap().value(QStringLiteral("backgroundAssetId")).toString().isEmpty() &&
+              slides.first().toMap().value(QStringLiteral("preview")).toString() ==
+                  QLatin1String("(empty)"),
+          "media audio: the cue has no background and no lyric box");
+
+    check(docs.setShowAudioFor(cueShow, pictureId) == false,
+          "media audio: a picture cannot replace the track");
+    check(docs.setShowAudioFor(cueShow, QString()),
+          "media audio: the track can be removed");
+    docs.undo();
+    docs.undo();
+    check(docs.playlistEntries().isEmpty(),
+          "media audio: two undos remove the cue and its show");
+
+    // Drop on an existing show: the cue keeps its words and gains the track.
+    check(docs.createSong(QStringLiteral("Chart")),
+          "media audio: a lyric chart is authored");
+    check(docs.addSlide(), "media audio: the chart has a slide");
+    const QString chartId = docs.currentSongId();
+    check(docs.addShowToPlaylist(chartId), "media audio: the chart joins the order");
+    check(docs.setShowAudioFor(chartId, audioId),
+          "media audio: the chart takes the track");
+    docs.undo();
+    check(!docs.slidesOf(chartId).isEmpty(),
+          "media audio: the chart keeps its slides");
+}
+
 int main(int argc, char* argv[]) {
     const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() /
                                            ("openshow-docctrl-" + std::to_string(getpid()));
@@ -4122,6 +4207,7 @@ int main(int argc, char* argv[]) {
     exerciseScripturePassage(tempRoot / "scripturepassage");
     exerciseMultiBoxSession(tempRoot / "multibox");
     exerciseBoxAuthoring(tempRoot / "boxauthoring");
+    exerciseMediaAudioCue(tempRoot / "mediaaudio");
     exerciseClipboard(tempRoot / "clipboard");
     exerciseBackgroundFit(tempRoot / "fit");
     exerciseImageItemSession(tempRoot / "mixeditem");

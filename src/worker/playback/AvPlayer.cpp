@@ -567,6 +567,10 @@ void AvPlayer::setVolume(int identity, float volume) {
     fMixer.setVolume(mixerIndexFor(identity), volume);
 }
 
+void AvPlayer::setMasterMute(bool muted) { fMixer.setMasterMute(muted); }
+
+bool AvPlayer::masterMuted() const { return fMixer.masterMuted(); }
+
 void AvPlayer::setMute(int identity, bool muted) {
     fMixer.setMute(mixerIndexFor(identity), muted);
 }

@@ -113,16 +113,25 @@ class WorkerController : public QObject {
     // surface. mediaOnAir is the honest enablement — the worker says a
     // transport is live, not the hopeful click (path would lie: it stays
     // set with a sticky error). Position and duration are seconds (the
-    // worker reports -1 for unknown), loop is the intent the end of the
-    // clip will honour, and mediaSources lists the registered audio
-    // identities as [{id, gain, muted}] — a source the transport does
-    // not have is absent, never falsely listed at default gain.
+    // worker reports -1 for unknown); the position is the worker's
+    // LOOP-CONTINUOUS clock, so a looping clip's position climbs past
+    // mediaDuration rather than restarting at 0 — a view that shows the
+    // clip's own progress wraps it (see OutputPanel's transportPosition).
+    // loop is the intent the end of the clip will honour, and mediaSources
+    // lists the registered audio identities as [{id, gain, muted}] — a
+    // source the transport does not have is absent, never falsely listed
+    // at default gain.
     Q_PROPERTY(QString mediaPath READ mediaPath NOTIFY mediaChanged)
     Q_PROPERTY(bool mediaOnAir READ mediaOnAir NOTIFY mediaChanged)
     Q_PROPERTY(double mediaPosition READ mediaPosition NOTIFY mediaChanged)
     Q_PROPERTY(double mediaDuration READ mediaDuration NOTIFY mediaChanged)
     Q_PROPERTY(bool mediaLoop READ mediaLoop NOTIFY mediaChanged)
     Q_PROPERTY(QVariantList mediaSources READ mediaSources NOTIFY mediaChanged)
+    // The master media-audio mute (media.mute source "all"): one switch that
+    // silences the background's embedded audio and the show audio layer
+    // together, confirmed by status.media.muted. Per-source mute stays exactly
+    // as each source was set underneath it.
+    Q_PROPERTY(bool mediaMuted READ mediaMuted NOTIFY mediaChanged)
     // Installed fonts (task TS.4): the family list a picker may offer,
     // because it is the WORKER'S own — the engine that shapes the
     // audience's words is the only honest answerer of which families it
@@ -287,6 +296,10 @@ public:
     Q_INVOKABLE void setMediaLoop(bool enabled);
     Q_INVOKABLE void setMediaGain(const QString& source, double gain);
     Q_INVOKABLE void setMediaMute(const QString& source, bool muted);
+    // media.mute with source "all": the worker-level switch over every media
+    // audio source. Works with no transport too — the flag is applied when
+    // the next cue comes up.
+    Q_INVOKABLE void setMediaMasterMute(bool muted);
 
     // Standalone production track (task 6.15b, review R15): select the
     // independent audio file ("" removes it). This is UI.4b's media cue
@@ -463,6 +476,7 @@ public:
     double mediaDuration() const { return fMediaDuration; }
     bool mediaLoop() const { return fMediaLoop; }
     QVariantList mediaSources() const { return fMediaSources; }
+    bool mediaMuted() const { return fMediaMuted; }
     bool standaloneOnAir() const { return fStandaloneLive; }
     QString standalonePath() const { return fStandalonePath; }
     double standalonePosition() const { return fStandalonePosition; }
@@ -627,6 +641,7 @@ private:
     double fMediaPosition = -1.0;
     double fMediaDuration = -1.0;
     bool fMediaLoop = false;
+    bool fMediaMuted = false;
     QVariantList fMediaSources;
     // The standalone track's status echo (task 6.15b, review R15): the
     // same optional-field rule as the transport's — a worker that does not

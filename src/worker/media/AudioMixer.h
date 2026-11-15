@@ -71,6 +71,12 @@ public:
     float volume(int input) const;
     void setMute(int input, bool muted);
     bool muted(int input) const;
+    // The whole mix silenced at once, regardless of per-input mute. This is
+    // the operator's "no media audio" switch: every source still drains (so
+    // unmuting resumes live audio rather than a backlog), but the mix output
+    // is silence. Per-input mute state is preserved underneath it.
+    void setMasterMute(bool muted);
+    bool masterMuted() const { return fMasterMute.load(); }
 
     // Source side: never blocks; returns frames accepted (a short count
     // is the pacing signal).
@@ -137,6 +143,7 @@ private:
     std::thread fThread;
     std::atomic<bool> fStop{false};
     std::atomic<bool> fStarted{false};
+    std::atomic<bool> fMasterMute{false};
 
     mutable std::mutex fStatsMutex;
     uint64_t fBlocks = 0;          // fStatsMutex

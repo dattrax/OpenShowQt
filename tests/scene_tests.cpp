@@ -330,13 +330,12 @@ void exerciseWireRoundTrip(const Fixture& fx) {
         obj[key] = replacement;
         return boost::json::serialize(obj);
     };
-    // One past this build's scene 4 (task TS.1 moved the number with the
-    // text item's style block; TS.1 also opened the other direction — legacy
-    // scene 3 now reads — but "one past" stays the future the way 6.17c1
-    // pinned it: anchoring on the wrong side of the move is how a version
-    // check gets tested against a format someone else agreed to).
-    refuses(mutate("scene", 6), "unsupported scene format", "a future scene format refuses");
-    refuses(boost::json::serialize(7), "top level must be an object",
+    // One past this build's scene 7 (scene 7 added the show audio layer;
+    // "one past" stays the future the way 6.17c1 pinned it: anchoring on the
+    // wrong side of the move is how a version check gets tested against a
+    // format someone else agreed to).
+    refuses(mutate("scene", 8), "unsupported scene format", "a future scene format refuses");
+    refuses(boost::json::serialize(8), "top level must be an object",
             "a bare number refuses");
     refuses(mutate("backgroundColor", 0x1000000), "outside 0xRRGGBB",
             "a colour beyond 24 bits refuses");
@@ -419,10 +418,18 @@ void exerciseWireRoundTrip(const Fixture& fx) {
           "the video background re-serialises byte-equal");
     // ND.5: the camera source crosses the wire, stays byte-stable, and is
     // refused when it also claims to be a video.
+    // ND.9: the front-camera mirror is the asset's, carried by the compile
+    // and by the wire; it joins the background identity so a flip is a new
+    // picture on screen.
+    Documents mirroredDocs = fx.docs;
+    check(mirroredDocs.setCameraMirror(fx.cameraAsset, true),
+          "the camera asset takes its mirror flag");
     scene::Scene cameraScene;
-    check(scene::compileSlide(fx.docs, fx.show, fx.cameraBacked, &cameraScene, &error) &&
-              cameraScene.background.isCamera,
+    check(scene::compileSlide(mirroredDocs, fx.show, fx.cameraBacked, &cameraScene, &error) &&
+              cameraScene.background.isCamera && cameraScene.background.cameraMirror,
           "compile the camera-backed slide for the wire");
+    check(scene::toJson(cameraScene).at("background").as_object().at("cameraMirror").as_bool(),
+          "the payload carries the camera's mirror flag");
     const std::string cameraText = boost::json::serialize(scene::toJson(cameraScene));
     scene::Scene cameraBack;
     check(scene::fromJson(boost::json::parse(cameraText), &cameraBack, &error) &&
@@ -465,6 +472,10 @@ void exerciseWireRoundTrip(const Fixture& fx) {
         scene::Scene stillCopy = videoScene;
         stillCopy.background.isVideo = false;
         check(stillCopy != videoScene, "kind participates in background equality");
+        scene::Scene unmirrored = cameraScene;
+        unmirrored.background.cameraMirror = false;
+        check(unmirrored != cameraScene,
+              "a camera's mirror participates in background equality");
     }
 }
 
@@ -901,6 +912,18 @@ void exercisePlacementCompile() {
               out.items[0].fontSize == 50.0,
           "and the box keeps its own words and the chain's look — placement is geometry only");
 
+    // The compiler carries the resolved decoration onto the item (scene 6).
+    {
+        openshow::domain::ThemeTextStyle underlined;
+        underlined.fontUnderline = true;
+        check(docs.setThemeTextStyle(slideTheme, underlined, &error) &&
+                  scene::compileSlide(docs, show, slide, &out, &error) &&
+                  out.items[0].underline,
+              "the compiler carries the theme's underline onto the text item");
+        check(docs.setThemeTextStyle(slideTheme, openshow::domain::ThemeTextStyle{}, &error),
+              "underline cleared after the compile pin");
+    }
+
     // A theme with no placement is silent, not zero-sized: the fall
     // continues to the layer below.
     check(docs.setSlideTheme(show, slide, current, &error) &&
@@ -1299,7 +1322,7 @@ void exerciseImageWire(Fixture& fx) {
 
     // --- the wire: per-kind keys, and a round trip that changes nothing ---
     const boost::json::value written = scene::toJson(out);
-    check(written.at("scene").to_number<int>() == 5, "the payload says scene 5");
+    check(written.at("scene").to_number<int>() == 7, "the payload says scene 7");
     const boost::json::object& imageJson = written.at("items").as_array().at(2).as_object();
     check(imageJson.at("kind").as_string() == "image" &&
               imageJson.at("assetId").as_string() == fx.asset &&
@@ -1420,8 +1443,8 @@ void exerciseImageWire(Fixture& fx) {
     }
     {  // Scene 3 (TS.1's legacy): the same payload minus every style key.
        // It must READ, land on 400/normal/shrink/12 and disabled records,
-       // and compare equal to the scene-4 round trip of the same compiled
-       // scene — the legacy defaults are not an approximation.
+       // and compare equal to the current-format round trip of the same
+       // compiled scene — the legacy defaults are not an approximation.
         boost::json::object legacy = scene::toJson(out).as_object();
         legacy["scene"] = 3;
         legacy["background"].as_object().erase("transparent");
@@ -1432,6 +1455,7 @@ void exerciseImageWire(Fixture& fx) {
             boost::json::object& text = element.as_object();
             text.erase("fontWeight");
             text.erase("fontStyle");
+            text.erase("underline");
             text.erase("fitMode");
             text.erase("minFontSize");
             text.erase("stroke");
@@ -1449,7 +1473,7 @@ void exerciseImageWire(Fixture& fx) {
                   !fromLegacy.items.front().stroke.enabled &&
                   !fromLegacy.items.front().shadow.enabled,
               "a scene-3 payload reads onto the contract's defaults and compares "
-              "equal to its scene-4 twin");
+              "equal to its current-format twin");
         {  // A style key smuggled into a scene-3 payload is refused by name —
            // that format never defined it, and reading it would be guessing.
             boost::json::object styled = legacy;
@@ -1458,8 +1482,13 @@ void exerciseImageWire(Fixture& fx) {
                       std::string::npos,
                   "a scene-3 payload carrying 'fontWeight' is refused naming the key");
         }
-        {  // Scene 4 requires the whole block: dropping one key refuses.
+        {  // Scene 6 requires the whole block: dropping one key refuses.
             boost::json::object missing = scene::toJson(out).as_object();
+            missing["items"].as_array()[0].as_object().erase("underline");
+            check(readRefused(boost::json::value(missing)).find("'underline' must be a boolean") !=
+                      std::string::npos,
+                  "a scene-6 text item with no 'underline' is refused naming the key");
+            missing = scene::toJson(out).as_object();
             missing["items"].as_array()[0].as_object().erase("stroke");
             check(readRefused(boost::json::value(missing)).find("'stroke' is required") !=
                       std::string::npos,
@@ -1495,6 +1524,9 @@ void exerciseImageWire(Fixture& fx) {
             check(refuseStyle(R"(["fontStyle", "oblique"])").find("\"normal\" or \"italic\"") !=
                       std::string::npos,
                   "a made-up font style refuses naming its two words");
+            check(refuseStyle(R"(["underline", "yes"])").find("must be a boolean") !=
+                      std::string::npos,
+                  "the underline switch is a boolean, not a word");
             check(refuseStyle(R"(["fitMode", "auto"])").find("\"shrink\" or \"fixed\"") !=
                       std::string::npos,
                   "and so does a made-up fit");
@@ -1588,6 +1620,7 @@ void exerciseImageWire(Fixture& fx) {
             lit.items.front().shadow.blurSigma = 64.0;
             lit.items.front().fontWeight = 900;
             lit.items.front().fontStyle = "italic";
+            lit.items.front().underline = true;
             lit.items.front().fitMode = "fixed";
             lit.items.front().minFontSize = 4096.0;
             scene::Scene litBack;
@@ -1813,6 +1846,65 @@ void exerciseBoxConstants() {
           "the default text box is centred on the authored canvas");
 }
 
+
+// The show audio layer compiles into every slide of the show with the same
+// identity, rides the wire as an optional block, and is refused when a
+// picture names it.
+void exerciseShowAudioLayer() {
+    Documents docs;
+    std::string error;
+    const Id show = docs.createShow("Chart", &error);
+    const Id slideA = docs.appendSlide(show, &error);
+    const Id slideB = docs.appendSlide(show, &error);
+    const Id track = docs.addAsset("song.mp3", "/services/svc/assets/song.mp3", &error);
+    const Id picture = docs.addAsset("plate.png", "/services/svc/assets/plate.png", &error);
+    check(!show.empty() && !slideA.empty() && !slideB.empty() && !track.empty() &&
+              !picture.empty(),
+          "audio layer: the show, slides and assets are created");
+    check(docs.setShowAudio(show, track, &error), "audio layer: the show takes the track");
+
+    scene::Scene a;
+    scene::Scene b;
+    check(scene::compileSlide(docs, show, slideA, &a, &error) &&
+              scene::compileSlide(docs, show, slideB, &b, &error),
+          "audio layer: every slide compiles");
+    check(a.audio.present && a.audio.assetId == track &&
+              a.audio.assetPath == "/services/svc/assets/song.mp3",
+          "audio layer: the track compiles with its asset and path");
+    check(a.audio == b.audio,
+          "audio layer: two slides of the show share ONE identity (the track does not restart)");
+
+    const boost::json::value wire = scene::toJson(a);
+    check(wire.at("audio").at("assetId").as_string() == track,
+          "audio layer: the wire carries its own 'audio' block");
+    scene::Scene back;
+    check(scene::fromJson(wire, &back, &error) && back == a,
+          "audio layer: the block round-trips");
+
+    // A payload without the key is a cue with no track, and the block's
+    // members are closed.
+    boost::json::object bare = wire.as_object();
+    bare.erase("audio");
+    scene::Scene silent;
+    check(scene::fromJson(bare, &silent, &error) && !silent.audio.present,
+          "audio layer: an absent block means no track");
+    boost::json::object odd = wire.as_object();
+    odd["audio"] = boost::json::object{{"assetId", track},
+                                       {"assetPath", "/x.mp3"},
+                                       {"gain", 0.5}};
+    scene::Scene keeper;
+    error.clear();
+    check(!scene::fromJson(odd, &keeper, &error) &&
+              error.find("gain") != std::string::npos,
+          "audio layer: an unknown member is refused by name");
+
+    // The picture asset is unused by this show: setShowAudio refused it at
+    // the model (domain_tests pins that), so a compile can never reach a
+    // transport with the wrong kind.
+    check(docs.findShow(show)->audioAssetId == track,
+          "audio layer: the picture never replaced the track");
+}
+
 int main() {
     Fixture fx = buildFixture();
     exerciseCompile(fx);
@@ -1821,6 +1913,7 @@ int main() {
     exerciseWireRoundTrip(fx);
     exerciseBudgets(fx);
     exerciseAssetReferences(fx);
+    exerciseShowAudioLayer();
     exerciseImageWire(fx);
     exerciseBackgroundFit();
     exerciseBackgroundGradient();

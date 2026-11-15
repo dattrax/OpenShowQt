@@ -75,59 +75,14 @@ Item {
             }
 
             // Camera artwork: our own neutral silhouette, tinted per source
-            // and numbered 1..4. No NDI mark (MB.5).
-            Item {
+            // and numbered 1..4. No NDI mark (MB.5); the same drawing stands
+            // in for an off-air camera in the service preview (ND.9).
+            CameraArtwork {
                 anchors.centerIn: parent
                 visible: card.kind === "camera"
                 width: Math.min(parent.width, parent.height)
                 height: width
-                Rectangle {
-                    anchors.fill: parent
-                    radius: 4
-                    color: ["#2f5f8f", "#2f7f5f", "#8f5f2f", "#6f3f8f"][
-                        Math.max(0, Math.min(3, card.cameraNumber - 1))]
-                }
-                Item {
-                    anchors.centerIn: parent
-                    width: parent.width * 0.66
-                    height: width * 0.72
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: 3
-                        color: "#ffffff"
-                    }
-                    Rectangle {  // viewfinder hump
-                        x: parent.width * 0.16
-                        y: -parent.height * 0.26
-                        width: parent.width * 0.38
-                        height: parent.height * 0.30
-                        radius: 2
-                        color: "#ffffff"
-                    }
-                    Rectangle {  // lens barrel
-                        anchors.centerIn: parent
-                        width: parent.height * 0.62
-                        height: width
-                        radius: width / 2
-                        color: "#202020"
-                    }
-                    Rectangle {  // lens
-                        anchors.centerIn: parent
-                        width: parent.width * 0.32
-                        height: width
-                        radius: width / 2
-                        color: "#ffffff"
-                    }
-                }
-                Text {
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.margins: 3
-                    text: card.cameraNumber > 0 ? card.cameraNumber : ""
-                    color: "#ffffff"
-                    font.pixelSize: Math.max(9, Math.round(parent.height * 0.20))
-                    font.bold: true
-                }
+                number: card.cameraNumber
             }
 
             // Audio: a record/turntable glyph, not a note.
@@ -188,13 +143,32 @@ Item {
                 smooth: true
             }
 
-            // Video: a play mark while the first frame is not here yet.
-            Text {
+            // Video: a film-frame mark while the first frame is not here
+            // yet. Deliberately not a play button — a card is a preview of a
+            // library object, and every kind presents through a cue, not by
+            // clicking the card.
+            Item {
                 anchors.centerIn: parent
                 visible: card.kind === "video" && card.videoThumb === ""
-                text: "\u25B6"
-                color: "#dfe7ee"
-                font.pixelSize: Math.round(parent.height * 0.55)
+                width: Math.min(parent.width, parent.height) * 0.55
+                height: width * 0.72
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 3
+                    color: "transparent"
+                    border.color: "#dfe7ee"
+                    border.width: Math.max(2, width * 0.04)
+                }
+                Repeater {
+                    model: [0.25, 0.5, 0.75]
+                    delegate: Rectangle {
+                        x: parent.width * modelData - width / 2
+                        y: parent.height * 0.16
+                        width: Math.max(2, parent.width * 0.07)
+                        height: parent.height * 0.68
+                        color: "#dfe7ee"
+                    }
+                }
             }
 
             // Other: a plain document mark.

@@ -402,8 +402,9 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Scen
     textStyle.setHeight(lineSpacing);
     textStyle.setHeightOverride(true);
     textStyle.setHalfLeading(true);
-    textStyle.setColor(SkColorSetARGB(0xFF, (item.color >> 16) & 0xFF, (item.color >> 8) & 0xFF,
-                                     item.color & 0xFF));
+    const SkColor textColour = SkColorSetARGB(0xFF, (item.color >> 16) & 0xFF,
+                                              (item.color >> 8) & 0xFF, item.color & 0xFF);
+    textStyle.setColor(textColour);
     // TS.2: weight and slant enter shaping through the public font style,
     // so FontCollection resolves the family list to a bold or italic FACE
     // (or a synthesised one, if the family has neither) — the same way a
@@ -419,6 +420,16 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Scen
     textStyle.setFontStyle(SkFontStyle(weight, 100, item.fontStyle == "italic"
                                                       ? SkFontStyle::kItalic_Slant
                                                       : SkFontStyle::kUpright_Slant));
+    // Scene 6: underline is a decoration, not a face — the paragraph's own
+    // decoration pass (TextLine.cpp) draws it through the same painter that
+    // already handles fill, shadow and fade, so it shares the word's colour
+    // and wrap by construction.
+    if (item.underline) {
+        textStyle.setDecoration(skia::textlayout::kUnderline);
+        textStyle.setDecorationColor(textColour);
+        textStyle.setDecorationStyle(skia::textlayout::kSolid);
+        textStyle.setDecorationThicknessMultiplier(1.0f);
+    }
     // The shadow rides the paragraph's own text style: the fork's shadow
     // pass copies the SHAPED run and hands that copy to the painter before
     // the glyphs (TextLine.cpp — background, shadow, blobs, decorations),
@@ -1423,16 +1434,21 @@ void SceneImageCache::releaseAllPinsLocked() {
 namespace {
 
 // The scene's background picture, or null when there is no picture: nothing
-// flagged, a video with no frame offered yet (task 5.5), or a still the cache
-// does not hold (task 6.10: the draw path never decodes). Null means the
-// colour fill stands alone — the same degradation as a missing file, and the
-// session reports it.
+// flagged, a video or camera with no frame offered yet (tasks 5.5 and ND.6),
+// or a still the cache does not hold (task 6.10: the draw path never decodes).
+// Null means the colour fill stands alone — the same degradation as a missing
+// file, and the session reports it.
+//
+// A camera is fetched by the SAME live frame a video is: its assetPath is the
+// NDI source name, not a file, so looking it up in the image cache could only
+// ever miss — and every camera background then drew the colour fill (black)
+// however healthy the feed was.
 sk_sp<SkImage> backgroundPicture(const openshow::scene::Scene& scene, SceneImageCache* images,
                                  const SkImage* video) {
     if (!scene.background.hasImage) {
         return nullptr;
     }
-    if (scene.background.isVideo) {
+    if (scene.background.isVideo || scene.background.isCamera) {
         return sk_ref_sp(const_cast<SkImage*>(video));
     }
     if (images == nullptr) {
@@ -1534,6 +1550,14 @@ void drawSceneBackground(SkCanvas* canvas, const openshow::scene::Scene& scene,
     // Clip so a portrait window's letterbox bars stay black (the cover-fit
     // dest can overflow the authored canvas on one axis).
     canvas->clipRect(canvasRect);
+    // ND.9: a camera whose source delivers a mirrored picture (a phone's
+    // front camera) is flipped about the canvas' vertical axis. The fit is
+    // centred and the clip is symmetric, so the picture and its bars land
+    // exactly where they did; only the pixels are swapped left for right.
+    if (scene.background.isCamera && scene.background.cameraMirror) {
+        canvas->translate(kSceneCanvasWidth, 0.0f);
+        canvas->scale(-1.0f, 1.0f);
+    }
     if (image == nullptr) {
         // Colour only: the fill IS the background, so the blend rides it
         // directly — and since 6.17c3 the fill may be a gradient, which is
@@ -1719,8 +1743,10 @@ bool renderSceneSnapshot(const openshow::scene::Scene& scene, const std::string&
         }
     };
     for (const openshow::scene::Scene* one : {&scene, options.fadeFrom}) {
+        // A camera's assetPath is an NDI source name, never a file to
+        // preload (ND.6); the live frame is handed to the draw instead.
         if (one != nullptr && one->background.hasImage && !one->background.isVideo &&
-            !one->background.assetPath.empty()) {
+            !one->background.isCamera && !one->background.assetPath.empty()) {
             images.loadFor(one->background.assetPath);
         }
         if (one != nullptr) {

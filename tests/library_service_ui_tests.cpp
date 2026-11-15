@@ -245,10 +245,49 @@ int main(int argc, char** argv) {
     auto* playlistList = findNamed(window->contentItem(), "collectionPlaylistList");
     auto* songList = findNamed(window->contentItem(), "librarySongList");
     auto* search = findNamed(window->contentItem(), "librarySearchField");
-    if (!check(playlistList && songList && search, "the two Library panes are present")) {
+    auto* songsFolder = findNamed(window->contentItem(), "librarySongsHeader");
+    auto* presentationsFolder =
+        findNamed(window->contentItem(), "libraryPresentationsHeader");
+    auto* serviceFolder = findNamed(window->contentItem(), "libraryServiceHeader");
+    if (!check(playlistList && songList && search, "the sidebar's lists and search are present")) {
         worker.shutdownNow();
         return 1;
     }
+    if (!check(songsFolder && presentationsFolder && serviceFolder,
+               "the strip lists Songs, Presentations and Service as folders")) {
+        worker.shutdownNow();
+        return 1;
+    }
+    auto selectFolder = [&](QQuickItem* folder) {
+        if (!folder) return;
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          folder->mapToScene(QPointF(40, 13)).toPoint());
+        QTest::qWait(70);
+    };
+    check(songList->isVisible() && !playlistList->isVisible()
+              && !findNamed(window->contentItem(), "collectionLibraryList")->isVisible(),
+          "the open Songs folder fills the pane and no other folder's files show");
+    {
+        auto* folderBox = findNamed(window->contentItem(), "libraryFolderBox");
+        auto* contentBox = findNamed(window->contentItem(), "libraryContentBox");
+        check(folderBox && contentBox
+                  && qAbs(folderBox->width() - search->width()) < 1
+                  && qAbs(contentBox->width() - search->width()) < 1
+                  && qAbs(folderBox->mapToScene(QPointF(0, 0)).x()
+                          - search->mapToScene(QPointF(0, 0)).x()) < 1
+                  && qAbs(contentBox->mapToScene(QPointF(0, 0)).x()
+                          - search->mapToScene(QPointF(0, 0)).x()) < 1,
+              "the folder and file boxes share the search field's width and edges");
+    }
+    // Visual capture: the Service folder open in the same pane.
+    selectFolder(serviceFolder);
+    check(playlistList->isVisible() && !songList->isVisible()
+              && playlistList->property("count").toInt() ==
+                     static_cast<int>(docs.playlistEntries().size()),
+          "opening Service lists the running order's cues in the same pane");
+    if (!debugCapture.isEmpty())
+        window->grabWindow().save(debugCapture + "-service-folder.png");
+    selectFolder(songsFolder);
     check(!findNamed(window->contentItem(), "toolbarSearchButton"),
           "the redundant toolbar Search control is absent");
     auto* hint = findNamed(search, "fixedFieldPlaceholder");
@@ -263,11 +302,9 @@ int main(int argc, char** argv) {
     QTest::qWait(80);
     check(hint && hint->mapToScene(QPointF()) == hintOrigin,
           "leaving search keeps the hint in the same position");
-    playlistList->setProperty("contentY", 100);
-    QTest::qWait(40);
-
     // Filter the Library to the imported song, then drag the filtered row
-    // into the scrolled order.
+    // onto the Service FOLDER — the file joins the running order without the
+    // operator having to open the service first.
     search->setProperty("text", "morning");
     QTest::qWait(60);
     QList<QQuickItem*> songRows;
@@ -286,20 +323,15 @@ int main(int argc, char** argv) {
     if (songRow) {
         const int before = static_cast<int>(docs.playlistEntries().size());
         const QPointF start = songRow->mapToScene(QPointF(25, 14));
-        const QPointF target = playlistList->mapToScene(
-            QPointF(40, std::max(10.0, playlistList->height() - 14.0)));
+        const QPointF target = serviceFolder->mapToScene(QPointF(40, 13));
         QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start.toPoint());
         QTest::mouseMove(window, (start + QPointF(60, 0)).toPoint(), 15);
         QTest::mouseMove(window, ((start + target) / 2 + QPointF(30, 0)).toPoint(), 15);
         QTest::mouseMove(window, (target + QPointF(20, 0)).toPoint(), 15);
         QTest::mouseMove(window, target.toPoint(), 15);
-        const qreal scrollBefore = playlistList->property("contentY").toReal();
-        QTest::qWait(260);  // hold at the bottom edge: autoscroll ticks
-        check(playlistList->property("contentY").toReal() > scrollBefore,
-              "holding a drag at the edge autoscrolls the long order");
-        auto* addMarker = findNamed(window->contentItem(), "serviceDropIndicator");
-        check(addMarker && addMarker->isVisible() && addMarker->height() >= 4,
-              "a Library drag shows a prominent service insertion marker");
+        QTest::qWait(60);
+        check(serviceFolder->property("hovering").toBool(),
+              "the Service folder marks itself as the drop target");
         QList<QQuickItem*> addBadges;
         collectNamed(window->contentItem(), "listDragFeedback", &addBadges);
         int shownAddBadges = 0;
@@ -313,7 +345,7 @@ int main(int argc, char** argv) {
         QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, target.toPoint());
         check(waitFor([&] { return !songService.busy(); }), "the drop prepared the song");
         check(static_cast<int>(docs.playlistEntries().size()) == before + 1,
-              "the filtered song was added to the scrolled order");
+              "the filtered song joined the running order through the folder");
         const QString showId = docs.showForCatalogItem(
             library.items().first().toMap().value("id").toString());
         check(!showId.isEmpty(), "the cue references a catalog-backed show");
@@ -321,7 +353,9 @@ int main(int argc, char** argv) {
         for (const QVariant& entry : docs.playlistEntries()) {
             named = named || entry.toMap().value("showId").toString() == showId;
         }
-        check(named, "the scrolled order holds a cue naming the referenced show");
+        check(named, "the running order holds a cue naming the referenced show");
+        check(songList->isVisible() && !playlistList->isVisible(),
+              "the drop leaves the Songs folder open, its filter untouched");
         check(search->property("text") == "morning",
               "dragging the filtered result keeps the search query unchanged");
         check(!docs.slidesOf(showId).isEmpty(), "the linked show carries slides");
@@ -438,12 +472,15 @@ int main(int argc, char** argv) {
             if (row.value("showId").toString() != fixture) continue;
             const int i = row.value("slideIndex").toInt();
             check(tile->property("showSectionLabel").toBool() == starts[i], "Show passes section boundaries to its actual cards");
-            if (i == 0) check(tile->property("displayCaption").toString() == "Blank \u2013 Section captions",
-                              "the opening caption retains the service item's name");
-            if (!starts[i]) {
-                ++continuations;
-                check(tile->property("displayCaption").toString().isEmpty(), "a Show continuation has no duplicate caption text");
-            }
+            const QString ordinal = QString::number(i + 1);
+            const QString displayed = tile->property("displayCaption").toString();
+            check(!displayed.contains(QLatin1String("Section captions")),
+                  "a slide strip no longer repeats the service item's name");
+            check(displayed == (starts[i]
+                                ? ordinal + "  " + tile->property("sectionTitle").toString()
+                                : ordinal),
+                  "each slide strip carries its number, and only a section start names the section");
+            if (!starts[i]) ++continuations;
         }
         check(continuations == 2, "both continued sections remain visible as thumbnail cards");
         const auto fixtureSlides = docs.slidesOf(fixture);
@@ -486,11 +523,11 @@ int main(int argc, char** argv) {
         collectNamed(list, "editorSlideTile", &tiles);
         bool continued = false;
         for (auto* tile : tiles) if (tile->property("index").toInt() == 2) {
-            continued = tile->property("displayCaption").toString().isEmpty()
+            continued = tile->property("displayCaption").toString() == QLatin1String("3")
                 && tile->property("sectionTitle").toString() == "Verse 1";
         }
         check(continued && docs.currentSlideText() == "Synthetic lyric words 2",
-              "Edit suppresses a repeated heading even when its predecessor is offscreen, without hiding lyric words");
+              "Edit hides the repeated heading but keeps the slide number and the lyric words");
         check(waitFor([&] { return worker.selectionReady() && worker.selectionFrames() > selectedFrames; }),
               "the continuation's lyric words also render on the Edit canvas");
         check(!worker.selectionImage().isNull() && qAlpha(worker.selectionImage().pixel(0, 0)) == 0,
@@ -513,6 +550,7 @@ int main(int argc, char** argv) {
     // from the Library's authored-presentation projection.
     auto* showPage = findNamed(window->contentItem(), "showPage");
     auto browseServiceEntry = [&](int index) {
+        selectFolder(serviceFolder);
         const auto entry = docs.playlistEntries()[index].toMap();
         const auto showId = entry.value("showId").toString();
         QMetaObject::invokeMethod(playlistList, "positionViewAtIndex", Q_ARG(int, index), Q_ARG(int, 1));
@@ -557,17 +595,29 @@ int main(int argc, char** argv) {
     window->setProperty("browsedShowId", fillerId);  // previously browsing just a Library deck
     browseServiceEntry(0);  // authored presentation
     auto* cueGrid = findNamed(window->contentItem(), "operatorSlideGrid");
-    QList<QQuickItem*> groupRules;
-    collectNamed(cueGrid, "serviceGroupSeparator", &groupRules);
-    int visibleRules = 0;
-    for (auto* rule : groupRules) {
-        if (!rule->isVisible()) continue;
-        ++visibleRules;
-        check(rule->width() >= cueGrid->width() - 12 && rule->height() >= 2
-                  && rule->y() + rule->height() < 0,
-              "service boundaries have a full-width visible rule in the gap above the next group");
+    QList<QQuickItem*> groupHeaders;
+    collectNamed(cueGrid, "serviceGroupHeader", &groupHeaders);
+    int visibleHeaders = 0;
+    bool namedFirst = false;
+    const auto firstEntryName = docs.playlistEntries().isEmpty()
+        ? QString() : docs.playlistEntries().first().toMap()
+              .value("showName").toString();
+    for (auto* header : groupHeaders) {
+        if (!header->isVisible()) continue;
+        ++visibleHeaders;
+        auto* label = findNamed(header, "serviceGroupHeaderText");
+        check(header->width() >= cueGrid->width() - 1 && header->height() >= 18,
+              "service boundaries have a bigger full-width band above the next group");
+        check(label && label->isVisible() && !label->property("text").toString().isEmpty()
+                  && !label->property("text").toString().contains(QLatin1Char('\n'))
+                  && label->width() >= header->width() - 16,
+              "the band names the service item in one line");
+        if (label && label->property("text").toString() == firstEntryName)
+            namedFirst = true;
     }
-    check(visibleRules > 0, "separate occurrences of the same show still have group separators");
+    check(visibleHeaders > 0,
+          "every service occurrence, the first included, is headed by its item's name");
+    check(namedFirst, "the first group's band carries that item's name");
     browseServiceEntry(docs.playlistEntries().size() - 1);  // catalog song
     check(docs.addScripturePassage(docs.currentPlaylistId(), "Mark 1:1-4", "TEST", "Fixture",
                                   {QStringList{"Synthetic passage words"}}), "prepare a schedule-only passage");
@@ -598,7 +648,7 @@ int main(int argc, char** argv) {
         if (!check(source != nullptr, "the reorder source is visible")) return;
         const auto start = source->mapToScene(QPointF(25, 15)).toPoint();
         const auto target = outside ? QPoint(window->width() / 2, 15)
-            : playlistList->mapToScene(QPointF(60, scroll ? playlistList->height() - 6 : gap * 30 + 2)).toPoint();
+            : playlistList->mapToScene(QPointF(60, scroll ? playlistList->height() - 6 : gap * 28 + 2)).toPoint();
         QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
         QTest::mouseMove(window, start + QPoint(45, 0), 20);
         QTest::mouseMove(window, target, 20);
@@ -766,6 +816,7 @@ int main(int argc, char** argv) {
     const auto presentation = library.addSong("Bulk Presentation", stanzas, "", "", "");
     library.moveItemToCategory(presentation, "presentations");
     search->setProperty("text", "bulk");
+    selectFolder(songsFolder);
     songList->setProperty("contentY", 0);
     QTest::qWait(50);
     auto* browser = findNamed(window->contentItem(), "libraryBrowser");
@@ -787,6 +838,8 @@ int main(int argc, char** argv) {
             if (list) break;
         }
         if (!check(list != nullptr, "the Library selection row exists in its filtered model")) return;
+        // The row only exists in the folder that lists it.
+        selectFolder(list == songList ? songsFolder : presentationsFolder);
         QMetaObject::invokeMethod(list, "positionViewAtIndex", Q_ARG(int, index), Q_ARG(int, 1));
         QTest::qWait(30);
         QList<QQuickItem*> rows;

@@ -60,6 +60,10 @@ bool AudioMixer::muted(int input) const {
     return fInputs[input]->mute.load();
 }
 
+void AudioMixer::setMasterMute(bool muted) {
+    fMasterMute.store(muted);
+}
+
 size_t AudioMixer::write(int input, const float* interleavedStereo, size_t frames) {
     if (input < 0 || input >= static_cast<int>(fInputCount)) {
         return 0;
@@ -142,9 +146,14 @@ void AudioMixer::run() {
 
     while (!fStop.load()) {
         std::memset(outScratch.data(), 0, outScratch.size() * sizeof(float));
+        const bool masterMute = fMasterMute.load(std::memory_order_relaxed);
         for (size_t i = 0; i < fInputs.size(); ++i) {
             Input& input = *fInputs[i];
-            const float target = input.mute.load(std::memory_order_relaxed)
+            // The master switch rides the same clickless ramp as a
+            // per-input mute: over the ramp window every source falls to
+            // silence, and its own mute/volume answer is untouched for the
+            // moment the master is released.
+            const float target = (masterMute || input.mute.load(std::memory_order_relaxed))
                                      ? 0.0f
                                      : input.volume.load(std::memory_order_relaxed);
             if (gain[i] < 0.0f) {

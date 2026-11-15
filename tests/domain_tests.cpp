@@ -572,6 +572,17 @@ void exerciseCameraCap() {
               error.find("four") != std::string::npos &&
               docs.assetIds().size() == before,
           "a fifth camera is refused with a reason and creates nothing");
+    // ND.9: the mirror is the camera's own property, refused for a file.
+    const std::string camera = docs.assetIds().front();
+    check(docs.setCameraMirror(camera, true, &error) &&
+              docs.findAsset(camera)->cameraMirror,
+          "a camera can be marked as delivering a mirrored picture");
+    const Id file = docs.addAsset("plate.png", "/tmp/plate.png");
+    error.clear();
+    check(!docs.setCameraMirror(file, true, &error) &&
+              !docs.findAsset(file)->cameraMirror &&
+              error.find("not a camera") != std::string::npos,
+          "a file asset cannot be marked as a camera's mirror and says why");
     check(docs.removeAsset(docs.assetIds().front(), nullptr),
           "one camera is removed");
     error.clear();
@@ -831,6 +842,7 @@ void buildSampleService(Documents* docs, const fs::path& assetSource) {
                                       kDefaultLineSpacing);
     const Id asset = docs->addAsset("stage loop.jpg", assetSource.string());
     const Id camera = docs->addCameraAsset("Stage camera", "STAGE (Camera 1)");
+    docs->setCameraMirror(camera, true);
 
     const Id order = docs->createShow("Service Order");
     docs->setShowDefaultTheme(order, house);
@@ -921,7 +933,8 @@ bool sameService(const Documents& a, const Documents& b) {
         // rewrites it); the identity that must round-trip is name + camera
         // source. A camera has no bytes and keeps its source verbatim.
         if (xa == nullptr || xb == nullptr || xa->name != xb->name ||
-            xa->cameraSource != xb->cameraSource) {
+            xa->cameraSource != xb->cameraSource ||
+            xa->cameraMirror != xb->cameraMirror) {
             return false;
         }
     }
@@ -1037,11 +1050,15 @@ void exercisePersistence(const fs::path& tempRoot) {
               reloadedCamera->cameraSource == "STAGE (Camera 1)" &&
               reloadedCamera->sourcePath == "ndi://STAGE (Camera 1)",
           "a camera asset round-trips its NDI source");
+    check(reloadedCamera != nullptr && reloadedCamera->cameraMirror,
+          "a camera's front-camera mirror round-trips too");
     check(readFile(package / "service.json").find("\"kind\":\"camera\"") !=
                   std::string::npos &&
               readFile(package / "service.json").find("STAGE (Camera 1)") !=
+                  std::string::npos &&
+              readFile(package / "service.json").find("\"mirror\":true") !=
                   std::string::npos,
-          "the manifest stores a camera kind and source");
+          "the manifest stores a camera kind, source and mirror flag");
     bool cameraFile = false;
     for (const auto& entry : fs::directory_iterator(package / "assets")) {
         if (entry.path().filename().string().rfind(camera + "-", 0) == 0) {
@@ -1849,9 +1866,9 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         const std::string manifest = readFile(gradedDir / "service.json");
         check(manifest.find("\"backgroundGradient\"") == std::string::npos,
               "theme backgrounds are absent from saved files");
-        check(manifest.find("\"format\":11") != std::string::npos,
-              "the manifest says format 11 (foreground themes and the service"
-              " catalog song link and attribution)");
+        check(manifest.find("\"format\":13") != std::string::npos,
+              "the manifest says format 13 (the show audio layer, beside the"
+              " catalog song link, attribution and underline style)");
         check(manifest.find("\"transition\":{") != std::string::npos,
               "the root transition is written by name, not left to an absent key");
         check(openshow::domain::saveService(back, tempRoot / "v5-regraded", &error) &&
@@ -2895,7 +2912,8 @@ void exerciseTextStyle() {
     // numbers describe what every renderer has always drawn, so an old
     // document keeps its exact pixels without carrying a single new key.
     ResolvedAppearance look = docs.appearanceForSlide(show, plain);
-    check(look.fontWeight == 400 && look.fontStyle == "normal" && look.fitMode == "shrink" &&
+    check(look.fontWeight == 400 && look.fontStyle == "normal" && !look.fontUnderline &&
+              look.fitMode == "shrink" &&
               look.minFontSize == 12.0 && !look.stroke.enabled && !look.shadow.enabled &&
               look.stroke.color == "#000000" && look.stroke.width == 2.0 &&
               look.shadow.opacity == 0.65 && look.shadow.offsetX == 2.0 &&
@@ -2909,9 +2927,11 @@ void exerciseTextStyle() {
     outline.width = 3.0;
     openshow::domain::ThemeTextStyle style;
     style.fontWeight = 700;
+    style.fontUnderline = true;
     style.stroke = outline;
     check(docs.setThemeTextStyle(current, style, &error) &&
               docs.findTheme(current)->fontWeight == 700 &&
+              docs.findTheme(current)->fontUnderline == true &&
               docs.findTheme(current)->stroke == outline &&
               !docs.findTheme(current)->fontStyle.has_value(),
           "the verb sets the fields it was given and leaves the rest of the theme silent");
@@ -3018,6 +3038,7 @@ void exerciseTextStyle() {
     // --- the resolver's walk: customization, then first CARRIER, then default ---
     openshow::domain::ThemeTextStyle baseStyle;
     baseStyle.fontWeight = 300;
+    baseStyle.fontUnderline = true;
     openshow::domain::TextShadow flat;  // base's explicit "no shadow here"
     flat.enabled = false;
     baseStyle.shadow = flat;
@@ -3028,7 +3049,8 @@ void exerciseTextStyle() {
               docs.setThemeTextStyle(base, baseStyle, &error),
           "the current theme carries slant and stroke; the base carries weight and a refusal");
     look = docs.appearanceForSlide(show, plain);
-    check(look.fontWeight == 300 && look.fontStyle == "italic" && look.fitMode == "shrink" &&
+    check(look.fontWeight == 300 && look.fontStyle == "italic" && look.fontUnderline &&
+              look.fitMode == "shrink" &&
               look.minFontSize == 12.0 && look.stroke == outline && look.shadow == flat,
           "each field falls to the first theme that carries it, and a carried enabled:false "
           "shadow resolves as the explicit refusal it is — not as silence");
@@ -3041,16 +3063,18 @@ void exerciseTextStyle() {
     off.width = 0.0;
     SlideCustomization changed;
     changed.fontWeight = 900;
+    changed.fontUnderline = false;  // the slide's own "not underlined" over a underlined theme
     changed.stroke = off;
     check(docs.setSlideCustomizations(show, plain, changed, &error),
           "the slide customizes its weight and switches the themed outline off");
     look = docs.appearanceForSlide(show, plain);
     check(look.fontWeight == 900 && look.stroke == off && look.fontStyle == "italic" &&
-              look.shadow == flat,
+              !look.fontUnderline && look.shadow == flat,
           "the slide answers its two fields while the themes keep answering the rest");
     const SlideCustomization& spoken = docs.findShow(show)->slides[0].customizations;
-    check(spoken.hasField("fontWeight") && spoken.hasField("stroke") &&
-              !spoken.hasField("fontStyle") && !spoken.hasField("shadow"),
+    check(spoken.hasField("fontWeight") && spoken.hasField("fontUnderline") &&
+              spoken.hasField("stroke") && !spoken.hasField("fontStyle") &&
+              !spoken.hasField("shadow"),
           "the sparse set says WHICH fields the slide spoke, style names included");
 
     // What the theme door refuses, the customization door refuses too: a
@@ -3118,6 +3142,7 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
         openshow::domain::ThemeTextStyle style;
         style.fontWeight = 800;
         style.fontStyle = "italic";
+        style.fontUnderline = true;
         style.fitMode = "fixed";
         style.minFontSize = 24.5;
         style.stroke = outline;
@@ -3131,6 +3156,7 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
         style.shadow = cast;
         SlideCustomization changed;
         changed.fontWeight = 100;
+        changed.fontUnderline = false;
         openshow::domain::TextStroke off;  // the slide's refusal, whole, with its own look
         off.enabled = false;
         off.color = "#00ff00";
@@ -3147,6 +3173,7 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
         // formatter rather than this codec's discipline. The values get
         // pinned field-for-field by the round trip right below.
         check(manifest.find("\"fontWeight\":800") != std::string::npos &&
+                  manifest.find("\"fontUnderline\":true") != std::string::npos &&
                   manifest.find("\"fitMode\":\"fixed\"") != std::string::npos &&
                   manifest.find("\"minFontSize\":") != std::string::npos &&
                   manifest.find("\"blurSigma\":") != std::string::npos &&
@@ -3157,15 +3184,17 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
         check(openshow::domain::loadService(&back, dir, &error) && sameService(back, docs) &&
                   back.findTheme(theme)->fontWeight == 800 &&
                   back.findTheme(theme)->fontStyle == "italic" &&
+                  back.findTheme(theme)->fontUnderline == true &&
                   back.findTheme(theme)->fitMode == "fixed" &&
                   back.findTheme(theme)->minFontSize == 24.5 &&
                   back.findTheme(theme)->stroke == outline &&
                   back.findTheme(theme)->shadow == cast,
               "the styled theme reads back field for field and the whole service compares");
         const SlideCustomization& spoken = back.findShow(show)->slides[0].customizations;
-        check(spoken.fontWeight == 100 && spoken.stroke == off && !spoken.shadow.has_value(),
-              "the slide's weight and its whole disabled stroke survive, and the fields it "
-              "never spoke stay unspoken");
+        check(spoken.fontWeight == 100 && spoken.fontUnderline == false &&
+                  spoken.stroke == off && !spoken.shadow.has_value(),
+              "the slide's weight, its underline refusal and its whole disabled stroke "
+              "survive, and the fields it never spoke stay unspoken");
         check(openshow::domain::saveService(back, tempRoot / "style-again", &error) &&
                   readFile(tempRoot / "style-again" / "service.json") == manifest,
               "re-saving a styled service writes a byte-identical manifest");
@@ -3183,8 +3212,9 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
         check(!theme.empty() && openshow::domain::saveService(docs, dir, &error),
               "a plain service saves");
         const std::string manifest = readFile(dir / "service.json");
-        for (const char* key : {"\"fontWeight\"", "\"fontStyle\"", "\"fitMode\"",
-                                "\"minFontSize\"", "\"stroke\"", "\"shadow\""}) {
+        for (const char* key : {"\"fontWeight\"", "\"fontStyle\"", "\"fontUnderline\"",
+                                "\"fitMode\"", "\"minFontSize\"", "\"stroke\"",
+                                "\"shadow\""}) {
             check(manifest.find(key) == std::string::npos,
                   (std::string("a theme that carries no style writes no ") + key)
                       .c_str());
@@ -3673,7 +3703,7 @@ void exerciseForegroundThemeStorage(const fs::path& tempRoot) {
     const auto dir = tempRoot / "foreground-themes";
     check(openshow::domain::saveService(docs, dir, &error), "save foreground themes");
     auto json = boost::json::parse(readFile(dir / "service.json"));
-    check(json.at("format").as_int64() == 11, "foreground theme files identify format 11");
+    check(json.at("format").as_int64() == 13, "foreground theme files identify format 13");
     for (auto& value : json.at("themes").as_array()) {
         check(!value.as_object().contains("backgroundColor") && !value.as_object().contains("backgroundGradient"),
               "new service files contain no theme background settings");
@@ -3682,7 +3712,7 @@ void exerciseForegroundThemeStorage(const fs::path& tempRoot) {
     }
     writeFile(dir / "service.json", boost::json::serialize(json));
     Documents back;
-    check(!openshow::domain::loadService(&back, dir, &error), "format 11 refuses theme backgrounds");
+    check(!openshow::domain::loadService(&back, dir, &error), "format 12 refuses theme backgrounds");
     json.as_object()["format"] = 10;
     writeFile(dir / "service.json", boost::json::serialize(json));
     check(openshow::domain::loadService(&back, dir, &error)
@@ -4772,6 +4802,59 @@ void exerciseDeckPageAssets(const fs::path& tempRoot) {
     }
 }
 
+
+// The show audio layer (media library): one audio asset per show, refused
+// for every other kind, carried through storage, and cleared with the asset.
+void exerciseShowAudio(const fs::path& tempRoot) {
+    std::string error;
+    std::filesystem::create_directories(tempRoot);
+    const fs::path audioSource = tempRoot / "song.mp3";
+    const fs::path pictureSource = tempRoot / "plate.png";
+    writeFile(audioSource, "MP3BYTES");
+    writeFile(pictureSource, "PNGBYTES");
+
+    Documents docs;
+    const Id show = docs.createShow("Chart", &error);
+    const Id slide = docs.appendSlide(show, &error);
+    const Id picture = docs.addAsset("plate.png", pictureSource.string(), &error);
+    const Id audio = docs.addAsset("song.mp3", audioSource.string(), &error);
+    check(!show.empty() && !slide.empty() && !picture.empty() && !audio.empty(),
+          "show audio: the show, slide and assets are created");
+
+    check(!docs.setShowAudio(show, picture, &error) &&
+              error.find("not audio") != std::string::npos,
+          "show audio: a picture is refused by name");
+    check(docs.setShowAudio(show, audio, &error),
+          "show audio: an audio asset is accepted");
+    check(docs.findShow(show)->audioAssetId == audio,
+          "show audio: the reference lives on the SHOW, not the slide");
+    check(docs.setShowAudio(show, "", &error) &&
+              docs.findShow(show)->audioAssetId.empty(),
+          "show audio: an empty id clears the layer");
+    check(docs.setShowAudio(show, audio, &error), "show audio: set again for the round trip");
+
+    // One edit is one document, and the slide keeps its own picture slot.
+    check(docs.setSlideBackground(show, slide, picture, &error),
+          "show audio: the slide can carry a picture beside the track");
+
+    const fs::path package = tempRoot / "service";
+    check(openshow::domain::saveService(docs, package, &error),
+          "show audio: the service saves");
+    const std::string manifest = readFile(package / "service.json");
+    check(manifest.find("\"audioAssetId\":\"" + audio + "\"") != std::string::npos,
+          "show audio: the manifest writes the show's layer by id");
+    Documents back;
+    check(openshow::domain::loadService(&back, package, &error),
+          "show audio: the service reloads");
+    check(back.findShow(show)->audioAssetId == audio,
+          "show audio: the layer survives the round trip");
+
+    // Removing the asset degrades the layer to none, exactly like a background.
+    check(docs.removeAsset(audio, &error), "show audio: the asset is removed");
+    check(docs.findShow(show)->audioAssetId.empty(),
+          "show audio: removal clears the show's reference");
+}
+
 int main() {
     const std::string_view version = openshow::domain::applicationVersion();
     bool ok = check(!version.empty(), "applicationVersion is not empty");
@@ -4845,6 +4928,13 @@ int main() {
     std::filesystem::remove_all(adoptionRoot);
     exerciseAdoption(adoptionRoot);
     std::filesystem::remove_all(adoptionRoot);
+
+    const std::filesystem::path audioRoot = std::filesystem::temp_directory_path() /
+                                            ("openshow-domain-show-audio-" +
+                                             std::to_string(getpid()));
+    std::filesystem::remove_all(audioRoot);
+    exerciseShowAudio(audioRoot);
+    std::filesystem::remove_all(audioRoot);
 
     if (!ok || gFailed) {
         return 1;

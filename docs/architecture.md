@@ -785,6 +785,19 @@ compound service edit restores its pre-edit snapshot (domain `History`), so no
 partial show survives. Library edits use catalog history; service edits use
 document history; both stay separate.
 
+**A show can carry one audio layer.** `Show::audioAssetId` (service format 13;
+optional `"audioAssetId"`) names the media library track the show plays beside
+its slides. The reference lives on the SHOW, so every slide of a song chart
+compiles the same `<scene 7 "audio">` block and the worker's transport identity
+keeps the track rolling while the words step. Dropping an audio card on the
+running order creates a one-slide audio cue with no picture; dropping it on an
+existing cue sets that show's layer. The worker mixes the layer and the
+background video's own embedded audio as two inputs of ONE `AvPlayer`, so both
+are paced by the same clock and reach PipeWire as one stream; an audio-only cue
+starts the player with no playback pipeline. `media.mute` source `"all"` is the
+master media-audio switch over every source (`output.status.media.muted`);
+`media.gain` deliberately has no `"all"`.
+
 Prepared songs begin with one intentional wordless cue supplied by `SongPlanner`,
 not an empty catalog stanza. The import preview and service bridge share that
 plan; the service adapter admits an explicitly marked blank only at the start

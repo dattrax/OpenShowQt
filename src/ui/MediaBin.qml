@@ -18,18 +18,14 @@ import QtQuick.Dialogs
 // present is still listed and says so, because hiding the row would leave the
 // operator wondering where the import went.
 //
-// UI.4b adds the activation, and it is one control on one kind. What the
-// worker offers at runtime is the independent production audio track
-// (media.standalone): a file with a life of its own, unaffected by slide
-// changes, which is exactly what a bin cue is — so an audio row gets
-// Play/Stop. A video has no cue of its own to fire: its route to the audience
-// is as a slide's background, an authored change made in Edit. A picture's
-// route is a slide. Those kinds are told where they go rather than given a
-// button with nothing behind it, per the plan's rule that a control appears
-// only when its complete action exists. Activation touches no document: no
-// undo step, no moved cursor, nothing presented. And it never promises a
-// file will play — the worker probes the bytes in its own file thread and
-// answers, and until that answer says so this file says nothing.
+// Every media kind takes the SAME route to the audience: a cue in the
+// running order. A video or picture becomes a cue whose slide carries it; a
+// camera becomes a live background; audio becomes an audio cue (a slide with
+// no picture and the show's own track), or joins an existing cue's audio
+// layer when dropped on that show. So the bin has no Play button on any
+// kind — activation is ordering and presenting, and the transport rail
+// governs whatever is on air. A bin row is a library object, never an
+// activation: no undo step, no moved cursor, nothing presented.
 //
 // The 40px bar is the toggle (the reference's strip click), the top edge
 // drags the height (WorkspacePanels' heightFor does the snapping), and the
@@ -109,30 +105,26 @@ FocusScope {
         if (kind === "video") return "background only \u2014 set it in Edit"
         if (kind === "camera") return "live NDI \u2014 set it as a background in Edit"
         if (kind === "other") return "nothing presents this file type"
-        if (kind === "audio" && refused) return "cannot play"
+        if (kind === "audio") return "audio cue \u2014 drag to a service"
         return ""
     }
     // Whether the worker says THIS file is what the audience is getting: the
-    // production track for an audio row, the on-air slide's background for a
-    // video. Never derived from a click.
+    // on-air cue's track for an audio row, its background for a video. Never
+    // derived from a click.
     function isLive(row) {
         if (!row || !row.sourcePath) return false
         if (row.kind === "audio")
-            return worker.standaloneOnAir && row.sourcePath === worker.standalonePath
+            return worker.mediaOnAir && row.sourcePath === worker.mediaPath
         if (row.kind === "video")
             return worker.mediaOnAir && row.sourcePath === worker.mediaPath
         if (row.kind === "camera")
             return worker.mediaOnAir && row.cameraSource === worker.mediaPath
         return false
     }
-    function isRefused(row) {
-        return worker.standaloneRefusal !== "" && !!row && !!row.sourcePath
-                && row.sourcePath === worker.standaloneRefusalPath
-    }
     function noticeFor(row) {
         if (!row || !row.kind) return ""
         return mediaBin.noticeForState(row.kind, row.exists !== false,
-                                       mediaBin.isLive(row), mediaBin.isRefused(row))
+                                       mediaBin.isLive(row), false)
     }
     // Live is a marker, not a warning; everything else in this column is. The
     // brighter pair is for a selected row, whose background is the blue.
@@ -141,13 +133,6 @@ FocusScope {
         if (onSelection) return live ? "#c8f5cd" : "#ffe0a3"
         return live ? "#5ec96a" : "#c8a24a"
     }
-    // The one cue the bin can activate: an audio row, while an output is
-    // connected to receive it. Whether the FILE is there is deliberately not
-    // part of enablement — that is a snapshot this view took, and a row marked
-    // "file is not here" whose file came back would stay dead until something
-    // re-read the document. The worker's probe is the authority on a file, so
-    // asking is always allowed and Play is never a promise.
-    readonly property bool canActivate: selected.kind === "audio" && worker.connected
     readonly property bool selectedLive: mediaBin.isLive(mediaBin.selected)
     // The row's whole story, for the info column. Kept to the file's name
     // where one exists (the plan's rule: filename on Show, the detailed
@@ -157,10 +142,9 @@ FocusScope {
         const row = mediaBin.selected
         if (!row || !row.kind) return ""
         if (row.kind === "audio" && mediaBin.selectedLive) {
-            return "audio track on air"
-                   + (worker.standalonePosition >= 0
-                      ? " \u00b7 " + worker.standalonePosition.toFixed(1) + " s" : "")
-                   + " \u00b7 loops until stopped"
+            return "audio on air with its cue"
+                   + (worker.mediaPosition >= 0
+                      ? " \u00b7 " + worker.mediaPosition.toFixed(1) + " s" : "")
         }
         if (row.exists === false && row.kind !== "other")
             return "this file is not where the service says it is"
@@ -176,12 +160,13 @@ FocusScope {
                    : "live NDI source \u2014 set it as a background in Edit"
         }
         if (row.kind === "other") return "nothing presents this file type"
-        // An audio cue, off air: what is standing between this row and sound.
-        if (!worker.connected) return "no output connected \u2014 nothing can play"
-        if (mediaBin.isRefused(row))
-            return "cannot play audio: " + mediaBin.fileName(row.sourcePath)
-        if (worker.standaloneOnAir) return "replaces the track now on air"
-        return "press Play to start it on the production audio track"
+        if (row.kind === "audio") {
+            // Audio is authored and ordered exactly like a picture: the
+            // route is a cue, and whether an output is connected is the
+            // rail's story once the cue is on air — not this row's.
+            return "drag it onto a service to make an audio cue, or onto a show to add it "
+                   + "to that show\u2019s audio layer"
+        }
     }
     // Camera cards wear 1..4 in creation order, whatever the current filter
     // shows. The model caps the list at four, so the numeral always has a slot.
@@ -312,19 +297,6 @@ FocusScope {
                     font.pixelSize: 11
                     text: mediaBin.statusLine
                 }
-                // The worker's own words about a refused cue. Show says the
-                // file's name, per the plan's split for media failures; the
-                // sentence that names the path is an Edit detail, exactly like
-                // the path below it.
-                Text {
-                    objectName: "mediaInfoDetail"
-                    width: parent.width
-                    wrapMode: Text.WordWrap
-                    visible: mediaBin.editingEnabled && mediaBin.isRefused(mediaBin.selected)
-                    color: "#d9a441"
-                    font.pixelSize: 10
-                    text: "the output refused this file: " + worker.standaloneRefusal
-                }
                 // The path is an Edit detail (the Show page identifies media by
                 // name); on Show there is no path text to squint at.
                 Text {
@@ -357,25 +329,6 @@ FocusScope {
                         if (info.audio) parts.push("audio")
                         else if (info.video) parts.push("video")
                         return parts.join(" \u00b7 ")
-                    }
-                }
-                // The bin's controls live in the inspector, so the grid keeps
-                // its full width and the top edges line up. MB.4 retires
-                // Remove to the context menu and replaces Add to slide with a
-                // drop; until then they stay here rather than over the grid.
-                Column {
-                    width: parent.width
-                    spacing: 6
-                    PanelButton {
-                        objectName: "mediaActivateButton"
-                        width: parent.width
-                        visible: mediaBin.selected.kind === "audio"
-                        enabled: mediaBin.canActivate
-                        text: mediaBin.selectedLive ? "Stop" : "Play"
-                        Accessible.name: text + (mediaBin.canActivate
-                                                 ? "" : " \u2014 no output connected")
-                        onClicked: worker.selectStandaloneTrack(
-                            mediaBin.selectedLive ? "" : mediaBin.selected.sourcePath)
                     }
                 }
             }
@@ -648,6 +601,19 @@ FocusScope {
             height: visible ? implicitHeight : 0
             onTriggered: docs.placeAssetOnSlide(mediaBin.selectedAssetId)
         }
+        // ND.9: a front camera delivers a mirrored picture; this flips the
+        // live frame about the vertical axis for THIS checkpoint camera. The
+        // tick reads the asset's own flag, so the menu never remembers a
+        // press the document did not take.
+        MenuItem {
+            objectName: "mediaCameraMirrorAction"
+            text: (mediaBin.selected.cameraMirror ? "\u2713 " : "")
+                  + "Mirror the picture (front camera)"
+            visible: mediaBin.selected.kind === "camera"
+            height: visible ? implicitHeight : 0
+            onTriggered: docs.setCameraMirror(mediaBin.selectedAssetId,
+                                              !mediaBin.selected.cameraMirror)
+        }
     }
 
     Dialog {
@@ -656,7 +622,10 @@ FocusScope {
         title: "Add NDI source"
         modal: true
         width: 460
-        height: 360
+        height: 420
+        // Each add states its own orientation: a tick left over from a
+        // previous camera must not silently mirror the next one.
+        onOpened: ndiMirrorCheckBox.checked = false
 
         contentItem: Column {
             spacing: 8
@@ -677,6 +646,15 @@ FocusScope {
                             ? "Scanning the network\u2026"
                             : "No cameras yet \u2014 they appear here as they start broadcasting."))
             }
+            // ND.9: some sources (a phone's FRONT camera) hand the worker a
+            // mirrored picture. The answer travels with the one add it was
+            // given for; the card's menu can flip it later.
+            CheckBox {
+                id: ndiMirrorCheckBox
+                objectName: "ndiMirrorCheckBox"
+                text: "Mirror the picture (front camera)"
+                checked: false
+            }
             ListView {
                 objectName: "ndiSourceList"
                 width: parent.width
@@ -687,7 +665,8 @@ FocusScope {
                     width: ListView.view.width
                     text: modelData.name
                     onClicked: {
-                        if (docs.addCameraAsset(modelData.name, modelData.name)) {
+                        if (docs.addCameraAsset(modelData.name, modelData.name,
+                                                ndiMirrorCheckBox.checked)) {
                             ndiSourceDialog.close()
                         }
                     }

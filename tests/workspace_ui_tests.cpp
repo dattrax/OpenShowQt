@@ -285,9 +285,13 @@ int main(int argc, char** argv) {
             const QVariantMap firstRow = rows[0].toMap();
             auto* tileSurface = firstTile->property("surface").value<QQuickItem*>();
             check(firstTile->property("caption").toString()
-                      .contains(QStringLiteral("1  ")
-                                + firstRow.value(QStringLiteral("preview")).toString()),
-                  "the cue card wears the caption of the row it stands for");
+                      == firstRow.value(QStringLiteral("preview")).toString()
+                      && firstTile->property("displayCaption").toString()
+                             .startsWith(QStringLiteral("1")),
+                  "the cue card wears its row's own words behind the slide number");
+            check(!firstTile->property("displayCaption").toString()
+                       .contains(firstRow.value(QStringLiteral("showName")).toString()),
+                  "the cue card no longer repeats the service item's name");
             check(tileSurface
                       && tileSurface->property("target").toString()
                              == QLatin1String("thumbnail")
@@ -368,20 +372,62 @@ int main(int argc, char** argv) {
         QTest::qWait(40);
     }
 
-    // --- tasks SL.4/SL.5: the Library above the current service ----------
+    // --- tasks SL.4/SL.5: the folder strip over the chosen folder --------
     auto* browserPane = findNamed(window->contentItem(), "libraryBrowser");
     auto* libraryList = findNamed(window->contentItem(), "collectionLibraryList");
     auto* playlistList = findNamed(window->contentItem(), "collectionPlaylistList");
     auto* songList = findNamed(window->contentItem(), "librarySongList");
+    auto* songsFolder = findNamed(window->contentItem(), "librarySongsHeader");
+    auto* presentationsFolder =
+        findNamed(window->contentItem(), "libraryPresentationsHeader");
+    auto* serviceFolder = findNamed(window->contentItem(), "libraryServiceHeader");
     check(browserPane && libraryList && playlistList && songList,
-          "the sidebar shows the shared Library and the current service together");
-    check(libraryList->isVisible() && playlistList->isVisible(),
-          "both panes are visible at once, not one switched detail view");
-    check(playlistList->property("count").toInt() ==
-              static_cast<int>(docs.playlistEntries().size()),
-          "the lower pane lists the running order's cues");
+          "the sidebar hosts the shared Library and the current service");
+    check(songsFolder && presentationsFolder && serviceFolder,
+          "the top strip lists the folders rather than their files");
+    auto openFolder = [window](QQuickItem* folder) {
+        if (!folder) return;
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          folder->mapToScene(QPointF(40, 13)).toPoint());
+        QTest::qWait(60);
+    };
+    check(songList->isVisible() && !libraryList->isVisible()
+              && !playlistList->isVisible(),
+          "opening Songs lists its files below and nothing else");
     check(songList->property("count").toInt() == library.songCount(),
-          "the Songs branch lists the shared catalog");
+          "the Songs folder lists the shared catalog");
+    openFolder(serviceFolder);
+    check(playlistList->isVisible() && !songList->isVisible()
+              && playlistList->property("count").toInt() ==
+                     static_cast<int>(docs.playlistEntries().size()),
+          "opening Service lists the running order's cues in the same pane");
+    openFolder(presentationsFolder);
+    check(libraryList->isVisible() && !playlistList->isVisible()
+              && libraryList->property("count").toInt() ==
+                     static_cast<int>(docs.songs().size()),
+          "opening Presentations lists its files in that same pane");
+    openFolder(songsFolder);
+    check(songList->isVisible() && !playlistList->isVisible(),
+          "and clicking Songs again brings its files back");
+    // The strip collapses so the open folder's files get its room, and comes
+    // back at its own height.
+    auto* foldersToggle = findNamed(window->contentItem(), "libraryFoldersToggle");
+    check(foldersToggle != nullptr, "the folder strip has a collapse control");
+    if (foldersToggle) {
+        const qreal listBefore = songList->height();
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          foldersToggle->mapToScene(QPointF(11, 11)).toPoint());
+        QTest::qWait(80);
+        check(!songsFolder->isVisible() && !serviceFolder->isVisible()
+                  && songList->height() > listBefore,
+              "collapsing the folders hands their room to the open folder's files");
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          foldersToggle->mapToScene(QPointF(11, 11)).toPoint());
+        QTest::qWait(80);
+        check(songsFolder->isVisible() && serviceFolder->isVisible()
+                  && qAbs(songList->height() - listBefore) < 1.0,
+              "the folders come back at their own height");
+    }
 
     // Title-only filtering (SL.5): a catalog song whose LYRICS contain the
     // word must not match; presentation titles and song titles both do.
@@ -434,11 +480,8 @@ int main(int argc, char** argv) {
         const QString dragId = library.addSong("Drag Me", stanzas, "", "", "");
         check(!dragId.isEmpty(), "a song exists for the category drag");
         QTest::qWait(40);
-        auto* songsHeader = findNamed(window->contentItem(), "librarySongsHeader");
-        auto* presentationsHeader =
-            findNamed(window->contentItem(), "libraryPresentationsHeader");
-        check(songsHeader && presentationsHeader,
-              "both category headers are present as drop targets");
+        check(songsFolder && presentationsFolder,
+              "both folders are present as drop targets");
         const auto rowById = [&](QQuickItem* list, const QString& id) -> QQuickItem* {
             const auto property = browserPane->property(list == songList ? "songRows" : "presentationRows");
             const auto model = property.canConvert<QJSValue>()
@@ -460,11 +503,12 @@ int main(int argc, char** argv) {
             }
             return nullptr;
         };
+        openFolder(songsFolder);
         QQuickItem* row = rowById(songList, dragId);
-        check(row != nullptr, "the new song is in the Songs branch");
-        if (row && presentationsHeader) {
+        check(row != nullptr, "the new song is in the Songs folder");
+        if (row && presentationsFolder) {
             const auto start = row->mapToScene(QPointF(25, 14)).toPoint();
-            const auto target = presentationsHeader->mapToScene(
+            const auto target = presentationsFolder->mapToScene(
                 QPointF(40, 13)).toPoint();
             QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
             QTest::mouseMove(window, start + QPoint(60, 0), 15);
@@ -478,16 +522,17 @@ int main(int argc, char** argv) {
             check(library.itemOf(dragId).value("contentRevision").toULongLong() == 1,
                   "a category move keeps the content revision");
         }
-        // It is now listed in the Presentations branch and drags back.
+        // It is now listed in the Presentations folder and drags back.
         QTest::qWait(30);
+        openFolder(presentationsFolder);
         QQuickItem* backRow = rowById(libraryList, dragId);
         check(backRow != nullptr &&
                   backRow->property("modelData").toMap().value("rowKind").toString()
                       == "catalog",
               "the moved song is listed in Presentations as a Library row");
-        if (backRow && songsHeader) {
+        if (backRow && songsFolder) {
             const auto start = backRow->mapToScene(QPointF(25, 14)).toPoint();
-            const auto target = songsHeader->mapToScene(QPointF(40, 13)).toPoint();
+            const auto target = songsFolder->mapToScene(QPointF(40, 13)).toPoint();
             QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
             QTest::mouseMove(window, start + QPoint(60, 0), 15);
             QTest::mouseMove(window, target + QPoint(20, 0), 15);
@@ -504,6 +549,7 @@ int main(int argc, char** argv) {
     // Long presentation names stay one bounded, selectable row.
     const QString longName(180, 'x');
     check(docs.createSong(longName), "a long-named presentation is created");
+    openFolder(presentationsFolder);
     QMetaObject::invokeMethod(libraryList, "positionViewAtEnd");
     QTest::qWait(20);
     {
@@ -546,6 +592,7 @@ int main(int argc, char** argv) {
     window->setProperty("browsedShowId", QString());
     QTest::qWait(20);
     check(docs.addShowToPlaylist(songId), "the order takes a second copy of the show");
+    openFolder(serviceFolder);
     QTest::qWait(20);
     {
         QList<QQuickItem*> rows;
@@ -587,7 +634,7 @@ int main(int argc, char** argv) {
         collectNamed(playlistList, "collectionPlaylistRow", rows);
         bool identities = !rows.isEmpty();
         for (auto* row : rows) {
-            const int index = qRound(row->y() / 30.0);
+            const int index = qRound(row->y() / 28.0);
             if (index < 0 || index >= static_cast<int>(entries.size()) ||
                 row->property("rowEntryId").toString() !=
                     entries[index].toMap().value("entryId").toString())
@@ -596,13 +643,14 @@ int main(int argc, char** argv) {
         check(identities, "scrolled rows keep the identities of the cues they show");
         playlistList->setProperty("contentY", 0);
     }
-    // Drag a presentation from the Library onto the current-service pane:
+    // Drag a presentation out of the Library onto the Service FOLDER:
     // preparation lands at the end of the running order, selection intact.
     {
         QString welcomeId;
         for (const auto& song : docs.songs())
             if (song.toMap().value("name").toString() == QLatin1String("Welcome"))
                 welcomeId = song.toMap().value("id").toString();
+        openFolder(presentationsFolder);
         QList<QQuickItem*> rows;
         collectNamed(libraryList, "collectionLibraryRow", rows);
         QQuickItem* welcomeRow = nullptr;
@@ -612,8 +660,7 @@ int main(int argc, char** argv) {
         check(welcomeRow != nullptr, "the Welcome row is in the presentation list");
         if (welcomeRow) {
             const auto start = welcomeRow->mapToScene(QPointF(25, 14)).toPoint();
-            const auto target = playlistList->mapToScene(
-                QPointF(40, std::max(10.0, playlistList->height() - 12.0))).toPoint();
+            const auto target = serviceFolder->mapToScene(QPointF(40, 13)).toPoint();
             const int before = static_cast<int>(docs.playlistEntries().size());
             QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
             QTest::mouseMove(window, start + QPoint(60, 0), 15);
@@ -628,7 +675,7 @@ int main(int argc, char** argv) {
                 landed = landed || entry.toMap().value("showId").toString() == welcomeId
                                   && static_cast<int>(before) + 1 == after.size();
             check(static_cast<int>(after.size()) == before + 1 && landed,
-                  "dragging a presentation onto the service prepares it in the order");
+                  "dragging a presentation onto the Service folder prepares it");
             check(docs.currentSongId() == songId,
                   "browsing and preparing never move the presented selection");
         }
@@ -918,11 +965,13 @@ int main(int argc, char** argv) {
         }
         check(chips == (QStringList{"Video", "Audio", "Other"}),
               "each media row says which kind of file it is");
-        // The two rows nothing here can fire say so, in full; the audio row
-        // says nothing, because UI.4b gave it a control instead of a notice.
-        check(noticeRows == 3 && notices.size() == 2 && notices.at(0).contains("background")
-                  && notices.at(1).contains("nothing presents") && noticesWhole,
-              "a row the product cannot use says why, in full, instead of hiding");
+        // Every row says where it goes: the video and camera to Edit, audio
+        // to a service cue, and "other" nowhere at all. No row carries a
+        // Play control.
+        check(noticeRows == 3 && notices.size() == 3 && notices.at(0).contains("background")
+                  && notices.at(1).contains("audio cue")
+                  && notices.at(2).contains("nothing presents") && noticesWhole,
+              "each row says where its file goes, in full, instead of hiding");
 
         // The table those notices come out of, driven directly. An offscreen
         // fixture with no worker cannot make a track live or a probe refuse,
@@ -950,9 +999,9 @@ int main(int argc, char** argv) {
         check(notice("video", true, false, false).startsWith(QLatin1String("background only"))
                   && notice("picture", true, false, false).isEmpty(),
               "the standing kind rule: a video's route is Edit, a picture has none to explain");
-        check(notice("audio", true, false, true) == QLatin1String("cannot play")
-                  && notice("audio", true, false, false).isEmpty(),
-              "a refused probe marks the row, and an audio cue nobody has tried says nothing");
+        check(notice("audio", true, false, false).startsWith(QLatin1String("audio cue"))
+                  && notice("audio", true, false, true).startsWith(QLatin1String("audio cue")),
+              "an audio row always says its route: a cue in a service");
 
         // A collection filters the list to its kind, and only that.
         for (auto* row : collectionRows())
@@ -986,26 +1035,19 @@ int main(int argc, char** argv) {
                   && showPageItem->property("cueIndex").toInt() == cueBeforeBin,
               "media browsing never moves the editing cursor or the presenter's place");
 
-        // UI.4b: the audio row has a cue control, and with no output to
-        // receive it the control is honest rather than hopeful. Clicking a
-        // row selected it; nothing else has happened, and nothing here can
-        // pretend a track is up — that answer only ever comes from a worker.
-        auto* activate = findNamed(window->contentItem(), "mediaActivateButton");
+        // Audio has no Play button: its route to the audience is a service
+        // cue like every other kind, and the transport rail governs what is
+        // on air. The info column names that route and the missing output.
         auto* statusLine = findNamed(mediaBin, "mediaInfoStatus");
-        check(activate != nullptr && activate->isVisible()
-                  && !activate->property("enabled").toBool(),
-              "an audio cue offers Play, and no connected output keeps it off");
+        check(findNamed(window->contentItem(), "mediaActivateButton") == nullptr,
+              "an audio row offers no Play button");
         check(statusLine != nullptr
-                  && statusLine->property("text").toString().contains("no output connected"),
-              "the info column names what stands between this row and sound");
+                  && statusLine->property("text").toString().contains("audio cue"),
+              "the info column names the row's route: a cue in a service");
         check(worker.standalonePath().isEmpty() && !worker.standaloneOnAir()
                   && worker.standaloneRefusal().isEmpty()
                   && worker.standaloneRefusalPath().isEmpty(),
               "and a bin with no output has said nothing about any track");
-        clickAt(activate, 20, 12);
-        QTest::qWait(30);
-        check(!worker.standaloneOnAir() && worker.standalonePath().isEmpty(),
-              "a disabled cue sends nothing");
 
         // Back to all media: the two document actions, both Edit-only and both
         // honest about the kinds they cover.
@@ -1087,9 +1129,9 @@ int main(int argc, char** argv) {
                 == QLatin1String("loop.mp4"))
                 clickAt(row, 20, 14);
         QTest::qWait(30);
-        check(!activate->isVisible()
+        check(findNamed(window->contentItem(), "mediaActivateButton") == nullptr
                   && statusLine->property("text").toString().contains("background"),
-              "a video row is not offered a cue, and is told where it does go");
+              "a video row is not offered a cue either, and is told where it does go");
 
         // A name whose file the service has lost (a moved or renamed file is
         // how this arrives) keeps its row and says so, and names itself in the
@@ -1115,8 +1157,8 @@ int main(int argc, char** argv) {
                              .contains("this file is not where the service says"),
                   "a row whose file has gone says so in both columns");
         }
-        check(activate->isVisible(),
-              "and its Play is not disabled by a snapshot: the worker's probe decides");
+        check(statusLine->property("text").toString().contains("not where the service says"),
+              "an audio row whose file is gone keeps saying so, with no cue control");
         for (auto* row : mediaRows())
             if (row->property("modelData").toMap().value("name").toString()
                 == QLatin1String("notes.txt"))
@@ -1224,6 +1266,60 @@ int main(int argc, char** argv) {
                   "the Media Bin accepts files dropped from the desktop");
         }
 
+        // MB.3's drop is the bin's OWN payload across Qt's drag, not just the
+        // routing function beside it: a card that carries the right text must
+        // also be understood by the cue tile's DropArea when the operator
+        // actually drags it there.
+        {
+            docs.undo();  // the routing check above left the first cue wearing it
+            window->setProperty("page", "show");
+            QTest::qWait(80);
+            auto backgroundId = [&docs](const QString& slideId) {
+                const QJsonObject scene =
+                    QJsonDocument::fromJson(docs.sceneJsonForSlide(slideId).toUtf8())
+                        .object();
+                return scene.value("background").toObject()
+                            .value("assetId").toString();
+            };
+            QQuickItem* card = nullptr;
+            for (auto* row : mediaRows())
+                if (row->property("modelData").toMap().value("id").toString()
+                    == pictureId)
+                    card = row;
+            QList<QQuickItem*> tiles;
+            collectNamed(showPageItem, "operatorCueTile", tiles);
+            QQuickItem* tile = nullptr;
+            for (auto* candidate : tiles) {
+                const QString slideId = candidate->property("modelData").toMap()
+                                            .value("slideId").toString();
+                if (candidate->isVisible() && !slideId.isEmpty()) {
+                    tile = candidate;
+                    break;
+                }
+            }
+            check(card != nullptr && tile != nullptr,
+                  "the bin card and a cue tile are both on screen");
+            if (card && tile) {
+                const QString slideId = tile->property("modelData").toMap()
+                                            .value("slideId").toString();
+                const QString before = backgroundId(slideId);
+                const QPoint start = card->mapToScene(QPointF(20, 20)).toPoint();
+                const QPoint target =
+                    tile->mapToScene(QPointF(tile->width() / 2, tile->height() / 2))
+                        .toPoint();
+                QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, start);
+                QTest::mouseMove(window, start + QPoint(40, -20), 20);
+                QTest::mouseMove(window, target + QPoint(20, 10), 20);
+                QTest::mouseMove(window, target, 20);
+                QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, target);
+                QTest::qWait(80);
+                check(before != pictureId && backgroundId(slideId) == pictureId,
+                      "dragging a bin card onto a cue sets that slide's background");
+                docs.undo();
+                QTest::qWait(40);
+            }
+        }
+
         // MB.5: camera cards wear our own glyph, numbered 1..4 in creation
         // order; the model refuses a fifth, so no unnumbered camera can exist.
         check(docs.addCameraAsset(QStringLiteral("Camera 1"), QStringLiteral("SOURCE 1")),
@@ -1245,6 +1341,94 @@ int main(int argc, char** argv) {
         check(!docs.addCameraAsset(QStringLiteral("Camera 5"), QStringLiteral("SOURCE 5"))
                   && docs.assets().size() == camerasBefore,
               "a fifth camera is refused and creates nothing");
+
+        // ND.9: an off-air camera cue has no frame to show (its receiver
+        // opens only for the scene the audience is on), so the service grid
+        // wears the Media Bin's own glyph — the same drawing, same number.
+        {
+            QString cameraId;
+            for (const QVariant& asset : docs.assets()) {
+                if (asset.toMap().value(QStringLiteral("kind")).toString()
+                        == QLatin1String("camera")) {
+                    cameraId = asset.toMap().value(QStringLiteral("id")).toString();
+                    break;
+                }
+            }
+            const int cueCount = showPageItem->property("cueRows").toList().size();
+            check(!cameraId.isEmpty()
+                      && docs.addMediaCue(cameraId, docs.playlistEntries().size()),
+                  "the camera becomes a service cue");
+            QTest::qWait(120);
+            const QVariantList cameraRows = showPageItem->property("cueRows").toList();
+            check(cameraRows.size() == cueCount + 1
+                      && cameraRows.last().toMap().value(QStringLiteral("cameraNumber"))
+                             .toInt() == 1,
+                  "the camera cue carries the bin's camera number");
+            auto* grid = window->findChild<QQuickItem*>("operatorSlideGrid");
+            // The view's cells are not cue indices: scroll through the
+            // collection's own mapping, as the page does.
+            QMetaObject::invokeMethod(grid, "scrollCueIntoView",
+                                      Q_ARG(QVariant, cameraRows.size() - 1));
+            QTest::qWait(160);
+            QList<QQuickItem*> tiles;
+            collectNamed(grid, "operatorCueTile", tiles);
+            bool glyphNumbered = false;
+            for (auto* tile : tiles) {
+                if (!tile->isVisible()
+                    || tile->property("index").toInt() != cameraRows.size() - 1)
+                    continue;
+                auto* glyph = findNamed(tile, "cueCameraArtwork");
+                glyphNumbered = glyph && glyph->isVisible()
+                    && glyph->property("number").toInt() == 1;
+            }
+            check(glyphNumbered,
+                  "the off-air camera cue wears the bin's numbered glyph, not a black tile");
+            const auto cameraCapture = qEnvironmentVariable("OPENSHOW_WORKSPACE_CAPTURE");
+            if (!cameraCapture.isEmpty())
+                window->grabWindow().save(cameraCapture + "-camera-cue.png");
+            docs.undo();
+            QTest::qWait(100);
+            check(showPageItem->property("cueRows").toList().size() == cueCount,
+                  "undo takes the camera cue and its glyph with it");
+        }
+
+        // ND.9: the camera's own menu offers the front-camera mirror, read off
+        // the asset (unticked until the document says otherwise).
+        {
+            for (auto* row : mediaRows())
+                if (row->property("modelData").toMap().value("name").toString()
+                    == QLatin1String("Camera 1"))
+                    clickAt(row, 20, 14);
+            QTest::qWait(30);
+            QObject* object = openMenu();
+            auto* mirror = menuItem(object, "mediaCameraMirrorAction");
+            check(mirror && mirror->isVisible()
+                      && !mirror->property("text").toString().startsWith(
+                          QStringLiteral("\u2713")),
+                  "a selected camera offers the mirror, unticked while it is off");
+            if (mirror != nullptr) {
+                QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                                  mirror->mapToScene(QPointF(30, mirror->height() / 2))
+                                      .toPoint());
+                QTest::qWait(80);
+            }
+            if (object != nullptr) {
+                QMetaObject::invokeMethod(object, "close");
+                QTest::qWait(40);
+            }
+            bool mirrored = false;
+            for (const QVariant& asset : docs.assets())
+                if (asset.toMap().value("name").toString() == QLatin1String("Camera 1"))
+                    mirrored = asset.toMap().value("cameraMirror").toBool();
+            check(mirrored, "the menu flips the live picture the worker draws");
+            docs.undo();
+            QTest::qWait(40);
+            bool restored = true;
+            for (const QVariant& asset : docs.assets())
+                if (asset.toMap().value("name").toString() == QLatin1String("Camera 1"))
+                    restored = !asset.toMap().value("cameraMirror").toBool();
+            check(restored, "one undo puts the camera's picture back the way it was");
+        }
 
         // A camera is an asset like any other: the Delete key removes the
         // selected one, with the card click giving the bin the keyboard.
@@ -1308,17 +1492,15 @@ int main(int argc, char** argv) {
         QTest::qWait(60);
         panels.resizeDrawer(300, window->height() - 364);
         QTest::qWait(40);
-        // Leave the bin on the row UI.4b is about: the audio cue, its control
-        // visible and still saying there is nothing to send it to. This is also
-        // the state the artefact captures below are taken in.
+        // Leave the bin on the audio row: no cue control, just the route.
         for (auto* row : mediaRows())
             if (row->property("modelData").toMap().value("name").toString()
                 == QLatin1String("hymn.mp3"))
                 clickAt(row, 20, 14);
         QTest::qWait(40);
-        check(activate->isVisible() && !activate->property("enabled").toBool()
+        check(findNamed(window->contentItem(), "mediaActivateButton") == nullptr
                   && !worker.standaloneOnAir(),
-              "the last word is the cue control, honest about having no output");
+              "the audio row carries no transport control");
 
         // The Delete key removes the selected asset, the same verb the menu's
         // Remove calls. It works on Show as well as in Edit: the bin browses
@@ -1372,8 +1554,10 @@ int main(int argc, char** argv) {
     // one schedule-owned show with a single slide whose whole picture is the
     // video's background — no lyric layer, no Library row.
     {
+        openFolder(serviceFolder);
         auto* serviceDrop = findNamed(window->contentItem(), "serviceDropArea");
-        check(serviceDrop != nullptr, "the running order accepts drops");
+        check(serviceDrop && serviceDrop->isVisible(),
+              "the open Service folder shows the running order that accepts drops");
         QString videoId;
         for (const QVariant& entry : docs.assets()) {
             const QVariantMap row = entry.toMap();
@@ -1429,6 +1613,61 @@ int main(int argc, char** argv) {
             docs.undo();
             check(docs.playlistEntries().size() == entriesBefore.size(),
                   "one undo removes the video cue");
+        }
+
+        // Audio takes the same drop, but ON a cue it joins that show's
+        // audio layer; below the last row it makes an audio cue of its own.
+        QString audioId;
+        for (const QVariant& entry : docs.assets()) {
+            const QVariantMap row = entry.toMap();
+            if (row.value(QStringLiteral("name")).toString() == QLatin1String("hymn.mp3"))
+                audioId = row.value(QStringLiteral("id")).toString();
+        }
+        const QVariantList order = docs.playlistEntries();
+        check(!audioId.isEmpty() && !order.isEmpty(),
+              "the audio card and a running-order cue are available");
+        if (!audioId.isEmpty() && !order.isEmpty() && serviceDrop) {
+            const QString targetShow =
+                order.first().toMap().value(QStringLiteral("showId")).toString();
+            QMimeData audioMime;
+            audioMime.setText(QStringLiteral("media:") + audioId);
+            const int entriesNow = docs.playlistEntries().size();
+            const QPoint onRow = serviceDrop->mapToScene(
+                QPointF(serviceDrop->width() / 2, 20)).toPoint();
+            QDragEnterEvent audioEnter(onRow, Qt::CopyAction, &audioMime,
+                                       Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(serviceDrop, &audioEnter);
+            QTest::qWait(20);
+            check(audioEnter.isAccepted(),
+                  "an audio card is accepted over an existing cue");
+            QDropEvent audioDrop(onRow, Qt::CopyAction, &audioMime,
+                                 Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(serviceDrop, &audioDrop);
+            QTest::qWait(40);
+            check(audioDrop.isAccepted() &&
+                      docs.showInfo(targetShow).value(QStringLiteral("audioAssetId"))
+                              .toString() == audioId,
+                  "dropping audio on a cue sets that show's audio layer");
+            check(docs.playlistEntries().size() == entriesNow,
+                  "and it adds no second cue");
+            docs.undo();
+            check(docs.showInfo(targetShow).value(QStringLiteral("audioAssetId"))
+                      .toString().isEmpty(),
+                  "one undo removes the cue's audio layer");
+
+            const QPoint belowRows = serviceDrop->mapToScene(
+                QPointF(serviceDrop->width() / 2, serviceDrop->height() - 4)).toPoint();
+            QDragEnterEvent newEnter(belowRows, Qt::CopyAction, &audioMime,
+                                     Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(serviceDrop, &newEnter);
+            QTest::qWait(20);
+            QDropEvent newDrop(belowRows, Qt::CopyAction, &audioMime,
+                               Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(serviceDrop, &newDrop);
+            QTest::qWait(40);
+            check(docs.playlistEntries().size() == entriesNow + 1,
+                  "audio dropped below the cues becomes an audio cue");
+            docs.undo();
         }
     }
     {
@@ -1778,17 +2017,29 @@ int main(int argc, char** argv) {
         check(betaTile != nullptr, "the Beta head tile is on screen");
         if (betaTile != nullptr) {
             const QPointF inGrid = betaTile->mapToItem(cueGrid, QPointF(0, 0));
+            const qreal bandHeight =
+                showPageItem->property("groupHeaderHeight").toReal();
             check(qAbs(inGrid.x() - cueRect(3).value(QStringLiteral("x")).toReal()) < 1.0
                       && qAbs(inGrid.y() + cueGrid->property("contentY").toReal()
-                              - cueRect(3).value(QStringLiteral("y")).toReal()) < 1.0,
-                  "the head tile and cueRect agree on where Beta starts");
+                              - cueRect(3).value(QStringLiteral("y")).toReal()
+                              - bandHeight) < 1.0,
+                  "the head tile sits directly under its group's name band");
         }
         // The padding is inert: clicking the fill beside Alpha costs nothing.
         showPageItem->setProperty("cueIndex", -1);
         check(firstFiller >= 0, "the fixture leaves some padding to test");
+        // Bring the pad row on screen first: a click is only a statement
+        // about the grid when the point really is inside the grid.
+        QMetaObject::invokeMethod(cueGrid, "positionViewAtIndex",
+                                  Q_ARG(int, firstFiller), Q_ARG(int, 4));
+        QTest::qWait(60);
         const QPointF fillPoint = cueGrid->mapToScene(
             QPointF((firstFiller % cs7cols) * cs7cellW + cs7cellW / 2.0,
-                    (firstFiller / cs7cols) * cs7cellH + cs7cellH / 2.0));
+                    (firstFiller / cs7cols) * cs7cellH + cs7cellH / 2.0
+                        - cueGrid->property("contentY").toReal()));
+        check(QRectF(cueGrid->mapToScene(QPointF(0, 0)),
+                     QSizeF(cueGrid->width(), cueGrid->height())).contains(fillPoint),
+              "the padding click lands inside the visible grid");
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, fillPoint.toPoint());
         QTest::qWait(40);
         check(showPageItem->property("cueIndex").toInt() == -1,
@@ -2484,30 +2735,93 @@ int main(int argc, char** argv) {
         check(transportPlay && !transportPlay->isVisible()
                   && transportIdle && transportIdle->isVisible(),
               "the transport names its emptiness and offers no controls for nothing");
+        // The worker reports a LOOP-CONTINUOUS position (a looping clip's
+        // clock climbs past its length), while the seek slider's range is the
+        // clip's own length. The rail wraps it back into the clip, which is
+        // the difference between a loop returning to the start and the slider
+        // pinning at the right edge forever.
+        {
+            auto wrapped = [right](double position, double duration, bool looping) {
+                QVariant answer;
+                QMetaObject::invokeMethod(right, "transportPositionOf",
+                                          Q_RETURN_ARG(QVariant, answer),
+                                          Q_ARG(QVariant, position), Q_ARG(QVariant, duration),
+                                          Q_ARG(QVariant, looping));
+                return answer.toDouble();
+            };
+            check(wrapped(-1.0, 6.0, true) < 0.0,
+                  "an unknown transport position stays unknown");
+            check(qAbs(wrapped(2.5, 6.0, true) - 2.5) < 1e-6,
+                  "a position inside the clip is shown as it is");
+            check(qAbs(wrapped(8.5, 6.0, true) - 2.5) < 1e-6,
+                  "a looping position past the clip wraps back onto the clip's own clock");
+            check(qAbs(wrapped(12.0, 6.0, true)) < 1e-6,
+                  "a loop landing exactly on the length shows the start, not the edge");
+            check(qAbs(wrapped(8.5, 6.0, false) - 6.0) < 1e-6,
+                  "a finished clip with loop off stays pinned at its end");
+        }
+        // A running time past a minute reads m:ss, both ends in the same
+        // form; short clips keep the tenths where they still mean something.
+        {
+            auto clocked = [right](double seconds, bool useClock) {
+                QVariant answer;
+                QMetaObject::invokeMethod(right, "clockText",
+                                          Q_RETURN_ARG(QVariant, answer),
+                                          Q_ARG(QVariant, seconds), Q_ARG(QVariant, useClock));
+                return answer.toString();
+            };
+            check(clocked(7.4, false) == QLatin1String("7.4 s") &&
+                      clocked(52.3, false) == QLatin1String("52.3 s"),
+                  "a short clip keeps tenths of a second");
+            check(clocked(0.0, true) == QLatin1String("0:00") &&
+                      clocked(7.4, true) == QLatin1String("0:07") &&
+                      clocked(67.6, true) == QLatin1String("1:08") &&
+                      clocked(267.6, true) == QLatin1String("4:28"),
+                  "a long clip reads minutes:seconds, seconds zero-padded");
+            check(clocked(59.6, true) == QLatin1String("1:00"),
+                  "rounding at the minute boundary carries into the minute");
+            check(clocked(-1.0, true) == QString(QChar(0x2014)),
+                  "an unknown time is still the dash");
+        }
 
-        auto* combo = findNamed(window->contentItem(), "audioCueCombo");
-        auto* play = findNamed(window->contentItem(), "audioPlayButton");
-        auto* stop = findNamed(window->contentItem(), "audioStopButton");
-        auto* audioNote = findNamed(window->contentItem(), "audioStatusLine");
-        check(combo && combo->isVisible() && play && play->isVisible() && stop && audioNote,
-              "the audio area offers its cues, an explicit Play and a Stop");
-        QStringList cueNames;
-        for (const QVariant& cue : combo->property("model").toList())
-            cueNames << cue.toMap().value(QStringLiteral("name")).toString();
-        check(cueNames == (QStringList{"hymn.mp3", "ghost.mp3"}),
-              "the area is populated by prepared AUDIO only — no video, no file paths");
-        // Picking from the list is browsing. The bin's cue lesson, at the
-        // rail: nothing until an explicit press, and even the press only
-        // asks — here there is not even an output to receive the ask.
-        combo->setProperty("currentIndex", 1);
-        QTest::qWait(30);
+        // The rail has no separate audio area any more: audio is a cue, and
+        // the transport above governs it like a video. The one audio control
+        // that remains is the MASTER mute, hoisted to the audience header
+        // with the layer clears: it must be present, off until the worker
+        // reports otherwise, and it must NOT be a second mute inside the
+        // transport.
+        check(findNamed(window->contentItem(), "audioCueCombo") == nullptr
+                  && findNamed(window->contentItem(), "audioPlayButton") == nullptr
+                  && findNamed(window->contentItem(), "audioStopButton") == nullptr
+                  && findNamed(window->contentItem(), "audioStatusLine") == nullptr,
+              "the rail offers no production-track Play/Stop area");
+        auto* muteAll = findNamed(window->contentItem(), "masterMuteButton");
+        const QPointF muteTopLeft = muteAll ? muteAll->mapToScene(QPointF(0, 0)) : QPointF();
+        check(muteAll != nullptr && !worker.mediaMuted(),
+              "the audience offers one master audio mute, off by default");
+        check(muteAll && muteTopLeft.y() < previewTopLeft.y()
+                  && findNamed(window->contentItem(), "transportMuteAllCheck") == nullptr,
+              "the master mute sits above the monitor and left the transport behind");
+        check(muteAll && findByClass(muteAll, "CheckBox") == nullptr,
+              "the master mute is one toggle, not a tick box");
+        // The old rows said "Video audio" over a bare slider beside a Mute
+        // tick box; the mix row now names the source and its volume, which is
+        // the sentence the delegate paints.
+        {
+            auto volumeLabel = [right](const char* source) {
+                QVariant answer;
+                QMetaObject::invokeMethod(right, "sourceVolumeLabel",
+                                          Q_RETURN_ARG(QVariant, answer),
+                                          Q_ARG(QVariant, QString::fromLatin1(source)));
+                return answer.toString();
+            };
+            check(volumeLabel("video") == QLatin1String("Video audio volume")
+                      && volumeLabel("audio") == QLatin1String("Show audio volume"),
+                  "each mix row says which source it is and that the slider is its volume");
+        }
         check(worker.standalonePath().isEmpty() && !worker.standaloneOnAir()
                   && worker.standaloneRefusal().isEmpty() && worker.sceneActive() == 0,
-              "picking a cue from the list sends nothing to any output");
-        check(!play->property("enabled").toBool() && !stop->property("enabled").toBool(),
-              "Play waits for an output and Stop for a track actually on air");
-        check(audioNote->property("text").toString().contains("no output connected"),
-              "the area names what stands between the cue and sound");
+              "nothing on the rail has sent a standalone selection");
         auto* offlineNote = findNamed(window->contentItem(), "previewOfflineNote");
         check(offlineNote && offlineNote->isVisible() && !worker.outputLive(),
               "no cue and no combo choice makes the monitor claim air it does not have");
@@ -2526,8 +2840,6 @@ int main(int argc, char** argv) {
                       && qAbs(preview->width() * 9 - preview->height() * 16) < 1.0,
                   "the monitor says it is disconnected inside a 16:9 frame");
         }
-        combo->setProperty("currentIndex", 0);
-        QTest::qWait(20);
     }
     // --- task UI.6: toolbar controls, keyboard handback, panel restore ----
     // The header's two working controls, and the layout promises the leaf
@@ -2947,6 +3259,53 @@ int main(int argc, char** argv) {
                   && typed.value(QStringLiteral("height")).toDouble() == 500.0
                   && noPlacementButton->property("enabled").toBool(),
               "typing the four numbers writes the placement as one unit and No placement wakes");
+        // The centre helpers (review 2026-11-10): one click per axis keeps
+        // the size and lands the box on the 1920x1080 centre; the guides
+        // rest hidden between gestures.
+        auto* centreH = findNamed(window->contentItem(), "themeEditorPlaceCenterH");
+        auto* centreV = findNamed(window->contentItem(), "themeEditorPlaceCenterV");
+        auto* guideX = findNamed(window->contentItem(), "themeEditorCentreGuideX");
+        auto* guideY = findNamed(window->contentItem(), "themeEditorCentreGuideY");
+        check(centreH && centreV && guideX && guideY
+                  && centreH->property("enabled").toBool()
+                  && centreV->property("enabled").toBool()
+                  && !guideX->isVisible() && !guideY->isVisible(),
+              "the placement row offers centre helpers and rests without centre guides");
+        clickAt(centreH, centreH->width() / 2, centreH->height() / 2);
+        QTest::qWait(80);
+        check(placementRow(placedId).value(QStringLiteral("placement")).toMap()
+                      .value(QStringLiteral("x")).toDouble() == 260.0
+                  && placementRow(placedId).value(QStringLiteral("placement")).toMap()
+                         .value(QStringLiteral("y")).toDouble() == 150.0,
+              "Center H moves only the horizontal axis onto the slide centre");
+        clickAt(centreV, centreV->width() / 2, centreV->height() / 2);
+        QTest::qWait(80);
+        check(placementRow(placedId).value(QStringLiteral("placement")).toMap()
+                      .value(QStringLiteral("y")).toDouble() == 290.0
+                  && placementRow(placedId).value(QStringLiteral("placement")).toMap()
+                         .value(QStringLiteral("width")).toDouble() == 1400.0,
+              "Center V moves only the vertical axis and keeps the box's size");
+        // The gesture and its fixture share one snap answer: inside the
+        // tolerance the axis lands exactly on the centre, outside it the
+        // pointer's travel is kept.
+        {
+            auto snapped = [editorPage](double x, double y, double w, double h,
+                                        double tolerance) {
+                QVariant answer;
+                QMetaObject::invokeMethod(editorPage, "snappedCentre",
+                                          Q_RETURN_ARG(QVariant, answer),
+                                          Q_ARG(QVariant, x), Q_ARG(QVariant, y),
+                                          Q_ARG(QVariant, w), Q_ARG(QVariant, h),
+                                          Q_ARG(QVariant, tolerance));
+                return answer.toRectF();
+            };
+            const QRectF nearX = snapped(915.0, 200.0, 100.0, 100.0, 8.0);
+            const QRectF farX = snapped(900.0, 200.0, 100.0, 100.0, 8.0);
+            const QRectF nearY = snapped(200.0, 495.0, 100.0, 100.0, 8.0);
+            check(qAbs(nearX.x() - 910.0) < 0.001 && qAbs(farX.x() - 900.0) < 0.001
+                      && qAbs(nearY.y() - 490.0) < 0.001,
+                  "the centre snap pulls a near axis exactly onto 960/540 and leaves a far one alone");
+        }
         // A box the page itself will not place (w < 1) never reaches the
         // model, and every field snaps back to where the record says it is.
         placeWField->setProperty("text", "0");
@@ -2983,50 +3342,88 @@ int main(int argc, char** argv) {
             }
             return QVariantMap{};
         };
-        auto* weightCombo = findNamed(window->contentItem(), "themeEditorWeight");
+        auto* weightToggle = findNamed(window->contentItem(), "themeEditorWeight");
         auto* weightInherit = findNamed(window->contentItem(), "themeEditorWeightInherit");
+        auto* alignControl = findNamed(window->contentItem(), "themeEditorAlign");
+        auto* slantToggle = findNamed(window->contentItem(), "themeEditorSlant");
+        auto* underlineToggle = findNamed(window->contentItem(), "themeEditorUnderline");
+        auto* underlineInherit =
+            findNamed(window->contentItem(), "themeEditorUnderlineInherit");
+        auto* fitControl = findNamed(window->contentItem(), "themeEditorFit");
+        check(alignControl && alignControl->property("count").toInt() == 3
+                  && alignControl->property("glyphStyle").toString() == QLatin1String("align")
+                  && fitControl && fitControl->property("count").toInt() == 2
+                  && weightToggle && slantToggle && underlineToggle && underlineInherit,
+              "alignment and fit are segmented; bold, italic and underline are B/I/U switches");
         auto* minSizeField = findNamed(window->contentItem(), "themeEditorMinSize");
         auto* strokeEnable = findNamed(window->contentItem(), "themeEditorStrokeEnable");
         auto* strokeOff = findNamed(window->contentItem(), "themeEditorStrokeInherit");
         auto* blurSlider = findNamed(window->contentItem(), "themeEditorShadowBlur");
-        auto* browseFonts = findNamed(window->contentItem(), "themeEditorBrowseFonts");
         // A closed Popup is not in the visible item tree at all — in Qt 6 it
         // is not even an Item — so the QObject tree is where the picker is
         // looked for, and "no picker" is read the same way.
         auto* fontPopup = window->findChild<QObject*>(QStringLiteral("themeEditorFontPopup"));
         auto* familyField = findNamed(window->contentItem(), "themeEditorFontField");
         auto* fontStatus = findNamed(window->contentItem(), "themeEditorFontStatus");
-        check(weightCombo && weightInherit && minSizeField && strokeEnable && strokeOff
-                  && blurSlider && browseFonts && fontPopup && familyField && fontStatus,
+        check(weightToggle && weightInherit && minSizeField && strokeEnable && strokeOff
+                  && blurSlider && fontPopup && familyField && fontStatus,
               "the Songs inspector carries the typography, effect and family controls");
+        check(!familyField->property("readOnly").toBool(),
+              "without a worker the typeface field stays typeable and no Browse button is needed");
         check(!weightInherit->property("enabled").toBool()
                   && !strokeOff->property("enabled").toBool()
+                  && !weightToggle->property("active").toBool()
+                  && !underlineToggle->property("active").toBool()
                   && styleRow(placedId).value(QStringLiteral("fontWeightSet")).toBool() == false
+                  && styleRow(placedId).value(QStringLiteral("fontUnderlineSet")).toBool() == false
                   && styleRow(placedId).value(QStringLiteral("strokeSet")).toBool() == false,
               "a silent theme's style controls start asleep and its row says nothing is set");
 
-        // One combo choice is ONE field: the neighbours keep their silence.
-        weightCombo->setProperty("currentIndex", 6);  // the model's 700
-        QMetaObject::invokeMethod(weightCombo, "activated", Q_ARG(int, 6));
+        // One switch is ONE field: the neighbours keep their silence.
+        clickAt(weightToggle, weightToggle->width() / 2, weightToggle->height() / 2);
         QTest::qWait(80);
         check(styleRow(placedId).value(QStringLiteral("fontWeightSet")).toBool()
                   && styleRow(placedId).value(QStringLiteral("fontWeight")).toInt() == 700
+                  && weightToggle->property("active").toBool()
                   && styleRow(placedId).value(QStringLiteral("strokeSet")).toBool() == false
                   && styleRow(placedId).value(QStringLiteral("minFontSizeSet")).toBool() == false,
-              "the weight combo writes its own field and no other");
+              "the bold switch writes its own field and no other");
         check(weightInherit->property("enabled").toBool(),
-              "the Inherit button wakes when the theme has something to give back");
+              "the Inherit chip wakes when the theme has something to give back");
         docs.undo();
         QTest::qWait(80);
         check(!styleRow(placedId).value(QStringLiteral("fontWeightSet")).toBool()
                   && !weightInherit->property("enabled").toBool()
-                  && weightCombo->property("currentIndex").toInt() == 3,
-              "one undo takes the weight back to silence, and the combo repaints from the record");
+                  && !weightToggle->property("active").toBool(),
+              "one undo takes the weight back to silence, and the switch repaints from the record");
+
+        // Italic and underline are the same one-field switches; underline is
+        // the contract's new decoration, so its round trip is pinned here.
+        clickAt(slantToggle, slantToggle->width() / 2, slantToggle->height() / 2);
+        QTest::qWait(80);
+        check(styleRow(placedId).value(QStringLiteral("fontStyle")).toString()
+                      == QLatin1String("italic")
+                  && slantToggle->property("active").toBool(),
+              "the italic switch writes italic and lights from the record");
+        docs.undo();
+        QTest::qWait(80);
+        clickAt(underlineToggle, underlineToggle->width() / 2, underlineToggle->height() / 2);
+        QTest::qWait(80);
+        check(styleRow(placedId).value(QStringLiteral("fontUnderlineSet")).toBool()
+                  && styleRow(placedId).value(QStringLiteral("fontUnderline")).toBool()
+                  && underlineToggle->property("active").toBool()
+                  && underlineInherit->property("enabled").toBool(),
+              "underline materialises its own answer and wakes its Inherit chip");
+        docs.undo();
+        QTest::qWait(80);
+        check(!styleRow(placedId).value(QStringLiteral("fontUnderlineSet")).toBool()
+                  && !underlineToggle->property("active").toBool()
+                  && !underlineInherit->property("enabled").toBool(),
+              "one undo takes underline back to inheritance");
 
         // A field committed UNCHANGED writes nothing — and so it costs no
         // undo: the step back after it is still the weight, not a phantom.
-        weightCombo->setProperty("currentIndex", 6);
-        QMetaObject::invokeMethod(weightCombo, "activated", Q_ARG(int, 6));
+        clickAt(weightToggle, weightToggle->width() / 2, weightToggle->height() / 2);
         QTest::qWait(80);
         minSizeField->setProperty("text", minSizeField->property("text").toString());
         QMetaObject::invokeMethod(minSizeField, "editingFinished");
@@ -3124,12 +3521,12 @@ int main(int argc, char** argv) {
                   && fontStatus->property("text").toString().contains(
                           QStringLiteral("cannot list")),
               "a typed family saves while the worker is away, and the note will not invent a verdict");
-        check(!browseFonts->property("enabled").toBool(),
-              "Browse sleeps until a worker that can enumerate its fonts is connected");
-        clickAt(browseFonts, browseFonts->width() / 2, browseFonts->height() / 2);
+        check(!familyField->property("readOnly").toBool(),
+              "with no worker that can enumerate, the typeface field stays typeable");
+        clickAt(familyField, familyField->width() / 2, familyField->height() / 2);
         QTest::qWait(60);
         check(fontPopup && !fontPopup->property("visible").toBool(),
-              "clicking the sleeping Browse opens no empty picker");
+              "clicking a typeface field with no list to offer opens no empty picker");
 
         // The scripture reading context (task TF.4): the toggle CREATES the
         // entry out of the theme's current look and box, the fields commit
@@ -3206,14 +3603,13 @@ int main(int argc, char** argv) {
                   && !created.value(QStringLiteral("fontSizeSet")).toBool(),
               "first edit preserves the inherited rectangle and renderer-default size");
         const auto inheritedReading = docs.themeSampleAppearance(placedId, "scripture");
-        auto* contextBrowse = findNamed(window->contentItem(), "themeEditorContextFontBrowse");
         auto* contextFamily = findNamed(window->contentItem(), "themeEditorContextFont");
         auto* contextAlign = findNamed(window->contentItem(), "themeEditorContextAlign");
-        check(contextBrowse && contextBrowse->isVisible() && !contextBrowse->isEnabled()
-                  && contextFamily && contextFamily->property("text") == inheritedReading.value("fontFamily")
+        check(contextFamily && contextFamily->property("text") == inheritedReading.value("fontFamily")
+                  && !contextFamily->property("readOnly").toBool()
                   && ctxSizeField->property("text").toString().toDouble() == inheritedReading.value("fontSize").toDouble()
                   && contextAlign && contextAlign->property("count").toInt() == 3,
-              "Bible uses the same resolved font fields and Browse control as Songs");
+              "Bible uses the same resolved typeface row as Songs, typeable while no list answers");
         QMetaObject::invokeMethod(ctxSizeField, "editingFinished");
         check(contextRow(placedId) == created,
               "focus-out on an inherited font size does not create an override");
@@ -4272,7 +4668,8 @@ int main(int argc, char** argv) {
         waitFor([&] { return !cueMenu->property("visible").toBool(); });
 
         // --- sidebar row: the bulk over a whole presentation, one undo ---
-        // The Library pane is always visible now (SL.4).
+        // The Library's Presentations folder is the row's home (SL.4).
+        openFolder(presentationsFolder);
         QTest::qWait(20);
         QString welcomeId;
         for (const QVariant& song : docs.songs()) {
@@ -4482,12 +4879,15 @@ int main(int argc, char** argv) {
             auto* sizeBadge = findNamed(window->contentItem(), "customizeBadgeFontSize");
             auto* alignCombo = findNamed(window->contentItem(), "themeAlignCombo");
             auto* alignBadge = findNamed(window->contentItem(), "customizeBadgeAlign");
-            auto* weightCombo = findNamed(window->contentItem(), "editWeight");
+            auto* weightToggle = findNamed(window->contentItem(), "editWeight");
             auto* weightInherit = findNamed(window->contentItem(), "editWeightInherit");
+            auto* underlineToggle = findNamed(window->contentItem(), "editUnderline");
+            auto* underlineInherit = findNamed(window->contentItem(), "editUnderlineInherit");
             auto* strokeCheck = findNamed(window->contentItem(), "editStrokeEnable");
             auto* strokeOff = findNamed(window->contentItem(), "editStrokeOff");
-            check(sizeField && sizeBadge && alignCombo && alignBadge && weightCombo
-                      && weightInherit && strokeCheck && strokeOff,
+            check(sizeField && sizeBadge && alignCombo && alignBadge && weightToggle
+                      && weightInherit && underlineToggle && underlineInherit
+                      && strokeCheck && strokeOff,
                   "the migrated rail carries the family, size, alignment and effect "
                   "rows with their revert affordances");
             // An unchanged commit is not an edit: a value the chain already
@@ -4531,28 +4931,40 @@ int main(int argc, char** argv) {
                           .value(QStringLiteral("customized")).toBool(),
                   "the chip hands the alignment back");
             // The advanced styling the slide supports now reaches through:
-            // weight speaks, Inherit quiets it, exactly as on the Songs rail.
-            // The weight choices ride the same font-list reply as the family
-            // list — a worker round-trip — so wait for it like the Themes
-            // test does before driving the combo.
-            for (int i = 0; i < 100 && weightCombo->property("count").toInt() < 9; ++i)
-                QTest::qWait(50);
-            check(weightCombo->property("count").toInt() == 9,
-                  "the weight choices arrive in Edit");
-            weightCombo->setProperty("currentIndex", 6);  // the model's 700
-            QMetaObject::invokeMethod(weightCombo, "activated", Q_ARG(int, 6));
-            QTest::qWait(80);
-                        check(docs.slideAppearance().value(QStringLiteral("fontWeight")).toMap()
+            // B / I / U speak, the ↺ quiets them, exactly as on the Songs
+            // rail. No worker round-trip is needed for a switch.
+            clickAt(weightToggle, weightToggle->width() / 2, weightToggle->height() / 2);
+            QTest::qWait(120);
+            check(docs.slideAppearance().value(QStringLiteral("fontWeight")).toMap()
                           .value(QStringLiteral("customized")).toBool()
+                      && weightToggle->property("active").toBool()
                       && weightInherit->property("enabled").toBool(),
-                  "a weight typed in Edit customizes the slide and wakes its Inherit");
+                  "bold in Edit customizes the slide and wakes its Inherit");
             scrollIntoView(weightInherit);
             QTest::qWait(60);
             clickAt(weightInherit, weightInherit->width() / 2, weightInherit->height() / 2);
             QTest::qWait(120);
             check(!docs.slideAppearance().value(QStringLiteral("fontWeight")).toMap()
-                          .value(QStringLiteral("customized")).toBool(),
+                          .value(QStringLiteral("customized")).toBool()
+                      && !weightToggle->property("active").toBool(),
                   "Inherit hands the weight back to the theme");
+            clickAt(underlineToggle, underlineToggle->width() / 2,
+                    underlineToggle->height() / 2);
+            QTest::qWait(120);
+            check(docs.slideAppearance().value(QStringLiteral("fontUnderline")).toMap()
+                          .value(QStringLiteral("customized")).toBool()
+                      && underlineToggle->property("active").toBool()
+                      && underlineInherit->property("enabled").toBool(),
+                  "underline in Edit customizes the slide and wakes its Inherit");
+            scrollIntoView(underlineInherit);
+            QTest::qWait(60);
+            clickAt(underlineInherit, underlineInherit->width() / 2,
+                    underlineInherit->height() / 2);
+            QTest::qWait(120);
+            check(!docs.slideAppearance().value(QStringLiteral("fontUnderline")).toMap()
+                          .value(QStringLiteral("customized")).toBool()
+                      && !underlineToggle->property("active").toBool(),
+                  "Inherit hands underline back to the theme");
             // An outline materialises, owns, and inherits back WHOLE.
             scrollIntoView(strokeCheck);
             QTest::qWait(60);
@@ -4613,6 +5025,32 @@ int main(int argc, char** argv) {
                                               - page->property("height").toReal());
             QTest::qWait(60);
         }
+        // The Edit page's geometry band carries the same one-click centre
+        // helpers as the theme rail, and the canvas wears the same resting
+        // guides (hidden until a move gesture has snapped an axis).
+        auto* centreH = findNamed(window->contentItem(), "centerBoxH");
+        auto* centreV = findNamed(window->contentItem(), "centerBoxV");
+        auto* guideX = findNamed(window->contentItem(), "centreGuideX");
+        auto* guideY = findNamed(window->contentItem(), "centreGuideY");
+        check(centreH && centreV && guideX && guideY
+                  && centreH->property("enabled").toBool()
+                  && centreV->property("enabled").toBool()
+                  && !guideX->isVisible() && !guideY->isVisible(),
+              "the edit geometry band offers centre helpers and rests without guides");
+        clickAt(centreH, centreH->width() / 2, centreH->height() / 2);
+        QTest::qWait(80);
+        check(docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("x"))
+                      .toDouble() == 310.0
+                  && docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("width"))
+                         .toDouble() == 1300.0,
+              "Center H puts the slide's box on the horizontal centre and keeps its width");
+        clickAt(centreV, centreV->width() / 2, centreV->height() / 2);
+        QTest::qWait(80);
+        check(docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("y"))
+                      .toDouble() == 190.0
+                  && docs.currentSlideBoxes().at(0).toMap().value(QStringLiteral("height"))
+                         .toDouble() == 700.0,
+              "Center V puts it on the vertical centre and keeps its height");
         clickAt(revert, revert->width() / 2, revert->height() / 2);
         QTest::qWait(120);
         check(waitFor([&] { return !docs.slideAppearance().value(QStringLiteral("placement"))

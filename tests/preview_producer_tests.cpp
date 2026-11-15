@@ -614,6 +614,54 @@ void shrinkStandsTheBatchDown(SceneRenderer* audience) {
     check(producer.status().running, "the smaller stream itself is live");
 }
 
+// ND.6 crash: the list draws a camera slide while NOTHING is on air — the
+// audience's scene is the null ActiveScene. That is the state the worker was
+// in when setting a camera cue live crashed it inside publishThumbnailFrame:
+// the camera comparison dereferenced the empty handle. With no audience scene
+// there is no frame to borrow, so the row is the colour fill; the one thing
+// it must never do is take the worker down.
+void cameraThumbnailWithoutAudienceScene(SceneRenderer* audience) {
+    PreviewProducer producer;
+    producer.attachRenderer(nullptr, audience);
+    std::string error;
+    PreviewProducer::ThumbnailAck ack;
+    check(producer.start(320, 180, 15, nullptr, &error), "camera row: stream starts");
+    producer.applyStreamState();
+
+    PreviewProducer::ThumbnailEntry entry;
+    entry.key = "camera-row";
+    entry.scene.showId = "show1";
+    entry.scene.slideId = "camera1";
+    entry.scene.background.color = 0xE03030u;
+    entry.scene.background.hasImage = true;
+    entry.scene.background.isCamera = true;
+    entry.scene.background.cameraSource = "STAGE (Camera 1)";
+    entry.scene.background.assetPath = entry.scene.background.cameraSource;
+    std::vector<PreviewProducer::ThumbnailEntry> batch;
+    batch.push_back(std::move(entry));
+    check(producer.requestThumbnails(batch, 64, 64, 1, &ack, &error),
+          "camera row: the band is accepted");
+    // A camera has no file to decode, so one pump settles the job without
+    // handing anything to the lane (its return says "a file moved", not "the
+    // batch settled"). The picture is the live frame the draw is given — or,
+    // with none, the fill.
+    producer.pumpThumbnailDecode();
+
+    // Nothing on air: the audience scene handle is the null one.
+    ActiveScene nothingOnAir;
+    openshow::worker::SceneFrame frame;
+    PreviewProducer::DrawInput input;
+    input.audienceFrame = &frame;
+    input.video = nullptr;
+    input.frames = 0;
+    input.startTime = std::chrono::steady_clock::now();
+    input.audienceScene = &nothingOnAir;
+    producer.drawTargets(input);
+    check(producer.status().thumbnails.active && producer.status().thumbnails.published == 0,
+          "camera row: the pass returns with its picture still owed, not taken down");
+    producer.stop();
+}
+
 }  // namespace
 
 int main() {
@@ -647,6 +695,7 @@ int main() {
     lookaheadAndDecodes(renderer.get());
     completionCarriesItsDestination(renderer.get());
     shrinkStandsTheBatchDown(renderer.get());
+    cameraThumbnailWithoutAudienceScene(renderer.get());
 
     if (gFailures > 0) {
         std::fprintf(stderr, "%d failure(s)\n", gFailures);

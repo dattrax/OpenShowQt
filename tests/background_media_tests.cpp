@@ -48,6 +48,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <string>
@@ -55,6 +56,7 @@
 #include <thread>
 #include <vector>
 
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -86,7 +88,8 @@ std::string socketPath(const char* tag) {
     return "/tmp/openshow-bg-" + std::to_string(getpid()) + "-" + tag + ".sock";
 }
 
-pid_t spawnWorker(const std::string& path, const std::vector<std::string>& extraEnv = {}) {
+pid_t spawnWorker(const std::string& path, const std::vector<std::string>& extraEnv = {},
+                  const std::string& stderrPath = {}) {
     const pid_t pid = fork();
     if (pid == 0) {
         // Fault knobs (OPENSHOW_FAULT_*) are set in the child only: the
@@ -98,11 +101,38 @@ pid_t spawnWorker(const std::string& path, const std::vector<std::string>& extra
                 ::setenv(entry.substr(0, equals).c_str(), entry.substr(equals + 1).c_str(), 1);
             }
         }
+        if (!stderrPath.empty()) {
+            // A scenario that counts the worker's own decode log lines
+            // (the prime-skip rule) owns this file rather than the terminal.
+            const int out = ::open(stderrPath.c_str(),
+                                   O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (out >= 0) {
+                ::dup2(out, STDERR_FILENO);
+                if (out != STDERR_FILENO) {
+                    ::close(out);
+                }
+            }
+        }
         execl(gWorkerBinary.c_str(), "openshow-worker", "--socket", path.c_str(),
               static_cast<char*>(nullptr));
         _exit(127);
     }
     return pid;
+}
+
+int countLinesContaining(const std::string& path, const std::string& needle) {
+    std::ifstream in(path);
+    if (!in) {
+        return -1;
+    }
+    int count = 0;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.find(needle) != std::string::npos) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 int connectRetry(const std::string& path) {
@@ -1436,10 +1466,11 @@ void exerciseAudioStartFailure(const std::string& audioClip, const std::string& 
 // A worker that owns its environment — the fault knobs and the transport
 // schedule are read at spawn — handshaken and ready to take scenes.
 int spawnScopedWorker(const char* tag, const std::vector<std::string>& extraEnv,
-                      std::string* socketOut, pid_t* pidOut) {
+                      std::string* socketOut, pid_t* pidOut,
+                      const std::string& stderrPath = {}) {
     const std::string socket = socketPath(tag);
     ::unlink(socket.c_str());
-    const pid_t worker = spawnWorker(socket, extraEnv);
+    const pid_t worker = spawnWorker(socket, extraEnv, stderrPath);
     if (worker < 0) {
         return -1;
     }
@@ -1606,12 +1637,18 @@ void exerciseGoLiveUnderLoad(const std::string& videoA, const std::string& video
                              const std::string& bigStill) {
     std::string socket;
     pid_t worker = -1;
+    // This worker's stderr is the observable for the prime-skip rule below:
+    // every genuinely opened decode names itself once, so a slide change
+    // over the clip already on air must not add a line.
+    const std::string workerLog =
+        "/tmp/openshow-bg-" + std::to_string(getpid()) + "-golive.stderr";
+    ::unlink(workerLog.c_str());
     const int fd = spawnScopedWorker(
         "golive",
         {"OPENSHOW_FAULT_VIDEO_OPEN_MS=" + std::to_string(static_cast<int>(k69bOpenMs)),
          "OPENSHOW_FAULT_VIDEO_OPEN_MATCH=loop-a.mp4",
          "OPENSHOW_FAULT_PREPARE_MS=" + std::to_string(static_cast<int>(k69bPrepareMs))},
-        &socket, &worker);
+        &socket, &worker, workerLog);
     if (fd < 0) {
         check(false, "the go-live worker could be spawned and handed its slow open");
         return;
@@ -1843,6 +1880,9 @@ void exerciseGoLiveUnderLoad(const std::string& videoA, const std::string& video
           "and the audience has the primed clip playing and advancing");
     check(videoLandSeconds >= 0.0 && videoLandSeconds * 1000.0 < 100.0,
           "a primed video change reaches the audience within 100 ms (no reopen at the boundary)");
+    const int decodesBeforeLyric =
+        countLinesContaining(workerLog, "openshow-worker: video decode:");
+    check(decodesBeforeLyric > 0, "the opening clip's decode path is named in the log");
 
     // --- the identity rule keeps the running transport alive (M3) ---------
     // videoA is on air and advancing. A lyric change that keeps the SAME
@@ -1867,6 +1907,14 @@ void exerciseGoLiveUnderLoad(const std::string& videoA, const std::string& video
     // the scripted open. The lane's housekeep refresh is waited out.
     check(waitForMediaPlaying(fd, videoA, /*afterPosition=*/0.5, /*timeoutMs=*/1500),
           "the lyric change over a running video rode the transport that never stopped");
+    // The prepare for that lyric change is the case the prime-skip exists
+    // for: the transport was already playing this identity, so no second
+    // decoder may have been opened for it. Without the skip the prepare
+    // primed the same clip and this count grew by one.
+    const int decodesAfterLyric =
+        countLinesContaining(workerLog, "openshow-worker: video decode:");
+    check(decodesAfterLyric == decodesBeforeLyric,
+          "a lyric change over the running video opens no second decoder");
 
     // Move away to a still so the warm-loop trio below samples still switches
     // from a clean, video-free output.
@@ -1940,6 +1988,7 @@ void exerciseGoLiveUnderLoad(const std::string& videoA, const std::string& video
     for (const std::string& copy : cold) {
         ::unlink(copy.c_str());
     }
+    ::unlink(workerLog.c_str());
 
     // --- superseded primed work is bounded by the close ------------------
     // A fresh worker, a queue full of cold prepares — and no acks waited
@@ -3282,6 +3331,95 @@ void exerciseRpcGain(const std::string& audioClip) {
         },
         4000);
     check(audible, "and status says the source is audible again");
+
+    // The MASTER mute (media.mute "all"): one switch over every media source.
+    // The per-source row keeps its own answer underneath, and gain refuses
+    // the master identity because a master volume would be a second mixer.
+    check(call(fd, proto::kMethodMediaMute,
+               boost::json::object{{"source", "all"}, {"mute", true}}, &reply) &&
+              reply.as_object().contains("result") &&
+              reply.at("result").as_object().at("source").as_string() == "all",
+          "the master mute is acknowledged");
+    const bool allMuted = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            const auto muted = media.find("muted");
+            return muted != media.end() && muted->value().is_bool() &&
+                   muted->value().as_bool();
+        },
+        4000);
+    check(allMuted, "status.media.muted reports the master switch");
+    {
+        const boost::json::object masterStatus = mediaOf(status(fd));
+        const boost::json::object* video = findSource(masterStatus, "video");
+        check(video != nullptr && !video->at("muted").as_bool(),
+              "the master mute leaves the source's own mute flag untouched");
+        check(masterStatus.at("playing").as_bool(),
+              "the master mute does not stop the transport");
+    }
+    check(call(fd, proto::kMethodMediaMute,
+               boost::json::object{{"source", "all"}, {"mute", false}}, &reply) &&
+              reply.as_object().contains("result"),
+          "the master mute releases");
+    const bool allAudible = waitMedia(
+        fd,
+        [](const boost::json::object& media) {
+            const auto muted = media.find("muted");
+            return muted != media.end() && muted->value().is_bool() &&
+                   !muted->value().as_bool();
+        },
+        4000);
+    check(allAudible, "and status says media audio is audible again");
+    check(call(fd, proto::kMethodMediaGain,
+               boost::json::object{{"source", "all"}, {"gain", 0.5}}, &reply) &&
+              reply.as_object().contains("error") &&
+              textOf(reply.at("error").as_object(), "message").find("one source") !=
+                  std::string::npos,
+          "gain refuses the master identity");
+
+    // Scene 7's audio-only cue: no picture, a show track, and the SAME
+    // transport commands as a video. This is the whole feature through the
+    // worker's real prepare/present path, not just the transport object.
+    {
+        boost::json::object audioScene = lyricScene("", "aud1", "", false);
+        audioScene["audio"] = boost::json::object{{"assetId", "asset-aud1"},
+                                                  {"assetPath", audioClip}};
+        const std::uint64_t revision = preparePresent(fd, audioScene);
+        check(revision != 0 && waitActive(fd, revision, nullptr),
+              "the audio-only cue goes on air");
+        const bool audioOnlyLive = waitMedia(
+            fd,
+            [&](const boost::json::object& media) {
+                const auto live = media.find("live");
+                return live != media.end() && live->value().is_bool() &&
+                       live->value().as_bool() &&
+                       textOf(media, "path") == audioClip &&
+                       findSource(media, "audio") != nullptr;
+            },
+            8000);
+        check(audioOnlyLive,
+              "status names the show's track and registers its 'audio' source");
+        const boost::json::object audioStatus = mediaOf(status(fd));
+        check(findSource(audioStatus, "video") == nullptr,
+              "an audio-only cue registers no video source");
+        check(numberOf(audioStatus, "duration") > 0.5,
+              "the audio-only cue reports its probed duration");
+        check(call(fd, proto::kMethodMediaPause, {}, &reply) &&
+                  reply.as_object().contains("result"),
+              "the audio-only cue takes a pause");
+        const bool held = waitMedia(
+            fd,
+            [](const boost::json::object& media) {
+                const auto playing = media.find("playing");
+                return playing != media.end() && playing->value().is_bool() &&
+                       !playing->value().as_bool();
+            },
+            4000);
+        check(held, "the held audio-only cue reads not-playing");
+        check(call(fd, proto::kMethodMediaPlay, {}, &reply) &&
+                  reply.as_object().contains("result"),
+              "and it resumes through the same transport command");
+    }
     retireScopedWorker(fd, worker, socket, "the rpc-gain worker answers shutdown");
 }
 

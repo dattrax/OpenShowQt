@@ -113,12 +113,15 @@ int main(int argc, char** argv) {
     };
 
     auto* serviceDrop = window->findChild<QQuickItem*>(QStringLiteral("serviceDropArea"));
+    auto* serviceFolderDrop =
+        window->findChild<QQuickItem*>(QStringLiteral("libraryServiceDrop"));
     auto* libraryDrop = window->findChild<QQuickItem*>(QStringLiteral("presentationsDrop"));
     QObject* libraryItem =
         window->findChild<QObject*>(QStringLiteral("powerPointLibraryMenuItem"));
     QObject* serviceItem =
         window->findChild<QObject*>(QStringLiteral("powerPointServiceMenuItem"));
     check(serviceDrop != nullptr, "the service has a deck drop area");
+    check(serviceFolderDrop != nullptr, "the Service folder is a deck drop area");
     check(libraryDrop != nullptr, "the Library header has a deck drop area");
     check(libraryItem == nullptr && serviceItem == nullptr,
           "redundant PowerPoint import menu entries are absent");
@@ -158,10 +161,11 @@ int main(int argc, char** argv) {
     check(docs.songs().size() == songsBefore && docs.playlistEntries().size() == entriesBefore,
           "one undo removes the dropped Library presentation");
 
-    // Service door: the same drop inserts a schedule-owned show at the
-    // running order and does not create a Library row.
-    check(dropUrlOn(window, serviceDrop, deck),
-          "a .pptx URL drop is accepted by the service");
+    // Service door: the same drop on the Service FOLDER inserts a
+    // schedule-owned show at the running order — no need to open it first —
+    // and does not create a Library row.
+    check(dropUrlOn(window, serviceFolderDrop, deck),
+          "a .pptx URL drop is accepted by the Service folder");
     check(waitForImport(docs), "the service drop finishes rendering");
     check(docs.playlistEntries().size() == entriesBefore + 1,
           "the service drop added one running-order row");

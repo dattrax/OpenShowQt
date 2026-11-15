@@ -585,6 +585,24 @@ bool feedersThroughMixer(const std::string& wavA, const std::string& wavB) {
     ok = check(back && std::fabs(rms(device.window(mark, 9600), 0) - 0.768) < 0.05,
                "unmute restores the full mix live") && ok;
 
+    // The master mute (media.mute "all"): every source silent at once, with
+    // each source's own mute flag untouched underneath.
+    mixer.setMasterMute(true);
+    sleepMs(400);
+    mark = device.frames();
+    const bool masterFlow = waitFor([&] { return device.frames() >= mark + 9600; }, 3000);
+    ok = check(masterFlow, "the master mute never stopped the output") && ok;
+    ok = check(std::fabs(rms(device.window(mark, 9600), 0)) < 0.01,
+               "the master mute silences both inputs (RMS ≈ 0)") && ok;
+    ok = check(mixer.masterMuted() && !mixer.muted(inA) && !mixer.muted(inB),
+               "the master mute leaves every per-input flag untouched") && ok;
+    mixer.setMasterMute(false);
+    sleepMs(400);
+    mark = device.frames();
+    const bool restored = waitFor([&] { return device.frames() >= mark + 9600; }, 3000);
+    ok = check(restored && std::fabs(rms(device.window(mark, 9600), 0) - 0.768) < 0.05,
+               "releasing the master mute restores the mix live") && ok;
+
     feederA.requestStop();
     feederB.requestStop();
     feederA.join();

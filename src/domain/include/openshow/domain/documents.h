@@ -296,6 +296,7 @@ struct TextShadow {
 struct ThemeTextStyle {
     std::optional<int> fontWeight;
     std::optional<std::string> fontStyle;
+    std::optional<bool> fontUnderline;
     std::optional<std::string> fitMode;
     std::optional<double> minFontSize;
     std::optional<TextStroke> stroke;
@@ -406,6 +407,7 @@ struct SlideCustomization {
     // say (theme-editor review, effects contract).
     std::optional<int> fontWeight;
     std::optional<std::string> fontStyle;
+    std::optional<bool> fontUnderline;
     std::optional<std::string> fitMode;
     std::optional<double> minFontSize;
     std::optional<TextStroke> stroke;
@@ -417,7 +419,8 @@ struct SlideCustomization {
                fontFamily == other.fontFamily && fontSize == other.fontSize &&
                align == other.align && lineSpacing == other.lineSpacing &&
                placement == other.placement && fontWeight == other.fontWeight &&
-               fontStyle == other.fontStyle && fitMode == other.fitMode &&
+               fontStyle == other.fontStyle && fontUnderline == other.fontUnderline &&
+               fitMode == other.fitMode &&
                minFontSize == other.minFontSize && stroke == other.stroke &&
                shadow == other.shadow;
     }
@@ -427,7 +430,8 @@ struct SlideCustomization {
                !backgroundGradient.has_value() && !fontFamily.has_value() &&
                !fontSize.has_value() && !align.has_value() && !lineSpacing.has_value() &&
                !placement.has_value() && !fontWeight.has_value() &&
-               !fontStyle.has_value() && !fitMode.has_value() && !minFontSize.has_value() &&
+               !fontStyle.has_value() && !fontUnderline.has_value() &&
+               !fitMode.has_value() && !minFontSize.has_value() &&
                !stroke.has_value() && !shadow.has_value();
     }
     // Remove one customized field; reverting "this thing" is a key away.
@@ -452,6 +456,8 @@ struct SlideCustomization {
             fontWeight.reset();
         } else if (field == "fontStyle") {
             fontStyle.reset();
+        } else if (field == "fontUnderline") {
+            fontUnderline.reset();
         } else if (field == "fitMode") {
             fitMode.reset();
         } else if (field == "minFontSize") {
@@ -493,6 +499,9 @@ struct SlideCustomization {
         if (field == "fontStyle") {
             return fontStyle.has_value();
         }
+        if (field == "fontUnderline") {
+            return fontUnderline.has_value();
+        }
         if (field == "fitMode") {
             return fitMode.has_value();
         }
@@ -519,8 +528,8 @@ inline bool isCustomizableField(const std::string& field) {
            field == "backgroundGradient" || field == "fontFamily" ||
            field == "fontSize" || field == "align" || field == "lineSpacing" ||
            field == "placement" || field == "fontWeight" || field == "fontStyle" ||
-           field == "fitMode" || field == "minFontSize" || field == "stroke" ||
-           field == "shadow";
+           field == "fontUnderline" || field == "fitMode" || field == "minFontSize" ||
+           field == "stroke" || field == "shadow";
 }
 
 // One slide of a show: a stack of items over a background.
@@ -624,6 +633,12 @@ struct Show {
     // the catalog is gone. Kept beside the link rather than inside it for
     // that reason — losing the catalog must not lose the attribution.
     std::optional<SongProvenance> song;
+    // The show's independent AUDIO layer (media library). A show plays one
+    // audio file alongside its slides: every slide compiles the same
+    // reference, so stepping through a song chart does not restart the
+    // track. Empty means no audio layer. The asset must be a file whose
+    // kind the domain's name rule calls audio.
+    Id audioAssetId;
 };
 
 // A named appearance. Colours are "#rgb" or "#rrggbb"; a zero font size
@@ -696,6 +711,7 @@ struct Theme {
     // pre-8 file never populates these with explicit overrides.
     std::optional<int> fontWeight;
     std::optional<std::string> fontStyle;
+    std::optional<bool> fontUnderline;
     std::optional<std::string> fitMode;
     std::optional<double> minFontSize;
     std::optional<TextStroke> stroke;
@@ -739,6 +755,7 @@ struct ResolvedAppearance {
     // before these fields existed, and the compile never has to guess.
     int fontWeight = kDefaultFontWeight;
     std::string fontStyle = "normal";
+    bool fontUnderline = false;
     std::string fitMode = "shrink";
     double minFontSize = kDefaultMinFontSize;
     TextStroke stroke;   // disabled by default; an enabled record draws
@@ -770,6 +787,11 @@ struct Asset {
     // worker opens. No bytes are ever owned or copied for it, which is why
     // the package stores the source instead of a file.
     std::string cameraSource;
+    // ND.9: some sources (a phone's FRONT camera) deliver a picture mirrored
+    // against the operator's view of the room. The flag is the asset's own
+    // answer, carried through the scene to the worker, which flips the live
+    // frame about the canvas' vertical axis; it means nothing for a file.
+    bool cameraMirror = false;
     // A rendered page of an imported presentation. It is a picture for every
     // scene purpose, but it is NOT a Media Bin row: the deck is a unit, and a
     // twenty-slide deck would bury the operator's own media. The package still
@@ -1143,11 +1165,21 @@ public:
     // new asset's Id, or "" on failure.
     Id addCameraAsset(const std::string& name, const std::string& source,
                       std::string* error = nullptr);
+    // ND.9: whether a camera's picture is drawn mirrored (a phone's front
+    // camera). Refused for a file asset or an unknown id.
+    bool setCameraMirror(const Id& assetId, bool mirror, std::string* error = nullptr);
     // Drops the asset and clears every slide's background reference.
     bool removeAsset(const Id& assetId, std::string* error = nullptr);
     // Points a slide's background at an asset; "" means no background.
     bool setSlideBackground(const Id& showId, const Id& slideId, const Id& assetId,
                             std::string* error = nullptr);
+    // Points a show's AUDIO layer at an asset; "" means no audio layer. The
+    // reference lives on the show so the same track runs across every slide
+    // — a song chart steps its words while the music keeps playing. A
+    // reference to an asset the name rule does not call audio is refused:
+    // the layer is played, never drawn.
+    bool setShowAudio(const Id& showId, const Id& assetId,
+                      std::string* error = nullptr);
     // How the slide's background picture fits the canvas (6.17c1). The
     // choice is legal with or without a picture — it is the slide's standing
     // answer, not a property of the file behind it — so the only refusal is

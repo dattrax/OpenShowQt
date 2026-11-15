@@ -273,7 +273,10 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                             // (length/size/streams) with a header probe.
                             kCapabilityMediaDescribe,
                             // MB.6: one first frame, scaled and PNG-encoded.
-                            kCapabilityMediaThumbnail};
+                            kCapabilityMediaThumbnail,
+                            // Minor 19: the show audio layer and the master
+                            // media-audio mute are performed by this worker.
+                            kCapabilityShowAudio};
     if (liveSources) {
         capabilities.push_back(kCapabilityLiveSources);
     }

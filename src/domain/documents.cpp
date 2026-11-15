@@ -1033,6 +1033,7 @@ bool Documents::setThemeTextStyle(const Id& themeId, ThemeTextStyle style, std::
     }
     theme->fontWeight = style.fontWeight;
     theme->fontStyle = style.fontStyle;
+    theme->fontUnderline = style.fontUnderline;
     theme->fitMode = style.fitMode;
     theme->minFontSize = style.minFontSize;
     theme->stroke = style.stroke;
@@ -1235,6 +1236,7 @@ bool Documents::validCustomizations(const SlideCustomization& c, std::string* er
     ThemeTextStyle styled;
     styled.fontWeight = c.fontWeight;
     styled.fontStyle = c.fontStyle;
+    styled.fontUnderline = c.fontUnderline;
     styled.fitMode = c.fitMode;
     styled.minFontSize = c.minFontSize;
     styled.stroke = c.stroke;
@@ -1692,6 +1694,16 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
         return fallback;
     };
     out.fontStyle = pickStyleString(c.fontStyle, &Theme::fontStyle, "normal");
+    if (c.fontUnderline.has_value()) {
+        out.fontUnderline = *c.fontUnderline;
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            if (layers[i]->fontUnderline.has_value()) {
+                out.fontUnderline = *layers[i]->fontUnderline;
+                break;
+            }
+        }
+    }
     out.fitMode = pickStyleString(c.fitMode, &Theme::fitMode, "shrink");
     if (c.stroke.has_value()) {
         out.stroke = *c.stroke;
@@ -1836,6 +1848,21 @@ Id Documents::addCameraAsset(const std::string& name, const std::string& source,
     return fAssets.back().id;
 }
 
+bool Documents::setCameraMirror(const Id& assetId, bool mirror, std::string* error) {
+    const auto found = std::find_if(fAssets.begin(), fAssets.end(),
+                                    [&](const Asset& a) { return a.id == assetId; });
+    if (found == fAssets.end()) {
+        fail(error, idError("asset", assetId));
+        return false;
+    }
+    if (found->cameraSource.empty()) {
+        fail(error, "asset '" + found->name + "' is not a camera");
+        return false;
+    }
+    found->cameraMirror = mirror;
+    return true;
+}
+
 bool Documents::removeAsset(const Id& assetId, std::string* error) {
     const auto found = std::find_if(fAssets.begin(), fAssets.end(),
                                     [&](const Asset& a) { return a.id == assetId; });
@@ -1844,12 +1871,16 @@ bool Documents::removeAsset(const Id& assetId, std::string* error) {
         return false;
     }
     fAssets.erase(found);
-    // Backgrounds naming the asset degrade to none, mirroring themes. A
-    // FOREGROUND item cannot degrade the same way: an image item without
-    // its picture is not a half-drawn item but a claim about the stack the
-    // worker could never honour, so the item leaves with the asset — and
-    // the undo step that restores the asset restores the item beside it.
+    // Backgrounds and audio layers naming the asset degrade to none,
+    // mirroring themes. A FOREGROUND item cannot degrade the same way: an
+    // image item without its picture is not a half-drawn item but a claim
+    // about the stack the worker could never honour, so the item leaves
+    // with the asset — and the undo step that restores the asset restores
+    // the item beside it.
     for (Show& show : fShows) {
+        if (show.audioAssetId == assetId) {
+            show.audioAssetId.clear();
+        }
         for (Slide& slide : show.slides) {
             if (slide.backgroundAssetId == assetId) {
                 slide.backgroundAssetId.clear();
@@ -1883,6 +1914,33 @@ bool Documents::setSlideBackground(const Id& showId, const Id& slideId, const Id
         return false;
     }
     show->slides[static_cast<size_t>(index)].backgroundAssetId = assetId;
+    return true;
+}
+
+bool Documents::setShowAudio(const Id& showId, const Id& assetId,
+                             std::string* error) {
+    Show* show = findShow_mut(showId);
+    if (show == nullptr) {
+        fail(error, idError("show", showId));
+        return false;
+    }
+    if (!assetId.empty()) {
+        const Asset* asset = findAsset(assetId);
+        if (asset == nullptr) {
+            fail(error, idError("asset", assetId));
+            return false;
+        }
+        // The layer is played, never drawn: a picture, a video or a camera
+        // in this slot is a file the worker would have to invent a meaning
+        // for, so the one kind the compiler and transport know is refused
+        // at the door and named.
+        if (assetKind(*asset) != AssetKind::Audio) {
+            fail(error, "asset '" + asset->name + "' is not audio (the show audio"
+                            " layer plays a file the kind rule calls audio)");
+            return false;
+        }
+    }
+    show->audioAssetId = assetId;
     return true;
 }
 

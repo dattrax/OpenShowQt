@@ -217,7 +217,15 @@ void testHello() {
         // belongs in the hello (TR.2's scene.transition-options.v1 made it 21),
         // and reading this fail means a name was added or dropped — which is
         // exactly the kind of change that should cost a looked-at line.
-        check(result.at("capabilities").as_array().size() == 23, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 24, "hello lists capabilities");
+        {  // Minor 19: the show audio layer is performed, not ignored.
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasShowAudio = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == "media.show-audio.v1";
+                });
+            check(hasShowAudio, "capabilities name media.show-audio.v1");
+        }
         {  // Task 6.17b's scene 2 (kinded items) is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasImageItems = std::any_of(

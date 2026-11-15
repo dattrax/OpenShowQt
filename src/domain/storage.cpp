@@ -75,7 +75,18 @@ namespace {
 // keys are era-guarded like every earlier meaning: a "transition" inside a
 // 8-file is somebody else's build meaning something by it.
 // Format 11 removes background fills/gradients from presentation themes.
-constexpr unsigned long long kServiceFormat = 11;
+// Format 12 adds the style block's underline answer ("fontUnderline"),
+// the one text decoration the contract had not spelled yet. Sparse like
+// every other style field: absent keeps the theme's silence and a slide's
+// inheritance, and the renderer's upright-roman default is what every
+// earlier file drew.
+constexpr unsigned long long kServiceFormat = 13;
+constexpr unsigned long long kServiceFormatThemedBackgrounds = 11;
+// And 13 introduces a show's "audioAssetId" — the independent audio layer a
+// cue plays alongside its slides (media library). Named like every
+// introducer so the guards that place an earlier key keep naming the
+// format where it got its meaning.
+constexpr unsigned long long kServiceFormatShowAudio = 13;
 constexpr unsigned long long kLastBackgroundThemeFormat = 10;
 // The older versions this build reads: single-box slides (1), a stack whose
 // every item was necessarily text (2), a kinded stack whose slides had no
@@ -109,6 +120,10 @@ constexpr unsigned long long kServiceFormatTransition = 9;
 // Named like every introducer so the day 11 arrives these guards still say
 // "10", the format where the keys got their meaning.
 constexpr unsigned long long kServiceFormatSongLink = 10;
+// And 12 introduces "fontUnderline" in the style block. Named for the same
+// reason: the guards for every earlier style member must keep reading the
+// format that introduced THEM.
+constexpr unsigned long long kServiceFormatTextDecoration = 12;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -549,6 +564,38 @@ bool wantCustomJsonString(const boost::json::object& obj, const char* key,
     return wantOptionalJsonString(obj, key, out, error);
 }
 
+// An optional BOOLEAN style member (format 12): underline is the style
+// block's first switch, so its reader states what shape it holds rather
+// than coercing "yes" or 1 into an answer the writer never produced.
+bool wantOptionalBool(const boost::json::object& obj, const char* key,
+                      std::optional<bool>* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;
+    }
+    if (!value->is_bool()) {
+        fail(error, std::string("service.json: '") + key + "' must be true or false");
+        return false;
+    }
+    *out = value->as_bool();
+    return true;
+}
+
+bool wantCustomBool(const boost::json::object& obj, const char* key,
+                    std::optional<bool>* out, std::string* error) {
+    const boost::json::value* value = field(obj, key);
+    if (value == nullptr) {
+        return true;
+    }
+    if (!value->is_bool()) {
+        fail(error, std::string("service.json: customization '") + key +
+                        "' must be true or false");
+        return false;
+    }
+    *out = value->as_bool();
+    return true;
+}
+
 // The effect records on the wire (task TS.1). Both travel WHOLE: a record
 // is `enabled` plus its complete look, never a fragment, because half an
 // effect has no meaning to resolve — the theme-editor review's atomicity
@@ -944,6 +991,11 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             songJson.emplace("copyright", show.song->copyright);
             entry.emplace("song", std::move(songJson));
         }
+        // Format 13: the show's audio layer, written only when it speaks so
+        // a cue with no track saves byte-for-byte as it did before the key.
+        if (!show.audioAssetId.empty()) {
+            entry.emplace("audioAssetId", show.audioAssetId);
+        }
         boost::json::array slides;
         for (const Slide& slide : show.slides) {
             boost::json::object slideJson;
@@ -1025,6 +1077,9 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             if (changed.fontStyle.has_value()) {
                 customizations.emplace("fontStyle", *changed.fontStyle);
             }
+            if (changed.fontUnderline.has_value()) {
+                customizations.emplace("fontUnderline", *changed.fontUnderline);
+            }
             if (changed.fitMode.has_value()) {
                 customizations.emplace("fitMode", *changed.fitMode);
             }
@@ -1105,6 +1160,9 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
         if (theme.fontStyle.has_value()) {
             entry.emplace("fontStyle", *theme.fontStyle);
         }
+        if (theme.fontUnderline.has_value()) {
+            entry.emplace("fontUnderline", *theme.fontUnderline);
+        }
         if (theme.fitMode.has_value()) {
             entry.emplace("fitMode", *theme.fitMode);
         }
@@ -1131,6 +1189,11 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             // name and no "file", so a package never pretends to hold it.
             entry.emplace("kind", "camera");
             entry.emplace("source", asset.cameraSource);
+            // ND.9: written only when set, so an unmirrored camera keeps the
+            // manifest it has always had.
+            if (asset.cameraMirror) {
+                entry.emplace("mirror", true);
+            }
         } else {
             // Package-relative, always: the loaded sourcePath never leaks
             // into the file, which is what makes re-saves byte-stable.
@@ -1188,11 +1251,13 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
     // backgroundGradient "" the same way (task 6.17c3). A
     // future version is refused naming both numbers, because guessing at a
     // format means quietly dropping whatever the newer build's operator wrote.
-    if (format != kServiceFormat && format != kLastBackgroundThemeFormat && format != kServiceFormatLegacyBoxes &&
+    if (format != kServiceFormat && format != kServiceFormatThemedBackgrounds &&
+        format != kLastBackgroundThemeFormat && format != kServiceFormatLegacyBoxes &&
         format != kServiceFormatLegacyTextOnly && format != kServiceFormatLegacyUnfit &&
         format != kServiceFormatLegacyFlat && format != kServiceFormatLegacyStyleNamed &&
         format != kServiceFormatLegacyContextless && format != kServiceFormatContexts &&
-        format != kServiceFormatTextStyle && format != kServiceFormatTransition) {
+        format != kServiceFormatTextStyle && format != kServiceFormatTransition &&
+        format != kServiceFormatTextDecoration) {
         fail(error, "service.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " + std::to_string(kServiceFormat) +
                         " and formats " + std::to_string(kServiceFormatLegacyBoxes) +
@@ -1423,6 +1488,21 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             }
             show.song = std::move(song);
         }
+        // Format 13's show audio layer. An earlier file carrying the key is
+        // another build meaning something by it and is refused by name, the
+        // placement rule every era-guarded key follows.
+        if (jsonShow.contains("audioAssetId")) {
+            if (format < kServiceFormatShowAudio) {
+                fail(error, "service.json: an \"audioAssetId\" in a format " +
+                                std::to_string(format) +
+                                " file, where that key does not exist");
+                return false;
+            }
+            if (!wantOptionalString(jsonShow, "audioAssetId", &show.audioAssetId,
+                                    error)) {
+                return false;
+            }
+        }
         const boost::json::array* slideArray = nullptr;
         if (!wantArray(jsonShow, "slides", &slideArray, error)) {
             return false;
@@ -1616,6 +1696,18 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                 // cannot interpret, and the whole package is refused naming
                 // the key (the placement rule again, at one level deeper).
                 if (format >= kServiceFormatTextStyle) {
+                    if (format >= kServiceFormatTextDecoration) {
+                        if (!wantCustomBool(changedObject, "fontUnderline", &c.fontUnderline,
+                                            error)) {
+                            return false;
+                        }
+                    } else if (changedObject.contains("fontUnderline")) {
+                        fail(error, "service.json: slide '" + slide.id + "' carries "
+                                        "customization 'fontUnderline' in a format " +
+                                        std::to_string(format) + " file, where that "
+                                        "field does not exist");
+                        return false;
+                    }
                     if (!wantCustomInteger(changedObject, "fontWeight", &c.fontWeight,
                                            error) ||
                         !wantCustomJsonString(changedObject, "fontStyle", &c.fontStyle,
@@ -1633,7 +1725,8 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                     }
                 } else {
                     for (const char* key : {"fontWeight", "fontStyle", "fitMode",
-                                            "minFontSize", "stroke", "shadow"}) {
+                                            "fontUnderline", "minFontSize", "stroke",
+                                            "shadow"}) {
                         if (changedObject.contains(key)) {
                             fail(error, "service.json: slide '" + slide.id + "' carries "
                                             "customization '" + key + "' in a format " +
@@ -1980,6 +2073,17 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         // A style key in a pre-8 file is somebody else's build meaning
         // something by it (the backgroundGradient rule, applied to a set).
         if (format >= kServiceFormatTextStyle) {
+            if (format >= kServiceFormatTextDecoration) {
+                if (!wantOptionalBool(jsonTheme, "fontUnderline", &theme.fontUnderline,
+                                      error)) {
+                    return false;
+                }
+            } else if (jsonTheme.contains("fontUnderline")) {
+                fail(error, "service.json: theme '" + theme.id + "' carries "
+                                "\"fontUnderline\" in a format " +
+                                std::to_string(format) + " file, where that key does not exist");
+                return false;
+            }
             if (!wantOptionalInteger(jsonTheme, "fontWeight", &theme.fontWeight, error) ||
                 !wantOptionalJsonString(jsonTheme, "fontStyle", &theme.fontStyle, error) ||
                 !wantOptionalJsonString(jsonTheme, "fitMode", &theme.fitMode, error) ||
@@ -1998,6 +2102,7 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             ThemeTextStyle style;
             style.fontWeight = theme.fontWeight;
             style.fontStyle = theme.fontStyle;
+            style.fontUnderline = theme.fontUnderline;
             style.fitMode = theme.fitMode;
             style.minFontSize = theme.minFontSize;
             style.stroke = theme.stroke;
@@ -2009,8 +2114,9 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                 return false;
             }
         } else {
-            for (const char* key : {"fontWeight", "fontStyle", "fitMode", "minFontSize",
-                                    "stroke", "shadow"}) {
+            for (const char* key : {"fontWeight", "fontStyle", "fitMode",
+                                    "fontUnderline", "minFontSize", "stroke",
+                                    "shadow"}) {
                 if (jsonTheme.contains(key)) {
                     fail(error, "service.json: theme '" + theme.id + "' carries \"" + key +
                                     "\" in a format " + std::to_string(format) +
@@ -2040,7 +2146,7 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         themeIds.insert(theme.id);
         if (format > kLastBackgroundThemeFormat &&
             (jsonTheme.contains("backgroundColor") || jsonTheme.contains("backgroundGradient"))) {
-            fail(error, "service.json: themes cannot store backgrounds in format 11");
+            fail(error, "service.json: themes cannot store backgrounds in format 11 and later");
             return false;
         }
         theme.backgroundColor.clear();
@@ -2087,6 +2193,15 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             }
             asset.cameraSource = source;
             asset.sourcePath = "ndi://" + source;
+            if (jsonAsset.contains("mirror")) {
+                const boost::json::value& mirror = jsonAsset.at("mirror");
+                if (!mirror.is_bool()) {
+                    fail(error, "service.json: camera asset '" + asset.name +
+                                    "' has a non-bool mirror flag");
+                    return false;
+                }
+                asset.cameraMirror = mirror.as_bool();
+            }
         } else if (kind.empty() || kind == "file") {
             std::string file;
             if (!wantString(jsonAsset, "file", &file, error) || file.empty()) {
@@ -2157,6 +2272,22 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             fail(error, "service.json: show '" + show.id + "' defaults to unknown theme '" +
                             show.defaultThemeId + "'");
             return false;
+        }
+        if (!show.audioAssetId.empty()) {
+            const auto audioAsset = std::find_if(
+                assets.begin(), assets.end(),
+                [&](const Asset& asset) { return asset.id == show.audioAssetId; });
+            if (audioAsset == assets.end()) {
+                fail(error, "service.json: show '" + show.id +
+                                "' names unknown audio asset '" + show.audioAssetId + "'");
+                return false;
+            }
+            if (assetKind(*audioAsset) != AssetKind::Audio) {
+                fail(error, "service.json: show '" + show.id +
+                                "' names asset '" + audioAsset->name +
+                                "' as its audio layer, but that file is not audio");
+                return false;
+            }
         }
         for (const Slide& slide : show.slides) {
             if (!slide.themeId.empty() && themeIds.count(slide.themeId) == 0) {

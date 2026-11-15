@@ -125,8 +125,10 @@ Rectangle {
             width: slides.width
             height: slides.rowHeight - 8
             selected: index === docs.currentSlide
-            caption: (index + 1) + "  " + modelData.preview
-            sectionSuffix: rail.showName
+            // The rail heading already names the show, so a slide's strip only
+            // carries its own number and its Verse/Chorus marking.
+            ordinal: String(index + 1)
+            caption: modelData.preview
             sectionLabel: modelData.sectionLabel || ""
             showSectionLabel: index === 0 || modelData.sectionLabel.trim().toLowerCase()
                 !== rail.rows[index - 1].sectionLabel.trim().toLowerCase()

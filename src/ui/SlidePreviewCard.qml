@@ -24,6 +24,10 @@ Item {
     property bool selected: false
     property bool live: false
     property string caption: ""
+    // A host-supplied slide number — the Show grid's own ordinal. It leads
+    // the strip on EVERY card, so a continuation keeps its number while the
+    // repeated section name stays tucked away.
+    property string ordinal: ""
     property string sectionLabel: ""
     property bool showSectionLabel: true
     property string sectionPrefix: ""
@@ -47,8 +51,19 @@ Item {
             "instrumental": "#5a503e", "interlude": "#5a503e", "tag": "#604351", "vamp": "#604351"})
         return colors[kind] || "#414141"
     }
-    readonly property string displayCaption: sectionLabel !== ""
-        ? (showSectionLabel ? sectionPrefix + sectionTitle + (sectionSuffix !== "" ? " \u2013 " + sectionSuffix : "") : "") : caption
+    readonly property string displayCaption: {
+        const number = ordinal
+        if (sectionLabel !== "") {
+            const title = showSectionLabel
+                ? sectionPrefix + sectionTitle
+                  + (sectionSuffix !== "" ? " \u2013 " + sectionSuffix : "")
+                : ""
+            if (number === "") return title
+            return title === "" ? number : number + "  " + title
+        }
+        if (number === "") return caption
+        return caption === "" ? number : number + "  " + caption
+    }
 
     property color idleColor: "#2d2d2d"
     property color hoverColor: "#393939"

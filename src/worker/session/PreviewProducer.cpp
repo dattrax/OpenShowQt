@@ -1142,9 +1142,14 @@ bool PreviewProducer::publishSelectionFrame(const DrawInput& input) {
     // other video stands as the colour fill it draws with no frame to show:
     // pretending otherwise would put a moving picture behind an edit that
     // the audience has no reason to be seeing.
+    // The camera comparison is asked ONLY when there is an audience scene to
+    // ask: a list can draw a camera slide while nothing is on air at all
+    // (`fRenderScene` is the null ActiveScene), and dereferencing that empty
+    // handle crashed the worker the moment a camera cue was set live.
     const ActiveScene* onAir = input.audienceScene;
     const bool sameCamera =
-        content->background.isCamera && (*onAir)->background.isCamera &&
+        onAir != nullptr && *onAir && content->background.isCamera &&
+        (*onAir)->background.isCamera &&
         content->background.cameraSource == (*onAir)->background.cameraSource;
     const bool sameVideoAsset =
         input.video != nullptr && onAir != nullptr && *onAir &&
@@ -1327,9 +1332,14 @@ bool PreviewProducer::publishThumbnailFrame(const DrawInput& input) {
     // sample the audience's frame only when the two scenes name the same
     // asset, because a scene with no transport has no business wearing
     // someone else's.
+    // The camera comparison is asked ONLY when there is an audience scene to
+    // ask: a list can draw a camera slide while nothing is on air at all
+    // (`fRenderScene` is the null ActiveScene), and dereferencing that empty
+    // handle crashed the worker the moment a camera cue was set live.
     const ActiveScene* onAir = input.audienceScene;
     const bool sameCamera =
-        content->background.isCamera && (*onAir)->background.isCamera &&
+        onAir != nullptr && *onAir && content->background.isCamera &&
+        (*onAir)->background.isCamera &&
         content->background.cameraSource == (*onAir)->background.cameraSource;
     const bool sameVideoAsset =
         input.video != nullptr && onAir != nullptr && *onAir &&

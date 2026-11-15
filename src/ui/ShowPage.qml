@@ -33,6 +33,17 @@ Rectangle {
     readonly property int thumbLevel: appSettings.showThumbLevel
     readonly property int thumbCellWidth:
         thumbSteps[Math.max(0, Math.min(thumbSteps.length - 1, thumbLevel))]
+    // The running-order item that owns the rows below it is named on a band
+    // in the gap above its first row. The band is the old one-line separator,
+    // grown to carry the item's name once instead of repeating that name on
+    // every slide's caption strip — which leaves the strips to the section
+    // marking and the slide number alone.
+    readonly property real groupHeaderHeight: 20
+    readonly property real cueRowGap: 6
+    // A cue card is the same chrome at every zoom step: the 16:9 picture plus
+    // its caption strip. The row's cell adds the header band above it and the
+    // gap below it, so the grid keeps one uniform row height.
+    readonly property real cueCardHeight: (slideGrid.cellWidth - 12) * 9 / 16 + 36
     // Scheduling telemetry: how many times the band timer below has fired.
     // Scroll, zoom and document churn all push through that one timer, so a
     // burst costs one run rather than one per tick — the UI.3c suite pins it.
@@ -43,6 +54,17 @@ Rectangle {
     // page must never ask, and the page catches up the moment it is shown.
     property int bandSent: 0
 
+    // ND.9: the bin's camera number (1..4, creation order) per asset, so a
+    // camera cue wears the same glyph the media card does.
+    readonly property var cameraNumbers: {
+        const numbers = ({})
+        let number = 0
+        for (const asset of docs.assets) {
+            if (asset.kind !== "camera") continue
+            numbers[asset.id] = ++number
+        }
+        return numbers
+    }
     readonly property var cueRows: {
         showPage.cueRowsTick
         const groups = []
@@ -73,6 +95,7 @@ Rectangle {
                            showId: group.showId, showName: group.showName,
                            section: group.section, slideId: slide.id,
                            slideIndex: slide.index, preview: slide.preview,
+                           cameraNumber: showPage.cameraNumbers[slide.backgroundAssetId] || 0,
                            sectionLabel: sectionLabel,
                            sectionStart: previousSection !== sectionLabel.trim().toLowerCase(),
                            groupStart: slide.index === 0})
@@ -165,6 +188,16 @@ Rectangle {
     // the presenter's place do not move.
     function applyMediaToCue(showId, slideId, assetId, fit) {
         if (showId === "" || slideId === "" || assetId === "") return false
+        // Audio is not a cue's picture: a drop on a slide adds it to the
+        // SHOW's audio layer, so every slide of that cue shares the track.
+        const rows = docs.assets
+        for (let i = 0; i < rows.length; ++i) {
+            if (rows[i].id === assetId) {
+                if (rows[i].kind === "audio")
+                    return docs.setShowAudioFor(showId, assetId)
+                break
+            }
+        }
         return docs.setSlideBackgroundFor(showId, slideId, assetId, fit || "cover")
     }
 
@@ -383,6 +416,8 @@ Rectangle {
         grouped: true
         stretchCells: true
         cardWidth: showPage.thumbCellWidth
+        // One uniform row: the header band, the card and the gap under it.
+        cellHeight: showPage.cueCardHeight + showPage.groupHeaderHeight + showPage.cueRowGap
         source: showPage.cueRows
         onVisibleBandChanged: thumbnailAsk.restart()
         // A cue tile is a click target, not a focusable button: an
@@ -401,6 +436,7 @@ Rectangle {
             // quiet and the whole cell stays invisible and inert.
             readonly property var emptyRow: ({cueKey: "", showName: "", section: "",
                                               slideId: "", slideIndex: -1, preview: "",
+                                              cameraNumber: 0,
                                               sectionLabel: "", sectionStart: false,
                                               groupStart: false})
             readonly property var row: modelData.filler === true
@@ -412,23 +448,50 @@ Rectangle {
             // Group padding is INERT: no name, no picture, no clicks, no
             // context menu, and nothing for a test to find.
             visible: modelData.filler !== true
-            // The existing 12px row gap leaves room for a full-width rule
-            // between service occurrences without adding cells or cues.
+            // The boundary between service items: the one-line rule has grown
+            // into a full-width band in the gap above the group's first row,
+            // naming the item on a single line. Every slide strip below it is
+            // then free of the repeated name.
             Rectangle {
-                objectName: "serviceGroupSeparator"
-                visible: cell.cue > 0 && cell.row.groupStart && showPage.sourceShowId === ""
-                y: -7
-                width: slideGrid.width - 12
-                height: 2
-                color: "#737373"
+                id: groupHeader
+                objectName: "serviceGroupHeader"
+                readonly property string groupName:
+                    (cell.row.section !== "" ? cell.row.section + " \u00b7 " : "")
+                    + cell.row.showName
+                visible: cell.cue >= 0 && cell.row.groupStart
+                         && showPage.sourceShowId === ""
+                x: -cell.x
+                y: 0
+                width: slideGrid.width
+                height: showPage.groupHeaderHeight
+                color: "#1e1e1e"
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: "#737373"
+                }
+                Text {
+                    objectName: "serviceGroupHeaderText"
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    verticalAlignment: Text.AlignVCenter
+                    text: groupHeader.groupName
+                    color: "#e6e6e6"
+                    font.pixelSize: 11
+                    font.bold: true
+                    elide: Text.ElideRight
+                }
             }
             SlidePreviewCard {
                 id: tile
                 objectName: "operatorCueTile"
                 readonly property var modelData: cell.row
                 readonly property int index: cell.cue
+                x: 0
+                y: showPage.groupHeaderHeight
                 width: slideGrid.cellWidth - 12
-                height: slideGrid.cellHeight - 12
+                height: showPage.cueCardHeight
                 readonly property string rowCueKey: modelData.cueKey
                 readonly property bool rowSelected: index === showPage.cueIndex
                 readonly property bool rowLive: modelData.cueKey !== ""
@@ -439,10 +502,8 @@ Rectangle {
                 live: rowLive
                 sectionLabel: modelData.sectionLabel
                 showSectionLabel: modelData.sectionStart
-                sectionSuffix: modelData.showName
-                caption: (modelData.groupStart && showPage.sourceShowId === ""
-                          ? modelData.showName + " \u00b7 " : "")
-                         + (modelData.slideIndex + 1) + "  " + modelData.preview
+                ordinal: String(modelData.slideIndex + 1)
+                caption: modelData.preview
                 Accessible.role: Accessible.Button
                 Accessible.name: "Cue " + (index + 1) + ": " + modelData.showName
                                  + (modelData.section !== "" ? ", " + modelData.section : "")
@@ -459,6 +520,19 @@ Rectangle {
                 surface.placeholderVisible: !worker.thumbnailSupported
                 surface.placeholderColor: "#eeeeee"
                 surface.placeholderPixelSize: 13
+
+                // ND.9: an off-air camera has no frame to show (its receiver
+                // opens only for the scene the audience is on), so the cue
+                // wears the Media Bin's own camera glyph rather than a black
+                // tile. The live cue shows its feed instead.
+                CameraArtwork {
+                    objectName: "cueCameraArtwork"
+                    visible: tile.modelData.cameraNumber > 0 && !tile.rowLive
+                    anchors.centerIn: parent
+                    width: Math.min(parent.width, parent.height) * 0.55
+                    height: width
+                    number: tile.modelData.cameraNumber
+                }
 
                 // The acknowledgement chip: only ever shown from the worker's
                 // own state, never from the click that asked.
@@ -495,8 +569,21 @@ Rectangle {
                 anchors.fill: parent
                 enabled: cell.visible
                 keys: ["text/plain"]
+                readonly property string dropHint: "Set this cue's background"
+                // The bin's proxy carries the payload on the SOURCE (the
+                // DragFeedback's own `payload`), exactly like every other
+                // internal drop target in this workspace. Qt does not expose
+                // it through DragEvent.text for an internal Quick drag — that
+                // reads empty beside a populated source — so the source is
+                // read first and the mime text only answers a foreign drag.
+                function payloadOf(event) {
+                    const carried = event.source ? String(event.source.payload || "") : ""
+                    return carried !== "" ? carried
+                                          : String(event.getDataAsString("text/plain") || "")
+                }
                 onEntered: function (drag) {
-                    if (drag.text && drag.text.startsWith("media:")) {
+                    const payload = mediaDrop.payloadOf(drag)
+                    if (payload.startsWith("media:")) {
                         drag.accept(Qt.CopyAction)
                         drag.accepted = true
                     } else {
@@ -504,9 +591,10 @@ Rectangle {
                     }
                 }
                 onDropped: function (drop) {
-                    if (!drop.text || !drop.text.startsWith("media:")) return
+                    const payload = mediaDrop.payloadOf(drop)
+                    if (!payload.startsWith("media:")) return
                     showPage.applyMediaToCue(cell.row.showId, cell.row.slideId,
-                                            drop.text.substring("media:".length),
+                                            payload.substring("media:".length),
                                             "cover")
                 }
             }

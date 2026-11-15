@@ -76,6 +76,8 @@ Item {
         // cancelled, not committed under the new view's handles.
         themeEditor.placing = false
         themeEditor.dragMode = ""
+        themeEditor.snappedX = false
+        themeEditor.snappedY = false
         themeEditor.selectedView = view
         themeEditor.syncInspector()
         themeEditor.askForSamplePicture()
@@ -253,6 +255,11 @@ Item {
     // The gesture's live rectangle, in the 1920x1080 authored canvas.
     property bool placing: false
     property string dragMode: ""
+    // Centre snapping, shared with the Edit canvas: while a move gesture
+    // brings the box centre within a few SCREEN pixels of the 1920x1080
+    // centre, that axis lands exactly on it and a guide line says so.
+    property bool snappedX: false
+    property bool snappedY: false
     property real dragOriginX: 0
     property real dragOriginY: 0
     property real penX: 0
@@ -265,6 +272,18 @@ Item {
     property real anchorH: 0
     function clamp(value, lo, hi) {
         return value < lo ? lo : (value > hi ? hi : value)
+    }
+    // The shared snap rule (see EditCanvas.snappedCentre): keep the size,
+    // pull either axis onto the canvas centre when it is within `tolerance`
+    // authored units. Exposed so the gesture and its fixture agree.
+    function snappedCentre(x, y, w, h, tolerance) {
+        let sx = x
+        let sy = y
+        if (Math.abs((x + w / 2) - 960) <= tolerance)
+            sx = 960 - w / 2
+        if (Math.abs((y + h / 2) - 540) <= tolerance)
+            sy = 540 - h / 2
+        return Qt.rect(sx, sy, w, h)
     }
     function boxFor(row) {
         if (row !== null && row.placementSet)
@@ -311,6 +330,8 @@ Item {
     function beginGesture(mode) {
         const box = themeEditor.shownBox
         themeEditor.dragMode = mode
+        themeEditor.snappedX = false
+        themeEditor.snappedY = false
         themeEditor.anchorX = box.x
         themeEditor.anchorY = box.y
         themeEditor.anchorW = box.width
@@ -323,12 +344,23 @@ Item {
     }
     function moveGesture(dx, dy) {
         if (themeEditor.dragMode === "move") {
-            themeEditor.penX = themeEditor.clamp(themeEditor.anchorX + dx, 0,
-                                                 1920 - themeEditor.anchorW)
-            themeEditor.penY = themeEditor.clamp(themeEditor.anchorY + dy, 0,
-                                                 1080 - themeEditor.anchorH)
+            const nx = themeEditor.clamp(themeEditor.anchorX + dx, 0,
+                                         1920 - themeEditor.anchorW)
+            const ny = themeEditor.clamp(themeEditor.anchorY + dy, 0,
+                                         1080 - themeEditor.anchorH)
+            const tolerance = 6 / Math.max(placementLayer.zoom, 0.0001)
+            const snapped = themeEditor.snappedCentre(nx, ny, themeEditor.anchorW,
+                                                      themeEditor.anchorH, tolerance)
+            themeEditor.penX = snapped.x
+            themeEditor.penY = snapped.y
+            themeEditor.snappedX = Math.abs((themeEditor.penX + themeEditor.anchorW / 2)
+                                            - 960) < 0.5
+            themeEditor.snappedY = Math.abs((themeEditor.penY + themeEditor.anchorH / 2)
+                                            - 540) < 0.5
             return
         }
+        themeEditor.snappedX = false
+        themeEditor.snappedY = false
         const min = 20
         const right = themeEditor.anchorX + themeEditor.anchorW
         const bottom = themeEditor.anchorY + themeEditor.anchorH
@@ -353,11 +385,15 @@ Item {
     function endGesture() {
         if (themeEditor.dragMode === "") {
             themeEditor.placing = false
+            themeEditor.snappedX = false
+            themeEditor.snappedY = false
             return
         }
         const id = themeEditor.selectedId
         themeEditor.placing = false
         themeEditor.dragMode = ""
+        themeEditor.snappedX = false
+        themeEditor.snappedY = false
         if (id === "")
             return
         if (themeEditor.selectedView !== "") {
@@ -650,6 +686,8 @@ Item {
             }
             themeEditor.placing = false
             themeEditor.dragMode = ""
+            themeEditor.snappedX = false
+            themeEditor.snappedY = false
         }
     }
     Component.onCompleted: {
@@ -669,14 +707,12 @@ Item {
         const st = songsInspector.styleControls
         st.sectionTitle = "Typography & effects"
         st.fontObjectName = "themeEditorFontField"
-        st.fontBrowseObjectName = "themeEditorBrowseFonts"
         st.fontStatusObjectName = "themeEditorFontStatus"
         st.fontPopupObjectName = "themeEditorFontPopup"
         st.fontSearchObjectName = "themeEditorFontSearch"
         st.fontListStatusObjectName = "themeEditorFontListStatus"
         st.fontListObjectName = "themeEditorFontList"
         st.fontRowObjectName = "themeEditorFontRow"
-        st.fontCancelObjectName = "themeEditorFontCancel"
         st.sizeObjectName = "themeEditorSizeField"
         st.alignObjectName = "themeEditorAlign"
         st.spacingObjectName = "themeEditorSpacingField"
@@ -684,6 +720,8 @@ Item {
         st.weightInheritObjectName = "themeEditorWeightInherit"
         st.slantObjectName = "themeEditorSlant"
         st.slantInheritObjectName = "themeEditorSlantInherit"
+        st.underlineObjectName = "themeEditorUnderline"
+        st.underlineInheritObjectName = "themeEditorUnderlineInherit"
         st.fitObjectName = "themeEditorFit"
         st.fitInheritObjectName = "themeEditorFitInherit"
         st.minSizeObjectName = "themeEditorMinSize"
@@ -693,6 +731,8 @@ Item {
         g.yObjectName = "themeEditorPlaceY"
         g.wObjectName = "themeEditorPlaceW"
         g.hObjectName = "themeEditorPlaceH"
+        g.centerHObjectName = "themeEditorPlaceCenterH"
+        g.centerVObjectName = "themeEditorPlaceCenterV"
         g.clearObjectName = "themeEditorNoPlacement"
         const fx = songsInspector.effectsControls
         fx.strokeCheckObjectName = "themeEditorStrokeEnable"
@@ -729,14 +769,12 @@ Item {
         cst.alignLabel = st.alignLabel
         cst.spacingLabel = st.spacingLabel
         cst.fontObjectName = "themeEditorContextFont"
-        cst.fontBrowseObjectName = "themeEditorContextFontBrowse"
         cst.fontStatusObjectName = "themeEditorContextFontStatus"
         cst.fontPopupObjectName = "themeEditorContextFontPopup"
         cst.fontSearchObjectName = "themeEditorContextFontSearch"
         cst.fontListStatusObjectName = "themeEditorContextFontListStatus"
         cst.fontListObjectName = "themeEditorContextFontList"
         cst.fontRowObjectName = "themeEditorContextFontRow"
-        cst.fontCancelObjectName = "themeEditorContextFontCancel"
         cst.sizeObjectName = "themeEditorContextSize"
         cst.alignObjectName = "themeEditorContextAlign"
         cst.spacingObjectName = "themeEditorContextSpacing"
@@ -746,6 +784,8 @@ Item {
         cg.yObjectName = "themeEditorContextY"
         cg.wObjectName = "themeEditorContextW"
         cg.hObjectName = "themeEditorContextH"
+        cg.centerHObjectName = "themeEditorContextCenterH"
+        cg.centerVObjectName = "themeEditorContextCenterV"
         cg.clearLabel = "No box"
         cg.extraActionLabel = "Theme's lyric box"
         cg.extraObjectName = "themeEditorContextBoxTheme"
@@ -1099,6 +1139,29 @@ Item {
                             y: modelData.y * parent.height - height / 2
                         }
                     }
+                }
+
+                // The centre guides, as on the Edit canvas: a line per axis
+                // the gesture has snapped explains why the box stopped.
+                Rectangle {
+                    objectName: "themeEditorCentreGuideX"
+                    visible: themeEditor.dragMode === "move" && themeEditor.snappedX
+                    x: placementLayer.width / 2
+                    y: 0
+                    width: 1
+                    height: placementLayer.height
+                    color: "#ffd666"
+                    z: 5
+                }
+                Rectangle {
+                    objectName: "themeEditorCentreGuideY"
+                    visible: themeEditor.dragMode === "move" && themeEditor.snappedY
+                    x: 0
+                    y: placementLayer.height / 2
+                    width: placementLayer.width
+                    height: 1
+                    color: "#ffd666"
+                    z: 5
                 }
 
                 MouseArea {

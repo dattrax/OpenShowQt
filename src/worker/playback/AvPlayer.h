@@ -202,6 +202,11 @@ public:
     void setMute(int identity, bool muted);
     float volume(int identity) const;
     bool muted(int identity) const;
+    // Silence the WHOLE mix (every registered source) without disturbing
+    // each source's own gain/mute answer. The operator's "mute media audio"
+    // switch rides this, so video-embedded and slide-audio go quiet together.
+    void setMasterMute(bool muted);
+    bool masterMuted() const;
     // The live loop state (mirrored to feeders and pipelines by setLoop).
     bool loopEnabled() const { return fLoop.load(); }
 

@@ -107,9 +107,10 @@ set(OPENSHOW_WORKSPACE_QML_NAMES
   ShortcutMap.qml OutputPanel.qml PlaylistPanel.qml ShowPage.qml
   LibraryBrowser.qml CurrentServicePanel.qml SongImportPage.qml ListSelection.qml DragFeedback.qml
   EditorSlideRail.qml
-  EditPage.qml SettingsPage.qml PanelField.qml PanelButton.qml
+  EditPage.qml SettingsPage.qml PanelField.qml PanelButton.qml SegmentedControl.qml
   ThemeEditorPage.qml BibleImportPage.qml
   SlidePreviewSurface.qml SlidePreviewCard.qml SlidePreviewCollection.qml
+  CameraArtwork.qml
   WorkerFontPicker.qml TextStyleControls.qml TextEffectsControls.qml
   BackgroundControls.qml BoxGeometryControls.qml TransitionControls.qml
   AppearanceInspector.qml
@@ -134,6 +135,7 @@ target_link_libraries(openshow-ui PRIVATE
   Qt6::Gui
   Qt6::Quick
   Qt6::QuickControls2
+  Qt6::QuickDialogs2
   Qt6::Network
   openshow::ui-core
   openshow::domain

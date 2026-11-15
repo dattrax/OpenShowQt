@@ -415,6 +415,7 @@ void WorkerController::onRpcDisconnected() {
     fMediaPath.clear();
     fMediaError.clear();  // the media state describes a worker we lost
     fMediaAudio = QStringLiteral("none");
+    fMediaMuted = false;
     // Same rule for the standalone track and for a refusal the lost worker
     // owed: with no worker there is no track and no verdict (task UI.4b), and
     // a row still marked ON AIR would be this process talking about itself.
@@ -450,6 +451,7 @@ void WorkerController::onProcessFinished(int exitCode, QProcess::ExitStatus exit
     fMediaPath.clear();
     fMediaError.clear();
     fMediaAudio = QStringLiteral("none");
+    fMediaMuted = false;
     // The standalone track died with the process, and so did any verdict it
     // owed (task UI.4b): a row still marked ON AIR after this would be this
     // process talking about itself.
@@ -1152,6 +1154,12 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
             if (loop != media.end() && loop->value().is_bool()) {
                 fMediaLoop = loop->value().as_bool();
             }
+            // Optional: a worker predating the master mute simply never says
+            // it, and the control stays off rather than guessing.
+            const auto muted = media.find("muted");
+            if (muted != media.end() && muted->value().is_bool()) {
+                fMediaMuted = muted->value().as_bool();
+            }
             const auto sources = media.find("sources");
             if (sources != media.end() && sources->value().is_array()) {
                 QVariantList listed;
@@ -1351,7 +1359,8 @@ bool WorkerController::sceneIsSendable(const boost::json::value& candidate,
                 continue;
             }
             const bool styled = item.fontWeight != openshow::domain::kDefaultFontWeight ||
-                                item.fontStyle != "normal" || item.fitMode != "shrink" ||
+                                item.fontStyle != "normal" || item.underline ||
+                                item.fitMode != "shrink" ||
                                 item.minFontSize != openshow::domain::kDefaultMinFontSize ||
                                 item.stroke.enabled || item.shadow.enabled;
             if (styled) {
@@ -1646,6 +1655,15 @@ void WorkerController::setMediaMute(const QString& source, bool muted) {
     }
     sendRequest(proto::kMethodMediaMute,
                 boost::json::object{{"source", source.toStdString()}, {"mute", muted}});
+}
+
+void WorkerController::setMediaMasterMute(bool muted) {
+    if (!fConnected || !fHandshakeDone) {
+        return;
+    }
+    sendRequest(proto::kMethodMediaMute,
+                boost::json::object{{"source", proto::kMediaSourceAll},
+                                    {"mute", muted}});
 }
 
 void WorkerController::selectStandaloneTrack(const QString& path) {

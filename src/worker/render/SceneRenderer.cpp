@@ -76,8 +76,10 @@ public:
             // background identity is unchanged — background_media_tests holds
             // that half of the rule.)
             const bool videoInvolved =
-                frame.scene->background.isVideo ||
-                (frame.fadeFrom != nullptr && frame.fadeFrom->background.isVideo);
+                frame.scene->background.isVideo || frame.scene->background.isCamera ||
+                (frame.fadeFrom != nullptr &&
+                 (frame.fadeFrom->background.isVideo ||
+                  frame.fadeFrom->background.isCamera));
             if (frame.fadeFrom != nullptr && !videoInvolved) {
                 drawSceneBackground(ctx.canvas, *frame.fadeFrom, fImages, nullptr);
                 SkPaint fade;

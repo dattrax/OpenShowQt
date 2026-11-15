@@ -13,13 +13,18 @@ namespace openshow::scene {
 
 namespace {
 
-// Scene 4 (task TS.1) adds the text item's resolved style block. Legacy
-// scene 3 keeps a READER: an absent style means the concrete defaults the
-// contract names, which are the pixels every scene-3 worker drew (see the
-// wire doc in scene.h for why this direction is safe and the other one is
-// gated by capability instead).
-constexpr int kSceneFormat = 5;
-constexpr int kSceneFormatLegacy = 3;
+// Scene 4 (task TS.1) adds the text item's resolved style block; scene 5
+// adds transparent backgrounds; scene 6 (review 2026-11-10) adds the
+// style block's underline decoration; scene 7 adds the show's optional audio
+// layer. Older formats keep READERS: an
+// absent style means the concrete defaults the contract names, which are
+// the pixels those workers drew (see the wire doc in scene.h for why this
+// direction is safe and the other one is gated by capability instead).
+constexpr int kSceneFormat = 7;
+constexpr int kSceneFormatLegacy = 3;       // no style block at all
+constexpr int kSceneFormatStyle = 4;        // style block, no underline
+constexpr int kSceneFormatTransparent = 5;  // transparent background, no underline
+constexpr int kSceneFormatUnderline = 6;    // underline, no show audio layer
 
 void fail(std::string* error, const std::string& message) {
     if (error != nullptr) {
@@ -467,11 +472,22 @@ bool operator==(const Background& a, const Background& b) {
     // so, so the comparison gates on the flag exactly as the draw does.
     return a.transparent == b.transparent && a.color == b.color && a.hasImage == b.hasImage && a.isVideo == b.isVideo &&
            a.isCamera == b.isCamera && a.cameraSource == b.cameraSource &&
+           a.cameraMirror == b.cameraMirror &&
            a.fit == b.fit && a.assetId == b.assetId && a.assetPath == b.assetPath &&
            a.hasGradient == b.hasGradient &&
            (a.hasGradient ? a.gradient : kBlack) == (b.hasGradient ? b.gradient : kBlack);
 }
 bool operator!=(const Background& a, const Background& b) { return !(a == b); }
+
+bool operator==(const AudioLayer& a, const AudioLayer& b) {
+    // The path is part of the identity: a re-imported asset can keep its id
+    // and point somewhere else, and the transport must not keep playing the
+    // old file. Presence gates the rest, so two absent layers are one
+    // answer whatever stale fields an editor left behind.
+    return a.present == b.present &&
+           (!a.present || (a.assetId == b.assetId && a.assetPath == b.assetPath));
+}
+bool operator!=(const AudioLayer& a, const AudioLayer& b) { return !(a == b); }
 
 bool operator==(const SceneItem& a, const SceneItem& b) {
     // The style block is part of what a text item IS on screen (task
@@ -486,7 +502,8 @@ bool operator==(const SceneItem& a, const SceneItem& b) {
            a.y == b.y && a.width == b.width && a.height == b.height &&
            a.align == b.align && a.lineSpacing == b.lineSpacing &&
            a.fontWeight == b.fontWeight && a.fontStyle == b.fontStyle &&
-           a.fitMode == b.fitMode && a.minFontSize == b.minFontSize &&
+           a.underline == b.underline && a.fitMode == b.fitMode &&
+           a.minFontSize == b.minFontSize &&
            a.stroke == b.stroke && a.shadow == b.shadow &&
            a.assetId == b.assetId && a.assetPath == b.assetPath;
 }
@@ -494,7 +511,8 @@ bool operator!=(const SceneItem& a, const SceneItem& b) { return !(a == b); }
 
 bool operator==(const Scene& a, const Scene& b) {
     return a.showId == b.showId && a.slideId == b.slideId &&
-           a.background == b.background && a.items == b.items;
+           a.background == b.background && a.audio == b.audio &&
+           a.items == b.items;
 }
 bool operator!=(const Scene& a, const Scene& b) { return !(a == b); }
 
@@ -715,6 +733,7 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         // renderer has always drawn.
         item.fontWeight = look.fontWeight;
         item.fontStyle = look.fontStyle;
+        item.underline = look.fontUnderline;
         item.fitMode = look.fitMode;
         item.minFontSize = look.minFontSize;
         item.stroke = look.stroke;
@@ -757,6 +776,7 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
             // built once, and a live frame is never the same picture twice.
             scene.background.isCamera = true;
             scene.background.cameraSource = asset->cameraSource;
+            scene.background.cameraMirror = asset->cameraMirror;
             scene.background.assetPath = asset->cameraSource;
             if (scene.background.fit == domain::BackgroundFit::Blur) {
                 fail(error, "slide '" + slideId + "' requests the blur background fit on a"
@@ -792,6 +812,29 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         scene.background.color = backgroundColor;
     }
 
+    // The show's audio layer. It belongs to the SHOW, not the slide, so
+    // every slide of a song chart compiles the same identity and the
+    // worker's transport can keep the track rolling while the words step.
+    // A reference the model could not have written (a picture in the audio
+    // slot) is refused here rather than handed to a transport that would
+    // have to invent a meaning for it.
+    if (!show->audioAssetId.empty()) {
+        const domain::Asset* asset = documents.findAsset(show->audioAssetId);
+        if (asset == nullptr) {
+            fail(error, "show '" + showId + "' names unknown audio asset '" +
+                            show->audioAssetId + "'");
+            return false;
+        }
+        if (domain::assetKind(*asset) != domain::AssetKind::Audio) {
+            fail(error, "show '" + showId + "' audio layer names '" + asset->name +
+                            "', which is not audio");
+            return false;
+        }
+        scene.audio.present = true;
+        scene.audio.assetId = asset->id;
+        scene.audio.assetPath = asset->sourcePath;
+    }
+
     *out = std::move(scene);
     return true;
 }
@@ -812,6 +855,9 @@ boost::json::value toJson(const Scene& scene) {
     if (scene.background.isCamera) {
         background.emplace("camera", true);
         background.emplace("cameraSource", scene.background.cameraSource);
+        if (scene.background.cameraMirror) {
+            background.emplace("cameraMirror", true);
+        }
     }
     // Always written, always the domain's spelling (6.17c1): the compiler
     // and the reader share the one name function, so the two ends of the
@@ -826,6 +872,16 @@ boost::json::value toJson(const Scene& scene) {
         background.emplace("gradient", static_cast<std::uint32_t>(scene.background.gradient));
     }
     root.emplace("background", std::move(background));
+
+    // Scene 7: the independent audio layer. Written ONLY when present, so a
+    // cue with no track produces the payload an earlier build wrote (apart
+    // from the format number) — absence is this layer's own history.
+    if (scene.audio.present) {
+        boost::json::object audio;
+        audio.emplace("assetId", scene.audio.assetId);
+        audio.emplace("assetPath", scene.audio.assetPath);
+        root.emplace("audio", std::move(audio));
+    }
 
     boost::json::array items;
     for (const SceneItem& item : scene.items) {
@@ -864,6 +920,7 @@ boost::json::value toJson(const Scene& scene) {
         // travels by absence — even the defaults say "default" by name.
         jsonItem.emplace("fontWeight", item.fontWeight);
         jsonItem.emplace("fontStyle", item.fontStyle);
+        jsonItem.emplace("underline", item.underline);
         jsonItem.emplace("fitMode", item.fitMode);
         jsonItem.emplace("minFontSize", item.minFontSize);
         jsonItem.emplace("stroke", strokeWire(item.stroke));
@@ -886,15 +943,21 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     const boost::json::object& root = value.as_object();
 
     const boost::json::value* format = field(root, "scene");
-    // Scene 4 is this build's format; legacy scene 3 keeps a reader — an
-    // absent style is the contract's concrete defaults, which are the
-    // pixels scene-3 workers drew (scene.h's wire doc owns the argument).
+    // Scene 7 is this build's format; scenes 3/4/5/6 keep readers — an
+    // absent style (or underline) is the contract's concrete default, which
+    // is the pixels those workers drew (scene.h's wire doc owns the
+    // argument), and an absent "audio" is a cue with no audio layer.
     const bool legacyScene = format != nullptr && format->is_int64() &&
                              format->as_int64() == kSceneFormatLegacy;
-    if ((format == nullptr || !format->is_int64() ||
-         (format->as_int64() != kSceneFormat && format->as_int64() != 4 && !legacyScene))) {
+    const bool hasUnderline = format != nullptr && format->is_int64() &&
+                              format->as_int64() >= kSceneFormatUnderline;
+    if (format == nullptr || !format->is_int64() ||
+        (format->as_int64() != kSceneFormat &&
+         format->as_int64() != kSceneFormatUnderline &&
+         format->as_int64() != kSceneFormatTransparent &&
+         format->as_int64() != kSceneFormatStyle && !legacyScene)) {
         fail(error,
-             "scene: unsupported scene format (this build reads scene 5 and legacy scenes 3/4)");
+             "scene: unsupported scene format (this build reads scene 7 and legacy scenes 3/4/5/6)");
         return false;
     }
 
@@ -905,7 +968,7 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         return false;
     }
     if (!noUnknownKeys(root, {"scene", "showId", "slideId", "backgroundColor", "background",
-                              "items"},
+                              "audio", "items"},
                        "the scene", error)) {
         return false;
     }
@@ -917,12 +980,12 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     }
     const boost::json::object& jsonBackground = background->as_object();
     if (!noUnknownKeys(jsonBackground,
-                       {"image", "video", "camera", "cameraSource", "fit", "assetId",
-                        "assetPath", "gradient", "transparent"},
+                       {"image", "video", "camera", "cameraSource", "cameraMirror", "fit",
+                        "assetId", "assetPath", "gradient", "transparent"},
                        "'background'", error)) {
         return false;
     }
-    if (format->as_int64() == kSceneFormat) {
+    if (format->as_int64() >= kSceneFormatTransparent) {
         if (!wantBool(jsonBackground, "transparent", &scene.background.transparent, error)) return false;
         const auto* image = jsonBackground.if_contains("image");
         if (scene.background.transparent &&
@@ -978,6 +1041,14 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         scene.background.assetPath = scene.background.cameraSource;
         scene.background.hasImage = true;
         scene.background.isVideo = false;
+        if (const boost::json::value* mirror = field(jsonBackground, "cameraMirror");
+            mirror != nullptr) {
+            if (!mirror->is_bool()) {
+                fail(error, "scene: background 'cameraMirror' must be a bool");
+                return false;
+            }
+            scene.background.cameraMirror = mirror->as_bool();
+        }
     }
     // A media reference is checked WHOLE, before the hasImage clear below, and
     // BEFORE the length rule that wantString would apply to it: a 200 KB data:
@@ -1056,6 +1127,39 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         scene.background.cameraSource.clear();
     }
 
+    // Scene 7's independent audio layer. Absence is "no track"; presence is
+    // a whole record, and an earlier scene carrying the key is refused by
+    // name rather than read as a meaning its author's build did not have.
+    if (const boost::json::value* audio = field(root, "audio"); audio != nullptr) {
+        if (format->as_int64() < kSceneFormat) {
+            fail(error, "scene: an \"audio\" layer in a scene " +
+                            std::to_string(format->as_int64()) +
+                            " payload, where that key does not exist");
+            return false;
+        }
+        if (!audio->is_object()) {
+            fail(error, "scene: 'audio' must be an object");
+            return false;
+        }
+        const boost::json::object& jsonAudio = audio->as_object();
+        if (!noUnknownKeys(jsonAudio, {"assetId", "assetPath"}, "the audio layer", error) ||
+            !wantString(jsonAudio, "assetId", &scene.audio.assetId, kMaxIdChars, error) ||
+            !wantString(jsonAudio, "assetPath", &scene.audio.assetPath, kMaxPathChars,
+                        error)) {
+            return false;
+        }
+        if (scene.audio.assetId.empty() || scene.audio.assetPath.empty()) {
+            fail(error, "scene: an audio layer needs an 'assetId' and an 'assetPath'");
+            return false;
+        }
+        std::string why;
+        if (!assetPathIsLocal(scene.audio.assetPath, &why)) {
+            fail(error, "scene: " + why);
+            return false;
+        }
+        scene.audio.present = true;
+    }
+
     const boost::json::value* items = field(root, "items");
     if (items == nullptr || !items->is_array()) {
         fail(error, "scene: 'items' must be an array");
@@ -1130,16 +1234,20 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
             fail(error, "scene: item kind '" + kind + "' is neither 'text' nor 'image'");
             return false;
         }
+        const std::initializer_list<const char*> legacyTextKeys{
+            "kind", "lines", "color", "fontFamily", "fontSize", "x", "y", "width",
+            "height", "align", "lineSpacing"};
+        const std::initializer_list<const char*> styledTextKeys{
+            "kind", "lines", "color", "fontFamily", "fontSize", "x", "y", "width",
+            "height", "align", "lineSpacing", "fontWeight", "fontStyle", "fitMode",
+            "minFontSize", "stroke", "shadow"};
+        const std::initializer_list<const char*> decoratedTextKeys{
+            "kind", "lines", "color", "fontFamily", "fontSize", "x", "y", "width",
+            "height", "align", "lineSpacing", "fontWeight", "fontStyle", "underline",
+            "fitMode", "minFontSize", "stroke", "shadow"};
         if (!noUnknownKeys(jsonItem,
-                           legacyScene
-                               ? std::initializer_list<const char*>{
-                                     "kind", "lines", "color", "fontFamily", "fontSize", "x",
-                                     "y", "width", "height", "align", "lineSpacing"}
-                               : std::initializer_list<const char*>{
-                                     "kind", "lines", "color", "fontFamily", "fontSize", "x",
-                                     "y", "width", "height", "align", "lineSpacing",
-                                     "fontWeight", "fontStyle", "fitMode", "minFontSize",
-                                     "stroke", "shadow"},
+                           legacyScene ? legacyTextKeys
+                           : (hasUnderline ? decoratedTextKeys : styledTextKeys),
                            "a text item", error)) {
             return false;
         }
@@ -1205,6 +1313,10 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
         // gate above only because this format defines them); scene 3 said
         // nothing and keeps the struct's concrete defaults — 400, upright,
         // shrink, 12, no ink — which is exactly what it always drew.
+        if (hasUnderline &&
+            !wantBool(jsonItem, "underline", &item.underline, error)) {
+            return false;
+        }
         if (!legacyScene &&
             (!wantFontWeight(jsonItem, "fontWeight", &item.fontWeight, error) ||
              !wantStyleWord(jsonItem, "fontStyle", "normal", "italic", &item.fontStyle,

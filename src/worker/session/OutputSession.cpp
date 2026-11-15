@@ -439,6 +439,17 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
     // prime is the one bounded transport R10 asks for (a superseded prime
     // retires on this thread). The prime changes nothing on screen — it is
     // readiness, and the present remains the decision.
+    // The audience may already be watching this exact clip: a slide change
+    // over one background video compiles to the same identity, so the
+    // present is the transport's no-op. Opening a second decoder for it
+    // here would be a head start on nothing — one file open, one decoder
+    // and one held audio player per slide — while the transport that is
+    // actually playing is the one that keeps the clock. The identity check
+    // is the prepare executor's read of the render thread's published
+    // transport state; a miss merely primes redundantly.
+    if (fTransport.backgroundVideoOnAir(background.assetId, background.assetPath)) {
+        return;
+    }
     openshow::media::MediaInfo info;
     std::string error;
     if (openshow::media::probeMedia(background.assetPath, &info, &error) !=
@@ -462,7 +473,13 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
         // non-story as a file-prime failure: the present falls back to the
         // inline start and reports there.
         std::string audioError;
-        if (!fTransport.primeAudio(background.assetPath, cancelled, &audioError)) {
+        // The show's audio layer (when it has one) rides the same held
+        // player, so the adopt side starts one clock for the picture and
+        // the track together.
+        if (!fTransport.primeAudio(background.assetPath,
+                                   scene.audio.present ? scene.audio.assetPath
+                                                       : std::string(),
+                                   cancelled, &audioError)) {
             std::fprintf(stderr, "openshow-worker: background audio prime %s skipped: %s\n",
                          background.assetPath.c_str(), audioError.c_str());
         }
@@ -901,6 +918,9 @@ OutputSession::Status OutputSession::status() const {
         const auto current = std::move(snapshot.media);
         snapshot.media = *fSceneMediaBeforeApply;
         snapshot.media.standalone = current.standalone;
+        // The master mute is worker state and outlives a scene swap; the
+        // pre-apply snapshot must not resurrect the previous answer.
+        snapshot.media.muted = current.muted;
         std::erase_if(snapshot.media.sources, [](const auto& source) { return source.name == "standalone"; });
         for (const auto& source : current.sources)
             if (source.name == "standalone") snapshot.media.sources.push_back(source);
@@ -1045,7 +1065,10 @@ bool OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
     }
     const auto wanted = snapshot.content ? snapshot.content->background
                                          : openshow::scene::Background{};
-    if (fBackgroundMedia && fTransport.backgroundChangeBlocked(wanted)) {
+    const auto wantedAudio = snapshot.content ? snapshot.content->audio
+                                              : openshow::scene::AudioLayer{};
+    if (fBackgroundMedia &&
+        fTransport.backgroundChangeBlocked(wanted, wantedAudio)) {
         fDeferredSceneRevision = snapshot.revision;
         return false;
     }
@@ -1066,7 +1089,8 @@ bool OutputSession::applyPendingSceneChange(const FrameSnapshot& snapshot) {
             std::lock_guard<std::mutex> lock(fMutex);
             if (!fSceneMediaBeforeApply) fSceneMediaBeforeApply = fTransport.mediaStatus();
         }
-        const auto result = fTransport.applyBackground(wanted, gpuHandles(),
+        const auto result = fTransport.applyBackground(
+            wanted, wantedAudio, gpuHandles(),
             [this](const std::string& path) {
                 return fScene != nullptr && fScene->imageCache()->has(path);
             });
@@ -1679,8 +1703,11 @@ unsigned long long OutputSession::run(double seconds, const std::atomic<bool>* a
             fStore.decide(&decision);
             const bool deferred = fDeferredSceneRevision != 0 &&
                 fDeferredSceneRevision == decision.snapshot.revision &&
-                fTransport.backgroundChangeBlocked(decision.snapshot.content
-                    ? decision.snapshot.content->background : openshow::scene::Background{});
+                fTransport.backgroundChangeBlocked(
+                    decision.snapshot.content ? decision.snapshot.content->background
+                                              : openshow::scene::Background{},
+                    decision.snapshot.content ? decision.snapshot.content->audio
+                                              : openshow::scene::AudioLayer{});
             presentNow = (decision.commandsDue && !deferred) || decision.destinationDue ||
                          fPreview.streamChangePending() ||
                          fNeedsPresent || fWindow->framebufferResized();

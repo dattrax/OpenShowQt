@@ -1,8 +1,110 @@
 # OpenShowQt progress and handoff
 
-Updated: 2026-11-07 (Europe/London).
+Updated: 2026-11-14 (Europe/London).
 
 ## Current checkpoint
+
+**Media library: audio is a cue, not a transport (2026-11-14):** audio now
+takes the same route to the audience as video. `Show::audioAssetId` is the
+show's independent audio layer (`Documents::setShowAudio`, service format
+**13**), compiled into every slide as `scene::AudioLayer` and carried by scene
+**7** as an optional `"audio": {assetId, assetPath}` block. Dropping an audio
+card on the running order creates a one-slide audio cue with no picture;
+dropping it on an existing cue adds it to that show's layer, so a lyric chart
+steps its words while the track keeps playing (the transport identity includes
+the layer, so a slide change over the same track is a no-op). The worker starts
+an audio-only `AvPlayer` when a cue has a track and no video, reports it as the
+`"audio"` source beside `"video"`, and keeps both on one clock; a video and its
+show track are two mixer inputs of the same player, mixed through PipeWire.
+`media.mute` gained source `"all"` — the master media-audio switch, applied at
+the mixer with the same clickless ramp, reported as `output.status.media.muted`,
+preserved across transport rebuilds, and surfaced as one **audio mute** toggle
+in the audience header above the monitor (not in the transport, not per
+source). The rows under the transport are volumes only, each labelled
+"<source> volume" with its percentage, so the audio mute is not duplicated by
+a source-level checkbox. `media.gain` refuses `"all"`. The Media Bin's
+Play/Stop control and the rail's AUDIO TRACK area are gone; every kind is a
+preview card with no play button. Domain, scene, controller, transport,
+protocol/worker and workspace suites pin the model, wire, cue creation,
+audio-only transport, master mute and the removed controls.
+
+**ND.9: camera mirroring and the shared camera glyph (2026-11-08):** a phone's
+FRONT camera delivers a mirrored picture (the rear one does not), so a camera
+asset now carries `cameraMirror`. The NDI picker asks at add time — one undo
+removes the camera and its answer — and the Media Bin's camera menu flips it
+later; the flag persists in the manifest (optional `"mirror"`), compiles to
+`Background::cameraMirror`, crosses scene 5 as `"cameraMirror"` (added to the
+background's closed key set) and joins the background identity. The worker's
+background draw flips the live frame about the authored canvas' vertical axis.
+The Media Bin's camera drawing moved to `CameraArtwork`, worn by the bin card
+and by an off-air camera cue in the service grid — a camera cue with no frame
+now shows the numbered glyph instead of a black tile, while the live cue keeps
+its feed. `domain_tests` (manifest round-trip and the file-asset refusal),
+`scene_tests` (compile, wire, identity), `scene_render_tests` (a half-red/half-
+green frame lands flipped), `document_controller_tests` (add-time flag and the
+undoable toggle) and `workspace_ui_tests` (the numbered glyph on the cue) pin
+it.
+
+**Camera previews no longer crash the worker (2026-11-08):** setting a camera
+cue live took the worker down in `PreviewProducer::publishThumbnailFrame` (the
+same unguarded comparison also sat in `publishSelectionFrame`). Both
+dereferenced the audience's `ActiveScene` without checking it, and a list or an
+edit can draw a camera slide while nothing is on air at all. The camera
+comparison now asks only when there is an audience scene (`onAir != nullptr &&
+*onAir`), exactly as the video branch beside it always has; with none, the row
+or edit is the colour fill. Found from the field coredump (SIGSEGV at
+`PreviewProducer.cpp:1332`) and pinned by `preview_producer_tests`'
+`cameraThumbnailWithoutAudienceScene`, which segfaults on the old code and
+returns with the picture still owed on the fix.
+
+**NDI camera backgrounds draw their live frame (2026-11-08):** a camera cue
+presented to a black screen. The renderer's background picture only treated
+`isVideo` as "the frame the composition was handed", so a camera fell through
+to the image cache with its NDI source name as a path — a lookup that can only
+miss — and every healthy feed drew the scene's colour fill. `backgroundPicture`
+now takes the live frame for `isCamera` as well, the background layer counts a
+camera as media for the fade-to-cut rule (in either direction), and the offline
+snapshot preload no longer tries to decode a source name as a file. The helper
+path itself was checked end to end: `ndi-helper` discovers `IPHONE 7A94 (HX
+Camera)`, opens it at 1920x1080 UYVY and streams. `scene_render_tests`'
+`testCameraBackgroundDrawsLiveFrame` pins the live frame over a loud colour
+fill (cover fit, portrait frame) and the fill before the first frame.
+
+**The sidebar is a folder strip (2026-11-08):** the left dock no longer shows
+every Library row inline. Its top strip lists three folders — Songs,
+Presentations and Service — with their counts, and never their files; choosing
+a folder lists that folder in the pane below (the same `librarySongList` /
+`collectionLibraryList` views, or the running order's `currentServicePanel`,
+which drops its own heading and draws flat at the Library's row pitch). The
+strip and the open folder's list each wear the same frame, both exactly the
+search field's width, so the current folder reads as a selected row rather
+than a dropdown. `libraryFoldersToggle`
+collapses the strip so the open folder gets its height back. The title search
+moved to the BOTTOM of the browser, under the files. Every folder row is a
+drop target: dropping on Songs or Presentations reclassifies a catalog item,
+and dropping on Service prepares a song, a presentation or a media cue at the
+end of the order — so "open the Songs folder and drag onto Service" adds to the
+running order without opening it. Selection keys still span both library
+folders (the folders are a view of one filtered list), so Ctrl+A and
+cross-folder multi-select behave as before. `workspace_ui_tests` (folder
+switching, collapse, folder drops) and `library_service_ui_tests` (folder strip,
+drop onto Service, per-folder row selection) pin it; the populated sidebar
+capture is `<capture>-service-folder.png`.
+
+**Named group bands and numbered slide strips (2026-11-08):** the one-line rule
+between running-order items is now a full-width band that names the item in a
+single elided line (its playlist section included) and heads every occurrence,
+the first included. The repeated item name is gone from the slides themselves:
+the Show grid and the Edit rail lead every strip with the slide number and, at
+a section boundary, the Verse/Chorus marking; a continuation keeps the number
+alone. The clipboard import preview keeps `Section – Song name`.
+`SlidePreviewCard` gained the host-supplied `ordinal`; the Show grid reserves
+its band inside a uniform row (`groupHeaderHeight` 20, gap 6), so the group
+model, cue mapping, scroll-to-cue and the thumbnail band are unchanged.
+`control_set_ui_tests` (ordinal composition), `library_service_ui_tests`
+(bands, one-line names, no names on strips, Edit numbering) and
+`workspace_ui_tests` (band placement, caption) pin it; the inert-padding click
+in the CS.7 fixture now scrolls its cell into view before it fires.
 
 **Media bin rework delivered through MB.7 (2026-11-07):** MB.1–MB.5 and MB.7
 are in: a preview-card grid with the right-hand inspector, silent drag sources,

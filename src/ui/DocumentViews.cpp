@@ -337,6 +337,8 @@ void insertThemeStyleRow(QVariantMap& entry, const openshow::domain::Theme& them
     entry.insert(QStringLiteral("fontStyleSet"), theme.fontStyle.has_value());
     entry.insert(QStringLiteral("fontStyle"),
                  QString::fromStdString(theme.fontStyle.value_or("normal")));
+    entry.insert(QStringLiteral("fontUnderlineSet"), theme.fontUnderline.has_value());
+    entry.insert(QStringLiteral("fontUnderline"), theme.fontUnderline.value_or(false));
     entry.insert(QStringLiteral("fitModeSet"), theme.fitMode.has_value());
     entry.insert(QStringLiteral("fitMode"),
                  QString::fromStdString(theme.fitMode.value_or("shrink")));
@@ -590,6 +592,7 @@ QVariantList DocumentViews::assetRows(bool includeDeckPages) const {
         entry.insert(QStringLiteral("sourcePath"), QString::fromStdString(asset->sourcePath));
         entry.insert(QStringLiteral("cameraSource"),
                      QString::fromStdString(asset->cameraSource));
+        entry.insert(QStringLiteral("cameraMirror"), asset->cameraMirror);
         entry.insert(QStringLiteral("deckPage"), asset->deckPage);
         // The kind the bin filters and labels by (UI.4a), from the domain's
         // one name rule — the same answer the model refuses a video with and

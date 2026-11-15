@@ -925,6 +925,39 @@ void testTextStyleFacesAndEffectsRender() {
           "italic is a slanted face, not the regular one (" + std::to_string(italicDiffers) +
               " px changed)");
 
+    // --- underline: the decoration pass, not the face (scene 6) ------------------
+    // A word with no descenders makes the rule unambiguous: it must add ink
+    // below the glyph bottoms, change many pixels, and keep the wrap.
+    {
+        const scene::Scene upright = singleItemScene({"GRACE AND PEACE"}, 96.0);
+        scene::Scene underlined = upright;
+        underlined.items[0].underline = true;
+        Frame uprightFrame, underlinedFrame;
+        if (!check(renderFixture(upright, "style-upright", &uprightFrame, &error),
+                   "upright underline fixture rendered: " + error) ||
+            !check(renderFixture(underlined, "style-underline", &underlinedFrame, &error),
+                   "underline fixture rendered: " + error)) {
+            return;
+        }
+        const Ink uprightInk = measureInk(uprightFrame);
+        const Ink underlinedInk = measureInk(underlinedFrame);
+        int underlineDiffers = 0;
+        for (std::size_t i = 0; i < underlinedFrame.pixels.size(); ++i) {
+            if (differs(underlinedFrame.pixels[i], uprightFrame.pixels[i])) {
+                ++underlineDiffers;
+            }
+        }
+        std::printf("measured: underline adds %d ink px, bottom %d -> %d\n",
+                    underlinedInk.count - uprightInk.count, uprightInk.bottom,
+                    underlinedInk.bottom);
+        check(inkBands(underlinedFrame) == inkBands(uprightFrame),
+              "underline keeps the word's own wrap");
+        check(underlinedInk.bottom > uprightInk.bottom + 1 &&
+                  underlinedInk.count > uprightInk.count + 50 && underlineDiffers > 200,
+              "underline draws a rule below the glyphs (" +
+                  std::to_string(underlineDiffers) + " px changed)");
+    }
+
     // --- stroke: behind the fill, outside its edge, scaled with the canvas -------
     // 28 authored units at the 0.5 output scale is a 14-device pen centred
     // on the outline: 7 device pixels of red beyond the white, with the
@@ -2567,6 +2600,119 @@ int worstChannelDifference(const SkImage& full, const SkImage& approx, SkColor f
     return worst;
 }
 
+// ND.6: a live camera background draws the LIVE FRAME the session hands the
+// composition, exactly as a video background does. The scene names an NDI
+// source, never a file, so the image cache cannot answer for it — looking
+// there drew the colour fill (black) for every camera, however healthy the
+// feed. The fill is still the honest picture before the first frame.
+void testCameraBackgroundDrawsLiveFrame() {
+    scene::Scene camera;
+    camera.showId = "show1";
+    camera.slideId = "camera1";
+    camera.background.color = 0xE03030u;  // loud red fill, never mistakable
+    camera.background.hasImage = true;
+    camera.background.isCamera = true;
+    camera.background.cameraSource = "STAGE (Camera 1)";
+    camera.background.assetPath = camera.background.cameraSource;
+    camera.background.assetId = "asset-camera";
+    camera.background.fit = openshow::domain::BackgroundFit::Cover;
+
+    // A portrait frame: cover must crop it to fill the canvas, so every
+    // measured pixel is the camera's own picture, never a letterbox bar.
+    auto liveSurface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(36, 64));
+    auto target = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(kWidth, kHeight));
+    if (!check(liveSurface && target, "camera fixture surfaces")) {
+        return;
+    }
+    liveSurface->getCanvas()->clear(SkColorSetRGB(32, 200, 64));
+    sk_sp<SkImage> liveFrame = liveSurface->makeImageSnapshot();
+    SkCanvas* canvas = target->getCanvas();
+    // Deliberately empty: an NDI source is not an asset path to decode.
+    worker::SceneImageCache images;
+
+    const auto pixelAt = [&target](int x, int y) {
+        SkBitmap bitmap;
+        const SkImageInfo info =
+            SkImageInfo::MakeN32Premul(target->width(), target->height());
+        if (!bitmap.tryAllocPixels(info) ||
+            !target->readPixels(info, bitmap.getPixels(), bitmap.rowBytes(), 0, 0)) {
+            return SkColor(0);
+        }
+        return bitmap.getColor(x, y);
+    };
+    const auto centrePixel = [&pixelAt, &target]() {
+        return pixelAt(target->width() / 2, target->height() / 2);
+    };
+
+    canvas->clear(SK_ColorBLACK);
+    worker::drawSceneBackground(canvas, camera, &images, nullptr, liveFrame.get());
+    const SkColor drawn = centrePixel();
+    check(SkColorGetG(drawn) > 150 && SkColorGetR(drawn) < 100 &&
+              SkColorGetB(drawn) < 120,
+          "a camera background draws the live frame handed to the composition");
+
+    canvas->clear(SK_ColorBLACK);
+    worker::drawSceneBackground(canvas, camera, &images, nullptr, nullptr);
+    const SkColor fillOnly = centrePixel();
+    check(SkColorGetR(fillOnly) > 150 && SkColorGetG(fillOnly) < 100,
+          "a camera with no frame yet keeps the scene's colour fill");
+
+    // ND.9: a camera whose source mirrors its picture (a phone's FRONT
+    // camera) is flipped about the canvas' vertical axis. A half-red /
+    // half-green frame says which way round the pixels landed.
+    auto halves = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(192, 108));
+    // The draw works in the authored 1920x1080 canvas, while the surface
+    // above is the 960x540 output: sample the mirror on a full canvas so a
+    // quarter is a quarter of the picture, not of the visible crop.
+    auto full = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(
+        static_cast<int>(worker::kSceneCanvasWidth),
+        static_cast<int>(worker::kSceneCanvasHeight)));
+    if (!check(bool(halves) && bool(full), "camera mirror fixture surface")) return;
+    {
+        SkCanvas* painter = halves->getCanvas();
+        SkPaint band;
+        band.setColor(SkColorSetRGB(240, 30, 30));
+        painter->drawRect(SkRect::MakeXYWH(0, 0, 96, 108), band);
+        band.setColor(SkColorSetRGB(30, 220, 60));
+        painter->drawRect(SkRect::MakeXYWH(96, 0, 96, 108), band);
+    }
+    sk_sp<SkImage> splitFrame = halves->makeImageSnapshot();
+    const auto reddish = [](SkColor c) {
+        return SkColorGetR(c) > 150 && SkColorGetG(c) < 120;
+    };
+    const auto greenish = [](SkColor c) {
+        return SkColorGetG(c) > 150 && SkColorGetR(c) < 120;
+    };
+    scene::Scene plain = camera;
+    plain.background.cameraMirror = false;
+    scene::Scene mirrored = camera;
+    mirrored.background.cameraMirror = true;
+    SkCanvas* fullCanvas = full->getCanvas();
+    const auto fullPixelAt = [&full](int x, int y) {
+        SkBitmap bitmap;
+        const SkImageInfo info =
+            SkImageInfo::MakeN32Premul(full->width(), full->height());
+        if (!bitmap.tryAllocPixels(info) ||
+            !full->readPixels(info, bitmap.getPixels(), bitmap.rowBytes(), 0, 0)) {
+            return SkColor(0);
+        }
+        return bitmap.getColor(x, y);
+    };
+    const int leftX = static_cast<int>(worker::kSceneCanvasWidth) / 4;
+    const int rightX = static_cast<int>(worker::kSceneCanvasWidth) - leftX;
+    const int midY = static_cast<int>(worker::kSceneCanvasHeight) / 2;
+
+    fullCanvas->clear(SK_ColorBLACK);
+    worker::drawSceneBackground(fullCanvas, plain, &images, nullptr, splitFrame.get());
+    check(reddish(fullPixelAt(leftX, midY)) && greenish(fullPixelAt(rightX, midY)),
+          "an unmirrored camera draws its frame the way the source sends it");
+
+    fullCanvas->clear(SK_ColorBLACK);
+    worker::drawSceneBackground(fullCanvas, mirrored, &images, nullptr, splitFrame.get());
+    check(greenish(fullPixelAt(leftX, midY)) && reddish(fullPixelAt(rightX, midY)),
+          "a mirrored camera draws the live frame flipped left for right");
+}
+
 void testBackgroundFitBlurSteady() {
     std::string error;
     if (!check(writeFlatRectPng("scene-render-blur-wide.png", 1920, 540,
@@ -3823,6 +3969,7 @@ int main() {
     testWireSceneRendersIdentically();
     testDemoSlidesRender();
     testImageBackgroundCover();
+    testCameraBackgroundDrawsLiveFrame();
     testBackgroundFitContain();
     testBackgroundFitBlurSteady();
     testBackgroundFitBlurCache();

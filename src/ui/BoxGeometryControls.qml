@@ -6,11 +6,13 @@ import QtQuick.Controls
  *
  * The X/Y/W/H rows every box target shares (task CS.5): four fields that
  * commit as ONE unit because a placement is one unit and a half-typed one
- * is a wrong one. The adapter routes "box" to whatever the host calls its
- * rectangle — setThemePlacement/clearThemePlacement for themes, the merged
- * context box (retiring a stored inset in the same edit) for views, the
- * single placement customization for slides — so a drag and the typed
- * path commit the same one undo either way.
+ * is a wrong one, plus the one-click centre helpers (review 2026-11-10)
+ * that type the same rule the canvas drag snaps to. The adapter routes
+ * "box" to whatever the host calls its rectangle — setThemePlacement/
+ * clearThemePlacement for themes, the merged context box (retiring a
+ * stored inset in the same edit) for views, the single placement
+ * customization for slides — so a drag and the typed path commit the same
+ * one undo either way.
  *
  * Extracted verbatim in behaviour from ThemeEditorPage (themes-plan
  * amendment 2026-11-01 and task TV.1): silence SHOWS the rectangle the
@@ -41,9 +43,16 @@ Column {
     property string yObjectName: "boxYField"
     property string wObjectName: "boxWField"
     property string hObjectName: "boxHField"
+    property string centerHObjectName: "boxCenterH"
+    property string centerVObjectName: "boxCenterV"
     property string clearObjectName: "boxClear"
     property string extraObjectName: "boxExtra"
     property string statusObjectName: "boxStatus"
+
+    // The authored canvas the box is placed on. The centre helpers answer
+    // in these units — 1920x1080 is the slide contract the label states.
+    property real canvasWidth: 1920
+    property real canvasHeight: 1080
 
     // The host owns the gesture and any extra verb; the part draws the
     // typed path through the adapter and forwards the extra button.
@@ -63,6 +72,9 @@ Column {
         hField.text = has ? String(Math.round(box.height)) : ""
         clearButton.enabled = s.canReset === true && s.editable === true
         extraButton.enabled = s.editable === true
+        const placeable = has && s.editable === true
+        centerHButton.enabled = placeable
+        centerVButton.enabled = placeable
         xField.enabled = s.editable === true
         yField.enabled = s.editable === true
         wField.enabled = s.editable === true
@@ -114,6 +126,23 @@ Column {
     Row {
         spacing: 6
         PanelButton {
+            id: centerHButton
+            objectName: geometry.centerHObjectName
+            text: "Center H"
+            Accessible.name: "Centre the box horizontally on the slide"
+            onClicked: geometry.centre(true)
+        }
+        PanelButton {
+            id: centerVButton
+            objectName: geometry.centerVObjectName
+            text: "Center V"
+            Accessible.name: "Centre the box vertically on the slide"
+            onClicked: geometry.centre(false)
+        }
+    }
+    Row {
+        spacing: 6
+        PanelButton {
             id: extraButton
             objectName: geometry.extraObjectName
             visible: geometry.extraActionLabel !== ""
@@ -155,6 +184,25 @@ Column {
         if (!Number.isFinite(x) || !Number.isFinite(y)
                 || !(w >= 1) || !(h >= 1)
                 || !geometry.adapter.commit("box", {x: x, y: y, width: w, height: h}))
+            geometry.sync()
+    }
+
+    // The one-click centre helpers: keep the rectangle's size, move the
+    // axis the button names onto the canvas centre. A click while already
+    // centred writes nothing (a deliberate gesture still must not cost an
+    // undo for a pixel it did not move).
+    function centre(horizontal) {
+        const s = geometry.state()
+        const box = s.value
+        if (!box || box.x === undefined || s.editable !== true)
+            return
+        const w = Number(box.width)
+        const h = Number(box.height)
+        const x = horizontal ? Math.round((geometry.canvasWidth - w) / 2) : Number(box.x)
+        const y = horizontal ? Number(box.y) : Math.round((geometry.canvasHeight - h) / 2)
+        if (x === box.x && y === box.y)
+            return
+        if (!geometry.adapter.commit("box", {x: x, y: y, width: w, height: h}))
             geometry.sync()
     }
 }

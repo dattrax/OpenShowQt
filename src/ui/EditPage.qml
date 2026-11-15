@@ -177,6 +177,16 @@ Flickable {
                 boxFields.sync()
             }
         }
+        // Centre helpers: keep the box's size, move one axis onto the
+        // 1920x1080 centre (the same rule the canvas drag snaps to).
+        function centre(horizontal) {
+            const x = horizontal ? Math.round((1920 - editCanvas.boxW) / 2)
+                                 : editCanvas.boxX
+            const y = horizontal ? editCanvas.boxY
+                                 : Math.round((1080 - editCanvas.boxH) / 2)
+            if (!docs.setTextBoxGeometry(x, y, editCanvas.boxW, editCanvas.boxH))
+                boxFields.sync()
+        }
         function sync() {
             fieldX.text = Qt.binding(function () { return editCanvas.boxX.toFixed(0) })
             fieldY.text = Qt.binding(function () { return editCanvas.boxY.toFixed(0) })
@@ -292,6 +302,35 @@ Flickable {
                 background: Rectangle {
                     color: "#242424"
                     border.color: "#4a4a4a"
+                }
+            }
+        }
+
+        // Centre helpers: one click per axis, the same rule the canvas
+        // drag snaps to. They live beside the fields because a typed
+        // coordinate and a snapped one must be the same kind of edit.
+        Column {
+            spacing: 2
+            Text {
+                color: "#b0b0b0"
+                font.pixelSize: 10
+                text: "Centre"
+            }
+            Row {
+                spacing: 4
+                PanelButton {
+                    objectName: "centerBoxH"
+                    text: "Center H"
+                    Accessible.name: "Centre the box horizontally on the slide"
+                    enabled: editCanvas.hasSlide && docs.currentBox >= 0
+                    onClicked: boxFields.centre(true)
+                }
+                PanelButton {
+                    objectName: "centerBoxV"
+                    text: "Center V"
+                    Accessible.name: "Centre the box vertically on the slide"
+                    enabled: editCanvas.hasSlide && docs.currentBox >= 0
+                    onClicked: boxFields.centre(false)
                 }
             }
         }
@@ -509,14 +548,12 @@ Flickable {
             b.gradientObjectName = "themeBackGradientField"
             const st = editInspector.styleControls
             st.fontObjectName = "themeFontField"
-            st.fontBrowseObjectName = "editBrowseFonts"
             st.fontStatusObjectName = "editFontStatus"
             st.fontPopupObjectName = "editFontPopup"
             st.fontSearchObjectName = "editFontSearch"
             st.fontListStatusObjectName = "editFontListStatus"
             st.fontListObjectName = "editFontList"
             st.fontRowObjectName = "editFontRow"
-            st.fontCancelObjectName = "editFontCancel"
             st.sizeObjectName = "themeSizeField"
             st.alignObjectName = "themeAlignCombo"
             st.spacingObjectName = "themeSpacingField"
@@ -524,6 +561,8 @@ Flickable {
             st.weightInheritObjectName = "editWeightInherit"
             st.slantObjectName = "editSlant"
             st.slantInheritObjectName = "editSlantInherit"
+            st.underlineObjectName = "editUnderline"
+            st.underlineInheritObjectName = "editUnderlineInherit"
             st.fitObjectName = "editFit"
             st.fitInheritObjectName = "editFitInherit"
             st.minSizeObjectName = "editMinSize"

@@ -219,7 +219,7 @@ void testStillsAndIdentity(BackgroundTransport& transport) {
     FakePresenter presenter;
     transport.setVideoPresenter(&presenter);
     const std::string path = "/media/broken-still.png";
-    bool started = (transport.applyBackground(stillBackground(path),
+    bool started = (transport.applyBackground(stillBackground(path), openshow::scene::AudioLayer{},
                                              openshow::worker::GpuHandles{},
                                              [](const std::string&) { return false; }) == BackgroundTransport::BackgroundApply::kVideoStarted);
     check(!started, "still: no video transport, no present owed");
@@ -235,7 +235,7 @@ void testStillsAndIdentity(BackgroundTransport& transport) {
 
     // Re-present the SAME asset: the alreadyReported gate must not notify
     // the same degradation again, and the sticky error stays paired.
-    started = (transport.applyBackground(stillBackground(path), openshow::worker::GpuHandles{},
+    started = (transport.applyBackground(stillBackground(path), openshow::scene::AudioLayer{}, openshow::worker::GpuHandles{},
                                         [](const std::string&) { return false; }) == BackgroundTransport::BackgroundApply::kVideoStarted);
     check(!started, "still: a re-present still starts nothing");
     check(!transport.takeMediaError(&reported),
@@ -244,14 +244,14 @@ void testStillsAndIdentity(BackgroundTransport& transport) {
 
     // The asset repaired: the same prepare that decodes it clears the
     // error (the recovery clears its own fault).
-    (transport.applyBackground(stillBackground(path), openshow::worker::GpuHandles{},
+    (transport.applyBackground(stillBackground(path), openshow::scene::AudioLayer{}, openshow::worker::GpuHandles{},
                               [](const std::string&) { return true; }) == BackgroundTransport::BackgroundApply::kVideoStarted);
     media = transport.mediaStatus();
     check(media.error.empty(), "still: a decoded asset clears the error");
     check(media.path == path, "still: the healthy asset is still NAMED on air");
 
     // A plain colour fill: no asset, no story.
-    (transport.applyBackground(openshow::scene::Background{}, openshow::worker::GpuHandles{},
+    (transport.applyBackground(openshow::scene::Background{}, openshow::scene::AudioLayer{}, openshow::worker::GpuHandles{},
                               [](const std::string&) { return false; }) == BackgroundTransport::BackgroundApply::kVideoStarted);
     media = transport.mediaStatus();
     check(media.path.empty() && media.error.empty(),
@@ -449,7 +449,7 @@ void testRetiredAudioGoesSilentAtHandoff() {
     handles.context = gr.get();
     const auto resident = [](const std::string&) { return true; };
 
-    check((transport.applyBackground(videoBackground(clip), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
+    check((transport.applyBackground(videoBackground(clip), openshow::scene::AudioLayer{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
           "the audio-bearing background transport starts");
 
     // Audible first: the lane reads live and the position climbs (the same
@@ -471,7 +471,7 @@ void testRetiredAudioGoesSilentAtHandoff() {
     // sleeps 700 ms, and applyBackground returning in milliseconds is half
     // of what A3 asks for.
     const auto began = std::chrono::steady_clock::now();
-    (transport.applyBackground(openshow::scene::Background{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted);
+    (transport.applyBackground(openshow::scene::Background{}, openshow::scene::AudioLayer{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted);
     const double handoffMs = std::chrono::duration<double, std::milli>(
                                  std::chrono::steady_clock::now() - began)
                                  .count();
@@ -598,19 +598,19 @@ void testSwapDefersBehindSlowRetirement() {
     {
         BackgroundTransport transport;
         transport.noteRunStart(kEpoch);
-        check((transport.applyBackground(videoBackground(clipA), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
+        check((transport.applyBackground(videoBackground(clipA), openshow::scene::AudioLayer{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
               "A starts (the clip whose retirement will be scripted slow)");
-        check((transport.applyBackground(videoBackground(clipB), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
+        check((transport.applyBackground(videoBackground(clipB), openshow::scene::AudioLayer{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
               "B starts beside the retiring A (6.21c2's allowed overlap)");
 
         const auto began = std::chrono::steady_clock::now();
-        const bool startedC = (transport.applyBackground(videoBackground(clipC), handles,
+        const bool startedC = (transport.applyBackground(videoBackground(clipC), openshow::scene::AudioLayer{}, handles,
                                                         resident) == BackgroundTransport::BackgroundApply::kVideoStarted);
         const double thirdMs = std::chrono::duration<double, std::milli>(
                                    std::chrono::steady_clock::now() - began)
                                    .count();
         check(!startedC, "the C swap defers rather than waiting on A's lane");
-        check(transport.applyBackground(videoBackground(clipC), handles, resident) ==
+        check(transport.applyBackground(videoBackground(clipC), openshow::scene::AudioLayer{}, handles, resident) ==
                   BackgroundTransport::BackgroundApply::kDeferred,
               "the caller receives an explicit deferred outcome");
         check(thirdMs < 100.0, "the deferred call returned in milliseconds");
@@ -623,7 +623,7 @@ void testSwapDefersBehindSlowRetirement() {
               "while deferred, status honestly reports the live B transport");
 
         const int pass = pumpUntil(transport, [&] {
-            transport.applyBackground(videoBackground(clipC), handles, resident);
+            transport.applyBackground(videoBackground(clipC), openshow::scene::AudioLayer{}, handles, resident);
             transport.refreshMediaState();
             return transport.mediaStatus().path == clipC;
         });
@@ -639,14 +639,14 @@ void testSwapDefersBehindSlowRetirement() {
     {
         BackgroundTransport transport;
         transport.noteRunStart(kEpoch);
-        check((transport.applyBackground(videoBackground(clipA), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
+        check((transport.applyBackground(videoBackground(clipA), openshow::scene::AudioLayer{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
               "A starts again (clear scenario)");
-        check((transport.applyBackground(videoBackground(clipB), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
+        check((transport.applyBackground(videoBackground(clipB), openshow::scene::AudioLayer{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
               "B starts beside the retiring A");
 
         const auto began = std::chrono::steady_clock::now();
         const bool startedClear =
-            (transport.applyBackground(openshow::scene::Background{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted);
+            (transport.applyBackground(openshow::scene::Background{}, openshow::scene::AudioLayer{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted);
         const double clearMs = std::chrono::duration<double, std::milli>(
                                    std::chrono::steady_clock::now() - began)
                                    .count();
@@ -657,7 +657,7 @@ void testSwapDefersBehindSlowRetirement() {
               "a deferred clear still reports B live until it lands");
 
         const int pass = pumpUntil(transport, [&] {
-            transport.applyBackground(openshow::scene::Background{}, handles, resident);
+            transport.applyBackground(openshow::scene::Background{}, openshow::scene::AudioLayer{}, handles, resident);
             transport.refreshMediaState();
             return !transport.mediaTransportLive() && transport.mediaStatus().path.empty();
         });
@@ -1089,7 +1089,7 @@ void testSeekCompletesOffTheFrameTick() {
     handles.uploadQueue = vk.uploadQueue();
     handles.context = gr.get();
     const auto resident = [](const std::string&) { return true; };
-    check((transport.applyBackground(videoBackground(clip), handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
+    check((transport.applyBackground(videoBackground(clip), openshow::scene::AudioLayer{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted),
           "the audio-bearing background transport starts for the seek flight");
 
     bool audible = false;
@@ -1150,7 +1150,7 @@ void testSeekCompletesOffTheFrameTick() {
     transport.requestMediaSeek(1.0);
     transport.applyTransportOps();  // flight #2, waiting
     const auto swapBegan = std::chrono::steady_clock::now();
-    (transport.applyBackground(openshow::scene::Background{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted);
+    (transport.applyBackground(openshow::scene::Background{}, openshow::scene::AudioLayer{}, handles, resident) == BackgroundTransport::BackgroundApply::kVideoStarted);
     const double swapMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - swapBegan)
             .count();
@@ -1296,6 +1296,70 @@ void testStandaloneStatusTracksReplacement() {
     transport.shutdown();
 }
 
+// The show audio layer as a transport of its own: a cue with no picture
+// still plays its track, reports it as the "audio" source, seeks and holds
+// through the same commands, and obeys the master mute without disturbing
+// its own per-source gain/mute answer.
+void testAudioOnlyLayer() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) {
+        std::printf("   skipped the audio-only layer (no ffmpeg)\n");
+        return;
+    }
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string track = "transport-fixtures/show-audio.wav";
+    if (std::system(("ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+                     "\"sine=frequency=440:duration=2:sample_rate=48000\" -ac 2 \"" +
+                     track + "\"").c_str()) != 0) {
+        check(false, "the audio-only fixture was written");
+        return;
+    }
+    BackgroundTransport transport;
+    const auto resident = [](const std::string&) { return true; };
+    openshow::scene::AudioLayer audio;
+    audio.present = true;
+    audio.assetId = "asset-audio";
+    audio.assetPath = track;
+    const auto applied = transport.applyBackground(openshow::scene::Background{}, audio,
+                                                   openshow::worker::GpuHandles{}, resident);
+    check(applied == BackgroundTransport::BackgroundApply::kApplied,
+          "audio-only: a cue with no picture still starts its track");
+    check(transport.mediaTransportLive(), "audio-only: the transport is commandable");
+    transport.refreshMediaState();
+    const openshow::worker::MediaStatus media = transport.mediaStatus();
+    check(media.path == track && media.live,
+          "audio-only: status names the track as what is on air");
+    bool audioSource = false;
+    for (const auto& source : media.sources)
+        if (source.name == "audio") {
+            audioSource = true;
+            check(!source.muted, "audio-only: the source starts unmuted");
+        }
+    check(audioSource, "audio-only: the transport registers an 'audio' source");
+    check(media.duration > 1.5, "audio-only: the probed duration rides status");
+
+    std::string error;
+    check(!transport.requestMediaGain(openshow::worker::AudioSource::kAll, 0.5, &error),
+          "audio-only: the master identity refuses a gain");
+    check(transport.requestMediaMute(openshow::worker::AudioSource::kAll, true, &error),
+          "audio-only: the master mute accepts without a video source");
+    check(transport.mediaStatus().muted,
+          "audio-only: status reports the master mute");
+    // The per-source row is untouched by the master switch.
+    for (const auto& source : transport.mediaStatus().sources)
+        if (source.name == "audio")
+            check(!source.muted, "audio-only: the master mute preserves the source's own flag");
+    check(transport.requestMediaMute(openshow::worker::AudioSource::kAll, false, &error),
+          "audio-only: the master mute releases");
+
+    // Applying a silent, pictureless scene ends it, and the status says so.
+    transport.applyBackground(openshow::scene::Background{}, openshow::scene::AudioLayer{},
+                              openshow::worker::GpuHandles{}, resident);
+    transport.refreshMediaState();
+    check(!transport.mediaTransportLive() && !transport.mediaStatus().live,
+          "audio-only: removing the layer ends the transport");
+    transport.shutdown();
+}
+
 }  // namespace
 
 int main() {
@@ -1313,6 +1377,7 @@ int main() {
     testStandaloneIntentGeneration();
     testClockEpochDropsUndrawnDeadlines();
     testStillsAndIdentity(transport);
+    testAudioOnlyLayer();
     testSeam(transport);
     testScheduleGrammar();
 

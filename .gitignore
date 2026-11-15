@@ -24,6 +24,8 @@ VP_VULKANINFO_*.json
 # repo root (the render fixtures write scene-render-*.png into the CWD)
 /background-media-fixtures/
 /playback-fixtures/
+/audio-mix-fixtures/
+/transport-fixtures/
 /scene-render-*.png
 
 # Rust sidecar build artefacts when cargo is run by hand

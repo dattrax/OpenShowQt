@@ -14,7 +14,8 @@ namespace {
 // base appearance, style-block leaves, whole effect records, box, movement.
 const char* const kBaseFields[] = {"fontFamily", "fontSize", "align", "lineSpacing",
                                    "textColor", "backgroundColor", "backgroundGradient"};
-const char* const kStyleLeaves[] = {"fontWeight", "fontStyle", "fitMode", "minFontSize"};
+const char* const kStyleLeaves[] = {"fontWeight", "fontStyle", "fontUnderline", "fitMode",
+                                    "minFontSize"};
 const char* const kStrokeMembers[] = {"strokeEnabled", "strokeColor", "strokeWidth"};
 const char* const kShadowMembers[] = {"shadowEnabled", "shadowColor", "shadowOpacity",
                                       "shadowOffsetX", "shadowOffsetY", "shadowBlurSigma"};
@@ -116,6 +117,9 @@ QVariant styleDefault(const QString& field) {
     }
     if (field == QLatin1String("fontStyle")) {
         return QStringLiteral("normal");
+    }
+    if (field == QLatin1String("fontUnderline")) {
+        return false;
     }
     if (field == QLatin1String("fitMode")) {
         return QStringLiteral("shrink");
@@ -880,7 +884,8 @@ QStringList InspectorAdapter::fields() const {
                 QStringLiteral("fontSize"), QStringLiteral("align"),
                 QStringLiteral("lineSpacing"), QStringLiteral("placement"),
                 QStringLiteral("fontWeight"), QStringLiteral("fontStyle"),
-                QStringLiteral("fitMode"), QStringLiteral("minFontSize"),
+                QStringLiteral("fontUnderline"), QStringLiteral("fitMode"),
+                QStringLiteral("minFontSize"),
                 QStringLiteral("stroke"), QStringLiteral("shadow")};
     }
     if (kind == QLatin1String("service")) {

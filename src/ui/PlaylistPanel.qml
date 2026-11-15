@@ -1,11 +1,10 @@
 import QtQuick
 import QtQuick.Controls
 
-// The sidebar host (task SL.4). It no longer switches one detail view
-// between the Library and a playlist: the shared Library is the upper pane
-// and the current service's running order is the lower pane, both visible
-// and independently scrollable. The Library comes from the catalog; the
-// service rows are this service's shows. Selecting, filtering and dragging
+// The sidebar host (tasks SL.4, SL.7; folder strip). One browser fills the
+// pane: the top strip lists the FOLDERS (Songs, Presentations, Service) and
+// never their files, the chosen folder's files fill the pane below it, and
+// the title search sits at the bottom. Selecting, filtering and dragging
 // never present anything.
 SidePanel {
     id: playlistPanel
@@ -23,14 +22,14 @@ SidePanel {
 
     // The presentation row the theme context menu is acting on (task TH.5).
     property string contextShowId: ""
-    readonly property bool libraryListFocused: libraryBrowser.activeFocus
-    readonly property bool serviceListFocused: servicePanel.activeFocus
+    readonly property bool libraryListFocused: libraryBrowser.libraryListFocused
+    readonly property bool serviceListFocused: libraryBrowser.serviceListFocused
     function undoLibrary() { libraryBrowser.undoFocused() }
     function redoLibrary() { libraryBrowser.redoFocused() }
 
-    // The selected cue lives with the lower pane; the host mirrors it so
+    // The selected cue lives with the Service folder; the host mirrors it so
     // other parts of the workspace can read one identity.
-    readonly property string selectedEntryId: servicePanel.selectedEntryId
+    readonly property string selectedEntryId: libraryBrowser.selectedEntryId
 
     function focusSearch() {
         libraryBrowser.focusSearch()
@@ -78,31 +77,17 @@ SidePanel {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            height: Math.max(100, Math.min(parent.height - 130,
-                Math.max(minimumUsefulHeight, Math.round(parent.height * 0.47))))
+            anchors.bottom: serviceDirText.top
             editingEnabled: playlistPanel.editingEnabled
-            onServiceFocusRequested: {
-                servicePanel.forceActiveFocus()
-                playlistPanel.serviceEntryChosen("")
-            }
+            // An explicit add hands the operator the service it landed in.
+            onServiceFocusRequested: playlistPanel.serviceEntryChosen("")
+            onServiceEntryChosen: entryId => playlistPanel.serviceEntryChosen(entryId)
             onSongChosen: songId => playlistPanel.songChosen(songId)
             onPresentationChosen: showId => playlistPanel.sourceChosen("show", showId)
             onThemeMenuRequested: (showId, x, y) => {
                 playlistPanel.contextShowId = showId
                 showThemeMenu.popup(x, y)
             }
-        }
-
-        CurrentServicePanel {
-            id: servicePanel
-            objectName: "currentServicePanel"
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: libraryBrowser.bottom
-            anchors.bottom: serviceDirText.top
-            anchors.topMargin: 6
-            editingEnabled: playlistPanel.editingEnabled
-            onEntryChosen: entryId => playlistPanel.serviceEntryChosen(entryId)
         }
 
         Text {

@@ -8,7 +8,10 @@ import QtQuick
  * outline per box in draw order, handles on the SELECTED box only, a
  * press that selects the topmost box under the pointer, drag to move and
  * a corner to resize — either commits once on release, one undo entry per
- * gesture.
+ * gesture. A move gesture whose box centre comes within a few screen
+ * pixels of the canvas centre snaps that axis exactly onto it and draws a
+ * guide line (review 2026-11-10), the same rule ThemeEditorPage's
+ * placement layer and the geometry row's Centre H/V buttons use.
  *
  * What is inside the boxes is the worker's own render (task 6.16a): the
  * slide is prepared and drawn into the preview stream's off-air target,
@@ -25,6 +28,7 @@ import QtQuick
  */
 Item {
     id: canvas
+    objectName: "editCanvas"
 
     // Handles shown on the selected box ("" between gestures hides them
     // without moving the selection).
@@ -50,11 +54,32 @@ Item {
     property string dragMode: ""
     property point dragOrigin
     property rect startBox
+    // Centre snapping: a move gesture whose box centre comes within a few
+    // SCREEN pixels of the canvas centre lands exactly on it, with a guide
+    // line saying why. The tolerance is converted to authored units so it
+    // feels the same at every window size.
+    property bool snappedX: false
+    property bool snappedY: false
+    readonly property real snapTolerance: 6 / Math.max(zoom, 0.0001)
 
     readonly property color canvasColor: docs.currentTheme.backgroundColor || "#000000"
 
     function clamp(v, lo, hi) {
         return Math.max(lo, Math.min(hi, v))
+    }
+
+    // The shared snap rule (see ThemeEditorPage's placement layer): keep the
+    // size, pull either axis onto the 1920x1080 centre when it is within
+    // `tolerance` authored units. Exposed so the gesture and its fixture
+    // agree on one answer.
+    function snappedCentre(x, y, w, h, tolerance) {
+        let sx = x
+        let sy = y
+        if (Math.abs((x + w / 2) - 960) <= tolerance)
+            sx = 960 - w / 2
+        if (Math.abs((y + h / 2) - 540) <= tolerance)
+            sy = 540 - h / 2
+        return Qt.rect(sx, sy, w, h)
     }
 
     function syncFromDocuments() {
@@ -129,10 +154,18 @@ Item {
     // below it the box cannot be grabbed back by its own handles.
     function applyDrag(dx, dy) {
         if (dragMode === "move") {
-            boxX = clamp(startBox.x + dx, 0, 1920 - startBox.width)
-            boxY = clamp(startBox.y + dy, 0, 1080 - startBox.height)
+            const nx = clamp(startBox.x + dx, 0, 1920 - startBox.width)
+            const ny = clamp(startBox.y + dy, 0, 1080 - startBox.height)
+            const snapped = snappedCentre(nx, ny, startBox.width, startBox.height,
+                                          snapTolerance)
+            boxX = snapped.x
+            boxY = snapped.y
+            snappedX = Math.abs((boxX + startBox.width / 2) - 960) < 0.5
+            snappedY = Math.abs((boxY + startBox.height / 2) - 540) < 0.5
             return
         }
+        snappedX = false
+        snappedY = false
         const min = 20
         const right = startBox.x + startBox.width
         const bottom = startBox.y + startBox.height
@@ -220,6 +253,29 @@ Item {
             }
         }
 
+        // The centre guides: one line per axis that the gesture has
+        // snapped, so the operator sees the reason the box stopped moving.
+        Rectangle {
+            objectName: "centreGuideX"
+            visible: canvas.dragMode === "move" && canvas.snappedX
+            x: stage.x + stage.width / 2
+            y: stage.y
+            width: 1
+            height: stage.height
+            color: "#ffd666"
+            z: 5
+        }
+        Rectangle {
+            objectName: "centreGuideY"
+            visible: canvas.dragMode === "move" && canvas.snappedY
+            x: stage.x
+            y: stage.y + stage.height / 2
+            width: stage.width
+            height: 1
+            color: "#ffd666"
+            z: 5
+        }
+
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.LeftButton
@@ -257,6 +313,8 @@ Item {
                 canvas.dragOrigin = Qt.point(mouse.x, mouse.y)
                 canvas.startBox = Qt.rect(canvas.boxX, canvas.boxY,
                                           canvas.boxW, canvas.boxH)
+                canvas.snappedX = false
+                canvas.snappedY = false
             }
             onPositionChanged: function (mouse) {
                 if (canvas.dragMode === "" || !canvas.hasSlide) {
@@ -270,6 +328,8 @@ Item {
                     return
                 }
                 canvas.dragMode = ""
+                canvas.snappedX = false
+                canvas.snappedY = false
                 // Whole authored pixels: the same coordinates the X/Y/W/H
                 // fields show, and a clean value for the history entry.
                 docs.setTextBoxGeometry(Math.round(canvas.boxX), Math.round(canvas.boxY),

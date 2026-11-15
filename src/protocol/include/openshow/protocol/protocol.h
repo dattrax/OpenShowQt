@@ -132,7 +132,12 @@ namespace openshow::protocol {
 // otherwise, because drawing an enabled stroke that nobody told the worker
 // about is the silent omission the wire has refused since 6.8a. Scene 4
 // with the contract defaults is always safe: it is what a scene-3 payload
-// means.
+// means. Scene 6 (review 2026-11-10) adds the style block's "underline"
+// boolean; scene 5's transparent-background format and scene 4's style
+// block keep readers, and the bump is what refuses a decorated payload by
+// a worker that predates it rather than drawing it unstyled. No new
+// capability is needed: the scene number is the gate, because a reader
+// that does not know the format refuses the whole payload.
 // Minor 16 (task TS.3, theme-editor review) grows text.measure into its
 // second version: blocks may carry the resolved STYLE — fontWeight,
 // fontStyle, fitMode, minFontSize and the whole stroke/shadow effect
@@ -189,8 +194,17 @@ namespace openshow::protocol {
 // present and the status line says the cue moves on the worker's own clock —
 // an operator who pressed Go is owed the next slide, so the gate downgrades and
 // speaks rather than stranding the audience on the previous cue.
+// Minor 19 (media library) gives audio a cue of its own: scene format 7 adds
+// the optional "audio" block (the show's track, mixed with the background
+// video's embedded audio by the same transport), output.status.media gains
+// the "audio" source identity and the master "muted" flag, and media.mute
+// accepts source "all" — one switch over every media source, settable before
+// a cue is on air. media.gain refuses "all". The capability
+// "media.show-audio.v1" names a worker that PLAYS that layer; a pre-19 worker
+// refuses the scene 7 payload by format number, never drawing a cue whose
+// track it would silently drop.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 18;
+inline constexpr std::uint32_t kProtocolMinor = 19;
 
 // The capability that names a worker DRAWING the scene 4 style block.
 // Defined here so the frontend's pre-send gate and the worker's hello name
@@ -234,6 +248,9 @@ inline constexpr const char* kCapabilityMediaDescribe = "media.describe.v1";
 inline constexpr const char* kMethodMediaDescribe = "media.describe";
 // MB.6: a video's first frame as a base64 PNG, bounded by the requested box.
 inline constexpr const char* kCapabilityMediaThumbnail = "media.thumbnail.v1";
+// Minor 19: this worker plays a show's own audio layer and honours the master
+// media-audio mute (media.mute "all").
+inline constexpr const char* kCapabilityShowAudio = "media.show-audio.v1";
 inline constexpr const char* kMethodMediaThumbnail = "media.thumbnail";
 
 // preview.select {"revision":r,"request":g} (task 6.16a, review R16):
@@ -323,11 +340,14 @@ inline constexpr const char* kMethodMediaError = "media.error";
 //   media.mute   {"source":n,"mute":m}.
 // Source names are the registered audio identities below; asking for one
 // this transport does not have is a refused request naming it, not a
-// silent no-op. Every command answers {"pending":true} — the ops are
-// applied by the transport's own thread — and output.status.media is the
-// acknowledgement (loop, duration, position, sources[].gain/muted), the
-// same rule scenes and layers already follow: confirmation comes from
-// what the audience actually has.
+// silent no-op. "all" is the master mute: one switch over every media
+// source (the background's own audio and the show's audio layer), and the
+// only identity that is legal without a transport, because the operator
+// may switch audio off before a cue is on air. Every command answers
+// {"pending":true} — the ops are applied by the transport's own thread —
+// and output.status.media is the acknowledgement (loop, duration,
+// position, muted, sources[].gain/muted), the same rule scenes and layers
+// already follow: confirmation comes from what the audience actually has.
 inline constexpr const char* kMethodMediaPlay = "media.play";
 inline constexpr const char* kMethodMediaPause = "media.pause";
 inline constexpr const char* kMethodMediaSeek = "media.seek";
@@ -360,11 +380,19 @@ inline constexpr const char* kMethodMediaMute = "media.mute";
 // describe it).
 inline constexpr const char* kMethodMediaStandalone = "media.standalone";
 
-// Audio source identities on the wire (task 6.15a). "video" is the clip's
-// embedded audio; "standalone" is the separate track — named now so the
-// wire does not change when 6.15b gives it a production lifetime.
+// Audio source identities on the wire (task 6.15a). "video" is the
+// background clip's embedded audio; "audio" is the show's own audio layer
+// (the media library's track, mixed beside the video's by the same
+// transport); "standalone" is the separate production track — kept for the
+// API's history. "all" is the MASTER MUTE target: media.mute with it
+// silences every media source at once (video and audio alike) without
+// changing any source's own gain or mute answer, and output.status.media
+// carries the result as its "muted" flag. media.gain refuses "all" — a
+// master volume would be a second mixer beside the per-source one.
 inline constexpr const char* kMediaSourceVideo = "video";
+inline constexpr const char* kMediaSourceAudio = "audio";
 inline constexpr const char* kMediaSourceStandalone = "standalone";
+inline constexpr const char* kMediaSourceAll = "all";
 
 // text.measure {"blocks":[{"key":"b0","lines":["line","line"],
 //                 "fontSize":60.0,"width":960.0,"lineSpacing":1.25}, ...]}

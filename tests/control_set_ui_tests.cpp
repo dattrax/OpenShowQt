@@ -323,11 +323,25 @@ bool captureControlSets(const QString& prefix) {
                       "handles track the rectangle through both views, window sizes and display scales");
             }
             if (!view.isEmpty()) {
-                auto* browse = window->findChild<QQuickItem*>("themeEditorContextFontBrowse");
+                auto* family = window->findChild<QQuickItem*>("themeEditorContextFont");
                 auto* sizeField = window->findChild<QQuickItem*>("themeEditorContextSize");
-                check(browse && browse->isVisible() && browse->isEnabled()
+                check(family && family->isVisible() && family->property("readOnly").toBool()
                       && sizeField && sizeField->property("text").toString() == "48",
-                      "Bible has the worker font browser and its own size in the actual inspector");
+                      "Bible's typeface field is the worker-list trigger and its size rides beside it");
+                if (size.width() == 1680) {
+                    auto* popup = window->findChild<QObject*>("themeEditorContextFontPopup");
+                    check(popup != nullptr, "the typeface row carries its drop-down");
+                    if (popup) {
+                        QMetaObject::invokeMethod(popup, "open");
+                        QTest::qWait(120);
+                        check(popup->property("visible").toBool(),
+                              "the typeface drop-down opens under the field");
+                        QMetaObject::invokeMethod(popup, "close");
+                        QTest::qWait(80);
+                        check(!popup->property("visible").toBool(),
+                              "the drop-down closes without taking the page hostage");
+                    }
+                }
             }
             save(view.isEmpty() ? "themes" : "themes-bible", size);
         }
@@ -343,11 +357,11 @@ bool captureControlSets(const QString& prefix) {
               "the inherited Bible appearance is rendered after Reset Bible");
         auto* fields = window->findChild<QQuickItem*>("themeEditorContextFields");
         auto* sizeField = window->findChild<QQuickItem*>("themeEditorContextSize");
-        auto* browse = window->findChild<QQuickItem*>("themeEditorContextFontBrowse");
+        auto* family = window->findChild<QQuickItem*>("themeEditorContextFont");
         check(!docs.themeContext(theme, "scripture").value("set").toBool()
                   && fields && fields->isVisible() && sizeField && sizeField->isVisible()
                   && sizeField->property("text").toString() == "64"
-                  && browse && browse->isEnabled()
+                  && family && family->property("readOnly").toBool()
                   && !window->findChild<QQuickItem*>("themeEditorBoxLabel"),
               "Bible controls stay visible and editable without a context, and no box label is painted");
         save("themes-bible-inherited", size);
@@ -514,9 +528,22 @@ int main(int argc, char** argv) {
     check(strip->property("color").toString() == "#7c2c28", "the live marker still outranks section colours");
     card->setProperty("live", false);
     card->setProperty("showSectionLabel", true);
-    card->setProperty("sectionLabel", "");
     card->setProperty("sectionSuffix", "");
-    check(card->property("displayCaption") == card->property("caption"),
+    // A slide number leads the strip; a continuation keeps the number while
+    // its repeated section name stays hidden.
+    card->setProperty("ordinal", "7");
+    check(card->property("displayCaption").toString() == "7  Chorus",
+          "a slide number leads the section marking");
+    card->setProperty("showSectionLabel", false);
+    check(card->property("displayCaption").toString() == "7",
+          "a continuation keeps its number but not the repeated section name");
+    card->setProperty("sectionLabel", "");
+    card->setProperty("caption", "First lyric line");
+    check(card->property("displayCaption").toString() == "7  First lyric line",
+          "an ordinary caption is led by its slide number too");
+    card->setProperty("ordinal", "");
+    check(card->property("displayCaption") == card->property("caption")
+              && card->property("displayCaption").toString() == "First lyric line",
           "Bible and ordinary presentation captions retain their existing text");
 
     // The actual Bible page with populated provider data, not just its empty

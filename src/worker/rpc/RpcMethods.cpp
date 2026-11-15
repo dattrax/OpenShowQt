@@ -575,6 +575,7 @@ boost::json::object statusParams(const OutputSession::Status& status) {
                                                               {"live", status.media.live},
                                                               {"loop", status.media.loop},
                                                               {"duration", status.media.duration},
+                                                              {"muted", status.media.muted},
                                                               {"sources", sourcesArray(status.media)},
                                                               {"standalone",
                                                                standaloneStatus(status.media.standalone)}}}};
@@ -1316,8 +1317,12 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
                 openshow::worker::OutputSession::AudioSource::kVideo;
             if (sourceName == proto::kMediaSourceVideo) {
                 identity = openshow::worker::OutputSession::AudioSource::kVideo;
+            } else if (sourceName == proto::kMediaSourceAudio) {
+                identity = openshow::worker::OutputSession::AudioSource::kAudio;
             } else if (sourceName == proto::kMediaSourceStandalone) {
                 identity = openshow::worker::OutputSession::AudioSource::kStandalone;
+            } else if (sourceName == proto::kMediaSourceAll) {
+                identity = openshow::worker::OutputSession::AudioSource::kAll;
             }
             double gain = 0.0;
             bool muted = false;
@@ -1332,10 +1337,15 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
                 }
             }
             std::string refusal;
-            if (sourceName != proto::kMediaSourceVideo &&
-                sourceName != proto::kMediaSourceStandalone) {
+            const bool knownSource = sourceName == proto::kMediaSourceVideo ||
+                                     sourceName == proto::kMediaSourceAudio ||
+                                     sourceName == proto::kMediaSourceStandalone ||
+                                     sourceName == proto::kMediaSourceAll;
+            if (!knownSource) {
                 refusal = "unknown audio source '" + proto::clippedForEcho(sourceName) +
-                          "'; expected 'video' or 'standalone'";
+                          "'; expected 'video', 'audio', 'standalone' or 'all'";
+            } else if (isGain && sourceName == proto::kMediaSourceAll) {
+                refusal = "media.gain needs one source, not 'all'";
             } else if (!valueOk) {
                 refusal = isGain ? "media.gain requires a gain within [0, 1]"
                                  : "media.mute requires a mute boolean";

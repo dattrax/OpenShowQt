@@ -822,6 +822,7 @@ namespace {
 bool styleFromMap(const QVariantMap& style, openshow::domain::ThemeTextStyle* out,
                   std::string* error) {
     static const QStringList kAllowed{QStringLiteral("fontWeight"), QStringLiteral("fontStyle"),
+                                      QStringLiteral("fontUnderline"),
                                       QStringLiteral("fitMode"), QStringLiteral("minFontSize"),
                                       QStringLiteral("stroke"), QStringLiteral("shadow")};
     for (const QString& key : style.keys()) {
@@ -843,6 +844,14 @@ bool styleFromMap(const QVariantMap& style, openshow::domain::ThemeTextStyle* ou
     }
     if (style.contains(QStringLiteral("fontStyle"))) {
         out->fontStyle = style.value(QStringLiteral("fontStyle")).toString().toStdString();
+    }
+    if (style.contains(QStringLiteral("fontUnderline"))) {
+        const QVariant value = style.value(QStringLiteral("fontUnderline"));
+        if (value.userType() != QMetaType::Bool) {
+            *error = "font underline must be true or false";
+            return false;
+        }
+        out->fontUnderline = value.toBool();
     }
     if (style.contains(QStringLiteral("fitMode"))) {
         out->fitMode = style.value(QStringLiteral("fitMode")).toString().toStdString();
@@ -1146,6 +1155,7 @@ bool DocumentController::setThemeTextStyleField(const QString& themeId, const QS
             openshow::domain::ThemeTextStyle next;
             next.fontWeight = theme->fontWeight;
             next.fontStyle = theme->fontStyle;
+            next.fontUnderline = theme->fontUnderline;
             next.fitMode = theme->fitMode;
             next.minFontSize = theme->minFontSize;
             next.stroke = theme->stroke;
@@ -1227,6 +1237,16 @@ bool DocumentController::setThemeTextStyleField(const QString& themeId, const QS
                     } else {
                         next.fitMode = word;
                     }
+                }
+            } else if (field == QLatin1String("fontUnderline")) {
+                if (clears) {
+                    next.fontUnderline = std::nullopt;
+                } else {
+                    if (!boolean(value)) {
+                        error = "font underline must be true or false";
+                        return false;
+                    }
+                    next.fontUnderline = value.toBool();
                 }
             } else if (field == QLatin1String("minFontSize")) {
                 if (clears) {
@@ -1532,8 +1552,8 @@ bool DocumentController::createThemeFromCurrent(const QString& name) {
     // record travels as the explicit refusal it is, and the new theme
     // wearing itself later draws exactly the pixels this slide draws now.
     const openshow::domain::ThemeTextStyle style{
-        base.fontWeight, base.fontStyle, base.fitMode, base.minFontSize, base.stroke,
-        base.shadow};
+        base.fontWeight, base.fontStyle, base.fontUnderline, base.fitMode, base.minFontSize,
+        base.stroke, base.shadow};
     std::string error;
     openshow::domain::Id created;
     if (!edit([&] {
@@ -1651,6 +1671,7 @@ bool DocumentController::duplicateTheme(const QString& themeId) {
             openshow::domain::ThemeTextStyle style;
             style.fontWeight = source.fontWeight;
             style.fontStyle = source.fontStyle;
+            style.fontUnderline = source.fontUnderline;
             style.fitMode = source.fitMode;
             style.minFontSize = source.minFontSize;
             style.stroke = source.stroke;
@@ -1792,6 +1813,7 @@ QVariantMap DocumentController::themeSampleAppearance(const QString& themeId,
         // shows what 400 normal shrink black-no-ink it actually means. The
         // effect records travel whole, exactly as a scene's do.
         out.insert(QStringLiteral("fontStyle"), QString::fromStdString(look.fontStyle));
+        out.insert(QStringLiteral("fontUnderline"), look.fontUnderline);
         out.insert(QStringLiteral("fontWeight"), look.fontWeight);
         out.insert(QStringLiteral("fitMode"), QString::fromStdString(look.fitMode));
         out.insert(QStringLiteral("minFontSize"), look.minFontSize);
@@ -1897,6 +1919,7 @@ QVariantMap DocumentController::fixtureBoxStyle(bool scripture) const {
         // packing is the controller's seam.
         style.insert(QStringLiteral("fontWeight"), item.fontWeight);
         style.insert(QStringLiteral("fontStyle"), QString::fromStdString(item.fontStyle));
+        style.insert(QStringLiteral("fontUnderline"), item.underline);
         style.insert(QStringLiteral("fitMode"), QString::fromStdString(item.fitMode));
         style.insert(QStringLiteral("minFontSize"), item.minFontSize);
         QVariantMap stroke;
@@ -2048,6 +2071,7 @@ QVariantMap DocumentController::slideAppearance() const {
     // inherited effect" is a value the inspector must be able to show.
     field("fontWeight", look.fontWeight, has("fontWeight"));
     field("fontStyle", QString::fromStdString(look.fontStyle), has("fontStyle"));
+    field("fontUnderline", look.fontUnderline, has("fontUnderline"));
     field("fitMode", QString::fromStdString(look.fitMode), has("fitMode"));
     field("minFontSize", look.minFontSize, has("minFontSize"));
     QVariantMap strokeRow;
@@ -2100,8 +2124,9 @@ bool DocumentController::customizeCurrentSlide(const QString& field, const QVari
          : name == "fontFamily"       ? changed.fontFamily
                                       : changed.align)
             = value.toString().toStdString();
-    } else if (name == "fontWeight" || name == "fontStyle" || name == "fitMode" ||
-               name == "minFontSize" || name == "stroke" || name == "shadow") {
+    } else if (name == "fontWeight" || name == "fontStyle" || name == "fontUnderline" ||
+               name == "fitMode" || name == "minFontSize" || name == "stroke" ||
+               name == "shadow") {
         // The TS.1 fields (task TS.1): ONE field's edit passes the theme
         // verb's own shape check by way of a one-field map, so a stringy
         // weight, an off-list word or half an effect record is refused
@@ -2135,6 +2160,9 @@ bool DocumentController::customizeCurrentSlide(const QString& field, const QVari
         }
         if (styled.fontStyle.has_value()) {
             changed.fontStyle = styled.fontStyle;
+        }
+        if (styled.fontUnderline.has_value()) {
+            changed.fontUnderline = styled.fontUnderline;
         }
         if (styled.fitMode.has_value()) {
             changed.fitMode = styled.fitMode;
@@ -2622,7 +2650,11 @@ QVariantMap DocumentController::showInfo(const QString& showId) const {
     if (!show) return {};
     return {{"id", QString::fromStdString(show->id)},
             {"name", QString::fromStdString(show->name)},
-            {"defaultThemeId", QString::fromStdString(show->defaultThemeId)}};
+            {"defaultThemeId", QString::fromStdString(show->defaultThemeId)},
+            // The show's own audio layer, so a running-order row can say a
+            // cue carries a track without asking the worker (which may not
+            // be connected and is not the authoring authority).
+            {"audioAssetId", QString::fromStdString(show->audioAssetId)}};
 }
 
 QVariantList DocumentController::slidesOf(const QString& showId) const {
@@ -3169,18 +3201,38 @@ bool DocumentController::importMediaFile(const QString& filePath) {
     return true;
 }
 
-bool DocumentController::addCameraAsset(const QString& name, const QString& source) {
+bool DocumentController::addCameraAsset(const QString& name, const QString& source,
+                                        bool mirror) {
     flushText();
     std::string error;
     openshow::domain::Id created;
     if (!edit([&] {
             created = fDocuments.addCameraAsset(name.toStdString(), source.toStdString(),
                                                 &error);
-            return !created.empty();
+            if (created.empty()) {
+                return false;
+            }
+            // ND.9: the picker's mirror answer is part of the same creation
+            // — one undo removes the camera and its orientation together.
+            return !mirror || fDocuments.setCameraMirror(created, true, &error);
         })) {
         setStatus(QStringLiteral("add camera: %1").arg(QString::fromStdString(error)));
         return false;
     }
+    return true;
+}
+
+bool DocumentController::setCameraMirror(const QString& assetId, bool mirror) {
+    flushText();
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setCameraMirror(assetId.toStdString(), mirror, &error);
+        })) {
+        setStatus(QStringLiteral("camera mirror: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    setStatus(mirror ? QStringLiteral("camera picture mirrored")
+                     : QStringLiteral("camera picture unmirrored"));
     return true;
 }
 
@@ -3218,16 +3270,19 @@ bool DocumentController::addMediaCue(const QString& assetId, int index) {
         setStatus(QStringLiteral("media cue: no such media item"));
         return false;
     }
-    // A cue is a picture the audience watches: a video, a still or a live
-    // camera. Audio is a production-track action (it is never a slide's
-    // picture) and an "other" file has nothing to draw, so neither can become
-    // a cue from this drop.
+    // A cue is one thing the audience receives: a video, a still or a live
+    // camera as the picture, or an audio file as the cue's own track. Audio
+    // becomes a one-slide cue with no picture — the same shape a video cue
+    // has, minus the frame — so it is dragged, ordered and presented like
+    // every other media cue instead of being a separate transport with its
+    // own Play button. "Other" has nothing to draw and no track to play.
     const openshow::domain::AssetKind kind = openshow::domain::assetKind(*asset);
-    if (kind != openshow::domain::AssetKind::Video &&
+    const bool audioCue = kind == openshow::domain::AssetKind::Audio;
+    if (!audioCue && kind != openshow::domain::AssetKind::Video &&
         kind != openshow::domain::AssetKind::Picture &&
         kind != openshow::domain::AssetKind::Camera) {
         setStatus(QStringLiteral(
-            "media cue: only a video, a picture or a camera can become a cue"));
+            "media cue: only a video, a picture, a camera or audio can become a cue"));
         return false;
     }
     if (fCurrentPlaylistId.empty()) {
@@ -3280,12 +3335,22 @@ bool DocumentController::addMediaCue(const QString& assetId, int index) {
                                    &error)) {
             return false;
         }
-        if (!fDocuments.setSlideBackground(show, slide, assetIdValue, &error)) {
-            return false;
-        }
-        if (!fDocuments.setSlideBackgroundFit(
-                show, slide, openshow::domain::BackgroundFit::Cover, &error)) {
-            return false;
+        if (audioCue) {
+            // An audio cue is one slide with no picture and the show's own
+            // audio layer. The slide exists so the cue orders, presents and
+            // receives a transition like every other cue; the track is the
+            // content.
+            if (!fDocuments.setShowAudio(show, assetIdValue, &error)) {
+                return false;
+            }
+        } else {
+            if (!fDocuments.setSlideBackground(show, slide, assetIdValue, &error)) {
+                return false;
+            }
+            if (!fDocuments.setSlideBackgroundFit(
+                    show, slide, openshow::domain::BackgroundFit::Cover, &error)) {
+                return false;
+            }
         }
         return !fDocuments
                     .insertPlaylistEntry(fCurrentPlaylistId, show, std::string(), at,
@@ -3297,6 +3362,22 @@ bool DocumentController::addMediaCue(const QString& assetId, int index) {
         return false;
     }
     setStatus(QStringLiteral("media cue added"));
+    return true;
+}
+
+bool DocumentController::setShowAudioFor(const QString& showId,
+                                         const QString& assetId) {
+    flushText();
+    std::string error;
+    if (!edit([&] {
+            return fDocuments.setShowAudio(showId.toStdString(), assetId.toStdString(),
+                                          &error);
+        })) {
+        setStatus(QStringLiteral("show audio: %1").arg(QString::fromStdString(error)));
+        return false;
+    }
+    setStatus(assetId.isEmpty() ? QStringLiteral("show audio removed")
+                                : QStringLiteral("show audio set"));
     return true;
 }
 
@@ -3356,6 +3437,9 @@ int DocumentController::removeUnusedAssets() {
         const openshow::domain::Show* show = fDocuments.findShow(showId);
         if (show == nullptr) {
             continue;
+        }
+        if (!show->audioAssetId.empty()) {
+            referenced.insert(show->audioAssetId);
         }
         for (const openshow::domain::Slide& slide : show->slides) {
             if (!slide.backgroundAssetId.empty()) {

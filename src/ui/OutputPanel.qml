@@ -3,13 +3,13 @@ import QtQuick.Controls
 
 // UI.5: the right rail is the show's runtime monitor, arranged the way the
 // plan's diagram draws it — the audience picture with compact clear controls
-// BESIDE it, the media transport beneath, and the production audio area
-// below that. Nothing here configures the output: no routing, no layers, no
-// renderer settings (those live in Settings), and no control speaks ahead of
-// the worker. Every enabled state, every marker and every number on this
-// rail mirrors an acknowledged status report; the rail itself decides
-// nothing, sends nothing except through the controller's confirmed commands,
-// and never lets a browse or a selection imply air.
+// BESIDE it, and the media transport beneath. Nothing here configures the
+// output: no routing, no layers, no renderer settings (those live in
+// Settings), and no control speaks ahead of the worker. Every enabled state,
+// every marker and every number on this rail mirrors an acknowledged status
+// report; the rail itself decides nothing, sends nothing except through the
+// controller's confirmed commands, and never lets a browse or a selection
+// imply air.
 //
 // The clear controls are the reference's pair shape: a small red action over
 // its label, one pair per layer the product can clear, each pair disabled
@@ -18,17 +18,16 @@ import QtQuick.Controls
 // a restore exists it becomes "Restore", which is exactly what the worker
 // still holds.
 //
-// The audio area replaces the interim file chooser. What can be cued from
-// here is the service's PREPARED audio — the bin's rows whose kind the
-// domain's one name rule calls audio, not a dialog's guess from a list of
-// extensions. Picking one from the list sends nothing (selection is
-// browsing); Play activates it as the worker's independent production track
-// — the same command and same acknowledged block as the bin's cue, so the
-// two can never disagree about what is playing — and Stop is the removal.
-// Whether a file will play remains the worker's probe's answer: this rail
-// shows the file's NAME (Show names files; the worker's full sentence lives
-// in the bin's Edit details) and it never marks air before the status block
-// does.
+// Audio is a cue like every other kind, so it has no separate area or Play
+// button here: the transport governs whatever is on air, video or audio
+// alike. The one audio-layer control is the audience mute at the TOP of the
+// rail — one switch that silences the background's embedded audio and the
+// show's own audio layer together through media.mute source "all". It sits
+// with the picture and the layer clears rather than inside a source's row,
+// so it is never "this source's mute": whatever is on air is silenced, and
+// releasing it restores the mix underneath. The per-source rows below the
+// transport keep only the worker's gain echo, each labelled as a volume, so
+// the operator shapes each layer under the master without a second mute.
 SidePanel {
     id: outputPanel
     side: "right"
@@ -36,46 +35,37 @@ SidePanel {
     readonly property string destinationName: worker.currentMonitor < 0 ? "Windowed"
         : (worker.displays.filter(d => d.index === worker.currentMonitor).map(d => d.name).join("") || "Audience display")
 
-    // The cues this area can fire: prepared assets, by the kind the domain
-    // owns. A name nothing presents and a video with no runtime of its own
-    // are not offered — their story is told in the bin (UI.4).
-    readonly property var audioCues: docs.assets.filter(a => a.kind === "audio")
-    readonly property var selectedCue: {
-        const i = audioCueCombo.currentIndex
-        return i >= 0 && i < outputPanel.audioCues.length ? outputPanel.audioCues[i] : ({})
+    // The background transport's wire position is LOOP-CONTINUOUS: a looping
+    // clip's clock keeps climbing past its length instead of restarting at 0,
+    // because that continuity is what its pacing and absolute seeks need (the
+    // worker's status carries exactly that clock, and its tests assert it).
+    // The rail shows the clip the audience is ACTUALLY in, so the position
+    // wraps back into the clip. Without the wrap the slider's range is
+    // 0..duration while the reported position runs past it: after the first
+    // repeat the slider pins at the right edge and never returns to the
+    // start, even though the picture is playing the clip again. A finished
+    // clip with loop off keeps its end — that really is where it stopped —
+    // rather than claiming a restart nobody asked for.
+    function transportPositionOf(position, duration, looping) {
+        if (position < 0 || duration <= 0 || position < duration)
+            return position
+        return looping ? position % duration : duration
     }
-    // Air is whatever the status block says, never the press: this cue is
-    // live only while the track on air names the same file.
-    readonly property bool cueLive: worker.standaloneOnAir
-                                    && !!outputPanel.selectedCue.sourcePath
-                                    && outputPanel.selectedCue.sourcePath === worker.standalonePath
-    readonly property bool cueRefused: {
-        const cue = outputPanel.selectedCue
-        return worker.standaloneRefusal !== "" && !!cue.sourcePath
-               && cue.sourcePath === worker.standaloneRefusalPath
-    }
-    readonly property bool standaloneMuted: {
-        for (const s of worker.mediaSources) if (s.id === "standalone") return !!s.muted
-        return false
-    }
-    // The one sentence this area says about audio. Its order is the
-    // operator's: a track that died mid-air first, then what is actually on
-    // air, then what stands between the selection and sound.
-    readonly property string audioStatus: {
-        if (worker.standaloneError !== "")
-            return "cannot play audio: " + outputPanel.fileName(worker.standalonePath)
-        if (worker.standaloneOnAir) {
-            const pos = worker.standalonePosition >= 0
-                        ? " \u00b7 " + worker.standalonePosition.toFixed(1) + " s" : ""
-            return outputPanel.fileName(worker.standalonePath) + " on air" + pos
-                   + (outputPanel.standaloneMuted ? " \u00b7 muted" : "")
-        }
-        if (outputPanel.audioCues.length === 0)
-            return "no prepared audio \u2014 import it in the media bin"
-        if (!worker.connected) return "no output connected \u2014 nothing can play"
-        if (outputPanel.cueRefused)
-            return "cannot play " + outputPanel.fileName(outputPanel.selectedCue.sourcePath)
-        return "pick a cue and press Play"
+    readonly property real transportPosition:
+        transportPositionOf(worker.mediaPosition, worker.mediaDuration, worker.mediaLoop)
+    // People read a running time as minutes and seconds, not tenths of
+    // seconds: once either end reaches a minute the readout switches to
+    // m:ss for BOTH numbers (0:07 / 4:28), and keeps one decimal only in the
+    // short clips where tenths are still useful.
+    readonly property bool clockFormat:
+        transportPosition >= 60 || worker.mediaDuration >= 60
+    function clockText(seconds, useClock) {
+        if (seconds < 0) return "\u2014"
+        if (!useClock) return seconds.toFixed(1) + " s"
+        const total = Math.round(seconds)
+        const minutes = Math.floor(total / 60)
+        const rest = total % 60
+        return minutes + ":" + (rest < 10 ? "0" : "") + rest
     }
 
     // The reference's per-layer clear pair (ClearButtons.svelte): a 24px red
@@ -122,36 +112,58 @@ SidePanel {
         }
     }
 
-    // One source of the acknowledged mix: gain and mute as the worker
-    // reports them, sent back as media.gain/media.mute and then confirmed
-    // by the next status block — a refused change snaps the control back.
+    // The label a mix row wears: the source's audience-facing name plus the
+    // one word that says what its slider does. A function, so the workspace
+    // test reads the same sentence the operator does and a source the
+    // transport reports without a friendly name still names itself.
+    function sourceName(id) {
+        return id === "video" ? "Video audio"
+             : (id === "audio" ? "Show audio" : id)
+    }
+    function sourceVolumeLabel(id) { return sourceName(id) + " volume" }
+
+    // One source's volume, as the worker reports it: the gain echo is sent
+    // back as media.gain and then confirmed by the next status block — a
+    // refused change snaps the slider back. Mute lives once at the top of the
+    // rail, so these rows are volumes and nothing else: the label says so and
+    // the percentage reads the acknowledged value.
     component SourceMix: Column {
+        id: sourceMix
         required property var source
         property string label: ""
         spacing: 2
-        Text { text: SourceMix.label; color: "#b0b0b0"; font.pixelSize: 11 }
-        Row {
+        Item {
             width: parent.width
-            spacing: 6
-            Slider {
-                id: gainSlider
-                width: Math.max(60, parent.width - muteCheck.width - 6)
-                from: 0; to: 1
-                value: SourceMix.source ? SourceMix.source.gain : 0
-                onMoved: worker.setMediaGain(SourceMix.source.id, value)
-                Connections {
-                    target: worker
-                    function onMediaChanged() {
-                        if (!gainSlider.pressed && SourceMix.source)
-                            gainSlider.value = SourceMix.source.gain
-                    }
-                }
+            height: volumeLabel.implicitHeight
+            Text {
+                id: volumeLabel
+                text: sourceMix.label
+                color: "#b0b0b0"; font.pixelSize: 11
             }
-            CheckBox {
-                id: muteCheck
-                text: "Mute"; font.pixelSize: 12
-                checked: SourceMix.source ? !!SourceMix.source.muted : false
-                onToggled: worker.setMediaMute(SourceMix.source.id, checked)
+            Text {
+                anchors.right: parent.right
+                anchors.baseline: volumeLabel.baseline
+                text: Math.round(gainSlider.value * 100) + "%"
+                color: "#8f8f8f"; font.pixelSize: 11
+            }
+        }
+        Slider {
+            id: gainSlider
+            objectName: "sourceGainSlider"
+            Accessible.name: sourceMix.label
+            width: parent.width
+            from: 0; to: 1
+            value: sourceMix.source ? sourceMix.source.gain : 0
+            // The handler runs before the binding re-evaluates, so the
+            // guard is what keeps a status tick from reaching a source
+            // that has just gone away (a scene swap while dragged).
+            onMoved: if (sourceMix.source) worker.setMediaGain(sourceMix.source.id, value)
+            Connections {
+                target: worker
+                function onMediaChanged() {
+                    if (!gainSlider.pressed && sourceMix.source)
+                        gainSlider.value = sourceMix.source.gain
+                }
             }
         }
     }
@@ -163,11 +175,37 @@ SidePanel {
     Item {
         anchors.fill: parent
         anchors.margins: 10
-        Text {
+        // The audience header: the rail's name on the left and its one MUTE
+        // control on the right. The mute belongs here, above the monitor and
+        // the layer clears, because it is an operation on the audience's
+        // whole sound rather than on a named source: one press silences the
+        // background's embedded audio and the show track together, and the
+        // next press gives back the mix the volume rows below describe.
+        Item {
             id: title
-            height: 24
-            color: "#bbbbbb"; font.pixelSize: 11; font.bold: true
-            text: "AUDIENCE"
+            objectName: "audienceHeader"
+            width: parent.width
+            height: 26
+            Text {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                color: "#bbbbbb"; font.pixelSize: 11; font.bold: true
+                text: "AUDIENCE"
+            }
+            PanelButton {
+                objectName: "masterMuteButton"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                height: 24
+                // The label is the action when audio is audible and the state
+                // when it is not, so a glance reads the output, not a tick.
+                text: worker.mediaMuted ? "Audio muted" : "Mute audio"
+                highlighted: worker.mediaMuted
+                enabled: worker.connected
+                Accessible.name: worker.mediaMuted
+                                 ? "Unmute audience audio" : "Mute audience audio"
+                onClicked: worker.setMediaMasterMute(!worker.mediaMuted)
+            }
         }
 
         // The monitor and its clears: the picture nearest the screen edge,
@@ -307,11 +345,14 @@ SidePanel {
                         }
                     }
                     Text {
+                        objectName: "transportTimeText"
                         color: "#b0b0b0"; font.pixelSize: 12
-                        text: worker.mediaPosition < 0 ? "\u2014"
-                            : worker.mediaPosition.toFixed(1) + " s"
+                        text: outputPanel.transportPosition < 0 ? "\u2014"
+                            : outputPanel.clockText(outputPanel.transportPosition,
+                                                    outputPanel.clockFormat)
                               + (worker.mediaDuration > 0
-                                 ? " / " + worker.mediaDuration.toFixed(1) + " s" : "")
+                                 ? " / " + outputPanel.clockText(worker.mediaDuration,
+                                                                 outputPanel.clockFormat) : "")
                     }
                     Slider {
                         id: seekSlider
@@ -323,7 +364,7 @@ SidePanel {
                         Connections {
                             target: worker
                             function onMediaChanged() {
-                                if (!seekSlider.pressed) seekSlider.value = worker.mediaPosition
+                                if (!seekSlider.pressed) seekSlider.value = outputPanel.transportPosition
                             }
                         }
                     }
@@ -333,75 +374,11 @@ SidePanel {
                     delegate: SourceMix {
                         required property var modelData
                         source: modelData
-                        label: modelData.id === "video" ? "Video audio" : modelData.id
+                        label: outputPanel.sourceVolumeLabel(modelData.id)
                         width: parent.width
                     }
                 }
 
-                Rectangle { width: parent.width; height: 1; color: "#505050" }
-
-                // ---------------- audio ----------------
-                // The independent production track: prepared cues, explicit
-                // activation, acknowledged air. A slide change moves none of
-                // this — the track has its own life, which is why it is a
-                // cue and not a slide's accessory.
-                Text {
-                    objectName: "audioHeading"
-                    text: "AUDIO TRACK"; color: "#bbbbbb"; font.pixelSize: 11; font.bold: true
-                }
-                ComboBox {
-                    id: audioCueCombo
-                    objectName: "audioCueCombo"
-                    width: parent.width
-                    visible: outputPanel.audioCues.length > 0
-                    textRole: "name"
-                    model: outputPanel.audioCues
-                    // Deliberately no onActivated: choosing from a list is
-                    // browsing, and browsing sends nothing to an output.
-                }
-                Row {
-                    spacing: 6
-                    visible: outputPanel.audioCues.length > 0
-                    PanelButton {
-                        objectName: "audioPlayButton"
-                        text: "Play"
-                        // The same enablement honesty as the bin's cue: an
-                        // output must exist to receive the track; whether
-                        // the FILE plays is the probe's answer, so a cue is
-                        // always worth asking with. Already-live cues are
-                        // Stop's business, not a re-send.
-                        enabled: worker.connected && !!outputPanel.selectedCue.sourcePath
-                                 && !outputPanel.cueLive
-                        Accessible.name: "Play audio cue"
-                            + (worker.connected ? "" : " \u2014 no output connected")
-                        onClicked: worker.selectStandaloneTrack(outputPanel.selectedCue.sourcePath)
-                    }
-                    PanelButton {
-                        objectName: "audioStopButton"
-                        text: "Stop"
-                        enabled: worker.standaloneOnAir
-                        Accessible.name: "Stop audio track"
-                        onClicked: worker.selectStandaloneTrack("")
-                    }
-                }
-                Text {
-                    objectName: "audioStatusLine"
-                    width: parent.width
-                    wrapMode: Text.WordWrap; font.pixelSize: 11
-                    color: outputPanel.cueLive || worker.standaloneOnAir ? "#5ec96a"
-                           : worker.standaloneError !== "" || outputPanel.cueRefused
-                             ? "#d9a441" : "#929292"
-                    text: outputPanel.audioStatus
-                }
-                Repeater {
-                    model: worker.mediaSources.filter(s => s.id === "standalone")
-                    delegate: SourceMix {
-                        required property var modelData
-                        source: modelData
-                        label: "Track audio"
-                        width: parent.width
-                    }
-                }
             }
         }
     }

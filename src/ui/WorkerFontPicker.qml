@@ -4,20 +4,26 @@ import QtQuick.Controls
 /*
  * UI part: WorkerFontPicker; contract: docs/ui/control-sets.md#workerfontpicker
  *
- * The font row every inspector needs (task CS.5): a TYPED family field —
- * the path that always worked and works with the worker gone — beside a
- * Browse button that opens the audience worker's OWN family list. Never
- * Qt's installed fonts: a picker of the operator's desktop would offer
- * names the show silently falls back from. The missing-family warning
- * needs a COMPLETED worker list, and a requested name is never rewritten
- * by a fallback verdict — the scene keeps what the author asked for.
+ * The font row every inspector needs (task CS.5, revised 2026-11-10):
+ * the family field IS the picker — clicking the typeface name opens a
+ * normal non-modal drop-down under the field, listing the audience
+ * worker's OWN families, with a chevron saying so. There is no separate
+ * Browse button. Never Qt's installed fonts: a picker of the
+ * operator's desktop would offer names the show silently falls back from.
+ * A worker that cannot enumerate leaves the field typeable (the path that
+ * always worked and works with the worker gone); the missing-family
+ * warning needs a COMPLETED worker list, and a requested name is never
+ * rewritten by a fallback verdict — the scene keeps what the author asked
+ * for. The positive "installed on the audience's machine" sentence is
+ * retired; only a real problem speaks.
  *
  * Extracted verbatim in behaviour from ThemeEditorPage's row (task TS.4):
- * the status line refuses to guess while no list has landed, Browse sleeps
- * for a worker that cannot enumerate, and choosing a family is exactly as
- * if the operator had typed it. Hosts pass their pinned automation names;
- * the popup lives at the page level through `overlayParent` because a
- * centred modal cannot hang off a row inside a scroll rail.
+ * the status line refuses to guess while no list has landed, the field
+ * sleeps for a worker that cannot enumerate, and choosing a family is
+ * exactly as if the operator had typed it. Hosts pass their pinned
+ * automation names; the popup lives at the page level through
+ * `overlayParent` because a centred modal cannot hang off a row inside a
+ * scroll rail.
  */
 Column {
     id: picker
@@ -34,7 +40,6 @@ Column {
     // the Bible row ("\"\" = theme's").
     property string label: "Font family (\"\" = platform)"
     property bool showStatus: true
-    property bool showBrowse: true         // the reading row types; no Browse
     property bool allowOpen: true          // ANDed with worker capability
     // The Edit page's badge tradition (see BackgroundControls): a ↺ named
     // <prefix>FontFamily stands beside the row while the target owns a
@@ -50,21 +55,32 @@ Column {
 
     property string labelObjectName: ""
     property string familyObjectName: "fontFamilyField"
-    property string browseObjectName: "fontBrowse"
     property string statusObjectName: "fontStatus"
     property string popupObjectName: "fontPopup"
     property string searchObjectName: "fontSearch"
     property string listStatusObjectName: "fontListStatus"
     property string listObjectName: "fontList"
     property string rowObjectName: "fontRow"
-    property string cancelObjectName: "fontCancel"
 
     signal familyChosen(string name)
 
     spacing: 4
     width: parent ? parent.width : 0
 
+    // The worker can enumerate AND this target may be edited: the field
+    // becomes the drop-down trigger and stops taking typed text. Without
+    // a list (no worker, an old worker) it stays a typed field, which is
+    // the one path that does not depend on the audience machine.
+    readonly property bool canList: worker.fontListSupported === true
+                                    && picker.allowOpen && picker.editable
+
     function state() { return adapter.fieldState(picker.field) }
+    function openPicker() {
+        fontSearchField.text = ""
+        if (worker.fontListState === "idle")
+            worker.refreshFontFamilies()
+        fontPopup.open()
+    }
     function resetOrSync() {
         if (!adapter.reset(picker.field))
             picker.sync()
@@ -85,6 +101,8 @@ Column {
             familyField.text = s.value === undefined ? "" : String(s.value)
         statusLine.text = picker.statusText(s)
         statusLine.color = picker.familyMissing(s) ? "#e0a94a" : "#888888"
+        statusLine.visible = picker.showStatus && statusLine.text !== ""
+        familyField.readOnly = picker.canList
         familyChip.visible = picker.showRevertChip && s.canReset === true
     }
     function commitTyped() {
@@ -146,7 +164,7 @@ Column {
         return picker.familyMissing(s)
                 ? "\"" + want + "\" is not installed on the audience's machine "
                   + "— it will fall back"
-                : "installed on the audience's machine"
+                : ""
     }
 
     Connections {
@@ -158,19 +176,40 @@ Column {
 
     Text {
         objectName: picker.labelObjectName
+        visible: picker.label !== ""
         text: picker.label
         color: "#b0b0b0"
         font.pixelSize: 11
     }
     Row {
         spacing: 4
-        PanelField {
-            id: familyField
-            objectName: picker.familyObjectName
-            width: picker.width
-                     - (browseFonts.visible ? browseFonts.width + 4 : 0)
-                     - (familyChip.visible ? familyChip.width + 4 : 0)
-            onEditingFinished: picker.commitTyped()
+        Item {
+            id: familyBox
+            width: picker.width - (familyChip.visible ? familyChip.width + 4 : 0)
+            height: familyField.height
+            PanelField {
+                id: familyField
+                objectName: picker.familyObjectName
+                anchors.fill: parent
+                onEditingFinished: picker.commitTyped()
+            }
+            Text {
+                visible: picker.canList
+                anchors.right: parent.right
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                text: fontPopup.visible ? "\u25b4" : "\u25be"
+                color: "#b0b0b0"
+                font.pixelSize: 12
+            }
+            MouseArea {
+                anchors.fill: parent
+                enabled: picker.canList
+                visible: picker.canList
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: fontPopup.visible ? fontPopup.close() : picker.openPicker()
+            }
         }
         // The Edit page's RevertBadge, extracted (see BackgroundControls).
         Rectangle {
@@ -199,19 +238,6 @@ Column {
                 onClicked: picker.resetOrSync()
             }
         }
-        PanelButton {
-            id: browseFonts
-            objectName: picker.browseObjectName
-            visible: picker.showBrowse
-            text: "Browse"
-            enabled: worker.fontListSupported && picker.allowOpen && picker.editable
-            onClicked: {
-                fontSearchField.text = ""
-                if (worker.fontListState === "idle")
-                    worker.refreshFontFamilies()
-                fontPopup.open()
-            }
-        }
     }
     Text {
         id: statusLine
@@ -224,24 +250,37 @@ Column {
         text: ""
     }
 
-    // The family picker (task TS.4's popup, moved verbatim). It lists ONLY
-    // the audience worker's own families; the sample renders the hovered
-    // family in its own face; choosing writes through the same row verb.
+    // The family drop-down (review 2026-11-10): a normal, NON-MODAL list
+    // attached under the field rather than a centred modal dialog. It
+    // lists ONLY the audience worker's own families, filters as the
+    // operator types, and choosing a row writes through the same verb a
+    // typed name uses. Clicking away or Escape closes it; the list never
+    // takes the page hostage.
     Popup {
         id: fontPopup
         objectName: picker.popupObjectName
-        parent: picker.overlayParent !== null ? picker.overlayParent : picker
-        x: Math.max(0, ((parent !== null ? parent.width : 0) - width) / 2)
-        y: 60
-        width: 360
-        height: 440
-        modal: true
+        parent: familyBox
+        x: familyBox.width - width
+        y: familyBox.height + 2
+        width: Math.max(260, familyBox.width)
+        height: Math.min(320, fontSearchField.height + 8
+                         + Math.max(28, fontPreviewList.contentHeight)
+                         + (fontListStatus.visible ? fontListStatus.height + 4 : 0)
+                         + 12)
+        modal: false
         focus: true
-        padding: 12
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: 6
         background: Rectangle { color: "#2b2b2b"; border.color: "#555555"; radius: 4 }
+        onOpened: {
+            fontSearchField.forceActiveFocus()
+            const at = fontPreviewList.model.indexOf(familyField.text)
+            if (at >= 0)
+                fontPreviewList.positionViewAtIndex(at, ListView.Center)
+        }
         // The host page standing down (mode exit, another page) takes its
-        // popup with it — an orphaned modal overlay would keep the keyboard
-        // the shell is trying to hand back (the TS.4 rule).
+        // popup with it — an orphaned overlay would keep the keyboard the
+        // shell is trying to hand back (the TS.4 rule).
         Connections {
             target: picker.overlayParent
             enabled: picker.overlayParent !== null
@@ -252,45 +291,32 @@ Column {
         }
         Column {
             width: parent.width
-            spacing: 8
-            Text { text: "Fonts the audience's worker can draw"; color: "#dddddd"
-                   font.pixelSize: 12; font.bold: true }
+            spacing: 4
             PanelField {
                 id: fontSearchField
                 objectName: picker.searchObjectName
                 width: parent.width
+                height: 28
                 placeholderText: "search families…"
             }
-            Row {
-                spacing: 8
-                Rectangle {
-                    width: 90; height: 40; color: "#ffffff"; radius: 3
-                    Text {
-                        anchors.centerIn: parent
-                        font.family: fontPreviewList.currentFamily
-                        font.pixelSize: 20
-                        color: "#000000"
-                        text: "Ag"
-                    }
-                }
-                Text {
-                    objectName: picker.listStatusObjectName
-                    width: parent.width - 98
-                    anchors.verticalCenter: parent.verticalCenter
-                    wrapMode: Text.WordWrap
-                    color: "#888888"
-                    font.pixelSize: 10
-                    text: worker.fontListState === "loading" ? "asking the audience's worker…"
-                                                              : ""
-                }
+            Text {
+                id: fontListStatus
+                objectName: picker.listStatusObjectName
+                width: parent.width
+                visible: text !== ""
+                wrapMode: Text.WordWrap
+                color: "#888888"
+                font.pixelSize: 10
+                text: worker.fontListState === "loading" ? "asking the audience's worker…"
+                      : ((worker.fontListState === "ready" && fontPreviewList.count === 0)
+                         ? "no families match" : "")
             }
             ListView {
                 id: fontPreviewList
                 objectName: picker.listObjectName
                 width: parent.width
-                height: 300
+                height: Math.min(260, Math.max(28, contentHeight))
                 clip: true
-                property string currentFamily: ""
                 model: picker.fontMatches(fontSearchField.text)
                 Connections {
                     target: worker
@@ -299,25 +325,29 @@ Column {
                     }
                 }
                 delegate: ItemDelegate {
+                    id: fontRow
                     width: fontPreviewList.width
+                    height: 28
                     objectName: picker.rowObjectName
                     required property string modelData
                     text: modelData
                     font.family: modelData
+                    font.pixelSize: 12
+                    leftPadding: 8
+                    rightPadding: 8
+                    topPadding: 0
+                    bottomPadding: 0
+                    hoverEnabled: true
+                    background: Rectangle {
+                        color: fontRow.hovered ? "#3d3d40"
+                               : (modelData === familyField.text ? "#333336" : "transparent")
+                    }
                     onClicked: {
                         familyField.text = modelData
                         picker.commitTyped()
                         fontPopup.close()
                     }
-                    hoverEnabled: true
-                    onHoveredChanged: if (hovered)
-                                          fontPreviewList.currentFamily = modelData
                 }
-            }
-            PanelButton {
-                objectName: picker.cancelObjectName
-                text: "Close"
-                onClicked: fontPopup.close()
             }
         }
     }

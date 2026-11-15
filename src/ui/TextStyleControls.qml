@@ -7,9 +7,16 @@ import QtQuick.Controls
  * Family, size, alignment and line spacing, plus (for targets that store
  * the style block) weight, slant, fit and minimum size (task CS.5). Every
  * row commits exactly ONE field through the adapter, so a change here
- * never disturbs the others and never costs more than one undo; the badge
- * beside each style field says whether this target speaks or inherits what
- * the audience draws today, and the Inherit button writes that back.
+ * never disturbs the others and never costs more than one undo.
+ *
+ * The rail reads the target's own state VISUALLY (review 2026-11-10): a
+ * small dot beside each style-block label is accent-coloured while the
+ * target speaks, and the ↺ chip stands up exactly when there is an own
+ * value to hand back — the same badge tradition the Edit page's fields
+ * carry, in place of the old "own/inherited" word plus an Inherit button
+ * on every row. Small enumerations are segmented choices (`SegmentedControl`)
+ * so the active alignment/slant/fit is visible without opening a list; the
+ * nine weights stay a picker because nine segments do not fit a rail.
  *
  * Behaviour extracted verbatim from ThemeEditorPage (tasks TS.4/TF.4): the
  * Songs rail edits the theme's base fields and style block; the Bible rail
@@ -37,35 +44,39 @@ Column {
     // Optional heading above the style-block rows ("Typography & effects").
     property string sectionTitle: ""
 
-    property string sizeLabel: "Font size (0 = renderer default)"
+    // The family and size share one row (review 2026-11-10): the typeface
+    // name opens the worker's list, the size sits where Browse used to be,
+    // and neither row needs a label. Strings stay configurable for hosts
+    // that want their own heading, but the default is silent.
+    property string sizeLabel: ""
     property string alignLabel: "Alignment"
     property string spacingLabel: "Line spacing (0.25 to 8)"
-    property string fontLabel: "Font family (\"\" = platform)"
+    property string fontLabel: ""
     property bool fontShowStatus: true
     property Item overlayParent: null
     // The Edit page's badge tradition (see BackgroundControls): a ↺ stands
     // beside each row this target can hand back up the chain, named
-    // <prefix><Field>. The weight/slant/fit/min-size rows already carry
-    // their Inherit buttons, so no chip joins them.
+    // <prefix><Field>. The style-block rows wear the same chip, named by
+    // their own pinned *InheritObjectName below.
     property bool showRevertChips: false
     property string revertBadgePrefix: "customizeBadge"
 
     property string fontObjectName: "fontFamilyField"
-    property string fontBrowseObjectName: "fontBrowse"
     property string fontStatusObjectName: "fontStatus"
     property string fontPopupObjectName: "fontPopup"
     property string fontSearchObjectName: "fontSearch"
     property string fontListStatusObjectName: "fontListStatus"
     property string fontListObjectName: "fontList"
     property string fontRowObjectName: "fontRow"
-    property string fontCancelObjectName: "fontCancel"
     property string sizeObjectName: "fontSizeField"
     property string alignObjectName: "alignCombo"
     property string spacingObjectName: "lineSpacingField"
-    property string weightObjectName: "weightCombo"
+    property string weightObjectName: "weightToggle"
     property string weightInheritObjectName: "weightInherit"
-    property string slantObjectName: "slantCombo"
+    property string slantObjectName: "slantToggle"
     property string slantInheritObjectName: "slantInherit"
+    property string underlineObjectName: "underlineToggle"
+    property string underlineInheritObjectName: "underlineInherit"
     property string fitObjectName: "fitCombo"
     property string fitInheritObjectName: "fitInherit"
     property string minSizeObjectName: "minSizeField"
@@ -100,29 +111,47 @@ Column {
             alignCombo.currentIndex = ["left", "center", "right"].indexOf(state("align").value)
         }
         sizeChip.visible = style.showRevertChips && state("fontSize").canReset === true
+        sizeChip.enabled = sizeChip.visible
         alignChip.visible = style.showRevertChips && state("align").canReset === true
+        alignChip.enabled = alignChip.visible
         spacingChip.visible = style.showRevertChips && state("lineSpacing").canReset === true
+        spacingChip.enabled = spacingChip.visible
         if (!style.showStyleBlock)
             return
-        const weights = [100, 200, 300, 400, 500, 600, 700, 800, 900]
-        const w = weights.indexOf(Number(style.state("fontWeight").value))
-        weightCombo.currentIndex = w >= 0 ? w : 3
-        slantCombo.currentIndex = style.state("fontStyle").value === "italic" ? 1 : 0
+        // B / I / U: the style block reads as the three switches every
+        // word processor has (review 2026-11-10). A resolved weight at or
+        // above 600 is the bold state; the contract still stores the full
+        // 100..900 scale, the UI just authors its two poles.
+        weightToggle.active = Number(style.state("fontWeight").value) >= 600
+        slantToggle.active = style.state("fontStyle").value === "italic"
+        underlineToggle.active = style.state("fontUnderline").value === true
         fitCombo.currentIndex = style.state("fitMode").value === "fixed" ? 1 : 0
         minSizeField.text = String(style.state("minFontSize").value)
-        weightBadge.text = ownWord("fontWeight")
-        weightBadge.color = ownColor("fontWeight")
-        weightInherit.enabled = style.state("fontWeight").canReset === true
-        slantInherit.enabled = style.state("fontStyle").canReset === true
+        fitDot.dotColor = ownColor("fitMode")
+        minSizeDot.dotColor = ownColor("minFontSize")
+        // B / I / U read as three clean glyphs while everything is
+        // inherited; a ↺ appears beside the switch this target OWNS, so
+        // the row says both what it draws and what it changed. The fit and
+        // minimum rows keep their chips in place (their geometry is fixed).
+        weightInherit.visible = style.state("fontWeight").canReset === true
+        weightInherit.enabled = weightInherit.visible
+        slantInherit.visible = style.state("fontStyle").canReset === true
+        slantInherit.enabled = slantInherit.visible
+        underlineInherit.visible = style.state("fontUnderline").canReset === true
+        underlineInherit.enabled = underlineInherit.visible
         fitInherit.enabled = style.state("fitMode").canReset === true
         minSizeInherit.enabled = style.state("minFontSize").canReset === true
     }
     function ownOrEmpty(s) { return s.isSet === true ? String(s.ownValue) : "" }
-    function ownWord(field) {
-        return style.state(field).isSet === true ? "own" : "inherited"
-    }
     function ownColor(field) {
-        return style.state(field).isSet === true ? "#8ec9f5" : "#888888"
+        return style.state(field).isSet === true ? "#8ec9f5" : "#777777"
+    }
+    function ownStateText(field) {
+        const s = style.state(field)
+        if (s.isSet === true)
+            return "this target sets its own " + field + "; click the arrow to inherit"
+        return "inherited — " + (s.source !== undefined && s.source !== ""
+                                 ? s.source + " answers" : "the renderer default answers")
     }
     // A commit that the model turns down has no documentsChanged to
     // repaint from — the controls go back to the record here.
@@ -174,21 +203,31 @@ Column {
     }
     Component.onCompleted: style.sync()
 
-    // The Edit page's RevertBadge, extracted (see BackgroundControls).
+    // The Edit page's RevertBadge, extracted (see BackgroundControls). The
+    // style-block rows pin their own names (weightInheritObjectName and
+    // friends), so the chip accepts a preferred identifier.
     component RevertChip: Rectangle {
         id: chip
         required property string chipField
-        objectName: style.revertBadgePrefix + style.capitalise(chip.chipField)
-        Accessible.name: "Revert " + chip.chipField + " customization"
+        property string preferredName: ""
+        property string stateSentence: ""
+        objectName: chip.preferredName !== ""
+                   ? chip.preferredName
+                   : style.revertBadgePrefix + style.capitalise(chip.chipField)
+        Accessible.name: chip.stateSentence !== ""
+                         ? chip.stateSentence
+                         : "Revert " + chip.chipField + " customization"
         width: 24
         height: 30
         radius: 4
-        visible: false // sync() decides, from the model's canReset
+        // The size/align/spacing chips still appear only when they can
+        // act (the Edit rail's tradition); sync() assigns that. The
+        // style-block chips stay put and merely dim (see sync).
         color: chipArea.containsMouse ? "#565659" : "#3a3a3c"
-        border.color: "#6a6a6d"
+        border.color: chipArea.containsMouse ? "#8a8a8d" : "#6a6a6d"
         Text {
             anchors.centerIn: parent
-            color: "#ffd666"
+            color: chip.enabled ? "#ffd666" : "#777777"
             font.pixelSize: 13
             text: "\u21ba"
         }
@@ -196,42 +235,74 @@ Column {
             id: chipArea
             anchors.fill: parent
             hoverEnabled: true
+            enabled: chip.enabled
             cursorShape: Qt.PointingHandCursor
+            ToolTip.visible: containsMouse && chip.enabled
+            ToolTip.text: chip.stateSentence !== "" ? chip.stateSentence
+                          : "Hand " + chip.chipField + " back up the chain"
             onClicked: style.resetOrSync(chip.chipField)
         }
     }
 
-    WorkerFontPicker {
-        id: fontPicker
-        width: parent.width
-        worker: style.worker
-        adapter: style.adapter
-        field: "fontFamily"
-        sparse: style.sparse
-        showInheritedValues: style.showInheritedValues
-        label: style.fontLabel
-        showStatus: style.fontShowStatus
-        showBrowse: true
-        showRevertChip: style.showRevertChips
-        revertBadgePrefix: style.revertBadgePrefix
-        overlayParent: style.overlayParent
-        familyObjectName: style.fontObjectName
-        browseObjectName: style.fontBrowseObjectName
-        statusObjectName: style.fontStatusObjectName
-        popupObjectName: style.fontPopupObjectName
-        searchObjectName: style.fontSearchObjectName
-        listStatusObjectName: style.fontListStatusObjectName
-        listObjectName: style.fontListObjectName
-        rowObjectName: style.fontRowObjectName
-        cancelObjectName: style.fontCancelObjectName
+    // The visual own/inherited state: a dot that reads at a glance, with
+    // its sentence in Accessible.name and a tooltip on hover.
+    component StateDot: Item {
+        id: dot
+        required property string dotField
+        property color dotColor: "#777777"
+        width: 9
+        height: 13   // the label text band, so the dot sits on its baseline
+        Accessible.name: style.ownStateText(dot.dotField)
+        Rectangle {
+            anchors.centerIn: parent
+            width: 6
+            height: 6
+            radius: 3
+            color: dot.dotColor
+        }
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            ToolTip.visible: containsMouse
+            ToolTip.text: style.ownStateText(dot.dotField)
+        }
     }
-    Text { text: style.sizeLabel; color: "#b0b0b0"; font.pixelSize: 11 }
+
+    Text {
+        visible: style.fontLabel !== ""
+        text: style.fontLabel
+        color: "#b0b0b0"
+        font.pixelSize: 11
+    }
     Row {
-        spacing: 2
+        width: parent.width
+        spacing: 4
+        WorkerFontPicker {
+            id: fontPicker
+            width: parent.width - sizeField.width - parent.spacing
+                     - (sizeChip.visible ? sizeChip.width + parent.spacing : 0)
+            worker: style.worker
+            adapter: style.adapter
+            field: "fontFamily"
+            sparse: style.sparse
+            showInheritedValues: style.showInheritedValues
+            label: ""
+            showStatus: style.fontShowStatus
+            showRevertChip: style.showRevertChips
+            revertBadgePrefix: style.revertBadgePrefix
+            overlayParent: style.overlayParent
+            familyObjectName: style.fontObjectName
+            statusObjectName: style.fontStatusObjectName
+            popupObjectName: style.fontPopupObjectName
+            searchObjectName: style.fontSearchObjectName
+            listStatusObjectName: style.fontListStatusObjectName
+            listObjectName: style.fontListObjectName
+            rowObjectName: style.fontRowObjectName
+        }
         PanelField {
             id: sizeField
             objectName: style.sizeObjectName
-            width: style.width - (sizeChip.visible ? 26 : 0)
+            width: 62
             onEditingFinished: {
                 if (style.sparse)
                     style.commitSparseNumber("fontSize", text, 0, undefined)
@@ -244,16 +315,17 @@ Column {
     Text { text: style.alignLabel; color: "#b0b0b0"; font.pixelSize: 11 }
     Row {
         spacing: 2
-        ComboBox {
+        SegmentedControl {
             id: alignCombo
             objectName: style.alignObjectName
             width: style.width - (alignChip.visible ? 26 : 0)
+            glyphStyle: "align"
             model: style.sparse && !style.showInheritedValues ? ["(theme)", "left", "center", "right"]
-                                : ["left", "center", "right"]
-            onActivated: {
+                                 : ["left", "center", "right"]
+            onActivated: function (index) {
                 if (style.sparse && !style.showInheritedValues) {
                     // "(theme)" is the sparse target's silence.
-                    if (currentIndex === 0)
+                    if (index === 0)
                         style.resetOrSync("align")
                     else
                         style.commitOrSync("align", currentValue)
@@ -292,78 +364,98 @@ Column {
             font.pixelSize: 11
             font.bold: true
         }
+
+        // B / I / U, one switch each, with the same ↺ inheritance chip the
+        // other style rows carry. The glyphs wear their own treatment so
+        // the icon IS the sample: bold B, italic I, underlined U.
         Row {
-            spacing: 6
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Weight"; color: "#b0b0b0"; font.pixelSize: 11
-            }
-            ComboBox {
-                id: weightCombo
+            spacing: 4
+            PanelButton {
+                id: weightToggle
                 objectName: style.weightObjectName
-                model: [100, 200, 300, 400, 500, 600, 700, 800, 900]
-                onActivated: style.commitOrSync("fontWeight", Number(currentValue))
+                property bool active: false
+                width: 32
+                text: "B"
+                font.bold: true
+                font.pixelSize: 15
+                highlighted: active
+                Accessible.name: active ? "Turn bold off" : "Turn bold on"
+                onClicked: style.commitOrSync("fontWeight", active ? 400 : 700)
             }
-            Text {
-                id: weightBadge
-                anchors.verticalCenter: parent.verticalCenter
-                font.pixelSize: 10
-                color: "#888888"
-                text: "inherited"
-            }
-            PanelButton {
+            RevertChip {
                 id: weightInherit
-                objectName: style.weightInheritObjectName
-                text: "Inherit"
-                onClicked: style.resetOrSync("fontWeight")
-            }
-        }
-        Row {
-            spacing: 6
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Slant"; color: "#b0b0b0"; font.pixelSize: 11
-            }
-            ComboBox {
-                id: slantCombo
-                objectName: style.slantObjectName
-                model: ["normal", "italic"]
-                onActivated: style.commitOrSync("fontStyle", currentValue)
+                chipField: "fontWeight"
+                preferredName: style.weightInheritObjectName
             }
             PanelButton {
-                id: slantInherit
-                objectName: style.slantInheritObjectName
-                text: "Inherit"
-                onClicked: style.resetOrSync("fontStyle")
+                id: slantToggle
+                objectName: style.slantObjectName
+                property bool active: false
+                width: 32
+                text: "I"
+                font.italic: true
+                font.pixelSize: 15
+                highlighted: active
+                Accessible.name: active ? "Turn italic off" : "Turn italic on"
+                onClicked: style.commitOrSync("fontStyle", active ? "normal" : "italic")
             }
+            RevertChip {
+                id: slantInherit
+                chipField: "fontStyle"
+                preferredName: style.slantInheritObjectName
+            }
+            PanelButton {
+                id: underlineToggle
+                objectName: style.underlineObjectName
+                property bool active: false
+                width: 32
+                text: "U"
+                font.underline: true
+                font.pixelSize: 15
+                highlighted: active
+                Accessible.name: active ? "Turn underline off" : "Turn underline on"
+                onClicked: style.commitOrSync("fontUnderline", !active)
+            }
+            RevertChip {
+                id: underlineInherit
+                chipField: "fontUnderline"
+                preferredName: style.underlineInheritObjectName
+            }
+        }
+
+        Row {
+            spacing: 4
+            Text { text: "Fit"; color: "#b0b0b0"; font.pixelSize: 11 }
+            StateDot { id: fitDot; dotField: "fitMode" }
         }
         Row {
             spacing: 6
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: "Fit"; color: "#b0b0b0"; font.pixelSize: 11
-            }
-            ComboBox {
+            SegmentedControl {
                 id: fitCombo
                 objectName: style.fitObjectName
+                width: style.width - (fitInherit.visible ? 30 : 0)
                 model: ["shrink", "fixed"]
                 onActivated: style.commitOrSync("fitMode", currentValue)
             }
-            PanelButton {
+            RevertChip {
                 id: fitInherit
-                objectName: style.fitInheritObjectName
-                text: "Inherit"
-                onClicked: style.resetOrSync("fitMode")
+                chipField: "fitMode"
+                preferredName: style.fitInheritObjectName
             }
         }
-        Text { text: "Minimum size (1..4096)"; color: "#b0b0b0"; font.pixelSize: 11 }
+
+        Row {
+            spacing: 4
+            Text { text: "Minimum size (1..4096)"; color: "#b0b0b0"; font.pixelSize: 11 }
+            StateDot { id: minSizeDot; dotField: "minFontSize" }
+        }
         Row {
             width: parent.width
-            spacing: 4
+            spacing: 2
             PanelField {
                 id: minSizeField
                 objectName: style.minSizeObjectName
-                width: parent.width - parent.spacing - 60
+                width: parent.width - (minSizeInherit.visible ? 26 : 0)
                 onEditingFinished: {
                     if (text.trim() === String(style.state("minFontSize").value))
                         return  // focus-out with no change writes nothing
@@ -374,12 +466,10 @@ Column {
                         style.sync()
                 }
             }
-            PanelButton {
+            RevertChip {
                 id: minSizeInherit
-                objectName: style.minSizeInheritObjectName
-                text: "Inherit"
-                width: 60
-                onClicked: style.resetOrSync("minFontSize")
+                chipField: "minFontSize"
+                preferredName: style.minSizeInheritObjectName
             }
         }
     }

@@ -148,6 +148,12 @@ struct MediaStatus {
     // (player up); error is sticky and names this block's own path,
     // so the 5.5d pairing rule holds inside the block without the
     // two transports ever crossing each other's reports.
+    // The operator's master mute (media.mute source "all"): one switch that
+    // silences the background's embedded audio and the show's audio layer
+    // together. Per-source muted flags stay exactly as the operator set
+    // them underneath it, so releasing the master restores that mix.
+    bool muted = false;
+
     struct Standalone {
         bool live = false;
         std::string path;
@@ -173,11 +179,13 @@ struct MediaError {
     std::string message;
 };
 
-// The two audio identities the operator addresses (task 6.15a, review
-// R15): the background's embedded audio, and the standalone production
-// track. Each maps to one AvPlayer, and the mixer's table resolves the
-// actual input index.
-enum class AudioSource { kVideo, kStandalone };
+// The audio identities the operator addresses: the background's embedded
+// audio, the slide's own audio layer (media library), the standalone
+// production track, and the master switch that silences every transport at
+// once. Each maps to one AvPlayer input, and the mixer's table resolves the
+// actual input index. kAll is a command target only — it is never a
+// registered source and never appears in status.sources.
+enum class AudioSource { kVideo, kAudio, kStandalone, kAll };
 
 // Task 6.7c (review R18) types the failure. Every report names the class
 // of fault it is (a still that will not decode, the video transport, the
@@ -324,9 +332,18 @@ public:
     // The caller retains the entire scene transaction on kDeferred and
     // retries it after retirement wakes the loop. The transport never retries
     // a background independently of its scene.
-    bool backgroundChangeBlocked(const openshow::scene::Background& wanted) const;
-    BackgroundApply applyBackground(const openshow::scene::Background& wanted, const GpuHandles& handles,
-                         const std::function<bool(const std::string&)>& imageResident);
+    bool backgroundChangeBlocked(const openshow::scene::Background& wanted,
+                                 const openshow::scene::AudioLayer& audio) const;
+    // The picture and the show's audio layer are one scene identity: a scene
+    // change carries both. Either half may be absent (an audio-only cue has
+    // no picture; a silent slide has no track), and the transport starts the
+    // player for whichever audio the scene asked for. `audio` is the show's
+    // track, mixed beside the video's own embedded audio by one AvPlayer so
+    // the two stay on the same clock.
+    BackgroundApply applyBackground(const openshow::scene::Background& wanted,
+                                    const openshow::scene::AudioLayer& audio,
+                                    const GpuHandles& handles,
+                                    const std::function<bool(const std::string&)>& imageResident);
     // Prepare-time transport prime (task 6.9b, review R10). Runs a video
     // transport's FILE half — openFile: container, streams, decoder — on the
     // CALLER's thread (the prepare executor's), and parks the result as the
@@ -352,8 +369,8 @@ public:
     // never parked stages nothing; a superseded staged player is stopped on
     // the calling thread, never in a frame tick. The player touches no GPU,
     // so staging it keeps every GPU rule untouched.
-    bool primeAudio(const std::string& path, const std::atomic<bool>* cancelled,
-                    std::string* error);
+    bool primeAudio(const std::string& path, const std::string& audioLayerPath,
+                    const std::atomic<bool>* cancelled, std::string* error);
     // End everything by name: the background transport (R6 order — quiesce,
     // then the slots, then the players) and the standalone track, which is
     // deliberately NOT part of the background's lifetime (task 6.15b) and
@@ -381,6 +398,16 @@ public:
     // Any thread: a background video transport is up (between a successful
     // bring-up and the teardown).
     bool mediaTransportLive() const { return fMediaTransportLive.load(); }
+    // Whether this exact video identity is the transport the audience is
+    // already watching. The prepare executor asks before opening a second
+    // decoder for a clip that needs no head start: a slide change over the
+    // same background is an identity no-op at present, so priming it would
+    // only pay a file open and a decoder for a transport nobody adopts.
+    // A false answer is always safe (the prime is merely redundant); the
+    // live flag is checked first so a scene prepared while a teardown runs
+    // never reads an identity out of service.
+    bool backgroundVideoOnAir(const std::string& assetId,
+                              const std::string& path) const;
     // Whether this transport registered that audio identity (embedded
     // audio present and decodable), independent of whether the sink is
     // audible — the gain belongs to the mixer either way.
@@ -494,7 +521,7 @@ private:
     // handle never becomes a source, so AvPlayer's lane says "none").
     AvPlayer::AudioLane mediaLaneLocked() const;
 
-    void mediaPlaying(const openshow::scene::Background& background);
+    void mediaPlaying(const std::string& path);
     void mediaStopped();
     void mediaFailedLocked(MediaFault fault, const std::string& path,
                            const std::string& message);
@@ -577,6 +604,17 @@ private:
     std::unique_ptr<AvPlayer> fAudio = std::make_unique<AvPlayer>();
     std::unique_ptr<PlaybackPipeline> fBackground;
     openshow::scene::Background fAppliedBackground;    // identity in service
+    openshow::scene::AudioLayer fAppliedAudio;         // the scene's audio half
+    // The audio layer's probed duration, kept for status when there is no
+    // video pipeline to ask (an audio-only cue). -1 when unknown.
+    double fAppliedAudioDuration = -1.0;
+    // The same identity published for the prepare executor (backgroundVideoOnAir).
+    // Render thread writes under fOnAirMutex when a video transport starts and
+    // when a teardown clears it; prepared work reads. A leaf lock: nothing is
+    // acquired beneath it, and it is never held across a swap or a join.
+    mutable std::mutex fOnAirMutex;
+    std::string fOnAirVideoAssetId;
+    std::string fOnAirVideoPath;
 
     // The in-flight seek (task 6.22e4, review A5). AvPlayer's seek wait —
     // up to 500 ms per feeder, a poll deadline rather than a promise from
@@ -661,7 +699,13 @@ private:
     std::unique_ptr<PlaybackPipeline> fPrimed;
     std::unique_ptr<AvPlayer> fPrimedAudio;
     bool fPrimedAudioWanted = false;      // the prime's probe found a decodable stream
+    bool fPrimedEmbeddedAudio = false;    // the video's own stream opened
+    bool fPrimedLayerAudio = false;       // the show audio layer opened
     std::string fPrimedAudioLoss;         // and what the audience would miss, if anything
+    // The show audio layer the staged player was built for ("" = none). A
+    // prime only serves a scene with the SAME audio half; anything else
+    // cold-starts rather than adopting a player mixed for another layer.
+    std::string fPrimedSecondPath;
     std::string fPrimedPath;
 
     // Standalone production audio (task 6.15b, review R15). A SEPARATE
@@ -768,10 +812,19 @@ private:
     std::atomic<double> fPendingGain{0.0};             // meaningful while source >= 0
     std::atomic<int> fPendingMuteSource{-1};           // identity or -1; any thread
     std::atomic<int> fPendingMute{0};                  // 0/1 while source >= 0
+    // The master mute, applied to every current player on the transport
+    // thread (the RPC thread never touches a player instance: the render
+    // thread can swap it). -1 means no change pending.
+    std::atomic<int> fPendingMasterMute{-1};
     // What the RPC thread may ask for, mirrored at bring-up and teardown
     // (fBackground itself stays transport-thread-only).
     std::atomic<bool> fMediaTransportLive{false};      // any thread
-    std::atomic<int> fMediaSourceMask{0};              // bit0 video, bit1 standalone
+    // bit0 video's embedded audio, bit1 standalone, bit2 the show audio layer
+    std::atomic<int> fMediaSourceMask{0};
+    // The master mute (media.mute "all"): any thread. Applied to every player
+    // instance this transport adopts or stages, so a transport change never
+    // quietly unmutes the audience.
+    std::atomic<bool> fMasterMute{false};
     // Test-only schedule (see OPENSHOW_TEST_TRANSPORT_OPS at the transport's
     // open): a timed script applied by the same render-thread seam, so the
     // scenarios R19 names run through the real transport rather than a

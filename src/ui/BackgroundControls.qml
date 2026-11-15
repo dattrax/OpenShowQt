@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 
 /*
  * UI part: BackgroundControls; contract: docs/ui/control-sets.md#backgroundcontrols
@@ -8,7 +9,8 @@ import QtQuick.Controls
  * background colour, and the gradient colour whose empty string is the
  * EXPLICIT flat — distinct from inherit, which these base fields never
  * have (a theme is the root of its own colours; the adapter refuses the
- * reset and says so). Extracted verbatim in behaviour from
+ * reset and says so). Each field also wears a live swatch of the value the
+ * audience draws (review 2026-11-10). Extracted verbatim in behaviour from
  * ThemeEditorPage's Songs rail; image/fit rows join with the slide target
  * (CS.6) through the same part.
  *
@@ -53,6 +55,9 @@ Column {
         textField.text = text.value === undefined ? "" : String(text.value)
         backField.text = back.value === undefined ? "" : String(back.value)
         gradientField.text = gradient.value === undefined ? "" : String(gradient.value)
+        textSwatch.color = background.colourOf(text.value)
+        backSwatch.color = background.colourOf(back.value)
+        gradientSwatch.color = background.colourOf(gradient.value)
         const storable = text.editable === true
         textField.enabled = storable
         backField.enabled = storable
@@ -86,6 +91,29 @@ Column {
     function resetOrSync(field) {
         if (!background.adapter.reset(field))
             background.sync()
+    }
+    // A colour-field preview: the swatch is what the audience draws, or
+    // nothing at all when the record carries something QML cannot parse
+    // (the field still shows the raw text, so nothing is hidden).
+    function colourOf(value) {
+        const text = String(value === undefined ? "" : value)
+        return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(text) ? text : "transparent"
+    }
+    // Qt's own picker (QtQuick.Dialogs), forced to the in-app dialog so it
+    // matches the workspace and does not depend on a platform portal. The
+    // swatch is the button; the hex field stays for exact values.
+    function dialogColour(value) {
+        const parsed = background.colourOf(value)
+        return parsed === "transparent" ? "#ffffff" : parsed
+    }
+    function hexOf(c) {
+        const byte = v => ("0" + Math.max(0, Math.min(255, Math.round(v * 255))).toString(16)).slice(-2)
+        return "#" + byte(c.r) + byte(c.g) + byte(c.b)
+    }
+    function chooseColour(field, current) {
+        colourDialog.targetField = field
+        colourDialog.selectedColor = background.dialogColour(current)
+        colourDialog.open()
     }
 
     // The Edit page's RevertBadge, extracted: a 24x30 ↺ that only stands
@@ -126,10 +154,25 @@ Column {
     Text { text: "Text colour (#rgb or #rrggbb)"; color: "#b0b0b0"; font.pixelSize: 11 }
     Row {
         spacing: 2
+        Rectangle {
+            id: textSwatch
+            objectName: background.textColorObjectName + "Swatch"
+            anchors.verticalCenter: parent.verticalCenter
+            width: 20; height: 20; radius: 3
+            color: "transparent"
+            border.color: "#6a6a6d"
+            Accessible.name: "Choose text colour"
+            MouseArea {
+                anchors.fill: parent
+                enabled: textField.enabled
+                cursorShape: Qt.PointingHandCursor
+                onClicked: background.chooseColour("textColor", textField.text)
+            }
+        }
         PanelField {
             id: textField
             objectName: background.textColorObjectName
-            width: background.width - (textChip.visible ? 26 : 0)
+            width: background.width - (textChip.visible ? 26 : 0) - 24
             onEditingFinished: background.commitIfChanged("textColor", text.trim())
         }
         RevertChip { id: textChip; chipField: "textColor" }
@@ -140,10 +183,25 @@ Column {
     Row {
         visible: background.supportsBackdrop
         spacing: 2
+        Rectangle {
+            id: backSwatch
+            objectName: background.backColorObjectName + "Swatch"
+            anchors.verticalCenter: parent.verticalCenter
+            width: 20; height: 20; radius: 3
+            color: "transparent"
+            border.color: "#6a6a6d"
+            Accessible.name: "Choose background colour"
+            MouseArea {
+                anchors.fill: parent
+                enabled: backField.enabled
+                cursorShape: Qt.PointingHandCursor
+                onClicked: background.chooseColour("backgroundColor", backField.text)
+            }
+        }
         PanelField {
             id: backField
             objectName: background.backColorObjectName
-            width: background.width - (backChip.visible ? 26 : 0)
+            width: background.width - (backChip.visible ? 26 : 0) - 24
             onEditingFinished: background.commitIfChanged("backgroundColor", text.trim())
         }
         RevertChip { id: backChip; chipField: "backgroundColor" }
@@ -152,14 +210,43 @@ Column {
     Row {
         visible: background.supportsBackdrop
         spacing: 2
+        Rectangle {
+            id: gradientSwatch
+            objectName: background.gradientObjectName + "Swatch"
+            anchors.verticalCenter: parent.verticalCenter
+            width: 20; height: 20; radius: 3
+            color: "transparent"
+            border.color: "#6a6a6d"
+            Accessible.name: "Choose gradient colour"
+            MouseArea {
+                anchors.fill: parent
+                enabled: gradientField.enabled
+                cursorShape: Qt.PointingHandCursor
+                onClicked: background.chooseColour("backgroundGradient", gradientField.text)
+            }
+        }
         PanelField {
             id: gradientField
             objectName: background.gradientObjectName
-            width: background.width - (gradientChip.visible ? 26 : 0)
+            width: background.width - (gradientChip.visible ? 26 : 0) - 24
             // "" stays the EXPLICIT flat: the base record always stores a
             // gradient member, so this writes "" rather than inheriting.
             onEditingFinished: background.commitIfChanged("backgroundGradient", text.trim())
         }
         RevertChip { id: gradientChip; chipField: "backgroundGradient" }
+    }
+
+    ColorDialog {
+        id: colourDialog
+        objectName: background.textColorObjectName + "Dialog"
+        title: "Choose a colour"
+        options: ColorDialog.DontUseNativeDialog
+        property string targetField: ""
+        onAccepted: {
+            if (colourDialog.targetField !== "")
+                background.commitIfChanged(colourDialog.targetField,
+                                           background.hexOf(colourDialog.selectedColor))
+            colourDialog.targetField = ""
+        }
     }
 }

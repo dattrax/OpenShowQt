@@ -19,6 +19,9 @@ Item {
     objectName: "currentServicePanel"
 
     property bool editingEnabled: false
+    // The sidebar's Service folder row already names the order, so the pane
+    // drops its own heading when it wears that folder.
+    property bool showHeading: true
     property alias selectedEntryId: selection.currentKey
     readonly property var selectedEntryIds: selection.keys
     readonly property var entryIds: docs.playlistEntries.map(row => row.entryId)
@@ -61,36 +64,57 @@ Item {
         return "?"
     }
     function gapIndex(y) {
-        // The list's content is a flat 30px row run; add the scrolled offset
+        // The list's content is a flat 28px row run, the same pitch as the
+        // Library's own lists; add the scrolled offset
         // so a drop on a scrolled order lands beside the row under it.
-        const raw = (y - entryList.y + entryList.contentY) / 30.0
+        const raw = (y - entryList.y + entryList.contentY) / 28.0
         return Math.max(0, Math.min(entryList.count, Math.round(raw)))
     }
+    // The ROW under a drop, or -1 past the end. A drop INSIDE a cue is "add
+    // this to that cue" (audio joins the show's own layer); the insertion
+    // gap is for ordering new cues.
+    function rowAt(y) {
+        const index = Math.floor((y - entryList.y + entryList.contentY) / 28.0)
+        return index >= 0 && index < entryList.count ? index : -1
+    }
     // The kind of a media asset, or "" when the id is not in the bin. A
-    // media card can only become a cue when its picture is a slide's
-    // background: a video, a picture or a live camera. Audio is a
-    // production-track action and "other" has no picture to draw, so a
-    // drop of either is refused rather than becoming a blank cue.
+    // media card becomes a cue for every kind that has something to
+    // present: a video, a picture or a live camera as the picture, audio as
+    // the cue's own track. Only "other" has nothing to draw and no track.
     function mediaCueKind(id) {
+        const row = mediaPanelRow(id)
+        if (!row) return ""
+        const kind = row.kind
+        return kind === "video" || kind === "picture" || kind === "camera"
+                || kind === "audio" ? kind : ""
+    }
+    // The audio asset id when a dropped card is audio, else "" — the
+    // per-row drop puts that file into THIS show's audio layer rather than
+    // creating a second cue.
+    function mediaAudioId(id) {
+        const row = mediaPanelRow(id)
+        return row && row.kind === "audio" ? id : ""
+    }
+    // Declared after its uses above: QML resolves functions at call time.
+    function mediaPanelRow(id) {
         const rows = docs.assets
-        for (let i = 0; i < rows.length; ++i) {
-            if (rows[i].id === id) {
-                const kind = rows[i].kind
-                return kind === "video" || kind === "picture" || kind === "camera"
-                    ? kind : ""
-            }
-        }
-        return ""
+        for (let i = 0; i < rows.length; ++i)
+            if (rows[i].id === id) return rows[i]
+        return null
     }
 
     Column {
         anchors.fill: parent
-        anchors.margins: 8
+        // The sidebar's folder pane owns the outer margin and the search box
+        // below owns the same edges: in that (headless) shape the list runs
+        // flush, so every folder shows its files in the SAME list view.
+        anchors.margins: servicePanel.showHeading ? 8 : 0
         spacing: 4
 
         Row {
             width: parent.width
             height: 24
+            visible: servicePanel.showHeading
             spacing: 4
             Text {
                 id: serviceTitle
@@ -111,10 +135,12 @@ Item {
         Rectangle {
             id: entryBox
             width: parent.width
-            height: Math.max(80, parent.height - 30)
-            color: "#242424"
-            border.color: entryDrop.containsDrag ? "#1685f8" : "#4a4a4a"
-            border.width: entryDrop.containsDrag ? 3 : 1
+            height: Math.max(80, parent.height - (servicePanel.showHeading ? 30 : 0))
+            // Flat like the Library's own lists: the pane is the list, and
+            // only a drag over it draws a frame.
+            color: "transparent"
+            border.color: entryDrop.containsDrag ? "#1685f8" : "transparent"
+            border.width: entryDrop.containsDrag ? 2 : 0
 
             ListView {
                 id: entryList
@@ -131,11 +157,16 @@ Item {
                     required property int index
                     objectName: "collectionPlaylistRow"
                     width: entryList.width
-                    height: 30
+                    height: 28
                     opacity: entryMouse.drag.active ? 0.45 : 1
                     readonly property string rowEntryId: modelData.entryId
                     readonly property bool rowSelected:
                         selection.contains(modelData.entryId)
+                    // A cue carrying its own audio layer says so at a glance:
+                    // the operator can see which cues have a track without
+                    // presenting them.
+                    readonly property bool rowHasAudio:
+                        docs.showInfo(modelData.showId).audioAssetId !== ""
                     Accessible.name: "Cue " + (index + 1) + ": "
                                      + (modelData.section !== "" ? modelData.section + ", " : "")
                                      + modelData.showName
@@ -148,7 +179,7 @@ Item {
                     }
                     Text {
                         anchors.left: parent.left
-                        anchors.leftMargin: 6
+                        anchors.leftMargin: 16
                         anchors.verticalCenter: parent.verticalCenter
                         width: Math.max(0, entryRow.width -
                                          (servicePanel.editingEnabled ? 86 : 46))
@@ -166,6 +197,17 @@ Item {
                         font.pixelSize: 11
                         color: entryRow.rowSelected ? "#d9ebff" : "#b0b0b0"
                         text: entryRow.modelData.slideCount
+                    }
+                    Text {
+                        objectName: "serviceRowAudioMark"
+                        anchors.right: parent.right
+                        anchors.rightMargin: servicePanel.editingEnabled ? 76 : 28
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: entryRow.rowHasAudio
+                        font.pixelSize: 11
+                        color: entryRow.rowSelected ? "#d9ebff" : "#8fb7dd"
+                        text: "\u266b"
+                        Accessible.name: "this cue carries an audio track"
                     }
 
                     Row {
@@ -243,6 +285,7 @@ Item {
                         moving: true
                         dragging: entryMouse.drag.active
                     }
+
                 }
 
                 Text {
@@ -265,7 +308,8 @@ Item {
                 readonly property string dropHint: payloadKind === "entry" ? "Move to the marked position"
                     : (payloadKind === "pptx" ? "Import this deck at the marked position"
                        : (payloadKind === "media" ? "Add a media cue at the marked position"
-                                                  : "Add at the marked position"))
+                          : (payloadKind === "media-audio" ? "Add audio to this cue"
+                                                          : "Add at the marked position")))
                 readonly property int insertionIndex: servicePanel.gapIndex(dragY)
                 // Bounded edge autoscroll (SL.7): a drag held near the top or
                 // bottom of a long order scrolls toward the destination it is
@@ -296,6 +340,15 @@ Item {
                         : (kind === "show" ? !!docs.showInfo(id).id
                            : (kind === "catalog" ? !!library.itemOf(id).id
                               : (kind === "media" && !!servicePanel.mediaCueKind(id)))))
+                    if (kind === "media" && servicePanel.mediaAudioId(id)
+                        && servicePanel.rowAt(drag.y) >= 0) {
+                        entryDrop.payloadKind = "media-audio"
+                        drag.accepted = true
+                        drag.accept(Qt.CopyAction)
+                        entryDrop.dragY = drag.y
+                        autoScroll.start()
+                        return
+                    }
                     drag.accepted = !!valid
                     if (!valid) return
                     entryDrop.payloadKind = kind
@@ -357,11 +410,18 @@ Item {
                             servicePanel.entryChosen("")
                         }
                     } else if (kind === "media") {
-                        // MB.9: a video or picture card becomes a cue of its
-                        // own — one slide carrying that media as its whole
-                        // background and no lyric layer. The bin's card stays
-                        // in the library; the cue is a copy of the picture.
-                        if (docs.addMediaCue(id, at)) {
+                        // MB.9: a video, picture, camera or audio card becomes
+                        // a cue of its own. Dropped ON an existing cue, an
+                        // audio card instead joins that show's audio layer, so
+                        // a lyric chart plays while its words step.
+                        const row = servicePanel.rowAt(drop.y)
+                        const entries = docs.playlistEntries
+                        if (servicePanel.mediaAudioId(id) && row >= 0
+                            && row < entries.length
+                            && docs.setShowAudioFor(entries[row].showId, id)) {
+                            drop.accept(Qt.CopyAction)
+                            servicePanel.entryChosen(entries[row].entryId)
+                        } else if (docs.addMediaCue(id, at)) {
                             drop.accept(Qt.CopyAction)
                             servicePanel.entryChosen("")
                         }
@@ -390,7 +450,7 @@ Item {
                 z: 2
                 x: 3
                 y: Math.max(2, Math.min(entryBox.height - 6,
-                    entryList.y + entryDrop.insertionIndex * 30 - entryList.contentY - 2))
+                    entryList.y + entryDrop.insertionIndex * 28 - entryList.contentY - 2))
                 width: entryBox.width - 6
                 height: 4
                 radius: 2

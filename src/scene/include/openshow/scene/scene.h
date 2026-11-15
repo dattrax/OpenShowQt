@@ -136,6 +136,10 @@ struct Background {
     // assetPath carries the same source name for status and identity.
     bool isCamera = false;
     std::string cameraSource;
+    // ND.9: draw the live frame mirrored about the canvas' vertical axis.
+    // Only meaningful when isCamera; the source's own orientation, carried
+    // from the asset so the operator can fix a front camera once.
+    bool cameraMirror = false;
     domain::Id assetId;
     std::string assetPath;
     // How the picture (still or video frame) sits on the canvas (task
@@ -183,12 +187,27 @@ struct SceneItem {
     // editor to the wire.
     int fontWeight = domain::kDefaultFontWeight;
     std::string fontStyle = "normal";  // "normal" | "italic"
+    // Scene 6 (review 2026-11-10): the underline decoration, drawn by the
+    // paragraph's own decoration pass in the text's colour. A scene-5
+    // payload said nothing and keeps this build's upright roman default.
+    bool underline = false;
     std::string fitMode = "shrink";    // "shrink" | "fixed"
     double minFontSize = domain::kDefaultMinFontSize;
     domain::TextStroke stroke;   // disabled by default; enabled draws
     domain::TextShadow shadow;
     // Image items only (6.17b): what compileSlide resolved from the
     // model's asset reference, same discipline as the background's pair.
+    domain::Id assetId;
+    std::string assetPath;
+};
+
+// The scene's independent AUDIO layer: a show plays one audio file
+// alongside its slides, mixed with the background video's own audio in the
+// worker. It is deliberately NOT part of Background: nothing about it is
+// drawn, and the transport's identity is allowed to keep the track rolling
+// while a slide's picture changes underneath it (the song-chart case).
+struct AudioLayer {
+    bool present = false;
     domain::Id assetId;
     std::string assetPath;
 };
@@ -202,11 +221,14 @@ struct Scene {
     domain::Id showId;
     domain::Id slideId;
     Background background;
+    AudioLayer audio;
     std::vector<SceneItem> items;
 };
 
 bool operator==(const Background& a, const Background& b);
 bool operator!=(const Background& a, const Background& b);
+bool operator==(const AudioLayer& a, const AudioLayer& b);
+bool operator!=(const AudioLayer& a, const AudioLayer& b);
 bool operator==(const SceneItem& a, const SceneItem& b);
 bool operator!=(const SceneItem& a, const SceneItem& b);
 bool operator==(const Scene& a, const Scene& b);
@@ -229,14 +251,16 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 
 // --- wire form ---------------------------------------------------------------
 
-// {"scene":4,"showId":...,"slideId":...,"backgroundColor":<int>,
+// {"scene":7,"showId":...,"slideId":...,"backgroundColor":<int>,
 //  "background":{"image":bool,"video":bool,
 //                "fit":"cover"|"contain"|"blur","assetId":...,"assetPath":...,
 //                "gradient":<int>},
+//  "audio":{"assetId":...,"assetPath":...},   // scene 7, only when present
 //  "items":[{"kind":"text","lines":[...],"color":<int>,"fontFamily":...,
 //            "fontSize":<num>,"x":<num>,"y":<num>,"width":<num>,
 //            "height":<num>,"align":"left"|"center"|"right",
 //            "lineSpacing":<num>,"fontWeight":<int>,"fontStyle":"normal"|"italic",
+//            "underline":<bool>,
 //            "fitMode":"shrink"|"fixed","minFontSize":<num>,
 //            "stroke":{"enabled":bool,"color":<int>,"width":<num>},
 //            "shadow":{"enabled":bool,"color":<int>,"opacity":<num>,
@@ -269,10 +293,18 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 // the frontend's to refuse (capability "scene.text-style.v1", advertised
 // from TS.2's renderer), because quietly drawing it unstyled is the silent
 // omission the wire has refused since 6.8a.
+// Scene 5 adds the transparent background; scene 6 (review 2026-11-10) adds
+// the style block's "underline" switch; scene 7 adds the optional "audio"
+// layer, a show-level track mixed with the background's own audio by the
+// worker. All keep readers for their predecessors: scene 6/5/4 read with
+// the absent fields landing on their own history (underline false, no audio
+// layer), scene 3 with the whole style block absent. A newer payload
+// carrying a key an older format did not define is refused by name, never
+// quietly drawn without it.
 boost::json::value toJson(const Scene& scene);
 
 // Strict reader for the above; see the header for the contract. Fails
-// on: wrong scene format number (only 4, and legacy 3, are read), malformed
+// on: wrong scene format number (only 7, 6, 5, 4 and legacy 3 are read), malformed
 // or wrongly-typed fields,
 // colours outside 0xRRGGBB, non-finite or negative font sizes, non-finite
 // text-box edges, non-positive box width or height, an alignment outside
@@ -285,7 +317,8 @@ boost::json::value toJson(const Scene& scene);
 // style key, a weight outside 100..900 or not an integer, a font style or
 // fit mode outside its two words, a minimum size outside 1..4096, an
 // effect that is not a whole closed record, and any effect number outside
-// its band (width 0..32, opacity 0..1, offsets -256..256, blur 0..64).
+// its band (width 0..32, opacity 0..1, offsets -256..256, blur 0..64); scene
+// 6 also requires the text item's "underline" boolean.
 //
 // The key set is CLOSED on purpose. Minor-version tolerance is a frontend
 // rule — an unknown field in a STATUS object costs a viewer nothing — but a
