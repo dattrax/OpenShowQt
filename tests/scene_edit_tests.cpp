@@ -337,6 +337,74 @@ void exerciseMediaBackgroundClears() {
           "a camera payload with image:false still reads as a background, as the worker draws it");
 }
 
+// Review D2: the traversal must see EVERY asset reference a scene carries.
+// The old rewrite knew the background and image items, so a save left the
+// show's audio layer naming bytes the save had moved.
+void exerciseAssetPathAdoption() {
+    Scene scene;
+    scene.showId = "show-paths";
+    scene.slideId = "slide-paths";
+    scene.background.hasImage = true;
+    scene.background.assetId = "asset-bg";
+    scene.background.assetPath = "/old/bg.jpg";
+    SceneItem picture;
+    picture.isImage = true;
+    picture.assetId = "asset-item";
+    picture.assetPath = "/old/item.png";
+    picture.width = 0.5;
+    picture.height = 0.5;
+    scene.items.push_back(picture);
+    scene.audio.present = true;
+    scene.audio.assetId = "asset-audio";
+    scene.audio.assetPath = "/old/track.wav";
+    const QString raw =
+        QString::fromStdString(boost::json::serialize(openshow::scene::toJson(scene)));
+
+    const QStringList paths = openshow::ui::sceneAssetPaths(raw);
+    check(paths == QStringList({QStringLiteral("/old/bg.jpg"), QStringLiteral("/old/track.wav"),
+                                QStringLiteral("/old/item.png")}),
+          "the traversal names the background, the show audio layer and every item");
+
+    const QVariantMap moved{{QStringLiteral("/old/bg.jpg"), QStringLiteral("/new/bg.jpg")},
+                            {QStringLiteral("/old/item.png"), QStringLiteral("/new/item.png")},
+                            {QStringLiteral("/old/track.wav"), QStringLiteral("/new/track.wav")}};
+    const QString adopted = openshow::ui::withAdoptedAssetPaths(raw, moved);
+    bool ok = false;
+    const Scene after = parseScene(adopted, &ok);
+    check(ok && after.background.assetPath == "/new/bg.jpg" &&
+              after.items.size() == 1 && after.items[0].assetPath == "/new/item.png" &&
+              after.audio.present && after.audio.assetPath == "/new/track.wav",
+          "adoption rewrites the background, the item AND the show audio layer");
+    check(openshow::ui::sceneAssetPaths(adopted) ==
+              QStringList({QStringLiteral("/new/bg.jpg"), QStringLiteral("/new/track.wav"),
+                           QStringLiteral("/new/item.png")}),
+          "and the rewritten payload names nothing old");
+
+    // An audio-only cue is the case the old rewrite could not reach at all.
+    Scene audioOnly;
+    audioOnly.showId = "show-audio";
+    audioOnly.slideId = "slide-audio";
+    audioOnly.audio.present = true;
+    audioOnly.audio.assetId = "asset-audio";
+    audioOnly.audio.assetPath = "/old/track.wav";
+    const QString audioOnlyJson = QString::fromStdString(
+        boost::json::serialize(openshow::scene::toJson(audioOnly)));
+    bool audioOk = false;
+    const Scene audioAdopted = parseScene(
+        openshow::ui::withAdoptedAssetPaths(audioOnlyJson, moved), &audioOk);
+    check(audioOk && audioAdopted.audio.assetPath == "/new/track.wav",
+          "an audio-only cue's track is adopted too");
+
+    // Nothing to do answers the input itself, so a caller can tell the two
+    // apart; garbage answers "", and an absent payload stays absent.
+    check(openshow::ui::withAdoptedAssetPaths(raw, {{QStringLiteral("/other/x"), QStringLiteral("/y")}}) ==
+              raw,
+          "a map naming nothing the payload uses leaves it byte-identical");
+    check(openshow::ui::withAdoptedAssetPaths(QStringLiteral("[]"), moved).isEmpty() &&
+              openshow::ui::withAdoptedAssetPaths(QString(), moved).isEmpty(),
+          "a non-scene answers empty rather than a mangled payload");
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -360,6 +428,7 @@ int main(int argc, char* argv[]) {
     exerciseContentFlags();
     exerciseClears();
     exerciseMediaBackgroundClears();
+    exerciseAssetPathAdoption();
     if (gFailed) {
         return 1;
     }

@@ -27,6 +27,8 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
+#include <QVariantMap>
 
 namespace openshow::ui {
 
@@ -57,6 +59,22 @@ SceneContent sceneContent(const QString& sceneJson);
 QString withRetainedBackground(const QString& sceneJson, const QString& previousJson);
 QString withWordsCleared(const QString& sceneJson);
 QString withBackgroundCleared(const QString& sceneJson);
+
+// Every asset reference a scene payload carries, in wire order: the
+// background's `assetPath`, the show's audio layer's, and each image item's.
+// ONE traversal, shared by the read and the rewrite below (DR.2), because a
+// reference this list misses is a stale path the running session keeps after
+// a save — which is exactly the bug D2 named. An unreadable payload answers
+// nothing.
+QStringList sceneAssetPaths(const QString& sceneJson);
+
+// The same payload with every asset reference whose OLD path is a key in
+// `pathMap` rewritten to the new one. Returns the input UNCHANGED when no
+// reference moved (so a caller can tell "nothing to do" from "rewritten"),
+// and "" when the input is not a scene object. A save's adoption feeds every
+// retained payload through this: the revision mirror, pending prepares, the
+// Restore snapshot and the desired presentation.
+QString withAdoptedAssetPaths(const QString& sceneJson, const QVariantMap& pathMap);
 
 // scene.clear-all in the same shape: the scene library's cleared scene,
 // serialized (black, no items).

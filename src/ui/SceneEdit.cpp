@@ -1,5 +1,7 @@
 #include "SceneEdit.h"
 
+#include <functional>
+
 #include <boost/json.hpp>
 
 #include "openshow/scene/scene.h"
@@ -45,6 +47,31 @@ QString edited(const QString& sceneJson, void (*mutate)(boost::json::object&)) {
 }
 
 void dropWords(boost::json::object& root) { root["items"] = boost::json::array{}; }
+
+// Every asset reference a scene carries, in one place (review D2). The walk
+// visits the background, the show's audio layer and each image item; a
+// reference it does not visit is a path a save leaves stale in the running
+// session.
+void visitAssetPaths(boost::json::object& root,
+                     const std::function<void(boost::json::value&)>& visit) {
+    const auto visitHolder = [&visit](boost::json::value* holder) {
+        if (holder == nullptr || !holder->is_object()) {
+            return;
+        }
+        boost::json::value* path = holder->as_object().if_contains("assetPath");
+        if (path != nullptr && path->is_string()) {
+            visit(*path);
+        }
+    };
+    visitHolder(root.if_contains("background"));
+    visitHolder(root.if_contains("audio"));
+    boost::json::value* items = root.if_contains("items");
+    if (items != nullptr && items->is_array()) {
+        for (boost::json::value& element : items->as_array()) {
+            visitHolder(&element);
+        }
+    }
+}
 
 }  // namespace
 
@@ -112,6 +139,39 @@ QString withBackgroundCleared(const QString& sceneJson) {
 
 QString clearedSceneJson() {
     return serializeJson(openshow::scene::toJson(openshow::scene::clearedScene()));
+}
+
+QStringList sceneAssetPaths(const QString& sceneJson) {
+    bool ok = false;
+    boost::json::value parsed = parseObject(sceneJson, &ok);
+    if (!ok) {
+        return {};
+    }
+    QStringList paths;
+    visitAssetPaths(parsed.as_object(), [&paths](boost::json::value& path) {
+        paths.push_back(QString::fromStdString(std::string(path.as_string())));
+    });
+    return paths;
+}
+
+QString withAdoptedAssetPaths(const QString& sceneJson, const QVariantMap& pathMap) {
+    bool ok = false;
+    boost::json::value parsed = parseObject(sceneJson, &ok);
+    if (!ok) {
+        return QString();
+    }
+    bool changed = false;
+    visitAssetPaths(parsed.as_object(), [&pathMap, &changed](boost::json::value& path) {
+        const QString oldPath = QString::fromStdString(std::string(path.as_string()));
+        if (!pathMap.contains(oldPath)) {
+            return;
+        }
+        path = pathMap.value(oldPath).toString().toStdString();
+        changed = true;
+    });    if (!changed) {
+        return sceneJson;  // nothing here was made stale by the move
+    }
+    return serializeJson(std::move(parsed));
 }
 
 }  // namespace openshow::ui

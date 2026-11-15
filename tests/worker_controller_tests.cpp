@@ -657,6 +657,19 @@ private:
                     }
                 }
                 fItemPaths.push_back(std::move(itemPaths));
+                // Review D2: and the show's own audio layer, which the old
+                // adoption rewrite could not see at all.
+                std::string audioPath;
+                const auto audio = params.find("audio");
+                if (audio != params.end() && audio->value().is_object()) {
+                    const auto path = audio->value().as_object().find("assetPath");
+                    if (path != audio->value().as_object().end() && path->value().is_string()) {
+                        audioPath = std::string(path->value().as_string());
+                    }
+                }
+                fAudioPaths.push_back(std::move(audioPath));
+            } else {
+                fAudioPaths.push_back(std::string());
             }
             fAssetPaths.push_back(std::move(assetPath));
             // Task 6.21e (review F4): whether THIS prepare's background still
@@ -1396,6 +1409,11 @@ private:
         for (const std::string& gradient : fGradients) {
             gradients.emplace_back(gradient);
         }
+        // Review D2: per-prepare show audio layer ("" = no layer).
+        boost::json::array audioPaths;
+        for (const std::string& audioPath : fAudioPaths) {
+            audioPaths.emplace_back(audioPath);
+        }
         boost::json::object methods;
         std::int64_t total = 0;
         for (const auto& counted : fMethodCounts) {
@@ -1411,6 +1429,7 @@ private:
             {"assetPaths", std::move(assetPaths)},
             {"foregroundPaths", std::move(foregroundPaths)},
             {"gradients", std::move(gradients)},
+            {"audioPaths", std::move(audioPaths)},
             {"methods", std::move(methods)},
             {"requests", total},
             {"bytesReceived", fBytesReceived},
@@ -1801,6 +1820,7 @@ private:
     boost::json::array fPresentOps;
     std::vector<std::string> fAssetPaths;  // each prepare's background file (task 6.12)
     std::vector<std::string> fItemPaths;   // and its path-bearing items, space-joined (task 6.21b)
+    std::vector<std::string> fAudioPaths;  // and its show audio layer's file (review D2)
     std::vector<std::string> fGradients;   // and its background gradient, or "" (task 6.21e)
     // Task 6.21f (review F6): the per-item foreground faults the status
     // scene block reports. Marked payloads arm them (FGMISSING/FGSECOND)
@@ -2000,6 +2020,18 @@ std::string sceneStyledText() {
     styled.items.front().fontWeight = 700;
     styled.items.front().stroke.enabled = true;
     return boost::json::serialize(scene::toJson(styled));
+}
+
+// Review D2: an AUDIO-ONLY cue — a scene 7 audio layer and no picture at
+// all. The old adoption rewrite could not see this reference, so a save left
+// the running session naming bytes the save had moved.
+std::string sceneAudioOnly(const std::string& audioPath) {
+    scene::Scene scene = authoredScene({}, 0u);
+    scene.slideId = "AUDIO-A";
+    scene.audio.present = true;
+    scene.audio.assetId = "asset-audio";
+    scene.audio.assetPath = audioPath;
+    return boost::json::serialize(scene::toJson(scene));
 }
 
 // Task 6.12 (review R7): a background PICTURE naming a file on disk. The
@@ -3766,13 +3798,44 @@ void scenarioAdoptedPaths() {
           }),
           "adopt: the second restore came back after the snapshot-time adoption");
 
+    // Round three (review D2): an AUDIO-ONLY cue. Its track is the reference
+    // the old rewrite never visited, so the save left the session naming the
+    // bytes it had just moved away — a clear/restore after their removal
+    // could not play. Adoption rewrites the audio layer, re-prepares without
+    // presenting, and the restore that follows names the new file.
+    const QString oldAudio = QStringLiteral("/old/dir/track.wav");
+    const QString newAudio = QStringLiteral("/new/dir/track.wav");
+    controller.presentSceneJson(
+        QString::fromStdString(sceneAudioOnly(oldAudio.toStdString())));
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 8 && controller.scenePending() == 0;
+          }),
+          "adopt: the audio-only cue is on air");
+    controller.adoptAssetPaths({{oldAudio, newAudio}});
+    check(waitUntil([&controller] {
+              return controller.scenePrepared() == 9 && controller.scenePending() == 0;
+          }),
+          "adopt: the audio-only cue was re-prepared with the saved track's path");
+    check(controller.sceneActive() == 8,
+          "adopt: adopting the track did not re-present the audio cue");
+    controller.clearAll();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 10 && controller.scenePending() == 0;
+          }),
+          "adopt: clear-all over the audio-only cue is acknowledged");
+    controller.restoreOutput();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 11 && controller.scenePending() == 0;
+          }),
+          "adopt: the audio-only cue is restored");
+
     controller.shutdownNow();
     const boost::json::object counts = readReport(report);
-    check(reportNumber(counts, "prepares") == 7,
-          "adopt: seven prepares - the go, the re-prepare, the clear, the restore, and the "
-          "snapshot round's go, clear, restore");
-    check(reportNumber(counts, "presents") == 7,
-          "adopt: seven presents - every go and re-present; the adoptions themselves added none");
+    check(reportNumber(counts, "prepares") == 11,
+          "adopt: eleven prepares - the two earlier rounds, then the audio cue's go, its "
+          "adoption and its restore");
+    check(reportNumber(counts, "presents") == 10,
+          "adopt: ten presents - every go and re-present; the adoptions themselves added none");
     std::string joined;
     std::size_t listed = 0;
     if (const auto entry = counts.find("assetPaths");
@@ -3786,15 +3849,41 @@ void scenarioAdoptedPaths() {
     }
     const std::string o = oldPath.toStdString();
     const std::string n = newPath.toStdString();
-    const std::string expect = o + " | " + n + " |  | " + n + " | " + o + " |  | " + n;
-    check(listed == 7 && joined == expect,
+    const std::string expect = o + " | " + n + " |  | " + n + " | " + o + " |  | " + n +
+                               " |  |  |  | ";
+    check(listed == 11 && joined == expect,
           ("adopt: each prepare named exactly the background it should, the old path never "
            "named by anything the adoption ran over (got [" + joined + "])")
+              .c_str());
+    // Review D2: the audio ledger, in prepare order. The first seven scenes
+    // carried no layer; the audio cue went out naming the old file, the
+    // adoption's re-prepare and the restore named the new one, and the clear
+    // (which is scene-7 audio-less) named none.
+    std::string audioJoined;
+    std::size_t audioListed = 0;
+    if (const auto entry = counts.find("audioPaths");
+        entry != counts.end() && entry->value().is_array()) {
+        for (const auto& value : entry->value().as_array()) {
+            if (value.is_string()) {
+                audioJoined += (audioJoined.empty() ? "" : " | ") + std::string(value.as_string());
+                ++audioListed;
+            }
+        }
+    }
+    const std::string ao = oldAudio.toStdString();
+    const std::string an = newAudio.toStdString();
+    // The seven picture-only prepares carry no layer, so the joined text
+    // begins at the first entry that does (the join idiom drops leading
+    // empties); audioListed is what counts them.
+    const std::string audioExpect = ao + " | " + an + " |  | " + an;
+    check(audioListed == 11 && audioJoined == audioExpect,
+          ("adopt: the show audio layer was adopted - the old track never re-prepared "
+           "after the save (got [" + audioJoined + "])")
               .c_str());
     if (const auto presented = counts.find("presented");
         presented != counts.end() && presented->value().is_array()) {
         const boost::json::array& revs = presented->value().as_array();
-        const std::vector<std::int64_t> wantRevisions{1, 1, 3, 4, 5, 6, 7};
+        const std::vector<std::int64_t> wantRevisions{1, 1, 3, 4, 5, 6, 7, 8, 10, 11};
         bool revsOk = revs.size() == wantRevisions.size();
         for (std::size_t i = 0; revsOk && i < wantRevisions.size(); ++i) {
             revsOk = revs[i].to_number<std::int64_t>() == wantRevisions[i];

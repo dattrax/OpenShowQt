@@ -266,60 +266,23 @@ void PresentationModel::adoptAssetPaths(const QVariantMap& pathMap) {
     if (pathMap.isEmpty()) {
         return;
     }
-    // One payload's rewrite: the new JSON when ANY assetPath this save moved
-    // appears in it — the background's pair since 6.12, and since 6.21b
-    // (review F2) the `assetPath` of every image ITEM too, because a
-    // foreground picture is just as much the operator's file as a background
-    // one. Empty for anything else — an unreadable payload or one that does
-    // not name the file is left exactly as it was, because there is nothing
-    // here that was made stale by the move.
+    // One rewrite, every reference (review D2). The traversal lives in
+    // SceneEdit and covers the background's pair, each image ITEM's pair and
+    // — since scene 7 — the show's audio layer. The old inline rewrite knew
+    // only the first two, so a save left the running session's audio naming
+    // the bytes the save had just moved away: a clear or restore after the
+    // old file was removed could not play.
     const auto rewrite = [&pathMap](const QString& sceneJson) {
-        if (sceneJson.isEmpty()) {
-            return QString();
-        }
-        boost::system::error_code parseError;
-        boost::json::value parsed = boost::json::parse(sceneJson.toStdString(), parseError);
-        if (parseError || !parsed.is_object()) {
-            return QString();
-        }
-        bool changed = false;
-        const auto repoint = [&pathMap, &changed](boost::json::object& holder) {
-            const auto path = holder.find("assetPath");
-            if (path == holder.end() || !path->value().is_string()) {
-                return;
-            }
-            const QString oldPath = QString::fromStdString(std::string(path->value().as_string()));
-            if (!pathMap.contains(oldPath)) {
-                return;
-            }
-            path->value() = pathMap.value(oldPath).toString().toStdString();
-            changed = true;
-        };
-        const auto background = parsed.as_object().find("background");
-        if (background != parsed.as_object().end() && background->value().is_object()) {
-            repoint(background->value().as_object());
-        }
-        const auto items = parsed.as_object().find("items");
-        if (items != parsed.as_object().end() && items->value().is_array()) {
-            for (auto& element : items->value().as_array()) {
-                if (element.is_object()) {
-                    repoint(element.as_object());
-                }
-            }
-        }
-        if (!changed) {
-            return QString();
-        }
-        return QString::fromStdString(boost::json::serialize(parsed));
+        const QString adopted = withAdoptedAssetPaths(sceneJson, pathMap);
+        // Unreadable payloads answer "", and an unchanged one answers itself:
+        // either way the holder keeps exactly what it had.
+        return adopted.isEmpty() ? sceneJson : adopted;
     };
 
     // The mirror: each retained revision's payload. A later explicit
     // presentScene(revision) must not put a deleted path back on air.
     for (auto entry = fSceneJson.begin(); entry != fSceneJson.end(); ++entry) {
-        const QString adopted = rewrite(entry.value());
-        if (!adopted.isEmpty()) {
-            entry.value() = adopted;
-        }
+        entry.value() = rewrite(entry.value());
     }
     // A prepare whose ack has not landed yet: the worker has the old payload
     // (it decoded it at prepare time, and the on-air path stays pinned), but
@@ -330,20 +293,14 @@ void PresentationModel::adoptAssetPaths(const QVariantMap& pathMap) {
         if (ask.prepareJson.isEmpty()) {
             return;
         }
-        const QString adopted = rewrite(ask.prepareJson);
-        if (!adopted.isEmpty()) {
-            ask.prepareJson = adopted;
-        }
+        ask.prepareJson = rewrite(ask.prepareJson);
     });
     // The restore snapshot re-prepares through presentSceneInternal when the
     // operator clicks it, so rewriting it here is enough: it names the new
     // file at the moment it is used.
-    const QString adoptedRestore = rewrite(fRestoreJson);
-    if (!adoptedRestore.isEmpty()) {
-        fRestoreJson = adoptedRestore;
-    }
+    fRestoreJson = rewrite(fRestoreJson);
     const QString adoptedDesired = rewrite(fDesiredSceneJson);
-    if (adoptedDesired.isEmpty()) {
+    if (adoptedDesired == fDesiredSceneJson) {
         return;  // nothing the output is owed named a moved file
     }
     fDesiredSceneJson = adoptedDesired;

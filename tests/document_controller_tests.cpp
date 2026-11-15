@@ -38,6 +38,7 @@
 #include "openshow/scene/scene.h"
 
 #include "DocumentController.h"
+#include "SceneEdit.h"
 
 namespace {
 
@@ -52,6 +53,7 @@ bool check(bool condition, const char* what) {
 }
 
 using openshow::domain::Autosave;
+using openshow::scene::Scene;
 using openshow::ui::DocumentController;
 
 // A QVariantList of {id,...} maps from the controller, read as strings.
@@ -483,6 +485,127 @@ void exerciseRecoveredAssetOwnership(const std::filesystem::path& root) {
                   .indexOf(QStringLiteral("autosave")) == -1,
               "adopt: and the whole session names no scratch path at all");
     }
+}
+
+// --- review D2: a save adopts the show's audio layer too -------------------
+
+// The same save-time adoption, for the reference the old rewrite could not
+// see: a show's audio layer (scene 7). The operator imports a track, sets it
+// on the show, saves — which MOVES the bytes — deletes the original, and the
+// session's retained payloads must name the package's copy. The clear
+// transforms are included because they are what the operator presses after
+// the save: a background clear preserves the layer (DR.1) and must preserve
+// the ADOPTED path, not the deleted one.
+void exerciseShowAudioAdoption(const std::filesystem::path& root) {
+    std::filesystem::create_directories(root / "audio-originals");
+    const std::filesystem::path track = root / "audio-originals" / "track.wav";
+    {
+        std::ofstream out(track, std::ios::binary);
+        out << "RIFF....WAVEfmt ";  // the NAME is what the model classifies
+    }
+    DocumentController docs(nullptr, root);
+    check(docs.createSong(QStringLiteral("Audio Cue")), "audio adopt: the song exists");
+    check(docs.addSlide(), "audio adopt: the slide exists");
+    const QString showId = docs.currentSongId();
+    const QString slideId =
+        QString::fromStdString(docs.slides().at(0).toMap().value(QStringLiteral("id")).toString().toStdString());
+    check(docs.importMediaFile(QString::fromStdString(track.string())),
+          "audio adopt: the track imports");
+    QString audioAssetId;
+    for (const QVariant& row : docs.assets()) {
+        if (row.toMap().value(QStringLiteral("sourcePath")).toString() ==
+            QString::fromStdString(track.string())) {
+            audioAssetId = row.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    check(!audioAssetId.isEmpty(), "audio adopt: the track is a library asset");
+    check(docs.setShowAudioFor(showId, audioAssetId),
+          "audio adopt: the show takes the track as its audio layer");
+
+    const QString beforeSave = docs.sceneJsonForSlide(slideId);
+    bool ok = false;
+    const Scene before = [&] {
+        boost::system::error_code error;
+        const boost::json::value parsed = boost::json::parse(beforeSave.toStdString(), error);
+        Scene scene;
+        ok = !error && openshow::scene::fromJson(parsed, &scene);
+        return scene;
+    }();
+    check(ok && before.audio.present &&
+              before.audio.assetPath == track.string(),
+          "audio adopt: the compiled scene names the imported track");
+
+    QVariantMap adopted;
+    QObject::connect(&docs, &DocumentController::assetsAdopted,
+                     [&adopted](const QVariantMap& moved) { adopted = moved; });
+    check(docs.save(), "audio adopt: the save succeeds");
+    check(adopted.contains(QString::fromStdString(track.string())),
+          "audio adopt: the save announced the track's move");
+    const QString owned =
+        docs.assets().size() == 1
+            ? docs.assets().at(0).toMap().value(QStringLiteral("sourcePath")).toString()
+            : QString();
+    check(owned.startsWith(QString::fromStdString((root / "service").string())) &&
+              QFileInfo::exists(owned),
+          "audio adopt: the model now names the package's copy of the track");
+    std::filesystem::remove(track);  // the old bytes are gone, as after any save
+
+    // The retained payloads the running session still holds are rewritten
+    // through the same traversal the session uses.
+    const QString rewritten = openshow::ui::withAdoptedAssetPaths(beforeSave, adopted);
+    bool afterOk = false;
+    const Scene after = [&] {
+        boost::system::error_code error;
+        const boost::json::value parsed = boost::json::parse(rewritten.toStdString(), error);
+        Scene scene;
+        afterOk = !error && openshow::scene::fromJson(parsed, &scene);
+        return scene;
+    }();
+    check(afterOk && after.audio.assetPath == owned.toStdString() &&
+              QFileInfo::exists(QString::fromStdString(after.audio.assetPath)),
+          "audio adopt: the adopted payload names the package's track, and it exists");
+
+    // The clear the operator presses next: the layer survives, naming bytes
+    // that are still there.
+    const QString cleared = openshow::ui::withBackgroundCleared(rewritten);
+    bool clearedOk = false;
+    const Scene clearedScene = [&] {
+        boost::system::error_code error;
+        const boost::json::value parsed = boost::json::parse(cleared.toStdString(), error);
+        Scene scene;
+        clearedOk = !error && openshow::scene::fromJson(parsed, &scene);
+        return scene;
+    }();
+    check(clearedOk && clearedScene.audio.present &&
+              clearedScene.audio.assetPath == owned.toStdString(),
+          "audio adopt: a background clear keeps the adopted track");
+    const QString wordsGone = openshow::ui::withWordsCleared(rewritten);
+    bool wordsOk = false;
+    const Scene wordsScene = [&] {
+        boost::system::error_code error;
+        const boost::json::value parsed = boost::json::parse(wordsGone.toStdString(), error);
+        Scene scene;
+        wordsOk = !error && openshow::scene::fromJson(parsed, &scene);
+        return scene;
+    }();
+    check(wordsOk && wordsScene.audio.present &&
+              wordsScene.audio.assetPath == owned.toStdString(),
+          "audio adopt: a words clear keeps the adopted track");
+
+    // And a reload agrees: the saved service names the package's track.
+    DocumentController reopened(nullptr, root);
+    const QString reloadedJson = reopened.sceneJsonForSlide(slideId);
+    bool reloadedOk = false;
+    const Scene reloaded = [&] {
+        boost::system::error_code error;
+        const boost::json::value parsed = boost::json::parse(reloadedJson.toStdString(), error);
+        Scene scene;
+        reloadedOk = !error && openshow::scene::fromJson(parsed, &scene);
+        return scene;
+    }();
+    check(reloadedOk && reloaded.audio.present &&
+              QFileInfo::exists(QString::fromStdString(reloaded.audio.assetPath)),
+          "audio adopt: a reopened service presents the packaged track");
 }
 
 // --- task 4.2: playlist, drawer search and the media library -----------
@@ -4194,6 +4317,7 @@ int main(int argc, char* argv[]) {
     exerciseGeometryEdits(tempRoot / "geometry");
     exercisePersistence(tempRoot / "persist");
     exerciseRecoveredAssetOwnership(tempRoot / "adopt");
+    exerciseShowAudioAdoption(tempRoot / "audio-adopt");
     exercisePlaylistAndLibrary(tempRoot / "playlist");
     exerciseThemePanel(tempRoot / "styles");
     exerciseWornChain(tempRoot / "wornchain");
