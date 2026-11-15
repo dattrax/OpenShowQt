@@ -1445,6 +1445,265 @@ void testStagedBundleOwnership() {
     transport.shutdown();
 }
 
+// Review D3: the bring-up's waits belong to the staging thread for EVERY
+// background kind. The scripted slow start is paid by primeAudio (the prepare
+// executor's stand-in here) and the frame-thread apply is a hold release.
+void testAudioStagingForEveryKind() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) {
+        std::printf("   skipped the audio-staging fixtures (no ffmpeg)\n");
+        return;
+    }
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string slowTrack = "transport-fixtures/staging-slow.wav";
+    if (std::system(("ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+                     "\"sine=frequency=440:duration=2:sample_rate=48000\" -ac 2 \"" +
+                     slowTrack + "\"").c_str()) != 0) {
+        check(false, "the staging fixture track is written");
+        return;
+    }
+    setenv("OPENSHOW_FAULT_AUDIO_START_MS", "700", 1);
+    setenv("OPENSHOW_FAULT_AUDIO_START_MATCH", "staging-slow", 1);
+    BackgroundTransport transport;
+    const auto resident = [](const std::string&) { return true; };
+    openshow::scene::AudioLayer audio;
+    audio.present = true;
+    audio.assetId = "asset-slow";
+    audio.assetPath = slowTrack;
+
+    const auto measure = [](const auto& work) {
+        const auto began = std::chrono::steady_clock::now();
+        work();
+        return std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now() - began)
+            .count();
+    };
+    const auto exercise = [&](const char* which, const openshow::scene::Background& background,
+                              const std::string& expectedPath) {
+        const double primeMs = measure([&] {
+            std::string error;
+            check(transport.primeAudio(background, audio, nullptr, &error),
+                  (std::string(which) + ": the audio is staged").c_str());
+        });
+        check(primeMs >= 600.0,
+              (std::string(which) + ": the scripted slow start was paid on the staging thread")
+                  .c_str());
+        const double applyMs = measure([&] {
+            transport.applyBackground(background, audio, openshow::worker::GpuHandles{},
+                                      resident);
+        });
+        check(applyMs < 100.0,
+              (std::string(which) +
+               ": adopting the staged player did not block the frame thread")
+                  .c_str());
+        transport.refreshMediaState();
+        check(transport.mediaStatus().live && transport.mediaStatus().path == expectedPath,
+              (std::string(which) + ": the cue is playing after the fast apply").c_str());
+        // Clear it so the next kind starts from a silent transport.
+        transport.applyBackground(openshow::scene::Background{}, openshow::scene::AudioLayer{},
+                                  openshow::worker::GpuHandles{}, resident);
+    };
+    exercise("audio-only", openshow::scene::Background{}, slowTrack);
+    exercise("still", stillBackground("transport-fixtures/staging-still.png"), slowTrack);
+    openshow::scene::Background camera;
+    camera.hasImage = true;
+    camera.isCamera = true;
+    camera.cameraSource = "STAGING (Camera)";
+    // A camera names itself on air; the track rides beside it (DR.0's
+    // camera-plus-audio identity), which the "audio" source row proves.
+    exercise("camera", camera, camera.cameraSource);
+    unsetenv("OPENSHOW_FAULT_AUDIO_START_MS");
+    unsetenv("OPENSHOW_FAULT_AUDIO_START_MATCH");
+    transport.shutdown();
+}
+
+// Review D3's last clause: adding or changing the show layer over the SAME
+// video is a new mix. The on-air shortcut must say "not this identity" (so
+// the prepare stages it) and the frame thread must adopt the staged player
+// instead of opening the file cold.
+void testSameVideoNewAudioStaging() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) {
+        std::printf("   skipped the same-video/new-audio fixture (no ffmpeg)\n");
+        return;
+    }
+    openshow::worker::VulkanContext vk;
+    if (!vk.createHeadless()) {
+        std::printf("   skipped the same-video/new-audio fixture (no headless Vulkan device)\n");
+        return;
+    }
+    auto gr = GrDirectContexts::MakeVulkan(vk.backendContext());
+    if (!gr) {
+        std::printf("   skipped the same-video/new-audio fixture (no Ganesh context)\n");
+        return;
+    }
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string clip = "transport-fixtures/staging-clip.mp4";
+    const std::string command =
+        "ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+        "nullsrc=s=160x96:r=12 -t 2 -c:v libx264 -preset veryfast -pix_fmt yuv420p " +
+        clip;
+    if (std::system(command.c_str()) != 0) {
+        check(false, "the same-video/new-audio fixture clip is generated");
+        return;
+    }
+    const std::string track = "transport-fixtures/staging-layer.wav";
+    if (std::system(("ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+                     "\"sine=frequency=520:duration=2:sample_rate=48000\" -ac 2 \"" +
+                     track + "\"").c_str()) != 0) {
+        check(false, "the same-video/new-audio fixture track is written");
+        return;
+    }
+    openshow::worker::GpuHandles handles;
+    handles.device = vk.device();
+    handles.physicalDevice = vk.physicalDevice();
+    handles.graphicsQueueIndex = vk.queueIndex();
+    handles.uploadQueueIndex = vk.uploadQueueIndex();
+    handles.uploadQueue = vk.uploadQueue();
+    handles.context = gr.get();
+    const auto resident = [](const std::string&) { return true; };
+
+    BackgroundTransport transport;
+    const openshow::scene::Background video = videoBackground(clip);
+    transport.applyBackground(video, openshow::scene::AudioLayer{}, handles, resident);
+    transport.refreshMediaState();
+    check(transport.mediaStatus().live, "same-video: the silent clip is on air");
+
+    openshow::scene::AudioLayer layer;
+    layer.present = true;
+    layer.assetId = "asset-layer";
+    layer.assetPath = track;
+    // The shortcut's question includes the layer (review D3): the same picture
+    // with a layer is NOT the transport on air, so the prepare must stage it.
+    check(transport.backgroundOnAir(video.assetId, video.assetPath, layer) == false,
+          "same-video: adding a show layer is not the on-air identity");
+    check(transport.backgroundOnAir(video.assetId, video.assetPath,
+                                    openshow::scene::AudioLayer{}) == true,
+          "same-video: the same picture and no layer IS the on-air identity");
+
+    setenv("OPENSHOW_FAULT_AUDIO_START_MS", "700", 1);
+    setenv("OPENSHOW_FAULT_AUDIO_START_MATCH", "staging-layer", 1);
+    const auto primeBegan = std::chrono::steady_clock::now();
+    std::string error;
+    const bool staged = transport.primeAudio(video, layer, nullptr, &error);
+    const double primeMs = std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - primeBegan)
+                               .count();
+    check(staged, "same-video: the new mix is staged");
+    check(primeMs >= 600.0,
+          "same-video: the slow bring-up was paid on the staging thread");
+
+    // The frame-thread apply: deferred while the retired picture's lane
+    // finishes, never blocked. Each pass is measured; none may pay the start.
+    double slowestApply = 0.0;
+    bool applied = false;
+    for (int attempt = 0; attempt < 200 && !applied; ++attempt) {
+        const auto began = std::chrono::steady_clock::now();
+        const auto result = transport.applyBackground(video, layer, handles, resident);
+        slowestApply = std::max(
+            slowestApply,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began)
+                .count());
+        applied = result == BackgroundTransport::BackgroundApply::kVideoStarted ||
+                  result == BackgroundTransport::BackgroundApply::kApplied;
+        if (!applied) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+    unsetenv("OPENSHOW_FAULT_AUDIO_START_MS");
+    unsetenv("OPENSHOW_FAULT_AUDIO_START_MATCH");
+    check(applied, "same-video: the new mix lands");
+    check(slowestApply < 100.0,
+          "same-video: no frame-thread pass paid the scripted bring-up");
+    transport.refreshMediaState();
+    bool audioSource = false;
+    for (const auto& source : transport.mediaStatus().sources) {
+        if (source.name == "audio") audioSource = true;
+    }
+    check(transport.mediaStatus().path == clip && audioSource,
+          "same-video: the clip is on air with its new show layer registered");
+    transport.shutdown();
+}
+
+// DR.0's continuity rule: a visual-only change keeps the player. The same
+// show layer under a new picture must NOT restart, and a change that alters
+// the audible mix must.
+void testVisualOnlyChangeKeepsAudio() {
+    if (std::system("ffmpeg -version >/dev/null 2>&1") != 0) {
+        std::printf("   skipped the visual-only continuity fixture (no ffmpeg)\n");
+        return;
+    }
+    std::filesystem::create_directories("transport-fixtures");
+    const std::string track = "transport-fixtures/continuity-a.wav";
+    const std::string other = "transport-fixtures/continuity-b.wav";
+    for (const auto& [path, freq] : {std::pair{track, 440}, std::pair{other, 660}}) {
+        const std::string command =
+            "ffmpeg -hide_banner -loglevel error -nostdin -y -f lavfi -i "
+            "\"sine=frequency=" + std::to_string(freq) +
+            ":duration=4:sample_rate=48000\" -ac 2 \"" + path + "\"";
+        if (std::system(command.c_str()) != 0) {
+            check(false, "the continuity fixtures were written");
+            return;
+        }
+    }
+    BackgroundTransport transport;
+    const auto resident = [](const std::string&) { return true; };
+    openshow::scene::AudioLayer layer;
+    layer.present = true;
+    layer.assetId = "asset-continuity";
+    layer.assetPath = track;
+    check(transport.applyBackground(openshow::scene::Background{}, layer,
+                                    openshow::worker::GpuHandles{}, resident) ==
+              BackgroundTransport::BackgroundApply::kApplied,
+          "continuity: the audio-only cue starts");
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    transport.refreshMediaState();
+    const double before = transport.mediaStatus().position;
+    check(before > 0.4, "continuity: the track is advancing before the change");
+
+    // A still lands over the same track: the picture changes, the sound does
+    // not restart.
+    const auto applied = transport.applyBackground(
+        stillBackground("transport-fixtures/continuity-still.png"), layer,
+        openshow::worker::GpuHandles{}, resident);
+    check(applied == BackgroundTransport::BackgroundApply::kApplied,
+          "continuity: the still is adopted");
+    transport.refreshMediaState();
+    const openshow::worker::MediaStatus after = transport.mediaStatus();
+    check(after.live && after.path == track,
+          "continuity: the transport is still the track after a visual-only change");
+    check(after.position >= before,
+          "continuity: the position did not restart at zero — the same player kept playing");
+    bool audioSource = false;
+    for (const auto& source : after.sources) {
+        if (source.name == "audio") audioSource = true;
+    }
+    check(audioSource, "continuity: the layer's source row survived the change");
+
+    // A camera over the same track: the same rule.
+    openshow::scene::Background camera;
+    camera.hasImage = true;
+    camera.isCamera = true;
+    camera.cameraSource = "CONTINUITY (Camera)";
+    const auto cameraApplied = transport.applyBackground(camera, layer,
+                                                         openshow::worker::GpuHandles{}, resident);
+    check(cameraApplied == BackgroundTransport::BackgroundApply::kApplied &&
+              transport.mediaStatus().live,
+          "continuity: a camera over the same track keeps the transport");
+
+    // A DIFFERENT track is a different mix: a new player, from its start.
+    openshow::scene::AudioLayer otherLayer;
+    otherLayer.present = true;
+    otherLayer.assetId = "asset-other";
+    otherLayer.assetPath = other;
+    transport.applyBackground(openshow::scene::Background{}, otherLayer,
+                              openshow::worker::GpuHandles{}, resident);
+    transport.refreshMediaState();
+    check(transport.mediaStatus().path == other,
+          "continuity: a different track is the transport now");
+    check(transport.mediaStatus().position < before,
+          "continuity: the new track started from its own beginning");
+    transport.shutdown();
+}
+
 }  // namespace
 
 int main() {
@@ -1464,6 +1723,9 @@ int main() {
     testStillsAndIdentity(transport);
     testAudioOnlyLayer();
     testStagedBundleOwnership();
+    testAudioStagingForEveryKind();
+    testSameVideoNewAudioStaging();
+    testVisualOnlyChangeKeepsAudio();
     testSeam(transport);
     testScheduleGrammar();
 

@@ -515,6 +515,12 @@ private:
     // called with fMutex held: the join() must not wait behind a dying
     // transport's own mediaFailed report.
     void teardownBackgroundTransport();
+    // A visual-only change with the audible mix unchanged (DR.0): the picture
+    // is retired through the normal lane, the player is left playing, and the
+    // status describes the new picture over the same sound.
+    BackgroundApply applyPictureOnlyChange(
+        const openshow::scene::Background& wanted, const openshow::scene::AudioLayer& audio,
+        const std::function<bool(const std::string&)>& imageResident);
     // Close a COMPLETED retirement on the render thread (the GPU half is a
     // Ganesh release; the close strictly follows the lane's join) and reap
     // its thread. Returns without touching anything while the lane still

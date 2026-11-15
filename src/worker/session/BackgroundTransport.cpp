@@ -1650,7 +1650,11 @@ bool BackgroundTransport::primeAudio(const openshow::scene::Background& wanted,
     bundle.wantsAudio = embeddedAudio || layerAudio;
     bundle.loss = std::move(loss);
     bundle.layerDuration = layerDuration;
-    if (bundle.wantsAudio) {
+    // The player is started even when nothing is playable, exactly as the cold
+    // path does: a video with no audio stream still needs a clock and a loop
+    // answer, and a scene staged beside it must adopt the same shape rather
+    // than leaving a never-started placeholder that reports loop off.
+    {
         auto player = std::make_unique<AvPlayer>();
         player->setMasterMute(fMasterMute.load(std::memory_order_relaxed));
         std::string startError;
@@ -1737,17 +1741,60 @@ BackgroundTransport::BackgroundApply BackgroundTransport::applyBackground(
         // The session can cancel an older pending scene immediately.
         return BackgroundApply::kApplied;
     }
+    bool wantsVideo = wanted.hasImage && wanted.isVideo && !wanted.isCamera;
     // Only this thread changes transports. The session retains the whole
     // scene when the bounded retirement slot is occupied, and retries it
     // after the lane's wake; no media-only transition can overtake it.
     reapRetirement();
+    // The continuity rule (DR.0): a visual-only change — a different still,
+    // a colour, a gradient, a camera — leaves the audible mix exactly as it
+    // is, so the player keeps its position, clock, sink, gain and mute, and
+    // only the picture is rebuilt. A lyric cue that gains a picture must not
+    // restart the music. (A change that alters the mix — a different video's
+    // embedded stream or a different track — takes the normal path below.)
+    if (fMediaTransportLive.load() && audio.present && !wantsVideo &&
+        audioIdentityOf(fAppliedBackground, fAppliedAudio) == audioIdentityOf(wanted, audio)) {
+        if (inFlightRetirement() != nullptr) {
+            return BackgroundApply::kDeferred;  // the picture's lane is still busy
+        }
+        return applyPictureOnlyChange(wanted, audio, imageResident);
+    }
     if (backgroundChangeBlocked(wanted, audio)) return BackgroundApply::kDeferred;
+    // The staged bundle for THIS identity (review D3/D4): taken WHOLE under
+    // one lock — the held player and every flag that describes it — so a
+    // prepare that publishes the next bundle in the same window can never
+    // hand its source flags to this player. A bundle that does not match is
+    // left for its own scene; a scene with none cold-opens below (the bench
+    // path, and the honest recovery when a prime was superseded).
+    std::optional<StagedAudioBundle> stagedBundle;
+    {
+        const std::lock_guard<std::mutex> lock(fPrimeMutex);
+        if (fStagedAudio.has_value() &&
+            fStagedAudio->videoPath == (wantsVideo ? wanted.assetPath : std::string()) &&
+            fStagedAudio->layerPath == (audio.present ? audio.assetPath : std::string())) {
+            stagedBundle = std::move(fStagedAudio);
+            fStagedAudio.reset();
+        }
+    }
+    if (stagedBundle.has_value() && fStagedBundleTakeHook) {
+        // Test seam (review D4): the window between "taken" and "adopted".
+        fStagedBundleTakeHook();
+    }
+    if (!stagedBundle.has_value() && (wantsVideo || audio.present) &&
+        fStagingAudio.load(std::memory_order_acquire)) {
+        // A prime is in flight for this scene's media (review D3): the bundle
+        // is moments away, so DEFER the scene rather than open the file on the
+        // frame thread. The prime always ends — success, failure or
+        // cancellation — and always wakes this loop, so the retry is bounded
+        // and latest-wins: a newer scene supersedes this one in the store.
+        return BackgroundApply::kDeferred;
+    }
+
     teardownBackgroundTransport();
     fAppliedBackground = wanted;
     fAppliedAudio = audio;
     fAppliedAudioDuration = -1.0;
 
-    bool wantsVideo = wanted.hasImage && wanted.isVideo && !wanted.isCamera;
     const bool wantsCamera = wanted.isCamera;
     const bool wantsLayer = audio.present;
     const int videoBit = 1;
@@ -1831,27 +1878,6 @@ BackgroundTransport::BackgroundApply BackgroundTransport::applyBackground(
             rebuildMediaSourcesLocked();
             return brokenStill ? BackgroundApply::kFailed : BackgroundApply::kApplied;
         }
-    }
-
-    // The staged bundle for THIS identity (review D3/D4): taken WHOLE under
-    // one lock — the held player and every flag that describes it — so a
-    // prepare that publishes the next bundle in the same window can never
-    // hand its source flags to this player. A bundle that does not match is
-    // left for its own scene; a scene with none cold-opens below (the bench
-    // path, and the honest recovery when a prime was superseded).
-    std::optional<StagedAudioBundle> stagedBundle;
-    {
-        const std::lock_guard<std::mutex> lock(fPrimeMutex);
-        if (fStagedAudio.has_value() &&
-            fStagedAudio->videoPath == (wantsVideo ? wanted.assetPath : std::string()) &&
-            fStagedAudio->layerPath == (audio.present ? audio.assetPath : std::string())) {
-            stagedBundle = std::move(fStagedAudio);
-            fStagedAudio.reset();
-        }
-    }
-    if (stagedBundle.has_value() && fStagedBundleTakeHook) {
-        // Test seam (review D4): the window between "taken" and "adopted".
-        fStagedBundleTakeHook();
     }
 
     std::string error;
@@ -2119,6 +2145,83 @@ BackgroundTransport::BackgroundApply BackgroundTransport::applyBackground(
     }
     return fBackground != nullptr ? BackgroundApply::kVideoStarted
                                   : BackgroundApply::kApplied;
+}
+
+BackgroundTransport::BackgroundApply BackgroundTransport::applyPictureOnlyChange(
+    const openshow::scene::Background& wanted, const openshow::scene::AudioLayer& audio,
+    const std::function<bool(const std::string&)>& imageResident) {
+    // The player stays: same audible identity, so position, clock, sink,
+    // gain and mute are exactly what the audience already has (DR.0). Only
+    // the PICTURE is retired, through the same lane a full teardown uses —
+    // the pipeline's join belongs off this thread like every other.
+    if (fBackground != nullptr) {
+        fBackground->requestStop();
+        fPresenter.store(nullptr, std::memory_order_relaxed);
+        setVideoClock(nullptr);
+        // Detaching the clock's owner relation is seam work and belongs to
+        // the thread that swaps transports (6.6b), before the hand-off.
+        fAudio->detachPipeline(fBackground.get());
+        auto retirement = std::make_shared<Retirement>();
+        retirement->pipeline = std::move(fBackground);
+        retirement->worker = std::thread([this, r = retirement] {
+            r->pipeline->join();
+            r->laneDone.store(true, std::memory_order_release);
+            wakeRenderThread();  // the reap's prompt, as every lane's is
+        });
+        {
+            const std::lock_guard<std::mutex> lock(fMutex);
+            fPendingVideo.reset();
+            fDrawnVideo.reset();
+            fRetirement = std::move(retirement);
+        }
+    }
+    constexpr int kVideoBit = 1;
+    constexpr int kLeanBit = 4;  // the "audio" row in rebuildMediaSourcesLocked
+    const bool brokenStill =
+        wanted.hasImage && !wanted.isVideo && !wanted.isCamera &&
+        !imageResident(wanted.assetPath);
+    {
+        std::lock_guard<std::mutex> lock(fMutex);
+        // The picture's own reading. The audible half keeps what it has: the
+        // player is playing, the layer's duration still stands, and the mute
+        // is the operator's standing answer.
+        fMedia.playing = false;
+        fMedia.position = -1.0;
+        fMedia.path = wanted.isCamera ? wanted.cameraSource : audio.assetPath;
+        fMedia.live = true;
+        fMedia.loop = false;
+        fMedia.duration = fAppliedAudioDuration;
+        fMedia.muted = fMasterMute.load(std::memory_order_relaxed);
+        fMediaSourceMask.store(
+            (fMediaSourceMask.load(std::memory_order_relaxed) & ~kVideoBit) | kLeanBit,
+            std::memory_order_release);
+        if (brokenStill) {
+            const bool alreadyReported =
+                fMediaFault && fMediaFault->first == MediaFault::kImage &&
+                fMediaFault->second == wanted.assetPath;
+            if (!alreadyReported) {
+                mediaFailedLocked(MediaFault::kImage, wanted.assetPath,
+                                  "background image: '" + wanted.assetPath +
+                                      "' is not in the decoded cache; the slide is drawing "
+                                      "its colour fill");
+            }
+        } else {
+            fMedia.error.clear();
+            fMediaFault.reset();
+        }
+        rebuildMediaSourcesLocked();
+    }
+    {
+        // The published identity follows the picture, so a prepare that asks
+        // after this change sees the new one.
+        const std::lock_guard<std::mutex> lock(fOnAirMutex);
+        fOnAirVideoAssetId.clear();
+        fOnAirVideoPath.clear();
+        fOnAirAudioPath = audio.present ? audio.assetPath : std::string();
+    }
+    fAppliedBackground = wanted;
+    fAppliedAudio = audio;
+    return brokenStill ? BackgroundApply::kFailed : BackgroundApply::kApplied;
 }
 
 void BackgroundTransport::teardownBackgroundTransport() {

@@ -389,16 +389,20 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
         }
     }
     const openshow::scene::Background& background = scene.background;
-    if (!background.hasImage || stopped()) {
+    if (stopped()) {
         return;
     }
+    // The picture's own file work first (a still decodes, a video primes its
+    // file half); the AUDIO is staged below for EVERY background kind, which
+    // is review D3's correction: an audio-only cue, a still and a camera with
+    // a show layer used to reach the frame thread with no staged player and
+    // pay the whole bring-up there.
+    const bool wantsVideo = background.hasImage && background.isVideo && !background.isCamera;
     if (background.isCamera) {
         // The live hub opens on present; there is no file to decode, probe or
         // prime. Starting it here would open a receiver for a scene the
         // audience has not been shown.
-        return;
-    }
-    if (!background.isVideo) {
+    } else if (background.hasImage && !wantsVideo) {
         // Stills: decode now, through the REFRESHING entry point (task
         // 6.7c, review R18). The per-frame draw path keeps a cached failure
         // — one attempt per path, not a retry at frame rate — but a prepare
@@ -414,43 +418,68 @@ void OutputSession::preloadScene(const openshow::scene::Scene& scene,
                                 "background image: " + error);
         } else {
             fTransport.mediaFaultCleared(MediaFault::kImage, background.assetPath);
+            // Task 6.9b: the blur fit's companion rides this same unit of
+            // file work — built NOW, on the executor thread, once the pixels
+            // it derives from are resident — so the frame boundary that
+            // switches to this scene pays only the map probe. Blur is a fit
+            // (task 6.17c1), not a flag; a cover/contain still has no
+            // backdrop to prewarm, and a blur over a VIDEO composites from
+            // the presented frame (6.6), so this belongs to the still alone.
             if (background.fit == openshow::domain::BackgroundFit::Blur) {
                 fScene->imageCache()->prewarmBackdrop(background.assetPath);
             }
         }
-        return;
+    } else if (wantsVideo) {
+        // Videos: opening a transport belongs to the present (the audience
+        // decides when it starts), but the cheap probe AND the file-half
+        // prime belong to now. The probe is first: a file that cannot even
+        // be read or demuxed is known while the old scene is still on air,
+        // and reported (5.5d) instead of discovered as a silent colour fill
+        // one frame after the change. A file the probe could read is then
+        // PRIME-OPENED on THIS thread — the prepare executor's — so the
+        // audience's boundary attaches the GPU half instead of opening from
+        // disk (task 6.9b, review R10): the slow open happens while the old
+        // scene is still on air, and the prime is the one bounded transport
+        // R10 asks for (a superseded prime retires on this thread). The
+        // prime changes nothing on screen — it is readiness, and the present
+        // remains the decision.
+        //
+        // The audience may already be watching this exact media identity: a
+        // slide change over one background video compiles to the same
+        // picture AND the same layer, so the present is the transport's
+        // no-op. Review D3: the LAYER is part of that question — adding or
+        // changing a track over the same clip is a new mix, and skipping it
+        // here would make that change open cold on the frame thread.
+        if (!fTransport.backgroundOnAir(background.assetId, background.assetPath,
+                                        scene.audio)) {
+            openshow::media::MediaInfo info;
+            std::string error;
+            if (openshow::media::probeMedia(background.assetPath, &info, &error) !=
+                openshow::media::ProbeStatus::kOk) {
+                std::fprintf(stderr, "openshow-worker: background preload %s: %s\n",
+                             background.assetPath.c_str(), error.c_str());
+                fTransport.mediaFailed(MediaFault::kVideo, background.assetPath,
+                                     "background preload: " + error);
+            } else if (!fTransport.primeVideo(background.assetPath, cancelled, &error)) {
+                // A prime failure is not a reportable media fault: the file
+                // reads (the probe just said so), and the present will open
+                // cold and report anything truly wrong. It is only the loss
+                // of the head start, so it stays in the log.
+                std::fprintf(stderr, "openshow-worker: background prime %s skipped: %s\n",
+                             background.assetPath.c_str(), error.c_str());
+            }
+        }
     }
-    // Videos: opening a transport belongs to the present (the audience
-    // decides when it starts), but the cheap probe AND the file-half prime
-    // belong to now. The probe is first: a file that cannot even be read or
-    // demuxed is known while the old scene is still on air, and reported
-    // (5.5d) instead of discovered as a silent colour fill one frame after
-    // the change. A file the probe could read is then PRIME-OPENED on THIS
-    // thread — the prepare executor's — so the audience's boundary attaches
-    // the GPU half instead of opening from disk (task 6.9b, review R10).
-    // The identity check is the prepare executor's read of the render
-    // thread's published transport state; a miss merely primes redundantly.
-    if (fTransport.backgroundOnAir(background.assetId, background.assetPath, scene.audio)) {
-        return;
-    }
-    openshow::media::MediaInfo info;
-    std::string error;
-    if (openshow::media::probeMedia(background.assetPath, &info, &error) !=
-        openshow::media::ProbeStatus::kOk) {
-        std::fprintf(stderr, "openshow-worker: background preload %s: %s\n",
-                     background.assetPath.c_str(), error.c_str());
-        fTransport.mediaFailed(MediaFault::kVideo, background.assetPath,
-                             "background preload: " + error);
-    } else if (!fTransport.primeVideo(background.assetPath, cancelled, &error)) {
-        std::fprintf(stderr, "openshow-worker: background prime %s skipped: %s\n",
-                     background.assetPath.c_str(), error.c_str());
-    } else {
-        // The audio half rides the same lane: negotiation, feeders and
-        // pre-roll paid here, so the frame boundary releases a held player.
+    // The audio half of the media identity (review D3): staged on THIS thread
+    // for every background kind, keyed by the picture AND the layer. The
+    // frame boundary that adopts it pays only the release of a hold.
+    const bool hasAudioIdentity = wantsVideo || scene.audio.present;
+    if (hasAudioIdentity && !stopped()) {
         std::string audioError;
         if (!fTransport.primeAudio(background, scene.audio, cancelled, &audioError)) {
             std::fprintf(stderr, "openshow-worker: background audio prime %s skipped: %s\n",
-                         background.assetPath.c_str(), audioError.c_str());
+                         (wantsVideo ? background.assetPath : scene.audio.assetPath).c_str(),
+                         audioError.c_str());
         }
     }
     // A successful probe deliberately clears nothing: the audience still
