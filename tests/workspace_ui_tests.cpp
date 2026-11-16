@@ -6022,16 +6022,39 @@ int main(int argc, char** argv) {
             auto* sizeBadge = findNamed(window->contentItem(), "customizeBadgeFontSize");
             auto* colourBadge = findNamed(window->contentItem(), "customizeBadgeTextColor");
             auto* worn = findNamed(window->contentItem(), "themeWornName");
-            auto* ownerLabel = findNamed(window->contentItem(), "placementOwner");
+            QVariantMap shownBox;
+            for (const QVariant& box : docs.currentSlideBoxes()) {
+                if (box.toMap().value(QStringLiteral("primary")).toBool()) {
+                    shownBox = box.toMap();
+                }
+            }
+            if (shownBox.isEmpty() || shownBox.value(QStringLiteral("x")).toDouble() != 240.0) {
+                std::fprintf(stderr,
+                             "DEBUG capture box x=%.1f y=%.1f w=%.1f h=%.1f placed=%d worn=%s\n",
+                             shownBox.value(QStringLiteral("x")).toDouble(),
+                             shownBox.value(QStringLiteral("y")).toDouble(),
+                             shownBox.value(QStringLiteral("width")).toDouble(),
+                             shownBox.value(QStringLiteral("height")).toDouble(),
+                             shownBox.value(QStringLiteral("placed")).toBool() ? 1 : 0,
+                             worn->property("text").toString().toLocal8Bit().constData());
+                const QVariantMap placement =
+                    docs.slideAppearance().value(QStringLiteral("placement")).toMap();
+                std::fprintf(stderr, "DEBUG placement customized=%d value x=%.1f\n",
+                             placement.value(QStringLiteral("customized")).toBool() ? 1 : 0,
+                             placement.value(QStringLiteral("value")).toMap()
+                                 .value(QStringLiteral("x")).toDouble());
+            }
             check(gradientBadge->property("visible").toBool()
                       && sizeBadge->property("visible").toBool()
                       && !colourBadge->property("visible").toBool()
                       && worn->property("text").toString() == QStringLiteral("House")
-                      && ownerLabel->property("visible").toBool()
-                      && ownerLabel->property("text").toString()
-                             == QStringLiteral("THEME PLACES"),
-                  "the edit capture carries exactly the two badges, the worn name and "
-                  "the THEME PLACES label on a box the theme drives");
+                      && findNamed(window->contentItem(), "placementOwner") == nullptr
+                      && shownBox.value(QStringLiteral("x")).toDouble() == 240.0
+                      && shownBox.value(QStringLiteral("y")).toDouble() == 620.0
+                      && shownBox.value(QStringLiteral("width")).toDouble() == 1440.0
+                      && shownBox.value(QStringLiteral("height")).toDouble() == 320.0,
+                  "the edit capture carries exactly the two badges and the worn name, "
+                  "with the theme's placed rectangle on the canvas and no ownership row");
         }
         window->grabWindow().save(capture + ".edit.png");
         // The Theme Editor, mid-edit on the placing theme: the overlay's
@@ -6045,17 +6068,17 @@ int main(int argc, char** argv) {
         QTest::qWait(80);
         {
             auto* editor = findNamed(window->contentItem(), "themeEditorPage");
-            auto* x = findNamed(window->contentItem(), "themeEditorPlaceX");
-            auto* y = findNamed(window->contentItem(), "themeEditorPlaceY");
-            auto* w = findNamed(window->contentItem(), "themeEditorPlaceW");
-            auto* h = findNamed(window->contentItem(), "themeEditorPlaceH");
-            check(editor->property("selectedId").toString() == houseId
-                      && x->property("text").toString() == QLatin1String("240")
-                      && y->property("text").toString() == QLatin1String("620")
-                      && w->property("text").toString() == QLatin1String("1440")
-                      && h->property("text").toString() == QLatin1String("320"),
-                  "selecting the placing theme puts its rectangle in the fields, and a "
-                  "page re-shown after outside edits still reads the record");
+            const QRectF shown = editor != nullptr
+                    ? editor->property("shownBox").toRectF() : QRectF();
+            check(editor != nullptr && editor->property("selectedId").toString() == houseId
+                      && std::abs(shown.x() - 240.0) < 0.01
+                      && std::abs(shown.y() - 620.0) < 0.01
+                      && std::abs(shown.width() - 1440.0) < 0.01
+                      && std::abs(shown.height() - 320.0) < 0.01
+                      && findNamed(window->contentItem(), "themeEditorPlaceX") == nullptr
+                      && findNamed(window->contentItem(), "themeEditorContextX") == nullptr,
+                  "selecting the placing theme draws its rectangle on the sample with no "
+                  "numeric rows, and a re-shown page still reads the record");
         }
         window->grabWindow().save(capture + ".themes.png");
         // TV.2: the Themes workspace at every ledger size in both views.
