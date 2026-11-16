@@ -270,20 +270,14 @@ Item {
     property real anchorY: 0
     property real anchorW: 0
     property real anchorH: 0
-    function clamp(value, lo, hi) {
-        return value < lo ? lo : (value > hi ? hi : value)
-    }
-    // The shared snap rule (see EditCanvas.snappedCentre): keep the size,
-    // pull either axis onto the canvas centre when it is within `tolerance`
-    // authored units. Exposed so the gesture and its fixture agree.
+    // Task BX.1: the ONE box-geometry implementation, shared with the Edit
+    // canvas. The page keeps its own target/view verbs; BoxTransform owns
+    // hit testing, corner resize, body move and centre snapping.
+    BoxTransform { id: boxTransform }
+    // Kept as the page's own spelling for the fixture, implemented by the
+    // shared helper.
     function snappedCentre(x, y, w, h, tolerance) {
-        let sx = x
-        let sy = y
-        if (Math.abs((x + w / 2) - 960) <= tolerance)
-            sx = 960 - w / 2
-        if (Math.abs((y + h / 2) - 540) <= tolerance)
-            sy = 540 - h / 2
-        return Qt.rect(sx, sy, w, h)
+        return boxTransform.snapCentre(x, y, w, h, tolerance)
     }
     function boxFor(row) {
         if (row !== null && row.placementSet)
@@ -315,17 +309,10 @@ Item {
             return ""
         const zoom = placementLayer.zoom
         const box = themeEditor.shownBox
-        const tol = 8
-        const left = box.x * zoom
-        const top = box.y * zoom
-        const right = (box.x + box.width) * zoom
-        const bottom = (box.y + box.height) * zoom
-        if (Math.abs(px - left) <= tol && Math.abs(py - top) <= tol) return "tl"
-        if (Math.abs(px - right) <= tol && Math.abs(py - top) <= tol) return "tr"
-        if (Math.abs(px - left) <= tol && Math.abs(py - bottom) <= tol) return "bl"
-        if (Math.abs(px - right) <= tol && Math.abs(py - bottom) <= tol) return "br"
-        if (px >= left && px <= right && py >= top && py <= bottom) return "move"
-        return ""
+        const corner = boxTransform.cornerAt(box, px, py, zoom)
+        if (corner !== "")
+            return corner
+        return boxTransform.inside(box, px, py, zoom) ? "move" : ""
     }
     function beginGesture(mode) {
         const box = themeEditor.shownBox
@@ -343,14 +330,14 @@ Item {
         themeEditor.placing = true
     }
     function moveGesture(dx, dy) {
+        const start = Qt.rect(themeEditor.anchorX, themeEditor.anchorY,
+                              themeEditor.anchorW, themeEditor.anchorH)
         if (themeEditor.dragMode === "move") {
-            const nx = themeEditor.clamp(themeEditor.anchorX + dx, 0,
-                                         1920 - themeEditor.anchorW)
-            const ny = themeEditor.clamp(themeEditor.anchorY + dy, 0,
-                                         1080 - themeEditor.anchorH)
+            const moved = boxTransform.move(start, dx, dy)
             const tolerance = 6 / Math.max(placementLayer.zoom, 0.0001)
-            const snapped = themeEditor.snappedCentre(nx, ny, themeEditor.anchorW,
-                                                      themeEditor.anchorH, tolerance)
+            const snapped = boxTransform.snapCentre(moved.x, moved.y,
+                                                    themeEditor.anchorW,
+                                                    themeEditor.anchorH, tolerance)
             themeEditor.penX = snapped.x
             themeEditor.penY = snapped.y
             themeEditor.snappedX = Math.abs((themeEditor.penX + themeEditor.anchorW / 2)
@@ -361,19 +348,11 @@ Item {
         }
         themeEditor.snappedX = false
         themeEditor.snappedY = false
-        const min = 20
-        const right = themeEditor.anchorX + themeEditor.anchorW
-        const bottom = themeEditor.anchorY + themeEditor.anchorH
-        const x0 = (themeEditor.dragMode === "tl" || themeEditor.dragMode === "bl")
-            ? themeEditor.clamp(themeEditor.anchorX + dx, 0, right - min)
-            : themeEditor.anchorX
-        const y0 = (themeEditor.dragMode === "tl" || themeEditor.dragMode === "tr")
-            ? themeEditor.clamp(themeEditor.anchorY + dy, 0, bottom - min)
-            : themeEditor.anchorY
-        themeEditor.penX = x0
-        themeEditor.penY = y0
-        themeEditor.penW = right - x0
-        themeEditor.penH = bottom - y0
+        const resized = boxTransform.resize(themeEditor.dragMode, start, dx, dy)
+        themeEditor.penX = resized.x
+        themeEditor.penY = resized.y
+        themeEditor.penW = resized.width
+        themeEditor.penH = resized.height
     }
     // One history entry per gesture, on release — the Edit canvas's rule,
     // so dragging a theme's box is one undo and not one per pixel. The
@@ -396,13 +375,23 @@ Item {
         themeEditor.snappedY = false
         if (id === "")
             return
+        const x = Math.round(themeEditor.penX)
+        const y = Math.round(themeEditor.penY)
+        const w = Math.round(themeEditor.penW)
+        const h = Math.round(themeEditor.penH)
+        // A press-and-release with no movement writes nothing (task BX.1's
+        // no-op case): selecting a box must not materialise a placement nor
+        // add an undo step.
+        if (x === Math.round(themeEditor.anchorX) &&
+                y === Math.round(themeEditor.anchorY) &&
+                w === Math.round(themeEditor.anchorW) &&
+                h === Math.round(themeEditor.anchorH)) {
+            return
+        }
         if (themeEditor.selectedView !== "") {
-            contextAdapter.commit("box", {
-                x: Math.round(themeEditor.penX), y: Math.round(themeEditor.penY),
-                width: Math.round(themeEditor.penW), height: Math.round(themeEditor.penH)})
+            contextAdapter.commit("box", {x: x, y: y, width: w, height: h})
         } else {
-            docs.setThemePlacement(id, Math.round(themeEditor.penX), Math.round(themeEditor.penY),
-                                   Math.round(themeEditor.penW), Math.round(themeEditor.penH))
+            docs.setThemePlacement(id, x, y, w, h)
         }
         themeEditor.syncInspector()
     }
@@ -1171,6 +1160,10 @@ Item {
                 MouseArea {
                     anchors.fill: parent
                     acceptedButtons: Qt.LeftButton
+                    hoverEnabled: true
+                    cursorShape: themeEditor.dragMode !== ""
+                                 ? boxTransform.cursorFor(themeEditor.dragMode)
+                                 : boxTransform.cursorFor(themeEditor.hitTest(mouseX, mouseY))
                     onPressed: function (mouse) {
                         const mode = themeEditor.hitTest(mouse.x, mouse.y)
                         if (mode !== "") {

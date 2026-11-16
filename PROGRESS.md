@@ -11,14 +11,24 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Next planned group: BX.1–BX.4 (2026-11-16), all TODO.** The
+**Box manipulation (2026-11-16): BX.1 is DONE; BX.2–BX.4 are TODO.** The
 [box-manipulation brief](docs/ui/box-manipulation-plan.md) fixes all four corner
 handles across Theme Songs/Bible/Edit and removes numeric geometry/Center H/V
 sections. Body drag retains centre snapping; placement reset/borrow moves to
-box context menus. Existing resize math only moves left/top edges, so BR is
-inert and TR/BL only partially resize. Next action: BX.1's shared geometry and
-regressions. This update changes planning docs only; TL/DR/PV completion and
-their recorded verification remain historical evidence, not BX acceptance.
+box context menus. TL/DR/PV completion remains historical evidence, not BX
+acceptance.
+
+BX.1 added `BoxTransform.qml`, the one geometry and hit-test implementation
+both canvases instantiate: centre snap, all four corner hit tests with a
+nearest-centre rule, body move with preserved size, and the four-direction
+resize that moves both edges the corner owns while fixing the opposite corner
+and clamping to the 20-unit minimum and the canvas. `EditCanvas` and
+`ThemeEditorPage` now delegate to it; bottom-right changes both dimensions (the
+reviewed code left it inert) and a release equal to the captured rectangle
+writes nothing, so selecting a box adds no undo step. Corners and bodies carry
+the right cursors. `control_set_ui_tests` proves the helper matrix;
+`workspace_ui_tests` proves both pages over one captured rectangle. Desktop
+suite 85/85. Next action: BX.2 (handle life-cycle and gesture lifetime).
 
 **Text layout and editor consistency (2026-11-16): TL.1–TL.6 are DONE.** The
 agreed

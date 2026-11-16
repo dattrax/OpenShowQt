@@ -861,6 +861,116 @@ SlidePreviewCollection {
             }
         }
     }
+    // --- task BX.1: the shared box transform --------------------------------
+    // One implementation for both editors: corner hit testing, the four
+    // resize directions with a fixed opposite corner, body move, centre
+    // snapping and the bounds/minimum clamps. Proving it here means neither
+    // page can drift back to the reviewed "left/top only" arithmetic.
+    {
+        QQmlComponent transformComponent(&engine);
+        transformComponent.loadFromModule("OpenShow", "BoxTransform");
+        std::unique_ptr<QObject> transformObject(transformComponent.create());
+        check(transformObject != nullptr, "the shared BoxTransform loads");
+        if (!transformObject) {
+            std::fprintf(stderr, "%s\n", qPrintable(transformComponent.errorString()));
+        } else {
+            const auto evaluate = [&](const QString& code) {
+                QQmlExpression expression(engine.rootContext(), transformObject.get(), code);
+                bool error = false;
+                const QVariant answer = expression.evaluate(&error);
+                if (error) {
+                    std::fprintf(stderr, "QLM error for %s: %s\n", qPrintable(code),
+                                 qPrintable(expression.error().toString()));
+                }
+                return answer;
+            };
+            const auto rectFor = [&](const QString& code) {
+                return evaluate(code).toRectF();
+            };
+            const auto close = [](const QRectF& a, const QRectF& b) {
+                return std::abs(a.x() - b.x()) < 0.001 && std::abs(a.y() - b.y()) < 0.001 &&
+                       std::abs(a.width() - b.width()) < 0.001 &&
+                       std::abs(a.height() - b.height()) < 0.001;
+            };
+            const QString start = QStringLiteral("Qt.rect(200, 150, 400, 300)");
+            const auto resize = [&](const char* mode, double dx, double dy) {
+                return rectFor(QStringLiteral("resize(\"%1\", %4, %2, %3)")
+                                   .arg(QString::fromLatin1(mode)).arg(dx).arg(dy).arg(start));
+            };
+
+            // Bottom-right moves BOTH edges (the reviewed implementation was
+            // inert here); the other three move their two intended edges and
+            // hold the opposite corner exactly.
+            check(close(resize("br", 50.0, 40.0), QRectF(200.0, 150.0, 450.0, 340.0)),
+                  "BR drag grows the width AND height with the top-left corner fixed");
+            check(close(resize("br", -30.0, -20.0), QRectF(200.0, 150.0, 370.0, 280.0)),
+                  "BR drag inward shrinks both dimensions");
+            check(close(resize("tr", -30.0, 20.0), QRectF(200.0, 170.0, 370.0, 280.0)),
+                  "TR moves the right and top edges, fixing bottom-left");
+            check(close(resize("bl", 30.0, -20.0), QRectF(230.0, 150.0, 370.0, 280.0)),
+                  "BL moves the left and bottom edges, fixing top-right");
+            check(close(resize("tl", 30.0, 20.0), QRectF(230.0, 170.0, 370.0, 280.0)),
+                  "TL moves the left and top edges, fixing bottom-right");
+
+            // Clamps: the moving edge stops at the gesture minimum and at the
+            // canvas, never crossing its fixed opposite.
+            check(close(resize("tl", 1000.0, 1000.0), QRectF(580.0, 430.0, 20.0, 20.0)),
+                  "a corner dragged past its opposite stops at the 20-unit minimum");
+            check(close(resize("br", 10000.0, 10000.0), QRectF(200.0, 150.0, 1720.0, 930.0)),
+                  "BR stops at the 1920x1080 canvas edge");
+
+            // Body move keeps its size and clamps inside the canvas.
+            check(close(rectFor(QStringLiteral("move(%1, 100, 50)").arg(start)),
+                        QRectF(300.0, 200.0, 400.0, 300.0)),
+                  "a body move preserves the captured width and height");
+            check(close(rectFor(QStringLiteral("move(%1, 10000, 10000)").arg(start)),
+                        QRectF(1520.0, 780.0, 400.0, 300.0)),
+                  "a body move stops at the canvas instead of leaving it");
+
+            // Centre snap stays screen-relative (the caller converts 6 px) and
+            // independent per axis.
+            check(close(rectFor(QStringLiteral("snapCentre(915, 200, 100, 100, 8)")),
+                        QRectF(910.0, 200.0, 100.0, 100.0)) &&
+                      close(rectFor(QStringLiteral("snapCentre(900, 200, 100, 100, 8)")),
+                            QRectF(900.0, 200.0, 100.0, 100.0)) &&
+                      close(rectFor(QStringLiteral("snapCentre(200, 495, 100, 100, 8)")),
+                            QRectF(200.0, 490.0, 100.0, 100.0)),
+                  "the centre snap pulls a near axis onto 960/540 and leaves a far one alone");
+
+            // Corner hit testing: all four modes, and the NEAREST corner wins
+            // inside a tiny box rather than whichever was tested first.
+            const auto corner = [&](const QString& box, double px, double py) {
+                return evaluate(QStringLiteral("cornerAt(%1, %2, %3, 1.0)")
+                                    .arg(box).arg(px).arg(py))
+                    .toString();
+            };
+            const QString probe = QStringLiteral("Qt.rect(100, 100, 200, 100)");
+            check(corner(probe, 100.0, 100.0) == QStringLiteral("tl") &&
+                      corner(probe, 300.0, 100.0) == QStringLiteral("tr") &&
+                      corner(probe, 100.0, 200.0) == QStringLiteral("bl") &&
+                      corner(probe, 300.0, 200.0) == QStringLiteral("br") &&
+                      corner(probe, 200.0, 150.0).isEmpty(),
+                  "each visible corner hit-tests to its own edge pair and the body is none");
+            check(corner(QStringLiteral("Qt.rect(0, 0, 10, 10)"), 6.0, 6.0)
+                      == QStringLiteral("br"),
+                  "overlapping corners choose the nearest centre deterministically");
+
+            // The pointer a corner or the body shows.
+            const auto cursor = [&](const char* mode) {
+                return evaluate(QStringLiteral("cursorFor(\"%1\")")
+                                    .arg(QString::fromLatin1(mode)))
+                    .toInt();
+            };
+            check(cursor("tl") == int(Qt::SizeFDiagCursor) &&
+                      cursor("br") == int(Qt::SizeFDiagCursor) &&
+                      cursor("tr") == int(Qt::SizeBDiagCursor) &&
+                      cursor("bl") == int(Qt::SizeBDiagCursor) &&
+                      cursor("move") == int(Qt::SizeAllCursor) &&
+                      cursor("") == int(Qt::ArrowCursor),
+                  "corners and the body carry the correct diagonal/move cursors");
+        }
+    }
+
     for (const auto& warning : warnings) {
         std::fprintf(stderr, "QML: %s\n", qPrintable(warning));
         failed = true;

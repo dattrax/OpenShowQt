@@ -470,6 +470,21 @@ string is explicit flat stays distinct from inheritance.
 | Events | `commit("textColor"/"backgroundColor"/"backgroundGradient", …)` through the adapter (each commit restates the WHOLE base record — one omitted field cannot silently flatten a gradient); a focus-out typed equal to the record re-reads and writes nothing (`commitIfChanged`) |
 | Note | `""` gradient stays explicit flat, distinct from inherit — these base fields never inherit (the adapter refuses the reset and says so). Background IMAGE and FIT are not appearance fields: they are slide/service props the host owns (Edit keeps its `backgroundCombo`/`backgroundFitCombo` rows writing `setSlideBackground`/`setSlideBackgroundFit` beside the shared part) |
 
+### BoxTransform
+
+`src/ui/BoxTransform.qml` (BX.1). The ONE geometry and hit-testing
+implementation both canvases consume — the Edit canvas and the Theme Editor's
+Songs/Bible placement overlay. Pure functions over the authored 1920×1080
+canvas and the fitted preview's `zoom`, so the two pages cannot keep two ideas
+of where a corner is or which edges a drag moves. A `QtObject`, instantiated as
+an invisible child by each page; it holds no document or history state.
+
+| | |
+|---|---|
+| Inputs | none; `canvasWidth`/`canvasHeight` (1920×1080 by contract), `minimumSize` (20 authored units), `handleRadius` (8 logical px) are read-only |
+| Functions | `snapCentre(x, y, w, h, tolerance)` — keep the size, pull a near axis exactly onto 960/540; `cornerAt(box, px, py, zoom, radius)` — `"tl"`/`"tr"`/`"bl"`/`"br"`/`""`, nearest centre wins when a tiny box overlaps two; `inside(box, px, py, zoom)`; `move(start, dx, dy)` — preserved size, clamped inside the canvas; `resize(mode, start, dx, dy, minimum)` — moves the TWO edges the corner owns, fixes the opposite corner, clamps each moving edge against it and the canvas; `cursorFor(mode)` — `SizeFDiagCursor`/`SizeBDiagCursor`/`SizeAllCursor`/`ArrowCursor` |
+| Rules | a corner drag can never flip the item or change its stack order; the tolerance is received in authored units the CALLER derives from the screen-relative 6 px, so aiming feels the same at every zoom; off-canvas legacy geometry is left alone until a corrective drag; `resize` is the correction the reviewed arithmetic lacked (bottom-right was inert, top-right/bottom-left moved one axis) |
+
 ### BoxGeometryControls
 
 `src/ui/BoxGeometryControls.qml` (CS.5). The shared X/Y/W/H rows: four

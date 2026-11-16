@@ -2081,7 +2081,7 @@ not TL's text alignment/caps controls. [Scope, resize bug and acceptance](docs/u
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| BX.1 | TODO | Share corner geometry/hit-testing and correct all resize directions | One helper computes both moving edges while fixing the opposite corner; TL/TR/BL/BR resize inward/outward, including the currently inert BR; move preserves size, snap tolerance stays screen-relative, bounds/minimum/no-op cases are covered |
+| BX.1 | DONE | Share corner geometry/hit-testing and correct all resize directions | One helper computes both moving edges while fixing the opposite corner; TL/TR/BL/BR resize inward/outward, including the currently inert BR; move preserves size, snap tolerance stays screen-relative, bounds/minimum/no-op cases are covered |
 | BX.2 | TODO | Integrate reliable handles and gesture lifetime across both editors | Songs/Bible/Edit share transform chrome with reachable handle hit areas at every slide edge; overlap honours selected identity, body selects topmost; fitted/zoomed coordinates agree; one commit/undo on release, cancel/navigation/deletion writes nothing and no gesture retargets a new box |
 | BX.3 | TODO | Remove geometry inspectors and retain non-numeric placement actions | No X/Y/W/H, pixel heading, Center H/V, owner sentence or old placement action row in any host; reset/borrow move to keyboard-accessible box menus through existing verbs; preserve TL controls, stack commands, keyboard move/resize and all source geometry/schema |
 | BX.4 | TODO | Prove actual pointer editing, snapping, reset and worker output | Real-pointer matrix covers all four corners and centre axes at 1000/1380/1680 and scales 1/1.5/2, edge/overlap/cancel/undo; reset/borrow preserves styles and save/reopen; preview-only edit → explicit Go reaches matching pixels; focused suites then desktop/headless/source guards, captures and skip/physical reporting |
@@ -2089,6 +2089,27 @@ not TL's text alignment/caps controls. [Scope, resize bug and acceptance](docs/u
 Order: BX.1 → BX.2 → BX.3 → BX.4, after delivered TL; split leaves exceeding two
 engineer-days. No feature implementation is claimed. Keep authored coordinates
 and target ownership internally; no service, scene or RPC format change is needed.
+
+BX.1 evidence (2026-11-16): `BoxTransform.qml` is the one geometry/hit-test
+implementation both canvases instantiate. It exposes `snapCentre`,
+`cornerAt` (all four corners, nearest-centre determinism inside a tiny box),
+`inside`, `move` (preserved size, canvas clamp), `resize` (both edges the
+corner owns, opposite corner fixed, minimum and canvas clamps) and
+`cursorFor`. `EditCanvas.applyDrag`/`hitTest` and
+`ThemeEditorPage.moveGesture`/`hitTest` now delegate to it; the pages keep
+their own target selection and document verbs, and both keep the public
+`snappedCentre` spelling as a delegation so the existing fixture still
+exercises one answer. Bottom-right now changes width AND height (the reviewed
+arithmetic left it inert); top-right moves the right and top edges and
+bottom-left the left and bottom. A release whose rounded rectangle equals the
+captured one writes nothing, so selecting a box neither normalizes legacy
+geometry nor adds an undo step. Corners and bodies carry the diagonal/move
+cursors. `control_set_ui_tests` proves the helper's four directions inward and
+outward, minimum/canvas clamps, preserved-size move, screen-relative snap,
+nearest-corner hit testing and cursor mapping; `workspace_ui_tests` invokes
+both pages' own gesture functions over one captured rectangle and would fail
+against the reviewed left/top-only code. Full desktop suite: 85/85; headless
+and guards follow in BX.4.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

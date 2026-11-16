@@ -64,22 +64,16 @@ Item {
 
     readonly property color canvasColor: docs.currentTheme.backgroundColor || "#000000"
 
-    function clamp(v, lo, hi) {
-        return Math.max(lo, Math.min(hi, v))
-    }
+    // Task BX.1: geometry, hit testing and centre snapping are one shared
+    // implementation (BoxTransform.qml) the Theme Editor consumes too. This
+    // canvas keeps only its own body-selection rule and its document verbs.
+    BoxTransform { id: transform }
 
-    // The shared snap rule (see ThemeEditorPage's placement layer): keep the
-    // size, pull either axis onto the 1920x1080 centre when it is within
-    // `tolerance` authored units. Exposed so the gesture and its fixture
-    // agree on one answer.
+    // Kept as the canvas's own spelling of the shared rule so the gesture and
+    // its fixture still agree on one answer; the implementation lives in
+    // BoxTransform.
     function snappedCentre(x, y, w, h, tolerance) {
-        let sx = x
-        let sy = y
-        if (Math.abs((x + w / 2) - 960) <= tolerance)
-            sx = 960 - w / 2
-        if (Math.abs((y + h / 2) - 540) <= tolerance)
-            sy = 540 - h / 2
-        return Qt.rect(sx, sy, w, h)
+        return transform.snapCentre(x, y, w, h, tolerance)
     }
 
     function syncFromDocuments() {
@@ -134,30 +128,26 @@ Item {
         if (!hasSlide) {
             return ""
         }
-        const tol = 8
         const box = boxes[currentBox]
         if (selected && box !== undefined) {
-            const left = box.x * zoom
-            const top = box.y * zoom
-            const right = (box.x + box.width) * zoom
-            const bottom = (box.y + box.height) * zoom
-            if (Math.abs(px - left) <= tol && Math.abs(py - top) <= tol) return "tl"
-            if (Math.abs(px - right) <= tol && Math.abs(py - top) <= tol) return "tr"
-            if (Math.abs(px - left) <= tol && Math.abs(py - bottom) <= tol) return "bl"
-            if (Math.abs(px - right) <= tol && Math.abs(py - bottom) <= tol) return "br"
+            const corner = transform.cornerAt(box, px, py, zoom)
+            if (corner !== "") {
+                return corner
+            }
         }
         const hit = docs.boxAt(px / zoom, py / zoom)
         return hit < 0 ? "" : "move"
     }
 
-    // The opposite corner stays anchored; 20 authored px is the floor —
-    // below it the box cannot be grabbed back by its own handles.
+    // Task BX.1: the shared helper moves both edges of the grabbed corner
+    // and anchors the opposite one. Move preserves the captured size; centre
+    // snapping applies to moves only, with the tolerance in authored units
+    // derived from the screen-relative 6 px.
     function applyDrag(dx, dy) {
         if (dragMode === "move") {
-            const nx = clamp(startBox.x + dx, 0, 1920 - startBox.width)
-            const ny = clamp(startBox.y + dy, 0, 1080 - startBox.height)
-            const snapped = snappedCentre(nx, ny, startBox.width, startBox.height,
-                                          snapTolerance)
+            const moved = transform.move(startBox, dx, dy)
+            const snapped = transform.snapCentre(moved.x, moved.y, startBox.width,
+                                                 startBox.height, snapTolerance)
             boxX = snapped.x
             boxY = snapped.y
             snappedX = Math.abs((boxX + startBox.width / 2) - 960) < 0.5
@@ -166,17 +156,11 @@ Item {
         }
         snappedX = false
         snappedY = false
-        const min = 20
-        const right = startBox.x + startBox.width
-        const bottom = startBox.y + startBox.height
-        const x0 = (dragMode === "tl" || dragMode === "bl")
-            ? clamp(startBox.x + dx, 0, right - min) : startBox.x
-        const y0 = (dragMode === "tl" || dragMode === "tr")
-            ? clamp(startBox.y + dy, 0, bottom - min) : startBox.y
-        boxX = x0
-        boxY = y0
-        boxW = right - x0
-        boxH = bottom - y0
+        const resized = transform.resize(dragMode, startBox, dx, dy)
+        boxX = resized.x
+        boxY = resized.y
+        boxW = resized.width
+        boxH = resized.height
     }
 
     // The stage (task CS.2): a SlidePreviewSurface on the Selection target —
@@ -279,6 +263,10 @@ Item {
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.LeftButton
+            hoverEnabled: true
+            cursorShape: canvas.dragMode !== ""
+                         ? transform.cursorFor(canvas.dragMode)
+                         : transform.cursorFor(canvas.hitTest(mouseX, mouseY))
             // Focus so the canvas's own Escape (below) reaches the item
             // scope rather than the window's clear-all shortcut.
             focus: true
@@ -331,9 +319,20 @@ Item {
                 canvas.snappedX = false
                 canvas.snappedY = false
                 // Whole authored pixels: the same coordinates the X/Y/W/H
-                // fields show, and a clean value for the history entry.
-                docs.setTextBoxGeometry(Math.round(canvas.boxX), Math.round(canvas.boxY),
-                                        Math.round(canvas.boxW), Math.round(canvas.boxH))
+                // fields show, and a clean value for the history entry. A
+                // press-and-release with no movement writes nothing — merely
+                // selecting a box must not normalize it or add an undo step.
+                const x = Math.round(canvas.boxX)
+                const y = Math.round(canvas.boxY)
+                const w = Math.round(canvas.boxW)
+                const h = Math.round(canvas.boxH)
+                if (x === Math.round(canvas.startBox.x) &&
+                        y === Math.round(canvas.startBox.y) &&
+                        w === Math.round(canvas.startBox.width) &&
+                        h === Math.round(canvas.startBox.height)) {
+                    return
+                }
+                docs.setTextBoxGeometry(x, y, w, h)
             }
         }
     }

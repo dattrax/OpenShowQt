@@ -5175,6 +5175,82 @@ int main(int argc, char** argv) {
         QTest::qWait(60);
     }
 
+    // --- task BX.1: both editors move the edge pair a corner owns ---------
+    // The reviewed implementation computed only the dragged left/top edge in
+    // BOTH pages, so a bottom-right drag left the rectangle unchanged. These
+    // call the pages' own gesture functions with a fixed captured rectangle:
+    // they fail against that arithmetic and pass only when both editors use
+    // the shared BoxTransform.
+    {
+        const auto close = [](const QRectF& a, const QRectF& b) {
+            return std::abs(a.x() - b.x()) < 0.01 && std::abs(a.y() - b.y()) < 0.01 &&
+                   std::abs(a.width() - b.width()) < 0.01 &&
+                   std::abs(a.height() - b.height()) < 0.01;
+        };
+        // Edit canvas: set the captured rectangle and invoke its gesture.
+        window->setProperty("page", "edit");
+        QTest::qWait(160);
+        auto* canvas = findNamed(window->contentItem(), "editCanvas");
+        check(canvas != nullptr, "the Edit canvas is reachable for the corner matrix");
+        if (canvas != nullptr) {
+            const auto drag = [canvas](const char* mode, double dx, double dy) {
+                canvas->setProperty("dragMode", QString::fromLatin1(mode));
+                canvas->setProperty("startBox", QRectF(200, 150, 400, 300));
+                canvas->setProperty("boxX", 200.0);
+                canvas->setProperty("boxY", 150.0);
+                canvas->setProperty("boxW", 400.0);
+                canvas->setProperty("boxH", 300.0);
+                QMetaObject::invokeMethod(canvas, "applyDrag", Q_ARG(QVariant, dx),
+                                          Q_ARG(QVariant, dy));
+                return QRectF(canvas->property("boxX").toDouble(),
+                              canvas->property("boxY").toDouble(),
+                              canvas->property("boxW").toDouble(),
+                              canvas->property("boxH").toDouble());
+            };
+            check(close(drag("br", 50.0, 40.0), QRectF(200, 150, 450, 340)),
+                  "Edit: a bottom-right drag changes BOTH dimensions");
+            check(close(drag("tr", -30.0, 20.0), QRectF(200, 170, 370, 280)),
+                  "Edit: top-right moves the right and top edges");
+            check(close(drag("bl", 30.0, -20.0), QRectF(230, 150, 370, 280)),
+                  "Edit: bottom-left moves the left and bottom edges");
+            check(close(drag("tl", 30.0, 20.0), QRectF(230, 170, 370, 280)),
+                  "Edit: top-left moves the left and top edges");
+            canvas->setProperty("dragMode", QString());
+        }
+        // Themes placement overlay: same captured rectangle, its own gesture.
+        window->setProperty("page", "themes");
+        QTest::qWait(160);
+        auto* themePage = findNamed(window->contentItem(), "themeEditorPage");
+        check(themePage != nullptr, "the Theme Editor page is reachable for the corner matrix");
+        if (themePage != nullptr) {
+            const auto drag = [themePage](const char* mode, double dx, double dy) {
+                themePage->setProperty("dragMode", QString::fromLatin1(mode));
+                themePage->setProperty("anchorX", 200.0);
+                themePage->setProperty("anchorY", 150.0);
+                themePage->setProperty("anchorW", 400.0);
+                themePage->setProperty("anchorH", 300.0);
+                QMetaObject::invokeMethod(themePage, "moveGesture", Q_ARG(QVariant, dx),
+                                          Q_ARG(QVariant, dy));
+                return QRectF(themePage->property("penX").toDouble(),
+                              themePage->property("penY").toDouble(),
+                              themePage->property("penW").toDouble(),
+                              themePage->property("penH").toDouble());
+            };
+            check(close(drag("br", 50.0, 40.0), QRectF(200, 150, 450, 340)),
+                  "Themes: a bottom-right drag changes BOTH dimensions");
+            check(close(drag("tr", -30.0, 20.0), QRectF(200, 170, 370, 280)),
+                  "Themes: top-right moves the right and top edges");
+            check(close(drag("bl", 30.0, -20.0), QRectF(230, 150, 370, 280)),
+                  "Themes: bottom-left moves the left and bottom edges");
+            check(close(drag("tl", 30.0, 20.0), QRectF(230, 170, 370, 280)),
+                  "Themes: top-left moves the left and top edges");
+            themePage->setProperty("dragMode", QString());
+            themePage->setProperty("placing", false);
+        }
+        window->setProperty("page", "show");
+        QTest::qWait(80);
+    }
+
     if (qEnvironmentVariableIsSet("OPENSHOW_WORKSPACE_LIVE")) {
         worker.start();
         QElapsedTimer timeout;

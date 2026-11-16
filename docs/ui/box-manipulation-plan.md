@@ -123,7 +123,9 @@ tests establish the new direct-manipulation contract.
 
 ## Acceptance
 
-The implementation ledger is **BX.1–BX.4** in `PLAN.md`. All begin TODO.
+The implementation ledger is **BX.1–BX.4** in `PLAN.md`. BX.1 is implemented
+(the shared `BoxTransform` helper and the corrected four-corner resize); the
+rest remain TODO.
 
 - Exercise real mouse press/move/release on each corner in Theme Songs, Theme
   Bible and Edit, in both directions. Check the moving edges, fixed opposite
