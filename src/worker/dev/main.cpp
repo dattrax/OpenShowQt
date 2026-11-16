@@ -89,6 +89,7 @@ void printUsage(const char* program) {
                  "       %s --render-test [--monitor N] [--seconds S] [--idle-check]\n"
                  "       %s --av-bench FILE [--monitor N] [--seconds S] [--no-audio]\n"
                  "                                  [--second-audio FILE] [--preview]\n"
+                 "                                  [--preview-fps N]\n"
                  "                                  [--allow-video-copy] [--no-hw-decode]\n"
                  "       %s --snapshot PATH [--scene-file FILE] [--width N] [--height N]\n"
                  "       %s --list-monitors\n"
@@ -105,7 +106,9 @@ void printUsage(const char* program) {
                  "  --second-audio FILE  with --av-bench: mix FILE's audio as a second\n"
                  "                       input into the one PipeWire output (5.3)\n"
                  "  --preview            with --av-bench: run the 1.4 preview stream\n"
-                 "                       at 640x360@15 with a built-in consumer\n"
+                 "                       at 640x360 with a built-in consumer\n"
+                 "  --preview-fps N      with --preview: the cadence to ask for, 1..60\n"
+                 "                       (default 15; task PV.2 measures 30)\n"
                  "  --vulkan-validation  with the Vulkan modes: run with the Khronos\n"
                  "                       validation layer and log its warnings and\n"
                  "                       errors\n"
@@ -321,10 +324,12 @@ int runPipeWireCheck(double seconds) {
 // or when FILE has no decodable audio). FILE's audio and an optional
 // standalone --second-audio file run as independent mixer inputs into the
 // one PipeWire output (task 5.3). Reports the numbers M5 is judged
-// on: missed deadlines under 1%, drift under 50 ms.
+// on: missed deadlines under 1%, drift under 50 ms — and, with --preview,
+// the preview's own delivery (task PV.2: asked cadence, frames consumed,
+// drops, deferrals and the worst frame's charge against the audience).
 int runAvBench(const std::string& path, const std::string& secondAudio, int monitorIndex,
-               double seconds, bool useAudio, bool preview, bool vulkanValidation,
-               bool hardwareDecode, bool allowVideoCopy) {
+               double seconds, bool useAudio, bool preview, uint32_t previewFps,
+               bool vulkanValidation, bool hardwareDecode, bool allowVideoCopy) {
     openshow::media::MediaInfo info;
     std::string error;
     if (openshow::media::probeMedia(path, &info, &error) != openshow::media::ProbeStatus::kOk) {
@@ -403,13 +408,15 @@ int runAvBench(const std::string& path, const std::string& secondAudio, int moni
     std::atomic<uint64_t> previewConsumed{0};
     std::thread previewThread;
     bool previewRunning = false;
+    auto previewStartedAt = std::chrono::steady_clock::now();
     if (preview) {
         openshow::worker::OutputSession::PreviewInfo previewInfo;
-        if (!session.startPreview(640, 360, 15, &previewInfo, &error)) {
+        if (!session.startPreview(640, 360, previewFps, &previewInfo, &error)) {
             std::fprintf(stderr, "openshow-worker: av-bench preview: %s (continuing without)\n",
                          error.c_str());
         } else {
             previewRunning = true;
+            previewStartedAt = std::chrono::steady_clock::now();
             previewThread = std::thread([&] {
                 openshow::worker::OutputSession::PreviewReady ready;
                 while (!previewStop.load()) {
@@ -467,6 +474,10 @@ int runAvBench(const std::string& path, const std::string& secondAudio, int moni
     if (previewThread.joinable()) {
         previewThread.join();
     }
+    // The window the consumer could draw frames in: from the stream coming up
+    // to the moment its thread was told to stop.
+    const auto previewElapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - previewStartedAt).count();
     if (previewRunning) {
         session.stopPreview();
     }
@@ -537,10 +548,18 @@ int runAvBench(const std::string& path, const std::string& secondAudio, int moni
                 static_cast<unsigned long long>(report.ringPeakFilled), report.ringDepth,
                 presented);
     if (preview) {
-        std::printf("  preview consumed=%llu published=%llu dropped=%llu\n",
-                    static_cast<unsigned long long>(previewConsumed.load()),
-                    static_cast<unsigned long long>(previewStatus.published),
-                    static_cast<unsigned long long>(previewStatus.dropped));
+        // Task PV.2's numbers: what the consumer actually took (the publish
+        // path's ceiling on this machine), what the producer published, what
+        // the audience budget stood down, and the worst frame it charged.
+        const auto consumed = previewConsumed.load();
+        const double achieved =
+            previewElapsed > 0.0 ? static_cast<double>(consumed) / previewElapsed : 0.0;
+        std::printf("  preview asked=%ufps consumed=%llu in %.1fs = %.1f/s published=%llu "
+                    "dropped=%llu deferred=%llu worst=%.2fms\n",
+                    previewFps, static_cast<unsigned long long>(consumed), previewElapsed,
+                    achieved, static_cast<unsigned long long>(previewStatus.published),
+                    static_cast<unsigned long long>(previewStatus.dropped),
+                    static_cast<unsigned long long>(previewStatus.deferred), previewStatus.worstMs);
     }
 
     std::printf("  direct=%llu downloads=%llu CPU-copies=%llu conversions=%llu "
@@ -579,6 +598,7 @@ int main(int argc, char** argv) {
     bool idleCheck = false;
     bool noAudio = false;
     bool benchPreview = false;
+    uint32_t benchPreviewFps = 15;  // task PV.2 asks 30; the stream accepts 1..60
     bool vulkanValidation = false;
     bool hardwareDecode = true;
     bool allowVideoCopy = false;
@@ -619,6 +639,8 @@ int main(int argc, char** argv) {
             noAudio = true;
         } else if (argument == "--preview") {
             benchPreview = true;
+        } else if (argument == "--preview-fps" && i + 1 < argc) {
+            benchPreviewFps = static_cast<uint32_t>(std::atoi(argv[++i]));
         } else if (argument == "--vulkan-validation") {
             vulkanValidation = true;
         } else if (argument == "--allow-video-copy") {
@@ -741,7 +763,7 @@ int main(int argc, char** argv) {
         // the decode -> GPU upload pipeline paced by the audio clock.
         return runAvBench(avBenchPath, secondAudioPath, monitorGiven ? monitorIndex : -1,
                           seconds > 0.0 ? seconds : 10.0, !noAudio, benchPreview,
-                          vulkanValidation, hardwareDecode, allowVideoCopy);
+                          benchPreviewFps, vulkanValidation, hardwareDecode, allowVideoCopy);
     }
 
     if (renderTest) {
