@@ -259,6 +259,90 @@ void stageNotifications(const std::string& a, const std::string& b) {
     }
     qunsetenv("OPENSHOW_FAULT_AUDIO_MIXER_FAIL");
 }
+// Review D7: Media Bin probe and decode work must not hold the control
+// connection. A slow file is asked for, and a Go, a clear and the status
+// poll must all keep landing while its describe/thumbnail is still running;
+// the answer arrives when the work finishes.
+void mediaBinWorkDoesNotHoldTheConnection(const std::string& slowClip) {
+    qputenv("OPENSHOW_FAULT_MEDIA_WORK_MS", "1500");
+    qputenv("OPENSHOW_FAULT_MEDIA_WORK_MATCH", "bin-slow");
+    {
+        WorkerController worker;
+        worker.start();
+        if (!check(waitUntil([&] { return worker.outputLive() && worker.previewActive(); }),
+                   "media work: the worker connects")) {
+            worker.shutdownNow();
+            qunsetenv("OPENSHOW_FAULT_MEDIA_WORK_MS");
+            qunsetenv("OPENSHOW_FAULT_MEDIA_WORK_MATCH");
+            return;
+        }
+        // The bin asks about a slow file. Its probe now runs on the media
+        // executor; before the fix it ran inside RPC dispatch.
+        worker.describeAsset(QString::fromStdString(slowClip));
+        scene::Scene subject;
+        subject.showId = "media-work";
+        subject.slideId = "slide-1";
+        scene::SceneItem words;
+        words.lines = {"words while the bin reads"};
+        subject.items.push_back(words);
+        const auto goBegan = std::chrono::steady_clock::now();
+        worker.presentSceneJson(
+            QString::fromStdString(boost::json::serialize(scene::toJson(subject))));
+        const bool went = waitUntil([&] {
+            return worker.sceneActive() == 1 && worker.scenePending() == 0;
+        }, 1200);
+        const double goMs = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - goBegan)
+                                .count();
+        check(went, "media work: a Go lands while a slow bin probe is in flight");
+        check(goMs < 1000.0,
+              "media work: and it did not wait for the probe (the probe is still running)");
+        check(worker.assetInfo().isEmpty(),
+              "media work: the slow probe has not answered yet, so the Go above really overtook it");
+
+        // A clear is the other control that used to queue behind a decode.
+        const auto clearBegan = std::chrono::steady_clock::now();
+        worker.clearAll();
+        const bool cleared = waitUntil([&] {
+            return !worker.wordsOnAir() && worker.scenePending() == 0;
+        }, 1200);
+        const double clearMs = std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - clearBegan)
+                                   .count();
+        check(cleared && clearMs < 1000.0,
+              "media work: Clear All is acknowledged while the probe still runs");
+
+        // The answer still arrives, and it is the real description.
+        check(waitUntil([&] { return !worker.assetInfo().isEmpty(); }, 8000),
+              "media work: the probe answers once its work finishes");
+        check(worker.assetInfo().value(QStringLiteral("video")).toBool(),
+              "media work: and the answer describes the clip");
+
+        // A thumbnail decode is the expensive half; the same rule applies.
+        worker.requestVideoThumbnail(QString::fromStdString(slowClip), 160, 90);
+        const auto thumbnailBegan = std::chrono::steady_clock::now();
+        worker.presentSceneJson(
+            QString::fromStdString(boost::json::serialize(scene::toJson(subject))));
+        const bool wentAgain = waitUntil([&] {
+            return worker.sceneActive() == 3 && worker.scenePending() == 0;
+        }, 1200);
+        const double thumbnailGoMs = std::chrono::duration<double, std::milli>(
+                                         std::chrono::steady_clock::now() - thumbnailBegan)
+                                         .count();
+        check(wentAgain && thumbnailGoMs < 1000.0,
+              "media work: a Go lands while a slow thumbnail decode is in flight");
+        check(waitUntil([&] {
+                  return !worker.videoThumbnails().value(QString::fromStdString(slowClip))
+                              .toString()
+                              .isEmpty();
+              }, 8000),
+              "media work: the thumbnail arrives when its decode finishes");
+        worker.shutdownNow();
+    }
+    qunsetenv("OPENSHOW_FAULT_MEDIA_WORK_MS");
+    qunsetenv("OPENSHOW_FAULT_MEDIA_WORK_MATCH");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -297,5 +381,10 @@ int main(int argc, char** argv) {
     if (std::system(seekCommand.c_str()) != 0) return 1;
     continuedSeekPlayback(seekClip);
     stageNotifications(intentA, intentB);
+    const auto slowBin = scratch.path().toStdString() + "/bin-slow.mp4";
+    const auto slowBinCommand = std::string("ffmpeg -v error -nostdin -y -f lavfi -i ")
+        + "testsrc2=size=320x180:rate=12 -t 3 -c:v libx264 -pix_fmt yuv420p '" + slowBin + "'";
+    if (std::system(slowBinCommand.c_str()) != 0) return 1;
+    mediaBinWorkDoesNotHoldTheConnection(slowBin);
     return failures ? 1 : 0;
 }

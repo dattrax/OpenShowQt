@@ -58,6 +58,8 @@
 
 #include "openshow/scene/scene.h"
 
+#include "media/MediaProbe.h"
+
 #include "output/OutputWindow.h"
 #include "output/Swapchain.h"
 #include "output/VulkanContext.h"
@@ -563,6 +565,35 @@ public:
     bool requestStandaloneAudioDeferred(const std::string& path, uint64_t jobId,
                                         std::function<void(bool accepted,
                                                            const std::string& refusal)> done);
+
+    // --- Media Bin work (review D7) ---
+    //
+    // media.describe and media.thumbnail used to probe/decode inside RPC
+    // dispatch: one slow file held every later Go, clear, transport and
+    // status request on that connection behind it. They now run on their own
+    // bounded, cancellable executor and answer by deferred reply, exactly as
+    // scene.prepare and media.standalone do. `done` fires once: from the
+    // executor thread when the work finishes, or from the cancellation path
+    // when the job is retired before it ran. Returns false only when the job
+    // could not be scheduled (stopped, or the queue is at capacity), and then
+    // the caller answers that refusal itself.
+    struct MediaDescription {
+        bool ok = false;
+        openshow::media::MediaInfo info;
+        std::string error;
+    };
+    bool requestMediaDescribeDeferred(const std::string& path, uint64_t jobId,
+                                      std::function<void(MediaDescription)> done);
+    struct MediaThumbnail {
+        bool ok = false;
+        std::string base64;   // the encoded frame (DR.7a); the cache path replaces it in DR.7b
+        int width = 0;
+        int height = 0;
+        std::string error;
+    };
+    bool requestMediaThumbnailDeferred(const std::string& path, int boxWidth, int boxHeight,
+                                       uint64_t jobId,
+                                       std::function<void(MediaThumbnail)> done);
     // Any thread: the standalone transport is up (between a swap that
     // started it and one that stopped it, or teardown).
     bool standaloneLive() const { return fTransport.standaloneLive(); }
@@ -710,6 +741,11 @@ private:
     // completion can fire again and nothing this work touches — the image
     // cache, the transport's fault lane — is torn down under it.
     PrepareExecutor fPrepares;
+    // Review D7: the Media Bin's probe/decode work, on its OWN executor so a
+    // bin thumbnail can never queue in front of a scene.prepare (the Go the
+    // operator is waiting for). Same bounded, cancellable contract, started
+    // and stopped beside fPrepares.
+    PrepareExecutor fMediaWork;
 
     // The operator's picture (task 1.4; owner since 6.18a2 is
     // PreviewProducer): the stream's lifecycle and generation rule, the

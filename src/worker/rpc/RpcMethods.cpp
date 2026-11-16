@@ -651,6 +651,9 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
     } else if (name == proto::kMethodMediaDescribe) {
         // MB.6: what a file IS, from container headers only. The bin asks on
         // selection and caches the answer; this never decodes a frame.
+        // Review D7: the probe is file I/O, so it runs on the media executor
+        // and the answer travels as a deferred reply — a slow or missing file
+        // must not hold the control connection.
         const boost::json::value* pathValue =
             given.is_object() ? given.as_object().if_contains("path") : nullptr;
         if (pathValue == nullptr || !pathValue->is_string()) {
@@ -669,41 +672,48 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
                 outbound);
             return;
         }
-        openshow::media::MediaInfo info;
-        std::string probeError;
-        const openshow::media::ProbeStatus status =
-            openshow::media::probeMedia(mediaPath, &info, &probeError);
-        if (status != openshow::media::ProbeStatus::kOk) {
+        const bool scheduled = fSession.requestMediaDescribeDeferred(
+            mediaPath, static_cast<std::uint64_t>(id),
+            [defer = fDefer, id, mediaPath](OutputSession::MediaDescription answer) {
+                if (!answer.ok) {
+                    defer(proto::makeError(
+                        id, proto::kInternalError,
+                        "media.describe: " +
+                            (answer.error.empty() ? std::string("the file could not be read")
+                                                  : answer.error)));
+                    return;
+                }
+                int width = 0;
+                int height = 0;
+                if (!answer.info.videoStreams.empty()) {
+                    width = answer.info.videoStreams.front().width;
+                    height = answer.info.videoStreams.front().height;
+                }
+                defer(proto::makeResult(
+                    id, boost::json::object{
+                            {"path", mediaPath},
+                            {"durationMs",
+                             static_cast<std::int64_t>(answer.info.durationSeconds * 1000.0 +
+                                                       0.5)},
+                            {"width", width},
+                            {"height", height},
+                            {"video", !answer.info.videoStreams.empty()},
+                            {"audio", !answer.info.audioStreams.empty()},
+                            {"format", answer.info.formatName}}));
+            });
+        if (!scheduled) {
+            // Closing, or the media queue is at capacity: an explicit refusal
+            // the caller can retry, because nothing was scheduled to answer.
             proto::appendFrame(
                 proto::makeError(id, proto::kInternalError,
-                                 "media.describe: " +
-                                     (probeError.empty()
-                                          ? std::string("the file could not be read")
-                                          : probeError)),
+                                 "media.describe could not schedule its probe"),
                 outbound);
-            return;
         }
-        int width = 0;
-        int height = 0;
-        if (!info.videoStreams.empty()) {
-            width = info.videoStreams.front().width;
-            height = info.videoStreams.front().height;
-        }
-        proto::appendFrame(
-            proto::makeResult(
-                id, boost::json::object{
-                        {"path", mediaPath},
-                        {"durationMs",
-                         static_cast<std::int64_t>(info.durationSeconds * 1000.0 + 0.5)},
-                        {"width", width},
-                        {"height", height},
-                        {"video", !info.videoStreams.empty()},
-                        {"audio", !info.audioStreams.empty()},
-                        {"format", info.formatName}}),
-            outbound);
     } else if (name == proto::kMethodMediaThumbnail) {
-        // MB.6: one first frame, scaled into the requested box and returned as
-        // base64 PNG. The card caches by path; this never decodes audio.
+        // MB.6: one first frame, scaled into the requested box. The card
+        // caches by path; this never decodes audio. Review D7: the open,
+        // demux and decode run on the media executor, so one slow clip can
+        // never queue the next Go behind it.
         const boost::json::value* pathValue =
             given.is_object() ? given.as_object().if_contains("path") : nullptr;
         if (pathValue == nullptr || !pathValue->is_string()) {
@@ -735,29 +745,30 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
                 boxHeight = static_cast<int>(h->to_number<double>());
             }
         }
-        std::string base64;
-        int thumbWidth = 0;
-        int thumbHeight = 0;
-        std::string thumbError;
-        if (!openshow::media::videoThumbnailBase64(
-                mediaPath, boxWidth, boxHeight, &base64, &thumbWidth, &thumbHeight,
-                &thumbError)) {
+        const bool scheduled = fSession.requestMediaThumbnailDeferred(
+            mediaPath, boxWidth, boxHeight, static_cast<std::uint64_t>(id),
+            [defer = fDefer, id, mediaPath](OutputSession::MediaThumbnail answer) {
+                if (!answer.ok) {
+                    defer(proto::makeError(
+                        id, proto::kInternalError,
+                        "media.thumbnail: " +
+                            (answer.error.empty()
+                                 ? std::string("the frame could not be decoded")
+                                 : answer.error)));
+                    return;
+                }
+                defer(proto::makeResult(
+                    id, boost::json::object{{"path", mediaPath},
+                                            {"width", answer.width},
+                                            {"height", answer.height},
+                                            {"data", answer.base64}}));
+            });
+        if (!scheduled) {
             proto::appendFrame(
                 proto::makeError(id, proto::kInternalError,
-                                 "media.thumbnail: " +
-                                     (thumbError.empty()
-                                          ? std::string("the frame could not be decoded")
-                                          : thumbError)),
+                                 "media.thumbnail could not schedule its decode"),
                 outbound);
-            return;
         }
-        proto::appendFrame(
-            proto::makeResult(
-                id, boost::json::object{{"path", mediaPath},
-                                        {"width", thumbWidth},
-                                        {"height", thumbHeight},
-                                        {"data", base64}}),
-            outbound);
     } else if (name == proto::kMethodLiveSources) {
         std::uint32_t waitMs = 3000;
         if (given.is_object()) {

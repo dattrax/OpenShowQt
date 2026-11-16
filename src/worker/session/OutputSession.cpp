@@ -38,6 +38,7 @@
 #include "output/VulkanQueueGuard.h"
 #include "live/live_source_hub.h"
 #include "media/MediaProbe.h"
+#include "media/VideoThumbnail.h"
 #include "render/SceneRenderer.h"
 #include "session/Faults.h"
 
@@ -147,7 +148,7 @@ bool OutputSession::open(const Options& options, std::string* error) {
 
     fStartTime = std::chrono::steady_clock::now();
     fStop = false;
-    if (fBackgroundMedia && !fPrepares.start()) {
+    if (fBackgroundMedia && (!fPrepares.start() || !fMediaWork.start())) {
         // Task 6.9a: socket mode is the only place a prepare schedules
         // file work, so that is the only place the executor runs. A worker
         // that cannot start it would answer every prepare with a refusal;
@@ -168,6 +169,10 @@ void OutputSession::close() {
     // transport's fault lane and the GPU below are never torn down under
     // a decode. Idempotent, like this close() is.
     fPrepares.stop();
+    // Review D7: the media executor beside it, stopped before the cache and
+    // transport it reads, so no probe or decode completion can fire after
+    // them.
+    fMediaWork.stop();
     // The live camera owns a helper process and an uploader on this device;
     // stop() waits for its start thread, because the Vulkan device below is
     // about to be destroyed and the thread may still be opening a source.
@@ -857,6 +862,113 @@ bool OutputSession::requestStandaloneAudioDeferred(
             } else {
                 done(verdict->accepted, verdict->refusal);
             }
+        });
+}
+
+bool OutputSession::requestMediaDescribeDeferred(
+    const std::string& path, uint64_t jobId,
+    std::function<void(MediaDescription)> done) {
+    // Review D7: the probe reads container headers — file I/O — so it belongs
+    // on the media executor, never in RPC dispatch.
+    if (path.empty() || !fBackgroundMedia) {
+        MediaDescription answer;
+        answer.ok = openshow::media::probeMedia(path, &answer.info, &answer.error) ==
+                    openshow::media::ProbeStatus::kOk;
+        if (!answer.ok && answer.error.empty()) {
+            answer.error = "the file could not be read";
+        }
+        done(std::move(answer));
+        return true;
+    }
+    auto answer = std::make_shared<MediaDescription>();
+    return fMediaWork.submit(
+        jobId,
+        [path, answer](const std::atomic<bool>& cancelled) {
+            if (cancelled.load(std::memory_order_acquire)) {
+                return;
+            }
+            // The scripted slow file names itself, so the fixture measures
+            // WHERE the read is paid rather than hoping a container is slow.
+            if (faults().delaysMediaWork(path)) {
+                const int delayMs = faults().mediaWorkDelayMs;
+                for (int elapsed = 0;
+                     elapsed < delayMs && !cancelled.load(std::memory_order_acquire);
+                     elapsed += 20) {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(std::min(20, delayMs - elapsed)));
+                }
+                if (cancelled.load(std::memory_order_acquire)) {
+                    return;
+                }
+            }
+            answer->ok = openshow::media::probeMedia(path, &answer->info, &answer->error) ==
+                         openshow::media::ProbeStatus::kOk;
+            if (!answer->ok && answer->error.empty()) {
+                answer->error = "the file could not be read";
+            }
+        },
+        [answer, done = std::move(done)](bool cancelled) {
+            if (cancelled) {
+                MediaDescription retired;
+                retired.error = "media.describe was retired before its probe ran";
+                done(std::move(retired));
+                return;
+            }
+            done(std::move(*answer));
+        });
+}
+
+bool OutputSession::requestMediaThumbnailDeferred(
+    const std::string& path, int boxWidth, int boxHeight, uint64_t jobId,
+    std::function<void(MediaThumbnail)> done) {
+    // Review D7: opening, demuxing and decoding a clip is the most expensive
+    // thing the bin asks for. It runs on the media executor with the same
+    // bounded packet budget, and its answer travels as a deferred reply.
+    if (path.empty() || !fBackgroundMedia) {
+        MediaThumbnail answer;
+        answer.ok = openshow::media::videoThumbnailBase64(
+            path, boxWidth, boxHeight, &answer.base64, &answer.width, &answer.height,
+            &answer.error);
+        if (!answer.ok && answer.error.empty()) {
+            answer.error = "the frame could not be decoded";
+        }
+        done(std::move(answer));
+        return true;
+    }
+    auto answer = std::make_shared<MediaThumbnail>();
+    return fMediaWork.submit(
+        jobId,
+        [path, boxWidth, boxHeight, answer](const std::atomic<bool>& cancelled) {
+            if (cancelled.load(std::memory_order_acquire)) {
+                return;
+            }
+            if (faults().delaysMediaWork(path)) {
+                const int delayMs = faults().mediaWorkDelayMs;
+                for (int elapsed = 0;
+                     elapsed < delayMs && !cancelled.load(std::memory_order_acquire);
+                     elapsed += 20) {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(std::min(20, delayMs - elapsed)));
+                }
+                if (cancelled.load(std::memory_order_acquire)) {
+                    return;
+                }
+            }
+            answer->ok = openshow::media::videoThumbnailBase64(
+                path, boxWidth, boxHeight, &answer->base64, &answer->width, &answer->height,
+                &answer->error);
+            if (!answer->ok && answer->error.empty()) {
+                answer->error = "the frame could not be decoded";
+            }
+        },
+        [answer, done = std::move(done)](bool cancelled) {
+            if (cancelled) {
+                MediaThumbnail retired;
+                retired.error = "media.thumbnail was retired before its decode ran";
+                done(std::move(retired));
+                return;
+            }
+            done(std::move(*answer));
         });
 }
 

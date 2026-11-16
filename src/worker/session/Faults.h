@@ -63,6 +63,12 @@ struct Faults {
     // knob: the slow file is the subject, everything else the yardstick.
     int standaloneProbeDelayMs = 0;  // OPENSHOW_FAULT_STANDALONE_PROBE_MS
     std::string standaloneProbeMatch;  // OPENSHOW_FAULT_STANDALONE_PROBE_MATCH
+    // Review D7: a Media Bin probe or thumbnail decode that really waits, so
+    // the fixture proves the RPC connection keeps answering Go/clear/status
+    // while a bin file is being read. Named by path substring like every
+    // other knob.
+    int mediaWorkDelayMs = 0;         // OPENSHOW_FAULT_MEDIA_WORK_MS
+    std::string mediaWorkMatch;       // OPENSHOW_FAULT_MEDIA_WORK_MATCH
     Faults() {
         const auto read = [](const char* name) {
             const char* value = std::getenv(name);
@@ -78,6 +84,10 @@ struct Faults {
             videoOpenMatch = match;
         }
         thumbnailDecodeDelayMs = read("OPENSHOW_FAULT_THUMBNAIL_DECODE_MS");
+        mediaWorkDelayMs = read("OPENSHOW_FAULT_MEDIA_WORK_MS");
+        if (const char* match = std::getenv("OPENSHOW_FAULT_MEDIA_WORK_MATCH")) {
+            mediaWorkMatch = match;
+        }
         if (const char* match = std::getenv("OPENSHOW_FAULT_THUMBNAIL_DECODE_MATCH")) {
             thumbnailDecodeMatch = match;
         }
@@ -104,6 +114,13 @@ struct Faults {
     bool delaysStandaloneProbe(const std::string& path) const {
         return standaloneProbeDelayMs > 0 && !standaloneProbeMatch.empty() &&
                path.find(standaloneProbeMatch) != std::string::npos;
+    }
+
+    // True when THIS Media Bin file's probe/decode owes the injected wait
+    // (review D7).
+    bool delaysMediaWork(const std::string& path) const {
+        return mediaWorkDelayMs > 0 && !mediaWorkMatch.empty() &&
+               path.find(mediaWorkMatch) != std::string::npos;
     }
 };
 
