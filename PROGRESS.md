@@ -11,6 +11,15 @@ archive is a current instruction.
 
 ## Current checkpoint
 
+**Next planned group: BX.1–BX.4 (2026-11-16), all TODO.** The
+[box-manipulation brief](docs/ui/box-manipulation-plan.md) fixes all four corner
+handles across Theme Songs/Bible/Edit and removes numeric geometry/Center H/V
+sections. Body drag retains centre snapping; placement reset/borrow moves to
+box context menus. Existing resize math only moves left/top edges, so BR is
+inert and TR/BL only partially resize. Next action: BX.1's shared geometry and
+regressions. This update changes planning docs only; TL/DR/PV completion and
+their recorded verification remain historical evidence, not BX acceptance.
+
 **Text layout and editor consistency (2026-11-16): TL.1–TL.6 are DONE.** The
 agreed
 [text-layout brief](docs/ui/text-layout-plan.md) adds shared vertical-alignment

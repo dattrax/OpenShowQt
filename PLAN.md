@@ -13,6 +13,8 @@ Current design conformance review and correction scope:
 [2026-11-15 review](docs/reviews/design-conformance-2026-11-15.md), tasks **DR** below.
 Text layout and editor consistency: [2026-11-16 brief](docs/ui/text-layout-plan.md),
 tasks **TL** below.
+Direct box manipulation and geometry cleanup:
+[2026-11-16 brief](docs/ui/box-manipulation-plan.md), tasks **BX** below.
 
 ## Goal and reference
 
@@ -2067,6 +2069,26 @@ and Remove-customizations state. Desktop suite: 85/85. Headless and source
 guards are run and recorded in `PROGRESS.md`; physical gates (audio hardware,
 target-GPU NDI/live output) remain the standing M7 items and no TV.3 effects or
 per-box styling are claimed.
+
+### Direct box manipulation and geometry cleanup — 2026-11-16 (BX)
+
+Place and size boxes visually in Theme Editor's Songs/Bible views and Edit.
+All four visible corner handles must resize correctly; body drag retains centre
+snapping and guides. Remove the numeric geometry section (X/Y/W/H, pixel heading,
+Center H/V and placement-status/action rows), preserving reset/borrow as box-menu
+actions and keeping Edit's stack/keyboard tools. This removes box-position helpers,
+not TL's text alignment/caps controls. [Scope, resize bug and acceptance](docs/ui/box-manipulation-plan.md).
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| BX.1 | TODO | Share corner geometry/hit-testing and correct all resize directions | One helper computes both moving edges while fixing the opposite corner; TL/TR/BL/BR resize inward/outward, including the currently inert BR; move preserves size, snap tolerance stays screen-relative, bounds/minimum/no-op cases are covered |
+| BX.2 | TODO | Integrate reliable handles and gesture lifetime across both editors | Songs/Bible/Edit share transform chrome with reachable handle hit areas at every slide edge; overlap honours selected identity, body selects topmost; fitted/zoomed coordinates agree; one commit/undo on release, cancel/navigation/deletion writes nothing and no gesture retargets a new box |
+| BX.3 | TODO | Remove geometry inspectors and retain non-numeric placement actions | No X/Y/W/H, pixel heading, Center H/V, owner sentence or old placement action row in any host; reset/borrow move to keyboard-accessible box menus through existing verbs; preserve TL controls, stack commands, keyboard move/resize and all source geometry/schema |
+| BX.4 | TODO | Prove actual pointer editing, snapping, reset and worker output | Real-pointer matrix covers all four corners and centre axes at 1000/1380/1680 and scales 1/1.5/2, edge/overlap/cancel/undo; reset/borrow preserves styles and save/reopen; preview-only edit → explicit Go reaches matching pixels; focused suites then desktop/headless/source guards, captures and skip/physical reporting |
+
+Order: BX.1 → BX.2 → BX.3 → BX.4, after delivered TL; split leaves exceeding two
+engineer-days. No feature implementation is claimed. Keep authored coordinates
+and target ownership internally; no service, scene or RPC format change is needed.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
