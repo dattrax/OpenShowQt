@@ -173,6 +173,38 @@ void removedIntent(const std::string& current, const std::string& a,
     qunsetenv("OPENSHOW_FAULT_STANDALONE_PROBE_MS");
     qunsetenv("OPENSHOW_FAULT_STANDALONE_PROBE_MATCH");
 }
+// Task PV.2: the panel under a moving source, through the real frontend.
+//
+// The fake-peer fixture (`scenarioPreviewCadence`) pins the rule that an
+// accepted copy raises the repaint signal; this leg proves the same rule on
+// the real worker and the real consumer, with a video repainting the picture
+// continuously. The copy threshold is deliberately far below the stream's
+// 30 fps ask — a software-rendered CI machine must not fail it — while the
+// relation between copies and signals is exact, and a panel that only
+// repainted on the 500 ms status poll cannot satisfy it.
+void uiRepaintsWhileContentMoves(const std::string& clip) {
+    // Declared before the controller so the counted signal outlives it.
+    int repaints = 0;
+    WorkerController worker;
+    QObject::connect(&worker, &WorkerController::previewChanged, [&repaints] { ++repaints; });
+    worker.start();
+    if (!check(waitUntil([&] { return worker.outputLive() && worker.previewActive(); }),
+               "cadence: worker and preview connect")) { worker.shutdownNow(); return; }
+    worker.presentSceneJson(videoScene(clip));
+    if (!check(waitUntil([&] {
+            return worker.sceneActive() > 0 && worker.mediaPlaying() && !worker.previewImage().isNull();
+        }), "cadence: the moving scene is on air")) { worker.shutdownNow(); return; }
+    const qint64 framesAtStart = worker.previewFrames();
+    const int repaintsAtStart = repaints;
+    settle(3000);
+    const qint64 copies = worker.previewFrames() - framesAtStart;
+    const int raised = repaints - repaintsAtStart;
+    check(copies >= 9, "cadence: three seconds of a moving scene is a stream of frames, "
+                       "not the two a polling panel would see");
+    check(raised >= copies,
+          "cadence: every accepted copy of the moving scene repainted the panel");
+    worker.shutdownNow();
+}
 // 6.23d: keep playing after delayed seek acknowledgement. An immediate
 // pause would hide the stale deadline domain found by the review.
 void continuedSeekPlayback(const std::string& clip) {
@@ -390,6 +422,12 @@ int main(int argc, char** argv) {
           "-t 8 -c:v libx264 -pix_fmt yuv420p -c:a aac '" + seekClip + "'";
     if (std::system(seekCommand.c_str()) != 0) return 1;
     continuedSeekPlayback(seekClip);
+    // Task PV.2: a continuously changing picture through the real frontend.
+    const auto cadenceClip = scratch.path().toStdString() + "/cadence.mp4";
+    const auto cadenceCommand = std::string("ffmpeg -v error -nostdin -y -f lavfi -i ")
+        + "testsrc2=size=640x360:rate=30 -t 6 -c:v libx264 -pix_fmt yuv420p '" + cadenceClip + "'";
+    if (std::system(cadenceCommand.c_str()) != 0) return 1;
+    uiRepaintsWhileContentMoves(cadenceClip);
     stageNotifications(intentA, intentB);
     const auto slowBin = scratch.path().toStdString() + "/bin-slow.mp4";
     const auto slowBinCommand = std::string("ffmpeg -v error -nostdin -y -f lavfi -i ")
