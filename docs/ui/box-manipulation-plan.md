@@ -125,8 +125,9 @@ tests establish the new direct-manipulation contract.
 
 The implementation ledger is **BX.1–BX.4** in `PLAN.md`. BX.1 (the shared
 `BoxTransform` helper and corrected four-corner resize), BX.2 (reachable
-handle areas and identity-owned gesture lifetime) and BX.3 (numeric geometry
-removed, reset/borrow on the box menu) are implemented; BX.4 remains TODO.
+handle areas and identity-owned gesture lifetime), BX.3 (numeric geometry
+removed, reset/borrow on the box menu) and BX.4 (real-pointer matrices, the
+worker-output geometry journey and the verification runs) are implemented.
 
 - Exercise real mouse press/move/release on each corner in Theme Songs, Theme
   Bible and Edit, in both directions. Check the moving edges, fixed opposite

@@ -2084,7 +2084,7 @@ not TL's text alignment/caps controls. [Scope, resize bug and acceptance](docs/u
 | BX.1 | DONE | Share corner geometry/hit-testing and correct all resize directions | One helper computes both moving edges while fixing the opposite corner; TL/TR/BL/BR resize inward/outward, including the currently inert BR; move preserves size, snap tolerance stays screen-relative, bounds/minimum/no-op cases are covered |
 | BX.2 | DONE | Integrate reliable handles and gesture lifetime across both editors | Songs/Bible/Edit share transform chrome with reachable handle hit areas at every slide edge; overlap honours selected identity, body selects topmost; fitted/zoomed coordinates agree; one commit/undo on release, cancel/navigation/deletion writes nothing and no gesture retargets a new box |
 | BX.3 | DONE | Remove geometry inspectors and retain non-numeric placement actions | No X/Y/W/H, pixel heading, Center H/V, owner sentence or old placement action row in any host; reset/borrow move to keyboard-accessible box menus through existing verbs; preserve TL controls, stack commands, keyboard move/resize and all source geometry/schema |
-| BX.4 | TODO | Prove actual pointer editing, snapping, reset and worker output | Real-pointer matrix covers all four corners and centre axes at 1000/1380/1680 and scales 1/1.5/2, edge/overlap/cancel/undo; reset/borrow preserves styles and save/reopen; preview-only edit → explicit Go reaches matching pixels; focused suites then desktop/headless/source guards, captures and skip/physical reporting |
+| BX.4 | DONE | Prove actual pointer editing, snapping, reset and worker output | Real-pointer matrix covers all four corners and centre axes at 1000/1380/1680 and scales 1/1.5/2, edge/overlap/cancel/undo; reset/borrow preserves styles and save/reopen; preview-only edit → explicit Go reaches matching pixels; focused suites then desktop/headless/source guards, captures and skip/physical reporting |
 
 Order: BX.1 → BX.2 → BX.3 → BX.4, after delivered TL; split leaves exceeding two
 engineer-days. No feature implementation is claimed. Keep authored coordinates
@@ -2146,6 +2146,33 @@ and leaves the rest of the record intact, opening a menu with nothing placed
 creates nothing, and the Bible borrow preserves the reading size.
 `inspector_adapter_tests` proves both verbs preserve sibling fields and survive
 save/reopen. Full desktop suite: 85/85.
+
+BX.4 evidence (2026-11-16): the interaction is proven with real pointers and on
+the worker. `workspace_ui_tests` drives actual press/move/release through all
+four corners of the Edit canvas at 1000/1380/1680 — inward and outward, with the
+moving edges and the fixed opposite corner checked — plus both centre axes and
+their intersection (exact 960/540 with both guides visible), a drag beyond the
+tolerance (free, travel kept), a small rectangle's body move (size preserved), a
+corner at the slide edge (the outer half is live), the selected handle over an
+overlapping body, Escape-cancels-without-a-write and one-undo round-trips. The
+Themes overlay runs the same four-corner matrix in Songs and Bible (one outward
+bottom-right), checking the theme placement or the context box each view owns,
+then the centre guide, the edge corner and Escape. The matrix fails against the
+reviewed add-the-inset mapping and the pre-BX left/top-only arithmetic.
+`production_journey_tests` moves and narrows the live cue through the Edit page's
+`setTextBoxGeometry`: the compiled rectangle, authored words, media asset and
+item count survive; the off-air picture shows the words lower while the audience
+keeps its acknowledged frame; the explicit Go publishes pixels matching the
+off-air box over continuous gold; save/reopen keeps the rectangle; one undo
+returns the previous box. BX.3's `inspector_adapter_tests` continue to prove
+reset/borrow preserve sibling fields and survive save/reopen.
+Verification: desktop **85/85** (100.9 s, 21 display entries); headless **47/47**
+(display excluded, 15.6 s) including the source guards; the same workspace binary
+passes at `QT_SCALE_FACTOR=1.5` and `2` with zero failures; the populated capture
+path produced 24 images at each of scales 1/1.5/2 with no failure. No
+display-labelled test was skipped on this machine. Physical M7/ND/TA gates
+(projector second display, NDI, target-GPU checks) remain open and are not
+claimed here.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

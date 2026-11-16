@@ -305,11 +305,20 @@ floor's seeding, refusal and chain tail in `domain_tests`, the primary-box
 write-to-customization routing and applied-rect rows in
 `document_controller_tests`, and the Default-aware list/editor/floor checks
 in `workspace_ui_tests` — the captures now lead the theme list with Default.
-BX adds its own rows there: the four-corner gesture matrix on both canvases,
-handle reach at a slide edge, identity-owned cancellation, the box menus by
-mouse and keyboard, and the absence of every numeric geometry control (with no
-blank spacer left behind); `inspector_adapter_tests` proves the reset/borrow
-verbs preserve sibling fields and survive save/reopen.
+BX adds its own rows there: real-pointer press/move/release through all four
+corners and both centre axes at 1000/1380/1680 on the Edit canvas and the
+Themes overlay in Songs and Bible, handle reach at a slide edge, a small
+rectangle's body move, the selected handle over an overlapping box,
+identity-owned cancellation by navigation/selection/view/Escape, the box menus
+by mouse and keyboard, and the absence of every numeric geometry control (with
+no blank spacer left behind). `inspector_adapter_tests` proves the reset/borrow
+verbs preserve sibling fields and survive save/reopen, and
+`production_journey_tests` publishes a moved and narrowed box through the real
+worker — preview-only, then an explicit Go whose audience pixels match the
+off-air box — with the rectangle surviving save/reopen and the media identity,
+layer count and authored words intact. The same binary re-runs the pointer
+matrix at `QT_SCALE_FACTOR=1.5` and `2`, and the populated capture path is
+generated at all three scales.
 [themes-plan.md](ui/themes-plan.md)
 carries the model and the acceptance rows; the PLAN ledger closes TH.1–TH.9.
 

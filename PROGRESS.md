@@ -11,7 +11,7 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Box manipulation (2026-11-16): BX.1–BX.3 are DONE; BX.4 is TODO.** The
+**Box manipulation (2026-11-16): BX.1–BX.4 are DONE.** The
 [box-manipulation brief](docs/ui/box-manipulation-plan.md) fixes all four corner
 handles across Theme Songs/Bible/Edit and removes numeric geometry/Center H/V
 sections. Body drag retains centre snapping; placement reset/borrow moves to
@@ -49,8 +49,27 @@ survive and a reset is one undo; opening a menu creates nothing. The Edit band
 and Theme rails were re-laid out with no blank spacer where the section sat.
 `workspace_ui_tests` pins the absences, the menu paths, reset/borrow effects and
 the surviving TL/stack controls; `inspector_adapter_tests` pins field
-preservation and save/reopen. Desktop suite 85/85. Next action: BX.4 (the
-real-pointer matrix, captures, headless/guards, and the worker-output journey).
+preservation and save/reopen. Desktop suite 85/85.
+
+BX.4 proved the interaction with real pointers and on the worker. The Edit
+matrix drives actual press/move/release through every corner at 1000/1380/1680
+inward and outward, both centre axes and their intersection (exact 960/540 with
+both guides), a beyond-tolerance drag, a small rectangle's body move, an edge
+corner, the selected handle over an overlapping box, Escape and one undo. The
+Themes overlay runs the four-corner matrix in Songs and Bible against the record
+each view owns, then the centre guide, edge corner and Escape. The worker
+journey moves and narrows a live cue's box, shows the off-air picture while the
+audience keeps its frame, publishes matching pixels on an explicit Go over
+continuous media, and keeps the rectangle through save/reopen; reset/borrow
+sibling preservation stays pinned by `inspector_adapter_tests`.
+
+Verification: desktop **85/85** (100.9 s, 21 display entries); headless
+**47/47** with display excluded (15.6 s), source guards included; the workspace
+binary passes at `QT_SCALE_FACTOR=1.5` and `2` with zero failures; the populated
+capture path produced 24 images at each of scales 1/1.5/2. No display-labelled
+test was skipped here. Physical M7/ND/TA gates (projector second display, NDI,
+target-GPU checks) remain open. BX is closed; TA.1 and the M7 gates remain as
+listed in `PLAN.md`.
 
 **Text layout and editor consistency (2026-11-16): TL.1–TL.6 are DONE.** The
 agreed
@@ -254,6 +273,16 @@ service. FO stays gated behind those.
 
 ## Recent commits
 
+- `1487777` test(ui): cover the remaining pointer fixtures and raise the suite wall (BX.4)
+- `6c7c384` fix(ui): map inset gesture coordinates and fit the stage for edge handles (BX.4)
+- `e38bae9` test(journey): publish a moved box through preview, Go and save/reopen (BX.4)
+- `c34160b` test(ui): drive the Themes overlay with real pointers in both views (BX.4)
+- `630574c` fix(ui): read gesture coordinates from the inset surface and keep handles in bounds (BX.4)
+- `37b1a47` feat(ui): remove numeric geometry and move reset/borrow to box menus (BX.3)
+- `85a3495` fix(ui): make handles reachable and gestures identity-owned (BX.2)
+- `6ae2666` fix(ui): share box geometry and resize every corner (BX.1)
+- `332a77b` docs: plan the BX direct-box-manipulation group
+- `cd52b37` test(journeys): close the layout journey and document the controls for TL.6
 - `f2fb8f3` feat(ui): share the vertical/anchor controls and fix Remove customizations (TL.5)
 - `64ae726` feat(importer): plan with the resolved layout pair for TL.4
 - `6a14f9e` feat(worker): render the anchored layout and root-locale capitals for TL.3
