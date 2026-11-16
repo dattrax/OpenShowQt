@@ -1982,6 +1982,12 @@ QVariantMap DocumentController::fixtureBoxStyle(bool scripture) const {
         style.insert(QStringLiteral("fontUnderline"), item.underline);
         style.insert(QStringLiteral("fitMode"), QString::fromStdString(item.fitMode));
         style.insert(QStringLiteral("minFontSize"), item.minFontSize);
+        // Task TL.4: the layout pair off the same item, so the packer
+        // measures the capitals the audience will see and the fingerprint
+        // names the whole question.
+        style.insert(QStringLiteral("verticalAlign"),
+                     QString::fromStdString(item.verticalAlign));
+        style.insert(QStringLiteral("allCaps"), item.allCaps);
         QVariantMap stroke;
         stroke.insert(QStringLiteral("enabled"), item.stroke.enabled);
         stroke.insert(QStringLiteral("color"), QString::fromStdString(item.stroke.color));

@@ -63,6 +63,10 @@ struct MeasureRequest {
     std::string fontStyle = "normal";
     std::string fitMode = "fixed";  // measurement never shrinks whatever says
     double minFontSize = openshow::domain::kDefaultMinFontSize;
+    // Task TL.4: the layout pair, forwarded verbatim like the rest of the
+    // style block. `allCaps` is the one that moves the answer.
+    std::string verticalAlign = openshow::domain::kDefaultVerticalAlign;
+    bool allCaps = false;
     openshow::domain::TextStroke stroke;
     openshow::domain::TextShadow shadow;
 };
@@ -136,6 +140,14 @@ struct FlowStyle {
     std::string fontStyle = "normal";
     std::string fitMode = "fixed";  // the flow's own premise: the size is the size
     double minFontSize = openshow::domain::kDefaultMinFontSize;
+    // Task TL.4: the resolved layout pair the packed slides will wear.
+    // `allCaps` changes the wrapped height (the worker uppercases before
+    // shaping), so a plan measured without it would pack a page the
+    // audience's capitals overflow; the anchor is position, not height,
+    // but it travels so the cache key and fingerprint name the whole
+    // question the plan answered.
+    std::string verticalAlign = openshow::domain::kDefaultVerticalAlign;
+    bool allCaps = false;
     openshow::domain::TextStroke stroke;
     openshow::domain::TextShadow shadow;
 };

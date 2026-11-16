@@ -434,6 +434,25 @@ int main(int argc, char* argv[]) {
         check(manager.requests == requestsAfterLookup, "still no network for re-pagination");
         check(identityHolds(scripture, bible), "the wide re-pagination preserved the passage");
 
+        // --- Task TL.4: a layout toggle re-measures, and the stale plan
+        // cannot enable Add while the new one is in flight ---------------
+        const qint64 planBeforeLayout = scripture.planGeneration();
+        check(docs.setThemeTextStyleField(tight, QStringLiteral("allCaps"), true) &&
+                  docs.setThemeTextStyleField(tight, QStringLiteral("verticalAlign"),
+                                              QStringLiteral("top")),
+              "the worn theme takes a capitals answer and a top anchor");
+        scripture.regenerate();
+        check(scripture.measuring() && !scripture.canAdd(),
+              "the toggle starts a new measurement and Add sleeps at once — the old plan "
+              "is never offered for the new layout");
+        check(waitForMeasured(scripture), "the layout toggle re-measured");
+        check(scripture.planGeneration() > planBeforeLayout,
+              "the re-measured plan is a new generation, not the old one re-labelled");
+        check(identityHolds(scripture, bible),
+              "the capitals re-pagination preserved the passage's source words");
+        check(manager.requests == requestsAfterLookup,
+              "and still no network request for the layout change");
+
         // --- Add: one item, labels in notes, and no second bite -----------
         const int libraryBefore = docs.songs().size();
         const qsizetype slidesAtAdd = scripture.slides().size();

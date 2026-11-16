@@ -11,8 +11,8 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Text layout and editor consistency (2026-11-16): TL.1–TL.3 are DONE;
-TL.4–TL.6 are TODO.** The agreed
+**Text layout and editor consistency (2026-11-16): TL.1–TL.4 are DONE;
+TL.5–TL.6 are TODO.** The agreed
 [text-layout brief](docs/ui/text-layout-plan.md) adds shared vertical-alignment
 icons and All caps to Theme Editor/ Edit, with theme defaults and per-slide
 overrides. Preview updates immediately; audience changes on explicit Go.
@@ -53,9 +53,20 @@ transformed result is checked against the scene's line/item/scene budgets with
 a named refusal, and `scene.prepare` runs that guard before the store grows.
 `text.measure` enters the same path, and an ask that names an anchor with a box
 height gets positioned bounds while the intrinsic height stays put. The worker
-now advertises `scene.text-layout.v1` and `text.measure.v3`. Full suite: 85/85
-tests pass. Next implementation action for this group: TL.4. DR/PV completion
-below remains unchanged.
+now advertises `scene.text-layout.v1` and `text.measure.v3`.
+
+TL.4 made the pair part of the planning question. `FlowStyle` and
+`MeasureRequest` carry it, the packer forwards it, and both the measurement
+cache key and the song fingerprint name it, so a toggle is a different plan
+rather than a stale hit. The box-style read comes off the same compiled
+`SceneItem` the added slide will wear, and both importers put the pair on every
+measurement block. The pages already regenerate on `documentsChanged`, so a
+toggle re-measures the held words with no second network request; the planner
+clears its plan immediately and the Bible page now discards a plan whose inputs
+moved mid-measurement, so a delayed plan can never enable Add. Source words and
+labels stay original-case, and committed slide boundaries are untouched. Full
+suite: 85/85 tests pass. Next implementation action for this group: TL.5.
+DR/PV completion below remains unchanged.
 
 **The design-conformance corrections (DR.0–DR.8) are complete.** The review
 [`docs/reviews/design-conformance-2026-11-15.md`](docs/reviews/design-conformance-2026-11-15.md)

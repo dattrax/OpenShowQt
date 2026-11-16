@@ -183,6 +183,8 @@ public:
         request.fontStyle = style.fontStyle;
         request.fitMode = style.fitMode;
         request.minFontSize = style.minFontSize;
+        request.verticalAlign = style.verticalAlign;
+        request.allCaps = style.allCaps;
         request.stroke = style.stroke;
         request.shadow = style.shadow;
         return request;
@@ -405,6 +407,10 @@ bool validateFlowStyle(const FlowStyle& style, std::string* error) {
     if (!openshow::domain::isFitModeName(style.fitMode)) {
         return fail("this theme's fit mode cannot be measured — it must be shrink or fixed");
     }
+    if (!openshow::domain::isVerticalAlignName(style.verticalAlign)) {
+        return fail("this theme's vertical alignment cannot be measured — it must be top, "
+                    "center or bottom");
+    }
     if (!std::isfinite(style.minFontSize) || style.minFontSize < 1.0 ||
         style.minFontSize > 4096.0) {
         return fail("this theme's smallest readable size cannot be measured — it must be "
@@ -457,6 +463,8 @@ std::string measureCacheKey(const MeasureRequest& request) {
     putString(request.fontStyle);
     putString(request.fitMode);
     putNumber(request.minFontSize);
+    putString(request.verticalAlign);
+    putNumber(request.allCaps ? 1.0 : 0.0);
     putNumber(request.stroke.enabled ? 1.0 : 0.0);
     putString(request.stroke.color);
     putNumber(request.stroke.width);

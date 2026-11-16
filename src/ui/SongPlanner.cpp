@@ -48,6 +48,11 @@ bool songInputFor(DocumentController* documents,
     out->style.minFontSize = style.contains(QStringLiteral("minFontSize"))
                                  ? style.value(QStringLiteral("minFontSize")).toDouble()
                                  : openshow::domain::kDefaultMinFontSize;
+    out->style.verticalAlign =
+        style.contains(QStringLiteral("verticalAlign"))
+            ? style.value(QStringLiteral("verticalAlign")).toString().toStdString()
+            : openshow::domain::kDefaultVerticalAlign;
+    out->style.allCaps = style.value(QStringLiteral("allCaps")).toBool();
     if (style.contains(QStringLiteral("stroke"))) {
         const QVariantMap stroke = style.value(QStringLiteral("stroke")).toMap();
         out->style.stroke.enabled = stroke.value(QStringLiteral("enabled")).toBool();
@@ -248,6 +253,9 @@ bool SongPlanner::measure(
         block.insert(QStringLiteral("fitMode"),
                      QString::fromStdString(request.fitMode));
         block.insert(QStringLiteral("minFontSize"), request.minFontSize);
+        block.insert(QStringLiteral("verticalAlign"),
+                     QString::fromStdString(request.verticalAlign));
+        block.insert(QStringLiteral("allCaps"), request.allCaps);
         QVariantMap stroke;
         stroke.insert(QStringLiteral("enabled"), request.stroke.enabled);
         stroke.insert(QStringLiteral("color"), QString::fromStdString(request.stroke.color));

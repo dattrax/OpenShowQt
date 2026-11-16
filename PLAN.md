@@ -1930,7 +1930,7 @@ Defaults remain centre/off. [Contract, source findings and acceptance](docs/ui/t
 | TL.1 | DONE | Persist and resolve sparse `verticalAlign` / `allCaps` on themes, contexts and slide overrides | Service 14 over current 13; centre/off legacy pixels and IDs preserved; explicit false/inheritance, context precedence, copy, reset and one-undo round-trips; strict invalid/old-format key refusal (`domain_tests`, `document_controller_tests`) |
 | TL.2 | DONE | Carry concrete layout through scenes, measurement, adapters and worker capability gates | Scene 8/protocol 0.20 over 7/0.19, `scene.text-layout.v1` / `text.measure.v3`; strict text-only fields, safe legacy defaults and named refusal of unsupported non-default settings; shared inspector provenance/verbs (`scene_tests`, `protocol_tests`, `inspector_adapter_tests`, `worker_controller_tests`) |
 | TL.3 | DONE | Render vertical placement and reversible Unicode capitals through the shared layout engine | Top/centre/bottom use one paragraph-origin calculation for paint and bounds; root-locale uppercase precedes shaping/fit/measurement, source UTF-8 stays intact, transformed limits are bounded; pinned-font raster and measurement regressions cover wrapping, overflow, effects and multiple boxes |
-| TL.4 | TODO | Propagate layout settings through song/Bible planning and stale-result ownership | Measurement, fingerprints and cache keys agree with render; toggles invalidate drafts and delayed plans cannot enable Add; original-case words/labels conserved; committed slide boundaries remain authored (`song_pagination_tests`, `scripture_pagination_tests`, song/Bible journeys) |
+| TL.4 | DONE | Propagate layout settings through song/Bible planning and stale-result ownership | Measurement, fingerprints and cache keys agree with render; toggles invalidate drafts and delayed plans cannot enable Add; original-case words/labels conserved; committed slide boundaries remain authored (`song_pagination_tests`, `scripture_pagination_tests`, song/Bible journeys) |
 | TL.5 | TODO | Review editor consistency and add shared layout icons/All caps control | Songs/Bible/Edit share control order, tooltips, keyboard access, resolved state and per-field reset; fix underline-only Remove customizations via one domain-derived state, including explicit false; one gesture/undo and immediate correct off-air preview, with no audience presentation on edit (`workspace_ui_tests`, `control_set_ui_tests`) |
 | TL.6 | TODO | Close integrated layout journeys and update architecture/control-set documentation | Preview-only edit → explicit Go → acknowledged pixels → reset/undo/save/reopen with source words and continuous media preserved; focused tests then desktop/headless/source guards pass; report skips/physical gates and leave unrelated TV/TA/ND/M7 work open |
 
@@ -2001,6 +2001,26 @@ budget refusals); `scene_render_tests` pins the three anchors' distinct
 origins, every pixel inside the anchored ink rect, and allCaps drawing the same
 picture as literal capitals; `text_measure_tests` pins the caps wrap, the
 positioned bounds and the prepare-time budget refusal. Full suite: 85/85.
+
+TL.4 evidence (2026-11-16): the layout pair is part of the planning question.
+`FlowStyle` and `MeasureRequest` carry `verticalAlign`/`allCaps`; the packer
+forwards them verbatim, `measureCacheKey` names them, and
+`songPlanFingerprint` includes them, so a toggle is a different plan rather
+than a stale hit. `validateFlowStyle` refuses an off-list anchor before any
+measurement. `DocumentController::fixtureBoxStyle` reads the pair off the same
+compiled `SceneItem` the added slide will wear, and both `SongPlanner` and
+`ScriptureImport` put it on every measurement block. The import pages already
+regenerate on `documentsChanged`, so a Theme Editor/Edit toggle re-measures
+the held words with no second network request; `SongPlanner::start` clears
+`hasPlan` immediately and `ScriptureImport::publish` now discards a plan whose
+inputs moved mid-measurement instead of briefly publishing it, so a delayed
+plan can never enable Add. Source words and labels stay original-case (the
+transform is display-only), and committed slide boundaries are untouched.
+`song_pagination_tests` pins the fingerprint, the forwarded pair, the anchor
+refusal and a capitals answer producing more slides; `scripture_pagination_tests`
+pins the forwarded pair and the cache-key distinction; the song and Bible page
+journeys pin the toggle → measuring → Add-sleeps → new-generation sequence
+with the passage's words preserved. Full suite: 85/85.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

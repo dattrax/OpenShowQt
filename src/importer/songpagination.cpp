@@ -78,6 +78,8 @@ private:
         request.fontStyle = fStyle.fontStyle;
         request.fitMode = "fixed";  // measurement never shrinks
         request.minFontSize = fStyle.minFontSize;
+        request.verticalAlign = fStyle.verticalAlign;
+        request.allCaps = fStyle.allCaps;
         request.stroke = fStyle.stroke;
         request.shadow = fStyle.shadow;
         const std::string cacheKey = measureCacheKey(request);
@@ -269,6 +271,8 @@ std::string songPlanFingerprint(const SongPaginationInput& input) {
         << ";slant=" << style.fontStyle
         << ";fit=" << style.fitMode
         << ";min=" << style.minFontSize
+        << ";valign=" << style.verticalAlign
+        << ";caps=" << style.allCaps
         << ";stroke=" << style.stroke.enabled << ',' << style.stroke.color << ','
         << style.stroke.width
         << ";shadow=" << style.shadow.enabled << ',' << style.shadow.color << ','

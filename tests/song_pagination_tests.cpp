@@ -313,6 +313,76 @@ void testFingerprint() {
           "a box change is a different plan");
 }
 
+// Task TL.4: the layout pair is part of the plan's question. It travels on
+// every measurement request, changes the fingerprint, and a capitals answer
+// that makes the words taller changes the packing — the plan the audience
+// gets is the one measured with the type it will wear.
+void testLayoutStyle() {
+    SongPaginationInput input;
+    input.style = styleWithBox(300.0);
+    input.stanzas = {stanza("Verse", {"one", "two", "three"})};
+    const std::string base = openshow::importer::songPlanFingerprint(input);
+
+    SongPaginationInput anchored = input;
+    anchored.style.verticalAlign = "bottom";
+    check(openshow::importer::songPlanFingerprint(anchored) != base,
+          "an anchor change is a different plan");
+
+    SongPaginationInput capitalised = input;
+    capitalised.style.allCaps = true;
+    check(openshow::importer::songPlanFingerprint(capitalised) != base,
+          "a capitals change is a different plan");
+
+    FlowStyle bad = styleWithBox(300.0);
+    bad.verticalAlign = "middle";
+    std::string error;
+    check(!openshow::importer::validateFlowStyle(bad, &error) &&
+              error.find("vertical alignment") != std::string::npos,
+          "an off-list anchor is refused before any measurement");
+
+    // A measurer that answers the capitals question with a taller block:
+    // the same words then need more slides, and every ask carried the pair.
+    struct Recorder {
+        bool sawCaps = false;
+        bool sawAnchor = false;
+    };
+    Recorder recorder;
+    const auto capsMeasurer = [&recorder](const std::vector<MeasureRequest>& requests,
+                                          std::vector<MeasureReply>* replies,
+                                          std::string*) -> bool {
+        replies->clear();
+        for (const MeasureRequest& request : requests) {
+            recorder.sawCaps = recorder.sawCaps || request.allCaps;
+            recorder.sawAnchor = recorder.sawAnchor || request.verticalAlign == "bottom";
+            int rendered = 0;
+            for (const std::string& line : request.lines) {
+                rendered += wrappedLines(line);
+            }
+            if (request.allCaps) {
+                rendered *= 2;  // the transform wraps the same words taller
+            }
+            MeasureReply reply;
+            reply.key = request.key;
+            reply.height = static_cast<double>(rendered) * 100.0;
+            reply.lineCount = rendered;
+            reply.fits = true;
+            replies->push_back(reply);
+        }
+        return true;
+    };
+    SongPaginationInput capsInput = input;
+    capsInput.style.allCaps = true;
+    capsInput.style.verticalAlign = "bottom";
+    const SongPaginationOutcome plain =
+        paginateSong(input, scriptedMeasurer(nullptr, nullptr));
+    const SongPaginationOutcome caps = paginateSong(capsInput, capsMeasurer);
+    check(plain.ok && caps.ok, "both layout plans complete");
+    check(recorder.sawCaps && recorder.sawAnchor,
+          "every measurement request carried the resolved layout pair");
+    check(caps.slides.size() > plain.slides.size(),
+          "a capitals answer that wraps taller produces more slides, not smaller words");
+}
+
 }  // namespace
 
 int main() {
@@ -323,6 +393,7 @@ int main() {
     testNoDuplicateMeasurements();
     testEmptyStanzaIsSkipped();
     testFingerprint();
+    testLayoutStyle();
     if (gFailed) {
         std::fprintf(stderr, "song_pagination_tests: FAILED\n");
         return 1;

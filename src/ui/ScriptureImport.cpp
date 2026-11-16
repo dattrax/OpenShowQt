@@ -170,6 +170,11 @@ void ScriptureImport::runPagination() {
     input.style.minFontSize = style.contains(QStringLiteral("minFontSize"))
                                   ? style.value(QStringLiteral("minFontSize")).toDouble()
                                   : openshow::domain::kDefaultMinFontSize;
+    input.style.verticalAlign =
+        style.contains(QStringLiteral("verticalAlign"))
+            ? style.value(QStringLiteral("verticalAlign")).toString().toStdString()
+            : openshow::domain::kDefaultVerticalAlign;
+    input.style.allCaps = style.value(QStringLiteral("allCaps")).toBool();
     if (style.contains(QStringLiteral("stroke"))) {
         const QVariantMap stroke = style.value(QStringLiteral("stroke")).toMap();
         input.style.stroke.enabled = stroke.value(QStringLiteral("enabled")).toBool();
@@ -267,6 +272,9 @@ bool ScriptureImport::measure(const std::vector<importer::MeasureRequest>& reque
         block.insert(QStringLiteral("fontStyle"), QString::fromStdString(request.fontStyle));
         block.insert(QStringLiteral("fitMode"), QString::fromStdString(request.fitMode));
         block.insert(QStringLiteral("minFontSize"), request.minFontSize);
+        block.insert(QStringLiteral("verticalAlign"),
+                     QString::fromStdString(request.verticalAlign));
+        block.insert(QStringLiteral("allCaps"), request.allCaps);
         QVariantMap stroke;
         stroke.insert(QStringLiteral("enabled"), request.stroke.enabled);
         stroke.insert(QStringLiteral("color"), QString::fromStdString(request.stroke.color));
@@ -325,6 +333,21 @@ bool ScriptureImport::measure(const std::vector<importer::MeasureRequest>& reque
 
 void ScriptureImport::publish(const std::vector<importer::GeneratedSlide>& generated,
                               const importer::PaginationOutcome& outcome) {
+    // Task TL.4: a plan whose inputs moved while it was being measured is
+    // NOT published. Publishing it would briefly make Add live on slides
+    // packed for the old layout (the reply handler clears the cache and
+    // reruns, but this branch is the last line of defence). Drop the stale
+    // plan, retire its keys, and answer the newest ask instead.
+    if (fRerunWanted) {
+        fRerunWanted = false;
+        fSlides.clear();
+        fScenes.clear();
+        fSelectedIndex = -1;
+        ++fPlanGeneration;
+        emit slidesChanged();
+        runPagination();
+        return;
+    }
     fSlides.clear();
     fScenes.clear();
     for (const importer::GeneratedSlide& slide : generated) {
@@ -348,12 +371,6 @@ void ScriptureImport::publish(const std::vector<importer::GeneratedSlide>& gener
     ++fPlanGeneration;
     fSelectedIndex = -1;
     fMeasuring = false;
-    if (fRerunWanted) {
-        fRerunWanted = false;
-        emit slidesChanged();
-        runPagination();  // the inputs moved mid-run; answer the newest ask
-        return;
-    }
     emit slidesChanged();
     setStatus(QStringLiteral("%1 slide%2 ready%3")
                   .arg(static_cast<qint64>(fSlides.size()))

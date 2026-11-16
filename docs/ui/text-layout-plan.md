@@ -2,8 +2,9 @@
 
 Implementation brief for the **TL** group in `PLAN.md`. TL.1 (persistence and
 resolution, service 14), TL.2 (scene 8 / protocol 0.20 carrying the pair and
-the capability gates) and TL.3 (anchored rendering and the root-locale capitals
-transform) are implemented; TL.4–TL.6 remain planned work.
+the capability gates), TL.3 (anchored rendering and the root-locale capitals
+transform) and TL.4 (planning, fingerprints and stale-result ownership) are
+implemented; TL.5–TL.6 remain planned work.
 
 ## Agreed operator behaviour
 

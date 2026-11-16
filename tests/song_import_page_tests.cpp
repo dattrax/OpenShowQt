@@ -190,6 +190,36 @@ int main(int argc, char** argv) {
     check(!worker.wordsOnAir() && worker.sceneActive() == 0,
           "the import page previews only, never presents");
 
+    // Task TL.4: a layout toggle re-measures the held words, and the stale
+    // plan cannot enable Add while the new measurement is in flight.
+    {
+        const QString keyBeforeLayout = songImport.previewKey(0);
+        check(docs.createBlankTheme(QStringLiteral("Caps")), "a blank theme is created");
+        QString caps;
+        for (const QVariant& row : docs.themes()) {
+            const QVariantMap map = row.toMap();
+            if (map.value(QStringLiteral("name")).toString() == QStringLiteral("Caps")) {
+                caps = map.value(QStringLiteral("id")).toString();
+            }
+        }
+        check(!caps.isEmpty() && docs.useThemeAsCurrent(caps) &&
+                  docs.setThemeTextStyleField(caps, QStringLiteral("allCaps"), true) &&
+                  docs.setThemeTextStyleField(caps, QStringLiteral("verticalAlign"),
+                                              QStringLiteral("top")),
+              "the worn theme takes a capitals answer and a top anchor");
+        songImport.regenerate();
+        check(songImport.measuring() && !songImport.canAdd(),
+              "the toggle starts a new measurement and Add sleeps at once — the old plan "
+              "is never offered for the new layout");
+        check(waitFor([&] {
+                  return !songImport.measuring() && !songImport.slides().isEmpty();
+              }, 30000),
+              "the layout toggle re-measured the held words");
+        check(songImport.previewKey(0) != keyBeforeLayout,
+              "the re-measured plan is a new generation, not the old one re-labelled");
+        check(songImport.canAdd(), "and Add wakes on the new plan");
+    }
+
     if (addButton) {
         QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
                           addButton->mapToScene(

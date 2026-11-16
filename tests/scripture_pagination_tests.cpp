@@ -519,6 +519,52 @@ void testMeasureDiscipline() {
 
 }  // namespace
 
+// Task TL.4: the Bible plan measures with the layout pair the added slides
+// will wear, and the cache key names it — a capitals answer is a different
+// question, never a stale height.
+void testLayoutStyleTravels() {
+    bool sawCaps = false;
+    bool sawAnchor = false;
+    const MeasureFn recorder = [&sawCaps, &sawAnchor](
+                                   const std::vector<MeasureRequest>& requests,
+                                   std::vector<MeasureReply>* replies, std::string*) {
+        replies->clear();
+        for (const MeasureRequest& request : requests) {
+            sawCaps = sawCaps || request.allCaps;
+            sawAnchor = sawAnchor || request.verticalAlign == "bottom";
+            MeasureReply reply;
+            reply.key = request.key;
+            reply.height = 10.0;
+            reply.lineCount = 1;
+            reply.fits = true;
+            replies->push_back(reply);
+        }
+        return true;
+    };
+    PaginationStyle box = style(1600, 900);
+    box.allCaps = true;
+    box.verticalAlign = "bottom";
+    const PaginationOutcome outcome =
+        paginateScripture(input({{"1:1", "In the beginning"}}, box, "John 1:1"), recorder);
+    check(outcome.ok && sawCaps && sawAnchor,
+          "the Bible measurement carries the resolved layout pair");
+
+    MeasureRequest plain;
+    plain.lines = {"words"};
+    plain.fontSize = 40.0;
+    plain.width = 800.0;
+    MeasureRequest caps = plain;
+    caps.allCaps = true;
+    MeasureRequest anchored = plain;
+    anchored.verticalAlign = "top";
+    check(openshow::importer::measureCacheKey(plain) !=
+              openshow::importer::measureCacheKey(caps),
+          "the cache key distinguishes a capitals answer");
+    check(openshow::importer::measureCacheKey(plain) !=
+              openshow::importer::measureCacheKey(anchored),
+          "and an anchor answer");
+}
+
 int main() {
     testFitsOneSlide();
     testBoxAndSizeShape();
@@ -532,6 +578,7 @@ int main() {
     testReservationBlocks();
     testRefusals();
     testMeasureDiscipline();
+    testLayoutStyleTravels();
     if (gFailed == 0) {
         std::printf("scripture_pagination_tests: all fixtures passed\n");
         return 0;
