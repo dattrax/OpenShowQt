@@ -11,6 +11,15 @@ archive is a current instruction.
 
 ## Current checkpoint
 
+**New planning work (2026-11-16): TL.1–TL.6 are TODO.** The agreed
+[text-layout brief](docs/ui/text-layout-plan.md) adds shared vertical-alignment
+icons and All caps to Theme Editor/ Edit, with theme defaults and per-slide
+overrides. Preview updates immediately; audience changes on explicit Go.
+Original-case words are preserved; worker measurement/rendering share Unicode
+uppercase. The scoped consistency review includes underline-only reset state.
+Next implementation action for this group: TL.1; no code or new test result is
+claimed by this documentation update. DR/PV completion below remains unchanged.
+
 **The design-conformance corrections (DR.0–DR.8) are complete.** The review
 [`docs/reviews/design-conformance-2026-11-15.md`](docs/reviews/design-conformance-2026-11-15.md)
 found seven integration regressions in the media work that landed with

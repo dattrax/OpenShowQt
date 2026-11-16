@@ -11,6 +11,8 @@ Architecture review: [after 6.22](docs/reviews/M6-post-6.22-review-2026-10-31.md
 Theme/editor review and proposed contracts: [2026-11-03 review](docs/reviews/theme-editor-2026-11-03.md).
 Current design conformance review and correction scope:
 [2026-11-15 review](docs/reviews/design-conformance-2026-11-15.md), tasks **DR** below.
+Text layout and editor consistency: [2026-11-16 brief](docs/ui/text-layout-plan.md),
+tasks **TL** below.
 
 ## Goal and reference
 
@@ -1913,6 +1915,30 @@ Keep the approach compatible with a future Windows build. The measured runs did
 not miss the target, so the Skia asynchronous-readback follow-up is not opened
 and the audience budget was not raised. Historical 15 fps DONE evidence remains
 unchanged; the 30 fps delivery result above is this group's own.
+
+### Text layout and editor consistency — 2026-11-16 (TL)
+
+Agreed: vertical Top/Centre/Bottom icon choices and an **All caps** checkbox in
+the shared Theme Editor (Songs/Bible) and Edit controls. Theme defaults and
+per-slide overrides apply to all text boxes. Changes update the off-air preview
+immediately; the audience changes only on the next explicit Go. Source words
+stay unchanged; Unicode uppercase is applied before worker measurement/rendering.
+Defaults remain centre/off. [Contract, source findings and acceptance](docs/ui/text-layout-plan.md).
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| TL.1 | TODO | Persist and resolve sparse `verticalAlign` / `allCaps` on themes, contexts and slide overrides | Service 14 over current 13; centre/off legacy pixels and IDs preserved; explicit false/inheritance, context precedence, copy, reset and one-undo round-trips; strict invalid/old-format key refusal (`domain_tests`, `document_controller_tests`) |
+| TL.2 | TODO | Carry concrete layout through scenes, measurement, adapters and worker capability gates | Scene 8/protocol 0.20 over 7/0.19, `scene.text-layout.v1` / `text.measure.v3`; strict text-only fields, safe legacy defaults and named refusal of unsupported non-default settings; shared inspector provenance/verbs (`scene_tests`, `protocol_tests`, `inspector_adapter_tests`, `worker_controller_tests`) |
+| TL.3 | TODO | Render vertical placement and reversible Unicode capitals through the shared layout engine | Top/centre/bottom use one paragraph-origin calculation for paint and bounds; root-locale uppercase precedes shaping/fit/measurement, source UTF-8 stays intact, transformed limits are bounded; pinned-font raster and measurement regressions cover wrapping, overflow, effects and multiple boxes |
+| TL.4 | TODO | Propagate layout settings through song/Bible planning and stale-result ownership | Measurement, fingerprints and cache keys agree with render; toggles invalidate drafts and delayed plans cannot enable Add; original-case words/labels conserved; committed slide boundaries remain authored (`song_pagination_tests`, `scripture_pagination_tests`, song/Bible journeys) |
+| TL.5 | TODO | Review editor consistency and add shared layout icons/All caps control | Songs/Bible/Edit share control order, tooltips, keyboard access, resolved state and per-field reset; fix underline-only Remove customizations via one domain-derived state, including explicit false; one gesture/undo and immediate correct off-air preview, with no audience presentation on edit (`workspace_ui_tests`, `control_set_ui_tests`) |
+| TL.6 | TODO | Close integrated layout journeys and update architecture/control-set documentation | Preview-only edit → explicit Go → acknowledged pixels → reset/undo/save/reopen with source words and continuous media preserved; focused tests then desktop/headless/source guards pass; report skips/physical gates and leave unrelated TV/TA/ND/M7 work open |
+
+Order: TL.1 → TL.2 → TL.3 → TL.4 → TL.5 → TL.6; split any leaf exceeding two
+engineer-days. Recheck schema allocations before implementation. This group does
+not add per-box styling, immediate live-edit switches or the rest of TV.3's
+context effects; its new fields must still work in the existing Bible view.
+All leaves are TODO; this planning update implements no feature.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
