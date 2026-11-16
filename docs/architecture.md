@@ -733,7 +733,10 @@ These limit what historical DONE statuses prove. The review linked above adds
   engine, so a companion cannot evict the audience's layouts (R16) — and the
   prepare path is the only prewarmer of either.
 - The live preview transport uses three slots, normally 640×360 at up to
-  15 fps when content changes; never overwrite an unreleased slot. Selected
+  30 fps when content changes; never overwrite an unreleased slot. The
+  frontend asks for that cadence (task PV.1) and repaints on every accepted
+  copy of any target, so the panel's refresh is the stream's, not the status
+  poll's. Selected
   scenes and thumbnail batches have their own bounded requests and identity.
   `PreviewProducer` owns that stream and its targets (task 6.18a2): frames in,
   slots out — it composes, captures and credits no frame of its own. The

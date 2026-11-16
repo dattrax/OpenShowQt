@@ -45,6 +45,26 @@ reviewed commit:
   the GPU decoder, and `media_tests` skips its PipeWire check without a daemon.
   No test was skipped by label beyond the headless run's explicit exclusion.
 
+## Preview cadence (PV)
+
+PV.1 is DONE (2026-11-16): the frontend asks for 640×360 at **30 fps** on every
+hello, and `PreviewConsumer` raises `changed()` on every accepted copy of any
+target, so the panel repaints per frame instead of on the 500 ms status poll.
+`worker_controller_tests`' `scenarioPreviewCadence` records the ask verbatim on
+two connections (the first dies after answering `preview.start`, so the second
+is a real reconnect) and requires the `previewChanged` count to cover the copies
+the 20 ms-beat producer delivered; reverting the `fresh` fix fails that line.
+The worker's own `preview.start` default stays 15 fps — only the frontend's ask
+changed, and the cadence is a ceiling drawn on content change.
+
+PV.2 is still OPEN and cannot be closed from this machine: it needs a
+continuously changing 1080p60 source on the target GPU, a steady 60-second
+window measuring ≥28.5 delivered preview frames/s, and then the ten-minute
+audience deadline gate with previews enabled (<1% missed deadlines), with the
+environment, drops and deferrals recorded. Do not raise the audience budget to
+reach the number; if it misses, add the measured Skia asynchronous-readback
+follow-up the plan names.
+
 **Still open (unchanged by DR, and not inferable from a green suite):** TV.3,
 TV.4a, TV.4b, TV.5 and TA.1; ND.4's real source-loss acceptance; M7.1a–c,
 M7.2–M7.4; the physical acceptance that needs the projector on a second display
@@ -71,6 +91,7 @@ service. FO stays gated behind those.
 
 ## Recent commits
 
+- `6fedd59` feat(ui): ask for 30 fps previews and repaint on every accepted frame (PV.1)
 - `afcee65` fix(media): deliver Media Bin pixels as a worker-produced cache file (DR.7b)
 - `7864058` fix(media): run Media Bin probe/decode work off the control connection (DR.7a)
 - `f2ba7e3` fix(library): every linked refresh survives a delayed preparation (DR.6)
