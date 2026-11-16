@@ -48,9 +48,11 @@ estimate is historical; re-estimate remaining work before productization.
   negotiation, request IDs, structured errors and acknowledged revisions. Traffic
   carries bounded scene/control metadata and paths, never original/decoded media.
 - **Preview:** composed worker pixels through three POSIX shared-memory slots;
-  exact stream/sequence ready-release ownership. Normally 640×360 at up to 15 fps
-  on content changes; selected editor scenes and on-demand thumbnails are bounded
-  separately. Drop/defer previews under load; never overwrite a consumer-owned slot.
+  exact stream/sequence ready-release ownership. Target 640×360 at up to 30 fps
+  on content changes (PV below; the default remains 15 fps until PV.1).
+  Selected editor scenes and on-demand thumbnails remain separately bounded.
+  Preserve audience timing and preview fairness; drop/defer under load and never
+  overwrite a consumer-owned slot.
 - **Audio:** native PipeWire, F32 stereo at negotiated rate, independent gain/mute
   for video and one standalone track. Two independent production streams are the
   accepted design (6.20d); audible pairing and relative latency remain 7.4.
@@ -1826,6 +1828,31 @@ Complete DR before FO; existing TV/TA/ND and M7 gates remain open.
 Order: DR.0 → DR.1/DR.2/DR.4 → DR.3/DR.5 → DR.6/DR.7a/DR.7b → DR.8.
 Target 0.5–2 engineer-days per implementation leaf; split further when needed.
 Review/probes are complete; no corrective implementation is claimed yet.
+
+### Preview cadence follow-up — 30 fps first (PV)
+
+Agreed 2026-11-16: keep the existing Skia readback and three-slot shared-memory
+architecture, request 30 fps by default, and verify actual UI delivery before
+considering asynchronous readback. The worker already accepts this cadence;
+the frontend currently requests 640×360 at 15 fps. This is planned work only.
+Keep PV separate from DR and coordinate overlapping frontend/test edits.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| PV.1 | TODO | Request 30 fps by default and complete per-frame UI repaint notification | Frontend requests 640×360 at 30 fps; accepted audience/selection copies notify the UI immediately. Tests cover defaults after reconnect, accepted/stale/invalid frames and existing sequence-exact slot ownership; no frame is shown under the wrong request or target |
+| PV.2 | TODO | Verify delivered cadence and audience performance on the target GPU | Continuously changing 1080p60 source delivers at least 28.5 preview frames/s over a steady 60-second window with no competing off-air requests; verify visible UI updates, then the existing ten-minute audience deadline gate with previews enabled (<1% missed deadlines). Record environment, actual delivery/latency, drops and deferrals; physical checks retain the projector requirement |
+
+Order: PV.1 → PV.2. Static scenes remain event-driven: 30 fps is a ceiling, not
+a continuous repaint requirement. Preserve audience-budget protection, editor/
+thumbnail fairness and drop-without-wait behavior for slow or stalled consumers;
+competing targets may reduce audience preview cadence. Resolution, rendering
+quality, wire format and shared-memory layout stay as they are.
+
+No MSAA, custom Vulkan buffer ring, GPU image sharing or Windows port in PV.
+Keep the approach compatible with a future Windows build. If measurements miss
+the target, leave PV.2 open and add a measured follow-up using Skia's public
+asynchronous readback API; do not raise the audience budget to force 30 fps.
+Historical 15 fps DONE evidence remains unchanged; no 30 fps result is claimed.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 
