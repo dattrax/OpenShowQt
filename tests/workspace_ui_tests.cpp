@@ -5699,6 +5699,159 @@ int main(int argc, char** argv) {
         QTest::qWait(80);
     }
 
+    // --- task BX.4: the Themes overlay, driven by real pointers -----------
+    // Songs and Bible are the same overlay over two records. Press/move/release
+    // through all four corners, the centre snap and its guide, an edge corner
+    // and an Escape cancellation, then check the record the view actually owns.
+    {
+        window->setProperty("page", "themes");
+        QTest::qWait(200);
+        auto* themePage = findNamed(window->contentItem(), "themeEditorPage");
+        auto* gesture = findNamed(window->contentItem(), "themeEditorGestureArea");
+        check(themePage != nullptr && gesture != nullptr,
+              "the Theme Editor overlay is reachable for the pointer matrix");
+        if (themePage != nullptr && gesture != nullptr &&
+            docs.createBlankTheme(QStringLiteral("BX pointer"))) {
+            QString id;
+            for (const QVariant& row : docs.themes()) {
+                if (row.toMap().value(QStringLiteral("name")).toString()
+                    == QStringLiteral("BX pointer")) {
+                    id = row.toMap().value(QStringLiteral("id")).toString();
+                }
+            }
+            themePage->setProperty("selectedId", id);
+            themePage->setProperty("selectedView", QString());
+            QTest::qWait(100);
+
+            QQuickItem* layer = gesture->parentItem();
+            check(layer != nullptr, "the Themes overlay has its placement layer");
+            const auto scenePoint = [layer](double ax, double ay) {
+                const double z = layer->width() / 1920.0;
+                return layer->mapToScene(QPointF(ax * z, ay * z));
+            };
+            const auto drag = [&](const QPointF& from, const QPointF& to) {
+                QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from.toPoint());
+                QTest::mouseMove(window, to.toPoint(), 20);
+                QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, to.toPoint());
+                QTest::qWait(100);
+            };
+            const auto near = [](double a, double b) { return std::abs(a - b) <= 4.0; };
+            const auto placementOf = [&docs](const QString& themeId) {
+                for (const QVariant& row : docs.themes()) {
+                    if (row.toMap().value(QStringLiteral("id")).toString() == themeId) {
+                        return row.toMap().value(QStringLiteral("placement")).toMap();
+                    }
+                }
+                return QVariantMap();
+            };
+
+            for (const QString view : {QString(), QStringLiteral("scripture")}) {
+                themePage->setProperty("selectedView", view);
+                check(docs.setThemePlacement(id, 200.0, 150.0, 400.0, 300.0),
+                      "the pointer theme places its box");
+                QTest::qWait(100);
+                const QRectF shown = themePage->property("shownBox").toRectF();
+                check(shown.width() > 0.0, "the overlay shows a box to drag");
+                const auto cornerDrag = [&](double dx, double dy) {
+                    drag(scenePoint(shown.x() + shown.width(),
+                                    shown.y() + shown.height()),
+                         scenePoint(shown.x() + shown.width() + dx,
+                                    shown.y() + shown.height() + dy));
+                    if (view.isEmpty()) {
+                        const QVariantMap p = placementOf(id);
+                        return QRectF(p.value(QStringLiteral("x")).toDouble(),
+                                      p.value(QStringLiteral("y")).toDouble(),
+                                      p.value(QStringLiteral("width")).toDouble(),
+                                      p.value(QStringLiteral("height")).toDouble());
+                    }
+                    const QVariantMap c = docs.themeContext(id, QStringLiteral("scripture"));
+                    return QRectF(c.value(QStringLiteral("x")).toDouble(),
+                                  c.value(QStringLiteral("y")).toDouble(),
+                                  c.value(QStringLiteral("width")).toDouble(),
+                                  c.value(QStringLiteral("height")).toDouble());
+                };
+                const QRectF grown = cornerDrag(50.0, 40.0);
+                check(near(grown.x(), 200.0) && near(grown.y(), 150.0) &&
+                          near(grown.width(), 450.0) && near(grown.height(), 340.0),
+                      view.isEmpty()
+                          ? "Themes/Songs: a real bottom-right drag grows both dimensions"
+                          : "Themes/Bible: a real bottom-right drag writes the view's box");
+                docs.undo();
+                QTest::qWait(80);
+                if (!view.isEmpty())
+                    check(!docs.themeContext(id, QStringLiteral("scripture"))
+                               .value(QStringLiteral("boxSet")).toBool(),
+                          "one undo removes the Bible drag's context box");
+                // Centre axis: the body drag snaps and shows its guide.
+                check(docs.setThemePlacement(id, 200.0, 150.0, 400.0, 300.0),
+                      "the snap fixture is set");
+                QTest::qWait(80);
+                {
+                    const QPointF from = scenePoint(400, 300);
+                    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier,
+                                      from.toPoint());
+                    QTest::mouseMove(window, scenePoint(960, 300).toPoint(), 20);
+                    QTest::qWait(50);
+                    auto* guideX = findNamed(window->contentItem(),
+                                             "themeEditorCentreGuideX");
+                    check(themePage->property("snappedX").toBool() && guideX
+                              && guideX->isVisible(),
+                          "Themes: a body drag near the centre shows its guide");
+                    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier,
+                                        scenePoint(960, 300).toPoint());
+                    QTest::qWait(100);
+                }
+                const QVariantMap snapped = view.isEmpty()
+                        ? placementOf(id)
+                        : docs.themeContext(id, QStringLiteral("scripture"));
+                check(near(snapped.value(QStringLiteral("x")).toDouble(), 760.0) &&
+                          near(snapped.value(QStringLiteral("width")).toDouble(), 400.0),
+                      "Themes: the snap lands exactly on the centre and keeps the width");
+                docs.undo();
+                QTest::qWait(80);
+            }
+            themePage->setProperty("selectedView", QString());
+
+            // An edge corner: press just outside the painted corner.
+            check(docs.setThemePlacement(id, 0.0, 0.0, 1920.0, 1080.0),
+                  "the edge fixture is set");
+            QTest::qWait(100);
+            {
+                const QPointF from = scenePoint(0, 0) - QPointF(3, 3);
+                drag(from, from + QPointF(30 * (layer->width() / 1920.0),
+                                          20 * (layer->width() / 1920.0)));
+                const QVariantMap p = placementOf(id);
+                check(near(p.value(QStringLiteral("x")).toDouble(), 30.0) &&
+                          near(p.value(QStringLiteral("y")).toDouble(), 20.0) &&
+                          near(p.value(QStringLiteral("width")).toDouble(), 1890.0),
+                      "Themes: a corner at the slide edge is reachable and resizes");
+                docs.undo();
+                QTest::qWait(80);
+            }
+
+            // Escape during a held drag writes nothing.
+            check(docs.setThemePlacement(id, 200.0, 150.0, 400.0, 300.0),
+                  "the cancel fixture is set");
+            QTest::qWait(80);
+            {
+                const QPointF from = scenePoint(600, 450);
+                QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from.toPoint());
+                QTest::mouseMove(window, (from + QPointF(50, 40)).toPoint(), 20);
+                QTest::qWait(50);
+                QTest::keyClick(window, Qt::Key_Escape);
+                QTest::qWait(50);
+                QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier,
+                                    (from + QPointF(50, 40)).toPoint());
+                QTest::qWait(80);
+                check(near(placementOf(id).value(QStringLiteral("width")).toDouble(), 400.0),
+                      "Themes: Escape cancels a held drag without a write");
+            }
+            check(docs.deleteTheme(id), "the pointer theme goes");
+        }
+        window->setProperty("page", "show");
+        QTest::qWait(80);
+    }
+
     if (qEnvironmentVariableIsSet("OPENSHOW_WORKSPACE_LIVE")) {
         worker.start();
         QElapsedTimer timeout;
