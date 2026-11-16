@@ -5251,6 +5251,185 @@ int main(int argc, char** argv) {
         QTest::qWait(80);
     }
 
+    // --- task BX.2: gesture lifetime and reachable handles -----------------
+    // The gesture surface reaches one handle radius past the fitted content
+    // (so the outer half of an edge handle is live), and a held gesture is
+    // owned by the target captured at press: a click without motion, a
+    // navigation, a selection change or a cancellation writes nothing and
+    // never retargets a new box.
+    {
+        window->setProperty("page", "edit");
+        QTest::qWait(160);
+        auto* canvas = findNamed(window->contentItem(), "editCanvas");
+        auto* gesture = findNamed(window->contentItem(), "editGestureArea");
+        check(canvas != nullptr && gesture != nullptr,
+              "the Edit canvas and its gesture surface exist");
+        if (canvas != nullptr && gesture != nullptr) {
+            const double stageWidth = canvas->property("stageWidth").toDouble();
+            check(gesture->x() <= -7.5 && gesture->y() <= -7.5 &&
+                      gesture->width() >= stageWidth + 15.0 &&
+                      gesture->height() >= canvas->property("stageHeight").toDouble() + 15.0,
+                  "the Edit gesture surface covers the outer half of edge handles");
+        }
+        const int index = docs.currentBox();
+        if (canvas != nullptr && index >= 0) {
+            const QVariantMap before = docs.currentSlideBoxes().at(index).toMap();
+            const auto setup = [canvas, &before](const char* mode) {
+                canvas->setProperty("dragMode", QString::fromLatin1(mode));
+                canvas->setProperty("startBox",
+                                    QRectF(before.value(QStringLiteral("x")).toDouble(),
+                                           before.value(QStringLiteral("y")).toDouble(),
+                                           before.value(QStringLiteral("width")).toDouble(),
+                                           before.value(QStringLiteral("height")).toDouble()));
+                canvas->setProperty("boxX", before.value(QStringLiteral("x")).toDouble());
+                canvas->setProperty("boxY", before.value(QStringLiteral("y")).toDouble());
+                canvas->setProperty("boxW", before.value(QStringLiteral("width")).toDouble());
+                canvas->setProperty("boxH", before.value(QStringLiteral("height")).toDouble());
+                QMetaObject::invokeMethod(canvas, "captureDragIdentity");
+            };
+            const auto widthOf = [&docs, index] {
+                return docs.currentSlideBoxes().at(index).toMap()
+                    .value(QStringLiteral("width")).toDouble();
+            };
+
+            setup("move");
+            QMetaObject::invokeMethod(canvas, "endDrag");
+            check(canvas->property("dragMode").toString().isEmpty() &&
+                      widthOf() == before.value(QStringLiteral("width")).toDouble(),
+                  "a click without motion writes nothing");
+
+            setup("br");
+            QMetaObject::invokeMethod(canvas, "applyDrag", Q_ARG(QVariant, 50.0),
+                                      Q_ARG(QVariant, 40.0));
+            QMetaObject::invokeMethod(canvas, "endDrag");
+            check(widthOf() == before.value(QStringLiteral("width")).toDouble() + 50.0,
+                  "a completed corner gesture commits one rectangle");
+            docs.undo();
+            check(widthOf() == before.value(QStringLiteral("width")).toDouble(),
+                  "and one undo restores it exactly");
+
+            if (docs.slides().size() > 1) {
+                setup("br");
+                QMetaObject::invokeMethod(canvas, "applyDrag", Q_ARG(QVariant, 50.0),
+                                          Q_ARG(QVariant, 40.0));
+                const int originalSlide = docs.currentSlide();
+                docs.selectSlide((originalSlide + 1) % docs.slides().size());
+                check(canvas->property("dragMode").toString().isEmpty(),
+                      "navigation during a held drag cancels it");
+                docs.selectSlide(originalSlide);
+                QTest::qWait(60);
+                check(widthOf() == before.value(QStringLiteral("width")).toDouble(),
+                      "and the dragged slide keeps its geometry");
+            }
+
+            if (docs.currentSlideBoxes().size() > 1) {
+                setup("br");
+                QMetaObject::invokeMethod(canvas, "applyDrag", Q_ARG(QVariant, 50.0),
+                                          Q_ARG(QVariant, 40.0));
+                docs.selectTextBox(index == 0 ? 1 : 0);
+                check(canvas->property("dragMode").toString().isEmpty() &&
+                          widthOf() == before.value(QStringLiteral("width")).toDouble(),
+                      "a selection change mid-drag cancels and never retargets");
+            }
+        }
+
+        // Overlap: the SELECTED box's corner beats another box's body, so a
+        // resize never selects or edits the item underneath it.
+        if (canvas != nullptr && index >= 0 && docs.addTextBox()) {
+            const QVariantMap first = docs.currentSlideBoxes().at(index).toMap();
+            const int added = docs.currentBox();
+            check(docs.setTextBoxGeometry(first.value(QStringLiteral("x")).toDouble() - 40.0,
+                                          first.value(QStringLiteral("y")).toDouble() - 40.0,
+                                          200.0, 200.0),
+                  "a second box is laid over the first one's corner");
+            docs.selectTextBox(index);
+            QTest::qWait(40);
+            const double zoom = canvas->property("zoom").toDouble();
+            const double px = first.value(QStringLiteral("x")).toDouble() * zoom + 2.0;
+            const double py = first.value(QStringLiteral("y")).toDouble() * zoom + 2.0;
+            QVariant mode;
+            QMetaObject::invokeMethod(canvas, "hitTest", Q_RETURN_ARG(QVariant, mode),
+                                      Q_ARG(QVariant, px), Q_ARG(QVariant, py));
+            check(mode.toString() == QStringLiteral("tl"),
+                  "an overlapping body does not steal the selected box's handle");
+            docs.selectTextBox(added);
+            docs.removeCurrentTextBox();
+            docs.selectTextBox(index);
+        }
+
+        // --- Themes: the overlay surface and the same identity rule --------
+        window->setProperty("page", "themes");
+        QTest::qWait(160);
+        auto* themePage = findNamed(window->contentItem(), "themeEditorPage");
+        auto* themeGesture = findNamed(window->contentItem(), "themeEditorGestureArea");
+        check(themePage != nullptr && themeGesture != nullptr,
+              "the Theme Editor page and its gesture surface exist");
+        if (themeGesture != nullptr) {
+            check(themeGesture->x() <= -7.5 && themeGesture->y() <= -7.5,
+                  "the Themes gesture surface covers the outer half of edge handles");
+        }
+        const auto placementOf = [&docs](const QString& id) {
+            for (const QVariant& row : docs.themes()) {
+                if (row.toMap().value(QStringLiteral("id")).toString() == id) {
+                    return row.toMap().value(QStringLiteral("placement")).toMap();
+                }
+            }
+            return QVariantMap();
+        };
+        if (themePage != nullptr && docs.createBlankTheme(QStringLiteral("BX gesture"))) {
+            QString scratchId;
+            QString otherId;
+            for (const QVariant& row : docs.themes()) {
+                const QVariantMap map = row.toMap();
+                if (map.value(QStringLiteral("name")).toString() == QStringLiteral("BX gesture")) {
+                    scratchId = map.value(QStringLiteral("id")).toString();
+                } else if (otherId.isEmpty()) {
+                    otherId = map.value(QStringLiteral("id")).toString();
+                }
+            }
+            themePage->setProperty("selectedId", scratchId);
+            themePage->setProperty("selectedView", QString());
+            QTest::qWait(80);
+            QMetaObject::invokeMethod(themePage, "beginGesture",
+                                      Q_ARG(QVariant, QStringLiteral("br")));
+            QMetaObject::invokeMethod(themePage, "moveGesture", Q_ARG(QVariant, 50.0),
+                                      Q_ARG(QVariant, 40.0));
+            QMetaObject::invokeMethod(themePage, "endGesture");
+            check(placementOf(scratchId).value(QStringLiteral("width")).toDouble() == 1650.0,
+                  "a completed Themes gesture writes the placement once");
+            docs.undo();
+            check(placementOf(scratchId).isEmpty(),
+                  "and one undo takes it back");
+
+            if (!otherId.isEmpty()) {
+                QMetaObject::invokeMethod(themePage, "beginGesture",
+                                          Q_ARG(QVariant, QStringLiteral("br")));
+                QMetaObject::invokeMethod(themePage, "moveGesture", Q_ARG(QVariant, 50.0),
+                                          Q_ARG(QVariant, 40.0));
+                QMetaObject::invokeMethod(themePage, "selectTheme", Q_ARG(QVariant, otherId));
+                QMetaObject::invokeMethod(themePage, "endGesture");
+                check(placementOf(scratchId).isEmpty() && placementOf(otherId).isEmpty(),
+                      "a theme switch cancels the gesture and writes to neither theme");
+            }
+            themePage->setProperty("selectedId", scratchId);
+            themePage->setProperty("selectedView", QString());
+            QTest::qWait(60);
+            QMetaObject::invokeMethod(themePage, "beginGesture",
+                                      Q_ARG(QVariant, QStringLiteral("br")));
+            QMetaObject::invokeMethod(themePage, "moveGesture", Q_ARG(QVariant, 50.0),
+                                      Q_ARG(QVariant, 40.0));
+            QMetaObject::invokeMethod(themePage, "selectView",
+                                      Q_ARG(QVariant, QStringLiteral("scripture")));
+            QMetaObject::invokeMethod(themePage, "endGesture");
+            check(placementOf(scratchId).isEmpty(),
+                  "a view switch cancels the gesture rather than committing under it");
+            themePage->setProperty("selectedView", QString());
+            check(docs.deleteTheme(scratchId), "the scratch theme goes");
+        }
+        window->setProperty("page", "show");
+        QTest::qWait(80);
+    }
+
     if (qEnvironmentVariableIsSet("OPENSHOW_WORKSPACE_LIVE")) {
         worker.start();
         QElapsedTimer timeout;

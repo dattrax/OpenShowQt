@@ -11,7 +11,7 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Box manipulation (2026-11-16): BX.1 is DONE; BX.2–BX.4 are TODO.** The
+**Box manipulation (2026-11-16): BX.1–BX.2 are DONE; BX.3–BX.4 are TODO.** The
 [box-manipulation brief](docs/ui/box-manipulation-plan.md) fixes all four corner
 handles across Theme Songs/Bible/Edit and removes numeric geometry/Center H/V
 sections. Body drag retains centre snapping; placement reset/borrow moves to
@@ -27,8 +27,19 @@ and clamping to the 20-unit minimum and the canvas. `EditCanvas` and
 reviewed code left it inert) and a release equal to the captured rectangle
 writes nothing, so selecting a box adds no undo step. Corners and bodies carry
 the right cursors. `control_set_ui_tests` proves the helper matrix;
-`workspace_ui_tests` proves both pages over one captured rectangle. Desktop
-suite 85/85. Next action: BX.2 (handle life-cycle and gesture lifetime).
+`workspace_ui_tests` proves both pages over one captured rectangle.
+
+BX.2 made the handle areas reachable and the gesture owned. Both gesture
+surfaces extend one handle radius past the fitted content (mapping coordinates
+back by the inset), and the Themes overlay no longer clips its handles, so the
+outer half of a corner at a slide edge is live. A gesture captures its target
+by identity at press (theme + view; slide + box id) and writes only if that
+identity still holds and the rounded rectangle changed. Navigation, a
+selection/theme change, a view switch, deletion and Escape cancel and restore
+the model geometry; a held drag never retargets a new box. Selected handles beat
+an overlapping body; body presses still select the topmost item. Desktop suite
+85/85. Next action: BX.3 (remove the numeric geometry inspectors, move
+reset/borrow to the box menu).
 
 **Text layout and editor consistency (2026-11-16): TL.1–TL.6 are DONE.** The
 agreed

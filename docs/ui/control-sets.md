@@ -484,6 +484,7 @@ an invisible child by each page; it holds no document or history state.
 | Inputs | none; `canvasWidth`/`canvasHeight` (1920×1080 by contract), `minimumSize` (20 authored units), `handleRadius` (8 logical px) are read-only |
 | Functions | `snapCentre(x, y, w, h, tolerance)` — keep the size, pull a near axis exactly onto 960/540; `cornerAt(box, px, py, zoom, radius)` — `"tl"`/`"tr"`/`"bl"`/`"br"`/`""`, nearest centre wins when a tiny box overlaps two; `inside(box, px, py, zoom)`; `move(start, dx, dy)` — preserved size, clamped inside the canvas; `resize(mode, start, dx, dy, minimum)` — moves the TWO edges the corner owns, fixes the opposite corner, clamps each moving edge against it and the canvas; `cursorFor(mode)` — `SizeFDiagCursor`/`SizeBDiagCursor`/`SizeAllCursor`/`ArrowCursor` |
 | Rules | a corner drag can never flip the item or change its stack order; the tolerance is received in authored units the CALLER derives from the screen-relative 6 px, so aiming feels the same at every zoom; off-canvas legacy geometry is left alone until a corrective drag; `resize` is the correction the reviewed arithmetic lacked (bottom-right was inert, top-right/bottom-left moved one axis) |
+| Gesture areas | both hosts extend their pointer surface one `handleRadius` past the fitted content and map coordinates back by the same inset, so the outer half of a corner at a slide edge is live; the target is captured by identity at press and the release writes only while that identity holds and the rounded rectangle changed (BX.2) |
 
 ### BoxGeometryControls
 

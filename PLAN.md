@@ -2082,7 +2082,7 @@ not TL's text alignment/caps controls. [Scope, resize bug and acceptance](docs/u
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
 | BX.1 | DONE | Share corner geometry/hit-testing and correct all resize directions | One helper computes both moving edges while fixing the opposite corner; TL/TR/BL/BR resize inward/outward, including the currently inert BR; move preserves size, snap tolerance stays screen-relative, bounds/minimum/no-op cases are covered |
-| BX.2 | TODO | Integrate reliable handles and gesture lifetime across both editors | Songs/Bible/Edit share transform chrome with reachable handle hit areas at every slide edge; overlap honours selected identity, body selects topmost; fitted/zoomed coordinates agree; one commit/undo on release, cancel/navigation/deletion writes nothing and no gesture retargets a new box |
+| BX.2 | DONE | Integrate reliable handles and gesture lifetime across both editors | Songs/Bible/Edit share transform chrome with reachable handle hit areas at every slide edge; overlap honours selected identity, body selects topmost; fitted/zoomed coordinates agree; one commit/undo on release, cancel/navigation/deletion writes nothing and no gesture retargets a new box |
 | BX.3 | TODO | Remove geometry inspectors and retain non-numeric placement actions | No X/Y/W/H, pixel heading, Center H/V, owner sentence or old placement action row in any host; reset/borrow move to keyboard-accessible box menus through existing verbs; preserve TL controls, stack commands, keyboard move/resize and all source geometry/schema |
 | BX.4 | TODO | Prove actual pointer editing, snapping, reset and worker output | Real-pointer matrix covers all four corners and centre axes at 1000/1380/1680 and scales 1/1.5/2, edge/overlap/cancel/undo; reset/borrow preserves styles and save/reopen; preview-only edit → explicit Go reaches matching pixels; focused suites then desktop/headless/source guards, captures and skip/physical reporting |
 
@@ -2110,6 +2110,23 @@ nearest-corner hit testing and cursor mapping; `workspace_ui_tests` invokes
 both pages' own gesture functions over one captured rectangle and would fail
 against the reviewed left/top-only code. Full desktop suite: 85/85; headless
 and guards follow in BX.4.
+
+BX.2 evidence (2026-11-16): both gesture surfaces now reach one handle radius
+past the fitted content (`anchors.margins: -8`, coordinates mapped back by the
+same inset), so the outer half of a corner at a slide edge is live; the Themes
+overlay no longer clips its handles to the content rect. A gesture captures the
+target by IDENTITY at press — theme + view for Themes, slide + box id for Edit
+— and `endDrag`/`endGesture` write only when that identity still holds and the
+rounded rectangle actually changed. Navigation, a selection or theme change, a
+view switch, deletion and cancellation (Escape included) discard the transient
+rectangle and restore the model's geometry; no held drag can retarget a newly
+selected box. Corner hit testing runs before the body, so a selected handle
+over an overlapping box resizes the selected box; a body press still selects the
+topmost item. `workspace_ui_tests` asserts both gesture surfaces cover the
+handle halves, a click without motion writes nothing, one completed gesture is
+one undo, navigation/selection/theme/view changes cancel without a write, and
+an overlapping body does not steal the selected corner. Full desktop suite:
+85/85.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

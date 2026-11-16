@@ -54,6 +54,14 @@ Item {
     property string dragMode: ""
     property point dragOrigin
     property rect startBox
+    // Task BX.2: the target is captured by IDENTITY at press — the slide and
+    // the box — never a current index that can move under a held drag. A
+    // release whose identity no longer matches writes nothing.
+    property string dragSlideId: ""
+    property string dragBoxId: ""
+    // The gesture area extends this far beyond the fitted content so the
+    // outer half of every visible corner handle is reachable at slide edges.
+    readonly property real gestureInset: 8
     // Centre snapping: a move gesture whose box centre comes within a few
     // SCREEN pixels of the canvas centre lands exactly on it, with a guide
     // line saying why. The tolerance is converted to authored units so it
@@ -106,17 +114,31 @@ Item {
         function onDocumentsChanged() {
             if (canvas.dragMode === "") {
                 canvas.syncFromDocuments()
+            } else if (!canvas.dragIdentityHolds()) {
+                // The slide or the box left under the held pointer: cancel
+                // rather than commit the captured rectangle onto whatever
+                // now occupies the selection.
+                canvas.cancelDrag()
             }
         }
         function onNavigationChanged() {
+            // Moving to another slide cancels the gesture; it never retargets.
+            canvas.cancelDrag()
             canvas.syncFromDocuments()
             canvas.selected = true
         }
         function onBoxSelectionChanged() {
-            if (canvas.dragMode === "") {
-                canvas.syncFromDocuments()
+            if (canvas.dragMode !== "") {
+                canvas.cancelDrag()
             }
+            canvas.syncFromDocuments()
         }
+    }
+    // Escape steps out of the selection through the key map; a held drag
+    // must be discarded, not committed.
+    onSelectedChanged: {
+        if (!selected && canvas.dragMode !== "")
+            canvas.cancelDrag()
     }
 
     // Hit order mirrors the interaction and the paint order: a selected
@@ -161,6 +183,62 @@ Item {
         boxY = resized.y
         boxW = resized.width
         boxH = resized.height
+    }
+
+    // The box the current selection names, or undefined when there is none.
+    function selectedBox() {
+        return canvas.boxes[canvas.currentBox]
+    }
+
+    function captureDragIdentity() {
+        canvas.dragSlideId = canvas.hasSlide
+                ? String(docs.slides[docs.currentSlide].id) : ""
+        const box = canvas.selectedBox()
+        canvas.dragBoxId = box === undefined ? "" : String(box.id)
+    }
+
+    function dragIdentityHolds() {
+        if (!canvas.hasSlide)
+            return false
+        const slideId = String(docs.slides[docs.currentSlide].id)
+        const box = canvas.selectedBox()
+        return slideId === canvas.dragSlideId && box !== undefined
+                && String(box.id) === canvas.dragBoxId
+    }
+
+    // BX.2: a completed gesture writes ONE rectangle through the box's own
+    // verb — unless the identity moved (navigation, a new selection, a
+    // deletion) or the pointer did not change the rounded rectangle.
+    function endDrag() {
+        if (canvas.dragMode === "")
+            return
+        const holds = canvas.dragIdentityHolds()
+        const x = Math.round(canvas.boxX)
+        const y = Math.round(canvas.boxY)
+        const w = Math.round(canvas.boxW)
+        const h = Math.round(canvas.boxH)
+        const unchanged = x === Math.round(canvas.startBox.x)
+                && y === Math.round(canvas.startBox.y)
+                && w === Math.round(canvas.startBox.width)
+                && h === Math.round(canvas.startBox.height)
+        canvas.dragMode = ""
+        canvas.snappedX = false
+        canvas.snappedY = false
+        if (!holds || unchanged) {
+            canvas.syncFromDocuments()
+            return
+        }
+        docs.setTextBoxGeometry(x, y, w, h)
+    }
+
+    // Cancel: no write, and the outline returns to the model's rectangle.
+    function cancelDrag() {
+        if (canvas.dragMode === "")
+            return
+        canvas.dragMode = ""
+        canvas.snappedX = false
+        canvas.snappedY = false
+        canvas.syncFromDocuments()
     }
 
     // The stage (task CS.2): a SlidePreviewSurface on the Selection target —
@@ -260,19 +338,30 @@ Item {
             z: 5
         }
 
+        // The gesture surface covers the fitted content AND the outer half
+        // of every handle (task BX.2): with the content at a slide edge the
+        // visible corner extends beyond it, so an exact-fill area would make
+        // that half dead. Coordinates are mapped back by `gestureInset`
+        // before hit testing; drag deltas are differences and cancel it.
         MouseArea {
+            objectName: "editGestureArea"
             anchors.fill: parent
+            anchors.margins: -canvas.gestureInset
             acceptedButtons: Qt.LeftButton
             hoverEnabled: true
             cursorShape: canvas.dragMode !== ""
                          ? transform.cursorFor(canvas.dragMode)
-                         : transform.cursorFor(canvas.hitTest(mouseX, mouseY))
+                         : transform.cursorFor(
+                               canvas.hitTest(mouseX + canvas.gestureInset,
+                                              mouseY + canvas.gestureInset))
             // Focus so the canvas's own Escape (below) reaches the item
             // scope rather than the window's clear-all shortcut.
             focus: true
 
             onPressed: function (mouse) {
-                const mode = canvas.hitTest(mouse.x, mouse.y)
+                const px = mouse.x + canvas.gestureInset
+                const py = mouse.y + canvas.gestureInset
+                const mode = canvas.hitTest(px, py)
                 if (mode === "") {
                     canvas.selected = false
                     return
@@ -288,7 +377,7 @@ Item {
                 // wrong box. Pressing the already-selected box re-selects
                 // it; the controller no-ops that without dirtying anything.
                 if (mode === "move") {
-                    const hit = docs.boxAt(mouse.x / canvas.zoom, mouse.y / canvas.zoom)
+                    const hit = docs.boxAt(px / canvas.zoom, py / canvas.zoom)
                     if (hit >= 0) {
                         docs.selectTextBox(hit)
                         // startBox must be the box just clicked, not the one
@@ -301,6 +390,7 @@ Item {
                 canvas.dragOrigin = Qt.point(mouse.x, mouse.y)
                 canvas.startBox = Qt.rect(canvas.boxX, canvas.boxY,
                                           canvas.boxW, canvas.boxH)
+                canvas.captureDragIdentity()
                 canvas.snappedX = false
                 canvas.snappedY = false
             }
@@ -311,29 +401,8 @@ Item {
                 canvas.applyDrag((mouse.x - canvas.dragOrigin.x) / canvas.zoom,
                                  (mouse.y - canvas.dragOrigin.y) / canvas.zoom)
             }
-            onReleased: {
-                if (canvas.dragMode === "") {
-                    return
-                }
-                canvas.dragMode = ""
-                canvas.snappedX = false
-                canvas.snappedY = false
-                // Whole authored pixels: the same coordinates the X/Y/W/H
-                // fields show, and a clean value for the history entry. A
-                // press-and-release with no movement writes nothing — merely
-                // selecting a box must not normalize it or add an undo step.
-                const x = Math.round(canvas.boxX)
-                const y = Math.round(canvas.boxY)
-                const w = Math.round(canvas.boxW)
-                const h = Math.round(canvas.boxH)
-                if (x === Math.round(canvas.startBox.x) &&
-                        y === Math.round(canvas.startBox.y) &&
-                        w === Math.round(canvas.startBox.width) &&
-                        h === Math.round(canvas.startBox.height)) {
-                    return
-                }
-                docs.setTextBoxGeometry(x, y, w, h)
-            }
+            onReleased: canvas.endDrag()
+            onCanceled: canvas.cancelDrag()
         }
     }
 }

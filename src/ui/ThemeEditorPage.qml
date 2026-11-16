@@ -53,6 +53,8 @@ Item {
 
     function selectTheme(id) {
         if (id !== selectedId) {
+            // A held gesture belongs to the theme it started on.
+            themeEditor.cancelGesture()
             selectedId = id
             askForSamplePicture()
         }
@@ -74,10 +76,7 @@ Item {
             return
         // An unfinished gesture belongs to the view it started in: it is
         // cancelled, not committed under the new view's handles.
-        themeEditor.placing = false
-        themeEditor.dragMode = ""
-        themeEditor.snappedX = false
-        themeEditor.snappedY = false
+        themeEditor.cancelGesture()
         themeEditor.selectedView = view
         themeEditor.syncInspector()
         themeEditor.askForSamplePicture()
@@ -270,6 +269,13 @@ Item {
     property real anchorY: 0
     property real anchorW: 0
     property real anchorH: 0
+    // Task BX.2: the gesture captures the target by IDENTITY — theme id and
+    // view — at press. A release whose identity moved writes nothing.
+    property string gestureId: ""
+    property string gestureView: ""
+    // The gesture area reaches this far beyond the fitted content so the
+    // outer half of each corner handle is live at a slide edge.
+    readonly property real gestureInset: 8
     // Task BX.1: the ONE box-geometry implementation, shared with the Edit
     // canvas. The page keeps its own target/view verbs; BoxTransform owns
     // hit testing, corner resize, body move and centre snapping.
@@ -316,6 +322,8 @@ Item {
     }
     function beginGesture(mode) {
         const box = themeEditor.shownBox
+        themeEditor.gestureId = themeEditor.selectedId
+        themeEditor.gestureView = themeEditor.selectedView
         themeEditor.dragMode = mode
         themeEditor.snappedX = false
         themeEditor.snappedY = false
@@ -361,6 +369,18 @@ Item {
     // (retiring any inset in the same edit, per the adapter's context
     // merge), and the
     // other view's record is left exactly as it was.
+    // BX.2: discard a held gesture — no write, and the overlay returns to
+    // the record's rectangle. Cancellation, navigation, a selection change,
+    // deletion and Escape all land here.
+    function cancelGesture() {
+        themeEditor.placing = false
+        themeEditor.dragMode = ""
+        themeEditor.snappedX = false
+        themeEditor.snappedY = false
+        themeEditor.gestureId = ""
+        themeEditor.gestureView = ""
+    }
+
     function endGesture() {
         if (themeEditor.dragMode === "") {
             themeEditor.placing = false
@@ -369,12 +389,19 @@ Item {
             return
         }
         const id = themeEditor.selectedId
+        const holds = id !== "" && id === themeEditor.gestureId
+                && themeEditor.selectedView === themeEditor.gestureView
+                && themeEditor.row !== null
         themeEditor.placing = false
         themeEditor.dragMode = ""
         themeEditor.snappedX = false
         themeEditor.snappedY = false
-        if (id === "")
+        themeEditor.gestureId = ""
+        themeEditor.gestureView = ""
+        if (!holds) {
+            themeEditor.syncInspector()
             return
+        }
         const x = Math.round(themeEditor.penX)
         const y = Math.round(themeEditor.penY)
         const w = Math.round(themeEditor.penW)
@@ -1085,7 +1112,10 @@ Item {
             target: "selection"
             borderColor: "#4a4a4a"
             borderWidth: 0
-            clipOverlays: true
+            // BX.2: the corner handles sit centred on the content edge; their
+            // outer half must be visible and reachable, so overlays are not
+            // clipped to the content rect.
+            clipOverlays: false
             // No picture (no worker, the first ask still in flight): the
             // frame says which, rather than painting a QML guess at it.
             placeholder: themeEditor.selectedId === "" ? "No theme selected"
@@ -1157,16 +1187,28 @@ Item {
                     z: 5
                 }
 
+                // The gesture surface reaches past the content edge by one
+                // handle radius (task BX.2), so the visible outer half of a
+                // corner at a slide boundary is live. Coordinates are mapped
+                // back by `gestureInset` before hit testing; drag deltas are
+                // differences and cancel it.
                 MouseArea {
+                    objectName: "themeEditorGestureArea"
                     anchors.fill: parent
+                    anchors.margins: -themeEditor.gestureInset
                     acceptedButtons: Qt.LeftButton
                     hoverEnabled: true
                     cursorShape: themeEditor.dragMode !== ""
                                  ? boxTransform.cursorFor(themeEditor.dragMode)
-                                 : boxTransform.cursorFor(themeEditor.hitTest(mouseX, mouseY))
+                                 : boxTransform.cursorFor(
+                                       themeEditor.hitTest(mouseX + themeEditor.gestureInset,
+                                                           mouseY + themeEditor.gestureInset))
                     onPressed: function (mouse) {
-                        const mode = themeEditor.hitTest(mouse.x, mouse.y)
+                        const mode = themeEditor.hitTest(
+                            mouse.x + themeEditor.gestureInset,
+                            mouse.y + themeEditor.gestureInset)
                         if (mode !== "") {
+                            forceActiveFocus()
                             themeEditor.beginGesture(mode)
                             themeEditor.dragOriginX = mouse.x
                             themeEditor.dragOriginY = mouse.y
@@ -1180,7 +1222,13 @@ Item {
                                                     / placementLayer.zoom)
                     }
                     onReleased: themeEditor.endGesture()
-                    onCanceled: themeEditor.endGesture()
+                    onCanceled: themeEditor.cancelGesture()
+                    Keys.onEscapePressed: function (event) {
+                        if (themeEditor.dragMode !== "") {
+                            themeEditor.cancelGesture()
+                            event.accepted = true
+                        }
+                    }
                 }
             }
         }
