@@ -285,8 +285,10 @@ if(OPENSHOW_BUILD_UI)
   set_tests_properties(workspace_ui_tests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
     # The CS.8 grouped band-and-scroll matrix grew the suite past the old
-    # 30-second wall; the run measures ~31s here and CI boxes are slower.
-    TIMEOUT 60)
+    # 30-second wall; the BX.4 real-pointer matrices (three widths, both
+    # canvases, every corner and axis) push it past 60 s on this box, so the
+    # wall is 120 s to leave CI room without hiding a real hang.
+    TIMEOUT 120)
 
   qt_add_executable(control_set_ui_tests control_set_ui_tests.cpp)
   qt_add_qml_module(control_set_ui_tests

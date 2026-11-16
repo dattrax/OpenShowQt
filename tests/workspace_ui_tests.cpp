@@ -5617,6 +5617,52 @@ int main(int argc, char** argv) {
                     QTest::qWait(60);
                 }
                 {
+                    // Both axes at once: the intersection snaps to the centre
+                    // and both guides show while the body is held there.
+                    const QPointF from = scenePoint(400, 300);
+                    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier,
+                                      from.toPoint());
+                    QTest::mouseMove(window, scenePoint(960, 540).toPoint(), 20);
+                    QTest::qWait(40);
+                    auto* guideX = findNamed(window->contentItem(), "centreGuideX");
+                    auto* guideY = findNamed(window->contentItem(), "centreGuideY");
+                    check(canvas->property("snappedX").toBool() &&
+                              canvas->property("snappedY").toBool() && guideX &&
+                              guideY && guideX->isVisible() && guideY->isVisible(),
+                          "a body drag onto the intersection snaps both axes");
+                    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier,
+                                        scenePoint(960, 540).toPoint());
+                    QTest::qWait(80);
+                    const QVariantMap box = boxAt(0);
+                    check(near(box.value(QStringLiteral("x")).toDouble(), 760.0) &&
+                              near(box.value(QStringLiteral("y")).toDouble(), 390.0) &&
+                              near(box.value(QStringLiteral("width")).toDouble(), 400.0) &&
+                              near(box.value(QStringLiteral("height")).toDouble(), 300.0),
+                          "the intersection lands exactly on 960/540 and keeps the size");
+                    docs.undo();
+                    QTest::qWait(60);
+                }
+                {
+                    // A small rectangle: its body still moves without a
+                    // corner taking the press, and the size is preserved.
+                    check(setBox(200.0, 150.0, 80.0, 80.0),
+                          "the small fixture is set");
+                    QTest::qWait(60);
+                    const QPointF from = scenePoint(240, 190);
+                    drag(from, from + QPointF(100 * z, 60 * z));
+                    const QVariantMap box = boxAt(0);
+                    check(near(box.value(QStringLiteral("x")).toDouble(), 300.0) &&
+                              near(box.value(QStringLiteral("y")).toDouble(), 210.0) &&
+                              near(box.value(QStringLiteral("width")).toDouble(), 80.0) &&
+                              near(box.value(QStringLiteral("height")).toDouble(), 80.0),
+                          "a small box's body drags and keeps its size");
+                    docs.undo();
+                    QTest::qWait(60);
+                }
+                {
+                    check(setBox(200.0, 150.0, 400.0, 300.0),
+                          "the tolerance fixture is set");
+                    QTest::qWait(60);
                     const QPointF from = scenePoint(400, 300);
                     QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier,
                                       from.toPoint());
@@ -5754,41 +5800,63 @@ int main(int argc, char** argv) {
 
             for (const QString view : {QString(), QStringLiteral("scripture")}) {
                 themePage->setProperty("selectedView", view);
-                check(docs.setThemePlacement(id, 200.0, 150.0, 400.0, 300.0),
-                      "the pointer theme places its box");
-                QTest::qWait(100);
-                const QRectF shown = themePage->property("shownBox").toRectF();
-                check(shown.width() > 0.0, "the overlay shows a box to drag");
-                const auto cornerDrag = [&](double dx, double dy) {
-                    drag(scenePoint(shown.x() + shown.width(),
-                                    shown.y() + shown.height()),
-                         scenePoint(shown.x() + shown.width() + dx,
-                                    shown.y() + shown.height() + dy));
-                    if (view.isEmpty()) {
-                        const QVariantMap p = placementOf(id);
-                        return QRectF(p.value(QStringLiteral("x")).toDouble(),
-                                      p.value(QStringLiteral("y")).toDouble(),
-                                      p.value(QStringLiteral("width")).toDouble(),
-                                      p.value(QStringLiteral("height")).toDouble());
-                    }
-                    const QVariantMap c = docs.themeContext(id, QStringLiteral("scripture"));
-                    return QRectF(c.value(QStringLiteral("x")).toDouble(),
-                                  c.value(QStringLiteral("y")).toDouble(),
-                                  c.value(QStringLiteral("width")).toDouble(),
-                                  c.value(QStringLiteral("height")).toDouble());
+                // A Bible view with a size and no box inherits the theme's
+                // rectangle, so every corner starts from the same fixture.
+                if (!view.isEmpty()) {
+                    check(docs.applyThemeContext(
+                              id, QStringLiteral("scripture"),
+                              QVariantMap{{QStringLiteral("fontSize"), 32.0}}),
+                          "the Bible view speaks without a box");
+                }
+                const auto record = [&]() {
+                    return view.isEmpty()
+                            ? placementOf(id)
+                            : docs.themeContext(id, QStringLiteral("scripture"));
                 };
-                const QRectF grown = cornerDrag(50.0, 40.0);
-                check(near(grown.x(), 200.0) && near(grown.y(), 150.0) &&
-                          near(grown.width(), 450.0) && near(grown.height(), 340.0),
-                      view.isEmpty()
-                          ? "Themes/Songs: a real bottom-right drag grows both dimensions"
-                          : "Themes/Bible: a real bottom-right drag writes the view's box");
-                docs.undo();
-                QTest::qWait(80);
-                if (!view.isEmpty())
-                    check(!docs.themeContext(id, QStringLiteral("scripture"))
-                               .value(QStringLiteral("boxSet")).toBool(),
-                          "one undo removes the Bible drag's context box");
+                struct Corner {
+                    const char* name;
+                    bool left;
+                    bool top;
+                    double dx;
+                    double dy;
+                    double ex;
+                    double ey;
+                    double ew;
+                    double eh;
+                };
+                const Corner corners[] = {
+                    {"top-left", true, true, 50.0, 40.0, 250.0, 190.0, 350.0, 260.0},
+                    {"top-right", false, true, -50.0, 40.0, 200.0, 190.0, 350.0, 260.0},
+                    {"bottom-left", true, false, 50.0, -40.0, 250.0, 150.0, 350.0, 260.0},
+                    {"bottom-right", false, false, -50.0, -40.0, 200.0, 150.0, 350.0, 260.0},
+                    {"bottom-right out", false, false, 50.0, 40.0, 200.0, 150.0, 450.0, 340.0},
+                };
+                for (const Corner& c : corners) {
+                    check(docs.setThemePlacement(id, 200.0, 150.0, 400.0, 300.0),
+                          "the pointer fixture is set");
+                    QTest::qWait(90);
+                    const QRectF shown = themePage->property("shownBox").toRectF();
+                    check(near(shown.x(), 200.0) && near(shown.y(), 150.0) &&
+                              near(shown.width(), 400.0) && near(shown.height(), 300.0),
+                          "the overlay shows the fixture's box");
+                    const double ax = c.left ? shown.x() : shown.x() + shown.width();
+                    const double ay = c.top ? shown.y() : shown.y() + shown.height();
+                    drag(scenePoint(ax, ay), scenePoint(ax + c.dx, ay + c.dy));
+                    const QVariantMap r = record();
+                    check(near(r.value(QStringLiteral("x")).toDouble(), c.ex) &&
+                              near(r.value(QStringLiteral("y")).toDouble(), c.ey) &&
+                              near(r.value(QStringLiteral("width")).toDouble(), c.ew) &&
+                              near(r.value(QStringLiteral("height")).toDouble(), c.eh),
+                          (std::string(view.isEmpty() ? "Themes/Songs: " : "Themes/Bible: ") +
+                           c.name + " drags its two edges").c_str());
+                    docs.undo();
+                    QTest::qWait(80);
+                    if (!view.isEmpty()) {
+                        check(!docs.themeContext(id, QStringLiteral("scripture"))
+                                   .value(QStringLiteral("boxSet")).toBool(),
+                              "one undo removes the Bible drag's context box");
+                    }
+                }
                 // Centre axis: the body drag snaps and shows its guide.
                 check(docs.setThemePlacement(id, 200.0, 150.0, 400.0, 300.0),
                       "the snap fixture is set");
