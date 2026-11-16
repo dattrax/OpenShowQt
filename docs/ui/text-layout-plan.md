@@ -3,9 +3,10 @@
 Implementation brief for the **TL** group in `PLAN.md`. TL.1 (persistence and
 resolution, service 14), TL.2 (scene 8 / protocol 0.20 carrying the pair and
 the capability gates), TL.3 (anchored rendering and the root-locale capitals
-transform), TL.4 (planning, fingerprints and stale-result ownership) and TL.5
-(shared controls and the domain-derived Remove-customizations state) are
-implemented; TL.6 remains planned work.
+transform), TL.4 (planning, fingerprints and stale-result ownership), TL.5
+(shared controls and the domain-derived Remove-customizations state) and TL.6
+(integrated journeys and the architecture/control-set documentation) are
+implemented.
 
 ## Agreed operator behaviour
 

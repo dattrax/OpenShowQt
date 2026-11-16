@@ -470,6 +470,23 @@ int whitePixels(const Shot& shot) {
     return white;
 }
 
+// The topmost row carrying a white (word) pixel, or -1 when there is none.
+// A vertical anchor moves the paragraph inside its box, so this is the
+// pixel proof that the layout change reached the audience; a solid backdrop
+// is not white in any channel, so only glyphs answer.
+int whiteTop(const Shot& shot) {
+    for (uint32_t y = 0; y < shot.height; ++y) {
+        for (uint32_t x = 0; x < shot.width; ++x) {
+            const uint8_t* p =
+                shot.px.data() + (static_cast<size_t>(y) * shot.width + x) * 4;
+            if (p[0] > 0x80 && p[1] > 0x80 && p[2] > 0x80) {
+                return static_cast<int>(y);
+            }
+        }
+    }
+    return -1;
+}
+
 bool uniformlyBlack(const Shot& shot) {
     return litPixels(shot) == 0;
 }
@@ -652,6 +669,149 @@ int main(int argc, char* argv[]) {
               "the corner SAMPLES gold — the worker decoded the asset and drew it");
         check(g.audience.ok && whitePixels(g.audience) > 0,
               "and the words still draw over it");
+
+        // --- task TL.6: preview-only formatting edit, explicit Go ----------
+        // The gold still is live and the words are centre-anchored in normal
+        // case. Change the LIVE cue's layout through the same controller the
+        // Edit page binds: the off-air preview must show the new anchor and
+        // capitals, the audience must keep the old picture until Go, and the
+        // source words and the media identity must never move.
+        {
+            const QString liveJson = docs.currentSceneJson();
+            const int centreTop = whiteTop(g.audience);
+            const auto itemOf = [](const QString& json) {
+                const boost::json::value parsed = boost::json::parse(json.toStdString());
+                return parsed.as_object().at("items").as_array().at(0).as_object();
+            };
+            const auto linesOf = [](const boost::json::object& item) {
+                return boost::json::serialize(item.at("lines"));
+            };
+            const auto backgroundOf = [](const QString& json) {
+                return boost::json::serialize(
+                    boost::json::parse(json.toStdString()).as_object().at("background"));
+            };
+            const auto assetIdOf = [](const QString& json) {
+                const auto background = boost::json::parse(json.toStdString())
+                                            .as_object()
+                                            .at("background")
+                                            .as_object();
+                const auto it = background.find("assetId");
+                return it == background.end() ? std::string()
+                                              : std::string(it->value().as_string());
+            };
+            const boost::json::object liveItem = itemOf(liveJson);
+            const std::string sourceLines = linesOf(liveItem);
+            const std::string sourceBackground = backgroundOf(liveJson);
+            const std::string sourceAsset = assetIdOf(liveJson);
+            check(liveItem.at("verticalAlign").as_string() == "center" &&
+                      liveItem.at("allCaps").as_bool() == false,
+                  "the live cue starts centre-anchored in normal case");
+
+            check(docs.customizeCurrentSlide(QStringLiteral("verticalAlign"),
+                                             QStringLiteral("top")) &&
+                      docs.customizeCurrentSlide(QStringLiteral("allCaps"), true),
+                  "the Edit controller authors a top anchor and capitals on the live cue");
+            const QString editedJson = docs.currentSceneJson();
+            const boost::json::object editedItem = itemOf(editedJson);
+            check(editedJson != liveJson &&
+                      editedItem.at("verticalAlign").as_string() == "top" &&
+                      editedItem.at("allCaps").as_bool(),
+                  "the edited scene carries the new layout pair");
+            check(linesOf(editedItem) == sourceLines,
+                  "the source words keep their authored mixed case through the edit");
+            check(backgroundOf(editedJson) == sourceBackground,
+                  "the gold media identity is unchanged by the layout edit");
+
+            // Off-air only: prepare the edited scene and picture it, but do
+            // not present it. The selection frame must show the top anchor
+            // while the audience stays on the gold, centre-anchored frame.
+            std::uint64_t revEdit = 0;
+            {
+                boost::json::value parsed = boost::json::parse(editedJson.toStdString());
+                boost::json::value prepReply;
+                if (call(fd, nextId++, "scene.prepare", parsed.as_object(), &prepReply) &&
+                    prepReply.as_object().contains("result")) {
+                    revEdit = numberValue(prepReply.at("result").as_object().at("revision"));
+                }
+            }
+            check(revEdit != 0, "the edited cue is prepared for the off-air picture");
+            g.maxPresentedSeen = gold.tag;  // a newer audience frame would be a leak
+            boost::json::value selReply;
+            check(call(fd, nextId++, proto::kMethodPreviewSelect,
+                       boost::json::object{{"revision", revEdit}, {"request", 7u}}, &selReply) &&
+                      selReply.as_object().contains("result"),
+                  "the edited cue is asked for off air");
+            bool previewSeen = false;
+            const auto previewDeadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(6);
+            while (!previewSeen && std::chrono::steady_clock::now() < previewDeadline) {
+                pump(fd, 250);
+                previewSeen = g.selection.ok &&
+                              g.selection.revision == (revEdit & 0xFFFFFFFFu) &&
+                              g.selection.request == 7;
+            }
+            const int previewTop = whiteTop(g.selection);
+            check(previewSeen && previewTop >= 0,
+                  "the off-air picture carries the edited cue's words");
+            check(previewTop < centreTop - 10,
+                  "the off-air picture shows the TOP anchor moved up");
+            check(g.audience.ok && g.audience.revision == gold.tag &&
+                      whiteTop(g.audience) == centreTop && g.leakedToAudience == 0,
+                  "the audience kept the old centre-anchored frame — preview only");
+
+            // Explicit Go: present the prepared revision and demand the
+            // acknowledged audience pixels, not merely the ack.
+            const Presented laid = presentRevision(fd, nextId, revEdit);
+            check(laid.scene == revEdit && laid.tag != 0,
+                  "Go presents the edited cue and reports it on air");
+            g.maxPresentedSeen = laid.tag;
+            check(waitFor(&g.audience, laid.tag, fd, 6),
+                  "the audience frame tagged with the layout edit arrives");
+            const int audienceTop = whiteTop(g.audience);
+            check(g.audience.ok && nearColor(pixelAt(g.audience, 0.02, 0.90), 0xF0E030),
+                  "the gold still is continuous across the layout Go");
+            check(audienceTop >= 0 && audienceTop < centreTop - 10,
+                  "the acknowledged audience pixels now sit at the top anchor");
+            check(whitePixels(g.audience) > 0,
+                  "and the capitals still draw on the audience frame");
+
+            // Save/reopen: the edit is durable, and the reopened package
+            // still holds the authored words in their original case.
+            check(docs.save(), "the layout edit saves to the service");
+            {
+                DocumentController reopened(nullptr, scratch);
+                const QString reopenedJson = reopened.sceneJsonForSlide(slide1);
+                check(!reopenedJson.isEmpty(), "the saved service reopens and compiles the cue");
+                const boost::json::object reopenedItem = itemOf(reopenedJson);
+                check(reopenedItem.at("verticalAlign").as_string() == "top" &&
+                          reopenedItem.at("allCaps").as_bool() &&
+                          linesOf(reopenedItem) == sourceLines,
+                      "save/reopen keeps the layout pair AND the source words");
+            }
+
+            // Reset/undo: two field commits, two undos, and the cue is back
+            // at the contract defaults with its words untouched.
+            docs.undo();
+            docs.undo();
+            const QString resetJson = docs.currentSceneJson();
+            const boost::json::object resetItem = itemOf(resetJson);
+            check(resetItem.at("verticalAlign").as_string() == "center" &&
+                      resetItem.at("allCaps").as_bool() == false &&
+                      linesOf(resetItem) == sourceLines,
+                  "undo/reset returns the cue to centre/off without touching its words");
+            check(assetIdOf(resetJson) == sourceAsset && !sourceAsset.empty(),
+                  "and the media identity (the same asset) stays unchanged through the reset");
+            const Presented reset = presentJson(fd, nextId, resetJson);
+            check(reset.scene != 0, "the reset cue is presented");
+            g.maxPresentedSeen = reset.tag;
+            check(waitFor(&g.audience, reset.tag, fd, 6),
+                  "the audience frame after the reset arrives");
+            const int resetTop = whiteTop(g.audience);
+            check(g.audience.ok && nearColor(pixelAt(g.audience, 0.02, 0.90), 0xF0E030) &&
+                      resetTop >= 0 &&
+                      std::abs(resetTop - centreTop) <= 10,
+                  "the audience is back at the centre anchor over the same gold");
+        }
 
         // --- per-layer clears against the picture -------------------------
         const QString goldJson = docs.currentSceneJson();

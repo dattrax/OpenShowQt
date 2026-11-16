@@ -11,8 +11,8 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Text layout and editor consistency (2026-11-16): TL.1–TL.5 are DONE; TL.6 is
-TODO.** The agreed
+**Text layout and editor consistency (2026-11-16): TL.1–TL.6 are DONE.** The
+agreed
 [text-layout brief](docs/ui/text-layout-plan.md) adds shared vertical-alignment
 icons and All caps to Theme Editor/ Edit, with theme defaults and per-slide
 overrides. Preview updates immediately; audience changes on explicit Go.
@@ -75,10 +75,34 @@ Remove customizations is now driven by the domain's sparse set
 (`currentSlideCustomized`), so an underline-only edit and an explicit `false`
 both wake it — the old QML name list omitted `fontUnderline`. Every gesture is
 one inspector commit (one undo), the off-air preview re-asks on
-`documentsChanged`, and no edit presents. Full suite: 85/85 tests pass. Next
-implementation action for this group: TL.6 (integrated journeys and
-architecture/control-set documentation). DR/PV completion below remains
-unchanged.
+`documentsChanged`, and no edit presents.
+
+TL.6 closed the integrated journey and the documentation. `production_journey_tests`
+drives the live gold-backed cue through the DocumentController the Edit page
+binds: a top anchor and capitals are authored, the off-air `preview.select`
+frame shows the words moved up while the audience keeps its acknowledged
+centre-anchored revision (the leak counter stays 0), an explicit Go presents
+the prepared revision and the acknowledged audience pixels move to the top
+anchor with the capitals drawn over the same gold asset, save/reopen keeps the
+pair and the source words' authored case, and two undos return the cue to
+centre/off with the media identity unchanged. `frontend_journey_tests` proves
+the same preview-only rule through the production `WorkerController` rather
+than raw RPC: `requestSelectionPreview` moves the off-air picture while the
+audience revision and frame do not move, and only `presentSceneJson` puts the
+edited anchor on air. `docs/architecture.md` gains the text-layout section
+(chain, formats, capabilities, the one-origin renderer, the root-locale
+transform and its budget guard, measurement/planning, the shared controls and
+the evidence list), and `docs/ui/control-sets.md` records the Vertical/All caps
+rows, the `glyphStyle: "vertical"` segments with keyboard activation and
+accessible names, the new object names, and the layout pair's place in the
+context merge and the Remove-customizations state.
+
+Verification for the group: desktop suite 85/85; headless suite 58/58 (display
+excluded, including the Qt-free, Skia-public-API, render-layer and
+ui_loads guards); the desktop run also carries the negative source guards.
+Physical gates (audio hardware, target-GPU NDI/live output) remain the standing
+M7 items, and no TV.3 effects or per-box styling are claimed. DR/PV completion
+below remains unchanged.
 
 **The design-conformance corrections (DR.0–DR.8) are complete.** The review
 [`docs/reviews/design-conformance-2026-11-15.md`](docs/reviews/design-conformance-2026-11-15.md)
@@ -189,6 +213,12 @@ service. FO stays gated behind those.
 
 ## Recent commits
 
+- `f2fb8f3` feat(ui): share the vertical/anchor controls and fix Remove customizations (TL.5)
+- `64ae726` feat(importer): plan with the resolved layout pair for TL.4
+- `6a14f9e` feat(worker): render the anchored layout and root-locale capitals for TL.3
+- `e02af41` feat(scene): carry the resolved text layout to the wire for TL.2
+- `f57e5b2` feat(domain): persist and resolve the text-layout pair for TL.1
+- `a652e1c` docs: plan the TL text-layout and editor-consistency group
 - `7d4631d` test(frontend): keep the panel repainting while the picture moves (PV.2)
 - `ab159b0` feat(worker): measure preview delivery at a chosen cadence in the A/V bench (PV.2)
 - `6fedd59` feat(ui): ask for 30 fps previews and repaint on every accepted frame (PV.1)

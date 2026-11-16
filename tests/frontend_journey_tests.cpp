@@ -152,6 +152,25 @@ bool nearColor(uint32_t rgb, uint32_t want, int tolerance = 8) {
     return dr * dr + dg * dg + db * db <= tolerance * tolerance * 3;
 }
 
+// The topmost row carrying a white (word) pixel, as a fraction of the frame
+// height, or -1 when there is none. Task TL.6's proof that a vertical-anchor
+// change moved the words: the two frames compared may differ in size, so a
+// fraction is the honest common unit.
+double whiteTopFraction(const QImage& image) {
+    if (image.isNull()) {
+        return -1.0;
+    }
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); x += 2) {
+            const QRgb pixel = image.pixel(x, y);
+            if (qRed(pixel) > 200 && qGreen(pixel) > 200 && qBlue(pixel) > 200) {
+                return double(y) / image.height();
+            }
+        }
+    }
+    return -1.0;
+}
+
 // Words are white items on colours here that are not: gold, magenta, dark
 // green and black all fail at least one channel of "all three > 200".
 int whitePixels(const QImage& image) {
@@ -272,6 +291,21 @@ QString sceneGraded() {
     return serialized(subject);
 }
 
+// Task TL.6: the same words in the same box, with and without the resolved
+// layout pair. A dark blue field keeps every white-pixel assertion about the
+// glyphs; the pair is the only difference between the two payloads.
+QString sceneLaidOut(const char* word, const char* anchor, bool allCaps) {
+    scene::Scene subject;
+    subject.showId = "fe-journey";
+    subject.slideId = "layout";
+    subject.background.color = 0x101030u;
+    scene::SceneItem item = textItem(word);
+    item.verticalAlign = anchor;
+    item.allCaps = allCaps;
+    subject.items = {item};
+    return serialized(subject);
+}
+
 // Filler for the store-pruning stretch: plain words over near-black, a colour
 // no assertion here mistakes for anything else.
 QString scenePlain(int index) {
@@ -362,6 +396,67 @@ int main(int argc, char* argv[]) {
                      nearColor(rgbAt(frame, kPicU, kPicV), kMagenta) && whitePixels(frame) > 20;
           }),
           "alpha: cover plate, foreground picture and words all reach the operator's frame");
+
+    // --- 1b. task TL.6: a layout edit is PREVIEW-ONLY until an explicit Go --
+    // The words go on air centre-anchored in normal case. The Edit page's
+    // gesture — a top anchor with capitals — must move the OFF-AIR picture
+    // at once, leave the audience's acknowledged frame untouched, and reach
+    // the audience only when the operator's Go presents the edited scene.
+    {
+        controller.presentSceneJson(sceneLaidOut("Frontend Layout", "center", false));
+        if (!check(waitUntil([&controller] {
+                       return controller.wordsOnAir() && controller.scenePending() == 0;
+                   }) &&
+                       pixelsSettled(controller, [](const QImage& frame) {
+                           return whiteTopFraction(frame) > 0.0;
+                       }),
+                   "layout: the centre-anchored words are on air")) {
+            controller.shutdownNow();
+            return 1;
+        }
+        const qint64 centreRevision = controller.sceneActive();
+        const double centreTop = whiteTopFraction(controller.previewImage());
+
+        // Ask for the off-air picture of the edited scene and do NOT present.
+        controller.requestSelectionPreview(sceneLaidOut("Frontend Layout", "top", true));
+        check(waitUntil([&controller] {
+                  return controller.selectionReady() && controller.selectionCurrent();
+              }),
+              "layout: the edited cue's off-air picture arrives");
+        const double previewTop = whiteTopFraction(controller.selectionImage());
+        check(previewTop >= 0.0 && previewTop < centreTop - 0.05,
+              "layout: the off-air picture shows the TOP anchor moved up");
+        check(controller.sceneActive() == centreRevision &&
+                  controller.wordsOnAir() &&
+                  std::abs(whiteTopFraction(controller.previewImage()) - centreTop) < 0.02,
+              "layout: the audience kept the centre-anchored frame — no present on an edit");
+
+        // The explicit Go: present the edited scene and demand its pixels.
+        controller.presentSceneJson(sceneLaidOut("Frontend Layout", "top", true));
+        check(waitUntil([&controller, centreRevision] {
+                  return controller.wordsOnAir() && controller.scenePending() == 0 &&
+                         controller.sceneActive() != centreRevision;
+              }),
+              "layout: the Go presents the edited cue and the worker acknowledges it");
+        check(pixelsSettled(controller, [&previewTop](const QImage& frame) {
+                  const double top = whiteTopFraction(frame);
+                  return top >= 0.0 && std::abs(top - previewTop) < 0.03 &&
+                         whitePixels(frame) > 20;
+              }),
+              "layout: the acknowledged audience pixels sit at the top anchor with the "
+              "capitals drawn");
+
+        // Back to the contract defaults, again only through a Go.
+        controller.presentSceneJson(sceneLaidOut("Frontend Layout", "center", false));
+        check(waitUntil([&controller] {
+                  return controller.wordsOnAir() && controller.scenePending() == 0;
+              }) &&
+                  pixelsSettled(controller, [centreTop](const QImage& frame) {
+                      return std::abs(whiteTopFraction(frame) - centreTop) < 0.03;
+                  }),
+              "layout: the reset returns the audience to the centre anchor");
+        controller.clearSelectionPreview();
+    }
 
     // --- 2. the gradient through the real controller -------------------------
     controller.presentSceneJson(sceneGraded());

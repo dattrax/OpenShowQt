@@ -1932,7 +1932,7 @@ Defaults remain centre/off. [Contract, source findings and acceptance](docs/ui/t
 | TL.3 | DONE | Render vertical placement and reversible Unicode capitals through the shared layout engine | Top/centre/bottom use one paragraph-origin calculation for paint and bounds; root-locale uppercase precedes shaping/fit/measurement, source UTF-8 stays intact, transformed limits are bounded; pinned-font raster and measurement regressions cover wrapping, overflow, effects and multiple boxes |
 | TL.4 | DONE | Propagate layout settings through song/Bible planning and stale-result ownership | Measurement, fingerprints and cache keys agree with render; toggles invalidate drafts and delayed plans cannot enable Add; original-case words/labels conserved; committed slide boundaries remain authored (`song_pagination_tests`, `scripture_pagination_tests`, song/Bible journeys) |
 | TL.5 | DONE | Review editor consistency and add shared layout icons/All caps control | Songs/Bible/Edit share control order, tooltips, keyboard access, resolved state and per-field reset; fix underline-only Remove customizations via one domain-derived state, including explicit false; one gesture/undo and immediate correct off-air preview, with no audience presentation on edit (`workspace_ui_tests`, `control_set_ui_tests`) |
-| TL.6 | TODO | Close integrated layout journeys and update architecture/control-set documentation | Preview-only edit → explicit Go → acknowledged pixels → reset/undo/save/reopen with source words and continuous media preserved; focused tests then desktop/headless/source guards pass; report skips/physical gates and leave unrelated TV/TA/ND/M7 work open |
+| TL.6 | DONE | Close integrated layout journeys and update architecture/control-set documentation | Preview-only edit → explicit Go → acknowledged pixels → reset/undo/save/reopen with source words and continuous media preserved; focused tests then desktop/headless/source guards pass; report skips/physical gates and leave unrelated TV/TA/ND/M7 work open |
 
 Order: TL.1 → TL.2 → TL.3 → TL.4 → TL.5 → TL.6; split any leaf exceeding two
 engineer-days. Recheck schema allocations before implementation. This group does
@@ -2042,6 +2042,31 @@ the off-air preview re-asks on `documentsChanged`, and no edit presents
 the three names, keyboard activation and commit/reset on theme, slide and
 context targets; `workspace_ui_tests` pins the underline-only and
 explicit-false Remove-customizations path. Full suite: 85/85.
+
+TL.6 evidence (2026-11-16): the integrated journey is closed in both lanes.
+`production_journey_tests` drives the LIVE gold-backed cue through the
+DocumentController the Edit page binds — a top anchor and capitals are
+authored, the off-air `preview.select` frame shows the words moved up while
+the audience keeps its acknowledged centre-anchored revision (and the leak
+counter stays 0), an explicit Go presents the prepared revision and the
+ACKNOWLEDGED audience pixels move to the top anchor with the capitals drawn
+over the same gold asset, save/reopen keeps the pair and the source words'
+authored case, and two undos return the cue to centre/off with the media
+identity unchanged and the audience back at the centre. `frontend_journey_tests`
+proves the same preview-only rule through the production `WorkerController`
+(not raw RPC): `requestSelectionPreview` moves the off-air picture, the
+audience revision and frame do not move, and only `presentSceneJson` puts the
+edited anchor on air; a Go back to centre restores it. `docs/architecture.md`
+gains the "Text layout: where the words sit and whether they shout" section
+(chain, formats, capabilities, one-origin renderer, root-locale transform and
+budget guard, measurement/planning, shared controls, evidence), and
+`docs/ui/control-sets.md` records the Vertical/All caps rows, the
+`glyphStyle: "vertical"` segments with keyboard activation and accessible
+names, the new object names, and the layout pair's place in the context merge
+and Remove-customizations state. Desktop suite: 85/85. Headless and source
+guards are run and recorded in `PROGRESS.md`; physical gates (audio hardware,
+target-GPU NDI/live output) remain the standing M7 items and no TV.3 effects or
+per-box styling are claimed.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

@@ -357,6 +357,12 @@ TE.6: a valid theme's absent Bible context is an editable inherited target,
 not an unusable one. Reading never creates a record. The first supported
 field edit seeds the compiled typography/box (and inherited context movement,
 when present), merges the requested field and writes one undoable record.
+The text-layout pair (TL.5) is a leaf on every target and the ONE part of the
+shared style block a context already stores, so `verticalAlign`/`allCaps`
+answer with the typography's editable inheritance rather than TV.3's
+"cannot store" badge; the whole-entry merge carries an untouched pair across a
+one-field edit, and the domain's sparse set — not a QML name list — decides
+whether the slide's Remove customizations button is live.
 A first transition edit uses the same atomic path. ThemeEditor keeps its
 Bible controls visible and provides Reset Bible to remove the own record;
 placement outlines carry no instructional caption. BoxGeometryControls treats
@@ -382,11 +388,24 @@ rows, which is where the reading look is reasoned about).
 ### TextStyleControls
 
 `src/ui/TextStyleControls.qml` (CS.5). One family-and-size row (embedded
-`WorkerFontPicker` plus the size field where Browse used to sit), alignment,
-line spacing and — unless `showStyleBlock: false` — the bold/italic/
-underline switches, fit and minimum size. The family and size labels are
-silent by default (review 2026-11-10): the typeface name and the number
-speak for themselves.
+`WorkerFontPicker` plus the size field where Browse used to sit), horizontal
+alignment, the vertical anchor, All caps, line spacing and — unless
+`showStyleBlock: false` — the bold/italic/underline switches, fit and minimum
+size. The family and size labels are silent by default (review 2026-11-10):
+the typeface name and the number speak for themselves.
+
+The layout rows are the text-layout group's (TL.5) and sit in a fixed order on
+every host: horizontal alignment, then **Vertical** (exactly three in-repository
+paragraph marks — top/centre/bottom — in a `SegmentedControl` with
+`glyphStyle: "vertical"`, never a platform icon font), then the **All caps**
+checkbox, then line spacing. A theme, the Bible view and a slide all answer for
+the pair (a text context is the ONE style pair it stores until TV.3), so the
+same rows read the resolved value, show the own/inherited dot and grow the same
+reset chip. Each icon has an accessible name and a tooltip and is reachable by
+Tab; Space/Return activate it as well as a click. `allCaps` is a strict
+boolean: unchecking it over an inherited `true` authors an explicit `false`
+(the answer that keeps the words in their original case), and only the reset
+chip removes the override.
 
 The style reads VISUALLY (review 2026-11-10): **B / I / U** are three
 glyph switches whose own treatment is the sample (bold B, italic I,
@@ -400,11 +419,11 @@ scene 6).
 
 | | |
 |---|---|
-| Inputs | `adapter` (required), `worker` (required, for the family row), `overlayParent`; `sparse` (empty typed values reset context overrides); `showInheritedValues` (when true, show resolved values and the same three alignment choices as Songs, with reset chips returning fields to inheritance; otherwise show own-or-empty values and the leading `"(theme)"` alignment choice). Font browsing is available in either mode; `showStyleBlock`; `sectionTitle` (the Songs rail titles this section "Typography & effects"); label strings `fontLabel`/`sizeLabel` (both `""` by default — the family+size row needs no heading)/`alignLabel`/`spacingLabel`; `fontShowStatus`; `showRevertChips`/`revertBadgePrefix` (a ↺ beside size/align/spacing named `<prefix><Field>`, shown from `canReset`, one click resets; the family row forwards them to its picker; the style-block rows keep their own pinned `*InheritObjectName` chips); one `*ObjectName` string per control (family, status, popup, search, list status, list, row, cancel, size, align, spacing, weight, weightInherit, slant, slantInherit, underline, underlineInherit, fit, fitInherit, minSize, minSizeInherit); alias `fontPicker` |
+| Inputs | `adapter` (required), `worker` (required, for the family row), `overlayParent`; `sparse` (empty typed values reset context overrides); `showInheritedValues` (when true, show resolved values and the same three alignment choices as Songs, with reset chips returning fields to inheritance; otherwise show own-or-empty values and the leading `"(theme)"` alignment choice). Font browsing is available in either mode; `showStyleBlock`; `sectionTitle` (the Songs rail titles this section "Typography & effects"); label strings `fontLabel`/`sizeLabel` (both `""` by default — the family+size row needs no heading)/`alignLabel`/`spacingLabel`; `fontShowStatus`; `showRevertChips`/`revertBadgePrefix` (a ↺ beside size/align/spacing named `<prefix><Field>`, shown from `canReset`, one click resets; the family row forwards them to its picker; the style-block and layout rows keep their own pinned `*InheritObjectName` chips); one `*ObjectName` string per control (family, status, popup, search, list status, list, row, cancel, size, align, verticalAlign, allCaps, spacing, weight, weightInherit, slant, slantInherit, underline, underlineInherit, fit, fitInherit, minSize, minSizeInherit, verticalAlignInherit, allCapsInherit); alias `fontPicker` |
 | Outputs | `sync()` — assignment, never binding (the adapter answers are function calls; a mid-edit control must not be yanked by an unrelated change) |
-| Events | none of its own — every row commits ONE field through the adapter (`commitOrSync`: a refusal re-syncs from the record); base fields route via the target's own verb, the style block via `setThemeTextStyleField`/`customizeCurrentSlide`; bold commits `fontWeight` 700/400, italic `fontStyle` italic/normal, underline `fontUnderline` true/false; the ↺ chips `reset` |
+| Events | none of its own — every row commits ONE field through the adapter (`commitOrSync`: a refusal re-syncs from the record); base fields route via the target's own verb, the style block and the layout pair via `setThemeTextStyleField`/`customizeCurrentSlide` (a context's `verticalAlign`/`allCaps` via its own context merge); bold commits `fontWeight` 700/400, italic `fontStyle` italic/normal, underline `fontUnderline` true/false, the vertical row `verticalAlign` top/center/bottom, All caps `allCaps` true/false; the ↺ chips `reset` |
 | Rules | min-size validates shape here (finite, 1..4096) and the domain keeps the last word; a focus-out whose text equals the record re-reads and writes nothing (`commitNumberIfChanged`, and the sparse variant compares against the resolved value when `showInheritedValues` is on, otherwise the own value); a segmented choice always commits, even equal to the resolved value — a deliberate pick that materialises is an edit |
-| Consumers | AppearanceInspector (Songs: full block; Bible: `sparse` + `showInheritedValues`, reset chips, no style block) |
+| Consumers | AppearanceInspector (Songs: full block; Bible: `sparse` + `showInheritedValues`, reset chips, no style block but the layout pair and the typography a context stores) |
 
 ### SegmentedControl
 
@@ -414,10 +433,10 @@ glance instead of hidden behind a closed combo.
 
 | | |
 |---|---|
-| Inputs | `model` (strings or `{value, label}` objects); `currentIndex`; `glyphStyle` (`"align"` draws the three paragraph marks); `italicValues` (slants an option whose value is `"italic"`); the former sparse `"(theme)"` entry is shown as "Theme" |
-| Outputs | `count`, `currentValue`, `labelAt(i)`/`valueAt(i)` |
-| Events | `activated(index)` — a click only; a programmatic `currentIndex` assignment (a sync from the record) never emits it, exactly as a ComboBox does not |
-| Consumers | TextStyleControls (alignment, slant, fit) |
+| Inputs | `model` (strings or `{value, label}` objects); `currentIndex`; `glyphStyle` (`"align"` draws the three horizontal paragraph marks, `"vertical"` the three vertical-anchor marks); `italicValues` (slants an option whose value is `"italic"`); the former sparse `"(theme)"` entry is shown as "Theme" |
+| Outputs | `count`, `currentValue`, `labelAt(i)`/`valueAt(i)`; each segment is named `<objectName>Segment<index>` and carries `Accessible.name`/`Accessible.checked`, so assistive tech and fixtures address the exact choice |
+| Events | `activated(index)` — a click or a keyboard activation only; a programmatic `currentIndex` assignment (a sync from the record) never emits it, exactly as a ComboBox does not. Segments take focus by Tab (`activeFocusOnTab`) and Space/Return call `activate(i)`, which is the same path a click takes |
+| Consumers | TextStyleControls (horizontal alignment, vertical anchor, slant, fit) |
 
 ### TextEffectsControls
 

@@ -304,6 +304,99 @@ in `workspace_ui_tests` — the captures now lead the theme list with Default.
 [themes-plan.md](ui/themes-plan.md)
 carries the model and the acceptance rows; the PLAN ledger closes TH.1–TH.9.
 
+### Text layout: where the words sit and whether they shout (TL)
+
+Two more answers travel the SAME appearance chain (the text-layout group,
+2026-11-16): `verticalAlign` (`"top"`/`"center"`/`"bottom"`) and `allCaps`
+(a strict boolean). Both are sparse optional fields on a theme, a named text
+context and a slide customization, resolved slide → context → nearest theme →
+default field by field, so an explicit `allCaps: false` is an authored answer
+rather than silence; the silent pair is centre / normal case, which is what
+every earlier file drew. The service format is 14 over 13: a format-13 file
+still loads with its pixels and IDs unchanged, and a pre-14 file naming either
+key is refused by name and era rather than guessed. Copying a theme or writing
+one field carries the whole entry (and one undo), and `removeTheme` treats the
+floor as before. The scoped consistency review found one real bug: "Remove
+customizations" decided whether anything was authored from a hand-kept list in
+QML that omitted `fontUnderline`, so an underline-only slide could not take its
+change back; the button now reads the domain's own sparse set
+(`DocumentController::currentSlideCustomized`), which counts an explicit `false`
+as the authored answer it is and needs no update when the vocabulary grows.
+
+The pair is CONCRETE on the wire, exactly like the rest of the style block.
+Scene format 8 carries both keys on every TEXT item (an image item carries
+neither: a picture has no paragraph to anchor), and scene 3–7 payloads read
+with centre/normal-case defaults, so older files and older workers keep their
+pixels; a scene-7 payload that NAMES either key is refused by name. Protocol
+minor is 20. `scene.text-layout.v1` names a worker that DRAWS the pair and
+`text.measure.v3` one that MEASURES with it; both are withheld by a build that
+does not yet draw them (TL.2) and earned in TL.3, so the frontend's
+`sceneIsSendable`/`measureText` gates refuse a non-default answer toward a hello
+without the name and say why, while centre/off content keeps the legacy payload
+shape and reaches any worker.
+
+The renderer owns both halves in ONE place (`SceneTextEngine`).
+`verticalOffset` computes the paragraph origin from the free space
+`max(0, boxHeight - textHeight)` divided 0 / half / all for top/centre/bottom;
+`paragraphTop` reads it for paint, ink bounds and the fit verdict, so the three
+cannot drift, and an overflowing fixed-size paragraph stays top-anchored,
+preserving the old clamped centre. `displayLines` applies ICU's ROOT-locale
+(`""`) uppercase exactly once, before SkParagraph shapes, wraps, fits or
+measures — so language-specific casing never depends on the operator's machine,
+authored line breaks and empty lines survive, and the source strings are never
+rewritten (the words on the slide stay as authored; capitals are a display
+transform). The transformed result is checked against the scene contract's
+line/item/scene character budgets with a named refusal, and `scene.prepare` runs
+that guard before the store grows rather than drawing truncated text or
+allocating past the wire's limits. `text.measure` enters the same path: an ask
+that named an anchor and supplied a box height gets POSITIONED bounds while the
+intrinsic height and line count never move, and a v2-shaped ask keeps the
+pre-TL numbers.
+
+Planning measures the type the audience will wear. `FlowStyle` and
+`MeasureRequest` carry the pair, the packer forwards it, and both the
+measurement cache key and `songPlanFingerprint` name it, so a toggle is a
+different plan rather than a stale hit; `validateFlowStyle` refuses an off-list
+anchor before any measurement. `DocumentController::fixtureBoxStyle` reads the
+pair off the compiled `SceneItem` the added slide will wear, and both the song
+and Bible importers put it on every measurement block. The import pages
+regenerate on `documentsChanged`, so a Theme Editor/Edit toggle re-measures the
+held words with no second network request; the planner clears its plan
+immediately and the Bible page discards a plan whose inputs moved
+mid-measurement, so a delayed plan can never enable Add. Committed slide
+boundaries and labels are untouched.
+
+The controls are shared, not copied (`TextStyleControls`): a Vertical row of
+three in-repository paragraph marks immediately after the horizontal alignment
+row, then one All caps checkbox, then line spacing — the same order on the Songs
+theme, the Bible view and the Edit slide. Each icon has an accessible name and a
+tooltip, takes focus by Tab and activates on Space/Return as well as a click,
+and every row shows the resolved value, the own/inherited dot and the same reset
+chip; a change is one inspector commit (one undo), the off-air preview re-asks
+on `documentsChanged`, and no edit presents — the audience changes only on the
+next explicit Go, including for the currently live cue.
+
+Evidence: `domain_tests` (chain, explicit false, context precedence, clearing,
+format-14 round-trip, byte-identical re-save, era/off-list refusals),
+`document_controller_tests` (the theme row's `...Set` pair, whole-set and
+one-field verbs with one undo, customize/revert, the context read model,
+duplicate, `createThemeFromCurrent`, save/reload),
+`scene_tests`/`protocol_tests` (scene 8 text-only keys, scene-7 reader and
+refusal, the capability spellings, minor 20), `text_measure_tests` (v3
+acceptance, malformed refusal, spelled centre/off measuring identically,
+positioned bounds, the prepare-time budget refusal), `unicode_text_tests`
+(ß→SS, ü→Ü, root-locale i→I, empty lines, source intact, budget refusals),
+`scene_render_tests` (three distinct anchor origins, every pixel inside the
+anchored ink rect, allCaps matching literal capitals),
+`inspector_adapter_tests` (provenance/commit/reset on theme, view and slide),
+`worker_controller_tests` (both capability gates open and closed, legacy-shaped
+centre/off payloads), `control_set_ui_tests` (shared order, icon names, keyboard
+activation), `workspace_ui_tests` (the underline-only and explicit-false Remove
+customizations path), and `production_journey_tests`/`frontend_journey_tests`
+(the preview-only edit → explicit Go → acknowledged pixels → reset/undo →
+save/reopen journey with the source words and the same media asset preserved).
+[text-layout-plan.md](ui/text-layout-plan.md) carries the brief.
+
 ## Online Bible import (milestone BI)
 
 The importer brings ONE requested passage at a time from Bible Gateway into
