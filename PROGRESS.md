@@ -11,6 +11,20 @@ archive is a current instruction.
 
 ## Current checkpoint
 
+**Edit canvas follow-up (BX.5, 2026-11-16): fixed and verified.** Sustained
+box drags could be stolen by Edit's parent Flickable; the earlier pointer matrix
+used one jump per drag and missed this. The canvas now keeps accepted box grabs,
+while empty-space presses remain available to the page. Centre guides now use
+their fitted-content parent's origin instead of applying the stage offset twice.
+The revised pointer matrix reproduced both failures before the fix, and checks
+guide endpoints as well as visibility. Build of `openshow-ui` and
+`workspace_ui_tests` passed using `CCACHE_DIR=/tmp/openshow-review-ccache`.
+Focused ctest checks passed **3/3** (workspace 63.52 s, control set 3.02 s,
+UI load 8.02 s); the workspace binary also passed with `QT_SCALE_FACTOR=1.5`
+and `2` on the offscreen/software backend. `git diff --check` passed. Restart
+the application to load its rebuilt QML; no physical-display check is claimed.
+Prior BX.1–BX.4 evidence below remains historical.
+
 **Box manipulation (2026-11-16): BX.1–BX.4 are DONE.** The
 [box-manipulation brief](docs/ui/box-manipulation-plan.md) fixes all four corner
 handles across Theme Songs/Bible/Edit and removes numeric geometry/Center H/V

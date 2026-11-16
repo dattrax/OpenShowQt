@@ -12,7 +12,7 @@ import QtQuick.Controls
  * gesture. A move gesture whose box centre comes within a few screen
  * pixels of the canvas centre snaps that axis exactly onto it and draws a
  * guide line (review 2026-11-10), the same rule ThemeEditorPage's
- * placement layer and the geometry row's Centre H/V buttons use.
+ * placement layer uses.
  *
  * What is inside the boxes is the worker's own render (task 6.16a): the
  * slide is prepared and drawn into the preview stream's off-air target,
@@ -358,19 +358,21 @@ Item {
         Rectangle {
             objectName: "centreGuideX"
             visible: canvas.dragMode === "move" && canvas.snappedX
-            x: stage.x + stage.width / 2
-            y: stage.y
+            // These are children of the fitted content overlay, whose
+            // origin already includes the stage's letterbox offset.
+            x: parent.width / 2
+            y: 0
             width: 1
-            height: stage.height
+            height: parent.height
             color: "#ffd666"
             z: 5
         }
         Rectangle {
             objectName: "centreGuideY"
             visible: canvas.dragMode === "move" && canvas.snappedY
-            x: stage.x
-            y: stage.y + stage.height / 2
-            width: stage.width
+            x: 0
+            y: parent.height / 2
+            width: parent.width
             height: 1
             color: "#ffd666"
             z: 5
@@ -387,6 +389,10 @@ Item {
             anchors.fill: parent
             anchors.margins: -canvas.gestureInset
             acceptedButtons: Qt.LeftButton | Qt.RightButton
+            // Edit lives inside a Flickable. Once a box/handle accepts a
+            // press, keep its grab through the whole drag instead of
+            // allowing the page to steal it and cancel the edit.
+            preventStealing: true
             hoverEnabled: true
             cursorShape: canvas.dragMode !== ""
                          ? transform.cursorFor(canvas.dragMode)
@@ -419,6 +425,7 @@ Item {
                 const mode = canvas.hitTest(px, py)
                 if (mode === "") {
                     canvas.selected = false
+                    mouse.accepted = false
                     return
                 }
                 // Pressing a box BODY works on THAT box: the topmost one
@@ -456,7 +463,7 @@ Item {
                 canvas.applyDrag((mouse.x - canvas.dragOrigin.x) / canvas.zoom,
                                  (mouse.y - canvas.dragOrigin.y) / canvas.zoom)
             }
-            onReleased: {
+            onReleased: function (mouse) {
                 if (mouse.button === Qt.LeftButton)
                     canvas.endDrag()
             }

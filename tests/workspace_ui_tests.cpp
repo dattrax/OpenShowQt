@@ -11,6 +11,7 @@
 #include <QQmlExpression>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLineF>
 #include <QQuickItem>
 #include <QJSValue>
 #include <QQuickStyle>
@@ -5520,9 +5521,19 @@ int main(int argc, char** argv) {
                     (canvas->height() - canvas->property("stageHeight").toDouble()) / 2.0;
                 return canvas->mapToScene(QPointF(sx + ax * z, sy + ay * z));
             };
+            // A real drag delivers several position events. A single jump
+            // followed by release misses the parent Flickable stealing the
+            // MouseArea's grab after its drag threshold is crossed.
+            const auto movePointer = [&](const QPointF& from, const QPointF& to) {
+                for (int step = 1; step <= 12; ++step) {
+                    const QPointF point = from + (to - from) * (step / 12.0);
+                    QTest::mouseMove(window, point.toPoint(), 10);
+                    QTest::qWait(5);
+                }
+            };
             const auto drag = [&](const QPointF& from, const QPointF& to) {
                 QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from.toPoint());
-                QTest::mouseMove(window, to.toPoint(), 20);
+                movePointer(from, to);
                 QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, to.toPoint());
                 QTest::qWait(80);
             };
@@ -5565,10 +5576,12 @@ int main(int argc, char** argv) {
                     docs.undo();
                     QTest::qWait(60);
                 };
-                corner("br", 50, 40, 200, 150, 450, 340);
-                corner("tr", -30, 20, 200, 170, 370, 280);
-                corner("bl", 30, -20, 230, 150, 370, 280);
-                corner("tl", 30, 20, 230, 170, 370, 280);
+                // Cross the scrolling parent's threshold at every zoom,
+                // rather than stopping before a real drag can be stolen.
+                corner("br", 180, 140, 200, 150, 580, 440);
+                corner("tr", -150, 120, 200, 270, 250, 180);
+                corner("bl", 150, -120, 350, 150, 250, 180);
+                corner("tl", 150, 120, 350, 270, 250, 180);
 
                 // Centre axes: the body drag snaps exactly and shows its
                 // guide; beyond the tolerance it stays free. Size never moves.
@@ -5578,12 +5591,19 @@ int main(int argc, char** argv) {
                     const QPointF from = scenePoint(400, 300);
                     QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier,
                                       from.toPoint());
-                    QTest::mouseMove(window, scenePoint(960, 300).toPoint(), 20);
+                    movePointer(from, scenePoint(960, 300));
                     QTest::qWait(40);
                     auto* guideX = findNamed(window->contentItem(), "centreGuideX");
                     check(canvas->property("snappedX").toBool() && guideX
                               && guideX->isVisible(),
                           "a body drag near the horizontal centre snaps and shows its guide");
+                    if (guideX != nullptr) {
+                        check(QLineF(guideX->mapToScene(QPointF(0, 0)),
+                                     scenePoint(960, 0)).length() <= 0.5 &&
+                                  QLineF(guideX->mapToScene(QPointF(0, guideX->height())),
+                                         scenePoint(960, 1080)).length() <= 0.5,
+                              "the vertical guide lies on the slide centre from top to bottom");
+                    }
                     QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier,
                                         scenePoint(960, 300).toPoint());
                     QTest::qWait(80);
@@ -5600,12 +5620,19 @@ int main(int argc, char** argv) {
                     const QPointF from = scenePoint(400, 300);
                     QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier,
                                       from.toPoint());
-                    QTest::mouseMove(window, scenePoint(400, 540).toPoint(), 20);
+                    movePointer(from, scenePoint(400, 540));
                     QTest::qWait(40);
                     auto* guideY = findNamed(window->contentItem(), "centreGuideY");
                     check(canvas->property("snappedY").toBool() && guideY
                               && guideY->isVisible(),
                           "a body drag near the vertical centre snaps and shows its guide");
+                    if (guideY != nullptr) {
+                        check(QLineF(guideY->mapToScene(QPointF(0, 0)),
+                                     scenePoint(0, 540)).length() <= 0.5 &&
+                                  QLineF(guideY->mapToScene(QPointF(guideY->width(), 0)),
+                                         scenePoint(1920, 540)).length() <= 0.5,
+                              "the horizontal guide lies on the slide centre from left to right");
+                    }
                     QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier,
                                         scenePoint(400, 540).toPoint());
                     QTest::qWait(80);
@@ -5622,7 +5649,7 @@ int main(int argc, char** argv) {
                     const QPointF from = scenePoint(400, 300);
                     QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier,
                                       from.toPoint());
-                    QTest::mouseMove(window, scenePoint(960, 540).toPoint(), 20);
+                    movePointer(from, scenePoint(960, 540));
                     QTest::qWait(40);
                     auto* guideX = findNamed(window->contentItem(), "centreGuideX");
                     auto* guideY = findNamed(window->contentItem(), "centreGuideY");
