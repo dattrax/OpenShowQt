@@ -757,11 +757,13 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
                                  : answer.error)));
                     return;
                 }
+                // Review D7b: the pixels are a worker-produced file; the
+                // control connection carries its path and nothing else.
                 defer(proto::makeResult(
                     id, boost::json::object{{"path", mediaPath},
+                                            {"cachePath", answer.cachePath},
                                             {"width", answer.width},
-                                            {"height", answer.height},
-                                            {"data", answer.base64}}));
+                                            {"height", answer.height}}));
             });
         if (!scheduled) {
             proto::appendFrame(

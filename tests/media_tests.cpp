@@ -778,6 +778,78 @@ int main() {
                    "a deprecated full-range format no longer logs swscale's range warning") && ok;
     }
 
+    // ---- review D7b: the Media Bin's on-disk thumbnail cache ----
+    {
+        const std::filesystem::path cache =
+            std::filesystem::temp_directory_path() / "openshow-media-tests-thumbnails";
+        std::filesystem::remove_all(cache);
+        std::string first;
+        std::string firstError;
+        int width = 0;
+        int height = 0;
+        ok = check(openshow::media::videoThumbnailCachePath(fullRange, 160, 90, cache.string(),
+                                                            &first, &width, &height,
+                                                            &firstError),
+                   "the thumbnail cache writes a file") && ok;
+        ok = check(std::filesystem::exists(first) && width > 0 && height > 0,
+                   "the cache path names a real file with a real size") && ok;
+        {
+            std::ifstream in(first, std::ios::binary);
+            unsigned char header[8] = {};
+            in.read(reinterpret_cast<char*>(header), 8);
+            ok = check(header[0] == 0x89 && header[1] == 'P' && header[2] == 'N' &&
+                           header[3] == 'G',
+                       "and the file is a PNG, not a JSON payload") && ok;
+        }
+        const auto firstWritten = std::filesystem::last_write_time(first);
+        std::string second;
+        std::string secondError;
+        ok = check(openshow::media::videoThumbnailCachePath(fullRange, 160, 90, cache.string(),
+                                                            &second, &width, &height,
+                                                            &secondError) &&
+                       second == first,
+                   "asking again reuses the same cache entry") && ok;
+        ok = check(std::filesystem::last_write_time(first) == firstWritten,
+                   "and does not rewrite it") && ok;
+
+        // A re-encoded clip is a different entry: the name fingerprints the
+        // source's size and mtime, so a card cannot keep the old picture
+        // under a changed file.
+        {
+            std::ofstream out(fullRange, std::ios::binary | std::ios::app);
+            out << " ";
+        }
+        std::string third;
+        std::string thirdError;
+        ok = check(openshow::media::videoThumbnailCachePath(fullRange, 160, 90, cache.string(),
+                                                            &third, &width, &height,
+                                                            &thirdError) &&
+                       third != first,
+                   "a changed source file gets a new cache entry") && ok;
+
+        // The budgets: fill the directory past the file cap and prove the
+        // next write prunes it back.
+        for (std::size_t i = 0; i < openshow::media::kThumbnailCacheMaxFiles + 8; ++i) {
+            std::ofstream out(cache / ("filler-" + std::to_string(i) + ".png"),
+                              std::ios::binary);
+            out << "x";
+        }
+        std::string pruned;
+        std::string prunedError;
+        ok = check(openshow::media::videoThumbnailCachePath(fullRange, 160, 90, cache.string(),
+                                                            &pruned, &width, &height,
+                                                            &prunedError),
+                   "a write over the budget still succeeds") && ok;
+        std::size_t entries = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(cache)) {
+            (void)entry;
+            ++entries;
+        }
+        ok = check(entries <= openshow::media::kThumbnailCacheMaxFiles,
+                   "and the directory is pruned to the file budget") && ok;
+        std::filesystem::remove_all(cache);
+    }
+
     if (!ok) {
         return 1;
     }

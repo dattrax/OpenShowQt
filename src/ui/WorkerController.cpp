@@ -15,6 +15,7 @@
 #include <QFile>
 #include <QStringList>
 #include <QTimer>
+#include <QUrl>
 
 #include <chrono>
 #include <cmath>
@@ -1037,20 +1038,29 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                            : QString();
             };
             map.insert(QStringLiteral("path"), stringOf("path"));
-            map.insert(QStringLiteral("data"), stringOf("data"));
+            // Review D7b: the worker hands back a FILE, not pixels. The card
+            // loads it from disk; the control connection never carried the
+            // frame in the first place.
+            map.insert(QStringLiteral("cachePath"), stringOf("cachePath"));
             return map;
         }();
-        fThumbnailPending.remove(row.value(QStringLiteral("path")).toString());
-        fThumbnailRequestPaths.remove(pending.id);
         const QString key = row.value(QStringLiteral("path")).toString();
-        const QString data = row.value(QStringLiteral("data")).toString();
-        if (key.isEmpty() || data.isEmpty()) {
+        const QString cachePath = row.value(QStringLiteral("cachePath")).toString();
+        // A stale card is rejected by identity: the reply must answer the
+        // request THIS client made for THIS path. A reconnect clears both
+        // maps, so a reply that outlived its connection is not installed.
+        const bool asked = !key.isEmpty() &&
+                           fThumbnailRequestPaths.value(pending.id) == key &&
+                           fThumbnailPending.contains(key);
+        fThumbnailPending.remove(key);
+        fThumbnailRequestPaths.remove(pending.id);
+        if (!asked || cachePath.isEmpty()) {
             return;
         }
         if (fVideoThumbnails.size() > 64) {
             fVideoThumbnails.clear();
         }
-        fVideoThumbnails.insert(key, QStringLiteral("data:image/png;base64,") + data);
+        fVideoThumbnails.insert(key, QUrl::fromLocalFile(cachePath).toString());
         emit videoThumbnailsChanged();
         return;
     }

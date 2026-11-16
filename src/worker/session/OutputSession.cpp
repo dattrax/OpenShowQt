@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <cstdlib>
 #include <ctime>
 #include <thread>
@@ -924,11 +925,23 @@ bool OutputSession::requestMediaThumbnailDeferred(
     // Review D7: opening, demuxing and decoding a clip is the most expensive
     // thing the bin asks for. It runs on the media executor with the same
     // bounded packet budget, and its answer travels as a deferred reply.
-    if (path.empty() || !fBackgroundMedia) {
+    // The bin's thumbnails live in one bounded directory under the system
+    // temp root: the frontend receives its absolute path, so no shared
+    // configuration is needed, and the worker prunes it to the budgets in
+    // VideoThumbnail.h.
+    std::string cacheDir;
+    {
+        std::error_code error;
+        const std::filesystem::path root = std::filesystem::temp_directory_path(error);
+        if (!error) {
+            cacheDir = (root / "openshow-media-thumbnails").string();
+        }
+    }
+    if (path.empty() || !fBackgroundMedia || cacheDir.empty()) {
         MediaThumbnail answer;
-        answer.ok = openshow::media::videoThumbnailBase64(
-            path, boxWidth, boxHeight, &answer.base64, &answer.width, &answer.height,
-            &answer.error);
+        answer.ok = openshow::media::videoThumbnailCachePath(
+            path, boxWidth, boxHeight, cacheDir, &answer.cachePath, &answer.width,
+            &answer.height, &answer.error);
         if (!answer.ok && answer.error.empty()) {
             answer.error = "the frame could not be decoded";
         }
@@ -938,7 +951,8 @@ bool OutputSession::requestMediaThumbnailDeferred(
     auto answer = std::make_shared<MediaThumbnail>();
     return fMediaWork.submit(
         jobId,
-        [path, boxWidth, boxHeight, answer](const std::atomic<bool>& cancelled) {
+        [path, boxWidth, boxHeight, cacheDir, answer](
+            const std::atomic<bool>& cancelled) {
             if (cancelled.load(std::memory_order_acquire)) {
                 return;
             }
@@ -954,9 +968,9 @@ bool OutputSession::requestMediaThumbnailDeferred(
                     return;
                 }
             }
-            answer->ok = openshow::media::videoThumbnailBase64(
-                path, boxWidth, boxHeight, &answer->base64, &answer->width, &answer->height,
-                &answer->error);
+            answer->ok = openshow::media::videoThumbnailCachePath(
+                path, boxWidth, boxHeight, cacheDir, &answer->cachePath, &answer->width,
+                &answer->height, &answer->error);
             if (!answer->ok && answer->error.empty()) {
                 answer->error = "the frame could not be decoded";
             }

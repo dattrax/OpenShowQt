@@ -6,8 +6,12 @@
 #include <png.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 namespace openshow::media {
@@ -50,8 +54,8 @@ struct PngWriter {
     static void flush(png_structp) {}
 };
 
-bool encodePng(const std::uint8_t* rgb, int width, int height, std::string* out,
-               std::string* error) {
+bool encodePngBytes(const std::uint8_t* rgb, int width, int height, std::string* out,
+                    std::string* error) {
     PngWriter* writer = new PngWriter;
     png_structp png =
         png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
@@ -86,18 +90,83 @@ bool encodePng(const std::uint8_t* rgb, int width, int height, std::string* out,
     }
     png_write_end(png, nullptr);
     png_destroy_write_struct(&png, &info);
-    *out = base64Encode(reinterpret_cast<const std::uint8_t*>(writer->bytes.data()),
-                        writer->bytes.size());
+    *out = std::move(writer->bytes);
     delete writer;
     return true;
 }
 
+// FNV-1a over the source's identity and the requested box: a stable name for
+// the same file at the same size, and a different one when either changes.
+std::string fingerprint(const std::string& path, std::uintmax_t size,
+                        std::int64_t modified, int boxWidth, int boxHeight) {
+    std::uint64_t hash = 1469598103934665603ull;
+    const auto mix = [&hash](const void* data, std::size_t count) {
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        for (std::size_t i = 0; i < count; ++i) {
+            hash ^= bytes[i];
+            hash *= 1099511628211ull;
+        }
+    };
+    mix(path.data(), path.size());
+    mix(&size, sizeof(size));
+    mix(&modified, sizeof(modified));
+    mix(&boxWidth, sizeof(boxWidth));
+    mix(&boxHeight, sizeof(boxHeight));
+    char text[17];
+    std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(hash));
+    return text;
+}
+
+// The cache's budgets, applied after every write (review D7b): at most
+// kThumbnailCacheMaxFiles entries, kThumbnailCacheMaxBytes on disk and
+// kThumbnailCacheMaxAgeSeconds of life. Oldest-first, so a bin the operator
+// keeps using keeps its pictures.
+void pruneCache(const std::filesystem::path& directory) {
+    namespace fs = std::filesystem;
+    std::error_code error;
+    struct Entry {
+        fs::path path;
+        fs::file_time_type written;
+        std::uintmax_t bytes;
+    };
+    std::vector<Entry> entries;
+    for (const fs::directory_entry& entry : fs::directory_iterator(directory, error)) {
+        if (error || !entry.is_regular_file(error)) {
+            continue;
+        }
+        entries.push_back({entry.path(), entry.last_write_time(error),
+                           entry.file_size(error)});
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const Entry& a, const Entry& b) { return a.written < b.written; });
+    const auto now = fs::file_time_type::clock::now();
+    std::uintmax_t total = 0;
+    for (const Entry& entry : entries) {
+        total += entry.bytes;
+    }
+    std::size_t kept = entries.size();
+    for (const Entry& entry : entries) {
+        const bool tooOld =
+            std::chrono::duration_cast<std::chrono::seconds>(now - entry.written).count() >
+            kThumbnailCacheMaxAgeSeconds;
+        if (tooOld || kept > kThumbnailCacheMaxFiles || total > kThumbnailCacheMaxBytes) {
+            fs::remove(entry.path, error);
+            if (!tooOld) {
+                total -= entry.bytes;
+                --kept;
+            } else {
+                total -= entry.bytes;
+                --kept;
+            }
+        }
+    }
+}
+
 }  // namespace
 
-bool videoThumbnailBase64(const std::string& path, int maxWidth, int maxHeight,
-                          std::string* base64Png, int* width, int* height,
-                          std::string* error) {
-    if (base64Png == nullptr || width == nullptr || height == nullptr) {
+bool videoThumbnailPng(const std::string& path, int maxWidth, int maxHeight,
+                       std::string* png, int* width, int* height, std::string* error) {
+    if (png == nullptr || width == nullptr || height == nullptr) {
         if (error != nullptr) *error = "video thumbnail: null output";
         return false;
     }
@@ -196,7 +265,7 @@ bool videoThumbnailBase64(const std::string& path, int maxWidth, int maxHeight,
         sws_scale(sws, frame->data, frame->linesize, 0, frame->height, dstData,
                   dstLinesize);
         sws_freeContext(sws);
-        ok = encodePng(rgb.data(), dstWidth, dstHeight, base64Png, error);
+        ok = encodePngBytes(rgb.data(), dstWidth, dstHeight, png, error);
         *width = dstWidth;
         *height = dstHeight;
     }
@@ -207,6 +276,100 @@ cleanup:
     avcodec_free_context(&decoder);
     if (format != nullptr) avformat_close_input(&format);
     return ok;
+}
+
+bool videoThumbnailBase64(const std::string& path, int maxWidth, int maxHeight,
+                          std::string* base64Png, int* width, int* height,
+                          std::string* error) {
+    std::string png;
+    if (!videoThumbnailPng(path, maxWidth, maxHeight, &png, width, height, error)) {
+        return false;
+    }
+    if (base64Png == nullptr) {
+        if (error != nullptr) *error = "video thumbnail: null output";
+        return false;
+    }
+    *base64Png = base64Encode(reinterpret_cast<const std::uint8_t*>(png.data()), png.size());
+    return true;
+}
+
+bool videoThumbnailCachePath(const std::string& path, int maxWidth, int maxHeight,
+                             const std::string& cacheDir, std::string* cachePath,
+                             int* width, int* height, std::string* error) {
+    namespace fs = std::filesystem;
+    if (cachePath == nullptr) {
+        if (error != nullptr) *error = "video thumbnail: null cache path";
+        return false;
+    }
+    const int boxWidth = std::clamp(maxWidth, 16, 1024);
+    const int boxHeight = std::clamp(maxHeight, 16, 1024);
+    std::error_code statusError;
+    const std::uintmax_t size = fs::file_size(path, statusError);
+    if (statusError) {
+        if (error != nullptr) *error = "video thumbnail: cannot read " + path;
+        return false;
+    }
+    // The mtime in the name is what makes a re-encoded clip a NEW card rather
+    // than the old picture under a new file's name.
+    const auto modified = fs::last_write_time(path, statusError);
+    const std::int64_t modifiedSeconds =
+        statusError
+            ? 0
+            : std::chrono::duration_cast<std::chrono::seconds>(modified.time_since_epoch())
+                  .count();
+    const fs::path directory(cacheDir);
+    fs::create_directories(directory, statusError);
+    if (statusError) {
+        if (error != nullptr) *error = "video thumbnail: cannot create the cache directory";
+        return false;
+    }
+    const fs::path target =
+        directory /
+        (fingerprint(path, size, modifiedSeconds, boxWidth, boxHeight) + ".png");
+    if (fs::exists(target, statusError) && !statusError) {
+        // The budgets hold on a HIT too: the directory can have been filled
+        // by another session between writes.
+        pruneCache(directory);
+        *cachePath = fs::absolute(target).string();
+        // The size was measured when the entry was written; a caller that
+        // needs it re-reads the PNG header instead of the source.
+        if (width != nullptr) *width = boxWidth;
+        if (height != nullptr) *height = boxHeight;
+        return true;
+    }
+    std::string png;
+    int thumbWidth = 0;
+    int thumbHeight = 0;
+    if (!videoThumbnailPng(path, boxWidth, boxHeight, &png, &thumbWidth, &thumbHeight,
+                           error)) {
+        return false;
+    }
+    // Written through a temporary file and renamed, so a reader never sees a
+    // torn PNG. The name is content-identity, so a concurrent writer writes
+    // the same bytes.
+    const fs::path staging = target.string() + ".tmp";
+    {
+        std::ofstream out(staging, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            if (error != nullptr) *error = "video thumbnail: cannot write the cache file";
+            return false;
+        }
+        out.write(png.data(), static_cast<std::streamsize>(png.size()));
+        if (!out) {
+            if (error != nullptr) *error = "video thumbnail: short write to the cache";
+            return false;
+        }
+    }
+    fs::rename(staging, target, statusError);
+    if (statusError) {
+        if (error != nullptr) *error = "video thumbnail: cannot publish the cache file";
+        return false;
+    }
+    pruneCache(directory);
+    *cachePath = fs::absolute(target).string();
+    if (width != nullptr) *width = thumbWidth;
+    if (height != nullptr) *height = thumbHeight;
+    return true;
 }
 
 }  // namespace openshow::media

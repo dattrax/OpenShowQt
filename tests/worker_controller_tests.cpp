@@ -1366,8 +1366,10 @@ private:
             _exit(0);
         }
         if (method == proto::kMethodMediaThumbnail) {
-            // One base64 payload, shaped like the real answer. The fixture
-            // watches the frontend's own map, so the bytes are irrelevant.
+            // Review D7b: the answer is a FILE the worker produced, shaped
+            // like the real answer. The fixture watches the frontend's own
+            // map, so the picture's bytes are irrelevant; the file itself
+            // has to exist, because the card loads it.
             std::string wanted;
             if (request.contains("params") && request.at("params").is_object()) {
                 const auto& params = request.at("params").as_object();
@@ -1376,8 +1378,15 @@ private:
                     wanted = std::string(it->value().as_string());
                 }
             }
+            const std::string cachePath = fReportPath + ".thumb.png";
+            if (std::FILE* file = std::fopen(cachePath.c_str(), "wb")) {
+                std::fwrite("\x89PNG\r\n\x1a\n", 1, 8, file);
+                std::fclose(file);
+            }
             sendResult(id, boost::json::object{{"path", wanted},
-                                               {"data", "iVBORw0KGgo="}});
+                                               {"cachePath", cachePath},
+                                               {"width", 160},
+                                               {"height", 90}});
             return;
         }
         // Anything else the controller sent that this peer does not model
@@ -4994,9 +5003,11 @@ void scenarioThumbnailAskedBeforeHello() {
         controller.shutdownNow();
         return;
     }
+    // Review D7b: the card receives a FILE reference (the worker's cache
+    // path), not pixels in the control connection.
     check(controller.videoThumbnails().value(path).toString().startsWith(
-              QStringLiteral("data:image/png;base64,")),
-          "thumbnail: the card receives the worker's picture");
+              QStringLiteral("file://")),
+          "thumbnail: the card receives the worker's picture as a file reference");
     controller.shutdownNow();
 }
 

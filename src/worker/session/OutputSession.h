@@ -586,7 +586,9 @@ public:
                                       std::function<void(MediaDescription)> done);
     struct MediaThumbnail {
         bool ok = false;
-        std::string base64;   // the encoded frame (DR.7a); the cache path replaces it in DR.7b
+        // Review D7b: the PNG is a worker-produced file, and this is its
+        // path — pixels never ride the control connection.
+        std::string cachePath;
         int width = 0;
         int height = 0;
         std::string error;

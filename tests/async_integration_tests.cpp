@@ -1,6 +1,8 @@
 // Async scene/media contracts through the production frontend and worker.
 #include <boost/json.hpp>
 #include <QCoreApplication>
+#include <QFileInfo>
+#include <QUrl>
 #include <QImage>
 #include <QTemporaryDir>
 
@@ -337,6 +339,14 @@ void mediaBinWorkDoesNotHoldTheConnection(const std::string& slowClip) {
                               .isEmpty();
               }, 8000),
               "media work: the thumbnail arrives when its decode finishes");
+        // Review D7b: the answer is a worker-produced FILE, not pixels in
+        // the control connection, and the card loads it from disk.
+        const QString thumbnailSource =
+            worker.videoThumbnails().value(QString::fromStdString(slowClip)).toString();
+        check(thumbnailSource.startsWith(QStringLiteral("file://")),
+              "media work: the thumbnail is a file reference, not a JSON payload");
+        check(QFileInfo::exists(QUrl(thumbnailSource).toLocalFile()),
+              "media work: and the file the card will load exists");
         worker.shutdownNow();
     }
     qunsetenv("OPENSHOW_FAULT_MEDIA_WORK_MS");
