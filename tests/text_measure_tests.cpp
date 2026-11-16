@@ -664,6 +664,42 @@ int main(int argc, char* argv[]) {
                                                     {"blurSigma", 0.0}};
         refusedWith(shadowColor, "color", "a colour past 0xFFFFFF is refused naming it");
 
+        // --- Task TL.2: text.measure.v3's optional layout pair ---
+        // Spelled centre/off IS the absent keys: the same numbers, verdict
+        // and bounds a v1/v2 ask answered, to the last bit.
+        const Measured implicitLayout =
+            measureOne(fd, nextId, block("l1", {"Hello world again"}, 40.0, 800.0), &error);
+        boost::json::object spelledLayout =
+            block("l1", {"Hello world again"}, 40.0, 800.0);
+        spelledLayout["verticalAlign"] = "center";
+        spelledLayout["allCaps"] = false;
+        const Measured defaultLayout = measureOne(fd, nextId, spelledLayout, &error);
+        check(defaultLayout.ok && implicitLayout.ok &&
+                  defaultLayout.height == implicitLayout.height &&
+                  defaultLayout.lineCount == implicitLayout.lineCount &&
+                  defaultLayout.left == implicitLayout.left &&
+                  defaultLayout.right == implicitLayout.right &&
+                  defaultLayout.top == implicitLayout.top &&
+                  defaultLayout.bottom == implicitLayout.bottom,
+              "spelled centre/off measures exactly as the absent pair did");
+        boost::json::object topCaps = block("l2", {"Hello world"}, 40.0, 800.0);
+        topCaps["verticalAlign"] = "top";
+        topCaps["allCaps"] = true;
+        const Measured laidOut = measureOne(fd, nextId, topCaps, &error);
+        check(laidOut.ok && laidOut.height > 0.0,
+              "a well-formed layout pair is accepted and answered");
+        boost::json::object badAnchor = block("r", {"words"}, 40.0, 800.0);
+        badAnchor["verticalAlign"] = "middle";
+        refusedWith(badAnchor, "verticalAlign",
+                    "an anchor off the closed word set is refused naming the key");
+        badAnchor["verticalAlign"] = 3;
+        refusedWith(badAnchor, "verticalAlign",
+                    "a non-string anchor is refused naming the key");
+        boost::json::object badCaps = block("r", {"words"}, 40.0, 800.0);
+        badCaps["allCaps"] = "yes";
+        refusedWith(badCaps, "allCaps",
+                    "a stringy caps answer is refused naming the key");
+
         // And the session lives on after all of it.
         const Measured after = measureOne(fd, nextId, block("live", {"still here"}, 40.0, 800.0),
                                           &error);

@@ -1928,7 +1928,7 @@ Defaults remain centre/off. [Contract, source findings and acceptance](docs/ui/t
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
 | TL.1 | DONE | Persist and resolve sparse `verticalAlign` / `allCaps` on themes, contexts and slide overrides | Service 14 over current 13; centre/off legacy pixels and IDs preserved; explicit false/inheritance, context precedence, copy, reset and one-undo round-trips; strict invalid/old-format key refusal (`domain_tests`, `document_controller_tests`) |
-| TL.2 | TODO | Carry concrete layout through scenes, measurement, adapters and worker capability gates | Scene 8/protocol 0.20 over 7/0.19, `scene.text-layout.v1` / `text.measure.v3`; strict text-only fields, safe legacy defaults and named refusal of unsupported non-default settings; shared inspector provenance/verbs (`scene_tests`, `protocol_tests`, `inspector_adapter_tests`, `worker_controller_tests`) |
+| TL.2 | DONE | Carry concrete layout through scenes, measurement, adapters and worker capability gates | Scene 8/protocol 0.20 over 7/0.19, `scene.text-layout.v1` / `text.measure.v3`; strict text-only fields, safe legacy defaults and named refusal of unsupported non-default settings; shared inspector provenance/verbs (`scene_tests`, `protocol_tests`, `inspector_adapter_tests`, `worker_controller_tests`) |
 | TL.3 | TODO | Render vertical placement and reversible Unicode capitals through the shared layout engine | Top/centre/bottom use one paragraph-origin calculation for paint and bounds; root-locale uppercase precedes shaping/fit/measurement, source UTF-8 stays intact, transformed limits are bounded; pinned-font raster and measurement regressions cover wrapping, overflow, effects and multiple boxes |
 | TL.4 | TODO | Propagate layout settings through song/Bible planning and stale-result ownership | Measurement, fingerprints and cache keys agree with render; toggles invalidate drafts and delayed plans cannot enable Add; original-case words/labels conserved; committed slide boundaries remain authored (`song_pagination_tests`, `scripture_pagination_tests`, song/Bible journeys) |
 | TL.5 | TODO | Review editor consistency and add shared layout icons/All caps control | Songs/Bible/Edit share control order, tooltips, keyboard access, resolved state and per-field reset; fix underline-only Remove customizations via one domain-derived state, including explicit false; one gesture/undo and immediate correct off-air preview, with no audience presentation on edit (`workspace_ui_tests`, `control_set_ui_tests`) |
@@ -1952,10 +1952,34 @@ domain's own sentence. `domain_tests` exercises the chain, storage round-trip,
 explicit false, context precedence, clearing and refusals; the new
 `document_controller_tests` fixture `exerciseTextLayoutSurfaces` covers the
 theme row's `...Set` pair, whole-set and one-field verbs with one undo each,
-the Edit page's customize/revert badges, the context read model and its
-carry-over, duplication and `createThemeFromCurrent`, and the save/reload
+the Edit page's customize/revert badges, the context read model (and the
+shared inspector's merge, which is what carries an untouched pair across a
+one-field edit — the whole-entry verb itself keeps its "absent is silence"
+rule), duplication and `createThemeFromCurrent`, and the save/reload
 round-trip. Focused runs and the full suite pass: 85/85 tests, including
 `domain_tests` and `document_controller_tests`.
+
+TL.2 evidence (2026-11-16): scene format 8 carries the resolved
+`verticalAlign`/`allCaps` pair on every TEXT item — always written, like the
+style block — and protocol minor is 20. `scene_tests` proves the compile
+carries the pair onto every text item (source words keep their authored case),
+a scene-7 payload reads onto centre/normal case and compares equal to its
+scene-8 twin, scene-7 payloads naming either key are refused by name, scene 8
+requires both keys and refuses an off-list anchor or a non-boolean caps
+answer, and image items acquire neither key on the wire or the reader. The
+`text.measure` handler accepts the optional pair under v3, refuses a malformed
+one naming the key, and measures spelled centre/off exactly as the absent pair
+did (`text_measure_tests`). `scene.text-layout.v1` and `text.measure.v3` are
+defined as the contract's spellings and deliberately WITHHELD from this
+build's hello — the renderer earns them in TL.3 — so the frontend's gates
+refuse a non-default pair toward it and name the missing capability
+(`protocol_tests`, `worker_controller_tests`). Centre/off scenes and
+measurement blocks travel on the legacy-shaped payload, so an older worker
+keeps receiving exactly the picture and numbers it always did. The shared
+inspector exposes both leaves on themes and slides and the one style pair a
+Bible view already stores, with provenance, commit and reset
+(`inspector_adapter_tests`). Focused runs pass; the full suite is recorded in
+`PROGRESS.md`.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

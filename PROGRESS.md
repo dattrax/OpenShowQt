@@ -11,13 +11,13 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Text layout and editor consistency (2026-11-16): TL.1 is DONE; TL.2–TL.6 are
-TODO.** The agreed [text-layout brief](docs/ui/text-layout-plan.md) adds shared
-vertical-alignment icons and All caps to Theme Editor/ Edit, with theme defaults
-and per-slide overrides. Preview updates immediately; audience changes on
-explicit Go. Original-case words are preserved; worker measurement/rendering
-share Unicode uppercase. The scoped consistency review includes underline-only
-reset state.
+**Text layout and editor consistency (2026-11-16): TL.1 and TL.2 are DONE;
+TL.3–TL.6 are TODO.** The agreed
+[text-layout brief](docs/ui/text-layout-plan.md) adds shared vertical-alignment
+icons and All caps to Theme Editor/ Edit, with theme defaults and per-slide
+overrides. Preview updates immediately; audience changes on explicit Go.
+Original-case words are preserved; worker measurement/rendering share Unicode
+uppercase. The scoped consistency review includes underline-only reset state.
 
 TL.1 added sparse `verticalAlign` and `allCaps` to themes, named text contexts
 and slide customizations, resolved slide → context → nearest theme → default,
@@ -29,10 +29,21 @@ name and era, and an off-list anchor is refused by the domain's own sentence.
 precedence, clearing and refusals; the new `document_controller_tests` fixture
 `exerciseTextLayoutSurfaces` covers the theme row's `...Set` pair, whole-set and
 one-field verbs with one undo each, the Edit page's customize/revert badges,
-the context read model and its carry-over, duplication and
-`createThemeFromCurrent`, and the save/reload round-trip. Full suite: 85/85
-tests pass. Next implementation action for this group: TL.2. DR/PV completion
-below remains unchanged.
+the context read model, duplication and `createThemeFromCurrent`, and the
+save/reload round-trip.
+
+TL.2 carried the pair to the wire: scene format 8 writes `verticalAlign` and
+`allCaps` on every text item (source words keep their authored case), scene-7
+payloads read with centre/normal-case defaults and are refused when they name
+either key, and protocol minor is 20. `text.measure` accepts the optional pair
+under v3 and refuses a malformed one by name. `scene.text-layout.v1` and
+`text.measure.v3` are defined but deliberately withheld from this build's hello
+until TL.3 earns them; the frontend gates a non-default pair by name while
+centre/off content keeps the legacy payload shape. The shared inspector exposes
+both leaves on themes and slides and the one style pair a Bible view already
+stores, with provenance, commit and reset. Full suite: 85/85 tests pass. Next
+implementation action for this group: TL.3. DR/PV completion below remains
+unchanged.
 
 **The design-conformance corrections (DR.0–DR.8) are complete.** The review
 [`docs/reviews/design-conformance-2026-11-15.md`](docs/reviews/design-conformance-2026-11-15.md)
@@ -135,9 +146,11 @@ service. FO stays gated behind those.
    worker binary as argv[1] under ctest. Test fixtures are written into the CWD
    (`transport-fixtures/`, `audio-mix-fixtures/`, `playback-fixtures/`,
    `background-media-fixtures/`, `scene-render-*.png`) and are git-ignored.
-4. Protocol/service/scene formats are now **protocol minor 19**, **service
-   format 13**, **scene format 7**; `docs/architecture.md` and
+4. Protocol/service/scene formats are now **protocol minor 20**, **service
+   format 14**, **scene format 8**; `docs/architecture.md` and
    `docs/ui/control-sets.md` are the authorities for the wire and the controls.
+   TL.2 defines `scene.text-layout.v1` and `text.measure.v3` but withholds both
+   from the worker's hello until TL.3 renders and measures the pair.
 
 ## Recent commits
 

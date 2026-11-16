@@ -73,7 +73,7 @@ bool measureNumberInRange(const QVariantMap& record, const QString& key, double 
 }
 
 bool attachMeasureStyle(const QVariantMap& block, boost::json::object* jsonBlock, bool* deviates,
-                        QString* why) {
+                        bool* layoutDeviates, QString* why) {
     const QVariant weight = block.value(QStringLiteral("fontWeight"));
     if (weight.isValid()) {
         bool ok = false;
@@ -178,6 +178,37 @@ bool attachMeasureStyle(const QVariantMap& block, boost::json::object* jsonBlock
             *deviates = true;
         }
         (*jsonBlock)["shadow"] = std::move(out);
+    }
+    // Task TL.2: the resolved layout pair, on the same principle. The anchor
+    // is the domain's closed word set; `allCaps` is a strict boolean (a
+    // stringy "yes" is refused, not coerced). A non-default answer is a
+    // LAYOUT deviation and feeds the text.measure.v3 gate — the caps
+    // transform changes the wrapped height, so a v2-only worker's numbers
+    // would be for the wrong words. Centre/off is the answer every earlier
+    // worker measured and is left OFF the wire (absence means exactly that),
+    // so a legacy ask keeps its byte-identical shape.
+    const QVariant anchor = block.value(QStringLiteral("verticalAlign"));
+    if (anchor.isValid() && !anchor.toString().isEmpty()) {
+        const QString name = anchor.toString();
+        if (!openshow::domain::isVerticalAlignName(name.toStdString())) {
+            *why = QStringLiteral("verticalAlign must be \"top\", \"center\" or \"bottom\"");
+            return false;
+        }
+        if (name != QLatin1String(openshow::domain::kDefaultVerticalAlign)) {
+            (*jsonBlock)["verticalAlign"] = name.toStdString();
+            *layoutDeviates = true;
+        }
+    }
+    const QVariant caps = block.value(QStringLiteral("allCaps"));
+    if (caps.isValid()) {
+        if (caps.userType() != QMetaType::Bool) {
+            *why = QStringLiteral("allCaps must be true or false");
+            return false;
+        }
+        if (caps.toBool()) {
+            (*jsonBlock)["allCaps"] = true;
+            *layoutDeviates = true;
+        }
     }
     return true;
 }
@@ -647,6 +678,8 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         bool measureCapable = false;
         bool styleCapable = false;
         bool measureV2Capable = false;
+        bool textLayoutCapable = false;
+        bool measureV3Capable = false;
         bool fontListCapable = false;
         bool liveCapable = false;
         bool transitionOptionsCapable = false;
@@ -695,6 +728,18 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
                     // would answer a styled ask with default-metric numbers
                     // and no way for anyone to tell.
                     measureV2Capable = true;
+                } else if (capability.as_string() == proto::kCapabilityTextLayout) {
+                    // The worker DRAWS the scene 8 layout pair (task TL.2):
+                    // it places the paragraph at the resolved anchor and
+                    // applies the capitals transform. A hello without it
+                    // gets the local refusal in sceneIsSendable rather than
+                    // a cue whose words sit where nobody asked.
+                    textLayoutCapable = true;
+                } else if (capability.as_string() == proto::kCapabilityTextMeasureV3) {
+                    // The worker MEASURES with that pair (task TL.2), the
+                    // successor to text.measure.v2. The name decides whether
+                    // a layout-shaped block may be sent at all.
+                    measureV3Capable = true;
                 } else if (capability.as_string() == proto::kCapabilityLiveSources) {
                     liveCapable = true;
                 } else if (capability.as_string() == proto::kCapabilityFontListV1) {
@@ -716,6 +761,8 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         fTextMeasureCapable = measureCapable;
         fTextStyleCapable = styleCapable;
         fTextMeasureV2Capable = measureV2Capable;
+        fTextLayoutCapable = textLayoutCapable;
+        fTextMeasureV3Capable = measureV3Capable;
         fTransitionOptionsCapable = transitionOptionsCapable;
         fFontListCapable = fontListCapable;
         fFontListState = fontListCapable ? QStringLiteral("idle")
@@ -1386,6 +1433,29 @@ bool WorkerController::sceneIsSendable(const boost::json::value& candidate,
             }
         }
     }
+    // The layout gate (task TL.2), the same rule one format later: scene 8
+    // always carries the resolved pair, and a worker that has not said it
+    // DRAWS the pair would ignore both keys. Centre / normal case is the
+    // answer every predecessor drew, so that content still travels; a
+    // non-default answer is refused here, by name, rather than shown to an
+    // operator as a layout the audience will never see.
+    if (!fTextLayoutCapable) {
+        for (const openshow::scene::SceneItem& item : parsed.items) {
+            if (item.isImage) {
+                continue;
+            }
+            const bool laidOut =
+                item.verticalAlign != openshow::domain::kDefaultVerticalAlign || item.allCaps;
+            if (laidOut) {
+                setStatus(QStringLiteral("%1: the scene was not sent - this worker has not "
+                                         "said it draws the text layout "
+                                         "(scene.text-layout.v1); reset the vertical "
+                                         "alignment or All caps, or update the worker")
+                              .arg(QString::fromLatin1(verb)));
+                return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -1502,8 +1572,10 @@ qint64 WorkerController::measureText(const QVariantList& blocks) {
         // because the failure it prevents (default-metric numbers answering
         // a bold italic ask) leaves no trace anyone downstream could read.
         bool deviates = false;
+        bool layoutDeviates = false;
         QString styleError;
-        if (!attachMeasureStyle(block, &jsonBlock, &deviates, &styleError)) {
+        if (!attachMeasureStyle(block, &jsonBlock, &deviates, &layoutDeviates,
+                                &styleError)) {
             setStatus(QStringLiteral("measure text: %1").arg(styleError));
             return 0;
         }
@@ -1512,6 +1584,13 @@ qint64 WorkerController::measureText(const QVariantList& blocks) {
                 "measure text: this worker measures with its default type only — it does "
                 "not offer text.measure.v2, and a styled ask would be answered in the "
                 "wrong face; nothing was sent"));
+            return 0;
+        }
+        if (layoutDeviates && !fTextMeasureV3Capable) {
+            setStatus(QStringLiteral(
+                "measure text: this worker does not measure with the text layout — it does "
+                "not offer text.measure.v3, and capitals change how the words wrap; nothing "
+                "was sent"));
             return 0;
         }
         jsonBlocks.push_back(std::move(jsonBlock));

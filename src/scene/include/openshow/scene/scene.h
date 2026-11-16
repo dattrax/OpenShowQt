@@ -193,6 +193,15 @@ struct SceneItem {
     bool underline = false;
     std::string fitMode = "shrink";    // "shrink" | "fixed"
     double minFontSize = domain::kDefaultMinFontSize;
+    // Scene 8 (task TL.2): the resolved text layout — where the paragraph
+    // sits in its box and whether its words are displayed in capitals. Both
+    // are CONCRETE, resolved from the domain chain before the wire, exactly
+    // like the style fields above; a scene 3–7 payload carries neither key
+    // and lands on centre / normal case, which is what those workers drew.
+    // The source lines stay exactly as authored: `allCaps` is a display
+    // transform the renderer applies, never stored uppercase text.
+    std::string verticalAlign = domain::kDefaultVerticalAlign;  // "top" | "center" | "bottom"
+    bool allCaps = false;
     domain::TextStroke stroke;   // disabled by default; enabled draws
     domain::TextShadow shadow;
     // Image items only (6.17b): what compileSlide resolved from the
@@ -251,7 +260,7 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 
 // --- wire form ---------------------------------------------------------------
 
-// {"scene":7,"showId":...,"slideId":...,"backgroundColor":<int>,
+// {"scene":8,"showId":...,"slideId":...,"backgroundColor":<int>,
 //  "background":{"image":bool,"video":bool,
 //                "fit":"cover"|"contain"|"blur","assetId":...,"assetPath":...,
 //                "gradient":<int>},
@@ -262,6 +271,7 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 //            "lineSpacing":<num>,"fontWeight":<int>,"fontStyle":"normal"|"italic",
 //            "underline":<bool>,
 //            "fitMode":"shrink"|"fixed","minFontSize":<num>,
+//            "verticalAlign":"top"|"center"|"bottom","allCaps":<bool>,
 //            "stroke":{"enabled":bool,"color":<int>,"width":<num>},
 //            "shadow":{"enabled":bool,"color":<int>,"opacity":<num>,
 //                      "offsetX":<num>,"offsetY":<num>,"blurSigma":<num>}}
@@ -296,15 +306,20 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
 // Scene 5 adds the transparent background; scene 6 (review 2026-11-10) adds
 // the style block's "underline" switch; scene 7 adds the optional "audio"
 // layer, a show-level track mixed with the background's own audio by the
-// worker. All keep readers for their predecessors: scene 6/5/4 read with
-// the absent fields landing on their own history (underline false, no audio
-// layer), scene 3 with the whole style block absent. A newer payload
-// carrying a key an older format did not define is refused by name, never
-// quietly drawn without it.
+// worker; scene 8 (task TL.2) adds the resolved text layout pair,
+// "verticalAlign" ("top"/"center"/"bottom") and "allCaps", always written on
+// a text item like the rest of the style block. All keep readers for their
+// predecessors: scene 6/5/4 read with the absent fields landing on their own
+// history (underline false, no audio layer, centre / normal case), scene 3
+// with the whole style block absent. A newer payload carrying a key an older
+// format did not define is refused by name, never quietly drawn without it;
+// toward a worker that predates the layout pair the FRONTEND refuses a
+// non-default answer (capability "scene.text-layout.v1"), so centre/off
+// content still travels on the legacy-shaped payload.
 boost::json::value toJson(const Scene& scene);
 
 // Strict reader for the above; see the header for the contract. Fails
-// on: wrong scene format number (only 7, 6, 5, 4 and legacy 3 are read), malformed
+// on: wrong scene format number (only 8, 7, 6, 5, 4 and legacy 3 are read), malformed
 // or wrongly-typed fields,
 // colours outside 0xRRGGBB, non-finite or negative font sizes, non-finite
 // text-box edges, non-positive box width or height, an alignment outside
@@ -318,7 +333,9 @@ boost::json::value toJson(const Scene& scene);
 // fit mode outside its two words, a minimum size outside 1..4096, an
 // effect that is not a whole closed record, and any effect number outside
 // its band (width 0..32, opacity 0..1, offsets -256..256, blur 0..64); scene
-// 6 also requires the text item's "underline" boolean.
+// 6 also requires the text item's "underline" boolean, and scene 8 (task
+// TL.2) requires the layout pair — an anchor outside the three words or a
+// non-boolean caps answer is refused naming itself.
 //
 // The key set is CLOSED on purpose. Minor-version tolerance is a frontend
 // rule — an unknown field in a STATUS object costs a viewer nothing — but a

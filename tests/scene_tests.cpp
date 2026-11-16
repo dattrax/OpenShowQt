@@ -330,11 +330,11 @@ void exerciseWireRoundTrip(const Fixture& fx) {
         obj[key] = replacement;
         return boost::json::serialize(obj);
     };
-    // One past this build's scene 7 (scene 7 added the show audio layer;
+    // One past this build's scene 8 (scene 8 added the text layout pair;
     // "one past" stays the future the way 6.17c1 pinned it: anchoring on the
     // wrong side of the move is how a version check gets tested against a
     // format someone else agreed to).
-    refuses(mutate("scene", 8), "unsupported scene format", "a future scene format refuses");
+    refuses(mutate("scene", 9), "unsupported scene format", "a future scene format refuses");
     refuses(boost::json::serialize(8), "top level must be an object",
             "a bare number refuses");
     refuses(mutate("backgroundColor", 0x1000000), "outside 0xRRGGBB",
@@ -830,6 +830,54 @@ void exerciseChainCompile() {
           "deleting the current theme re-skins back, it does not blank");
 }
 
+// Task TL.2's compile half: the resolved layout pair reaches every TEXT item
+// on the slide, exactly as the style block does, and is part of what a scene
+// item IS on screen (equality), while an image item carries neither a
+// paragraph anchor nor a capitals answer.
+void exerciseTextLayoutCompile() {
+    std::string error;
+    Documents docs;
+    const Id show = docs.createShow("Laid out");
+    const Id slide = docs.appendSlide(show);
+    docs.setSlideLines(show, slide, {"Words on the wall"});
+
+    scene::Scene out;
+    check(scene::compileSlide(docs, show, slide, &out, &error) &&
+              out.items.front().verticalAlign == "center" && !out.items.front().allCaps,
+          "a silent document compiles to centre / normal case, the pixels before TL");
+
+    const Id theme = docs.createTheme("Layout", "#ffffff", "#000000", "", "Serif", 48.0,
+                                      "center", 1.25, &error);
+    openshow::domain::ThemeTextStyle style;
+    style.verticalAlign = "top";
+    style.allCaps = true;
+    check(!theme.empty() && docs.setShowDefaultTheme(show, theme) &&
+              docs.setThemeTextStyle(theme, style, &error) &&
+              scene::compileSlide(docs, show, slide, &out, &error) &&
+              out.items.front().verticalAlign == "top" && out.items.front().allCaps,
+          "the theme's layout pair compiles onto the text item");
+    check(out.items.front().lines == std::vector<std::string>{"Words on the wall"},
+          "and the source words keep their authored case: all caps is display-only");
+
+    // The layout pair is part of a scene item's identity, so a change is a
+    // new picture rather than a dedupe to the old frame.
+    scene::SceneItem a;
+    scene::SceneItem b;
+    check(a == b, "two default items are one answer");
+    b.verticalAlign = "bottom";
+    check(a != b, "a different anchor is a different item");
+    b.verticalAlign = "center";
+    b.allCaps = true;
+    check(a != b, "and so is a different capitals answer");
+
+    // The wire carries the pair on every text item and nothing on a picture.
+    const boost::json::value written = scene::toJson(out);
+    const boost::json::object& textJson = written.at("items").as_array().at(0).as_object();
+    check(textJson.at("verticalAlign").as_string() == "top" &&
+              textJson.at("allCaps").as_bool(),
+          "the text item writes both layout keys");
+}
+
 // The themes plan amendment (2026-11-01): a theme that carries a placement
 // moves ONE box on a wearing slide — its PRIMARY lyric box, the first TEXT
 // item in draw order — and leaves every other box, words or picture, at the
@@ -1322,7 +1370,7 @@ void exerciseImageWire(Fixture& fx) {
 
     // --- the wire: per-kind keys, and a round trip that changes nothing ---
     const boost::json::value written = scene::toJson(out);
-    check(written.at("scene").to_number<int>() == 7, "the payload says scene 7");
+    check(written.at("scene").to_number<int>() == 8, "the payload says scene 8");
     const boost::json::object& imageJson = written.at("items").as_array().at(2).as_object();
     check(imageJson.at("kind").as_string() == "image" &&
               imageJson.at("assetId").as_string() == fx.asset &&
@@ -1330,8 +1378,9 @@ void exerciseImageWire(Fixture& fx) {
           "an image item's JSON names its kind, its asset and its path");
     check(!imageJson.contains("lines") && !imageJson.contains("color") &&
               !imageJson.contains("fontFamily") && !imageJson.contains("fontSize") &&
-              !imageJson.contains("align") && !imageJson.contains("lineSpacing"),
-          "and writes no typography the renderer would silently ignore");
+              !imageJson.contains("align") && !imageJson.contains("lineSpacing") &&
+              !imageJson.contains("verticalAlign") && !imageJson.contains("allCaps"),
+          "and writes no typography or layout the renderer would silently ignore");
     const boost::json::object& captionJson = written.at("items").as_array().at(1).as_object();
     check(captionJson.at("kind").as_string() == "text" && !captionJson.contains("assetId") &&
               !captionJson.contains("assetPath"),
@@ -1390,6 +1439,12 @@ void exerciseImageWire(Fixture& fx) {
         check(readRefused(withItems(boost::json::array{walking})).find(
                   "has no field 'assetPath'") != std::string::npos,
               "and a path on a text item is refused the same way");
+        boost::json::object laidOutImage = goodImage;
+        laidOutImage["verticalAlign"] = "top";
+        check(readRefused(withItems(boost::json::array{laidOutImage})).find(
+                  "has no field 'verticalAlign'") != std::string::npos,
+              "a layout key on an image item is refused the same way: a picture has no "
+              "paragraph to anchor or capitalise");
     }
     {
         boost::json::object alien = goodImage;
@@ -1458,6 +1513,8 @@ void exerciseImageWire(Fixture& fx) {
             text.erase("underline");
             text.erase("fitMode");
             text.erase("minFontSize");
+            text.erase("verticalAlign");
+            text.erase("allCaps");
             text.erase("stroke");
             text.erase("shadow");
         }
@@ -1470,6 +1527,8 @@ void exerciseImageWire(Fixture& fx) {
                   fromLegacy.items.front().fontStyle == "normal" &&
                   fromLegacy.items.front().fitMode == "shrink" &&
                   fromLegacy.items.front().minFontSize == 12.0 &&
+                  fromLegacy.items.front().verticalAlign == "center" &&
+                  !fromLegacy.items.front().allCaps &&
                   !fromLegacy.items.front().stroke.enabled &&
                   !fromLegacy.items.front().shadow.enabled,
               "a scene-3 payload reads onto the contract's defaults and compares "
@@ -1481,6 +1540,64 @@ void exerciseImageWire(Fixture& fx) {
             check(readRefused(boost::json::value(styled)).find("has no field 'fontWeight'") !=
                       std::string::npos,
                   "a scene-3 payload carrying 'fontWeight' is refused naming the key");
+        }
+        {  // Scene 7 keeps a reader a format later: the same payload minus the
+           // layout pair lands on centre / normal case, which is exactly what
+           // a scene-7 worker drew.
+            boost::json::object seven = scene::toJson(out).as_object();
+            seven["scene"] = 7;
+            for (boost::json::value& element : seven.at("items").as_array()) {
+                if (!element.as_object().contains("lines")) {
+                    continue;
+                }
+                element.as_object().erase("verticalAlign");
+                element.as_object().erase("allCaps");
+            }
+            scene::Scene fromSeven;
+            error.clear();
+            check(scene::fromJson(boost::json::value(seven), &fromSeven, &error) &&
+                      fromSeven == out && fromSeven.items.front().verticalAlign == "center" &&
+                      !fromSeven.items.front().allCaps,
+                  "a scene-7 payload reads onto centre / normal case and compares equal "
+                  "to its scene-8 twin");
+        }
+        {  // A layout key in a scene-7 payload is refused by name, never read
+           // as a meaning that format did not have.
+            boost::json::object seven = scene::toJson(out).as_object();
+            seven["scene"] = 7;
+            boost::json::object& text = seven["items"].as_array()[0].as_object();
+            text.erase("allCaps");
+            check(readRefused(boost::json::value(seven)).find("has no field 'verticalAlign'") !=
+                      std::string::npos,
+                  "a scene-7 text item carrying 'verticalAlign' is refused naming the key");
+            boost::json::object caps = scene::toJson(out).as_object();
+            caps["scene"] = 7;
+            caps["items"].as_array()[0].as_object().erase("verticalAlign");
+            check(readRefused(boost::json::value(caps)).find("has no field 'allCaps'") !=
+                      std::string::npos,
+                  "and so is one carrying 'allCaps'");
+        }
+        {  // Scene 8 requires BOTH layout keys, and validates their values.
+            boost::json::object missing = scene::toJson(out).as_object();
+            missing["items"].as_array()[0].as_object().erase("verticalAlign");
+            check(readRefused(boost::json::value(missing)).find(
+                      "'verticalAlign' must be a string") != std::string::npos,
+                  "a scene-8 text item with no 'verticalAlign' is refused naming the key");
+            missing = scene::toJson(out).as_object();
+            missing["items"].as_array()[0].as_object().erase("allCaps");
+            check(readRefused(boost::json::value(missing)).find(
+                      "'allCaps' must be a boolean") != std::string::npos,
+                  "and so is one with no 'allCaps'");
+            boost::json::object bad = scene::toJson(out).as_object();
+            bad["items"].as_array()[0].as_object()["verticalAlign"] = "middle";
+            check(readRefused(boost::json::value(bad)).find(
+                      "not \"top\", \"center\" or \"bottom\"") != std::string::npos,
+                  "an anchor off the closed word set is refused naming the three words");
+            bad = scene::toJson(out).as_object();
+            bad["items"].as_array()[0].as_object()["allCaps"] = "yes";
+            check(readRefused(boost::json::value(bad)).find("'allCaps' must be a boolean") !=
+                      std::string::npos,
+                  "a stringy caps answer is refused, not coerced");
         }
         {  // Scene 6 requires the whole block: dropping one key refuses.
             boost::json::object missing = scene::toJson(out).as_object();
@@ -1918,6 +2035,7 @@ int main() {
     exerciseBackgroundFit();
     exerciseBackgroundGradient();
     exerciseChainCompile();
+    exerciseTextLayoutCompile();
     exercisePlacementCompile();
     exerciseMeasuredSizes(fx);
     exerciseClearedScene();

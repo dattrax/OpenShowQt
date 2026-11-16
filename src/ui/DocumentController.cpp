@@ -1479,11 +1479,6 @@ bool DocumentController::applyThemeContext(const QString& themeId, const QString
             for (const openshow::domain::TextContext& existing : current->contexts) {
                 if (existing.name == contextName) {
                     context.transition = existing.transition;
-                    // Text layout (task TL.1) rides the entry the same way:
-                    // an edit that named something else must not silently
-                    // drop the view's own alignment or capitalisation.
-                    context.verticalAlign = existing.verticalAlign;
-                    context.allCaps = existing.allCaps;
                     break;
                 }
             }

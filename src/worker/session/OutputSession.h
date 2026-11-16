@@ -369,6 +369,13 @@ public:
         std::string fontStyle = "normal";                    // "normal" | "italic"
         std::string fitMode = "fixed";                       // v1 never shrinks
         double minFontSize = openshow::domain::kDefaultMinFontSize;
+        // Task TL.2: the resolved layout pair, optional under
+        // text.measure.v3. Omitted fields keep the legacy answers —
+        // centre and normal case — so a v1/v2 ask measures exactly as it
+        // always did. `allCaps` changes the wrapped height (TL.3 applies
+        // the transform before shaping); the anchor is position, not size.
+        std::string verticalAlign = openshow::domain::kDefaultVerticalAlign;
+        bool allCaps = false;
         openshow::domain::TextStroke stroke;                 // disabled = no ink
         openshow::domain::TextShadow shadow;
         // Optional box height for the fits verdict (0 = judge the width

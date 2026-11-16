@@ -15,7 +15,7 @@ namespace {
 const char* const kBaseFields[] = {"fontFamily", "fontSize", "align", "lineSpacing",
                                    "textColor", "backgroundColor", "backgroundGradient"};
 const char* const kStyleLeaves[] = {"fontWeight", "fontStyle", "fontUnderline", "fitMode",
-                                    "minFontSize"};
+                                    "minFontSize", "verticalAlign", "allCaps"};
 const char* const kStrokeMembers[] = {"strokeEnabled", "strokeColor", "strokeWidth"};
 const char* const kShadowMembers[] = {"shadowEnabled", "shadowColor", "shadowOpacity",
                                       "shadowOffsetX", "shadowOffsetY", "shadowBlurSigma"};
@@ -123,6 +123,12 @@ QVariant styleDefault(const QString& field) {
     }
     if (field == QLatin1String("fitMode")) {
         return QStringLiteral("shrink");
+    }
+    if (field == QLatin1String("verticalAlign")) {
+        return QString::fromStdString(openshow::domain::kDefaultVerticalAlign);
+    }
+    if (field == QLatin1String("allCaps")) {
+        return false;
     }
     return openshow::domain::kDefaultMinFontSize;  // minFontSize
 }
@@ -364,9 +370,20 @@ QVariantMap InspectorAdapter::fieldState(const QString& field) const {
             }
             return shape(value, own, ownSet, source, true, ownSet);
         }
-        // Until TV.3 a text context stores typography and a box ONLY. The
-        // controls must STATE where the answer comes from and disable —
-        // never write the Songs base from a Bible rail.
+        // The text-layout pair is the ONE part of the shared style block a
+        // context already stores (task TL.1): the Bible view sets it where
+        // scripture slides are composed, so these two answer like the
+        // typography above rather than wearing TV.3's "cannot store" badge.
+        if (name == QLatin1String("verticalAlign") || name == QLatin1String("allCaps")) {
+            const bool isSet = row.value(name + QLatin1String("Set")).toBool();
+            return shape(sample.value(name, styleDefault(name)),
+                         isSet ? row.value(name) : QVariant(), isSet,
+                         isSet ? QStringLiteral("this view") : QStringLiteral("this theme"),
+                         true, isSet);
+        }
+        // Until TV.3 a text context stores typography, a box and the layout
+        // pair ONLY. The controls must STATE where the answer comes from and
+        // disable — never write the Songs base from a Bible rail.
         if (isBaseField(name)) {
             const QVariant inherited =
                 name == QLatin1String("textColor") || name == QLatin1String("backgroundColor") ||
@@ -580,7 +597,9 @@ bool InspectorAdapter::commit(const QString& field, const QVariant& value) {
                                   name == QLatin1String("fontSize") ||
                                   name == QLatin1String("align") ||
                                   name == QLatin1String("lineSpacing");
-        if (!isTypography && name != QLatin1String("placement")
+        const bool isLayout = name == QLatin1String("verticalAlign") ||
+                              name == QLatin1String("allCaps");
+        if (!isTypography && !isLayout && name != QLatin1String("placement")
                 && name != QLatin1String("transition")) {
             emit refused(field, QStringLiteral("a text context cannot store %1 yet (TV.3); "
                                                "the themes answer stays untouched").arg(name));
@@ -625,6 +644,17 @@ bool InspectorAdapter::commit(const QString& field, const QVariant& value) {
         }
         if (row.value(QStringLiteral("alignSet")).toBool()) {
             fields.insert(QStringLiteral("align"), row.value(QStringLiteral("align")));
+        }
+        // The layout pair rides the entry like every other field: editing the
+        // reading font must not silently drop the view's own anchor or caps.
+        if (name != QLatin1String("verticalAlign") &&
+            row.value(QStringLiteral("verticalAlignSet")).toBool()) {
+            fields.insert(QStringLiteral("verticalAlign"),
+                          row.value(QStringLiteral("verticalAlign")));
+        }
+        if (name != QLatin1String("allCaps") &&
+            row.value(QStringLiteral("allCapsSet")).toBool()) {
+            fields.insert(QStringLiteral("allCaps"), row.value(QStringLiteral("allCaps")));
         }
         if (name == QLatin1String("placement")) {
             const QVariantMap given = value.toMap();
@@ -792,7 +822,9 @@ bool InspectorAdapter::reset(const QString& field) {
                                   name == QLatin1String("fontSize") ||
                                   name == QLatin1String("align") ||
                                   name == QLatin1String("lineSpacing");
-        if (!isTypography && name != QLatin1String("placement")) {
+        const bool isLayout = name == QLatin1String("verticalAlign") ||
+                              name == QLatin1String("allCaps");
+        if (!isTypography && !isLayout && name != QLatin1String("placement")) {
             emit refused(field, QStringLiteral("a text context never stored %1").arg(name));
             return false;
         }
@@ -811,6 +843,15 @@ bool InspectorAdapter::reset(const QString& field) {
         }
         if (name != QLatin1String("align") && row.value(QStringLiteral("alignSet")).toBool()) {
             fields.insert(QStringLiteral("align"), row.value(QStringLiteral("align")));
+        }
+        if (name != QLatin1String("verticalAlign") &&
+            row.value(QStringLiteral("verticalAlignSet")).toBool()) {
+            fields.insert(QStringLiteral("verticalAlign"),
+                          row.value(QStringLiteral("verticalAlign")));
+        }
+        if (name != QLatin1String("allCaps") &&
+            row.value(QStringLiteral("allCapsSet")).toBool()) {
+            fields.insert(QStringLiteral("allCaps"), row.value(QStringLiteral("allCaps")));
         }
         if (name != QLatin1String("placement")) {
             if (row.value(QStringLiteral("boxSet")).toBool()) {
@@ -876,6 +917,7 @@ QStringList InspectorAdapter::fields() const {
     if (kind == QLatin1String("context")) {
         return {QStringLiteral("fontFamily"), QStringLiteral("fontSize"),
                 QStringLiteral("align"), QStringLiteral("lineSpacing"),
+                QStringLiteral("verticalAlign"), QStringLiteral("allCaps"),
                 QStringLiteral("placement"), QStringLiteral("transition")};
     }
     if (kind == QLatin1String("slide")) {
@@ -885,7 +927,8 @@ QStringList InspectorAdapter::fields() const {
                 QStringLiteral("lineSpacing"), QStringLiteral("placement"),
                 QStringLiteral("fontWeight"), QStringLiteral("fontStyle"),
                 QStringLiteral("fontUnderline"), QStringLiteral("fitMode"),
-                QStringLiteral("minFontSize"),
+                QStringLiteral("minFontSize"), QStringLiteral("verticalAlign"),
+                QStringLiteral("allCaps"),
                 QStringLiteral("stroke"), QStringLiteral("shadow")};
     }
     if (kind == QLatin1String("service")) {

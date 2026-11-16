@@ -416,6 +416,17 @@ public:
     // ignore unknown block keys silently — so measureText refuses such an
     // ask outright, by name, rather than ship a silent face swap.
     bool styledMeasureSupported() const { return fTextMeasureV2Capable; }
+    // The worker's hello named scene.text-layout.v1 (task TL.2): that worker
+    // DRAWS the scene 8 layout pair. Until TL.3 teaches the renderer to place
+    // and capitalise, no hello names it, and sceneIsSendable refuses a
+    // non-default pair rather than let words draw at the old centre /
+    // original case while the editor shows otherwise.
+    bool textLayoutSupported() const { return fTextLayoutCapable; }
+    // The worker's hello names text.measure.v3 (task TL.2): that worker
+    // MEASURES with the layout pair. `allCaps` changes the wrapped height, so
+    // a layout-shaped ask sent to a v2-only worker would be answered as if the
+    // transform had not been asked for; measureText refuses it by name.
+    bool layoutMeasureSupported() const { return fTextMeasureV3Capable; }
     // --- installed fonts (task TS.4) ------------------------------------
     // The worker's hello names font.list.v1: it answers "which families
     // can THIS shaper resolve?" about its own font manager, which is the
@@ -565,6 +576,10 @@ private:
     bool fTextStyleCapable = false;
     // text.measure.v2 (task TS.3): see styledMeasureSupported().
     bool fTextMeasureV2Capable = false;
+    // scene.text-layout.v1 / text.measure.v3 (task TL.2): see
+    // textLayoutSupported() and layoutMeasureSupported().
+    bool fTextLayoutCapable = false;
+    bool fTextMeasureV3Capable = false;
     // font.list.v1 (task TS.4): see fontListSupported(). The walk state
     // beside it belongs to the CONNECTION: a page that never gets sent,
     // or an answer that arrives after the session died, is nobody's list.

@@ -226,6 +226,28 @@ void testHello() {
                 });
             check(hasShowAudio, "capabilities name media.show-audio.v1");
         }
+        {  // Task TL.2 defines the two layout names and bumps the minor, but
+           // WITHHOLDS them: this build's renderer places no paragraph and
+           // applies no capitals yet (TL.3), and a capability is a claim about
+           // pixels. The spellings still have to be the contract's, so the
+           // frontend's gate and a later hello name one string.
+            check(proto::kCapabilityTextLayout == std::string("scene.text-layout.v1"),
+                  "the layout scene capability is spelled scene.text-layout.v1");
+            check(proto::kCapabilityTextMeasureV3 == std::string("text.measure.v3"),
+                  "the layout measure capability is spelled text.measure.v3");
+            check(proto::kProtocolMinor == 20, "TL.2's wire is protocol minor 20");
+            const auto& caps = result.at("capabilities").as_array();
+            const bool hasLayout = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == proto::kCapabilityTextLayout;
+                });
+            const bool hasMeasureV3 = std::any_of(
+                caps.begin(), caps.end(), [](const boost::json::value& v) {
+                    return v.is_string() && v.as_string() == proto::kCapabilityTextMeasureV3;
+                });
+            check(!hasLayout && !hasMeasureV3,
+                  "the layout names are withheld until the renderer earns them (TL.3)");
+        }
         {  // Task 6.17b's scene 2 (kinded items) is named by a capability.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasImageItems = std::any_of(

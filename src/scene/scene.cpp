@@ -16,15 +16,18 @@ namespace {
 // Scene 4 (task TS.1) adds the text item's resolved style block; scene 5
 // adds transparent backgrounds; scene 6 (review 2026-11-10) adds the
 // style block's underline decoration; scene 7 adds the show's optional audio
-// layer. Older formats keep READERS: an
+// layer; scene 8 (task TL.2) adds the resolved text-layout pair. Older
+// formats keep READERS: an
 // absent style means the concrete defaults the contract names, which are
 // the pixels those workers drew (see the wire doc in scene.h for why this
 // direction is safe and the other one is gated by capability instead).
-constexpr int kSceneFormat = 7;
+constexpr int kSceneFormat = 8;
 constexpr int kSceneFormatLegacy = 3;       // no style block at all
 constexpr int kSceneFormatStyle = 4;        // style block, no underline
 constexpr int kSceneFormatTransparent = 5;  // transparent background, no underline
 constexpr int kSceneFormatUnderline = 6;    // underline, no show audio layer
+constexpr int kSceneFormatShowAudio = 7;    // show audio layer, no text layout
+constexpr int kSceneFormatTextLayout = 8;   // the layout pair, no successor yet
 
 void fail(std::string* error, const std::string& message) {
     if (error != nullptr) {
@@ -504,6 +507,7 @@ bool operator==(const SceneItem& a, const SceneItem& b) {
            a.fontWeight == b.fontWeight && a.fontStyle == b.fontStyle &&
            a.underline == b.underline && a.fitMode == b.fitMode &&
            a.minFontSize == b.minFontSize &&
+           a.verticalAlign == b.verticalAlign && a.allCaps == b.allCaps &&
            a.stroke == b.stroke && a.shadow == b.shadow &&
            a.assetId == b.assetId && a.assetPath == b.assetPath;
 }
@@ -736,6 +740,12 @@ bool compileSlide(const domain::Documents& documents, const domain::Id& showId,
         item.underline = look.fontUnderline;
         item.fitMode = look.fitMode;
         item.minFontSize = look.minFontSize;
+        // The resolved text layout (task TL.2): the chain already chose,
+        // field by field, so the compile copies the concrete pair. A
+        // document silent on both resolves to centre / normal case, which
+        // is exactly what the scene has always drawn.
+        item.verticalAlign = look.verticalAlign;
+        item.allCaps = look.allCaps;
         item.stroke = look.stroke;
         {
             Color strokeColor = kBlack;
@@ -923,6 +933,11 @@ boost::json::value toJson(const Scene& scene) {
         jsonItem.emplace("underline", item.underline);
         jsonItem.emplace("fitMode", item.fitMode);
         jsonItem.emplace("minFontSize", item.minFontSize);
+        // Scene 8's resolved layout pair (task TL.2), always written for the
+        // same reason as the style block: a text item whose layout the
+        // reader has not validated must not draw.
+        jsonItem.emplace("verticalAlign", item.verticalAlign);
+        jsonItem.emplace("allCaps", item.allCaps);
         jsonItem.emplace("stroke", strokeWire(item.stroke));
         jsonItem.emplace("shadow", shadowWire(item.shadow));
         items.push_back(std::move(jsonItem));
@@ -943,21 +958,24 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     const boost::json::object& root = value.as_object();
 
     const boost::json::value* format = field(root, "scene");
-    // Scene 7 is this build's format; scenes 3/4/5/6 keep readers — an
-    // absent style (or underline) is the contract's concrete default, which
-    // is the pixels those workers drew (scene.h's wire doc owns the
-    // argument), and an absent "audio" is a cue with no audio layer.
+    // Scene 8 is this build's format; scenes 3/4/5/6/7 keep readers — an
+    // absent style, underline, audio layer or layout pair is the contract's
+    // concrete default, which is the pixels those workers drew (scene.h's
+    // wire doc owns the argument).
     const bool legacyScene = format != nullptr && format->is_int64() &&
                              format->as_int64() == kSceneFormatLegacy;
     const bool hasUnderline = format != nullptr && format->is_int64() &&
                               format->as_int64() >= kSceneFormatUnderline;
+    const bool hasLayout = format != nullptr && format->is_int64() &&
+                           format->as_int64() >= kSceneFormatTextLayout;
     if (format == nullptr || !format->is_int64() ||
         (format->as_int64() != kSceneFormat &&
+         format->as_int64() != kSceneFormatShowAudio &&
          format->as_int64() != kSceneFormatUnderline &&
          format->as_int64() != kSceneFormatTransparent &&
          format->as_int64() != kSceneFormatStyle && !legacyScene)) {
         fail(error,
-             "scene: unsupported scene format (this build reads scene 7 and legacy scenes 3/4/5/6)");
+             "scene: unsupported scene format (this build reads scene 8 and legacy scenes 3/4/5/6/7)");
         return false;
     }
 
@@ -1131,7 +1149,7 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
     // a whole record, and an earlier scene carrying the key is refused by
     // name rather than read as a meaning its author's build did not have.
     if (const boost::json::value* audio = field(root, "audio"); audio != nullptr) {
-        if (format->as_int64() < kSceneFormat) {
+        if (format->as_int64() < kSceneFormatShowAudio) {
             fail(error, "scene: an \"audio\" layer in a scene " +
                             std::to_string(format->as_int64()) +
                             " payload, where that key does not exist");
@@ -1245,9 +1263,14 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
             "kind", "lines", "color", "fontFamily", "fontSize", "x", "y", "width",
             "height", "align", "lineSpacing", "fontWeight", "fontStyle", "underline",
             "fitMode", "minFontSize", "stroke", "shadow"};
+        const std::initializer_list<const char*> layoutTextKeys{
+            "kind", "lines", "color", "fontFamily", "fontSize", "x", "y", "width",
+            "height", "align", "lineSpacing", "fontWeight", "fontStyle", "underline",
+            "fitMode", "minFontSize", "verticalAlign", "allCaps", "stroke", "shadow"};
         if (!noUnknownKeys(jsonItem,
                            legacyScene ? legacyTextKeys
-                           : (hasUnderline ? decoratedTextKeys : styledTextKeys),
+                           : (hasLayout ? layoutTextKeys
+                              : (hasUnderline ? decoratedTextKeys : styledTextKeys)),
                            "a text item", error)) {
             return false;
         }
@@ -1326,6 +1349,26 @@ bool fromJson(const boost::json::value& value, Scene* out, std::string* error) {
              !wantStrokeWire(jsonItem, "stroke", &item.stroke, error) ||
              !wantShadowWire(jsonItem, "shadow", &item.shadow, error))) {
             return false;
+        }
+        // Scene 8 REQUIRES the resolved layout pair (its keys passed the
+        // closed-set gate above only because this format defines them). The
+        // anchor is the domain's closed word set and the caps answer is a
+        // strict boolean, so a payload cannot carry a layout no renderer
+        // would draw.
+        if (hasLayout) {
+            std::string anchor;
+            if (!wantString(jsonItem, "verticalAlign", &anchor, kMaxIdChars, error)) {
+                return false;
+            }
+            if (!domain::isVerticalAlignName(anchor)) {
+                fail(error, "scene: an item's 'verticalAlign' is '" + clipForError(anchor) +
+                                "', not \"top\", \"center\" or \"bottom\"");
+                return false;
+            }
+            item.verticalAlign = std::move(anchor);
+            if (!wantBool(jsonItem, "allCaps", &item.allCaps, error)) {
+                return false;
+            }
         }
         scene.items.push_back(std::move(item));
     }

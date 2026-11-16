@@ -709,6 +709,8 @@ bool OutputSession::measureText(const MeasureBlock& block, float* heightOut,
     item.fontStyle = block.fontStyle;
     item.fitMode = block.fitMode;
     item.minFontSize = block.minFontSize;
+    item.verticalAlign = block.verticalAlign;
+    item.allCaps = block.allCaps;
     item.stroke = block.stroke;
     item.shadow = block.shadow;
     const SceneTextEngine::LaidOutItem laid =

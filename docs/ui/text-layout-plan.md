@@ -1,9 +1,10 @@
 # Text layout and editor consistency — 2026-11-16
 
-Implementation brief for the **TL** group in `PLAN.md`. The domain and
-persistence half of TL.1 is implemented (service format 14); the rest of the
-brief remains planned work. No runtime layout verification is claimed by this
-document.
+Implementation brief for the **TL** group in `PLAN.md`. TL.1 (persistence and
+resolution, service 14) and TL.2 (scene 8 / protocol 0.20 carrying the pair and
+the capability gates) are implemented; TL.3–TL.6 remain planned work. No layout
+rendering is claimed by this document — the renderer and the capitals transform
+arrive in TL.3.
 
 ## Agreed operator behaviour
 
@@ -68,12 +69,14 @@ theme creation/duplication, whole-style replacement, context merge, undo/redo,
 controller read models, inspector provenance and serialized content. Changing
 one field must preserve the other fields, box placement and transitions.
 
-At this planning checkpoint the code used service **13**, scene **7** and
-protocol **0.19**. TL.1 has since moved the service to **14**; scene **8** and
-protocol **0.20** remain reserved for TL.2, with capabilities
-`scene.text-layout.v1` and `text.measure.v3`. Recheck allocation before
-implementing TL.2 if another task changes these versions. The older TV/TS
-runbook's 9/4/0.18 paragraph is historical, not the current allocation.
+At the planning checkpoint the code used service **13**, scene **7** and
+protocol **0.19**. TL.1 moved the service to **14**; TL.2 moved scene to **8**
+and protocol to **0.20** and defined `scene.text-layout.v1` /
+`text.measure.v3`. Both names are deliberately withheld from this build's hello
+until TL.3 renders and measures the pair; the frontend gates a non-default
+answer by name meanwhile. Recheck allocation before implementing TL.3 if
+another task changes these versions. The older TV/TS runbook's 9/4/0.18
+paragraph is historical, not the current allocation.
 
 - Service 14 persists sparse layout fields. Readers of services 1–13 supply
   legacy centre/off defaults without changing content or IDs. New keys in an

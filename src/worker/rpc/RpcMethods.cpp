@@ -240,6 +240,26 @@ bool parseMeasureStyle(const boost::json::object& block, OutputSession::MeasureB
         *why = "\"minFontSize\" must be finite and between 1 and 4096";
         return false;
     }
+    // Task TL.2: the resolved layout pair, optional under text.measure.v3.
+    // The anchor is the domain's closed word set and the caps answer is a
+    // strict boolean, so a malformed pair is refused naming the key rather
+    // than measured as if it had said nothing.
+    if (const auto anchor = block.find("verticalAlign"); anchor != block.end()) {
+        if (!anchor->value().is_string() ||
+            !openshow::domain::isVerticalAlignName(
+                std::string(anchor->value().as_string()))) {
+            *why = "\"verticalAlign\" must be \"top\", \"center\" or \"bottom\"";
+            return false;
+        }
+        out->verticalAlign = std::string(anchor->value().as_string());
+    }
+    if (const auto caps = block.find("allCaps"); caps != block.end()) {
+        if (!caps->value().is_bool()) {
+            *why = "\"allCaps\" must be true or false";
+            return false;
+        }
+        out->allCaps = caps->value().as_bool();
+    }
     const auto height = block.find("height");
     if (height != block.end() &&
         !jsonDoubleInRange(block, "height", 1.0, 65536.0, &out->boxHeight)) {

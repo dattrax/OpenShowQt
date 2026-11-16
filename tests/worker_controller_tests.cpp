@@ -470,6 +470,18 @@ private:
                 result["capabilities"] =
                     boost::json::array{"text.measure.v1", proto::kCapabilityTextMeasureV2};
             }
+            // Task TL.2: the layout peers. "text-layout" DRAWS the scene 8
+            // pair; "text-measure-v3" also MEASURES with it. The withheld
+            // real worker names neither yet, so these scripted peers are how
+            // the gates' open side is exercised.
+            if (fScenario == "text-layout") {
+                result["capabilities"] = boost::json::array{proto::kCapabilityTextLayout};
+            }
+            if (fScenario == "text-measure-v3") {
+                result["capabilities"] = boost::json::array{
+                    "text.measure.v1", proto::kCapabilityTextMeasureV2,
+                    proto::kCapabilityTextMeasureV3};
+            }
             // Task TS.4: peers that enumerate their families. Both answer
             // font.list from a scripted five-family scan paged two-at-a-
             // time; the ERROR one refuses instead, so a fixture can watch
@@ -1330,7 +1342,8 @@ private:
                                       ? request.at("params")
                                       : boost::json::object{});
             boost::json::array measured;
-            const bool v2 = fScenario == "text-measure-v2";
+            const bool v2 = fScenario == "text-measure-v2" ||
+                            fScenario == "text-measure-v3";
             if (request.contains("params") && request.at("params").is_object()) {
                 const auto params = request.at("params").as_object().find("blocks");
                 if (params != request.at("params").as_object().end() &&
@@ -2099,6 +2112,18 @@ std::string sceneStyledText() {
     styled.items.front().fontWeight = 700;
     styled.items.front().stroke.enabled = true;
     return boost::json::serialize(scene::toJson(styled));
+}
+
+// Task TL.2: text that carries a non-default layout pair — a bottom anchor
+// and capitals. This is the payload the frontend may only send to a worker
+// whose hello named scene.text-layout.v1; a peer without the claim would read
+// both keys and draw at the old centre / original case, which is the silent
+// omission the gate exists to refuse.
+std::string sceneLaidOutText() {
+    scene::Scene laid = authoredScene({"LOWER CASE WORDS"}, 0xFFFFFFu);
+    laid.items.front().verticalAlign = "bottom";
+    laid.items.front().allCaps = true;
+    return boost::json::serialize(scene::toJson(laid));
 }
 
 // Review D2: an AUDIO-ONLY cue — a scene 7 audio layer and no picture at
@@ -3092,6 +3117,173 @@ void scenarioMeasureStyleGate() {
                   stroke.at("color").to_number<std::uint64_t>() == 0xFFFFFF &&
                   shadow.at("enabled").as_bool() && shadow.at("offsetY").to_number<double>() == 14.0,
               "measure gate: the effect records arrive whole, colour packed to an int");
+    }
+}
+
+// S8c2 (task TL.2): the text-LAYOUT gates, on the same principle one format
+// later. Scene 8 carries the resolved anchor/caps pair on every text item and
+// text.measure.v3 accepts it; a worker that names neither would read both and
+// draw/measure the old centre / original case. So a non-default pair stops
+// locally by name, centre/off travels on the legacy-shaped payload, and the
+// pair reaches exactly the peers that claimed it.
+void scenarioTextLayoutGate() {
+    // (a) The plain peer: a laid-out scene is refused locally and nothing is
+    // stored; centre/off still travels, because that IS the picture an older
+    // worker draws.
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
+    const std::string report = tempPath("layout-gate-closed");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "layout gate: handshake with the capability-less peer")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(!controller.textLayoutSupported(),
+          "layout gate: no hello claim, no drawing permission");
+    controller.prepareScene(QString::fromStdString(sceneLaidOutText()));
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(
+                       QStringLiteral("scene.text-layout.v1"));
+               }),
+               "layout gate: the laid-out scene is refused naming the capability")) {
+        std::fprintf(stderr, "  status was: %s\n",
+                     controller.statusText().toLocal8Bit().constData());
+    }
+    check(controller.scenePrepared() == 0 && controller.sceneActive() == 0,
+          "layout gate: the refused scene stored nothing and moved nothing");
+    controller.prepareScene(QString::fromStdString(sceneWordsOnly("CENTRE")));
+    check(waitUntil([&controller] { return controller.scenePrepared() == 1; }),
+          "layout gate: centre / normal case needs no capability — it is the legacy picture");
+    controller.shutdownNow();
+    const boost::json::object closedCounts = readReport(report);
+    check(methodCount(closedCounts, "scene.prepare") == 1,
+          "layout gate: the peer saw the centre prepare and never the laid-out one");
+
+    // (b) The peer that names scene.text-layout.v1 receives the pair.
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "text-layout", 1);
+    const std::string openReport = tempPath("layout-gate-open");
+    ::unlink(openReport.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", openReport.c_str(), 1);
+    WorkerController layoutSession;
+    layoutSession.start();
+    if (!check(waitUntil([&layoutSession] {
+                   return layoutSession.statusText().contains(
+                       QStringLiteral("connected to worker"));
+               }),
+               "layout gate: handshake with the layout-drawing peer")) {
+        layoutSession.shutdownNow();
+        return;
+    }
+    check(layoutSession.textLayoutSupported(),
+          "layout gate: the hello named the capability and the session remembers");
+    layoutSession.prepareScene(QString::fromStdString(sceneLaidOutText()));
+    check(waitUntil([&layoutSession] { return layoutSession.scenePrepared() == 1; }),
+          "layout gate: the laid-out scene reaches the worker that claimed to draw it");
+    layoutSession.shutdownNow();
+    check(methodCount(readReport(openReport), "scene.prepare") == 1,
+          "layout gate: the claiming peer was asked to prepare the laid-out scene");
+
+    // (c) Measurement: a v2-only peer measures type and effects but not the
+    // layout, so caps/anchor asks are refused by name with nothing sent;
+    // spelled defaults travel and carry NEITHER key.
+    const auto bareBlock = [](const QString& key) {
+        QVariantMap block;
+        block.insert(QStringLiteral("key"), key);
+        block.insert(QStringLiteral("lines"), QVariantList{QStringLiteral("Measure me")});
+        block.insert(QStringLiteral("fontSize"), 40.0);
+        block.insert(QStringLiteral("width"), 800.0);
+        block.insert(QStringLiteral("lineSpacing"), 1.25);
+        return block;
+    };
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "text-measure-v2", 1);
+    const std::string v2Report = tempPath("layout-measure-v2");
+    ::unlink(v2Report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", v2Report.c_str(), 1);
+    WorkerController v2;
+    qint64 v2RowsId = 0;
+    QObject::connect(&v2, &WorkerController::textMeasured,
+                     [&v2RowsId](qint64 id, const QVariantList&) { v2RowsId = id; });
+    v2.start();
+    if (!check(waitUntil([&v2] {
+                   return v2.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "layout gate: handshake with the v2-only measuring peer")) {
+        v2.shutdownNow();
+        return;
+    }
+    check(v2.styledMeasureSupported() && !v2.layoutMeasureSupported(),
+          "layout gate: v2 named, v3 not — styled measurement yes, layout measurement no");
+    QVariantMap caps = bareBlock(QStringLiteral("c1"));
+    caps.insert(QStringLiteral("allCaps"), true);
+    check(v2.measureText({caps}) == 0 &&
+              v2.statusText().contains(QStringLiteral("text.measure.v3")),
+          "layout gate: a caps ask toward a v2-only peer is refused naming v3");
+    QVariantMap anchor = bareBlock(QStringLiteral("a1"));
+    anchor.insert(QStringLiteral("verticalAlign"), QStringLiteral("bottom"));
+    check(v2.measureText({anchor}) == 0 &&
+              v2.statusText().contains(QStringLiteral("text.measure.v3")),
+          "layout gate: a non-centre anchor is a layout ask too");
+    QVariantMap defaults = bareBlock(QStringLiteral("d1"));
+    defaults.insert(QStringLiteral("verticalAlign"), QStringLiteral("center"));
+    defaults.insert(QStringLiteral("allCaps"), false);
+    const qint64 defaultsId = v2.measureText({defaults});
+    check(defaultsId != 0 && waitUntil([&v2RowsId, defaultsId] { return v2RowsId == defaultsId; }),
+          "layout gate: spelled centre/off is the legacy question and travels");
+    v2.shutdownNow();
+    const boost::json::object v2Counts = readReport(v2Report);
+    check(methodCount(v2Counts, "text.measure") == 1,
+          "layout gate: only the defaults ask reached the v2 peer");
+    {
+        const boost::json::object& sent =
+            v2Counts.at("measureOps").as_array()[0].as_object().at("blocks").as_array()[0]
+                .as_object();
+        check(!sent.contains("verticalAlign") && !sent.contains("allCaps"),
+              "layout gate: centre/off is left OFF the wire, so the legacy payload keeps its shape");
+    }
+
+    // (d) The v3 peer: the pair travels and the reply parses like any v2 row.
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "text-measure-v3", 1);
+    const std::string v3Report = tempPath("layout-measure-v3");
+    ::unlink(v3Report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", v3Report.c_str(), 1);
+    WorkerController v3;
+    QVariantList v3Rows;
+    qint64 v3RowsId = 0;
+    QObject::connect(&v3, &WorkerController::textMeasured,
+                     [&v3Rows, &v3RowsId](qint64 id, const QVariantList& rows) {
+                         v3RowsId = id;
+                         v3Rows = rows;
+                     });
+    v3.start();
+    if (!check(waitUntil([&v3] {
+                   return v3.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "layout gate: handshake with the v3 measuring peer")) {
+        v3.shutdownNow();
+        return;
+    }
+    check(v3.layoutMeasureSupported(), "layout gate: the hello named text.measure.v3");
+    const qint64 laidId = v3.measureText({caps});
+    check(laidId != 0 && waitUntil([&v3RowsId, laidId] { return v3RowsId == laidId; }),
+          "layout gate: the caps ask reaches the peer that claimed to measure it");
+    if (v3Rows.size() == 1) {
+        check(v3Rows[0].toMap().value(QStringLiteral("fits")).toBool(),
+              "layout gate: the v3 reply parses like a v2 row");
+    }
+    v3.shutdownNow();
+    {
+        const boost::json::object v3Counts = readReport(v3Report);
+        const boost::json::object& sent =
+            v3Counts.at("measureOps").as_array()[0].as_object().at("blocks")
+                .as_array()[0].as_object();
+        check(sent.at("allCaps").as_bool(),
+              "layout gate: the caps answer arrives on the wire as sent");
     }
 }
 
@@ -5449,6 +5641,7 @@ int main(int argc, char* argv[]) {
     scenarioTextStyleGate();
     scenarioTransitionIntent();
     scenarioMeasureStyleGate();
+    scenarioTextLayoutGate();
     scenarioFontListWalk();
     scenarioUnansweredRequestsStayBounded();
     scenarioWriteStallIsRefusedBoundedAndClosed();

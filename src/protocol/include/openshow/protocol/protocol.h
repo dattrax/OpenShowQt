@@ -203,8 +203,17 @@ namespace openshow::protocol {
 // "media.show-audio.v1" names a worker that PLAYS that layer; a pre-19 worker
 // refuses the scene 7 payload by format number, never drawing a cue whose
 // track it would silently drop.
+// Minor 20 (text layout) gives the two agreed operator controls their wire
+// meanings: scene format 8 carries the resolved `verticalAlign`/`allCaps`
+// pair on every text item, and text.measure gains a v3 shape that accepts the
+// same pair in its style block. `scene.text-layout.v1` names a worker that
+// DRAWS the pair and `text.measure.v3` one that MEASURES with it — the caps
+// transform changes the wrapped height, so a measurement answered without it
+// would pack a page the audience's slide overflows. Centre/off content
+// travels on the legacy payload in both directions; anything else is refused
+// locally and by name.
 inline constexpr std::uint32_t kProtocolMajor = 0;
-inline constexpr std::uint32_t kProtocolMinor = 19;
+inline constexpr std::uint32_t kProtocolMinor = 20;
 
 // The capability that names a worker DRAWING the scene 4 style block.
 // Defined here so the frontend's pre-send gate and the worker's hello name
@@ -220,6 +229,21 @@ inline constexpr const char* kCapabilityTextStyle = "scene.text-style.v1";
 // asked, so WorkerController refuses the send by name rather than ship a
 // silent typography swap.
 inline constexpr const char* kCapabilityTextMeasureV2 = "text.measure.v2";
+
+// The capability that names a worker DRAWING the scene 8 layout pair (task
+// TL.2): a paragraph anchored top/centre/bottom in its box and, when asked,
+// its words displayed in capitals. The transform is a DISPLAY one — stored
+// lines stay exactly as authored — and the frontend refuses a non-default
+// pair toward a hello without this name rather than ship words that would
+// silently draw at the old centre / original case.
+inline constexpr const char* kCapabilityTextLayout = "scene.text-layout.v1";
+
+// The capability that names a worker MEASURING with the layout pair (task
+// TL.2), the successor to text.measure.v2. Only `allCaps` changes the answer
+// (uppercase wraps differently; the anchor is position, not height), but the
+// block shape travels whole so a v2-only worker is never handed a field it
+// would ignore on an ask whose numbers it answers as if it had not.
+inline constexpr const char* kCapabilityTextMeasureV3 = "text.measure.v3";
 
 // The capability that names a worker ANSWERING font.list (minor 17). The
 // frontend offers the searchable picker only to a hello that carries it;

@@ -3443,8 +3443,8 @@ void exerciseTextLayoutSurfaces(const std::filesystem::path& root) {
               "after the reverts the theme's top / off show again, unflagged");
     }
 
-    // --- the Bible view's context speaks the pair, and an edit that names
-    // other fields must not drop it ---
+    // --- the Bible view's context speaks the pair; the whole-entry verb
+    // replaces, and the shared inspector's merge is what carries it ---
     QVariantMap reading;
     reading.insert(QStringLiteral("verticalAlign"), QStringLiteral("center"));
     reading.insert(QStringLiteral("allCaps"), true);
@@ -3465,12 +3465,22 @@ void exerciseTextLayoutSurfaces(const std::filesystem::path& root) {
     check(docs.applyThemeContext(house, QStringLiteral("scripture"), other),
           "a later edit names only the font size");
     {
+        // applyThemeContext REPLACES the whole entry: absent keys are
+        // silence about the field they name, exactly like every other
+        // context field. The shared inspector's merge (not this verb) is
+        // what carries an untouched pair across a one-field edit.
         const QVariantMap context = docs.themeContext(house, QStringLiteral("scripture"));
-        check(context.value(QStringLiteral("verticalAlignSet")).toBool() &&
-                  context.value(QStringLiteral("allCapsSet")).toBool() &&
-                  context.value(QStringLiteral("allCaps")).toBool(),
-              "and it leaves the context's own pair in place");
+        check(!context.value(QStringLiteral("verticalAlignSet")).toBool() &&
+                  !context.value(QStringLiteral("allCapsSet")).toBool() &&
+                  context.value(QStringLiteral("fontSize")).toDouble() == 40.0,
+              "a replacing write that names only the size leaves the pair silent");
     }
+    QVariantMap restored;
+    restored.insert(QStringLiteral("fontSize"), 40.0);
+    restored.insert(QStringLiteral("verticalAlign"), QStringLiteral("center"));
+    restored.insert(QStringLiteral("allCaps"), true);
+    check(docs.applyThemeContext(house, QStringLiteral("scripture"), restored),
+          "the pair is authored again beside the size");
     check(!docs.applyThemeContext(
               house, QStringLiteral("scripture"),
               QVariantMap{{QStringLiteral("verticalAlign"), QStringLiteral("middle")}}),

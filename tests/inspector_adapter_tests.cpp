@@ -404,6 +404,134 @@ void exerciseContextTarget(const std::filesystem::path& root) {
           "movement silence falls through to the service");
 }
 
+// Task TL.2's shared inspector surface: the layout pair is a style leaf on a
+// theme, an own-able field on a Bible view, and a per-slide customization —
+// the same provenance, commit and reset every other style control speaks, so
+// the controls TL.5 builds need no private route.
+void exerciseTextLayoutFields(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong(QStringLiteral("Laid out"));
+    docs.addSlide();
+    docs.selectSlide(0);
+    check(docs.createBlankTheme(QStringLiteral("House")), "a blank theme exists to lay out");
+    const QString house = themeRowNamed(docs, QStringLiteral("House"))
+                              .value(QStringLiteral("id"))
+                              .toString();
+    check(!house.isEmpty() && docs.applyThemeToCurrentSlide(house), "the slide wears House");
+    InspectorAdapter adapter;
+    adapter.setDocument(&docs);
+    Refusals refusals;
+    watchRefusals(adapter, refusals);
+
+    // --- the theme: a style leaf with the usual own/inherit story ---
+    adapter.setTarget(fieldTarget(QStringLiteral("theme"), house));
+    const QVariantMap silentAnchor = adapter.fieldState(QStringLiteral("verticalAlign"));
+    const QVariantMap silentCaps = adapter.fieldState(QStringLiteral("allCaps"));
+    check(silentAnchor.value(QStringLiteral("value")).toString() == QStringLiteral("center") &&
+              !silentAnchor.value(QStringLiteral("isSet")).toBool() &&
+              !silentAnchor.value(QStringLiteral("canReset")).toBool() &&
+              silentAnchor.value(QStringLiteral("source")).toString() ==
+                  QStringLiteral("the renderer default") &&
+              silentCaps.value(QStringLiteral("value")).toBool() == false &&
+              !silentCaps.value(QStringLiteral("isSet")).toBool(),
+          "a silent theme shows centre / normal case as the renderer default, with no inherit");
+    check(adapter.commit(QStringLiteral("verticalAlign"), QStringLiteral("top")) &&
+              adapter.commit(QStringLiteral("allCaps"), true) &&
+              themeRowNamed(docs, QStringLiteral("House"))
+                  .value(QStringLiteral("verticalAlignSet"))
+                  .toBool() &&
+              themeRowNamed(docs, QStringLiteral("House")).value(QStringLiteral("allCapsSet")).toBool(),
+          "the two leaves commit through the one-field style verb");
+    const QVariantMap ownAnchor = adapter.fieldState(QStringLiteral("verticalAlign"));
+    check(ownAnchor.value(QStringLiteral("value")).toString() == QStringLiteral("top") &&
+              ownAnchor.value(QStringLiteral("isSet")).toBool() &&
+              ownAnchor.value(QStringLiteral("canReset")).toBool() &&
+              ownAnchor.value(QStringLiteral("source")).toString() ==
+                  QStringLiteral("this theme") &&
+              adapter.fieldState(QStringLiteral("allCaps")).value(QStringLiteral("value")).toBool(),
+          "and report themselves as the theme's own answers");
+    check(adapter.commit(QStringLiteral("allCaps"), false) &&
+              themeRowNamed(docs, QStringLiteral("House"))
+                  .value(QStringLiteral("allCapsSet"))
+                  .toBool() &&
+              !adapter.fieldState(QStringLiteral("allCaps")).value(QStringLiteral("value")).toBool(),
+          "an explicit false is an authored answer, not a cleared one (the box stays checked)");
+    check(adapter.reset(QStringLiteral("verticalAlign")) &&
+              !themeRowNamed(docs, QStringLiteral("House"))
+                   .value(QStringLiteral("verticalAlignSet"))
+                   .toBool() &&
+              adapter.fieldState(QStringLiteral("verticalAlign"))
+                      .value(QStringLiteral("source"))
+                      .toString() == QStringLiteral("the renderer default"),
+          "inherit takes the anchor back to silence");
+    check(!adapter.commit(QStringLiteral("verticalAlign"), QStringLiteral("middle")) &&
+              refusals.count == 1,
+          "an off-list anchor is refused at the adapters door too");
+
+    // --- the Bible view: the one style pair a context already stores ---
+    adapter.setTarget(fieldTarget(QStringLiteral("context"), house,
+                                  QStringLiteral("scripture")));
+    const QVariantMap viewAnchor = adapter.fieldState(QStringLiteral("verticalAlign"));
+    check(viewAnchor.value(QStringLiteral("editable")).toBool() &&
+              !viewAnchor.value(QStringLiteral("isSet")).toBool() &&
+              viewAnchor.value(QStringLiteral("source")).toString() ==
+                  QStringLiteral("this theme"),
+          "an absent view exposes an editable inherited anchor, not TV.3s refusal");
+    check(adapter.commit(QStringLiteral("verticalAlign"), QStringLiteral("bottom")) &&
+              docs.themeContext(house, QStringLiteral("scripture"))
+                  .value(QStringLiteral("verticalAlignSet"))
+                  .toBool() &&
+              docs.themeContext(house, QStringLiteral("scripture"))
+                      .value(QStringLiteral("verticalAlign"))
+                      .toString() == QStringLiteral("bottom"),
+          "the view stores its own anchor through the context merge");
+    check(adapter.commit(QStringLiteral("allCaps"), true) &&
+              adapter.commit(QStringLiteral("fontSize"), 30.0) &&
+              docs.themeContext(house, QStringLiteral("scripture"))
+                  .value(QStringLiteral("allCapsSet"))
+                  .toBool(),
+          "and a later font edit keeps the caps answer it did not name");
+    const QVariantMap ownView = adapter.fieldState(QStringLiteral("allCaps"));
+    check(ownView.value(QStringLiteral("value")).toBool() &&
+              ownView.value(QStringLiteral("isSet")).toBool() &&
+              ownView.value(QStringLiteral("canReset")).toBool() &&
+              ownView.value(QStringLiteral("source")).toString() == QStringLiteral("this view"),
+          "the view reports its own caps with the reset chip");
+    check(adapter.reset(QStringLiteral("allCaps")) &&
+              !docs.themeContext(house, QStringLiteral("scripture"))
+                   .value(QStringLiteral("allCapsSet"))
+                   .toBool() &&
+              docs.themeContext(house, QStringLiteral("scripture"))
+                  .value(QStringLiteral("fontSizeSet"))
+                  .toBool(),
+          "resetting caps removes only that field, leaving the view and its size");
+
+    // --- the slide: a per-slide override with its own badge ---
+    adapter.setTarget(fieldTarget(QStringLiteral("slide")));
+    const QVariantMap slideAnchor = adapter.fieldState(QStringLiteral("verticalAlign"));
+    check(!slideAnchor.value(QStringLiteral("isSet")).toBool() &&
+              slideAnchor.value(QStringLiteral("source")).toString() ==
+                  QStringLiteral("the theme"),
+          "a slide that says nothing shows the theme answer, unflagged");
+    check(adapter.commit(QStringLiteral("verticalAlign"), QStringLiteral("bottom")) &&
+              adapter.commit(QStringLiteral("allCaps"), true),
+          "the Edit page customizes both fields");
+    const QVariantMap ownSlide = adapter.fieldState(QStringLiteral("verticalAlign"));
+    check(ownSlide.value(QStringLiteral("value")).toString() == QStringLiteral("bottom") &&
+              ownSlide.value(QStringLiteral("isSet")).toBool() &&
+              ownSlide.value(QStringLiteral("source")).toString() == QStringLiteral("this slide"),
+          "and the slide reports its own pair, flagged");
+    check(adapter.reset(QStringLiteral("verticalAlign")) &&
+              adapter.reset(QStringLiteral("allCaps")) &&
+              !adapter.fieldState(QStringLiteral("allCaps"))
+                   .value(QStringLiteral("isSet"))
+                   .toBool(),
+          "both badges revert to the chain");
+    check(!adapter.commit(QStringLiteral("allCaps"), QStringLiteral("yes")) &&
+              refusals.count == 2,
+          "a stringy caps answer is refused at the door, not coerced");
+}
+
 // --- the slide target ---------------------------------------------------
 
 void exerciseSlideTarget(const std::filesystem::path& root) {
@@ -566,6 +694,7 @@ int main(int argc, char* argv[]) {
     exerciseThemeTarget(tempRoot / "theme");
     exerciseContextTarget(tempRoot / "context");
     exerciseSlideTarget(tempRoot / "slide");
+    exerciseTextLayoutFields(tempRoot / "textlayout");
     exerciseInheritedTheme(tempRoot / "inheritance");
     std::filesystem::remove_all(tempRoot);
 
