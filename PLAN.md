@@ -1822,12 +1822,16 @@ Complete DR before FO; existing TV/TA/ND and M7 gates remain open.
 | DR.5 | DONE | Include acknowledged show audio in overall output activity and Clear All/Escape gates (D5) | Audio-only Go → active → Clear All → silence → Restore works through actual UI/worker state; paused/muted and pending cues covered; audio remains separate from composition layers — `SceneContent.audio`, `audioOnAir` on the controller, OutputPanel's label/Clear All and ShortcutMap's `outputClearEnabled`; `worker_controller_tests` drive the cue, `workspace_ui_tests` read the gate |
 | DR.6 | DONE | Preserve every linked Library refresh across delayed preparation (D6) | Same-ID and multiple-ID edits converge to current catalog revisions; initial Add/Refresh, metadata, deletion and destination-service replacement cannot publish stale plans (`song_service_tests`) — plans capture and recheck record/content revisions plus the destination show; a deduplicated catalog-bounded dirty set drains one run per publish, and a removed destination is dropped rather than re-added |
 | DR.7a | DONE | Defer Media Bin probe/decode work through a bounded cancellable executor (D7) | Delayed/failing describe/thumbnail work leaves Go/clear/status responsive; queue, cancellation and reconnect generations have deterministic IPC coverage — `fMediaWork` (its own executor) answers by deferred reply; `OPENSHOW_FAULT_MEDIA_WORK_MS` makes the cost real, and `async_integration_tests` prove Go/Clear land while a 1.5 s probe/decode runs |
-| DR.7b | TODO | Deliver Media Bin pixels outside JSON-RPC media payloads (D7) | Use shared preview transport or worker-produced cache paths, with byte/lifetime budgets and stale-card rejection; preserve existing bin artwork/first-frame behavior |
-| DR.8 | TODO | Close corrective journeys, reconcile architecture and archive superseded handoff narratives | DR leaves plus desktop/headless suites and source guards pass with skips reported; one current handoff and concise ledger; physical M7/ND checks remain explicitly open |
+| DR.7b | DONE | Deliver Media Bin pixels outside JSON-RPC media payloads (D7) | Use shared preview transport or worker-produced cache paths, with byte/lifetime budgets and stale-card rejection; preserve existing bin artwork/first-frame behavior — the worker writes a PNG to a bounded cache (64 files / 32 MB / 24 h, fingerprinted by source mtime+size) and answers with its path; the card loads a file URL, and a reply is installed only for the request this client made; `media_tests` + `async_integration_tests` |
+| DR.8 | DONE | Close corrective journeys, reconcile architecture and archive superseded handoff narratives | DR leaves plus desktop/headless suites and source guards pass with skips reported; one current handoff and concise ledger; physical M7/ND checks remain explicitly open — desktop **85/85** (474 s, 21 display entries, 10 guards + negative fixtures), headless **47/47** (81 s, display excluded); `PROGRESS.md` is the one handoff and the older narratives are archived in `docs/history/progress-archive-2026-11-16.md`; TV/TA/ND/M7 remain open |
 
 Order: DR.0 → DR.1/DR.2/DR.4 → DR.3/DR.5 → DR.6/DR.7a/DR.7b → DR.8.
 Target 0.5–2 engineer-days per implementation leaf; split further when needed.
-Review/probes are complete; no corrective implementation is claimed yet.
+All ten leaves are DONE (2026-11-16): the audio contract is recorded, the
+clears/adoption/staging/ownership/activity/Library/Media Bin regressions are
+fixed with tests that fail on the reviewed commit, and the journeys, desktop and
+headless suites and source guards are green. The physical M7/ND acceptance this
+group did not touch stays open, as do TV.3–TV.5, TA.1 and M7.1a–c/7.2–7.4.
 
 ### Preview cadence follow-up — 30 fps first (PV)
 

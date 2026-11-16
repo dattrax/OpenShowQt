@@ -1559,16 +1559,27 @@ void testMediaThumbnail() {
                   reply.as_object().contains("result"),
               "media.thumbnail answers for a video")) {
         const auto& result = reply.at("result").as_object();
-        const std::string data = result.at("data").is_string()
-                                     ? std::string(result.at("data").as_string())
-                                     : std::string();
+        // Review D7b: the answer names a worker-produced FILE; the pixels do
+        // not ride the control connection.
+        const std::string cachePath = result.at("cachePath").is_string()
+                                          ? std::string(result.at("cachePath").as_string())
+                                          : std::string();
         check(result.at("width").to_number<int>() > 0 &&
                   result.at("width").to_number<int>() <= 320 &&
                   result.at("height").to_number<int>() > 0 &&
                   result.at("height").to_number<int>() <= 180,
               "the thumbnail fits the requested box");
-        check(data.rfind("iVBORw0KGgo", 0) == 0,
-              "the thumbnail is a base64 PNG");
+        bool pngOnDisk = false;
+        if (!cachePath.empty()) {
+            std::ifstream in(cachePath, std::ios::binary);
+            char header[8] = {};
+            in.read(header, sizeof(header));
+            pngOnDisk = in.gcount() == 8 && static_cast<unsigned char>(header[0]) == 0x89 &&
+                        header[1] == 'P' && header[2] == 'N' && header[3] == 'G';
+        }
+        check(pngOnDisk, "the thumbnail is a PNG file at the path the reply names");
+        check(!result.contains("data"),
+              "and no pixels ride the JSON reply");
     }
     check(call(fd, 3, proto::kMethodMediaThumbnail,
                boost::json::object{{"path", "/no/such/openshow-video"}}, &reply) &&

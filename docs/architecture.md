@@ -434,10 +434,12 @@ The review's completion rule says every finding must have passing regression
 evidence or an explicit M7 gate, and that "the new behavioural regressions
 pass". This matrix is that accounting. A row is evidenced when its named
 fixtures exist in the ctest inventory of the stated preset and pass its
-recorded gate; the current green run is the closing gate recorded for
-**6.20d** in [PROGRESS.md](../PROGRESS.md), whose desktop run covers all 54
-tests including all 13 display-labelled ones, and whose headless run covers
-all 32 — every fixture named below passed in it. Preset marks: **H** runs in the headless
+recorded gate; the green run recorded for **6.20d** (54 desktop / 32 headless
+entries at the time) is in
+[`docs/history/progress-archive-2026-11-16.md`](history/progress-archive-2026-11-16.md),
+and every fixture named below passed in it. Those counts are historical: the
+current inventory is the one `ctest -N` reports, and the current green run is
+recorded in [`PROGRESS.md`](../PROGRESS.md). Preset marks: **H** runs in the headless
 inventory (and therefore in both), **D** is desktop-build only without a
 display label, **D✦** is desktop-build and display-labelled. Where M6
 deliberately left work, the row carries the explicit M7 reference from the
@@ -634,6 +636,16 @@ These limit what historical DONE statuses prove. The review linked above adds
   sender, the prepare-intent handle, the visit over pending prepares and the
   status line — and it reads only the prepare ack and the `scene` block of
   `output.status`, never the shape of any other result (R5).
+- Since the DR corrections (2026-11-16) the Media Bin's file work obeys the
+  same rule as prepare: `media.describe` and `media.thumbnail` run on their own
+  bounded, cancellable `PrepareExecutor` (`fMediaWork`, separate from
+  `fPrepares` so a bin thumbnail can never queue in front of a Go) and answer
+  by deferred reply. The decoded frame is a worker-produced PNG in a bounded
+  cache (`$TMPDIR/openshow-media-thumbnails`, 64 files / 32 MB / 24 h, the name
+  fingerprinting the source's path, size, mtime and box), and the reply carries
+  its path — pixels never ride the control connection. The frontend installs a
+  reply only for the request it made for that path, so a reply that outlived
+  its connection cannot repaint a card.
 - Since **6.19a4** the worker answers requests through `RpcMethods`, and the
   division keeps the two rules the connection and the table were each trusted
   with: only `RpcServer` can end a session — a method is refused, never
@@ -848,6 +860,15 @@ discarded with the player when the audible mix changes. Loop defaults to on
 for cue media. **Mute and gain** are mixer state: the master mute and every
 per-source row survive a transport rebuild, and the master mute is applied to
 each instance as it is adopted.
+
+**A linked refresh publishes only what it captured.** A plan carries the
+catalog's record and content revisions and the destination show; publishing
+rechecks all three, drops a stale plan and re-runs its id from a deduplicated,
+catalog-bounded owed set (one run per published plan, each capturing the catalog
+as it is now). A Refresh whose destination the operator removed is dropped
+rather than re-added, and an Add that never published is prepared again. This is
+what makes an edit that lands DURING a measurement converge instead of being
+lost behind the one deferred slot it used to share with every other id.
 
 Prepared songs begin with one intentional wordless cue supplied by `SongPlanner`,
 not an empty catalog stanza. The import preview and service bridge share that
