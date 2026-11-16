@@ -5692,6 +5692,13 @@ int main(int argc, char** argv) {
                           "Escape cancels a held drag without a write");
                 }
             }
+            // Leave the document as the block found it: the last fixture wrote
+            // a placement customization, and later captures read the theme's
+            // rectangle.
+            if (docs.slideAppearance().value(QStringLiteral("placement"))
+                    .toMap().value(QStringLiteral("customized")).toBool()) {
+                docs.revertCurrentSlideField(QStringLiteral("placement"));
+            }
             window->resize(1680, 1020);
             QTest::qWait(80);
         }
