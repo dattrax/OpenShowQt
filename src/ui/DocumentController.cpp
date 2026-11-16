@@ -824,6 +824,7 @@ bool styleFromMap(const QVariantMap& style, openshow::domain::ThemeTextStyle* ou
     static const QStringList kAllowed{QStringLiteral("fontWeight"), QStringLiteral("fontStyle"),
                                       QStringLiteral("fontUnderline"),
                                       QStringLiteral("fitMode"), QStringLiteral("minFontSize"),
+                                      QStringLiteral("verticalAlign"), QStringLiteral("allCaps"),
                                       QStringLiteral("stroke"), QStringLiteral("shadow")};
     for (const QString& key : style.keys()) {
         if (!kAllowed.contains(key)) {
@@ -865,6 +866,22 @@ bool styleFromMap(const QVariantMap& style, openshow::domain::ThemeTextStyle* ou
             return false;
         }
         out->minFontSize = number;
+    }
+    if (style.contains(QStringLiteral("verticalAlign"))) {
+        const QVariant value = style.value(QStringLiteral("verticalAlign"));
+        if (value.userType() != QMetaType::QString) {
+            *error = "vertical alignment must be \"top\", \"center\" or \"bottom\"";
+            return false;
+        }
+        out->verticalAlign = value.toString().toStdString();
+    }
+    if (style.contains(QStringLiteral("allCaps"))) {
+        const QVariant value = style.value(QStringLiteral("allCaps"));
+        if (value.userType() != QMetaType::Bool) {
+            *error = "all caps must be true or false";
+            return false;
+        }
+        out->allCaps = value.toBool();
     }
     if (style.contains(QStringLiteral("stroke"))) {
         const QVariant value = style.value(QStringLiteral("stroke"));
@@ -1158,6 +1175,8 @@ bool DocumentController::setThemeTextStyleField(const QString& themeId, const QS
             next.fontUnderline = theme->fontUnderline;
             next.fitMode = theme->fitMode;
             next.minFontSize = theme->minFontSize;
+            next.verticalAlign = theme->verticalAlign;
+            next.allCaps = theme->allCaps;
             next.stroke = theme->stroke;
             next.shadow = theme->shadow;
 
@@ -1258,6 +1277,26 @@ bool DocumentController::setThemeTextStyleField(const QString& themeId, const QS
                         return false;
                     }
                     next.minFontSize = numberValue;
+                }
+            } else if (field == QLatin1String("verticalAlign")) {
+                if (clears) {
+                    next.verticalAlign = std::nullopt;
+                } else {
+                    if (value.userType() != QMetaType::QString) {
+                        error = "vertical alignment must be \"top\", \"center\" or \"bottom\"";
+                        return false;
+                    }
+                    next.verticalAlign = value.toString().toStdString();
+                }
+            } else if (field == QLatin1String("allCaps")) {
+                if (clears) {
+                    next.allCaps = std::nullopt;
+                } else {
+                    if (!boolean(value)) {
+                        error = "all caps must be true or false";
+                        return false;
+                    }
+                    next.allCaps = value.toBool();
                 }
             } else if (field == QLatin1String("strokeEnabled") ||
                        field == QLatin1String("strokeColor") ||
@@ -1375,6 +1414,15 @@ QVariantMap DocumentController::themeContext(const QString& themeId, const QStri
                    context.align.has_value() ? QString::fromStdString(*context.align)
                                              : QString());
         out.insert(QStringLiteral("alignSet"), context.align.has_value());
+        // Text layout (task TL.1): the context's own answer and whether it
+        // speaks at all, exactly the shape every other context field wears.
+        out.insert(QStringLiteral("verticalAlignSet"), context.verticalAlign.has_value());
+        out.insert(QStringLiteral("verticalAlign"),
+                   context.verticalAlign.has_value()
+                       ? QString::fromStdString(*context.verticalAlign)
+                       : QString());
+        out.insert(QStringLiteral("allCapsSet"), context.allCaps.has_value());
+        out.insert(QStringLiteral("allCaps"), context.allCaps.value_or(false));
         const openshow::domain::BoxRect box = context.box.value_or(openshow::domain::BoxRect{});
         out.insert(QStringLiteral("boxSet"), context.box.has_value());
         out.insert(QStringLiteral("x"), box.x);
@@ -1431,6 +1479,11 @@ bool DocumentController::applyThemeContext(const QString& themeId, const QString
             for (const openshow::domain::TextContext& existing : current->contexts) {
                 if (existing.name == contextName) {
                     context.transition = existing.transition;
+                    // Text layout (task TL.1) rides the entry the same way:
+                    // an edit that named something else must not silently
+                    // drop the view's own alignment or capitalisation.
+                    context.verticalAlign = existing.verticalAlign;
+                    context.allCaps = existing.allCaps;
                     break;
                 }
             }
@@ -1457,6 +1510,13 @@ bool DocumentController::applyThemeContext(const QString& themeId, const QString
             }
             if (fields.contains(QStringLiteral("inset"))) {
                 context.inset = fields.value(QStringLiteral("inset")).toDouble();
+            }
+            if (fields.contains(QStringLiteral("verticalAlign"))) {
+                context.verticalAlign =
+                    fields.value(QStringLiteral("verticalAlign")).toString().toStdString();
+            }
+            if (fields.contains(QStringLiteral("allCaps"))) {
+                context.allCaps = fields.value(QStringLiteral("allCaps")).toBool();
             }
             if (fields.contains(QStringLiteral("box"))) {
                 const QVariantMap box = fields.value(QStringLiteral("box")).toMap();
@@ -1553,7 +1613,7 @@ bool DocumentController::createThemeFromCurrent(const QString& name) {
     // wearing itself later draws exactly the pixels this slide draws now.
     const openshow::domain::ThemeTextStyle style{
         base.fontWeight, base.fontStyle, base.fontUnderline, base.fitMode, base.minFontSize,
-        base.stroke, base.shadow};
+        base.verticalAlign, base.allCaps, base.stroke, base.shadow};
     std::string error;
     openshow::domain::Id created;
     if (!edit([&] {
@@ -1674,6 +1734,8 @@ bool DocumentController::duplicateTheme(const QString& themeId) {
             style.fontUnderline = source.fontUnderline;
             style.fitMode = source.fitMode;
             style.minFontSize = source.minFontSize;
+            style.verticalAlign = source.verticalAlign;
+            style.allCaps = source.allCaps;
             style.stroke = source.stroke;
             style.shadow = source.shadow;
             if (!fDocuments.setThemeTextStyle(copy, style, &error)) {
@@ -1817,6 +1879,9 @@ QVariantMap DocumentController::themeSampleAppearance(const QString& themeId,
         out.insert(QStringLiteral("fontWeight"), look.fontWeight);
         out.insert(QStringLiteral("fitMode"), QString::fromStdString(look.fitMode));
         out.insert(QStringLiteral("minFontSize"), look.minFontSize);
+        out.insert(QStringLiteral("verticalAlign"),
+                   QString::fromStdString(look.verticalAlign));
+        out.insert(QStringLiteral("allCaps"), look.allCaps);
         QVariantMap stroke;
         stroke.insert(QStringLiteral("enabled"), look.stroke.enabled);
         stroke.insert(QStringLiteral("color"), QString::fromStdString(look.stroke.color));
@@ -2074,6 +2139,11 @@ QVariantMap DocumentController::slideAppearance() const {
     field("fontUnderline", look.fontUnderline, has("fontUnderline"));
     field("fitMode", QString::fromStdString(look.fitMode), has("fitMode"));
     field("minFontSize", look.minFontSize, has("minFontSize"));
+    // Text layout (task TL.1): the chain's concrete answers, with the
+    // slide's own flag. The vertical anchor rides the same rows as align,
+    // because an operator reads one pair about where the words sit.
+    field("verticalAlign", QString::fromStdString(look.verticalAlign), has("verticalAlign"));
+    field("allCaps", look.allCaps, has("allCaps"));
     QVariantMap strokeRow;
     strokeRow.insert(QStringLiteral("enabled"), look.stroke.enabled);
     strokeRow.insert(QStringLiteral("color"), QString::fromStdString(look.stroke.color));
@@ -2125,8 +2195,8 @@ bool DocumentController::customizeCurrentSlide(const QString& field, const QVari
                                       : changed.align)
             = value.toString().toStdString();
     } else if (name == "fontWeight" || name == "fontStyle" || name == "fontUnderline" ||
-               name == "fitMode" || name == "minFontSize" || name == "stroke" ||
-               name == "shadow") {
+               name == "fitMode" || name == "minFontSize" || name == "verticalAlign" ||
+               name == "allCaps" || name == "stroke" || name == "shadow") {
         // The TS.1 fields (task TS.1): ONE field's edit passes the theme
         // verb's own shape check by way of a one-field map, so a stringy
         // weight, an off-list word or half an effect record is refused
@@ -2169,6 +2239,12 @@ bool DocumentController::customizeCurrentSlide(const QString& field, const QVari
         }
         if (styled.minFontSize.has_value()) {
             changed.minFontSize = styled.minFontSize;
+        }
+        if (styled.verticalAlign.has_value()) {
+            changed.verticalAlign = styled.verticalAlign;
+        }
+        if (styled.allCaps.has_value()) {
+            changed.allCaps = styled.allCaps;
         }
         if (styled.stroke.has_value()) {
             changed.stroke = styled.stroke;

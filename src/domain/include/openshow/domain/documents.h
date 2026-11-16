@@ -262,6 +262,12 @@ struct BoxRect {
 // scaled exactly once with the canvas at draw time.
 inline constexpr int kDefaultFontWeight = 400;
 inline constexpr double kDefaultMinFontSize = 12.0;
+// Text layout (task TL.1): where a paragraph sits inside its box, and
+// whether its words are displayed in capitals. Both are SPARSE like the
+// style fields above — a document written before them carries neither and
+// must keep drawing centre/normal-case — so these constants are the
+// answers only after the whole chain has been walked.
+inline constexpr const char* kDefaultVerticalAlign = "center";
 
 inline bool isFontWeightInBand(int weight) { return weight >= 100 && weight <= 900; }
 inline bool isFontStyleName(const std::string& name) {
@@ -269,6 +275,11 @@ inline bool isFontStyleName(const std::string& name) {
 }
 inline bool isFitModeName(const std::string& name) {
     return name == "shrink" || name == "fixed";
+}
+// The vertical alignment's closed word set: the three paragraph anchors the
+// renderer can place, refused by name like every other word set here.
+inline bool isVerticalAlignName(const std::string& name) {
+    return name == "top" || name == "center" || name == "bottom";
 }
 
 struct TextStroke {
@@ -299,6 +310,11 @@ struct ThemeTextStyle {
     std::optional<bool> fontUnderline;
     std::optional<std::string> fitMode;
     std::optional<double> minFontSize;
+    // Text layout (task TL.1): sparse like the rest of the block. Absent
+    // keeps the theme silent, and `allCaps: false` is an explicit refusal
+    // of an inherited capitalisation, which no absence can say.
+    std::optional<std::string> verticalAlign;
+    std::optional<bool> allCaps;
     std::optional<TextStroke> stroke;
     std::optional<TextShadow> shadow;
 
@@ -410,6 +426,11 @@ struct SlideCustomization {
     std::optional<bool> fontUnderline;
     std::optional<std::string> fitMode;
     std::optional<double> minFontSize;
+    // Text layout (task TL.1), sparse like every other answer here: a
+    // slide's own vertical alignment and capitalisation, falling through
+    // to its text context and then the themes.
+    std::optional<std::string> verticalAlign;
+    std::optional<bool> allCaps;
     std::optional<TextStroke> stroke;
     std::optional<TextShadow> shadow;
 
@@ -421,7 +442,9 @@ struct SlideCustomization {
                placement == other.placement && fontWeight == other.fontWeight &&
                fontStyle == other.fontStyle && fontUnderline == other.fontUnderline &&
                fitMode == other.fitMode &&
-               minFontSize == other.minFontSize && stroke == other.stroke &&
+               minFontSize == other.minFontSize &&
+               verticalAlign == other.verticalAlign && allCaps == other.allCaps &&
+               stroke == other.stroke &&
                shadow == other.shadow;
     }
 
@@ -432,6 +455,7 @@ struct SlideCustomization {
                !placement.has_value() && !fontWeight.has_value() &&
                !fontStyle.has_value() && !fontUnderline.has_value() &&
                !fitMode.has_value() && !minFontSize.has_value() &&
+               !verticalAlign.has_value() && !allCaps.has_value() &&
                !stroke.has_value() && !shadow.has_value();
     }
     // Remove one customized field; reverting "this thing" is a key away.
@@ -462,6 +486,10 @@ struct SlideCustomization {
             fitMode.reset();
         } else if (field == "minFontSize") {
             minFontSize.reset();
+        } else if (field == "verticalAlign") {
+            verticalAlign.reset();
+        } else if (field == "allCaps") {
+            allCaps.reset();
         } else if (field == "stroke") {
             stroke.reset();
         } else if (field == "shadow") {
@@ -508,6 +536,12 @@ struct SlideCustomization {
         if (field == "minFontSize") {
             return minFontSize.has_value();
         }
+        if (field == "verticalAlign") {
+            return verticalAlign.has_value();
+        }
+        if (field == "allCaps") {
+            return allCaps.has_value();
+        }
         if (field == "stroke") {
             return stroke.has_value();
         }
@@ -529,6 +563,7 @@ inline bool isCustomizableField(const std::string& field) {
            field == "fontSize" || field == "align" || field == "lineSpacing" ||
            field == "placement" || field == "fontWeight" || field == "fontStyle" ||
            field == "fontUnderline" || field == "fitMode" || field == "minFontSize" ||
+           field == "verticalAlign" || field == "allCaps" ||
            field == "stroke" || field == "shadow";
 }
 
@@ -673,6 +708,12 @@ struct TextContext {
     // canvas pixels on every side — the "slightly smaller bible box"
     // without naming four numbers. Mutually exclusive with `box`.
     std::optional<double> inset;
+    // Text layout (task TL.1). The Bible view has no whole style block yet
+    // (TV.3 defers weight and effects), but these two answers must be
+    // editable where scripture slides are set, so they live on the context
+    // itself: present means the context speaks, absent inherits the theme.
+    std::optional<std::string> verticalAlign;
+    std::optional<bool> allCaps;
     // How scripture cues move on screen when this context set the slide
     // (task TR.1). Absent inherits the theme, then the service. It rides with
     // the context rather than with the passage because it is how the view
@@ -714,6 +755,11 @@ struct Theme {
     std::optional<bool> fontUnderline;
     std::optional<std::string> fitMode;
     std::optional<double> minFontSize;
+    // Text layout (task TL.1), sparse like the rest of this block: absent
+    // keeps the theme's silence, `allCaps: false` is an explicit refusal of
+    // a capitalisation inherited from a nearer layer.
+    std::optional<std::string> verticalAlign;
+    std::optional<bool> allCaps;
     std::optional<TextStroke> stroke;
     std::optional<TextShadow> shadow;
     // Where a slide wearing this theme puts its PRIMARY lyric box
@@ -758,6 +804,11 @@ struct ResolvedAppearance {
     bool fontUnderline = false;
     std::string fitMode = "shrink";
     double minFontSize = kDefaultMinFontSize;
+    // Text layout (task TL.1): CONCRETE like the style fields above. A
+    // document silent on both resolves to the centre/normal-case answers,
+    // which are exactly what every earlier build drew.
+    std::string verticalAlign = kDefaultVerticalAlign;
+    bool allCaps = false;
     TextStroke stroke;   // disabled by default; an enabled record draws
     TextShadow shadow;
     // The primary lyric box's rectangle, resolved like the rest: the slide's

@@ -998,6 +998,16 @@ bool Documents::setThemeContexts(const Id& themeId, std::vector<TextContext> con
                             "', not an alignment this build can draw");
             return false;
         }
+        // Text layout (task TL.1): the context answers these two fields in
+        // the same word set and boolean shape every other layer uses, so a
+        // whole-set write cannot accept what the loader would refuse back.
+        if (context.verticalAlign.has_value() &&
+            !isVerticalAlignName(*context.verticalAlign)) {
+            fail(error, "context '" + context.name + "' has verticalAlign '" +
+                            *context.verticalAlign +
+                            "', not an alignment this build can draw");
+            return false;
+        }
         if (context.inset.has_value() &&
             (!std::isfinite(*context.inset) || *context.inset < 0.0)) {
             fail(error, "context '" + context.name +
@@ -1036,6 +1046,8 @@ bool Documents::setThemeTextStyle(const Id& themeId, ThemeTextStyle style, std::
     theme->fontUnderline = style.fontUnderline;
     theme->fitMode = style.fitMode;
     theme->minFontSize = style.minFontSize;
+    theme->verticalAlign = style.verticalAlign;
+    theme->allCaps = style.allCaps;
     theme->stroke = style.stroke;
     theme->shadow = style.shadow;
     return true;
@@ -1185,6 +1197,13 @@ bool Documents::validThemeTextStyle(const ThemeTextStyle& style, std::string* er
         fail(error, "minimum font size must be a finite size within 1..4096");
         return false;
     }
+    // Text layout (task TL.1): the vertical anchor is a closed word set, so
+    // a document cannot carry an alignment no renderer would draw.
+    if (style.verticalAlign.has_value() && !isVerticalAlignName(*style.verticalAlign)) {
+        fail(error, "vertical alignment must be \"top\", \"center\" or \"bottom\" (got '" +
+                        *style.verticalAlign + "')");
+        return false;
+    }
     if (style.stroke.has_value() && !validStroke(*style.stroke, error)) {
         return false;
     }
@@ -1239,6 +1258,8 @@ bool Documents::validCustomizations(const SlideCustomization& c, std::string* er
     styled.fontUnderline = c.fontUnderline;
     styled.fitMode = c.fitMode;
     styled.minFontSize = c.minFontSize;
+    styled.verticalAlign = c.verticalAlign;
+    styled.allCaps = c.allCaps;
     styled.stroke = c.stroke;
     styled.shadow = c.shadow;
     return validThemeTextStyle(styled, error);
@@ -1705,6 +1726,37 @@ ResolvedAppearance Documents::appearanceForSlide(const Id& showId, const Id& sli
         }
     }
     out.fitMode = pickStyleString(c.fitMode, &Theme::fitMode, "shrink");
+    // Text layout (task TL.1) walks the same chain as the style fields, with
+    // one difference the plan names: the slide's named context may answer
+    // these, because the Bible view sets them without a whole style block.
+    // The first-context-wholesale rule is preserved — a context that answers
+    // the vertical anchor answers it alone, and one silent on it inherits
+    // from the theme chain exactly as a context silent on the box does.
+    if (c.verticalAlign.has_value()) {
+        out.verticalAlign = *c.verticalAlign;
+    } else if (ctx != nullptr && ctx->verticalAlign.has_value()) {
+        out.verticalAlign = *ctx->verticalAlign;
+    } else {
+        out.verticalAlign = kDefaultVerticalAlign;
+        for (size_t i = 0; i < count; ++i) {
+            if (layers[i]->verticalAlign.has_value()) {
+                out.verticalAlign = *layers[i]->verticalAlign;
+                break;
+            }
+        }
+    }
+    if (c.allCaps.has_value()) {
+        out.allCaps = *c.allCaps;
+    } else if (ctx != nullptr && ctx->allCaps.has_value()) {
+        out.allCaps = *ctx->allCaps;
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            if (layers[i]->allCaps.has_value()) {
+                out.allCaps = *layers[i]->allCaps;
+                break;
+            }
+        }
+    }
     if (c.stroke.has_value()) {
         out.stroke = *c.stroke;
     } else {

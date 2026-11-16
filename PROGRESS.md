@@ -11,14 +11,28 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**New planning work (2026-11-16): TL.1–TL.6 are TODO.** The agreed
-[text-layout brief](docs/ui/text-layout-plan.md) adds shared vertical-alignment
-icons and All caps to Theme Editor/ Edit, with theme defaults and per-slide
-overrides. Preview updates immediately; audience changes on explicit Go.
-Original-case words are preserved; worker measurement/rendering share Unicode
-uppercase. The scoped consistency review includes underline-only reset state.
-Next implementation action for this group: TL.1; no code or new test result is
-claimed by this documentation update. DR/PV completion below remains unchanged.
+**Text layout and editor consistency (2026-11-16): TL.1 is DONE; TL.2–TL.6 are
+TODO.** The agreed [text-layout brief](docs/ui/text-layout-plan.md) adds shared
+vertical-alignment icons and All caps to Theme Editor/ Edit, with theme defaults
+and per-slide overrides. Preview updates immediately; audience changes on
+explicit Go. Original-case words are preserved; worker measurement/rendering
+share Unicode uppercase. The scoped consistency review includes underline-only
+reset state.
+
+TL.1 added sparse `verticalAlign` and `allCaps` to themes, named text contexts
+and slide customizations, resolved slide → context → nearest theme → default,
+and moved the service to format 14. The silent pair resolves to centre / normal
+case, so legacy files keep their pixels and IDs; an explicit `allCaps: false`
+survives as an authored answer. Pre-14 files naming either key are refused by
+name and era, and an off-list anchor is refused by the domain's own sentence.
+`domain_tests` covers the chain, storage round-trip, explicit false, context
+precedence, clearing and refusals; the new `document_controller_tests` fixture
+`exerciseTextLayoutSurfaces` covers the theme row's `...Set` pair, whole-set and
+one-field verbs with one undo each, the Edit page's customize/revert badges,
+the context read model and its carry-over, duplication and
+`createThemeFromCurrent`, and the save/reload round-trip. Full suite: 85/85
+tests pass. Next implementation action for this group: TL.2. DR/PV completion
+below remains unchanged.
 
 **The design-conformance corrections (DR.0–DR.8) are complete.** The review
 [`docs/reviews/design-conformance-2026-11-15.md`](docs/reviews/design-conformance-2026-11-15.md)

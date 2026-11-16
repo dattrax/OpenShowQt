@@ -1927,7 +1927,7 @@ Defaults remain centre/off. [Contract, source findings and acceptance](docs/ui/t
 
 | ID | Status | Work | Acceptance |
 |---|---|---|---|
-| TL.1 | TODO | Persist and resolve sparse `verticalAlign` / `allCaps` on themes, contexts and slide overrides | Service 14 over current 13; centre/off legacy pixels and IDs preserved; explicit false/inheritance, context precedence, copy, reset and one-undo round-trips; strict invalid/old-format key refusal (`domain_tests`, `document_controller_tests`) |
+| TL.1 | DONE | Persist and resolve sparse `verticalAlign` / `allCaps` on themes, contexts and slide overrides | Service 14 over current 13; centre/off legacy pixels and IDs preserved; explicit false/inheritance, context precedence, copy, reset and one-undo round-trips; strict invalid/old-format key refusal (`domain_tests`, `document_controller_tests`) |
 | TL.2 | TODO | Carry concrete layout through scenes, measurement, adapters and worker capability gates | Scene 8/protocol 0.20 over 7/0.19, `scene.text-layout.v1` / `text.measure.v3`; strict text-only fields, safe legacy defaults and named refusal of unsupported non-default settings; shared inspector provenance/verbs (`scene_tests`, `protocol_tests`, `inspector_adapter_tests`, `worker_controller_tests`) |
 | TL.3 | TODO | Render vertical placement and reversible Unicode capitals through the shared layout engine | Top/centre/bottom use one paragraph-origin calculation for paint and bounds; root-locale uppercase precedes shaping/fit/measurement, source UTF-8 stays intact, transformed limits are bounded; pinned-font raster and measurement regressions cover wrapping, overflow, effects and multiple boxes |
 | TL.4 | TODO | Propagate layout settings through song/Bible planning and stale-result ownership | Measurement, fingerprints and cache keys agree with render; toggles invalidate drafts and delayed plans cannot enable Add; original-case words/labels conserved; committed slide boundaries remain authored (`song_pagination_tests`, `scripture_pagination_tests`, song/Bible journeys) |
@@ -1938,7 +1938,24 @@ Order: TL.1 → TL.2 → TL.3 → TL.4 → TL.5 → TL.6; split any leaf exceedi
 engineer-days. Recheck schema allocations before implementation. This group does
 not add per-box styling, immediate live-edit switches or the rest of TV.3's
 context effects; its new fields must still work in the existing Bible view.
-All leaves are TODO; this planning update implements no feature.
+
+TL.1 evidence (2026-11-16): `verticalAlign` (`"top"`/`"center"`/`"bottom"`) and
+`allCaps` are sparse optional fields on `Theme`, `TextContext`,
+`SlideCustomization` and the concrete `ResolvedAppearance`; the service format
+is 14 over 13. An absent pair resolves to centre / normal case, which is what
+every earlier file drew, and a format-13 file still loads with its pixels and
+IDs unchanged. The resolution chain is slide → named context → nearest theme →
+default, field by field, so an explicit `allCaps: false` is an answer rather
+than silence. Storage writes the pair only when authored, refuses both keys in
+pre-14 files naming the key and era, and rejects an off-list anchor through the
+domain's own sentence. `domain_tests` exercises the chain, storage round-trip,
+explicit false, context precedence, clearing and refusals; the new
+`document_controller_tests` fixture `exerciseTextLayoutSurfaces` covers the
+theme row's `...Set` pair, whole-set and one-field verbs with one undo each,
+the Edit page's customize/revert badges, the context read model and its
+carry-over, duplication and `createThemeFromCurrent`, and the save/reload
+round-trip. Focused runs and the full suite pass: 85/85 tests, including
+`domain_tests` and `document_controller_tests`.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

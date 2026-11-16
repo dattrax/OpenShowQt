@@ -1866,8 +1866,8 @@ void exerciseBoxStorage(const fs::path& tempRoot) {
         const std::string manifest = readFile(gradedDir / "service.json");
         check(manifest.find("\"backgroundGradient\"") == std::string::npos,
               "theme backgrounds are absent from saved files");
-        check(manifest.find("\"format\":13") != std::string::npos,
-              "the manifest says format 13 (the show audio layer, beside the"
+        check(manifest.find("\"format\":14") != std::string::npos,
+              "the manifest says format 14 (the text-layout pair, beside the"
               " catalog song link, attribution and underline style)");
         check(manifest.find("\"transition\":{") != std::string::npos,
               "the root transition is written by name, not left to an absent key");
@@ -3104,6 +3104,81 @@ void exerciseTextStyle() {
               docs.appearanceForSlide(show, plain).fontWeight == 300 &&
               docs.appearanceForSlide(show, plain).stroke == outline,
           "the full revert returns every style field to the themes");
+
+    // --- text layout (task TL.1): vertical anchor and capitals -----------
+    check(docs.setThemeTextStyle(current, openshow::domain::ThemeTextStyle{}, &error) &&
+              docs.setThemeTextStyle(base, openshow::domain::ThemeTextStyle{}, &error),
+          "the chain starts silent for the layout pair");
+    look = docs.appearanceForSlide(show, plain);
+    check(look.verticalAlign == "center" && !look.allCaps,
+          "a silent chain lands on centre / normal case, the pixels every earlier file drew");
+    openshow::domain::ThemeTextStyle topCaps;
+    topCaps.verticalAlign = "top";
+    topCaps.allCaps = true;
+    check(docs.setThemeTextStyle(base, topCaps, &error),
+          "the default theme answers the layout pair");
+    look = docs.appearanceForSlide(show, plain);
+    check(look.verticalAlign == "top" && look.allCaps,
+          "the first theme that carries each layout field answers it");
+    openshow::domain::ThemeTextStyle bottomOff;
+    bottomOff.verticalAlign = "bottom";
+    bottomOff.allCaps = false;  // the current theme's explicit refusal of base's true
+    check(docs.setThemeTextStyle(current, bottomOff, &error),
+          "the current theme carries its own anchor and an explicit allCaps:false");
+    look = docs.appearanceForSlide(show, plain);
+    check(look.verticalAlign == "bottom" && !look.allCaps,
+          "a nearer theme outranks the default, and false is an answer rather than silence");
+
+    // The named context answers before the themes, field by field.
+    openshow::domain::TextContext reading;
+    reading.name = "scripture";
+    reading.verticalAlign = "top";
+    reading.allCaps = false;
+    check(docs.setThemeContexts(base, {reading}, &error) &&
+              docs.setSlideTextContext(show, plain, "scripture", &error),
+          "the reading context carries the pair and the slide wears it");
+    look = docs.appearanceForSlide(show, plain);
+    check(look.verticalAlign == "top" && !look.allCaps && look.contextName == "scripture",
+          "the context answers both layout fields before the theme chain");
+    check(docs.setSlideTextContext(show, plain, "", &error),
+          "and the slide can stop wearing the context");
+
+    // A slide's own pair outranks the context and the themes; clearing one
+    // field hands THAT field back, leaving the other customized.
+    SlideCustomization layout;
+    layout.verticalAlign = "center";
+    layout.allCaps = true;
+    check(docs.setSlideCustomizations(show, plain, layout, &error),
+          "the slide customizes both layout fields");
+    look = docs.appearanceForSlide(show, plain);
+    check(look.verticalAlign == "center" && look.allCaps,
+          "the slide's own pair is what the chain answers, over context and themes");
+    const SlideCustomization& pair = docs.findShow(show)->slides[0].customizations;
+    check(pair.hasField("verticalAlign") && pair.hasField("allCaps") && !pair.hasField("stroke"),
+          "the sparse set says which layout fields the slide spoke");
+    layout.clearField("allCaps");
+    check(docs.setSlideCustomizations(show, plain, layout, &error) &&
+              docs.appearanceForSlide(show, plain).allCaps == false &&
+              docs.appearanceForSlide(show, plain).verticalAlign == "center",
+          "clearing the slide's caps hands that field back while its anchor stays its own");
+
+    // What the theme door refuses, the customization door refuses too.
+    openshow::domain::ThemeTextStyle badLayout;
+    badLayout.verticalAlign = "middle";
+    check(!docs.setThemeTextStyle(current, badLayout, &error) &&
+              error.find("\"top\", \"center\" or \"bottom\"") != std::string::npos,
+          "a made-up vertical anchor is refused naming the three words");
+    badLayout = openshow::domain::ThemeTextStyle{};
+    badLayout.verticalAlign = "";
+    check(!docs.setThemeTextStyle(current, badLayout, &error),
+          "and the empty string is silence, not an anchor: it is refused");
+    SlideCustomization rogueLayout;
+    rogueLayout.verticalAlign = "middle";
+    check(!docs.setSlideCustomizations(show, plain, rogueLayout, &error) &&
+              error.find("top") != std::string::npos,
+          "a customized anchor off the word set is refused by the same sentence");
+    check(docs.findShow(show)->slides[0].customizations.verticalAlign == "center",
+          "and every refusal left the slide's own pair untouched");
 }
 
 // TS.1's storage half: a styled service round-trips through the file to the
@@ -3145,6 +3220,8 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
         style.fontUnderline = true;
         style.fitMode = "fixed";
         style.minFontSize = 24.5;
+        style.verticalAlign = "top";
+        style.allCaps = true;
         style.stroke = outline;
         openshow::domain::TextShadow cast;
         cast.enabled = true;
@@ -3157,16 +3234,23 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
         SlideCustomization changed;
         changed.fontWeight = 100;
         changed.fontUnderline = false;
+        changed.verticalAlign = "bottom";
+        changed.allCaps = false;  // the slide's explicit refusal over the theme's true
         openshow::domain::TextStroke off;  // the slide's refusal, whole, with its own look
         off.enabled = false;
         off.color = "#00ff00";
         off.width = 0.0;
         changed.stroke = off;
+        openshow::domain::TextContext reading;
+        reading.name = "scripture";
+        reading.verticalAlign = "center";
+        reading.allCaps = true;
         check(!theme.empty() && !styled.empty() &&
                   docs.setThemeTextStyle(theme, style, &error) &&
                   docs.setSlideCustomizations(show, styled, changed, &error) &&
+                  docs.setThemeContexts(theme, {reading}, &error) &&
                   openshow::domain::saveService(docs, dir, &error),
-              "a theme with the whole style block and a slide with two style answers save");
+              "a theme, a context and a slide carrying the layout pair save");
         const std::string manifest = readFile(dir / "service.json");
         // Keyed by NAME, not by digits: this boost spells 24.5 as 2.45E1,
         // so a number-exact string check would test the JSON library's
@@ -3176,10 +3260,13 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
                   manifest.find("\"fontUnderline\":true") != std::string::npos &&
                   manifest.find("\"fitMode\":\"fixed\"") != std::string::npos &&
                   manifest.find("\"minFontSize\":") != std::string::npos &&
+                  manifest.find("\"verticalAlign\":\"top\"") != std::string::npos &&
+                  manifest.find("\"allCaps\":true") != std::string::npos &&
                   manifest.find("\"blurSigma\":") != std::string::npos &&
                   manifest.find("\"offsetX\":") != std::string::npos,
-              "the theme's style is written BY NAME, the zero blur included — "
-              "leaving an authored answer to an absent key is the rule this project refuses");
+              "the theme's style is written BY NAME, the layout pair and the zero blur "
+              "included — leaving an authored answer to an absent key is the rule this "
+              "project refuses");
         Documents back;
         check(openshow::domain::loadService(&back, dir, &error) && sameService(back, docs) &&
                   back.findTheme(theme)->fontWeight == 800 &&
@@ -3187,14 +3274,20 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
                   back.findTheme(theme)->fontUnderline == true &&
                   back.findTheme(theme)->fitMode == "fixed" &&
                   back.findTheme(theme)->minFontSize == 24.5 &&
+                  back.findTheme(theme)->verticalAlign == "top" &&
+                  back.findTheme(theme)->allCaps == true &&
+                  back.findTheme(theme)->contexts.size() == 1 &&
+                  back.findTheme(theme)->contexts[0].verticalAlign == "center" &&
+                  back.findTheme(theme)->contexts[0].allCaps == true &&
                   back.findTheme(theme)->stroke == outline &&
                   back.findTheme(theme)->shadow == cast,
               "the styled theme reads back field for field and the whole service compares");
         const SlideCustomization& spoken = back.findShow(show)->slides[0].customizations;
         check(spoken.fontWeight == 100 && spoken.fontUnderline == false &&
+                  spoken.verticalAlign == "bottom" && spoken.allCaps == false &&
                   spoken.stroke == off && !spoken.shadow.has_value(),
-              "the slide's weight, its underline refusal and its whole disabled stroke "
-              "survive, and the fields it never spoke stay unspoken");
+              "the slide's weight, its underline refusal, its bottom anchor and its caps "
+              "refusal survive, and the fields it never spoke stay unspoken");
         check(openshow::domain::saveService(back, tempRoot / "style-again", &error) &&
                   readFile(tempRoot / "style-again" / "service.json") == manifest,
               "re-saving a styled service writes a byte-identical manifest");
@@ -3213,8 +3306,8 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
               "a plain service saves");
         const std::string manifest = readFile(dir / "service.json");
         for (const char* key : {"\"fontWeight\"", "\"fontStyle\"", "\"fontUnderline\"",
-                                "\"fitMode\"", "\"minFontSize\"", "\"stroke\"",
-                                "\"shadow\""}) {
+                                "\"fitMode\"", "\"minFontSize\"", "\"verticalAlign\"",
+                                "\"allCaps\"", "\"stroke\"", "\"shadow\""}) {
             check(manifest.find(key) == std::string::npos,
                   (std::string("a theme that carries no style writes no ") + key)
                       .c_str());
@@ -3230,10 +3323,18 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
             R"("backgroundGradient":"","fontFamily":"","fontSize":64,"align":"center",)"
             R"("lineSpacing":1.5)";
         const std::string themesTail = R"(],"assets":[],"playlists":[]})";
+        // Format 9 always writes the service's transition answer, so the
+        // fixtures from that era on carry one; earlier eras must not name it.
+        const auto rootTransition = [](unsigned long long format) {
+            return format >= 9
+                       ? std::string(R"(,"transition":{"kind":"cut","textDurationMs":0,)"
+                                     R"("mediaDurationMs":0})")
+                       : std::string();
+        };
         const auto themed = [&](unsigned long long format, const std::string& extraStyle) {
             return std::string(R"({"format":)") + std::to_string(format) +
-                   R"(,"nextOrdinal":99,"currentThemeId":"","shows":[],"themes":[)" +
-                   themeStart + extraStyle + "}" + themesTail;
+                   R"(,"nextOrdinal":99,"currentThemeId":"")" + rootTransition(format) +
+                   R"(,"shows":[],"themes":[)" + themeStart + extraStyle + "}" + themesTail;
         };
         refusesJson(themed(7, R"(,"fontWeight":700)"),
                     "carries \"fontWeight\" in a format 7 file",
@@ -3249,7 +3350,8 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
             R"("fit":"cover","backgroundAssetId":"","customizations":)";
         const auto slideWith = [&](unsigned long long format, const std::string& customJson) {
             return std::string(R"({"format":)") + std::to_string(format) +
-                   R"(,"nextOrdinal":99,"currentThemeId":"","shows":[{"id":"show1",)"
+                   R"(,"nextOrdinal":99,"currentThemeId":"")" + rootTransition(format) +
+                   R"(,"shows":[{"id":"show1",)"
                    R"("name":"Old","slides":[)" +
                    slideStart + customJson +
                    R"(}]}],"themes":[],"assets":[],"playlists":[]})";
@@ -3281,6 +3383,30 @@ void exerciseTextStyleStorage(const fs::path& tempRoot) {
         refusesJson(slideWith(8, R"({"fitMode":"auto"})"),
                     "\"shrink\" or \"fixed\"",
                     "and a made-up fit name with it");
+
+        // The text-layout pair (task TL.1) is format 14's meaning at all
+        // three sites; a 13-file naming one came from a build this reader
+        // cannot answer for, so it is refused naming the key and the era.
+        refusesJson(themed(13, R"(,"verticalAlign":"top")"),
+                    "carries \"verticalAlign\" in a format 13 file",
+                    "a hand-bumped theme anchor in a format-13 file is refused naming the era");
+        refusesJson(themed(13, R"(,"allCaps":true)"),
+                    "carries \"allCaps\" in a format 13 file",
+                    "and a capitalisation answer in that same era is refused with it");
+        refusesJson(slideWith(13, R"({"allCaps":false})"),
+                    "customization 'allCaps' in a format 13 file",
+                    "a caps answer inside a format-13 slide's customizations is refused too");
+        refusesJson(
+            themed(13, R"(,"contexts":[{"name":"scripture","verticalAlign":"top"}])"),
+            "carries a text-layout field in a format 13 file",
+            "and a context cannot carry the anchor before format 14");
+        refusesJson(themed(14, R"(,"verticalAlign":"middle")"),
+                    "vertical alignment must be",
+                    "a format-14 theme with an off-list anchor is refused by the domain's "
+                    "own sentence");
+        refusesJson(slideWith(14, R"({"verticalAlign":"middle"})"),
+                    "vertical alignment must be",
+                    "and so is a customized one");
     }
 }
 
@@ -3703,7 +3829,7 @@ void exerciseForegroundThemeStorage(const fs::path& tempRoot) {
     const auto dir = tempRoot / "foreground-themes";
     check(openshow::domain::saveService(docs, dir, &error), "save foreground themes");
     auto json = boost::json::parse(readFile(dir / "service.json"));
-    check(json.at("format").as_int64() == 13, "foreground theme files identify format 13");
+    check(json.at("format").as_int64() == 14, "foreground theme files identify format 14");
     for (auto& value : json.at("themes").as_array()) {
         check(!value.as_object().contains("backgroundColor") && !value.as_object().contains("backgroundGradient"),
               "new service files contain no theme background settings");

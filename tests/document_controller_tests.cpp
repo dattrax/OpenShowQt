@@ -1970,9 +1970,9 @@ void exerciseBackgroundFit(const std::filesystem::path& root) {
         std::ifstream manifest(root / "service" / "service.json");
         const std::string text{std::istreambuf_iterator<char>(manifest),
                                std::istreambuf_iterator<char>()};
-        check(text.find("\"format\":13") != std::string::npos &&
+        check(text.find("\"format\":14") != std::string::npos &&
                   text.find("\"fit\":\"contain\"") != std::string::npos,
-              "the manifest is this build's format (13 since the show audio layer) and spells the slide's fit");
+              "the manifest is this build's format (14 since the text-layout pair) and spells the slide's fit");
     }
     {
         DocumentController reopened(nullptr, root);
@@ -3281,6 +3281,253 @@ void exerciseTextStyleSurfaces(const std::filesystem::path& root) {
           "the styled theme reads back from disk through the next session's load");
 }
 
+// Task TL.1's controller half: the vertical anchor and the All caps answer
+// travel the same doors as the rest of the style block — the theme row's
+// ...Set pair, the whole-set verb's one undo, the one-field merge verb's
+// single undo, the Edit page's customize/revert badges, the Bible view's
+// context read model, a duplicate's copy and the sample's resolved
+// appearance — while the closed word set is refused at every door and an
+// explicit false stays distinguishable from silence.
+void exerciseTextLayoutSurfaces(const std::filesystem::path& root) {
+    DocumentController docs(nullptr, root);
+    docs.createSong("Laid out");
+    docs.addSlide();
+    docs.selectSlide(0);
+    check(docs.createBlankTheme("House"), "a blank theme exists to lay out");
+    QString house;
+    for (const QVariant& theme : docs.themes()) {
+        if (theme.toMap().value(QStringLiteral("name")).toString() == QStringLiteral("House")) {
+            house = theme.toMap().value(QStringLiteral("id")).toString();
+        }
+    }
+    check(!house.isEmpty() && docs.applyThemeToCurrentSlide(house), "the slide wears House");
+    const auto rowOf = [&docs, &house] {
+        for (const QVariant& theme : docs.themes()) {
+            if (theme.toMap().value(QStringLiteral("id")).toString() == house) {
+                return theme.toMap();
+            }
+        }
+        return QVariantMap{};
+    };
+
+    // A silent theme's row shows the contract's centre/normal-case answers
+    // with the Set flags down, exactly as the style fields do.
+    {
+        const QVariantMap row = rowOf();
+        check(row.value(QStringLiteral("verticalAlignSet")).toBool() == false &&
+                  row.value(QStringLiteral("verticalAlign")).toString() ==
+                      QStringLiteral("center") &&
+                  row.value(QStringLiteral("allCapsSet")).toBool() == false &&
+                  row.value(QStringLiteral("allCaps")).toBool() == false,
+              "an unstyled theme's row says silent and shows centre / normal case");
+    }
+    {
+        const QVariantMap look = docs.slideAppearance();
+        const QVariantMap anchor = look.value(QStringLiteral("verticalAlign")).toMap();
+        const QVariantMap caps = look.value(QStringLiteral("allCaps")).toMap();
+        check(anchor.value(QStringLiteral("value")).toString() == QStringLiteral("center") &&
+                  !anchor.value(QStringLiteral("customized")).toBool() &&
+                  caps.value(QStringLiteral("value")).toBool() == false &&
+                  !caps.value(QStringLiteral("customized")).toBool(),
+              "the Edit page shows the inherited centre / normal case, unflagged");
+    }
+
+    // --- the whole-set verb: both fields in one undo ---
+    QVariantMap style;
+    style.insert(QStringLiteral("verticalAlign"), QStringLiteral("top"));
+    style.insert(QStringLiteral("allCaps"), true);
+    check(docs.setThemeTextStyle(house, style), "the Theme Editor sets the layout pair");
+    {
+        const QVariantMap row = rowOf();
+        check(row.value(QStringLiteral("verticalAlignSet")).toBool() &&
+                  row.value(QStringLiteral("verticalAlign")).toString() == QStringLiteral("top") &&
+                  row.value(QStringLiteral("allCapsSet")).toBool() &&
+                  row.value(QStringLiteral("allCaps")).toBool(),
+              "the row carries the authored anchor and capitalisation");
+        const QVariantMap sample = docs.themeSampleAppearance(house);
+        check(sample.value(QStringLiteral("ok")).toBool() &&
+                  sample.value(QStringLiteral("verticalAlign")).toString() ==
+                      QStringLiteral("top") &&
+                  sample.value(QStringLiteral("allCaps")).toBool(),
+              "the sample's resolved appearance carries the pair");
+    }
+    // The closed word set is refused at the whole-set door, and a refusal
+    // changes nothing.
+    check(!docs.setThemeTextStyle(
+              house, QVariantMap{{QStringLiteral("verticalAlign"), QStringLiteral("middle")}}) &&
+              docs.status().contains(QStringLiteral("\"top\", \"center\" or \"bottom\"")),
+          "a made-up anchor is refused naming the three words");
+    check(!docs.setThemeTextStyle(
+              house, QVariantMap{{QStringLiteral("verticalAlign"), QStringLiteral("")}}),
+          "an empty anchor is refused rather than read as silence");
+    check(!docs.setThemeTextStyle(
+              house, QVariantMap{{QStringLiteral("allCaps"), QStringLiteral("yes")}}),
+          "a stringy caps answer is refused, not coerced");
+    check(rowOf().value(QStringLiteral("verticalAlign")).toString() == QStringLiteral("top") &&
+              rowOf().value(QStringLiteral("allCaps")).toBool(),
+          "the refusals left the accepted pair standing");
+    docs.undo();
+    check(rowOf().value(QStringLiteral("verticalAlignSet")).toBool() == false &&
+              rowOf().value(QStringLiteral("allCapsSet")).toBool() == false,
+          "one undo takes the whole pair back to silence");
+    docs.redo();
+    check(rowOf().value(QStringLiteral("verticalAlign")).toString() == QStringLiteral("top") &&
+              rowOf().value(QStringLiteral("allCaps")).toBool(),
+          "and redo puts the pair back");
+
+    // --- the one-field merge verb: one field, one undo, null to inherit ---
+    check(docs.setThemeTextStyleField(house, QStringLiteral("verticalAlign"),
+                                      QStringLiteral("bottom")),
+          "the merge verb moves the anchor alone");
+    check(rowOf().value(QStringLiteral("verticalAlign")).toString() == QStringLiteral("bottom") &&
+              rowOf().value(QStringLiteral("allCaps")).toBool(),
+          "the capitalisation it did not name stays as it was");
+    docs.undo();
+    check(rowOf().value(QStringLiteral("verticalAlign")).toString() == QStringLiteral("top"),
+          "one undo backs out the one merge");
+    check(docs.setThemeTextStyleField(house, QStringLiteral("allCaps"), false),
+          "the merge verb can say false, which no silence can");
+    check(rowOf().value(QStringLiteral("allCapsSet")).toBool() &&
+              rowOf().value(QStringLiteral("allCaps")).toBool() == false,
+          "an explicit false stays an authored answer, not a cleared one");
+    check(docs.setThemeTextStyleField(house, QStringLiteral("allCaps"), QVariant()) &&
+              rowOf().value(QStringLiteral("allCapsSet")).toBool() == false,
+          "null clears the answer back to inherit");
+    check(!docs.setThemeTextStyleField(house, QStringLiteral("verticalAlign"),
+                                       QStringLiteral("middle")),
+          "the merge door refuses the same word set");
+
+    // --- the Edit page: customize each, revert each ---
+    check(docs.customizeCurrentSlide(QStringLiteral("verticalAlign"),
+                                     QStringLiteral("bottom")) &&
+              docs.customizeCurrentSlide(QStringLiteral("allCaps"), true),
+          "the slide customizes both layout fields");
+    {
+        const QVariantMap look = docs.slideAppearance();
+        check(look.value(QStringLiteral("verticalAlign"))
+                      .toMap()
+                      .value(QStringLiteral("value"))
+                      .toString() == QStringLiteral("bottom") &&
+                  look.value(QStringLiteral("verticalAlign"))
+                      .toMap()
+                      .value(QStringLiteral("customized"))
+                      .toBool() &&
+                  look.value(QStringLiteral("allCaps")).toMap().value(QStringLiteral("value")).toBool() &&
+                  look.value(QStringLiteral("allCaps"))
+                      .toMap()
+                      .value(QStringLiteral("customized"))
+                      .toBool(),
+              "the appearance view shows the slide's own pair, flagged");
+    }
+    check(!docs.customizeCurrentSlide(QStringLiteral("verticalAlign"), QStringLiteral("middle")),
+          "the customization door refuses the off-list anchor");
+    check(docs.revertCurrentSlideField(QStringLiteral("verticalAlign")) &&
+              docs.revertCurrentSlideField(QStringLiteral("allCaps")),
+          "both badges revert");
+    {
+        const QVariantMap look = docs.slideAppearance();
+        check(look.value(QStringLiteral("verticalAlign"))
+                      .toMap()
+                      .value(QStringLiteral("value"))
+                      .toString() == QStringLiteral("top") &&
+                  !look.value(QStringLiteral("verticalAlign"))
+                       .toMap()
+                       .value(QStringLiteral("customized"))
+                       .toBool() &&
+                  look.value(QStringLiteral("allCaps")).toMap().value(QStringLiteral("value")).toBool() ==
+                      false &&
+                  !look.value(QStringLiteral("allCaps"))
+                       .toMap()
+                       .value(QStringLiteral("customized"))
+                       .toBool(),
+              "after the reverts the theme's top / off show again, unflagged");
+    }
+
+    // --- the Bible view's context speaks the pair, and an edit that names
+    // other fields must not drop it ---
+    QVariantMap reading;
+    reading.insert(QStringLiteral("verticalAlign"), QStringLiteral("center"));
+    reading.insert(QStringLiteral("allCaps"), true);
+    check(docs.applyThemeContext(house, QStringLiteral("scripture"), reading),
+          "House's scripture context carries the pair");
+    {
+        const QVariantMap context = docs.themeContext(house, QStringLiteral("scripture"));
+        check(context.value(QStringLiteral("set")).toBool() &&
+                  context.value(QStringLiteral("verticalAlignSet")).toBool() &&
+                  context.value(QStringLiteral("verticalAlign")).toString() ==
+                      QStringLiteral("center") &&
+                  context.value(QStringLiteral("allCapsSet")).toBool() &&
+                  context.value(QStringLiteral("allCaps")).toBool(),
+              "the context read model carries set flags and values");
+    }
+    QVariantMap other;
+    other.insert(QStringLiteral("fontSize"), 40.0);
+    check(docs.applyThemeContext(house, QStringLiteral("scripture"), other),
+          "a later edit names only the font size");
+    {
+        const QVariantMap context = docs.themeContext(house, QStringLiteral("scripture"));
+        check(context.value(QStringLiteral("verticalAlignSet")).toBool() &&
+                  context.value(QStringLiteral("allCapsSet")).toBool() &&
+                  context.value(QStringLiteral("allCaps")).toBool(),
+              "and it leaves the context's own pair in place");
+    }
+    check(!docs.applyThemeContext(
+              house, QStringLiteral("scripture"),
+              QVariantMap{{QStringLiteral("verticalAlign"), QStringLiteral("middle")}}),
+          "the context door refuses the off-list anchor");
+
+    // --- duplication and a theme taken from the slide both carry the pair ---
+    check(docs.setThemeTextStyleField(house, QStringLiteral("allCaps"), false),
+          "the theme takes an explicit false for the duplicate to carry");
+    check(docs.duplicateTheme(house), "House is duplicated");
+    QString copy;
+    QVariantMap copyRow;
+    for (const QVariant& theme : docs.themes()) {
+        const QVariantMap map = theme.toMap();
+        if (map.value(QStringLiteral("name")).toString() == QStringLiteral("House copy")) {
+            copy = map.value(QStringLiteral("id")).toString();
+            copyRow = map;
+        }
+    }
+    check(copyRow.value(QStringLiteral("verticalAlignSet")).toBool() &&
+              copyRow.value(QStringLiteral("verticalAlign")).toString() == QStringLiteral("top") &&
+              copyRow.value(QStringLiteral("allCapsSet")).toBool() &&
+              copyRow.value(QStringLiteral("allCaps")).toBool() == false &&
+              docs.themeContext(copy, QStringLiteral("scripture"))
+                  .value(QStringLiteral("allCaps"))
+                  .toBool(),
+          "the duplicate carries the theme's pair and its context's pair");
+
+    check(docs.customizeCurrentSlide(QStringLiteral("verticalAlign"),
+                                     QStringLiteral("bottom")) &&
+              docs.createThemeFromCurrent(QStringLiteral("From slide")),
+          "a theme is made from what the slide draws");
+    QVariantMap snapshotRow;
+    for (const QVariant& theme : docs.themes()) {
+        const QVariantMap map = theme.toMap();
+        if (map.value(QStringLiteral("name")).toString() == QStringLiteral("From slide")) {
+            snapshotRow = map;
+        }
+    }
+    check(snapshotRow.value(QStringLiteral("verticalAlignSet")).toBool() &&
+              snapshotRow.value(QStringLiteral("verticalAlign")).toString() ==
+                  QStringLiteral("bottom") &&
+              snapshotRow.value(QStringLiteral("allCapsSet")).toBool() &&
+              snapshotRow.value(QStringLiteral("allCaps")).toBool() == false,
+          "the new theme owns the chain's resolved pair, explicit false included");
+
+    // --- and the pair survives the disk ---
+    check(docs.save(), "the service saves with its layout pair");
+    openshow::domain::Documents reopened;
+    std::string loadError;
+    check(openshow::domain::loadService(&reopened, root / "service", &loadError) &&
+              reopened.findTheme(house.toStdString())->verticalAlign == "top" &&
+              reopened.findTheme(house.toStdString())->allCaps == false &&
+              reopened.findTheme(house.toStdString())->contexts[0].verticalAlign == "center" &&
+              reopened.findTheme(house.toStdString())->contexts[0].allCaps == true,
+          "the anchor and capitalisation read back from disk through the next session's load");
+}
+
 // TS.4's one-field merge verb: the inspector edits one property of the
 // shared style block at a time (a drag of the shadow-blur slider lands ONE
 // undo, not one per intermediate value), and a field edit cannot disagree
@@ -4325,6 +4572,7 @@ int main(int argc, char* argv[]) {
     exercisePlacementSurfaces(tempRoot / "placementsurfaces");
     exerciseReadingContexts(tempRoot / "readingcontexts");
     exerciseTextStyleSurfaces(tempRoot / "textstyle");
+    exerciseTextLayoutSurfaces(tempRoot / "textlayout");
     exerciseTransitionSurfaces(tempRoot / "transitionsurfaces");
     exerciseTextStyleFieldMerge(tempRoot / "stylefields");
     exerciseThemeSampleViews(tempRoot / "sampleviews");

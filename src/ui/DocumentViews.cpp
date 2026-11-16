@@ -345,6 +345,15 @@ void insertThemeStyleRow(QVariantMap& entry, const openshow::domain::Theme& them
     entry.insert(QStringLiteral("minFontSizeSet"), theme.minFontSize.has_value());
     entry.insert(QStringLiteral("minFontSize"),
                  theme.minFontSize.value_or(openshow::domain::kDefaultMinFontSize));
+    // Text layout (task TL.1), the same ...Set/value pair: the flag is the
+    // only thing that can distinguish "this theme says centre" from "this
+    // theme says nothing and inherits one that does".
+    entry.insert(QStringLiteral("verticalAlignSet"), theme.verticalAlign.has_value());
+    entry.insert(QStringLiteral("verticalAlign"),
+                 QString::fromStdString(
+                     theme.verticalAlign.value_or(openshow::domain::kDefaultVerticalAlign)));
+    entry.insert(QStringLiteral("allCapsSet"), theme.allCaps.has_value());
+    entry.insert(QStringLiteral("allCaps"), theme.allCaps.value_or(false));
     entry.insert(QStringLiteral("strokeSet"), theme.stroke.has_value());
     QVariantMap stroke;
     if (theme.stroke.has_value()) {

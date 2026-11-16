@@ -280,7 +280,8 @@ public:
     // an override that used to be there), and {} silences all of them. The
     // map names: fontWeight (integer 100..900), fontStyle ("normal"/"italic"),
     // fontUnderline (true/false), fitMode ("shrink"/"fixed"),
-    // minFontSize (1..4096), stroke and shadow
+    // minFontSize (1..4096), verticalAlign ("top"/"center"/"bottom"),
+    // allCaps (true/false), stroke and shadow
     // (whole records — stroke {enabled,color,width}, shadow {enabled,color,
     // opacity,offsetX,offsetY,blurSigma}; a fragment is refused, because an
     // effect means one thing whole). Unknown keys, stringy weights and
@@ -338,7 +339,8 @@ public:
     // that edits one property of a shared block must not have to know the
     // other five, and a drag gesture that lands many values must cost ONE
     // undo, not one per intermediate. `field` names a leaf — fontWeight,
-    // fontStyle, fontUnderline, fitMode, minFontSize, strokeEnabled, strokeColor,
+    // fontStyle, fontUnderline, fitMode, minFontSize, verticalAlign, allCaps,
+    // strokeEnabled, strokeColor,
     // strokeWidth, shadowEnabled, shadowColor, shadowOpacity,
     // shadowOffsetX, shadowOffsetY, shadowBlurSigma — or a whole effect
     // record ("stroke"/"shadow") for the inherit button to clear. A null
@@ -357,7 +359,8 @@ public:
     // context carries typography and a box ONLY — never colours, and never
     // a line count, because how many lines fit is what the worker's
     // measurement says. `themeContext` answers {set, name, fontFamily,
-    // fontSize, lineSpacing, align, x, y, width, height, inset, transition}
+    // fontSize, lineSpacing, align, x, y, width, height, inset, verticalAlign,
+    // allCaps, transition}
     // with a ...Set flag per field (silence is a real state — an unset field
     // falls through to the themes); absent set means no such context. The
     // transition rides as {kind, textDurationMs, mediaDurationMs} plus

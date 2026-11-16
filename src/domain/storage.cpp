@@ -79,8 +79,10 @@ namespace {
 // the one text decoration the contract had not spelled yet. Sparse like
 // every other style field: absent keeps the theme's silence and a slide's
 // inheritance, and the renderer's upright-roman default is what every
-// earlier file drew.
-constexpr unsigned long long kServiceFormat = 13;
+// earlier file drew. Format 14 adds the text-layout pair ("verticalAlign",
+// "allCaps") to the same sparse style block and to named text contexts;
+// absent keeps the centre/normal-case answers every earlier file drew.
+constexpr unsigned long long kServiceFormat = 14;
 constexpr unsigned long long kServiceFormatThemedBackgrounds = 11;
 // And 13 introduces a show's "audioAssetId" — the independent audio layer a
 // cue plays alongside its slides (media library). Named like every
@@ -124,6 +126,11 @@ constexpr unsigned long long kServiceFormatSongLink = 10;
 // reason: the guards for every earlier style member must keep reading the
 // format that introduced THEM.
 constexpr unsigned long long kServiceFormatTextDecoration = 12;
+// And 14 introduces the text-layout pair ("verticalAlign", "allCaps") in the
+// style block, a named text context and a slide's customizations. Named like
+// every introducer so the guards for the earlier style members keep reading
+// the format that introduced THEM.
+constexpr unsigned long long kServiceFormatTextLayout = 14;
 constexpr const char* kManifestName = "service.json";
 constexpr const char* kAssetsDir = "assets";
 
@@ -842,6 +849,14 @@ boost::json::object textContextJson(const TextContext& context) {
     if (context.transition.has_value()) {
         out.emplace("transition", transitionJson(*context.transition));
     }
+    // Text layout (task TL.1): present exactly when the context speaks, in
+    // the same silence discipline as every field above.
+    if (context.verticalAlign.has_value()) {
+        out.emplace("verticalAlign", *context.verticalAlign);
+    }
+    if (context.allCaps.has_value()) {
+        out.emplace("allCaps", *context.allCaps);
+    }
     return out;
 }
 
@@ -1086,6 +1101,12 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
             if (changed.minFontSize.has_value()) {
                 customizations.emplace("minFontSize", *changed.minFontSize);
             }
+            if (changed.verticalAlign.has_value()) {
+                customizations.emplace("verticalAlign", *changed.verticalAlign);
+            }
+            if (changed.allCaps.has_value()) {
+                customizations.emplace("allCaps", *changed.allCaps);
+            }
             if (changed.stroke.has_value()) {
                 customizations.emplace("stroke", strokeJson(*changed.stroke));
             }
@@ -1168,6 +1189,12 @@ boost::json::value ServiceCodec::toJson(const Documents& documents) {
         }
         if (theme.minFontSize.has_value()) {
             entry.emplace("minFontSize", *theme.minFontSize);
+        }
+        if (theme.verticalAlign.has_value()) {
+            entry.emplace("verticalAlign", *theme.verticalAlign);
+        }
+        if (theme.allCaps.has_value()) {
+            entry.emplace("allCaps", *theme.allCaps);
         }
         if (theme.stroke.has_value()) {
             entry.emplace("stroke", strokeJson(*theme.stroke));
@@ -1257,7 +1284,8 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
         format != kServiceFormatLegacyFlat && format != kServiceFormatLegacyStyleNamed &&
         format != kServiceFormatLegacyContextless && format != kServiceFormatContexts &&
         format != kServiceFormatTextStyle && format != kServiceFormatTransition &&
-        format != kServiceFormatTextDecoration) {
+        format != kServiceFormatTextDecoration && format != kServiceFormatShowAudio &&
+        format != kServiceFormatTextLayout) {
         fail(error, "service.json: unsupported format " + std::to_string(format) +
                         " (this build reads format " + std::to_string(kServiceFormat) +
                         " and formats " + std::to_string(kServiceFormatLegacyBoxes) +
@@ -1708,6 +1736,27 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                                         "field does not exist");
                         return false;
                     }
+                    // The text-layout pair (task TL.1) is format 14's to
+                    // carry. An earlier file that names one came from a
+                    // build whose answer this loader cannot read, so the
+                    // package is refused naming the key rather than guessed.
+                    if (format >= kServiceFormatTextLayout) {
+                        if (!wantCustomString(changedObject, "verticalAlign",
+                                              &c.verticalAlign, error) ||
+                            !wantCustomBool(changedObject, "allCaps", &c.allCaps, error)) {
+                            return false;
+                        }
+                    } else {
+                        for (const char* key : {"verticalAlign", "allCaps"}) {
+                            if (changedObject.contains(key)) {
+                                fail(error, "service.json: slide '" + slide.id + "' carries "
+                                                "customization '" + key + "' in a format " +
+                                                std::to_string(format) + " file, where that "
+                                                "field does not exist");
+                                return false;
+                            }
+                        }
+                    }
                     if (!wantCustomInteger(changedObject, "fontWeight", &c.fontWeight,
                                            error) ||
                         !wantCustomJsonString(changedObject, "fontStyle", &c.fontStyle,
@@ -1725,8 +1774,8 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                     }
                 } else {
                     for (const char* key : {"fontWeight", "fontStyle", "fitMode",
-                                            "fontUnderline", "minFontSize", "stroke",
-                                            "shadow"}) {
+                                            "fontUnderline", "minFontSize", "verticalAlign",
+                                            "allCaps", "stroke", "shadow"}) {
                         if (changedObject.contains(key)) {
                             fail(error, "service.json: slide '" + slide.id + "' carries "
                                             "customization '" + key + "' in a format " +
@@ -1948,11 +1997,24 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                                         " holds only typography and a box");
                         return false;
                     }
+                    // The text-layout pair (task TL.1) is format 14's to
+                    // carry inside a context too: a pre-14 file naming one
+                    // came from a build whose meaning this loader cannot
+                    // read, so it is refused rather than guessed at.
+                    if (format < kServiceFormatTextLayout &&
+                        (jsonContext.contains("verticalAlign") || jsonContext.contains("allCaps"))) {
+                        fail(error, "service.json: context '" + context.name +
+                                        "' carries a text-layout field in a format " +
+                                        std::to_string(format) + " file, where a context"
+                                        " holds only typography and a box");
+                        return false;
+                    }
                     for (const auto& member : jsonContext) {
                         const std::string_view key = member.key();
                         if (key == "name" || key == "fontFamily" || key == "fontSize" ||
                             key == "lineSpacing" || key == "align" || key == "box" ||
-                            key == "inset" || key == "transition") {
+                            key == "inset" || key == "transition" ||
+                            key == "verticalAlign" || key == "allCaps") {
                             continue;
                         }
                         fail(error, "service.json: context '" + context.name +
@@ -1998,6 +2060,40 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                             return false;
                         }
                         context.align = std::string(align->as_string());
+                    }
+                    // The text-layout pair (task TL.1) is format 14's to
+                    // carry inside a context too. An earlier file naming one
+                    // is refused, exactly as the theme and slide rules do.
+                    if (format >= kServiceFormatTextLayout) {
+                        const boost::json::value* verticalAlign =
+                            field(jsonContext, "verticalAlign");
+                        if (verticalAlign != nullptr) {
+                            if (!verticalAlign->is_string()) {
+                                fail(error, "service.json: context '" + context.name +
+                                                "' verticalAlign must be a string");
+                                return false;
+                            }
+                            context.verticalAlign = std::string(verticalAlign->as_string());
+                        }
+                        const boost::json::value* allCaps = field(jsonContext, "allCaps");
+                        if (allCaps != nullptr) {
+                            if (!allCaps->is_bool()) {
+                                fail(error, "service.json: context '" + context.name +
+                                                "' allCaps must be true or false");
+                                return false;
+                            }
+                            context.allCaps = allCaps->as_bool();
+                        }
+                    } else {
+                        for (const char* key : {"verticalAlign", "allCaps"}) {
+                            if (jsonContext.contains(key)) {
+                                fail(error, "service.json: context '" + context.name +
+                                                "' carries '" + key + "' in a format " +
+                                                std::to_string(format) +
+                                                " file, where that field does not exist");
+                                return false;
+                            }
+                        }
                     }
                     if (!wantBoxRect(jsonContext, "box", "context '" + context.name + "'",
                                      &context.box, error)) {
@@ -2095,6 +2191,25 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
                             error)) {
                 return false;
             }
+            // The text-layout pair (task TL.1) arrived in format 14; an
+            // earlier file carrying one is refused naming the key, exactly
+            // as the underline rule above refuses its own era mismatch.
+            if (format >= kServiceFormatTextLayout) {
+                if (!wantOptionalJsonString(jsonTheme, "verticalAlign", &theme.verticalAlign,
+                                            error) ||
+                    !wantOptionalBool(jsonTheme, "allCaps", &theme.allCaps, error)) {
+                    return false;
+                }
+            } else {
+                for (const char* key : {"verticalAlign", "allCaps"}) {
+                    if (jsonTheme.contains(key)) {
+                        fail(error, "service.json: theme '" + theme.id + "' carries \"" +
+                                        key + "\" in a format " + std::to_string(format) +
+                                        " file, where that key does not exist");
+                        return false;
+                    }
+                }
+            }
             // A loaded theme must be one this build could have written:
             // the shape was the reader's, the MEANING is the domain's one
             // sentence — the same validThemeTextStyle setThemeTextStyle
@@ -2105,6 +2220,8 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             style.fontUnderline = theme.fontUnderline;
             style.fitMode = theme.fitMode;
             style.minFontSize = theme.minFontSize;
+            style.verticalAlign = theme.verticalAlign;
+            style.allCaps = theme.allCaps;
             style.stroke = theme.stroke;
             style.shadow = theme.shadow;
             std::string detail;
@@ -2115,8 +2232,8 @@ bool ServiceCodec::fromJson(const boost::json::value& value, Documents* out,
             }
         } else {
             for (const char* key : {"fontWeight", "fontStyle", "fitMode",
-                                    "fontUnderline", "minFontSize", "stroke",
-                                    "shadow"}) {
+                                    "fontUnderline", "minFontSize", "verticalAlign",
+                                    "allCaps", "stroke", "shadow"}) {
                 if (jsonTheme.contains(key)) {
                     fail(error, "service.json: theme '" + theme.id + "' carries \"" + key +
                                     "\" in a format " + std::to_string(format) +

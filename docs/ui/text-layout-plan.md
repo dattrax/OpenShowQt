@@ -1,7 +1,9 @@
 # Text layout and editor consistency — 2026-11-16
 
-Implementation brief for the **TL** group in `PLAN.md`. This is planned work;
-no new layout feature or runtime verification is claimed by this document.
+Implementation brief for the **TL** group in `PLAN.md`. The domain and
+persistence half of TL.1 is implemented (service format 14); the rest of the
+brief remains planned work. No runtime layout verification is claimed by this
+document.
 
 ## Agreed operator behaviour
 
@@ -66,10 +68,11 @@ theme creation/duplication, whole-style replacement, context merge, undo/redo,
 controller read models, inspector provenance and serialized content. Changing
 one field must preserve the other fields, box placement and transitions.
 
-At this planning checkpoint the code uses service **13**, scene **7** and
-protocol **0.19**. Reserve service **14**, scene **8**, protocol **0.20**, with
-capabilities `scene.text-layout.v1` and `text.measure.v3`. Recheck allocation
-before implementation if another task changes these versions. The older TV/TS
+At this planning checkpoint the code used service **13**, scene **7** and
+protocol **0.19**. TL.1 has since moved the service to **14**; scene **8** and
+protocol **0.20** remain reserved for TL.2, with capabilities
+`scene.text-layout.v1` and `text.measure.v3`. Recheck allocation before
+implementing TL.2 if another task changes these versions. The older TV/TS
 runbook's 9/4/0.18 paragraph is historical, not the current allocation.
 
 - Service 14 persists sparse layout fields. Readers of services 1–13 supply
