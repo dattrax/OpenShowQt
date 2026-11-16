@@ -2730,6 +2730,25 @@ int main(int argc, char** argv) {
         check(clearAll->property("text").toString() == QLatin1String("Clear all"),
               "with nothing cleared there is no restore to offer");
 
+        // Review D5: the cue's own audio layer is output activity for the
+        // Escape/Clear All gate. The gate is a named property, so the fixture
+        // reads the decision itself rather than inferring it from a key press.
+        {
+            auto* map = findNamed(window->contentItem(), "shortcutMap");
+            check(map != nullptr, "the key table is reachable from the window");
+            if (map != nullptr) {
+                check(!map->property("audioOnAir").toBool() &&
+                          !map->property("outputClearEnabled").toBool(),
+                      "with nothing on air, the Escape/Clear All gate is closed");
+                map->setProperty("audioOnAir", true);
+                check(map->property("outputClearEnabled").toBool(),
+                      "an audible cue alone opens the Escape/Clear All gate");
+                map->setProperty("audioOnAir", false);
+                check(!map->property("outputClearEnabled").toBool(),
+                      "and closing it again closes the gate");
+            }
+        }
+
         auto* transportPlay = findNamed(window->contentItem(), "transportPlayButton");
         auto* transportIdle = findNamed(window->contentItem(), "transportIdleNote");
         check(transportPlay && !transportPlay->isVisible()

@@ -194,6 +194,10 @@ class WorkerController : public QObject {
     // does not yet have.
     Q_PROPERTY(bool wordsOnAir READ wordsOnAir NOTIFY sceneChanged)
     Q_PROPERTY(bool backgroundOnAir READ backgroundOnAir NOTIFY sceneChanged)
+    // Review D5: the acknowledged show audio layer, its own layer beside the
+    // picture ones. A cue that is only audible must still read as output
+    // activity, so Clear All and Escape stay available over it.
+    Q_PROPERTY(bool audioOnAir READ audioOnAir NOTIFY sceneChanged)
     Q_PROPERTY(bool canRestore READ canRestore NOTIFY sceneChanged)
     // Cue markers (task UI.3b): liveCueKey names the running-order cue the
     // worker has on air ("" when the active revision belongs to no cue),
@@ -363,6 +367,7 @@ public:
     qint64 scenePrepared() const { return fPresent->scenePrepared(); }
     bool wordsOnAir() const { return fPresent->wordsOnAir(); }
     bool backgroundOnAir() const { return fPresent->backgroundOnAir(); }
+    bool audioOnAir() const { return fPresent->audioOnAir(); }
     bool canRestore() const { return fPresent->canRestore(); }
     QVariantList foregroundErrors() const { return fPresent->foregroundErrors(); }
     qint64 foregroundFailureEvents() const { return fPresent->foregroundFailureEvents(); }

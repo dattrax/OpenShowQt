@@ -48,9 +48,11 @@ estimate is historical; re-estimate remaining work before productization.
   negotiation, request IDs, structured errors and acknowledged revisions. Traffic
   carries bounded scene/control metadata and paths, never original/decoded media.
 - **Preview:** composed worker pixels through three POSIX shared-memory slots;
-  exact stream/sequence ready-release ownership. Normally 640×360 at up to 15 fps
-  on content changes; selected editor scenes and on-demand thumbnails are bounded
-  separately. Drop/defer previews under load; never overwrite a consumer-owned slot.
+  exact stream/sequence ready-release ownership. Target 640×360 at up to 30 fps
+  on content changes (PV below; the default remains 15 fps until PV.1).
+  Selected editor scenes and on-demand thumbnails remain separately bounded.
+  Preserve audience timing and preview fairness; drop/defer under load and never
+  overwrite a consumer-owned slot.
 - **Audio:** native PipeWire, F32 stereo at negotiated rate, independent gain/mute
   for video and one standalone track. Two independent production streams are the
   accepted design (6.20d); audible pairing and relative latency remain 7.4.
@@ -1815,7 +1817,7 @@ Complete DR before FO; existing TV/TA/ND and M7 gates remain open.
 | DR.0 | DONE | Reconcile the current audio cue contract and continuity across visual changes, clear, seek/loop and Restore | One recorded policy covers show audio, embedded video audio and legacy standalone RPC; preserve the latest cue workflow; specify transport identity and acknowledged output activity — `docs/architecture.md` "Media audio: one contract, and when it restarts" (audible identity = embedded stream + show layer; visual-only changes keep the player; Clear Background/Slide preserve the layer, Clear All stops it, Restore starts it from the beginning; seek/loop live on the player; mute/gain survive rebuilds) |
 | DR.1 | DONE | Clear video/camera backgrounds through a complete valid scene transformation (D1) | Still/video/camera/gradient clears validate, remove the actual background and agree with indicators; preserve words/show audio, retire the camera and Restore correctly (`scene_edit_tests`, controller/output journeys) — `SceneEdit` clears through `scene::fromJson`/`toJson` and derives the flags from the same reader; `scene_edit_tests` cover video/camera/mirror/gradient with words and show audio, and `production_journey_tests` clears and restores a real clip on air |
 | DR.2 | DONE | Adopt every scene asset path, including show audio, in retained/pending payloads (D2) | Save → delete old bytes → clear/restore plays audio-only and mixed cues; pending prepares use saved paths; save/adoption alone never re-presents (`worker_controller_tests`, `frontend_journey_tests`) — one traversal (`SceneEdit::visitAssetPaths`) feeds mirror, pending prepares, Restore and desired; `worker_controller_tests` prove the prepare traffic, `document_controller_tests` the real save with the original bytes deleted |
-| DR.3 | TODO | Stage audio for every background kind and complete media identity; defer unready scenes (D3) | After DR.0/DR.4: slow audio-only/still/camera/same-video-new-audio starts never block frame-thread operations; cancellation/replacement/failure stay bounded; duration and faults travel with the staged bundle |
+| DR.3 | DONE | Stage audio for every background kind and complete media identity; defer unready scenes (D3) | After DR.0/DR.4: slow audio-only/still/camera/same-video-new-audio starts never block frame-thread operations; cancellation/replacement/failure stay bounded; duration and faults travel with the staged bundle — `preloadScene` stages every kind, `backgroundOnAir` includes the layer, `fStagingAudio` defers once, a staged failure rides the bundle, and visual-only changes keep the player (DR.0); timings pinned in `background_transport_tests` |
 | DR.4 | DONE | Transfer staged player and all source metadata atomically under one owner (D4) | A barrier-controlled A-adopt/B-publish interleaving preserves both bundles' source identities; no unlocked shared flags; CPU handoff passes race checking where supported — one `StagedAudioBundle` taken whole under `fPrimeMutex`; `background_transport_tests` publish B inside the take-hook window; TSan not available for a Vulkan/Ganesh/GLFW/FFmpeg link, noted in the commit |
 | DR.5 | TODO | Include acknowledged show audio in overall output activity and Clear All/Escape gates (D5) | Audio-only Go → active → Clear All → silence → Restore works through actual UI/worker state; paused/muted and pending cues covered; audio remains separate from composition layers |
 | DR.6 | TODO | Preserve every linked Library refresh across delayed preparation (D6) | Same-ID and multiple-ID edits converge to current catalog revisions; initial Add/Refresh, metadata, deletion and destination-service replacement cannot publish stale plans (`song_service_tests`) |
@@ -1826,6 +1828,31 @@ Complete DR before FO; existing TV/TA/ND and M7 gates remain open.
 Order: DR.0 → DR.1/DR.2/DR.4 → DR.3/DR.5 → DR.6/DR.7a/DR.7b → DR.8.
 Target 0.5–2 engineer-days per implementation leaf; split further when needed.
 Review/probes are complete; no corrective implementation is claimed yet.
+
+### Preview cadence follow-up — 30 fps first (PV)
+
+Agreed 2026-11-16: keep the existing Skia readback and three-slot shared-memory
+architecture, request 30 fps by default, and verify actual UI delivery before
+considering asynchronous readback. The worker already accepts this cadence;
+the frontend currently requests 640×360 at 15 fps. This is planned work only.
+Keep PV separate from DR and coordinate overlapping frontend/test edits.
+
+| ID | Status | Work | Acceptance |
+|---|---|---|---|
+| PV.1 | TODO | Request 30 fps by default and complete per-frame UI repaint notification | Frontend requests 640×360 at 30 fps; accepted audience/selection copies notify the UI immediately. Tests cover defaults after reconnect, accepted/stale/invalid frames and existing sequence-exact slot ownership; no frame is shown under the wrong request or target |
+| PV.2 | TODO | Verify delivered cadence and audience performance on the target GPU | Continuously changing 1080p60 source delivers at least 28.5 preview frames/s over a steady 60-second window with no competing off-air requests; verify visible UI updates, then the existing ten-minute audience deadline gate with previews enabled (<1% missed deadlines). Record environment, actual delivery/latency, drops and deferrals; physical checks retain the projector requirement |
+
+Order: PV.1 → PV.2. Static scenes remain event-driven: 30 fps is a ceiling, not
+a continuous repaint requirement. Preserve audience-budget protection, editor/
+thumbnail fairness and drop-without-wait behavior for slow or stalled consumers;
+competing targets may reduce audience preview cadence. Resolution, rendering
+quality, wire format and shared-memory layout stay as they are.
+
+No MSAA, custom Vulkan buffer ring, GPU image sharing or Windows port in PV.
+Keep the approach compatible with a future Windows build. If measurements miss
+the target, leave PV.2 open and add a measured follow-up using Skia's public
+asynchronous readback API; do not raise the audience budget to force 30 fps.
+Historical 15 fps DONE evidence remains unchanged; no 30 fps result is claimed.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

@@ -3894,6 +3894,60 @@ void scenarioAdoptedPaths() {
     }
 }
 
+// Review D5: an audio-only cue is output activity. The picture flags are
+// false for it — that is correct, audio is its own layer — but the monitor
+// must not label it clear, and Clear All/Escape must be available. The
+// scripted peer answers like a real worker (active revision, no picture), and
+// the fixture drives the same controller the panel binds to.
+void scenarioAudioOnlyOutputActivity() {
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "media", 1);
+    const std::string report = tempPath("audio-activity");
+    ::unlink(report.c_str());
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+
+    WorkerController controller;
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(
+                       QStringLiteral("connected to worker"));
+               }),
+               "audio-activity: handshake with the scripted peer")) {
+        controller.shutdownNow();
+        return;
+    }
+    controller.presentSceneJson(
+        QString::fromStdString(sceneAudioOnly("/audio/dir/track.wav")));
+    if (!check(waitUntil([&controller] {
+                   return controller.sceneActive() == 1 && controller.scenePending() == 0;
+               }),
+               "audio-activity: the audio-only cue is on air")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(controller.audioOnAir(),
+          "audio-activity: an audio-only cue reads as output activity");
+    check(!controller.wordsOnAir() && !controller.backgroundOnAir(),
+          "audio-activity: and never as a picture layer");
+    check(!controller.canRestore(), "audio-activity: nothing is retained before the clear");
+
+    controller.clearAll();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 2 && controller.scenePending() == 0;
+          }),
+          "audio-activity: Clear All over an audio-only cue is acknowledged");
+    check(!controller.audioOnAir(),
+          "audio-activity: the cleared scene carries no audio layer");
+    check(controller.canRestore(), "audio-activity: the audible cue is retained for Restore");
+
+    controller.restoreOutput();
+    check(waitUntil([&controller] {
+              return controller.sceneActive() == 3 && controller.scenePending() == 0;
+          }),
+          "audio-activity: Restore is acknowledged");
+    check(controller.audioOnAir(), "audio-activity: Restore brings the cue's audio layer back");
+    controller.shutdownNow();
+}
+
 // Task 6.21b (review F2): adoption must rewrite the ITEMS too, not just the
 // background. The S12 journey again — but with a foreground picture, the
 // shape no background-only fixture ever sent: present text plus image,
@@ -5184,6 +5238,7 @@ int main(int argc, char* argv[]) {
     scenarioWriteStallIsRefusedBoundedAndClosed();
     scenarioStalledThenResumingPeerKeepsItsSession();
     scenarioAdoptedPaths();
+    scenarioAudioOnlyOutputActivity();
     scenarioAdoptedForeground();
     scenarioMediaTransport();
     scenarioThumbnailAskedBeforeHello();

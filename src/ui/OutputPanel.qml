@@ -32,6 +32,11 @@ SidePanel {
     id: outputPanel
     side: "right"
     function fileName(path) { return String(path).split(/[\\/]/).pop() || "Unknown file" }
+    // Review D5: output activity includes the cue's own audio layer. A cue
+    // that is only audible (no words, no picture) is still output, so the
+    // monitor must not call it clear and Clear All must stay reachable.
+    readonly property bool outputActive: worker.wordsOnAir || worker.backgroundOnAir
+                                         || worker.audioOnAir
     readonly property string destinationName: worker.currentMonitor < 0 ? "Windowed"
         : (worker.displays.filter(d => d.index === worker.currentMonitor).map(d => d.name).join("") || "Audience display")
 
@@ -269,7 +274,7 @@ SidePanel {
                     font.pixelSize: 11
                     text: worker.canRestore ? "Restore" : "Clear all"
                     Accessible.name: worker.canRestore ? "Restore output" : "Clear all"
-                    enabled: worker.wordsOnAir || worker.backgroundOnAir || worker.canRestore
+                    enabled: outputPanel.outputActive || worker.canRestore
                     onClicked: worker.canRestore ? worker.restoreOutput() : worker.clearAll()
                 }
             }
@@ -282,7 +287,7 @@ SidePanel {
             color: worker.outputLive ? "#b8d7b0" : "#d89b9b"
             font.pixelSize: 11
             text: !worker.outputLive ? "Audience output unavailable"
-                : (worker.wordsOnAir || worker.backgroundOnAir ? "\u25cf  Output active" : "\u25cb  Output clear")
+                : (outputPanel.outputActive ? "\u25cf  Output active" : "\u25cb  Output clear")
                   + " \u00b7 " + outputPanel.destinationName
             elide: Text.ElideRight
         }

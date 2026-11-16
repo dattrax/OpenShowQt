@@ -37,6 +37,7 @@ import QtQuick
  */
 Item {
     id: shortcutMap
+    objectName: "shortcutMap"
 
     // What the window owns and the gates read. Each is a fact, not a
     // decision: the decisions are the enabled: lines below.
@@ -52,6 +53,8 @@ Item {
     property int cueCount: 0              // the running order's cues (UI.3b)
     property bool wordsOnAir: false
     property bool backgroundOnAir: false
+    // Review D5: the cue's own audio layer is output activity too.
+    property bool audioOnAir: false
     property bool canRestore: false
     property bool numberKeysPresent: false  // the settings page's opt-in
 
@@ -97,10 +100,16 @@ Item {
     // do nothing. On the edit page the first Escape steps out of the
     // selection first (4.3); the two owners gate on boxSelected, so the
     // key never lands on both at once.
+    // The gate itself, named so the fixture can read the decision rather
+    // than infer it from a key press: Escape clears when ANY layer is on air
+    // — words, picture or the show's audio (DR.5) — and restores when only a
+    // snapshot is left.
+    readonly property bool outputClearEnabled: (wordsOnAir || backgroundOnAir || audioOnAir
+                                                || canRestore)
+                                               && !(page === "edit" && boxSelected)
     Shortcut {
         sequence: StandardKey.Cancel
-        enabled: (wordsOnAir || backgroundOnAir || canRestore)
-                 && !(page === "edit" && boxSelected)
+        enabled: shortcutMap.outputClearEnabled
         onActivated: outputCancelRequested()
     }
     Shortcut {

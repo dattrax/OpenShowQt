@@ -163,6 +163,11 @@ public:
     }
     bool wordsOnAir() const { return fSceneContent.words; }
     bool backgroundOnAir() const { return fSceneContent.background; }
+    // The acknowledged scene carries the show's audio layer (DR.5). Audio is
+    // its own layer: it never makes words/background true, and a cue that is
+    // only audible is still output activity — the state the operator must be
+    // able to clear.
+    bool audioOnAir() const { return fSceneContent.audio; }
     bool canRestore() const { return !fRestoreJson.isEmpty(); }
     // The stack pictures the worker could not decode (task 6.21f, review
     // F6): the bounded list as [{path, error}, ...] and the worker's

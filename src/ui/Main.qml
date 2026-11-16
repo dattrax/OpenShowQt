@@ -116,6 +116,7 @@ Window {
         cueCount: showPage.cueRows.length
         wordsOnAir: worker.wordsOnAir
         backgroundOnAir: worker.backgroundOnAir
+        audioOnAir: worker.audioOnAir
         canRestore: worker.canRestore
         numberKeysPresent: appSettings.numberKeysPresent
 
