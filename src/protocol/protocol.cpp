@@ -276,13 +276,17 @@ bool handleHello(const boost::json::value& params, std::string_view workerVersio
                             kCapabilityMediaThumbnail,
                             // Minor 19: the show audio layer and the master
                             // media-audio mute are performed by this worker.
-                            kCapabilityShowAudio};
-    // Task TL.2 defines scene.text-layout.v1 and text.measure.v3 and bumps
-    // the minor to 20, but deliberately WITHHOLDS both names: this build's
-    // renderer places no paragraph and applies no capitals yet (TL.3 does),
-    // and a capability is a claim about pixels, not about parsing. The
-    // frontend's gates refuse a non-default pair toward this hello and say
-    // so; TL.3 adds the two names here when the layout engine earns them.
+                            kCapabilityShowAudio,
+                            // TL.3 EARNED these two names: the renderer now
+                            // places the paragraph at the resolved anchor
+                            // (paint and bounds share one origin) and applies
+                            // the root-locale capitals transform before
+                            // shaping, and text.measure enters the same
+                            // transform/layout path. TL.2 defined the
+                            // spellings and withheld them precisely so this
+                            // update would be a conscious one.
+                            kCapabilityTextLayout,
+                            kCapabilityTextMeasureV3};
     if (liveSources) {
         capabilities.push_back(kCapabilityLiveSources);
     }

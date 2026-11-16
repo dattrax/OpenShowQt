@@ -35,6 +35,7 @@
 #include <unistd.h>
 
 #include "openshow/protocol/protocol.h"
+#include "openshow/scene/scene.h"
 
 namespace {
 
@@ -700,6 +701,44 @@ int main(int argc, char* argv[]) {
         refusedWith(badCaps, "allCaps",
                     "a stringy caps answer is refused naming the key");
 
+        // Task TL.3: the transform is applied BEFORE shaping, so capitals
+        // change the wrap. Twenty ß become forty S characters, which cannot
+        // fit the same narrow box on the same number of lines.
+        std::string sharp;
+        for (int i = 0; i < 20; ++i) {
+            sharp += "\xC3\x9F";
+        }
+        const Measured lower = measureOne(fd, nextId, block("c1", {sharp}, 40.0, 200.0), &error);
+        boost::json::object capsBlock = block("c1", {sharp}, 40.0, 200.0);
+        capsBlock["allCaps"] = true;
+        const Measured upper = measureOne(fd, nextId, capsBlock, &error);
+        check(lower.ok && upper.ok && upper.lineCount > lower.lineCount,
+              "allCaps measures the transformed words: ß -> SS wraps to more lines");
+        check(upper.height > lower.height,
+              "and the taller wrap is what the paginator is told");
+
+        // Task TL.3: an ask that NAMES an anchor and supplies a box height
+        // gets POSITIONED bounds; the intrinsic height never moves.
+        boost::json::object topBox = block("p1", {"Positioned"}, 40.0, 800.0);
+        topBox["height"] = 400.0;
+        topBox["verticalAlign"] = "top";
+        const Measured atTop = measureOne(fd, nextId, topBox, &error);
+        boost::json::object bottomBox = topBox;
+        bottomBox["verticalAlign"] = "bottom";
+        const Measured atBottom = measureOne(fd, nextId, bottomBox, &error);
+        check(atTop.ok && atBottom.ok && atTop.height == atBottom.height,
+              "the anchor moves the bounds, not the intrinsic height");
+        const double free = std::max(0.0, 400.0 - atTop.height);
+        check(std::abs((atBottom.top - atTop.top) - free) <= 1.0 &&
+                  std::abs((atBottom.bottom - atTop.bottom) - free) <= 1.0,
+              "bottom-anchored bounds sit a whole free space below top-anchored ones");
+        boost::json::object v2Shaped = block("p2", {"Positioned"}, 40.0, 800.0);
+        v2Shaped["height"] = 400.0;  // no anchor: the pre-TL.3 question
+        const Measured unanchored = measureOne(fd, nextId, v2Shaped, &error);
+        check(unanchored.ok && unanchored.top == atTop.top &&
+                  unanchored.bottom == atTop.bottom,
+              "a v2-shaped ask keeps the pre-TL.3 bounds even with a height");
+
         // And the session lives on after all of it.
         const Measured after = measureOne(fd, nextId, block("live", {"still here"}, 40.0, 800.0),
                                           &error);
@@ -815,6 +854,37 @@ int main(int argc, char* argv[]) {
         check(call(fd, nextId++, proto::kMethodFontList, boost::json::object{}, &alive) &&
                   !alive.as_object().contains("error"),
               "font.list refusals are per-request; the session lives on");
+    }
+
+    // Task TL.3: scene.prepare applies the same display-transform budget
+    // BEFORE the store grows. U+01F0 uppercases to two characters, so a
+    // source line at the wire's byte limit overflows the scene's line
+    // budget only AFTER the transform — exactly what this gate catches.
+    {
+        openshow::scene::Scene scene;
+        scene.showId = "show1";
+        scene.slideId = "slide1";
+        openshow::scene::SceneItem item;
+        std::string grow;
+        for (int i = 0; i < 512; ++i) {
+            grow += "\xC7\xB0";
+        }
+        item.lines = {grow};
+        item.allCaps = true;
+        scene.items.push_back(std::move(item));
+        const boost::json::value wire = openshow::scene::toJson(scene);
+        boost::json::value reply;
+        if (call(fd, nextId++, "scene.prepare", wire.as_object(), &reply) &&
+            reply.as_object().contains("error")) {
+            const std::string message =
+                std::string(reply.at("error").as_object().at("message").as_string());
+            check(message.find("uppercase") != std::string::npos &&
+                      message.find("budget") != std::string::npos,
+                  "scene.prepare refuses an uppercase expansion over the text budget, "
+                  "naming it");
+        } else {
+            check(false, "scene.prepare refuses the over-budget uppercase scene");
+        }
     }
 
     // An empty batch is legal and answers empty.

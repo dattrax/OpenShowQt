@@ -1929,7 +1929,7 @@ Defaults remain centre/off. [Contract, source findings and acceptance](docs/ui/t
 |---|---|---|---|
 | TL.1 | DONE | Persist and resolve sparse `verticalAlign` / `allCaps` on themes, contexts and slide overrides | Service 14 over current 13; centre/off legacy pixels and IDs preserved; explicit false/inheritance, context precedence, copy, reset and one-undo round-trips; strict invalid/old-format key refusal (`domain_tests`, `document_controller_tests`) |
 | TL.2 | DONE | Carry concrete layout through scenes, measurement, adapters and worker capability gates | Scene 8/protocol 0.20 over 7/0.19, `scene.text-layout.v1` / `text.measure.v3`; strict text-only fields, safe legacy defaults and named refusal of unsupported non-default settings; shared inspector provenance/verbs (`scene_tests`, `protocol_tests`, `inspector_adapter_tests`, `worker_controller_tests`) |
-| TL.3 | TODO | Render vertical placement and reversible Unicode capitals through the shared layout engine | Top/centre/bottom use one paragraph-origin calculation for paint and bounds; root-locale uppercase precedes shaping/fit/measurement, source UTF-8 stays intact, transformed limits are bounded; pinned-font raster and measurement regressions cover wrapping, overflow, effects and multiple boxes |
+| TL.3 | DONE | Render vertical placement and reversible Unicode capitals through the shared layout engine | Top/centre/bottom use one paragraph-origin calculation for paint and bounds; root-locale uppercase precedes shaping/fit/measurement, source UTF-8 stays intact, transformed limits are bounded; pinned-font raster and measurement regressions cover wrapping, overflow, effects and multiple boxes |
 | TL.4 | TODO | Propagate layout settings through song/Bible planning and stale-result ownership | Measurement, fingerprints and cache keys agree with render; toggles invalidate drafts and delayed plans cannot enable Add; original-case words/labels conserved; committed slide boundaries remain authored (`song_pagination_tests`, `scripture_pagination_tests`, song/Bible journeys) |
 | TL.5 | TODO | Review editor consistency and add shared layout icons/All caps control | Songs/Bible/Edit share control order, tooltips, keyboard access, resolved state and per-field reset; fix underline-only Remove customizations via one domain-derived state, including explicit false; one gesture/undo and immediate correct off-air preview, with no audience presentation on edit (`workspace_ui_tests`, `control_set_ui_tests`) |
 | TL.6 | TODO | Close integrated layout journeys and update architecture/control-set documentation | Preview-only edit → explicit Go → acknowledged pixels → reset/undo/save/reopen with source words and continuous media preserved; focused tests then desktop/headless/source guards pass; report skips/physical gates and leave unrelated TV/TA/ND/M7 work open |
@@ -1980,6 +1980,27 @@ inspector exposes both leaves on themes and slides and the one style pair a
 Bible view already stores, with provenance, commit and reset
 (`inspector_adapter_tests`). Focused runs pass; the full suite is recorded in
 `PROGRESS.md`.
+
+TL.3 evidence (2026-11-16): the shared layout engine now owns both halves.
+`SceneTextEngine::verticalOffset` is the ONE paragraph-origin calculation —
+free space is `max(0, boxHeight - textHeight)`, divided 0 / half / all for
+top/centre/bottom — and `paragraphTop` (paint, ink bounds and fit diagnostics)
+reads it, so an overflowing fixed-size paragraph stays top-anchored for every
+answer, preserving the old clamped centre. `displayLines` applies ICU's
+root-locale (`""`) uppercase exactly once, before SkParagraph shapes, wraps,
+fits or measures; authored line breaks and empty lines survive, the source
+strings are never rewritten, and the transformed result is checked against the
+scene contract's line/item/scene character budgets with a named refusal.
+`scene.prepare` runs that guard before the store grows, and `text.measure`
+enters the same transform/layout path; an ask that names an anchor and supplies
+a box height gets positioned bounds while the intrinsic height and line count
+stay put (a v2-shaped ask keeps the pre-TL.3 numbers). The worker now
+advertises `scene.text-layout.v1` and `text.measure.v3`. `unicode_text_tests`
+pins the transform (ß→SS, ü→Ü, root-locale i→I, empty lines, source intact,
+budget refusals); `scene_render_tests` pins the three anchors' distinct
+origins, every pixel inside the anchored ink rect, and allCaps drawing the same
+picture as literal capitals; `text_measure_tests` pins the caps wrap, the
+positioned bounds and the prepare-time budget refusal. Full suite: 85/85.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

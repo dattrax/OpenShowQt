@@ -138,9 +138,10 @@ public:
     // engine is not.
     bool listFonts(std::vector<FontFamily>* families, std::string* error) const;
 
-    // One item laid out: wrapped at its authored box width, centred,
+    // One item laid out: wrapped at its authored box width, aligned,
     // explicit line height. The box fields are the item's authored box
-    // (task 4.3) — the region drawLayout centres the paragraph in.
+    // (task 4.3) — the region drawLayout places the paragraph in at the
+    // item's vertical anchor (task TL.3).
     //
     // A text item's visual extent, authored units, relative to the
     // paragraph's paint origin (boxX horizontally, paragraphTop()
@@ -170,6 +171,11 @@ public:
         float boxY = 0.0f;
         float boxWidth = 0.0f;
         float boxHeight = 0.0f;
+        // Task TL.3: where the paragraph sits inside the box — "top",
+        // "center" or "bottom". It is carried so paragraphTop() can answer
+        // from the LAID-OUT item alone, which is what keeps paint, ink
+        // bounds and fit diagnostics on one origin calculation.
+        std::string verticalAlign = "center";
         bool isImage = false;    // an image entry: box + assetPath, nothing else
         std::string assetPath;
         // The TS.2 effect state drawLayout needs beside the paragraph.
@@ -215,16 +221,44 @@ public:
         bool fits = true;
     };
 
+    // The anchored vertical offset of a paragraph inside its box (task
+    // TL.3): the free space is max(0, boxHeight - textHeight), so an
+    // overflowing fixed-size paragraph stays top-anchored for all three
+    // answers — the old clamped-centre behaviour — while top/center/bottom
+    // divide the free space 0, half, all. One function so measurement,
+    // drawing and every bounds consumer agree.
+    static float verticalOffset(const std::string& verticalAlign, float boxHeight,
+                                float textHeight);
+
     // Where drawLayout places a paragraph's top edge inside its box: the
-    // box's own vertical centring, exposed because TS.3's bounds travel
+    // box's own vertical positioning, exposed because TS.3's bounds travel
     // RELATIVE to this point — the layout cache's consumer (the test, the
     // measurement) computes the absolute extent from the same arithmetic
     // the drawing uses, never a copy that could drift.
     static float paragraphTop(const LaidOutItem& item);
 
+    // Task TL.3: the DISPLAY transform. `allCaps` uppercases each authored
+    // line with ICU's ROOT locale ("") exactly once, before SkParagraph
+    // shapes, wraps, fits or measures it; authored line breaks and empty
+    // lines survive, and the source strings are never rewritten. Returns
+    // false with a named error when the transformed UTF-8 would exceed the
+    // scene contract's own line/item character budgets — the expansion is
+    // bounded, but it must not slip past the resource limits the wire
+    // enforces on the source. `item.lines` is copied when the flag is off.
+    bool displayLines(const openshow::scene::SceneItem& item,
+                      std::vector<std::string>* out, std::string* error = nullptr) const;
+
+    // The whole-scene guard, run by scene.prepare: the same displayLines
+    // pass plus the scene-wide character budget, so an uppercase expansion
+    // that would overflow any limit is refused by name BEFORE the store
+    // grows. A scene that passes this lays out with no transform failure.
+    bool validateSceneText(const openshow::scene::Scene& scene, std::string* error) const;
+
     // scale multiplies the item's size before layout (the fit pass).
-    LaidOutItem layout(const openshow::scene::SceneItem& item, float scale,
-                       float maxWidth) const;
+    // `error` (task TL.3) receives the named refusal when the display
+    // transform cannot be bounded.
+    LaidOutItem layout(const openshow::scene::SceneItem& item, float scale, float maxWidth,
+                       std::string* error = nullptr) const;
 
     // A whole scene's text: each item laid out inside its own box and
     // shrunk (FreeShow's per-item shrinkToFit) until it fits that box's
@@ -233,7 +267,8 @@ public:
     struct SceneLayout {
         std::vector<LaidOutItem> items;
     };
-    SceneLayout layoutScene(const openshow::scene::Scene& scene) const;
+    SceneLayout layoutScene(const openshow::scene::Scene& scene,
+                            std::string* error = nullptr) const;
 
     // A renderer's layout cache (task 6.9b). The expensive half of a scene
     // change is shaping its text, and until now that cost was paid on the

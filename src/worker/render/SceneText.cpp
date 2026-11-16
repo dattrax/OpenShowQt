@@ -355,17 +355,109 @@ float effectiveSize(const openshow::scene::SceneItem& item, float scale) {
 
 }  // namespace
 
+bool SceneTextEngine::displayLines(const openshow::scene::SceneItem& item,
+                                   std::vector<std::string>* out, std::string* error) const {
+    if (out == nullptr) {
+        if (error != nullptr) {
+            *error = "the display transform needs a destination for its lines";
+        }
+        return false;
+    }
+    *out = item.lines;
+    if (!item.allCaps) {
+        return true;
+    }
+    if (!fUnicode) {
+        if (error != nullptr) {
+            *error = "the Unicode backend is unavailable for the uppercase transform";
+        }
+        return false;
+    }
+    // One pass, root locale: language-specific casing (Turkish dotless i,
+    // for instance) must not depend on the operator's machine. ICU's
+    // uppercase is full Unicode string casing — it may turn one character
+    // into several — and the authored line breaks are ordinary characters
+    // it leaves alone.
+    std::size_t total = 0;
+    for (std::string& line : *out) {
+        if (line.empty()) {
+            continue;  // an empty authored line stays an empty line
+        }
+        const SkString upper = fUnicode->toUpper(SkString(line.c_str(), line.size()), "");
+        if (upper.size() == 0) {
+            if (error != nullptr) {
+                *error = "the uppercase transform failed on a non-empty line";
+            }
+            return false;
+        }
+        line.assign(upper.c_str(), upper.size());
+        if (line.size() > openshow::scene::kMaxLineChars) {
+            if (error != nullptr) {
+                *error = "uppercase text makes a line of " + std::to_string(line.size()) +
+                         " characters, over the scene's " +
+                         std::to_string(openshow::scene::kMaxLineChars) + "-character budget";
+            }
+            return false;
+        }
+        total += line.size();
+        if (total > openshow::scene::kMaxItemTextChars) {
+            if (error != nullptr) {
+                *error = "uppercase text makes an item of " + std::to_string(total) +
+                         " characters, over the scene's " +
+                         std::to_string(openshow::scene::kMaxItemTextChars) +
+                         "-character budget";
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+bool SceneTextEngine::validateSceneText(const openshow::scene::Scene& scene,
+                                        std::string* error) const {
+    std::size_t sceneTotal = 0;
+    for (const openshow::scene::SceneItem& item : scene.items) {
+        if (item.isImage) {
+            continue;
+        }
+        std::vector<std::string> lines;
+        if (!displayLines(item, &lines, error)) {
+            return false;
+        }
+        for (const std::string& line : lines) {
+            sceneTotal += line.size();
+            if (sceneTotal > openshow::scene::kMaxSceneTextChars) {
+                if (error != nullptr) {
+                    *error = "uppercase text makes the scene of " +
+                             std::to_string(sceneTotal) + " characters, over the scene's " +
+                             std::to_string(openshow::scene::kMaxSceneTextChars) +
+                             "-character budget";
+                }
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::SceneItem& item,
-                                                     float scale, float maxWidth) const {
+                                                     float scale, float maxWidth,
+                                                     std::string* error) const {
     LaidOutItem out;
     out.fontSize = effectiveSize(item, scale);
+    out.verticalAlign = item.verticalAlign;
 
+    std::vector<std::string> display;
+    if (!displayLines(item, &display, error)) {
+        out.hasText = false;
+        return out;
+    }
     std::string joined;
-    for (std::size_t i = 0; i < item.lines.size(); ++i) {
+    for (std::size_t i = 0; i < display.size(); ++i) {
         if (i > 0) {
             joined.push_back('\n');
         }
-        joined += item.lines[i];
+        joined += display[i];
     }
     if (item.lines.empty()) {
         return out;  // hasText stays false; nothing to draw
@@ -561,12 +653,28 @@ SceneTextEngine::LaidOutItem SceneTextEngine::layout(const openshow::scene::Scen
     return out;
 }
 
+float SceneTextEngine::verticalOffset(const std::string& verticalAlign, float boxHeight,
+                                      float textHeight) {
+    // Free space is never negative: a paragraph taller than its box keeps
+    // its top on the box top for every answer, which preserves the clamped
+    // centre this renderer has always drawn for an overflowing fixed-size
+    // item. Top/center/bottom then divide that free space 0 / half / all.
+    const float free = std::max(0.0f, boxHeight - textHeight);
+    if (verticalAlign == "top") {
+        return 0.0f;
+    }
+    if (verticalAlign == "bottom") {
+        return free;
+    }
+    return free * 0.5f;  // "center", and the safe read of anything else
+}
+
 float SceneTextEngine::paragraphTop(const LaidOutItem& item) {
-    // The block sits at the box's vertical middle (4.3) — a taller-than-box
-    // block's top rides up over the box edge rather than clipping at the
-    // bottom, which is what drawLayout has always done and what TS.3's
-    // bounds are relative to.
-    return item.boxY + std::max(0.0f, (item.boxHeight - item.height) * 0.5f);
+    // The block sits at the resolved vertical anchor (task TL.3), defaulting
+    // to the box's vertical middle — a taller-than-box block's top rides up
+    // over the box edge rather than clipping at the bottom, which is what
+    // drawLayout has always done and what TS.3's bounds are relative to.
+    return item.boxY + verticalOffset(item.verticalAlign, item.boxHeight, item.height);
 }
 
 namespace {
@@ -589,7 +697,7 @@ bool inkInsideBox(const openshow::worker::SceneTextEngine::LaidOutItem& item) {
 }  // namespace
 
 SceneTextEngine::SceneLayout SceneTextEngine::layoutScene(
-    const openshow::scene::Scene& scene) const {
+    const openshow::scene::Scene& scene, std::string* error) const {
     SceneLayout out;
     out.items.reserve(scene.items.size());
     for (const auto& item : scene.items) {
@@ -633,7 +741,7 @@ SceneTextEngine::SceneLayout SceneTextEngine::layoutScene(
         const float minScale = base > 0.0f ? kSceneMinFontSize / base : 1.0f;
         float scale = 1.0f;
         for (int pass = 0;; ++pass) {
-            LaidOutItem laid = layout(item, scale, boxWidth);
+            LaidOutItem laid = layout(item, scale, boxWidth, error);
             laid.boxX = boxX;
             laid.boxY = boxY;
             laid.boxWidth = boxWidth;
@@ -814,9 +922,10 @@ private:
 void SceneTextEngine::drawLayout(SkCanvas* canvas, const SceneLayout& layout,
                                  const SkPaint* paint, SceneImageCache* images,
                                  bool textItems) const {
-    // Centred: the paragraph aligns its lines inside boxWidth, and the block
-    // sits at the box's vertical middle — paragraphTop(), the same arithmetic
-    // TS.3's ink bounds are measured relative to.
+    // The paragraph aligns its lines inside boxWidth and its block sits at
+    // the resolved vertical anchor — paragraphTop(), the same arithmetic
+    // TS.3's ink bounds and the fit verdict use, so paint and bounds cannot
+    // drift.
     const auto centerY = [](const LaidOutItem& item) { return paragraphTop(item); };
     // A foreground picture (task 6.17b) draws beside the paragraphs, in the
     // stack's array order, so the composition honours the order the operator

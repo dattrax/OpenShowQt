@@ -226,6 +226,85 @@ void fixtureBreakIterators(SkUnicode& unicode) {
     check(lines != nullptr, "line break iterator exists");
 }
 
+// Task TL.3: the display capitals transform. One pass through the block's
+// own ICU backend with the ROOT locale, before shaping; authored line
+// breaks and empty lines survive, and the source lines are never rewritten.
+void fixtureUppercaseDisplay(worker::SceneTextEngine& engine) {
+    scene::SceneItem item;
+    item.lines = {"stra\xC3\x9F" "e", "", "\xC3\xBC" "ber", "i"};
+    // "straße" -> "STRASSE" (ß expands to SS; Unicode case mapping, not a
+    // byte-wise toupper), the empty line stays empty, "über" -> "ÜBER" and
+    // root-locale "i" -> "I" (a Turkish locale would answer "İ").
+    item.allCaps = true;
+    std::vector<std::string> lines;
+    std::string error;
+    if (!check(engine.displayLines(item, &lines, &error),
+               "the display transform answers: " + error)) {
+        return;
+    }
+    check(lines.size() == 4, "the transform preserves the line count");
+    check(lines[0] == "STRASSE", "ß expands to SS through ICU's full uppercase");
+    check(lines[1].empty(), "an authored empty line stays empty");
+    check(lines[2] == "\xC3\x9C" "BER", "a non-ASCII letter uppercases (ü -> Ü)");
+    check(lines[3] == "I", "root-locale uppercase of i is I, never a dotted capital");
+
+    // The SOURCE is untouched: allCaps is a display flag, not an edit.
+    check(item.lines[0] == "stra\xC3\x9F" "e" && item.lines[3] == "i",
+          "the authored lines keep their exact original case");
+
+    // Off is the identity, and it copies rather than aliases.
+    scene::SceneItem plain = item;
+    plain.allCaps = false;
+    std::vector<std::string> same;
+    check(engine.displayLines(plain, &same, &error) && same == item.lines,
+          "the transform is the identity when allCaps is off");
+
+    // The transform must not slip past the scene contract's own budgets.
+    // Uppercase can lengthen a line, so the check is on the RESULT.
+    scene::SceneItem longLine;
+    longLine.allCaps = true;
+    {
+        // U+01F0 (ǰ) uppercases to "J" + combining caron: two bytes grow to
+        // three, so a source at the byte budget exceeds it after the
+        // transform. This is the expansion the budget guard exists for.
+        std::string word;
+        for (int i = 0; i < static_cast<int>(scene::kMaxLineChars) / 2; ++i) {
+            word += "\xC7\xB0";
+        }
+        longLine.lines = {std::move(word)};
+    }
+    std::vector<std::string> refused;
+    error.clear();
+    check(!engine.displayLines(longLine, &refused, &error) &&
+              error.find("line") != std::string::npos &&
+              error.find(std::to_string(scene::kMaxLineChars)) != std::string::npos,
+          "a transform that overflows the line budget is refused naming the budget");
+
+    // The item budget is the sum over lines, and the scene budget sums the
+    // items — both named, both refusing before any shaping.
+    scene::SceneItem fatItem;
+    fatItem.allCaps = true;
+    fatItem.lines.assign(33, std::string(512, 'a'));  // 16896 > 16 KiB
+    check(!engine.displayLines(fatItem, &refused, &error) &&
+              error.find("item") != std::string::npos,
+          "an item over the per-item budget is refused naming the item budget");
+    scene::Scene crowded;
+    for (int i = 0; i < 17; ++i) {
+        scene::SceneItem one;
+        one.allCaps = true;
+        one.lines.assign(4, std::string(1000, 'a'));  // 17*4*1000 > 64 KiB
+        crowded.items.push_back(std::move(one));
+    }
+    error.clear();
+    check(!engine.validateSceneText(crowded, &error) &&
+              error.find("scene") != std::string::npos,
+          "a transformed scene over the scene-wide budget is refused naming it");
+    scene::Scene calm = crowded;
+    calm.items.resize(2);
+    check(engine.validateSceneText(calm, &error),
+          "and a scene inside the budgets validates");
+}
+
 }  // namespace
 
 int main() {
@@ -247,6 +326,7 @@ int main() {
     fixtureCjkWrapping(engine, *unicode);
     fixtureMixedBidi(engine, *unicode);
     fixtureBreakIterators(*unicode);
+    fixtureUppercaseDisplay(engine);
 
     if (failures != 0) {
         std::fprintf(stderr, "unicode_text_tests: %d failure(s)\n", failures);

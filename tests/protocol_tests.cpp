@@ -217,7 +217,7 @@ void testHello() {
         // belongs in the hello (TR.2's scene.transition-options.v1 made it 21),
         // and reading this fail means a name was added or dropped — which is
         // exactly the kind of change that should cost a looked-at line.
-        check(result.at("capabilities").as_array().size() == 24, "hello lists capabilities");
+        check(result.at("capabilities").as_array().size() == 26, "hello lists capabilities");
         {  // Minor 19: the show audio layer is performed, not ignored.
             const auto& caps = result.at("capabilities").as_array();
             const bool hasShowAudio = std::any_of(
@@ -226,16 +226,17 @@ void testHello() {
                 });
             check(hasShowAudio, "capabilities name media.show-audio.v1");
         }
-        {  // Task TL.2 defines the two layout names and bumps the minor, but
-           // WITHHOLDS them: this build's renderer places no paragraph and
-           // applies no capitals yet (TL.3), and a capability is a claim about
-           // pixels. The spellings still have to be the contract's, so the
-           // frontend's gate and a later hello name one string.
+        {  // Task TL.2 defined the two layout names and bumped the minor;
+           // TL.3 EARNED them — the renderer places the paragraph at the
+           // resolved anchor and applies the capitals transform before
+           // shaping, and measurement enters the same path. This replaced
+           // TL.2's absence tripwire, which existed so this update would be
+           // a conscious one.
             check(proto::kCapabilityTextLayout == std::string("scene.text-layout.v1"),
                   "the layout scene capability is spelled scene.text-layout.v1");
             check(proto::kCapabilityTextMeasureV3 == std::string("text.measure.v3"),
                   "the layout measure capability is spelled text.measure.v3");
-            check(proto::kProtocolMinor == 20, "TL.2's wire is protocol minor 20");
+            check(proto::kProtocolMinor == 20, "the layout wire is protocol minor 20");
             const auto& caps = result.at("capabilities").as_array();
             const bool hasLayout = std::any_of(
                 caps.begin(), caps.end(), [](const boost::json::value& v) {
@@ -245,8 +246,9 @@ void testHello() {
                 caps.begin(), caps.end(), [](const boost::json::value& v) {
                     return v.is_string() && v.as_string() == proto::kCapabilityTextMeasureV3;
                 });
-            check(!hasLayout && !hasMeasureV3,
-                  "the layout names are withheld until the renderer earns them (TL.3)");
+            check(hasLayout && hasMeasureV3,
+                  "scene.text-layout.v1 and text.measure.v3 are advertised now the "
+                  "renderer draws and measures the pair");
         }
         {  // Task 6.17b's scene 2 (kinded items) is named by a capability.
             const auto& caps = result.at("capabilities").as_array();

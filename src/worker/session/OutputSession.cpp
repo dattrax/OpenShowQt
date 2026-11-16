@@ -714,11 +714,26 @@ bool OutputSession::measureText(const MeasureBlock& block, float* heightOut,
     item.stroke = block.stroke;
     item.shadow = block.shadow;
     const SceneTextEngine::LaidOutItem laid =
-        fScene->textEngine().layout(item, 1.0f, static_cast<float>(block.width));
+        fScene->textEngine().layout(item, 1.0f, static_cast<float>(block.width), error);
+    if (!laid.hasText && !block.lines.empty()) {
+        return false;  // the display transform refused; `error` names why
+    }
     *heightOut = laid.height;
     *lineCountOut = laid.lineCount;
     if (inkOut != nullptr) {
         *inkOut = laid.ink;
+        // Task TL.3: when the ask NAMED an anchor and supplied a box
+        // height, the bounds are POSITIONED inside that box — an anchored
+        // paragraph is no longer always centred, so a consumer adding its
+        // own centring arithmetic would be wrong. The intrinsic height and
+        // line count never move; only where the words sit. A v2-shaped ask
+        // (no anchor) keeps the pre-TL.3 numbers exactly.
+        if (block.verticalAlignSet && block.boxHeight > 0.0 && !laid.ink.empty) {
+            const float delta = SceneTextEngine::verticalOffset(
+                laid.verticalAlign, static_cast<float>(block.boxHeight), laid.height);
+            inkOut->top += delta;
+            inkOut->bottom += delta;
+        }
     }
     if (fitsOut != nullptr) {
         // The FILL verdict: do the laid-out lines themselves stay inside
@@ -739,6 +754,17 @@ bool OutputSession::measureText(const MeasureBlock& block, float* heightOut,
         *fitsOut = fits;
     }
     return true;
+}
+
+bool OutputSession::validateSceneText(const openshow::scene::Scene& scene,
+                                      std::string* error) const {
+    if (fScene == nullptr) {
+        // No renderer, no transform to guard. Refusing here would strand a
+        // prepare for a reason that is about the session's lifecycle, not
+        // the payload; the draw path reports its own lack of an engine.
+        return true;
+    }
+    return fScene->textEngine().validateSceneText(scene, error);
 }
 
 bool OutputSession::listFonts(std::vector<SceneTextEngine::FontFamily>* families,

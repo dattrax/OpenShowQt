@@ -416,11 +416,10 @@ public:
     // ignore unknown block keys silently — so measureText refuses such an
     // ask outright, by name, rather than ship a silent face swap.
     bool styledMeasureSupported() const { return fTextMeasureV2Capable; }
-    // The worker's hello named scene.text-layout.v1 (task TL.2): that worker
-    // DRAWS the scene 8 layout pair. Until TL.3 teaches the renderer to place
-    // and capitalise, no hello names it, and sceneIsSendable refuses a
-    // non-default pair rather than let words draw at the old centre /
-    // original case while the editor shows otherwise.
+    // The worker's hello named scene.text-layout.v1 (task TL.2, earned in
+    // TL.3): that worker DRAWS the scene 8 layout pair. A hello without it
+    // gets the local refusal in sceneIsSendable rather than words drawn at
+    // the old centre / original case while the editor shows otherwise.
     bool textLayoutSupported() const { return fTextLayoutCapable; }
     // The worker's hello names text.measure.v3 (task TL.2): that worker
     // MEASURES with the layout pair. `allCaps` changes the wrapped height, so

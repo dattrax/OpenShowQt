@@ -252,6 +252,7 @@ bool parseMeasureStyle(const boost::json::object& block, OutputSession::MeasureB
             return false;
         }
         out->verticalAlign = std::string(anchor->value().as_string());
+        out->verticalAlignSet = true;
     }
     if (const auto caps = block.find("allCaps"); caps != block.end()) {
         if (!caps->value().is_bool()) {
@@ -927,6 +928,20 @@ void MethodTable::dispatch(const proto::RequestEnvelope& envelope, std::string* 
                                                     : sceneError),
                 outbound);
             return;
+        }
+        // Task TL.3: the display transform the renderer will apply is
+        // deterministic, so its expansion is checked HERE, before the store
+        // grows — an uppercase line that would overflow the scene's own
+        // character budgets is refused by name rather than drawn truncated
+        // or allowed to allocate past the wire's limits.
+        {
+            std::string textError;
+            if (!fSession.validateSceneText(scene, &textError)) {
+                proto::appendFrame(
+                    proto::makeError(id, proto::kInvalidParams, "scene.prepare " + textError),
+                    outbound);
+                return;
+            }
         }
         // Task 6.9a (review R10): the store answer is immediate, the file
         // work is not. The revision is registered now (the pins too); the

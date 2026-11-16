@@ -436,7 +436,7 @@ if(OPENSHOW_BUILD_UI)
   # the batch answers whole, and every cap refusal names itself. Needs a
   # display, like every row a live worker draws.
   add_executable(text_measure_tests text_measure_tests.cpp)
-  target_link_libraries(text_measure_tests PRIVATE openshow::protocol)
+  target_link_libraries(text_measure_tests PRIVATE openshow::protocol openshow::scene)
   add_test(NAME text_measure_tests
     COMMAND text_measure_tests $<TARGET_FILE:openshow-worker>)
   set_tests_properties(text_measure_tests PROPERTIES LABELS display TIMEOUT 90)

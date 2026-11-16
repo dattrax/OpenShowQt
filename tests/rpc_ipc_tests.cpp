@@ -449,9 +449,10 @@ void testServedSession() {
               "hello negotiates a protocol version");
         // The count is a tripwire (see protocol_tests): the hello growing or
         // shrinking is a wire change, and it should cost a looked-at line.
-        // Minor 19's media.show-audio.v1 made this 24 — the worker now
-        // performs a show's own audio layer and the master media mute.
-        check(result.as_object().at("capabilities").as_array().size() == 24,
+        // Minor 19's media.show-audio.v1 made this 24; TL.3's
+        // scene.text-layout.v1 and text.measure.v3 make it 26 — the worker
+        // now draws the resolved layout pair and measures with it.
+        check(result.as_object().at("capabilities").as_array().size() == 26,
               "hello lists worker capabilities");
     }
 

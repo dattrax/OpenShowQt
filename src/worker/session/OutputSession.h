@@ -375,6 +375,11 @@ public:
         // always did. `allCaps` changes the wrapped height (TL.3 applies
         // the transform before shaping); the anchor is position, not size.
         std::string verticalAlign = openshow::domain::kDefaultVerticalAlign;
+        // True when the ASK named the anchor. Task TL.3's positioned bounds
+        // answer only an ask that spoke about placement; a v2-shaped block
+        // (no anchor) keeps the pre-TL.3 bounds even when it supplies a
+        // height for the fits verdict.
+        bool verticalAlignSet = false;
         bool allCaps = false;
         openshow::domain::TextStroke stroke;                 // disabled = no ink
         openshow::domain::TextShadow shadow;
@@ -401,6 +406,14 @@ public:
     bool measureText(const MeasureBlock& block, float* heightOut, int* lineCountOut,
                      std::string* error, SceneTextEngine::InkRect* inkOut = nullptr,
                      bool* fitsOut = nullptr);
+
+    // Task TL.3: the whole-scene display-transform guard, run by
+    // scene.prepare before the store grows. The uppercase transform the
+    // renderer applies can lengthen text; a scene whose transformed lines
+    // would exceed the scene contract's own character budgets is refused
+    // by name here rather than drawn with a silent truncation or an
+    // unbounded allocation.
+    bool validateSceneText(const openshow::scene::Scene& scene, std::string* error) const;
 
     // The families the production renderer's OWN text engine can resolve
     // (task TS.4, `font.list`): the engine's cached scan, copied out on the

@@ -11,8 +11,8 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Text layout and editor consistency (2026-11-16): TL.1 and TL.2 are DONE;
-TL.3–TL.6 are TODO.** The agreed
+**Text layout and editor consistency (2026-11-16): TL.1–TL.3 are DONE;
+TL.4–TL.6 are TODO.** The agreed
 [text-layout brief](docs/ui/text-layout-plan.md) adds shared vertical-alignment
 icons and All caps to Theme Editor/ Edit, with theme defaults and per-slide
 overrides. Preview updates immediately; audience changes on explicit Go.
@@ -41,9 +41,21 @@ under v3 and refuses a malformed one by name. `scene.text-layout.v1` and
 until TL.3 earns them; the frontend gates a non-default pair by name while
 centre/off content keeps the legacy payload shape. The shared inspector exposes
 both leaves on themes and slides and the one style pair a Bible view already
-stores, with provenance, commit and reset. Full suite: 85/85 tests pass. Next
-implementation action for this group: TL.3. DR/PV completion below remains
-unchanged.
+stores, with provenance, commit and reset.
+
+TL.3 taught the shared layout engine to draw and measure the pair. One
+`verticalOffset` calculation divides the free space 0 / half / all for
+top/centre/bottom, and paint, ink bounds and fit diagnostics all read it, so an
+overflowing fixed-size paragraph stays top-anchored as before. `displayLines`
+applies ICU's root-locale uppercase once, before shaping, preserving authored
+line breaks and empty lines and leaving the source strings untouched; the
+transformed result is checked against the scene's line/item/scene budgets with
+a named refusal, and `scene.prepare` runs that guard before the store grows.
+`text.measure` enters the same path, and an ask that names an anchor with a box
+height gets positioned bounds while the intrinsic height stays put. The worker
+now advertises `scene.text-layout.v1` and `text.measure.v3`. Full suite: 85/85
+tests pass. Next implementation action for this group: TL.4. DR/PV completion
+below remains unchanged.
 
 **The design-conformance corrections (DR.0–DR.8) are complete.** The review
 [`docs/reviews/design-conformance-2026-11-15.md`](docs/reviews/design-conformance-2026-11-15.md)
@@ -149,8 +161,8 @@ service. FO stays gated behind those.
 4. Protocol/service/scene formats are now **protocol minor 20**, **service
    format 14**, **scene format 8**; `docs/architecture.md` and
    `docs/ui/control-sets.md` are the authorities for the wire and the controls.
-   TL.2 defines `scene.text-layout.v1` and `text.measure.v3` but withholds both
-   from the worker's hello until TL.3 renders and measures the pair.
+   TL.3 earns `scene.text-layout.v1` and `text.measure.v3`, so the worker's
+   hello now names both.
 
 ## Recent commits
 

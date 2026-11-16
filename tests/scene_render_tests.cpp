@@ -1273,6 +1273,110 @@ void testTextStyleFacesAndEffectsRender() {
           "the wire round-trip renders byte-identically");
 }
 
+// Task TL.3: the vertical anchor is one paragraph-origin calculation for
+// paint and bounds. The same two lines are rendered at top/centre/bottom in
+// the same box; the paragraph origin moves by the free space, every drawn
+// pixel stays inside the item's own ink rect, and the three pictures are
+// genuinely different.
+void testVerticalAlignmentRenders() {
+    const auto sceneFor = [](const char* anchor) {
+        scene::Scene subject = singleItemScene({"First line", "Second line"}, 120.0);
+        subject.items[0].verticalAlign = anchor;
+        return subject;
+    };
+    worker::SceneTextEngine engine;
+    std::string error;
+    if (!check(engine.create(&error), "vertical anchor fixture engine: " + error)) {
+        return;
+    }
+    struct Row {
+        const char* anchor;
+        const char* name;
+        Frame frame;
+        float top = 0.0f;
+        worker::SceneTextEngine::InkRect ink;
+        float boxX = 0.0f;
+    };
+    Row rows[3] = {{"top", "anchor-top", {}, 0.0f, {}, 0.0f},
+                   {"center", "anchor-centre", {}, 0.0f, {}, 0.0f},
+                   {"bottom", "anchor-bottom", {}, 0.0f, {}, 0.0f}};
+    for (Row& row : rows) {
+        const scene::Scene subject = sceneFor(row.anchor);
+        const auto layout = engine.layoutScene(subject);
+        if (!check(layout.items.size() == 1, "the anchor fixture lays out one item")) {
+            return;
+        }
+        row.top = worker::SceneTextEngine::paragraphTop(layout.items[0]);
+        row.ink = layout.items[0].ink;
+        row.boxX = layout.items[0].boxX;
+        if (!check(renderFixture(subject, row.name, &row.frame, &error),
+                   std::string(row.name) + " rendered: " + error)) {
+            return;
+        }
+    }
+    // The origin moves by half the free space per step, and the three
+    // answers are ordered top < centre < bottom.
+    const float step = (rows[2].top - rows[0].top) * 0.5f;
+    check(rows[0].top < rows[1].top && rows[1].top < rows[2].top && step > 1.0f,
+          "top/centre/bottom place the paragraph at three distinct origins");
+    check(std::abs((rows[1].top - rows[0].top) - step) <= 0.5f &&
+              std::abs((rows[2].top - rows[1].top) - step) <= 0.5f,
+          "centre is exactly half the free space, bottom all of it");
+    for (const Row& row : rows) {
+        const Ink pixels = measureInk(row.frame);
+        const double devLeft = (row.boxX + row.ink.left) * kScale;
+        const double devRight = (row.boxX + row.ink.right) * kScale;
+        const double devTop = (row.top + row.ink.top) * kScale;
+        const double devBottom = (row.top + row.ink.bottom) * kScale;
+        check(pixels.count > 0 && static_cast<double>(pixels.left) >= std::floor(devLeft) - 2.0 &&
+                  pixels.right <= std::ceil(devRight) + 2.0 &&
+                  pixels.top >= std::floor(devTop) - 2.0 &&
+                  pixels.bottom <= std::ceil(devBottom) + 2.0,
+              std::string(row.name) + ": every drawn pixel lands inside the anchored ink rect");
+    }
+    const Ink topInk = measureInk(rows[0].frame);
+    const Ink centreInk = measureInk(rows[1].frame);
+    const Ink bottomInk = measureInk(rows[2].frame);
+    check(topInk.centerY < centreInk.centerY && centreInk.centerY < bottomInk.centerY,
+          "the rendered ink follows the anchor, not just the bounds arithmetic");
+}
+
+// Task TL.3: capitals are a display transform applied before shaping. The
+// same words rendered with allCaps on and with literal capitals produce the
+// same picture, while the source lines keep their authored case.
+void testAllCapsRenders() {
+    scene::Scene lower = singleItemScene({"stra\xC3\x9F" "e"}, 120.0);
+    lower.items[0].allCaps = true;
+    scene::Scene literal = singleItemScene({"STRASSE"}, 120.0);
+    scene::Scene plain = singleItemScene({"stra\xC3\x9F" "e"}, 120.0);
+    Frame capsFrame;
+    Frame literalFrame;
+    Frame plainFrame;
+    std::string error;
+    if (!check(renderFixture(lower, "caps-on", &capsFrame, &error) &&
+                   renderFixture(literal, "caps-literal", &literalFrame, &error) &&
+                   renderFixture(plain, "caps-off", &plainFrame, &error),
+               "caps fixtures rendered: " + error)) {
+        return;
+    }
+    const Ink caps = measureInk(capsFrame);
+    const Ink literalInk = measureInk(literalFrame);
+    const Ink plainInk = measureInk(plainFrame);
+    check(caps.count > 500 && literalInk.count > 500,
+          "both capitalised pictures draw real glyphs");
+    check(std::abs(caps.left - literalInk.left) <= 2 &&
+              std::abs(caps.right - literalInk.right) <= 2 &&
+              std::abs(caps.top - literalInk.top) <= 2 &&
+              std::abs(caps.bottom - literalInk.bottom) <= 2,
+          "allCaps draws the same picture as literal capitals (ß -> SS)");
+    check(std::abs(caps.centerY - plainInk.centerY) > 1.0 ||
+              std::abs(caps.centerX - plainInk.centerX) > 1.0 ||
+              std::abs(caps.count - plainInk.count) > 50,
+          "and the lowercase source without the flag is a different picture");
+    check(lower.items[0].lines.size() == 1 && lower.items[0].lines[0] == "stra\xC3\x9F" "e",
+          "the source line keeps its authored case after rendering");
+}
+
 void testInkBoundsContainEveryEffectPixel() {
     // Task TS.3: layout()'s ink rect is the answer to "where can a pixel
     // of this item land". The fixture renders the authored 1920x1080
@@ -3965,6 +4069,8 @@ int main() {
     testThemeTextContextsRender();
     testTypographyAlignsAndSpaces();
     testTextStyleFacesAndEffectsRender();
+    testVerticalAlignmentRenders();
+    testAllCapsRenders();
     testInkBoundsContainEveryEffectPixel();
     testWireSceneRendersIdentically();
     testDemoSlidesRender();

@@ -1,10 +1,9 @@
 # Text layout and editor consistency — 2026-11-16
 
 Implementation brief for the **TL** group in `PLAN.md`. TL.1 (persistence and
-resolution, service 14) and TL.2 (scene 8 / protocol 0.20 carrying the pair and
-the capability gates) are implemented; TL.3–TL.6 remain planned work. No layout
-rendering is claimed by this document — the renderer and the capitals transform
-arrive in TL.3.
+resolution, service 14), TL.2 (scene 8 / protocol 0.20 carrying the pair and
+the capability gates) and TL.3 (anchored rendering and the root-locale capitals
+transform) are implemented; TL.4–TL.6 remain planned work.
 
 ## Agreed operator behaviour
 
@@ -72,11 +71,10 @@ one field must preserve the other fields, box placement and transitions.
 At the planning checkpoint the code used service **13**, scene **7** and
 protocol **0.19**. TL.1 moved the service to **14**; TL.2 moved scene to **8**
 and protocol to **0.20** and defined `scene.text-layout.v1` /
-`text.measure.v3`. Both names are deliberately withheld from this build's hello
-until TL.3 renders and measures the pair; the frontend gates a non-default
-answer by name meanwhile. Recheck allocation before implementing TL.3 if
-another task changes these versions. The older TV/TS runbook's 9/4/0.18
-paragraph is historical, not the current allocation.
+`text.measure.v3`; TL.3 earned both names, so the worker's hello advertises
+them. Recheck allocation before implementing TL.4 if another task changes
+these versions. The older TV/TS runbook's 9/4/0.18 paragraph is historical,
+not the current allocation.
 
 - Service 14 persists sparse layout fields. Readers of services 1–13 supply
   legacy centre/off defaults without changing content or IDs. New keys in an
