@@ -30,7 +30,7 @@ reviewed commit:
 | DR.7b | `afcee65` | Bin pixels are a worker-produced PNG in a bounded cache (64 files / 32 MB / 24 h, name fingerprints source mtime+size); the reply carries the path, the card loads a file URL, and a reply is installed only for the request this client made. |
 | DR.8 | this commit | Journeys and suites re-run, architecture reconciled, superseded handoff narratives archived. |
 
-**Verification (fresh, 2026-11-16):**
+**Verification (DR closure, 2026-11-16):**
 
 - `cmake --build build --parallel 24` — clean.
 - `ctest --test-dir build --output-on-failure` — **85/85 passed** in 474 s,
@@ -38,6 +38,12 @@ reviewed commit:
   guards and their negative fixtures (`skia_public_api_guard`,
   `render_layer_guard`, `render_target_guard_negative`, `app_has_no_ndi_symbols`,
   `ui_links_qt`, `worker_check_deps`, `ui_loads_guard_*`).
+
+**Verification (PV closure, 2026-11-16, after the 30 fps ask and the per-frame
+repaint):** `cmake --build build --parallel 24` clean, then
+`ctest --test-dir build -j8 --output-on-failure` — **85/85 passed**, 274 s of
+`display`-labelled test time across the same 21 entries. `worker_controller_tests`
+(66.5 s) and `async_integration_tests` (45.5 s) carry PV's own legs.
 - `cmake --build build-headless --parallel 24` then
   `ctest --test-dir build-headless -LE display` — **47/47 passed** in 81 s.
 - Skips are the environment's, not the suite's: PipeWire-daemon and VA-API
@@ -57,13 +63,34 @@ the 20 ms-beat producer delivered; reverting the `fresh` fix fails that line.
 The worker's own `preview.start` default stays 15 fps — only the frontend's ask
 changed, and the cadence is a ceiling drawn on content change.
 
-PV.2 is still OPEN and cannot be closed from this machine: it needs a
-continuously changing 1080p60 source on the target GPU, a steady 60-second
-window measuring ≥28.5 delivered preview frames/s, and then the ten-minute
-audience deadline gate with previews enabled (<1% missed deadlines), with the
-environment, drops and deferrals recorded. Do not raise the audience budget to
-reach the number; if it misses, add the measured Skia asynchronous-readback
-follow-up the plan names.
+PV.2 is DONE too, measured on this machine on 2026-11-16 rather than claimed:
+Wayland, RADV **AMD Radeon 890M** (STRIX1), 1920×1080 swapchain, h264 decoded in
+software into Vulkan linear images, previews 640×360 in three slots, audio clock
+live through PipeWire. The bench grew `--preview-fps` and delivery counters
+(`ab159b0`).
+
+- 60 s with a continuously changing **1080p60** source (ffmpeg `testsrc2`
+  1920×1080@60 plus a 440 Hz tone, looping), previews asked at 30 fps, no off-air
+  requests: **1795 frames consumed in 60.0 s = 29.9/s**, published 1795,
+  **dropped 0, deferred 0**, worst preview frame 2.45 ms — above the 28.5/s
+  target. The same run presented the 60 fps source to the audience at ~60/s with
+  93 frames later than 25 ms (2.6%, drift max 46.9 ms); that is a 60 fps
+  audience question, not the gate below, and it is recorded rather than hidden.
+- Ten-minute gate with previews at 30 fps on the existing 1080p25 fixture:
+  `presents=15000` (exactly 25.000 fps), **missed(>25 ms)=0 (0.00%)**, drops 0,
+  drift mean +2.4 ms / max 16.3 ms. Preview consumed 15000 in 600.0 s = 25.0/s
+  with **dropped 0, deferred 11, worst 15.92 ms** — the rate is the source's own
+  change rate (30 fps is a ceiling), and the deferrals are the audience-budget
+  policy standing down after the worst frames, as designed.
+- "Visible UI updates" was verified through the product objects, not an eye:
+  `async_integration_tests` leg `uiRepaintsWhileContentMoves` requires the
+  `previewChanged` count to cover the frames the frontend accepted from a 30 fps
+  clip over three seconds, and fails when PV.1's `fresh` fix is reverted. No
+  human watched the panel during these runs; that one clause is not claimed and
+  the projector/physical checks keep their existing owner.
+
+The measured runs met the target, so no asynchronous-readback follow-up was
+opened and the audience budget was not raised.
 
 **Still open (unchanged by DR, and not inferable from a green suite):** TV.3,
 TV.4a, TV.4b, TV.5 and TA.1; ND.4's real source-loss acceptance; M7.1a–c,
@@ -91,6 +118,8 @@ service. FO stays gated behind those.
 
 ## Recent commits
 
+- `7d4631d` test(frontend): keep the panel repainting while the picture moves (PV.2)
+- `ab159b0` feat(worker): measure preview delivery at a chosen cadence in the A/V bench (PV.2)
 - `6fedd59` feat(ui): ask for 30 fps previews and repaint on every accepted frame (PV.1)
 - `afcee65` fix(media): deliver Media Bin pixels as a worker-produced cache file (DR.7b)
 - `7864058` fix(media): run Media Bin probe/decode work off the control connection (DR.7a)

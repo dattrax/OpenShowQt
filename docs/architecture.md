@@ -552,7 +552,11 @@ these:
 - **Long-run gates.** The thirty-minute A/V continuity, ten-minute deadline
   and one-hour mixed-service runs are not in the recorded 247.9 seconds;
   historical M5-era numbers stay historical, exactly as their ledger rows
-  already say. Fresh runs are **7.4**.
+  already say. Fresh runs are **7.4**. The ten-minute audience deadline gate
+  has since been re-run on this machine's own device as PV.2's acceptance
+  (2026-11-16, previews enabled at 30 fps): 15000 presents, 0 missed, drift
+  max 16.3 ms — evidence the release gate can use, not a discharge of 7.4's
+  other runs, audible pairing or physical checks.
 - **Keyboard coverage.** The cheat-sheet/`ShortcutMap.qml` alignment was
   verified by reading both files against each other (6.19b3, re-checked by
   the unchanged live notice set in `ui_loads`); no automated keyboard test
