@@ -1931,7 +1931,7 @@ Defaults remain centre/off. [Contract, source findings and acceptance](docs/ui/t
 | TL.2 | DONE | Carry concrete layout through scenes, measurement, adapters and worker capability gates | Scene 8/protocol 0.20 over 7/0.19, `scene.text-layout.v1` / `text.measure.v3`; strict text-only fields, safe legacy defaults and named refusal of unsupported non-default settings; shared inspector provenance/verbs (`scene_tests`, `protocol_tests`, `inspector_adapter_tests`, `worker_controller_tests`) |
 | TL.3 | DONE | Render vertical placement and reversible Unicode capitals through the shared layout engine | Top/centre/bottom use one paragraph-origin calculation for paint and bounds; root-locale uppercase precedes shaping/fit/measurement, source UTF-8 stays intact, transformed limits are bounded; pinned-font raster and measurement regressions cover wrapping, overflow, effects and multiple boxes |
 | TL.4 | DONE | Propagate layout settings through song/Bible planning and stale-result ownership | Measurement, fingerprints and cache keys agree with render; toggles invalidate drafts and delayed plans cannot enable Add; original-case words/labels conserved; committed slide boundaries remain authored (`song_pagination_tests`, `scripture_pagination_tests`, song/Bible journeys) |
-| TL.5 | TODO | Review editor consistency and add shared layout icons/All caps control | Songs/Bible/Edit share control order, tooltips, keyboard access, resolved state and per-field reset; fix underline-only Remove customizations via one domain-derived state, including explicit false; one gesture/undo and immediate correct off-air preview, with no audience presentation on edit (`workspace_ui_tests`, `control_set_ui_tests`) |
+| TL.5 | DONE | Review editor consistency and add shared layout icons/All caps control | Songs/Bible/Edit share control order, tooltips, keyboard access, resolved state and per-field reset; fix underline-only Remove customizations via one domain-derived state, including explicit false; one gesture/undo and immediate correct off-air preview, with no audience presentation on edit (`workspace_ui_tests`, `control_set_ui_tests`) |
 | TL.6 | TODO | Close integrated layout journeys and update architecture/control-set documentation | Preview-only edit → explicit Go → acknowledged pixels → reset/undo/save/reopen with source words and continuous media preserved; focused tests then desktop/headless/source guards pass; report skips/physical gates and leave unrelated TV/TA/ND/M7 work open |
 
 Order: TL.1 → TL.2 → TL.3 → TL.4 → TL.5 → TL.6; split any leaf exceeding two
@@ -2021,6 +2021,27 @@ refusal and a capitals answer producing more slides; `scripture_pagination_tests
 pins the forwarded pair and the cache-key distinction; the song and Bible page
 journeys pin the toggle → measuring → Add-sleeps → new-generation sequence
 with the passage's words preserved. Full suite: 85/85.
+
+TL.5 evidence (2026-11-16): the shared `TextStyleControls` now carries the
+Vertical row — exactly three in-repository paragraph marks in a
+`SegmentedControl` with `glyphStyle: "vertical"` — immediately after the
+horizontal alignment row, then one All caps checkbox, then line spacing. That
+order is identical on the Songs theme, the Bible view and the Edit slide. Each
+icon has an accessible name and a tooltip; segments take focus by Tab and
+activate on Space/Return as well as a click. Every row reads the adapter's
+resolved value, shows the own/inherited dot and grows the same reset chip, so
+a context's one stored style pair behaves like a theme's and a slide's. The
+Edit page's Remove customizations is now driven by
+`DocumentController::currentSlideCustomized`, which asks the domain's sparse
+set whether ANY field is authored: the old hand-kept QML name list omitted
+`fontUnderline`, so an underline-only slide could not take it back, and an
+explicit `false` (underline off, All caps off) now counts as the authored
+answer it is. Each gesture commits through the one inspector verb (one undo),
+the off-air preview re-asks on `documentsChanged`, and no edit presents
+(`worker.wordsOnAir()` stays false). `control_set_ui_tests` pins the order,
+the three names, keyboard activation and commit/reset on theme, slide and
+context targets; `workspace_ui_tests` pins the underline-only and
+explicit-false Remove-customizations path. Full suite: 85/85.
 
 ### Future output profiles — lower thirds to OBS and stage (FO)
 

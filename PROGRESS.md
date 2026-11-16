@@ -11,8 +11,8 @@ archive is a current instruction.
 
 ## Current checkpoint
 
-**Text layout and editor consistency (2026-11-16): TL.1–TL.4 are DONE;
-TL.5–TL.6 are TODO.** The agreed
+**Text layout and editor consistency (2026-11-16): TL.1–TL.5 are DONE; TL.6 is
+TODO.** The agreed
 [text-layout brief](docs/ui/text-layout-plan.md) adds shared vertical-alignment
 icons and All caps to Theme Editor/ Edit, with theme defaults and per-slide
 overrides. Preview updates immediately; audience changes on explicit Go.
@@ -64,9 +64,21 @@ measurement block. The pages already regenerate on `documentsChanged`, so a
 toggle re-measures the held words with no second network request; the planner
 clears its plan immediately and the Bible page now discards a plan whose inputs
 moved mid-measurement, so a delayed plan can never enable Add. Source words and
-labels stay original-case, and committed slide boundaries are untouched. Full
-suite: 85/85 tests pass. Next implementation action for this group: TL.5.
-DR/PV completion below remains unchanged.
+labels stay original-case, and committed slide boundaries are untouched.
+
+TL.5 added the shared controls: a Vertical row of exactly three in-repository
+paragraph marks beside the horizontal alignment row, then one All caps
+checkbox, in the same order on Songs, Bible and Edit. Icons carry accessible
+names and tooltips, take focus by Tab and activate by Space/Return; every row
+shows the resolved value, the own/inherited dot and the same reset chip.
+Remove customizations is now driven by the domain's sparse set
+(`currentSlideCustomized`), so an underline-only edit and an explicit `false`
+both wake it — the old QML name list omitted `fontUnderline`. Every gesture is
+one inspector commit (one undo), the off-air preview re-asks on
+`documentsChanged`, and no edit presents. Full suite: 85/85 tests pass. Next
+implementation action for this group: TL.6 (integrated journeys and
+architecture/control-set documentation). DR/PV completion below remains
+unchanged.
 
 **The design-conformance corrections (DR.0–DR.8) are complete.** The review
 [`docs/reviews/design-conformance-2026-11-15.md`](docs/reviews/design-conformance-2026-11-15.md)

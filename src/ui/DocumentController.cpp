@@ -2064,6 +2064,23 @@ openshow::domain::Id ownerShowOf(const openshow::domain::Documents& documents,
 
 } // namespace
 
+bool DocumentController::currentSlideCustomized() const {
+    const openshow::domain::Id slideId = currentSlideId();
+    if (slideId.empty()) {
+        return false;
+    }
+    const openshow::domain::Show* show = fDocuments.findShow(fCurrentSongId);
+    if (show == nullptr) {
+        return false;
+    }
+    for (const openshow::domain::Slide& slide : show->slides) {
+        if (slide.id == slideId) {
+            return !slide.customizations.empty();
+        }
+    }
+    return false;
+}
+
 QVariantMap DocumentController::slideAppearance() const {
     QVariantMap map;
     const openshow::domain::Id slideId = currentSlideId();

@@ -487,6 +487,14 @@ public:
     // current slide.
     Q_PROPERTY(QVariantMap slideAppearance READ slideAppearance NOTIFY documentsChanged)
     QVariantMap slideAppearance() const;
+    // Does the current slide customize ANYTHING? Task TL.5's one
+    // domain-derived state: the slide's sparse set answers by its own
+    // emptiness, so a field added to the vocabulary later cannot be missing
+    // from a hand-kept list in QML. An explicit `false` (underline off,
+    // All caps off) is an authored answer and counts — which is exactly the
+    // underline-only case the old list dropped.
+    Q_PROPERTY(bool currentSlideCustomized READ currentSlideCustomized NOTIFY documentsChanged)
+    bool currentSlideCustomized() const;
     // One appearance field of the current slide becomes a customization
     // (the gradient's "" is the explicit flat, the family's "" the platform
     // answer); the theme entity is left alone. The domain vets the value

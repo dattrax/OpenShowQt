@@ -70,6 +70,10 @@ Column {
     property string fontRowObjectName: "fontRow"
     property string sizeObjectName: "fontSizeField"
     property string alignObjectName: "alignCombo"
+    property string verticalAlignObjectName: "verticalAlignCombo"
+    property string verticalAlignInheritObjectName: "verticalAlignInherit"
+    property string allCapsObjectName: "allCapsToggle"
+    property string allCapsInheritObjectName: "allCapsInherit"
     property string spacingObjectName: "lineSpacingField"
     property string weightObjectName: "weightToggle"
     property string weightInheritObjectName: "weightInherit"
@@ -114,6 +118,27 @@ Column {
         sizeChip.enabled = sizeChip.visible
         alignChip.visible = style.showRevertChips && state("align").canReset === true
         alignChip.enabled = alignChip.visible
+        // Task TL.5's vertical row and All caps checkbox, in the shared
+        // layout section: the resolved choice is shown, the dot says whether
+        // this target speaks, and the chip hands the answer back.
+        {
+            const anchor = state("verticalAlign")
+            if (style.sparse && !style.showInheritedValues) {
+                verticalCombo.currentIndex = anchor.isSet === true
+                        ? ["top", "center", "bottom"].indexOf(anchor.ownValue) + 1 : 0
+            } else {
+                verticalCombo.currentIndex =
+                        ["top", "center", "bottom"].indexOf(anchor.value)
+            }
+            verticalInherit.visible = style.showRevertChips && anchor.canReset === true
+            verticalInherit.enabled = verticalInherit.visible
+            verticalDot.dotColor = ownColor("verticalAlign")
+            const caps = state("allCaps")
+            allCapsToggle.checked = caps.value === true
+            allCapsInherit.visible = style.showRevertChips && caps.canReset === true
+            allCapsInherit.enabled = allCapsInherit.visible
+            allCapsDot.dotColor = ownColor("allCaps")
+        }
         spacingChip.visible = style.showRevertChips && state("lineSpacing").canReset === true
         spacingChip.enabled = spacingChip.visible
         if (!style.showStyleBlock)
@@ -335,6 +360,89 @@ Column {
             }
         }
         RevertChip { id: alignChip; chipField: "align" }
+    }
+    // Task TL.5: the vertical row sits beside the horizontal alignment row,
+    // in the same visual language — three in-repository paragraph marks
+    // (top/centre/bottom), reachable by Tab and activated by Space/Return.
+    Row {
+        spacing: 4
+        Text { text: "Vertical"; color: "#b0b0b0"; font.pixelSize: 11 }
+        StateDot { id: verticalDot; dotField: "verticalAlign" }
+    }
+    Row {
+        spacing: 2
+        SegmentedControl {
+            id: verticalCombo
+            objectName: style.verticalAlignObjectName
+            width: style.width - (verticalInherit.visible ? 26 : 0)
+            glyphStyle: "vertical"
+            model: style.sparse && !style.showInheritedValues
+                   ? [{value: "(theme)", label: "Theme"},
+                      {value: "top", label: "Top"},
+                      {value: "center", label: "Centre"},
+                      {value: "bottom", label: "Bottom"}]
+                   : [{value: "top", label: "Top"},
+                      {value: "center", label: "Centre"},
+                      {value: "bottom", label: "Bottom"}]
+            onActivated: function (index) {
+                if (style.sparse && !style.showInheritedValues && index === 0) {
+                    style.resetOrSync("verticalAlign")
+                } else {
+                    style.commitOrSync("verticalAlign", currentValue)
+                }
+            }
+        }
+        RevertChip {
+            id: verticalInherit
+            chipField: "verticalAlign"
+            preferredName: style.verticalAlignInheritObjectName
+        }
+    }
+    Row {
+        spacing: 4
+        CheckBox {
+            id: allCapsToggle
+            objectName: style.allCapsObjectName
+            text: "All caps"
+            padding: 0
+            spacing: 4
+            font.pixelSize: 11
+            Accessible.name: checked ? "All caps on" : "All caps off"
+            // clicked only: sync() assigns checked from the record and must
+            // never commit the value it just read back.
+            onClicked: style.commitOrSync("allCaps", checked)
+            indicator: Rectangle {
+                implicitWidth: 14
+                implicitHeight: 14
+                x: allCapsToggle.leftPadding
+                y: parent.height / 2 - height / 2
+                radius: 3
+                color: allCapsToggle.checked ? "#1685f8" : "#2b2b2c"
+                border.color: allCapsToggle.checked ? "#1685f8" : "#6a6a6d"
+                Rectangle {
+                    visible: allCapsToggle.checked
+                    width: 4
+                    height: 7
+                    x: 5
+                    y: 2
+                    rotation: 45
+                    color: "#ffffff"
+                }
+            }
+            contentItem: Text {
+                text: allCapsToggle.text
+                color: "#cccccc"
+                font.pixelSize: 11
+                leftPadding: allCapsToggle.indicator.width + allCapsToggle.spacing
+                verticalAlignment: Text.AlignVCenter
+            }
+        }
+        StateDot { id: allCapsDot; dotField: "allCaps" }
+        RevertChip {
+            id: allCapsInherit
+            chipField: "allCaps"
+            preferredName: style.allCapsInheritObjectName
+        }
     }
     Text { text: style.spacingLabel; color: "#b0b0b0"; font.pixelSize: 11 }
     Row {

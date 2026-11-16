@@ -640,19 +640,124 @@ int main(int argc, char** argv) {
     }
     openshow::ui::InspectorAdapter adapter;
     adapter.setDocument(&docs);
-    for (const QString kind : {QStringLiteral("theme"), QStringLiteral("slide")}) {
-        adapter.setTarget({{"kind", kind}, {"id", themeId}});
+    const auto clickItem = [&window](QQuickItem* item) {
+        QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                          item->mapToScene(QPointF(item->width() / 2,
+                                                   item->height() / 2)).toPoint());
+    };
+    const auto accessibleName = [](QQuickItem* item) {
+        QQmlExpression expr(QQmlEngine::contextForObject(item), item,
+                            QStringLiteral("Accessible.name"));
+        bool error = false;
+        const QString name = expr.evaluate(&error).toString();
+        return error ? QString() : name;
+    };
+    const QList<QVariantMap> targets{
+        {{"kind", "theme"}, {"id", themeId}},
+        {{"kind", "slide"}, {"id", themeId}},
+        // Task TL.5: the Bible view stores this one style pair, so the
+        // same controls must work on a context target too.
+        {{"kind", "context"}, {"id", themeId}, {"view", "scripture"}},
+    };
+    for (const QVariantMap& target : targets) {
+        adapter.setTarget(target);
+        const QString kind = target.value("kind").toString();
         QQmlComponent styleComponent(&engine);
         styleComponent.loadFromModule("OpenShow", "TextStyleControls");
         std::unique_ptr<QObject> styleObject(styleComponent.createWithInitialProperties(
             {{"adapter", QVariant::fromValue(&adapter)},
-             {"worker", QVariant::fromValue(&worker)}}));
+             {"worker", QVariant::fromValue(&worker)},
+             {"showRevertChips", true}}));
         auto* style = qobject_cast<QQuickItem*>(styleObject.get());
-        check(style != nullptr, "the shared typography section loads for both write targets");
+        check(style != nullptr,
+              "the shared typography section loads for theme, slide and context targets");
         if (!style) continue;
         style->setParentItem(window.contentItem());
-        window.resize(400, 1000);
-        for (const int width : {232, 282}) {
+        window.resize(400, 1400);
+        style->setWidth(282);
+        QTest::qWait(40);
+
+        // --- Task TL.5: the vertical row and All caps ---
+        auto* align = style->findChild<QQuickItem*>("alignCombo");
+        auto* vertical = style->findChild<QQuickItem*>("verticalAlignCombo");
+        auto* caps = style->findChild<QQuickItem*>("allCapsToggle");
+        auto* spacing = style->findChild<QQuickItem*>("lineSpacingField");
+        auto* verticalChip = style->findChild<QQuickItem*>("verticalAlignInherit");
+        auto* capsChip = style->findChild<QQuickItem*>("allCapsInherit");
+        check(align && vertical && caps && spacing && verticalChip && capsChip,
+              "the shared layout section carries horizontal alignment, Vertical, All caps "
+              "and line spacing");
+        if (!(align && vertical && caps && spacing && verticalChip && capsChip)) continue;
+        // Control ORDER is the same on every host: horizontal alignment,
+        // then the vertical row, then All caps, then line spacing.
+        const auto topOf = [&style](QQuickItem* item) {
+            return item->mapToItem(style, QPointF(0, 0)).y();
+        };
+        check(topOf(align) < topOf(vertical) && topOf(vertical) < topOf(caps) &&
+                  topOf(caps) < topOf(spacing),
+              "Songs, Bible and Edit share one control order");
+        check(vertical->property("glyphStyle").toString() == "vertical" &&
+                  vertical->property("count").toInt() == 3,
+              "the Vertical row is exactly three icon choices");
+        // Every icon names itself for assistive tech as well as drawing its
+        // in-repository mark (no platform glyph).
+        const auto segment = [vertical](int index) {
+            const auto found = namedItems(vertical,
+                                          QStringLiteral("verticalAlignComboSegment%1").arg(index));
+            return found.isEmpty() ? nullptr : found.first();
+        };
+        auto* topSegment = segment(0);
+        auto* centreSegment = segment(1);
+        auto* bottomSegment = segment(2);
+        check(topSegment && centreSegment && bottomSegment &&
+                  accessibleName(topSegment) == "Top" &&
+                  accessibleName(centreSegment) == "Centre" &&
+                  accessibleName(bottomSegment) == "Bottom",
+              "each vertical icon has its own accessible name");
+        check(vertical->property("currentIndex").toInt() == 1,
+              "an inherited layout shows centre, the contract default");
+
+        // Keyboard activation: focus the Bottom icon and press Space.
+        bottomSegment->forceActiveFocus();
+        QTest::qWait(40);
+        QTest::keyClick(&window, Qt::Key_Space);
+        QTest::qWait(80);
+        check(adapter.fieldState("verticalAlign").value("isSet").toBool() &&
+                  adapter.fieldState("verticalAlign").value("value").toString() == "bottom",
+              "Space on a focused vertical icon commits the choice to its host target");
+        check(verticalChip->property("visible").toBool() &&
+                  verticalChip->property("enabled").toBool(),
+              "the vertical row grows its reset chip once the target speaks");
+        clickItem(verticalChip);
+        QTest::qWait(80);
+        check(!adapter.fieldState("verticalAlign").value("isSet").toBool(),
+              "the vertical reset chip hands the answer back");
+
+        // All caps: checking authors true; unchecking authors an EXPLICIT
+        // false (an answer, not silence); reset removes the override.
+        caps->setProperty("checked", true);
+        QMetaObject::invokeMethod(caps, "clicked");
+        QTest::qWait(80);
+        check(adapter.fieldState("allCaps").value("isSet").toBool() &&
+                  adapter.fieldState("allCaps").value("value").toBool(),
+              "All caps on is an authored answer");
+        check(accessibleName(caps).contains("on"),
+              "the checkbox announces its checked state");
+        caps->setProperty("checked", false);
+        QMetaObject::invokeMethod(caps, "clicked");
+        QTest::qWait(80);
+        check(adapter.fieldState("allCaps").value("isSet").toBool() &&
+                  adapter.fieldState("allCaps").value("value").toBool() == false,
+              "All caps off over an inherited answer stays an authored false");
+        clickItem(capsChip);
+        QTest::qWait(80);
+        check(!adapter.fieldState("allCaps").value("isSet").toBool(),
+              "the All caps reset chip removes the override");
+
+        // The existing rail-width behaviour still holds with the new rows.
+        // (A context stores the layout pair only until TV.3, so its other
+        // style inputs are deliberately disabled and cannot be typed into.)
+        for (const int width : kind == "context" ? QList<int>{} : QList<int>{232, 282}) {
             style->setWidth(width);
             QTest::qWait(30);
             auto* field = style->findChild<QQuickItem*>("minSizeField");

@@ -2499,6 +2499,52 @@ int main(int argc, char** argv) {
                   && itemNamed("themeSizeField")->property("text").toString() == QLatin1String("48"),
               "Remove customizations lands back on the theme's 48");
 
+        // Task TL.5: the domain-derived Remove customizations state. A
+        // slide whose ONLY authored answer is the underline must wake the
+        // button — the old hand-kept name list omitted fontUnderline — and
+        // an explicit `false` (underline off over an underlined theme) is
+        // an authored answer too, so it must keep the button awake until
+        // the operator takes it back.
+        // The Theme Editor host has an underline switch of the same name;
+        // scope the search to the VISIBLE Edit rail so the click cannot
+        // land on the hidden page.
+        auto* underline = itemNamed("editUnderline");
+        check(underline != nullptr, "the shared rail carries the underline switch");
+        if (underline != nullptr) {
+            scrollIntoRail(underline);
+            // The switch itself, not a mapped point: the row re-lays out
+            // when its inherit chip appears, and the gesture under test is
+            // the button's click whichever way the pointer would land.
+            QMetaObject::invokeMethod(underline, "clicked");
+            QTest::qWait(120);
+            check(docs.slideAppearance().value(QStringLiteral("fontUnderline")).toMap()
+                          .value(QStringLiteral("customized"))
+                          .toBool() &&
+                      docs.currentSlideCustomized() &&
+                      itemNamed("removeCustomizationsButton")->property("enabled").toBool(),
+                  "an underline-only edit wakes Remove customizations");
+            underline = itemNamed("editUnderline");
+            scrollIntoRail(underline);
+            // The switch itself, not a mapped point: the row re-lays out
+            // when its inherit chip appears, and the gesture under test is
+            // the button's click whichever way the pointer would land.
+            QMetaObject::invokeMethod(underline, "clicked");
+            QTest::qWait(120);
+            check(docs.slideAppearance().value(QStringLiteral("fontUnderline")).toMap()
+                          .value(QStringLiteral("customized"))
+                          .toBool() &&
+                      docs.slideAppearance().value(QStringLiteral("fontUnderline")).toMap()
+                          .value(QStringLiteral("value")).toBool() == false &&
+                      itemNamed("removeCustomizationsButton")->property("enabled").toBool(),
+                  "an explicit underline OFF is still an authored answer, not a cleared one");
+            auto* underlineOnlyRemove = itemNamed("removeCustomizationsButton");
+            QMetaObject::invokeMethod(underlineOnlyRemove, "clicked");
+            QTest::qWait(150);
+            check(!docs.currentSlideCustomized() &&
+                      !itemNamed("removeCustomizationsButton")->property("enabled").toBool(),
+                  "one Remove customizations gesture hands the underline back");
+        }
+
         // Keyboard discipline on the shared rail: Tab MOVES focus inside the
         // page, Escape releases a typed field, and leaving the page takes
         // the cursor with it.

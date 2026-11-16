@@ -449,30 +449,15 @@ Flickable {
         width: themeScroll.availableWidth
         spacing: 10
 
-        // Everything "Remove customizations" hands back — the base seven,
-        // the six fields TS.1 added to a slide's vocabulary (a stroke the
-        // slide owns is as much a customization as a colour), and the
-        // placement (amendment 2026-11-01). The button must be live when
-        // any one of them is set — even when the box's spot is the ONLY
-        // thing the slide changed, since that field's revert lives by the
-        // geometry fields rather than in this panel.
-        readonly property var revertableNames: ["textColor", "backgroundColor",
-                                                "backgroundGradient", "fontFamily",
-                                                "fontSize", "align", "lineSpacing",
-                                                "fontWeight", "fontStyle", "fitMode",
-                                                "minFontSize", "stroke", "shadow",
-                                                "placement"]
-        function isCustomized(field) {
-            const entry = docs.slideAppearance[field]
-            return entry !== undefined && entry.customized === true
-        }
+        // Task TL.5: "Remove customizations" asks the DOMAIN, not a list
+        // of names kept in QML. The slide's sparse set says whether ANY
+        // field is authored, so a field added to the vocabulary later
+        // cannot be silently missing — and an explicit `false` (underline
+        // off, All caps off) counts as the authored answer it is. The old
+        // hand-kept list omitted fontUnderline, which left a slide that had
+        // ONLY changed its underline unable to take it back in one click.
         function customizedAny() {
-            for (var i = 0; i < revertableNames.length; ++i) {
-                if (isCustomized(revertableNames[i])) {
-                    return true
-                }
-            }
-            return false
+            return docs.currentSlideCustomized
         }
         // Combo row 0 is "follow show" (the empty id); the rest name
         // the themes view's rows in order.
@@ -556,6 +541,10 @@ Flickable {
             st.fontRowObjectName = "editFontRow"
             st.sizeObjectName = "themeSizeField"
             st.alignObjectName = "themeAlignCombo"
+            st.verticalAlignObjectName = "editVerticalAlign"
+            st.verticalAlignInheritObjectName = "editVerticalAlignInherit"
+            st.allCapsObjectName = "editAllCaps"
+            st.allCapsInheritObjectName = "editAllCapsInherit"
             st.spacingObjectName = "themeSpacingField"
             st.weightObjectName = "editWeight"
             st.weightInheritObjectName = "editWeightInherit"
