@@ -5491,6 +5491,214 @@ int main(int argc, char** argv) {
         QTest::qWait(80);
     }
 
+    // --- task BX.4: the real-pointer matrix --------------------------------
+    // Every corner and both centre axes, driven by actual press/move/release
+    // at the three supported widths. The display-scale leg is the same
+    // binary re-run with QT_SCALE_FACTOR=1.5 and 2 (the capture matrix's
+    // rule); the assertions are in authored units, so they hold at any
+    // device scale.
+    {
+        window->setProperty("page", "edit");
+        QTest::qWait(160);
+        auto* canvas = findNamed(window->contentItem(), "editCanvas");
+        check(canvas != nullptr, "the Edit canvas is reachable for the pointer matrix");
+        if (canvas != nullptr) {
+            // Earlier blocks may have flicked the page to its stack row; the
+            // pointer matrix needs the canvas's top edge on screen.
+            QQuickItem* page = canvas->parentItem();
+            while (page != nullptr && !page->property("contentY").isValid())
+                page = page->parentItem();
+            if (page != nullptr) {
+                page->setProperty("contentY", 0.0);
+                QTest::qWait(80);
+            }
+            const auto scenePoint = [canvas](double ax, double ay) {
+                const double z = canvas->property("zoom").toDouble();
+                const double sx =
+                    (canvas->width() - canvas->property("stageWidth").toDouble()) / 2.0;
+                const double sy =
+                    (canvas->height() - canvas->property("stageHeight").toDouble()) / 2.0;
+                return canvas->mapToScene(QPointF(sx + ax * z, sy + ay * z));
+            };
+            const auto drag = [&](const QPointF& from, const QPointF& to) {
+                QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from.toPoint());
+                QTest::mouseMove(window, to.toPoint(), 20);
+                QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, to.toPoint());
+                QTest::qWait(80);
+            };
+            const auto boxAt = [&docs](int index) {
+                return docs.currentSlideBoxes().at(index).toMap();
+            };
+            // Pointer coordinates are whole device pixels, so a drag's
+            // authored travel carries up to one pixel of rounding at the
+            // current zoom. The helper tests prove the exact arithmetic; this
+            // matrix proves the gesture wiring and direction.
+            const auto near = [](double a, double b) { return std::abs(a - b) <= 4.0; };
+            const auto setBox = [&docs](double x, double y, double w, double h) {
+                docs.selectTextBox(0);
+                return docs.setTextBoxGeometry(x, y, w, h);
+            };
+
+            for (const int width : {1000, 1380, 1680}) {
+                window->resize(width, 800);
+                QTest::qWait(140);
+                canvas->setProperty("selected", true);
+                const double z = canvas->property("zoom").toDouble();
+                const auto corner = [&](const char* mode, double dx, double dy,
+                                        double ex, double ey, double ew, double eh) {
+                    check(setBox(200.0, 150.0, 400.0, 300.0),
+                          "the pointer matrix sets its captured rectangle");
+                    QTest::qWait(60);
+                    const QPointF from = mode == std::string("tl") ? scenePoint(200, 150)
+                                        : mode == std::string("tr") ? scenePoint(600, 150)
+                                        : mode == std::string("bl") ? scenePoint(200, 450)
+                                                                    : scenePoint(600, 450);
+                    drag(from, from + QPointF(dx * z, dy * z));
+                    const QVariantMap box = boxAt(0);
+                    check(near(box.value(QStringLiteral("x")).toDouble(), ex) &&
+                              near(box.value(QStringLiteral("y")).toDouble(), ey) &&
+                              near(box.value(QStringLiteral("width")).toDouble(), ew) &&
+                              near(box.value(QStringLiteral("height")).toDouble(), eh),
+                          (std::string("real pointer: ") + mode +
+                           " resizes both of its edges at " + std::to_string(width))
+                              .c_str());
+                    docs.undo();
+                    QTest::qWait(60);
+                };
+                corner("br", 50, 40, 200, 150, 450, 340);
+                corner("tr", -30, 20, 200, 170, 370, 280);
+                corner("bl", 30, -20, 230, 150, 370, 280);
+                corner("tl", 30, 20, 230, 170, 370, 280);
+
+                // Centre axes: the body drag snaps exactly and shows its
+                // guide; beyond the tolerance it stays free. Size never moves.
+                check(setBox(200.0, 150.0, 400.0, 300.0), "the snap fixture is set");
+                QTest::qWait(60);
+                {
+                    const QPointF from = scenePoint(400, 300);
+                    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier,
+                                      from.toPoint());
+                    QTest::mouseMove(window, scenePoint(960, 300).toPoint(), 20);
+                    QTest::qWait(40);
+                    auto* guideX = findNamed(window->contentItem(), "centreGuideX");
+                    check(canvas->property("snappedX").toBool() && guideX
+                              && guideX->isVisible(),
+                          "a body drag near the horizontal centre snaps and shows its guide");
+                    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier,
+                                        scenePoint(960, 300).toPoint());
+                    QTest::qWait(80);
+                    const QVariantMap box = boxAt(0);
+                    check(near(box.value(QStringLiteral("x")).toDouble(), 760.0) &&
+                              near(box.value(QStringLiteral("y")).toDouble(), 150.0) &&
+                              near(box.value(QStringLiteral("width")).toDouble(), 400.0) &&
+                              near(box.value(QStringLiteral("height")).toDouble(), 300.0),
+                          "the horizontal snap lands exactly on 960 and keeps the size");
+                    docs.undo();
+                    QTest::qWait(60);
+                }
+                {
+                    const QPointF from = scenePoint(400, 300);
+                    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier,
+                                      from.toPoint());
+                    QTest::mouseMove(window, scenePoint(400, 540).toPoint(), 20);
+                    QTest::qWait(40);
+                    auto* guideY = findNamed(window->contentItem(), "centreGuideY");
+                    check(canvas->property("snappedY").toBool() && guideY
+                              && guideY->isVisible(),
+                          "a body drag near the vertical centre snaps and shows its guide");
+                    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier,
+                                        scenePoint(400, 540).toPoint());
+                    QTest::qWait(80);
+                    const QVariantMap box = boxAt(0);
+                    check(near(box.value(QStringLiteral("y")).toDouble(), 390.0) &&
+                              near(box.value(QStringLiteral("height")).toDouble(), 300.0),
+                          "the vertical snap lands exactly on 540 and keeps the size");
+                    docs.undo();
+                    QTest::qWait(60);
+                }
+                {
+                    const QPointF from = scenePoint(400, 300);
+                    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier,
+                                      from.toPoint());
+                    QTest::mouseMove(window, scenePoint(1000, 300).toPoint(), 20);
+                    QTest::qWait(40);
+                    check(!canvas->property("snappedX").toBool(),
+                          "a drag beyond the tolerance stays free");
+                    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier,
+                                        scenePoint(1000, 300).toPoint());
+                    QTest::qWait(80);
+                    check(near(boxAt(0).value(QStringLiteral("x")).toDouble(), 800.0),
+                          "and the pointer's travel is kept");
+                    docs.undo();
+                    QTest::qWait(60);
+                }
+
+                // A handle at the slide edge: the outer half is live.
+                check(setBox(0.0, 0.0, 1920.0, 1080.0), "the edge fixture is set");
+                QTest::qWait(60);
+                {
+                    const QPointF from = scenePoint(0, 0) - QPointF(3, 3);
+                    drag(from, from + QPointF(30 * z, 20 * z));
+                    const QVariantMap box = boxAt(0);
+                    check(near(box.value(QStringLiteral("x")).toDouble(), 30.0) &&
+                              near(box.value(QStringLiteral("y")).toDouble(), 20.0) &&
+                              near(box.value(QStringLiteral("width")).toDouble(), 1890.0) &&
+                              near(box.value(QStringLiteral("height")).toDouble(), 1060.0),
+                          "a corner at the slide edge is reachable and resizes");
+                    docs.undo();
+                    QTest::qWait(60);
+                }
+
+                // Overlap: the selected box's handle wins over another box.
+                check(setBox(200.0, 150.0, 400.0, 300.0), "the overlap fixture is set");
+                if (docs.addTextBox()) {
+                    const int added = docs.currentBox();
+                    docs.setTextBoxGeometry(150.0, 100.0, 300.0, 300.0);
+                    docs.selectTextBox(0);
+                    QTest::qWait(60);
+                    const QPointF from = scenePoint(200, 150);
+                    drag(from, from + QPointF(30 * z, 20 * z));
+                    const QVariantMap first = boxAt(0);
+                    const QVariantMap second = boxAt(added);
+                    check(near(first.value(QStringLiteral("x")).toDouble(), 230.0) &&
+                              near(first.value(QStringLiteral("width")).toDouble(), 370.0) &&
+                              near(second.value(QStringLiteral("x")).toDouble(), 150.0) &&
+                              near(second.value(QStringLiteral("width")).toDouble(), 300.0),
+                          "an overlapping body does not steal the selected handle");
+                    docs.undo();
+                    docs.selectTextBox(added);
+                    docs.removeCurrentTextBox();
+                    docs.selectTextBox(0);
+                    QTest::qWait(60);
+                }
+
+                // Cancel: Escape during a held drag writes nothing.
+                check(setBox(200.0, 150.0, 400.0, 300.0), "the cancel fixture is set");
+                QTest::qWait(60);
+                {
+                    const QPointF from = scenePoint(600, 450);
+                    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier,
+                                      from.toPoint());
+                    QTest::mouseMove(window, (from + QPointF(50 * z, 40 * z)).toPoint(), 20);
+                    QTest::qWait(40);
+                    QTest::keyClick(window, Qt::Key_Escape);
+                    QTest::qWait(40);
+                    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier,
+                                        (from + QPointF(50 * z, 40 * z)).toPoint());
+                    QTest::qWait(80);
+                    const QVariantMap box = boxAt(0);
+                    check(near(box.value(QStringLiteral("width")).toDouble(), 400.0) &&
+                              near(box.value(QStringLiteral("height")).toDouble(), 300.0),
+                          "Escape cancels a held drag without a write");
+                }
+            }
+            window->resize(1680, 1020);
+            QTest::qWait(80);
+        }
+        window->setProperty("page", "show");
+        QTest::qWait(80);
+    }
+
     if (qEnvironmentVariableIsSet("OPENSHOW_WORKSPACE_LIVE")) {
         worker.start();
         QElapsedTimer timeout;

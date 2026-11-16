@@ -47,7 +47,11 @@ Item {
     property real boxW: 1600
     property real boxH: 880
 
-    readonly property real stageWidth: Math.min(width, height * 16 / 9)
+    // BX.4: the fitted stage leaves one handle radius of room on every side,
+    // so a corner at a slide edge is still inside this canvas's own bounds
+    // (a child outside its parent's bounds receives no pointer events).
+    readonly property real stageWidth: Math.max(
+        1, Math.min(width - 2 * gestureInset, (height - 2 * gestureInset) * 16 / 9))
     readonly property real stageHeight: stageWidth * 9 / 16
     readonly property real zoom: stageWidth / 1920
 
@@ -387,15 +391,15 @@ Item {
             cursorShape: canvas.dragMode !== ""
                          ? transform.cursorFor(canvas.dragMode)
                          : transform.cursorFor(
-                               canvas.hitTest(mouseX + canvas.gestureInset,
-                                              mouseY + canvas.gestureInset))
+                               canvas.hitTest(mouseX - canvas.gestureInset,
+                                              mouseY - canvas.gestureInset))
             // Focus so the canvas's own Escape (below) reaches the item
             // scope rather than the window's clear-all shortcut.
             focus: true
 
             onPressed: function (mouse) {
-                const px = mouse.x + canvas.gestureInset
-                const py = mouse.y + canvas.gestureInset
+                const px = mouse.x - canvas.gestureInset
+                const py = mouse.y - canvas.gestureInset
                 if (mouse.button === Qt.RightButton) {
                     // A right-click selects the box under the pointer (the
                     // topmost body rule) and opens the box menu; it never

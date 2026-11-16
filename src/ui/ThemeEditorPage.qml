@@ -1224,8 +1224,8 @@ Item {
                     cursorShape: themeEditor.dragMode !== ""
                                  ? boxTransform.cursorFor(themeEditor.dragMode)
                                  : boxTransform.cursorFor(
-                                       themeEditor.hitTest(mouseX + themeEditor.gestureInset,
-                                                           mouseY + themeEditor.gestureInset))
+                                       themeEditor.hitTest(mouseX - themeEditor.gestureInset,
+                                                           mouseY - themeEditor.gestureInset))
                     onPressed: function (mouse) {
                         if (mouse.button === Qt.RightButton) {
                             // Right-click opens the box menu; it never starts
@@ -1236,8 +1236,8 @@ Item {
                             return
                         }
                         const mode = themeEditor.hitTest(
-                            mouse.x + themeEditor.gestureInset,
-                            mouse.y + themeEditor.gestureInset)
+                            mouse.x - themeEditor.gestureInset,
+                            mouse.y - themeEditor.gestureInset)
                         if (mode !== "") {
                             forceActiveFocus()
                             themeEditor.beginGesture(mode)
