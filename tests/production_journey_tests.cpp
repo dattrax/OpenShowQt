@@ -813,6 +813,134 @@ int main(int argc, char* argv[]) {
                   "the audience is back at the centre anchor over the same gold");
         }
 
+        // --- task BX.4: a geometry edit, previewed then published ---------
+        // Move and narrow the live cue's primary box through the Edit page's
+        // own verb. The off-air picture must show the words in the new box
+        // while the audience keeps the old frame; an explicit Go publishes
+        // matching pixels; save/reopen keeps the rectangle, the authored
+        // words and the same media asset.
+        {
+            const QString liveJson = docs.currentSceneJson();
+            const int centreTop = whiteTop(g.audience);
+            const auto itemOf = [](const QString& json) {
+                const boost::json::value parsed = boost::json::parse(json.toStdString());
+                return parsed.as_object().at("items").as_array().at(0).as_object();
+            };
+            const auto linesOf = [](const boost::json::object& item) {
+                return boost::json::serialize(item.at("lines"));
+            };
+            const auto assetIdOf = [](const QString& json) {
+                const auto background = boost::json::parse(json.toStdString())
+                                            .as_object()
+                                            .at("background")
+                                            .as_object();
+                const auto it = background.find("assetId");
+                return it == background.end() ? std::string()
+                                              : std::string(it->value().as_string());
+            };
+            const auto itemsOf = [](const QString& json) {
+                return boost::json::parse(json.toStdString())
+                    .as_object().at("items").as_array().size();
+            };
+            const boost::json::object liveItem = itemOf(liveJson);
+            const std::string sourceLines = linesOf(liveItem);
+            const std::string sourceAsset = assetIdOf(liveJson);
+            const std::size_t sourceItems = itemsOf(liveJson);
+            const std::uint64_t liveTag = g.audience.revision;
+            check(!sourceAsset.empty() && centreTop >= 0,
+                  "the live cue has the gold asset and drawn words");
+
+            check(docs.setTextBoxGeometry(300.0, 500.0, 1000.0, 400.0),
+                  "the Edit controller moves and narrows the live cue's box");
+            const QString editedJson = docs.currentSceneJson();
+            const boost::json::object editedItem = itemOf(editedJson);
+            check(editedItem.at("x").to_number<double>() == 300.0 &&
+                      editedItem.at("y").to_number<double>() == 500.0 &&
+                      editedItem.at("width").to_number<double>() == 1000.0 &&
+                      editedItem.at("height").to_number<double>() == 400.0,
+                  "the compiled scene carries the new rectangle");
+            check(linesOf(editedItem) == sourceLines &&
+                      assetIdOf(editedJson) == sourceAsset &&
+                      itemsOf(editedJson) == sourceItems,
+                  "the words, the media identity and the layer count are unchanged");
+
+            std::uint64_t revBox = 0;
+            {
+                boost::json::value parsed = boost::json::parse(editedJson.toStdString());
+                boost::json::value prepReply;
+                if (call(fd, nextId++, "scene.prepare", parsed.as_object(), &prepReply) &&
+                    prepReply.as_object().contains("result")) {
+                    revBox = numberValue(prepReply.at("result").as_object().at("revision"));
+                }
+            }
+            check(revBox != 0, "the moved cue is prepared for the off-air picture");
+            g.maxPresentedSeen = liveTag;
+            boost::json::value selReply;
+            check(call(fd, nextId++, proto::kMethodPreviewSelect,
+                       boost::json::object{{"revision", revBox}, {"request", 9u}}, &selReply) &&
+                      selReply.as_object().contains("result"),
+                  "the moved cue is asked for off air");
+            bool previewSeen = false;
+            const auto previewDeadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(6);
+            while (!previewSeen && std::chrono::steady_clock::now() < previewDeadline) {
+                pump(fd, 250);
+                previewSeen = g.selection.ok &&
+                              g.selection.revision == (revBox & 0xFFFFFFFFu) &&
+                              g.selection.request == 9;
+            }
+            const int previewTop = whiteTop(g.selection);
+            check(previewSeen && previewTop >= 0,
+                  "the off-air picture carries the moved cue's words");
+            check(previewTop > centreTop + 20,
+                  "the off-air words sit lower in the moved box");
+            check(g.audience.ok && g.audience.revision == liveTag &&
+                      whiteTop(g.audience) == centreTop && g.leakedToAudience == 0,
+                  "the audience kept the old rectangle — preview only");
+
+            const Presented moved = presentRevision(fd, nextId, revBox);
+            check(moved.scene == revBox && moved.tag != 0,
+                  "Go publishes the moved cue and reports it on air");
+            g.maxPresentedSeen = moved.tag;
+            check(waitFor(&g.audience, moved.tag, fd, 6),
+                  "the audience frame tagged with the geometry edit arrives");
+            const int audienceTop = whiteTop(g.audience);
+            check(g.audience.ok && nearColor(pixelAt(g.audience, 0.02, 0.90), 0xF0E030),
+                  "the gold still is continuous across the geometry Go");
+            check(audienceTop >= 0 && std::abs(audienceTop - previewTop) <= 10,
+                  "the acknowledged audience pixels match the off-air box");
+            check(whitePixels(g.audience) > 0, "and the words still draw");
+
+            check(docs.save(), "the geometry edit saves to the service");
+            {
+                DocumentController reopened(nullptr, scratch);
+                const QString reopenedJson = reopened.sceneJsonForSlide(slide1);
+                check(!reopenedJson.isEmpty(), "the saved service reopens and compiles the cue");
+                const boost::json::object reopenedItem = itemOf(reopenedJson);
+                check(reopenedItem.at("x").to_number<double>() == 300.0 &&
+                          reopenedItem.at("y").to_number<double>() == 500.0 &&
+                          reopenedItem.at("width").to_number<double>() == 1000.0 &&
+                          reopenedItem.at("height").to_number<double>() == 400.0 &&
+                          linesOf(reopenedItem) == sourceLines &&
+                          assetIdOf(reopenedJson) == sourceAsset,
+                      "save/reopen keeps the rectangle, the words and the media asset");
+            }
+
+            docs.undo();
+            pump(fd, 60);
+            const QString resetJson = docs.currentSceneJson();
+            check(itemOf(resetJson).at("x").to_number<double>() == liveItem.at("x").to_number<double>() &&
+                      linesOf(itemOf(resetJson)) == sourceLines,
+                  "one undo returns the cue to its previous rectangle");
+            const Presented reset = presentJson(fd, nextId, resetJson);
+            check(reset.scene != 0, "the reset cue is presented");
+            g.maxPresentedSeen = reset.tag;
+            check(waitFor(&g.audience, reset.tag, fd, 6),
+                  "the audience frame after the geometry reset arrives");
+            check(std::abs(whiteTop(g.audience) - centreTop) <= 10,
+                  "the audience is back at the previous box");
+        }
+
         // --- per-layer clears against the picture -------------------------
         const QString goldJson = docs.currentSceneJson();
         const QString wordsGone = openshow::ui::withWordsCleared(goldJson);
