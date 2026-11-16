@@ -732,9 +732,13 @@ void WorkerController::onRpcReply(const RpcRequest& pending, const boost::json::
         // asked for a picture it can no longer draw.
         fPreview->setCapabilities(selectionCapable, thumbnailCapable);
         if (previewCapable) {
+            // 30 fps (task PV.1): the cadence the operator sees. The worker
+            // honours it as a ceiling and still draws only on content change,
+            // so a static slide costs nothing extra; the stream's own budget
+            // policy stands a frame down if the target cannot afford it.
             sendRequest("preview.start", boost::json::object{{"width", 640},
                                                              {"height", 360},
-                                                             {"fps", 15}});
+                                                             {"fps", 30}});
         }
         QTimer::singleShot(0, this, &WorkerController::pollStatus);
         auto* poll = new QTimer(this);

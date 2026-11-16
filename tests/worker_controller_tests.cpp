@@ -248,6 +248,17 @@ public:
     }
 
 private:
+    // Every scenario that serves a preview stream answers hello with the same
+    // two capabilities and reports the same output.status blocks: "preview"
+    // is the scripted producer the routing fixtures drive, "preview-cadence"
+    // republishes on a beat (task PV.1), and "preview-restart" serves one
+    // preview.start and then dies, so a fixture can watch the next connection
+    // ask for the stream again.
+    bool isPreviewScenario() const {
+        return fScenario == "preview" || fScenario == "preview-cadence" ||
+               fScenario == "preview-restart";
+    }
+
     struct DelayedReply {
         std::chrono::steady_clock::time_point when;
         std::string wire;
@@ -358,6 +369,28 @@ private:
                 }
             }
             publishOwedThumbnails();  // the slide list's band, one row per wake
+            // Task PV.1: a continuously changing source. A real producer
+            // republishes a target while its content moves, and this peer does
+            // the same on a beat: the audience's mirror every turn, and — once
+            // an edit has been accepted — the edit's frame on the turns
+            // between, so a fixture can compare the copies the client made
+            // with the signals it raised rather than trusting a fixed number.
+            if (fScenario == "preview-cadence" && fStreamStarted) {
+                const auto beat = std::chrono::steady_clock::now();
+                if (beat >= fNextCadenceAt) {
+                    fNextCadenceAt = beat + std::chrono::milliseconds(kCadenceMs);
+                    const bool editTurn = fSelectionActive && (++fCadenceTicks % 2 == 0);
+                    if (editTurn) {
+                        publishPreviewFrame(
+                            proto::kPreviewTargetSelection,
+                            static_cast<std::uint32_t>(fSelectionRevision), kFrameWidth,
+                            kFrameHeight, false, static_cast<std::uint32_t>(fSelectionAccepted),
+                            false);
+                    } else {
+                        publishPreview(proto::kPreviewTargetAudience, 0, 7, false);
+                    }
+                }
+            }
             // A resumed peer is a SLOW peer: it takes the backlog in slices with
             // a pause between them, so what the controller owes comes down over
             // seconds rather than in one go. The pace is the whole point of
@@ -413,7 +446,7 @@ private:
             // canvas a worker-drawn picture when the SECOND capability is
             // present. Advertising both is what lets this peer be the one
             // that draws the frames the fixture reads.
-            if (fScenario == "preview") {
+            if (isPreviewScenario()) {
                 result["capabilities"] = boost::json::array{"preview.shm.v1",
                                                             "preview.stream-id.v1",
                                                             "preview.select.v1",
@@ -525,7 +558,7 @@ private:
             // slide is marked FORGET — a worker that has lost a target the
             // client believes it asked for, which the client must recover
             // from by asking again rather than by painting nothing.
-            if (fScenario == "preview") {
+            if (isPreviewScenario()) {
                 bool active = fSelectionActive;
                 if (fForgetReportsLeft > 0) {
                     --fForgetReportsLeft;
@@ -572,7 +605,7 @@ private:
             // properties from this echo and nowhere else, so a control that
             // ran on local optimism — a Pause label flipped by the click —
             // cannot survive here.
-            if (fScenario == "preview") {
+            if (isPreviewScenario()) {
                 // ... and the account behind it is refreshed on every poll,
                 // because a fixture that is proving the client sent NOTHING has
                 // nothing else to wake this peer with (task 6.16b).
@@ -938,10 +971,26 @@ private:
         // FORGET makes the peer report the target as gone once, so the
         // client's recovery is a behaviour under test instead of a comment.
         if (method == "preview.start") {
-            if (fScenario != "preview") {
+            if (!isPreviewScenario()) {
                 sendError(id, "fake: this scenario has no preview stream");
                 return;
             }
+            // Task PV.1: the ask is recorded VERBATIM, because what a fixture
+            // needs to know is the cadence the frontend actually put on the
+            // wire — not the cadence a comment says it asks for — and the
+            // answer carries it back the way a worker that accepted it does.
+            boost::json::object ask;
+            if (request.contains("params") && request.at("params").is_object()) {
+                ask = request.at("params").as_object();
+            }
+            fPreviewStartOps.push_back(ask);
+            const auto asked = [&ask](const char* key, std::int64_t fallback) {
+                const auto entry = ask.find(key);
+                return entry != ask.end() && entry->value().is_number()
+                           ? entry->value().to_number<std::int64_t>()
+                           : fallback;
+            };
+            const std::int64_t askedFps = asked("fps", 15);
             std::string error;
             if (!startPreviewSegment(&error)) {
                 sendError(id, error);
@@ -953,10 +1002,18 @@ private:
                                                {"slotCount", static_cast<std::int64_t>(kSlots)},
                                                {"bytesPerSlot",
                                                 static_cast<std::int64_t>(fSlotStride)},
-                                               {"fps", 15}});
+                                               {"fps", askedFps}});
             // The audience's own picture, immediately: the panel is live
             // before anybody asks for an edit, and stays that way.
             publishPreview(proto::kPreviewTargetAudience, 0, 7, false);
+            if (fScenario == "preview-restart") {
+                // The stream was asked for and answered; the connection now
+                // dies, which is the only honest way to produce a SECOND
+                // hello on this socket path (task PV.1's defaults-after-
+                // reconnect leg).
+                writeReport();
+                _exit(0);
+            }
             return;
         }
         if (method == proto::kMethodPreviewSelect) {
@@ -1455,6 +1512,9 @@ private:
             // client actually put on the wire), plus what the scripted
             // producer did with them and how many slot releases came back.
             {"selects", fSelects},
+            // Task PV.1: every preview.start ask verbatim — the cadence the
+            // frontend actually requested on this connection.
+            {"previewStartOps", fPreviewStartOps},
             // Task 6.16b: every preview.thumbnails verbatim, plus what the
             // scripted producer did with the band. The published count is what
             // lets a fixture say "the frame reached the socket and the CLIENT
@@ -1773,6 +1833,16 @@ private:
     bool fForgetUsed = false;
     int fForgetReportsLeft = 0;
     boost::json::array fSelects;
+    // Task PV.1: every preview.start ask this connection carried, verbatim, so
+    // a fixture can name the cadence the frontend requested instead of
+    // inferring it from the frames that happened to arrive.
+    boost::json::array fPreviewStartOps;
+    // The cadence scenario's beat: when the next republish is due, and how
+    // many turns have been taken (they alternate between the two targets once
+    // an edit is active).
+    std::chrono::steady_clock::time_point fNextCadenceAt{};
+    int fCadenceTicks = 0;
+    static constexpr int kCadenceMs = 20;
     // Task 6.16b: the slide list's target, its ledger, and the counters the
     // client mirrors. `fThumbnailNextId` is monotonic for the whole session —
     // uniqueness only has to hold within one batch, and a producer that reused
@@ -2157,6 +2227,35 @@ std::vector<std::pair<std::int64_t, std::int64_t>> selectLedger(
                          request->value().to_number<std::int64_t>());
     }
     return out;
+}
+
+// Task PV.1: the preview.start asks a connection carried, verbatim — the only
+// honest witness of the cadence this frontend requested.
+std::vector<boost::json::object> previewStartAsks(const boost::json::object& report) {
+    std::vector<boost::json::object> asks;
+    const auto entry = report.find("previewStartOps");
+    if (entry == report.end() || !entry->value().is_array()) {
+        return asks;
+    }
+    for (const auto& value : entry->value().as_array()) {
+        if (value.is_object()) {
+            asks.push_back(value.as_object());
+        }
+    }
+    return asks;
+}
+
+// The ask PV.1 promises: the mirror's extent, at the cadence the UI is meant
+// to repaint at. A missing key reads as -1 and fails the check rather than
+// passing by accident.
+bool askedCadence(const boost::json::object& ask) {
+    const auto number = [&ask](const char* key) -> std::int64_t {
+        const auto entry = ask.find(key);
+        return entry == ask.end() || !entry->value().is_number()
+                   ? -1
+                   : entry->value().to_number<std::int64_t>();
+    };
+    return number("width") == 640 && number("height") == 360 && number("fps") == 30;
 }
 
 // The scripted producer paints (1, 2, 3) for the audience and
@@ -5011,6 +5110,112 @@ void scenarioThumbnailAskedBeforeHello() {
     controller.shutdownNow();
 }
 
+// S20 (task PV.1): the cadence the frontend asks for, and the repaint that has
+// to follow every accepted copy of it.
+//
+// Two promises, one fixture:
+//
+//   - the stream is asked for as 640x360 at 30 fps — and asked for AGAIN on a
+//     fresh connection rather than inherited from a dead one. The peer records
+//     every preview.start ask verbatim, so what is asserted is the wire, not a
+//     comment about the source;
+//   - every frame the consumer ACCEPTS raises the signal the panel repaints
+//     on. The peer republishes on a 20 ms beat, the way a live source does,
+//     and the count of changed() signals must cover the copies across BOTH
+//     targets. Before PV.1 the audience and edit branches updated their images
+//     without saying so, and the panel repainted on the 500 ms status poll
+//     instead: copies kept advancing, so a fixture that only counted frames
+//     proved nothing at all.
+void scenarioPreviewCadence() {
+    const std::string firstReport = tempPath("pv-cadence-first");
+    const std::string report = tempPath("pv-cadence");
+    ::unlink(firstReport.c_str());
+    ::unlink(report.c_str());
+
+    // Declared before the controller so the counted signal outlives it.
+    // (`signals` is a Qt keyword macro, hence the plainer name.)
+    int repaints = 0;
+    WorkerController controller;
+    // The panel's whole repaint path: PreviewView::update() hangs off this.
+    QObject::connect(&controller, &WorkerController::previewChanged,
+                     [&repaints] { ++repaints; });
+
+    // One connection that answers preview.start and then dies, so the second
+    // hello is a real reconnect and its ask is the second witness.
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "preview-restart", 1);
+    ::setenv("OPENSHOW_FAKE_REPORT", firstReport.c_str(), 1);
+    controller.start();
+    if (!check(waitUntil([&controller] {
+                   return controller.statusText().contains(QStringLiteral("connected to worker"));
+               }),
+               "pv1: handshake with the scripted producer")) {
+        controller.shutdownNow();
+        return;
+    }
+    if (!check(waitUntil([&controller] { return !controller.isConnected(); }),
+               "pv1: the first connection goes away with its stream")) {
+        controller.shutdownNow();
+        return;
+    }
+    {
+        const auto asks = previewStartAsks(readReport(firstReport));
+        check(asks.size() == 1 && askedCadence(asks.front()),
+              "pv1: the first connection asked for 640x360 at 30 fps");
+    }
+
+    // --- the reconnect: the same ask, from a client that starts over ------
+    ::setenv("OPENSHOW_FAKE_SCENARIO", "preview-cadence", 1);
+    ::setenv("OPENSHOW_FAKE_REPORT", report.c_str(), 1);
+    controller.start();
+    if (!check(waitUntil([&controller] { return controller.previewActive(); }),
+               "pv1: the second connection maps a fresh stream")) {
+        controller.shutdownNow();
+        return;
+    }
+    check(waitUntil([&report] { return !previewStartAsks(readReportNow(report)).empty(); },
+                    4000),
+          "pv1: the second connection's preview.start reaches the peer");
+    {
+        const auto asks = previewStartAsks(readReportNow(report));
+        check(asks.size() == 1 && askedCadence(asks.front()),
+              "pv1: a reconnect asks for 640x360 at 30 fps again, not the dead stream");
+    }
+    if (!check(waitUntil([&controller] { return controller.previewFrames() >= 5; }),
+               "pv1: the mirror flows at the producer's cadence")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    // --- an edit on the same stream, so both targets are under measurement --
+    const QString edit = QString::fromStdString(sceneForSelection("A", "verse", 0x101030u));
+    controller.requestSelectionPreview(edit);
+    if (!check(waitUntil([&controller] { return controller.selectionReady(); }),
+               "pv1: the off-air render reaches the edit target")) {
+        controller.shutdownNow();
+        return;
+    }
+
+    // The window starts at one pair of counters, so copies and signals are
+    // compared over the SAME interval and the earlier ones cannot flatter it.
+    const int repaintsAtStart = repaints;
+    const qint64 audienceAtStart = controller.previewFrames();
+    const qint64 selectionAtStart = controller.selectionFrames();
+    const auto copies = [&controller, audienceAtStart, selectionAtStart] {
+        return (controller.previewFrames() - audienceAtStart) +
+               (controller.selectionFrames() - selectionAtStart);
+    };
+    check(waitUntil([&copies] { return copies() >= 24; }, 8000),
+          "pv1: the beat delivers frames of both targets");
+    const qint64 measured = copies();
+    const int raised = repaints - repaintsAtStart;
+    check(measured >= 24,
+          "pv1: the window held enough copies to mean something");
+    check(raised >= measured,
+          "pv1: every accepted audience/selection copy raised previewChanged — the panel "
+          "repaints per frame, not per status poll");
+    controller.shutdownNow();
+}
+
 void scenarioGradientClear() {
     ::setenv("OPENSHOW_FAKE_SCENARIO", "clean", 1);
     const std::string report = tempPath("gradient");
@@ -5254,6 +5459,7 @@ int main(int argc, char* argv[]) {
     scenarioMediaTransport();
     scenarioThumbnailAskedBeforeHello();
     scenarioSelectionPreview();
+    scenarioPreviewCadence();
     scenarioThumbnailPreview();
     scenarioGradientClear();
     scenarioForegroundFaults();

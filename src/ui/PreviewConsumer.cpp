@@ -809,6 +809,12 @@ void PreviewConsumer::handleReady(const boost::json::object& params) {
     // Copy the payload under the slot's seqlock: same sequence before and
     // after means the producer never touched it mid-copy. A stale or torn
     // frame is simply skipped; the next notification brings a newer one.
+    //
+    // `fresh` means "an accepted copy landed in a target", whichever target
+    // it was: the audience mirror and the editor's off-air picture repaint
+    // through the same changed() as a thumbnail (task PV.1). Emitting it
+    // only for thumbnails left the panel painting whatever the 500 ms status
+    // poll happened to read, so a 30 fps stream looked like 2 fps.
     bool fresh = false;
     if (!superseded && !unmapped && fMap && slot < fPreviewSlotCount &&
         rowBytes == width * 4 && width > 0 && height > 0 && width <= 4096 && height <= 4096 &&
@@ -849,9 +855,11 @@ void PreviewConsumer::handleReady(const boost::json::object& params) {
                         fSelectionImage = std::move(image);
                         fSelectionImageRequest = request;
                         ++fSelectionFrames;
+                        fresh = true;
                     } else {
                         fPreviewImage = std::move(image);
                         ++fPreviewFrames;
+                        fresh = true;
                     }
                 }
             }
